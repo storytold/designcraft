@@ -433,19 +433,46 @@ fn compose_cells(
     }
 }
 
-/// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
-/// Uses the same baseline/bounds test as auto-growth, and retains a prefix: overset text cannot
-/// reappear after a line that did not fit.
-fn clip_overset(lay: &CellLayout, clip_height: f64) -> Arc<ComposedStory> {
+/// Where a line's text ends along it: the end of its last glyph that is drawn, leaving out
+/// spaces and punctuation (which may hang past the measure).
+fn ink_end(line: &crate::Line) -> f64 {
+    line.glyphs
+        .iter()
+        .filter(|g| g.visible && !g.rendered_char.is_whitespace() && !g.rendered_char.is_ascii_punctuation())
+        .map(|g| g.x + g.adv)
+        .fold(line.x0, f64::max)
+}
+
+/// Whether a line of turned text runs past `along`, the cell's length along its lines: a word
+/// longer than the cell's height can't wrap, and text composed for a longer span than the cell
+/// shows (a header repeated without the rows it spans) is drawn in a shorter one.
+fn runs_past(line: &crate::Line, along: f64) -> bool {
+    ink_end(line) > along + 0.01
+}
+
+/// A cell's text cut to the lines that fit `depth` across them and, for turned text, `along`
+/// them, with where the overset text begins. Uses the same baseline/bounds test as auto-growth,
+/// and retains a prefix: overset text cannot reappear after a line that did not fit. Paragraph
+/// shading and borders go with the lines cut off; those of the lines kept end at `depth`.
+fn clip_overset(lay: &CellLayout, depth: f64, along: Option<f64>) -> Arc<ComposedStory> {
     let Some(f) = lay.text.frames.first() else { return lay.text.clone() };
-    let keep = lay.line_heights.iter().take_while(|h| **h <= clip_height + 0.01).count();
+    let keep = lay.line_heights.iter().zip(&f.lines).take_while(|(h, l)| **h <= depth + 0.01 && along.is_none_or(|a| !runs_past(l, a))).count();
     let overset_at = f.lines.get(keep).map(|l| l.range.start);
     let mut t = (*lay.text).clone();
     if let Some(frame) = t.frames.first_mut() {
+        let last_baseline = keep.checked_sub(1).map(|i| frame.lines[i].baseline);
         frame.lines.truncate(keep);
         frame.objects.retain(|o| o.line < keep);
         frame.tables.retain(|table| table.line < keep);
         frame.range.end = frame.lines.last().map_or(frame.range.start, |l| l.range.end);
+        // A box that starts below the last kept line's baseline is a later line's, cut off.
+        frame.decos.retain(|d| last_baseline.is_some_and(|b| d.rect.y0 < b));
+        for d in &mut frame.decos {
+            if d.rect.y1 > depth + 0.01 {
+                d.rect.y1 = depth;
+                d.path = None;
+            }
+        }
     }
     if let Some(at) = overset_at {
         t.overset_at = Some(at);
@@ -525,8 +552,10 @@ fn emit(
                 VerticalJustification::Bottom if space > 0.0 => space,
                 _ => 0.0,
             };
-            let overset = space < -0.01 || lay.text.is_overset();
-            let text = if overset { clip_overset(lay, depth) } else { lay.text.clone() };
+            let along = (turns % 2 == 1).then(|| clip.height());
+            let runs_over = along.is_some_and(|a| lay.text.frames.first().is_some_and(|f| f.lines.iter().any(|l| runs_past(l, a))));
+            let overset = space < -0.01 || runs_over || lay.text.is_overset();
+            let text = if overset { clip_overset(lay, depth, along) } else { lay.text.clone() };
             // The frame position of the text's top left.
             let origin = match turns {
                 1 => Point::new(clip.x1 - dy, clip.y0),
@@ -1293,6 +1322,53 @@ mod height_tests {
         assert!((placed.rect.height() - 40.0).abs() < 1e-6);
         assert!(placed.overset);
         assert_eq!(placed.text.frames[0].lines.len(), 1, "only the lines that fit across 17.5 pt");
+    }
+
+    #[test]
+    fn rotated_text_longer_than_its_cell_is_overset() {
+        // Long words break, but a glyph wider than the cell's height can't: its line would run
+        // out of the cell, so the text is overset instead.
+        let big = |text: &str| {
+            let mut table = rotated_table(text, 270.0, &[30.0]);
+            table.columns[0].width = 80.0;
+            let cell = &mut table.cells[0];
+            cell.text.format_chars(0..cell.text.len(), |f| f.over.size = Some(40.0));
+            let composed = compose_table(table, 300.0);
+            composed.frames[0].tables[0].cell(0, 0).unwrap().clone()
+        };
+        let placed = big("W");
+        assert!(placed.clip.height() < 30.0, "{:?}", placed.clip);
+        assert!(placed.overset);
+        assert!(placed.text.frames[0].lines.is_empty(), "no line runs past the cell");
+        let placed = big("i");
+        assert!(!placed.overset, "a glyph that fits along the cell");
+        assert_eq!(placed.text.frames[0].lines.len(), 1);
+    }
+
+    #[test]
+    fn overset_paragraphs_leave_no_shading_in_the_cell() {
+        // Two paragraphs across a 17.5 pt column: the second doesn't fit, and its shading goes with it.
+        let shaded = |para: usize| {
+            let mut table = rotated_table(
+                "HS 160
+HS 170",
+                270.0,
+                &[60.0],
+            );
+            let at = if para == 0 { 0 } else { table.cells[0].text.len() - 1 };
+            table.cells[0].text.format_paras(at..at, |p| p.para.shading_on = Some(true));
+            let composed = compose_table(table, 300.0);
+            composed.frames[0].tables[0].cell(0, 0).unwrap().clone()
+        };
+        let placed = shaded(1);
+        assert!(placed.overset);
+        assert_eq!(placed.text.frames[0].lines.len(), 1);
+        assert!(placed.text.frames[0].decos.is_empty(), "{:?}", placed.text.frames[0].decos);
+        // The paragraph that fits keeps its shading, within the cell's depth.
+        let placed = shaded(0);
+        let decos = &placed.text.frames[0].decos;
+        assert_eq!(decos.len(), 1, "{decos:?}");
+        assert!(decos[0].rect.y1 <= placed.clip.width() + 1e-6, "{:?} across {}", decos[0].rect, placed.clip.width());
     }
 }
 
