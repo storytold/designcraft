@@ -79,6 +79,10 @@ fn language_names_map_to_bcp47_tags() {
     assert_eq!(language_tag("Georgian"), Some("ka"));
     assert_eq!(language_tag("Japanese"), Some("ja"));
     assert_eq!(language_tag("Korean"), Some("ko"));
+    assert_eq!(language_tag("Khmer"), Some("km"));
+    assert_eq!(language_tag("$ID/Khmer"), Some("km"));
+    assert_eq!(language_tag("Cambodian"), Some("km"));
+    assert_eq!(language_tag("km_KH"), Some("km-KH"));
     assert_eq!(language_tag("Chinese"), Some("zh"));
     assert_eq!(language_tag("Chinese: Simplified"), Some("zh-Hans"));
     assert_eq!(language_tag("Chinese: Traditional"), Some("zh-Hant"));

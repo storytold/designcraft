@@ -1,3 +1,4 @@
+mod khmer;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Align, Composer, Document, ParaAttrs, ParaFormat, SpreadRef};
 use designcraft_geom::Rect;
