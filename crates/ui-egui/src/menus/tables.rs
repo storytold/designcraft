@@ -437,6 +437,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             "-",
             ">Cell Options",
             "ui:app.cellOptionsDialog",
+            "ui:app.diagonalLinesDialog",
             "<",
             "-",
             ">Insert",
