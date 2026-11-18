@@ -25,11 +25,12 @@ impl XrefIndex {
     /// stay unresolved (their anchors' pages hardly move), but their running headers show what
     /// they show on the page, since a long one can push an anchor onto the next page. Those come
     /// from a running-header index of its own, built once, in which the stories that hold
-    /// cross-references, or sit in anchored frames, are composed outside the cache too, so
+    /// cross-references, sit in anchored frames, or are wrapped by a story in an anchored frame, are composed outside the cache too, so
     /// nothing comes back here.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> XrefIndex {
         let mut pages = HashMap::new();
         let mut running: Option<Arc<crate::vars::RunningIndex>> = None;
+        let anchored = |st: &Story| st.frames.iter().any(|f| doc.find(*f).is_none());
         for (sid, st) in &doc.stories {
             if st.anchors.is_empty() {
                 continue;
@@ -40,8 +41,12 @@ impl XrefIndex {
                     running
                         .get_or_insert_with(|| {
                             Arc::new(crate::vars::RunningIndex::build(doc, &|s| match doc.stories.get(&s) {
-                                // An anchored frame's story would compose its host through the cache too.
-                                Some(src) if has_xrefs(src) || src.frames.iter().any(|f| doc.find(*f).is_none()) => {
+                                // An anchored frame's story (itself or a wrap neighbour) would compose its host through the cache too.
+                                Some(src)
+                                    if has_xrefs(src)
+                                        || anchored(src)
+                                        || crate::wrap::neighbours(doc, s).iter().any(|n| doc.stories.get(n).is_some_and(|ns| anchored(ns))) =>
+                                {
                                     Arc::new(crate::compose_story(doc, s, &Default::default()))
                                 }
                                 _ => get(s),
