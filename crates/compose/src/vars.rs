@@ -161,7 +161,7 @@ impl RunningIndex {
                             .filter(|(offset, _)| {
                                 let Some(start) = end.checked_add(*offset) else { return false };
                                 cs.overset_at.is_none_or(|o| start < o)
-                                    && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame) != Some(page))
+                                    && cs.frames.iter().any(|ft| ft.range.contains(&start) && frame_page(doc, ft.frame).is_some_and(|p| p != page))
                             })
                             .map(|(_, word)| word)
                             .unwrap_or_default()
