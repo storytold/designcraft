@@ -20,6 +20,7 @@ mod guides;
 mod ime;
 mod input;
 mod page_decor;
+mod place_cursor;
 mod render;
 mod rulers;
 mod scroll;
@@ -62,7 +63,8 @@ pub(crate) use view::page_in_view;
 use view::present_fit;
 pub use view::{
     PageBox, apply_view_request, can_go_through_history, current_page, current_parent_page, current_slot, current_spread, current_spread_page,
-    drop_point, fit, go_through_history, go_to_page, page_box, page_box_go, page_target, set_zoom, show_spread, step_spread, view_centre, zoom_at,
+    drop_point, fit, go_through_history, go_to_page, go_to_spread_rect, page_box, page_box_go, page_target, set_zoom, show_spread, step_spread,
+    view_centre, zoom_at,
 };
 
 pub const RULER: f32 = 15.0;
@@ -133,6 +135,13 @@ impl Xf {
     }
 }
 
+/// Whether the canvas rectangle `r`, grown by `margin` screen points, reaches into `clip`. A
+/// rectangle with a coordinate that is not finite counts as in view.
+fn in_view(xf: &Xf, clip: Rect, r: DRect, margin: f32) -> bool {
+    let s = xf.rect(r);
+    !s.is_finite() || s.expand(margin).intersects(clip)
+}
+
 /// A guide being dragged out or moved: its line, what caught it, and where it is beside the pointer (#1282).
 fn draw_guide_drag(app: &DesignApp, painter: &egui::Painter, xf: &Xf, g: &GuideDrag, p: Pos2, rect: Rect, t: &Tokens) {
     let col = Color32::from_rgb(74, 227, 255);
@@ -188,7 +197,9 @@ fn paint_render(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Documen
             // Preview: only the shown area of each spread keeps its content.
             for slot in &layout.slots {
                 let r = shown_area(app, doc, xf, slot);
-                painter.with_clip_rect(r.intersect(screen)).add(egui::Shape::mesh(mesh.clone()));
+                if r.intersects(screen) {
+                    painter.with_clip_rect(r.intersect(screen)).add(egui::Shape::mesh(mesh.clone()));
+                }
             }
         } else {
             painter.add(egui::Shape::mesh(mesh));
@@ -252,8 +263,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let preview = app.ui.screen_mode != ScreenMode::Normal;
     let bg = if app.ui.screen_mode == ScreenMode::Presentation { Color32::BLACK } else { t.pasteboard };
     painter.rect_filled(screen, 0.0, bg);
+    // The spreads whose pages, shadow or edge reach into the view: the others paint none of them.
+    let clip = painter.clip_rect();
+    let in_sight: Vec<&SpreadSlot> = layout.slots.iter().filter(|slot| in_view(&xf, clip, slot.bounds, 2.0)).collect();
     // Page shadow: a hard 1.5 pt black offset on the right and bottom (InDesign 2026).
-    for slot in &layout.slots {
+    for slot in &in_sight {
         let r = xf.rect(slot.bounds);
         painter.rect_filled(r.translate(vec2(1.5, 1.5)), 0.0, Color32::BLACK);
     }
@@ -261,7 +275,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // not the shadow's black, until its render arrives.
     let [r, g, b, _] = doc.resolve_color(designcraft_color::swatch::PAPER, 1.0).unwrap_or(designcraft_color::Color::WHITE).to_rgba8(1.0);
     let paper = Color32::from_rgb(r, g, b);
-    for slot in &layout.slots {
+    for slot in &in_sight {
         for page in doc.spread(slot.spread).map(|sp| sp.pages.as_slice()).unwrap_or_default() {
             painter.rect_filled(xf.rect(slot.xf.transform_rect_bbox(page.bounds())), 0.0, paper);
         }
@@ -271,8 +285,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     paint_render(app, &painter, &xf, &doc, &layout, screen, preview);
     crate::separations::paint(app, ui.ctx(), &painter, &xf, &layout, screen);
     let hair = 1.0 / ui.ctx().pixels_per_point();
-    for slot in &layout.slots {
-        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, Color32::from_rgb(0x4a, 0x4a, 0x4a)), StrokeKind::Outside);
+    for slot in &in_sight {
+        painter.rect_stroke(xf.rect(slot.bounds), 0.0, Stroke::new(hair, page_decor::PAGE_EDGE), StrokeKind::Outside);
     }
     if !preview {
         let drag = ui.data(|d| d.get_temp::<GuideDrag>(egui::Id::unique(GUIDE_DRAG)));
@@ -413,26 +427,56 @@ fn draw_loaded_thumbnail(app: &DesignApp, painter: &egui::Painter, p: Pos2, t: &
         vec![pos2(inner.min.x, inner.max.y), pos2(inner.min.x + 3.5, inner.min.y + 2.5), pos2(inner.max.x, inner.max.y)],
         ink,
     ));
+    place_cursor::draw_loaded_count(app, painter, badge);
 }
 
 /// The loaded graphic's thumbnail texture, cached per image data.
 fn loaded_thumb_texture(ctx: &egui::Context, doc: &Document, asset: designcraft_doc::AssetId, size: (f64, f64)) -> Option<egui::TextureHandle> {
     let a = doc.assets.get(&asset)?;
-    let key = egui::Id::unique(("loaded_thumb", std::sync::Arc::as_ptr(&a.data) as usize, a.data.len(), a.page));
-    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
-        return Some(t);
-    }
     // Twice the thumbnail's size in pixels, for high-density screens.
     let scale = (2.0 * f64::from(LOADED_THUMB) / size.0.max(size.1)).min(1.0);
-    let pm = designcraft_render::images::mip(&a.data, a.page, size.0, scale)?;
+    proxy_texture(ctx, "loaded_thumb", &a.data, a.page, size.0, scale, 1024)
+}
+
+/// A texture of `data` drawn `width_pt` wide at `scale` device pixels per point for an overlay,
+/// cached per image data, without waiting for a decode: an image still decoding in the
+/// background shows another cached level of it (redrawn as decodes finish), or nothing yet.
+pub(super) fn proxy_texture(
+    ctx: &egui::Context,
+    name: &str,
+    data: &designcraft_doc::AssetData,
+    page: u32,
+    width_pt: f64,
+    scale: f64,
+    max_side: usize,
+) -> Option<egui::TextureHandle> {
+    use designcraft_render::images::{Mip, generation, mip_now};
+    let key = egui::Id::unique((name, data.key(), page));
+    // `None`: the level asked for; else the generation a stand-in was drawn at.
+    let cached = ctx.data(|d| d.get_temp::<(egui::TextureHandle, Option<u64>)>(key));
+    if let Some((t, stand_in)) = &cached
+        && stand_in.is_none_or(|g| g == generation())
+    {
+        return Some(t.clone());
+    }
+    let shown = generation();
+    let (pm, ready) = match mip_now(data, page, width_pt, scale) {
+        Mip::Ready(pm) => (pm, true),
+        Mip::Pending(Some(pm)) => (pm, false),
+        Mip::Pending(None) => return cached.map(|(t, _)| t),
+        Mip::Failed => {
+            ctx.data_mut(|d| d.remove::<(egui::TextureHandle, Option<u64>)>(key));
+            return None;
+        }
+    };
     let (pw, ph) = (pm.width() as usize, pm.height() as usize);
     if pw == 0 || ph == 0 {
         return None;
     }
     let ci = egui::ColorImage::from_rgba_premultiplied([pw, ph], pm.data_as_u8_slice());
-    let max = ctx.input(|i| i.max_texture_side).min(1024);
-    let t = ctx.load_texture("loaded_thumb", crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(key, t.clone()));
+    let max = ctx.input(|i| i.max_texture_side).min(max_side);
+    let t = ctx.load_texture(name, crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(key, (t.clone(), (!ready).then_some(shown))));
     Some(t)
 }
 

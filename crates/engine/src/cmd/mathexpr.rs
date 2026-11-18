@@ -2,8 +2,6 @@
 //! text insertion point (an anchored object) or as a frame. The LaTeX is kept as the object's
 //! alt text, so it can be edited and exports accessibly.
 
-use std::sync::Arc;
-
 use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape};
 use designcraft_geom::{Affine, Rect, shapes};
 use serde_json::{Value, json};
@@ -14,7 +12,13 @@ use crate::{Result, Session};
 fn math_item(d: &mut designcraft_doc::Document, latex: &str, size: f64, lid: designcraft_doc::LayerId, at: (f64, f64)) -> Item {
     let (svg, (w, h)) = crate::math::to_svg(latex, size);
     let fresh = AssetId(d.alloc());
-    let aid = d.add_asset(Asset { id: fresh, name: "math.svg".into(), mime: "image/svg+xml".into(), data: Arc::new(svg), ..Default::default() });
+    let aid = d.add_asset(Asset {
+        id: fresh,
+        name: "math.svg".into(),
+        mime: "image/svg+xml".into(),
+        data: designcraft_doc::AssetData::embedded(svg),
+        ..Default::default()
+    });
     let id = ItemId(d.alloc());
     let r = Rect::new(at.0, at.1, at.0 + w, at.1 + h);
     let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
@@ -85,9 +89,11 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(t) = text {
             let it = math_item(d, &latex, size, lid, (0.0, 0.0));
             let r = t.range();
+            let del = r.start.min(d.story(t.story).map_or(0, |st| st.len()))..r.end.min(d.story(t.story).map_or(0, |st| st.len()));
             if let Some(st) = d.story_mut(t.story) {
-                st.delete(r.start.min(st.len())..r.end.min(st.len()));
+                st.delete(del.clone());
             }
+            d.adjust_text_ranges(t.story, del, 0);
             let end = super::anchored::anchor_items(d, t.story, r.start, vec![it], &Default::default())?;
             sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
             return Ok(json!({"inline": true, "pos": end}));

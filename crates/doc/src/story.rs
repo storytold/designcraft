@@ -341,6 +341,11 @@ impl Story {
     /// Character format at byte `pos` (the run containing it; at a boundary, the preceding run —
     /// the format new typing takes).
     pub fn char_format_at(&self, pos: usize) -> &CharFormat {
+        if pos == self.text.len()
+            && let Some(r) = self.chars.iter().rev().find(|r| r.len > 0)
+        {
+            return &r.format;
+        }
         let mut start = 0;
         for r in &self.chars {
             let end = start + r.len;
@@ -430,7 +435,9 @@ impl Story {
             self.marks_inserted(pos, text);
         }
         // Paragraph formats: each new '\n' splits the current paragraph; the new paragraphs copy it.
-        let pi = self.para_at(pos);
+        // An append (an import building a story piece by piece) is in the last paragraph: no prefix count.
+        let at_end = pos == self.text.len();
+        let pi = if at_end { self.paras.len().saturating_sub(1) } else { self.para_at(pos) };
         let newlines = text.bytes().filter(|b| *b == b'\n').count();
         if newlines > 0
             && let Some(f) = self.paras.get(pi).cloned()
@@ -439,9 +446,15 @@ impl Story {
             self.paras.splice(pi + 1..pi + 1, std::iter::repeat_n(f, newlines));
         }
         self.text.insert_str(pos, text);
-        // Character runs.
-        self.splice_runs(pos, 0, text.len(), fmt);
-        self.normalize();
+        // Character runs. Appending extends or pushes at the end: no scan, and the runs stay normalized.
+        match self.chars.last_mut() {
+            Some(last) if at_end && last.len > 0 && last.format == fmt => last.len += text.len(),
+            Some(last) if at_end && last.len > 0 => self.chars.push(CharRun { len: text.len(), format: fmt }),
+            _ => {
+                self.splice_runs(pos, 0, text.len(), fmt);
+                self.normalize();
+            }
+        }
         self.rev = self.rev.wrapping_add(1);
     }
 
@@ -867,5 +880,23 @@ last");
                 }
             }
         }
+    }
+
+    /// Appending pieces in alternating formats keeps one run per piece and merges equal neighbours.
+    #[test]
+    fn appended_pieces_keep_their_runs() {
+        let bold = CharFormat { style: "B".into(), ..Default::default() };
+        let mut s = Story::new(StoryId(1));
+        for i in 0..3000 {
+            let f = if i % 2 == 0 { CharFormat::default() } else { bold.clone() };
+            let at = s.len();
+            s.insert_with(at, if i % 7 == 0 { "a\n" } else { "b" }, f);
+        }
+        assert_eq!(s.chars.len(), 3000);
+        assert_eq!(s.chars.iter().map(|r| r.len).sum::<usize>(), s.text.len());
+        assert_eq!(s.paras.len(), s.text.matches('\n').count() + 1);
+        let at = s.len();
+        s.insert_with(at, "c", bold);
+        assert_eq!(s.chars.len(), 3000);
     }
 }
