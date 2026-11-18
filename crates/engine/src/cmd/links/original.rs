@@ -89,7 +89,10 @@ pub fn originals(s: &Session, p: &Value) -> Result<Vec<Original>> {
     let mut why = None;
     for aid in assets {
         let Some(a) = st.doc.assets.get(&aid) else { continue };
-        match on_disk(a, document).and_then(|path| openable(a, path)) {
+        // A graphic embedded with Links › Embed keeps the record of the file it came from (for
+        // Unembed), but the document shows its own copy: a change to that file never reaches it.
+        let file = if super::embedded_copy(a) { Err(format!("{} is embedded: it has no file to edit", a.name)) } else { on_disk(a, document) };
+        match file.and_then(|path| openable(a, path)) {
             Ok(path) => out.push(Original { asset: aid, name: a.name.clone(), path }),
             Err(e) => {
                 why.get_or_insert(e);

@@ -987,6 +987,29 @@ fn a_save_right_after_placing_writes_no_copy_of_the_file() {
     assert!(saved < bytes.len() as u64, "saved {saved} bytes for a {} byte photo", bytes.len());
 }
 
+/// A graphic embedded with Links › Embed keeps the record of the file it came from (for
+/// Unembed), but it has no file to edit: the document shows its own copy.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_embedded_graphic_has_no_original_to_edit() {
+    let dir = TempDir::new("embedded-original");
+    let path = dir.0.join("art.png");
+    std::fs::write(&path, same_size_pngs().0).unwrap();
+    set_age(&path, 60);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = placed(&mut s, json!({"path": path.to_string_lossy()}));
+    let files = s.execute("links.originalFiles", &json!({"asset": id.0})).unwrap();
+    assert_eq!(files["files"][0]["path"].as_str(), path.to_str());
+
+    s.execute("links.embed", &json!({"asset": id.0})).unwrap();
+    assert!(asset_of(&s, id).link.is_some(), "the link record stays");
+    let err = s.execute("links.originalFiles", &json!({"asset": id.0})).unwrap_err().to_string();
+    assert!(err.contains("embedded"), "{err}");
+    // Where it came from can still be shown.
+    assert_eq!(crate::cmd::link_reveal_target(&s, &json!({"asset": id.0})).unwrap(), crate::cmd::LinkReveal::File(path.clone()));
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_modified_link_is_updated_undoably() {
