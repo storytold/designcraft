@@ -33,7 +33,7 @@ pub struct Sheet {
     pub plates: Plates,
     /// The printing condition the composite converts process plates through.
     cms: CmsConversion,
-    /// Export warnings.
+    /// Export warnings, and one when the resolution was lowered to fit the plate size.
     pub warnings: Vec<String>,
 }
 
@@ -228,7 +228,8 @@ mod tests {
         let used = a3["dpi"].as_f64().unwrap();
         assert!(used < 150.0, "{a3}");
         assert_eq!(lowered(&a3), 1, "{a3}");
-        let text = a3["warnings"][0].as_str().unwrap_or_default();
+        let text =
+            a3["warnings"].as_array().and_then(|ws| ws.iter().filter_map(|w| w.as_str()).find(|w| w.contains("dpi asked for"))).unwrap_or_default();
         assert!(text.contains(&format!("{used:.0} dpi")) && text.contains("300 dpi"), "{text}");
         let a5 = run("A5", 72);
         assert_eq!(a5["dpi"].as_f64(), Some(72.0));
