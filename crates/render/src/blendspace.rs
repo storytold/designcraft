@@ -12,6 +12,7 @@ use crate::{Frame, Placed, RenderOptions, Rendered, Renderer};
 use designcraft_color::BlendMode as DcBlend;
 use designcraft_doc::{Document, Item, SpreadRef};
 use designcraft_geom::{Affine, Rect, Shape};
+use vello_cpu::color::PremulRgba8;
 use vello_cpu::{RenderContext, peniko};
 
 /// At most one viewport, capped at 64 MiB. The snapshot shares the document's large Arcs;
@@ -28,6 +29,9 @@ pub(crate) struct CachedView {
     stats: crate::FrameStats,
     threads: u16,
 }
+/// Rounds [`transparent_area`](Renderer::transparent_area) grows the blend area by joining touching objects.
+const MAX_AREA_ROUNDS: usize = 64;
+
 impl CachedView {
     pub(crate) const MAX_BYTES: usize = 64 << 20;
     #[allow(clippy::too_many_arguments)]
@@ -114,6 +118,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         modified,
         next_id,
         font_scope,
+        alpha_outlines,
     } = new;
     let same_spreads = |a: &[std::sync::Arc<designcraft_doc::Spread>], b: &[std::sync::Arc<designcraft_doc::Spread>]| {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
@@ -125,6 +130,8 @@ fn same_document(old: &Document, new: &Document) -> bool {
         && old.stories.iter().zip(stories).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
         && old.assets.len() == assets.len()
         && old.assets.iter().zip(assets).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
+        && old.alpha_outlines.len() == alpha_outlines.len()
+        && old.alpha_outlines.iter().zip(alpha_outlines).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
         && old.title == *title
         && old.file_info == *file_info
         && old.settings == *settings
@@ -281,6 +288,58 @@ fn srgb_in(table: &[[f32; 3]], cmyk: [f32; 4]) -> [f32; 3] {
     out
 }
 
+/// Rows of the ink passes' area one conversion thread takes at least; the last band can hold fewer.
+const MIN_BAND_ROWS: usize = 32;
+
+/// The blended inks, the C/M/Y complements in `cmy` and the K complement in `black` (`width`
+/// pixels a row), converted to screen colours in `cmy`. With render threads, bands of rows are
+/// converted on that many threads at once. Returns the number of bands.
+fn inks_to_screen(cmy: &mut [PremulRgba8], black: &[PremulRgba8], width: usize, rich_black: bool, threads: u16) -> usize {
+    let table = srgb_table();
+    let convert = |cmy: &mut [PremulRgba8], black: &[PremulRgba8]| {
+        for (c, k) in cmy.iter_mut().zip(black) {
+            if c.a == 0 {
+                continue;
+            }
+            let a = c.a as f32;
+            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
+            let rgb = if rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
+            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
+            (c.r, c.g, c.b) = (r, g, b);
+        }
+    };
+    let rows = cmy.len().checked_div(width).unwrap_or(0);
+    let bands = usize::from(threads).min(rows / MIN_BAND_ROWS).max(1);
+    if cfg!(target_arch = "wasm32") || bands == 1 {
+        convert(cmy, black);
+        return 1;
+    }
+    let chunk = rows.div_ceil(bands) * width;
+    let mut parts: Vec<(&mut [PremulRgba8], &[PremulRgba8])> = cmy.chunks_mut(chunk).zip(black.chunks(chunk)).collect();
+    let convert = &convert;
+    let mut failed = Vec::new();
+    std::thread::scope(|s| {
+        let mut each = parts.iter_mut().enumerate();
+        let first = each.next();
+        for (i, (c, k)) in each {
+            if let Err(e) = std::thread::Builder::new().spawn_scoped(s, move || convert(c, k)) {
+                log::warn!("CMYK view: a conversion thread did not start ({e})");
+                failed.push(i);
+            }
+        }
+        if let Some((_, (c, k))) = first {
+            convert(c, k);
+        }
+    });
+    // A band whose thread did not start is converted here.
+    for i in failed {
+        if let Some((c, k)) = parts.get_mut(i) {
+            convert(c, k);
+        }
+    }
+    parts.len()
+}
+
 impl Renderer {
     /// The view pixels the spread's transparency can change: the union of its transparent
     /// objects (opacity, blend, effects, knockout, also nested or anchored) with their effects'
@@ -312,10 +371,18 @@ impl Renderer {
             }
         }
         // What an object can paint on the spread: its bounds with its (and its children's)
-        // strokes and effects.
+        // strokes and effects, which are drawn through each one's transform and grow with it.
+        fn outset(it: &Item, outer: Affine, o: &mut f64) {
+            let xf = outer * it.xf;
+            let scale = crate::fx::max_scale(xf).unwrap_or(1.0);
+            *o = o.max(crate::fx::outset_scaled(it, scale) + it.stroke.extent() * scale);
+            for c in it.children() {
+                outset(c, xf, o);
+            }
+        }
         let reach = |it: &Item| {
             let mut o: f64 = 0.0;
-            it.walk(&mut |c| o = o.max(crate::fx::outset(c) + c.stroke.extent()));
+            outset(it, Affine::IDENTITY, &mut o);
             it.bounds().inflate(o + 2.0, o + 2.0)
         };
         let items: Vec<(Rect, bool)> = sp.items.iter().filter(|it| visible(it)).map(|it| (reach(it), transparent(it))).collect();
@@ -326,12 +393,19 @@ impl Renderer {
         // Objects the area touches join it whole, so none is drawn partly through the ink passes
         // and partly through the ordinary drawing (their colour conversions differ slightly).
         let Some(mut area) = area else { return Some(Rect::ZERO) };
-        for _ in 0..items.len() {
+        // A chain of overlapping objects joins one more per round (a pass over every item each), so the
+        // rounds are capped; past that the area is everything, a larger area the passes blend exactly.
+        let mut settled = false;
+        for _ in 0..MAX_AREA_ROUNDS.min(items.len()) {
             let grown = items.iter().filter(|(r, _)| r.intersect(area).area() > 0.0).fold(area, |a, (r, _)| a.union(*r));
             if grown == area {
+                settled = true;
                 break;
             }
             area = grown;
+        }
+        if !settled && items.len() > MAX_AREA_ROUNDS {
+            area = items.iter().fold(area, |a, (r, _)| a.union(*r));
         }
         Some(f.view.transform_rect_bbox(area))
     }
@@ -403,16 +477,10 @@ impl Renderer {
         crate::PLATE.with(|p| p.set(f.opts.plate));
         self.stats.items = (self.stats.items - stats.items) / 2 + stats.items;
         self.stats.glyphs = (self.stats.glyphs - stats.glyphs) / 2 + stats.glyphs;
-        let table = srgb_table();
-        for (c, k) in cmy.data_mut().iter_mut().zip(black.data()) {
-            if c.a == 0 {
-                continue;
-            }
-            let a = c.a as f32;
-            let inks = [1.0 - c.r as f32 / a, 1.0 - c.g as f32 / a, 1.0 - c.b as f32 / a, 1.0 - k.r as f32 / a];
-            let rgb = if f.opts.rich_black && inks[0..3].iter().all(|v| *v <= 1e-3) && inks[3] >= 0.999 { [0.0; 3] } else { srgb_in(&table, inks) };
-            let [r, g, b] = rgb.map(|v| (v.clamp(0.0, 1.0) * a).round() as u8);
-            (c.r, c.g, c.b) = (r, g, b);
+        let _bands = inks_to_screen(cmy.data_mut(), black.data(), usize::from(aw), f.opts.rich_black, threads);
+        #[cfg(test)]
+        {
+            self.cmyk_convert_bands = _bands;
         }
         ctx.set_transform(Affine::translate((area.x0, area.y0)));
         ctx.set_paint(vello_cpu::Image { image: vello_cpu::ImageSource::Pixmap(std::sync::Arc::new(cmy)), sampler: peniko::ImageSampler::default() });
@@ -541,6 +609,39 @@ mod tests {
         assert_eq!(draw(&doc, &mut renderer).pixels, rgb.pixels);
     }
 
+    /// A hardened outer glow is stroked through the object's transform, and through its group's,
+    /// so the ink-pass area grows by the scaled growth: the square at 30..60 glows out to -30.
+    #[test]
+    fn cmyk_area_holds_a_scaled_objects_glow() {
+        for nested in [false, true] {
+            let mut doc = document();
+            let mut item = Item::new(
+                ItemId(doc.alloc()),
+                doc.default_layer(),
+                Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(10.0, 10.0, 20.0, 20.0)),
+            );
+            item.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+            let g = &mut item.effects.outer_glow;
+            (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+            if nested {
+                let mut group = Item::new(ItemId(doc.alloc()), doc.default_layer(), Shape::Group, Default::default());
+                group.xf = Affine::scale(3.0);
+                group.content = Content::Group { items: vec![Arc::new(item)] };
+                doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+            } else {
+                item.xf = Affine::scale(3.0);
+                doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+            }
+            let cache = Cache::new();
+            let opts = RenderOptions::default();
+            let f =
+                Frame { doc: &doc, cache: &cache, view: Affine::IDENTITY, visible: Rect::new(-1e4, -1e4, 1e4, 1e4), px: 1.0, opts: &opts, mt: false };
+            let area = Renderer::new().transparent_area(&f, SpreadRef::Doc(0)).unwrap();
+            assert!(area.x0 <= -30.0, "nested {nested}: the area {area:?} holds the glow out to -30");
+        }
+    }
+
     #[test]
     fn cmyk_pass_count_is_constant_and_unchanged_views_are_cached() {
         let mut doc = document();
@@ -657,6 +758,44 @@ mod tests {
             assert_eq!(out[3], cmy[3], "conversion preserves coverage");
             assert!(out[..3].iter().all(|v| *v <= out[3]), "output remains premultiplied");
         }
+    }
+
+    /// With render threads, the ink passes' colours are converted in that many bands of rows at
+    /// once, each band by its own thread, and the result is the same as converting on one thread.
+    #[test]
+    fn ink_colours_convert_in_a_band_per_render_thread() {
+        let mut doc = document();
+        rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(-20.0, -5.0, 180.0, 125.0), "C=100 M=0 Y=0 K=0", DcBlend::Multiply);
+        let render = |threads: u16| {
+            let mut renderer = Renderer::new();
+            renderer.threads = threads;
+            let image = renderer.render(
+                &doc,
+                &Cache::new(),
+                &[Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }],
+                (400, 300),
+                Affine::scale(2.0) * Affine::translate((30.0, 10.0)),
+                &RenderOptions { blend_space_view: true, background: Some([180, 180, 180, 255]), ..Default::default() },
+            );
+            (image, renderer.cmyk_convert_bands)
+        };
+        let (one, bands) = render(0);
+        assert_eq!(bands, 1);
+        let (four, bands) = render(4);
+        assert_eq!(bands, 4, "a band per render thread");
+        assert_eq!(four.pixels, one.pixels);
+    }
+
+    /// The returned count is the number of bands converted: 1,281 rows on 40 threads split into
+    /// bands of 33 rows, which makes 39 bands.
+    #[test]
+    fn ink_conversion_returns_the_bands_it_converted() {
+        let rows = 1281;
+        let mut cmy = vec![PremulRgba8 { r: 0, g: 255, b: 255, a: 255 }; rows];
+        let black = vec![PremulRgba8 { r: 255, g: 255, b: 255, a: 255 }; rows];
+        assert_eq!(inks_to_screen(&mut cmy, &black, 1, false, 40), 39);
+        assert!(cmy.iter().all(|c| *c == cmy[0]), "every band is converted");
+        assert_ne!(cmy[0], PremulRgba8 { r: 0, g: 255, b: 255, a: 255 });
     }
 
     #[test]

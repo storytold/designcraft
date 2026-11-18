@@ -11,7 +11,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::io::Write;
 
 use designcraft_doc::geom::{Affine, Rect};
 use designcraft_doc::{
@@ -39,8 +38,6 @@ use fonts::{css_weight_style, generic_family};
 use html::base64;
 pub use html::{Block, HtmlOptions, export_html, images_without_alt, reading_order};
 pub use markup::{EpubError, slug};
-#[cfg(test)]
-use package::iso8601;
 pub use package::{FixedPage, contents_title, export_epub, export_fixed_epub};
 pub use story_writer::story_html;
 

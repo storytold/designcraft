@@ -83,22 +83,55 @@ pub fn stripes(bp: &BezPath, weight: f64, bands: &Bands, tol: f64) -> BezPath {
     out
 }
 
+/// Most points [`samples`] places along one path. A wavy or hashed stroke places one every
+/// few points of length, so a long path from a document (a segment thousands of kilometres
+/// long) would otherwise take millions; past this the points spread out to fit the budget.
+pub const MAX_STROKE_SAMPLES: usize = 100_000;
+
+/// Points along `bp` every `step` of arc length, with the unit tangent there, all subpaths in turn.
+fn samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
+    sample_subpaths(bp, step).into_iter().flatten().collect()
+}
+
 /// Points along each subpath of `bp` every `step` of arc length, with the unit tangent there.
-fn samples(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
-    subpaths(bp).iter().map(|sub| subpath_samples(sub, step)).collect()
+/// When that would take more than [`MAX_STROKE_SAMPLES`] points, the step widens so the path
+/// still gets them evenly; a path whose length isn't finite gets none.
+fn sample_subpaths(bp: &BezPath, step: f64) -> Vec<Vec<(Point, Vec2)>> {
+    let subs = subpaths(bp);
+    // kurbo's arclen of an all-equal quadratic is NaN; it has no length, so skip it.
+    let total: f64 = subs
+        .iter()
+        .flat_map(|s| s.segments())
+        .map(|seg| match seg {
+            PathSeg::Quad(q) if q.p0 == q.p1 && q.p1 == q.p2 => 0.0,
+            _ => seg.arclen(1e-3),
+        })
+        .sum();
+    if !total.is_finite() || !step.is_finite() || step <= 0.0 {
+        return Vec::new();
+    }
+    let step = step.max(total / MAX_STROKE_SAMPLES as f64);
+    subs.iter().map(|sub| subpath_samples(sub, step)).collect()
 }
 
 /// Points along one subpath every `step` of arc length, with the unit tangent there.
 fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
+    // kurbo's arclen of an all-equal quadratic is NaN; it has no length, so skip it.
+    let lens: Vec<f64> = bp
+        .segments()
+        .map(|seg| match seg {
+            PathSeg::Quad(q) if q.p0 == q.p1 && q.p1 == q.p2 => 0.0,
+            _ => seg.arclen(1e-3),
+        })
+        .collect();
     let mut out = Vec::new();
     let mut carry = 0.0;
-    for seg in bp.segments() {
-        let len = seg.arclen(1e-3);
+    for (seg, &len) in bp.segments().zip(&lens) {
         if len < 1e-9 {
             continue;
         }
         let mut s = carry;
-        while s <= len {
+        while s <= len && out.len() < MAX_STROKE_SAMPLES {
             let t = seg.inv_arclen(s, 1e-3);
             let d = match seg {
                 PathSeg::Line(l) => l.p1 - l.p0,
@@ -120,7 +153,7 @@ fn subpath_samples(bp: &BezPath, step: f64) -> Vec<(Point, Vec2)> {
 pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let wavelength = (weight * 4.0).max(2.0);
     let mut line = BezPath::new();
-    for pts in samples(bp, wavelength / 16.0) {
+    for pts in sample_subpaths(bp, wavelength / 16.0) {
         for (i, (p, t)) in pts.iter().enumerate() {
             let normal = Vec2::new(-t.y, t.x);
             let phase = i as f64 / 16.0 * std::f64::consts::TAU;
@@ -135,7 +168,7 @@ pub fn wavy(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
 /// A straight-hash stroke: short ticks across the path, as wide as the weight.
 pub fn hashed(bp: &BezPath, weight: f64, tol: f64) -> BezPath {
     let mut ticks = BezPath::new();
-    for (p, t) in samples(bp, (weight * 0.6).max(1.0)).into_iter().flatten() {
+    for (p, t) in samples(bp, (weight * 0.6).max(1.0)) {
         let normal = Vec2::new(-t.y, t.x) * (weight / 2.0);
         ticks.move_to(p - normal);
         ticks.line_to(p + normal);
@@ -191,6 +224,32 @@ mod tests {
         assert!(!inside(7.0), "outside the weight");
         let off = offset_path(&line(), 3.0, 0.01);
         assert!((off.bounding_box().y0 + 3.0).abs() < 1e-6, "left of travel is −y");
+    }
+
+    /// A path kilometres long gets at most the sample budget, not one point per few points of
+    /// length; a path of infinite length gets none.
+    #[test]
+    fn long_paths_stay_within_the_sample_budget() {
+        let mut long = BezPath::new();
+        long.move_to((0.0, 0.0));
+        long.line_to((1e12, 0.0));
+        long.line_to((1e12, 1e12));
+        assert!(samples(&long, 1.0).len() <= MAX_STROKE_SAMPLES);
+        let h = hashed(&long, 1.0, 0.01).bounding_box();
+        assert!(h.width() > 1e11, "{h:?}");
+        assert!(!wavy(&long, 1.0, 0.01).is_empty());
+        let mut huge = BezPath::new();
+        huge.move_to((-f64::MAX, 0.0));
+        huge.line_to((f64::MAX, 0.0));
+        assert!(samples(&huge, 1.0).is_empty());
+        assert_eq!(samples(&line(), 10.0).len(), 11, "short paths sample as before");
+    }
+
+    #[test]
+    fn a_zero_length_quadratic_keeps_the_line_before_it() {
+        let mut bp = line();
+        bp.quad_to((100.0, 0.0), (100.0, 0.0));
+        assert_eq!(samples(&bp, 10.0).len(), 11);
     }
 
     #[test]
