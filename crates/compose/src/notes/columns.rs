@@ -63,7 +63,16 @@ pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) ->
         }
         Some((bottom, out))
     };
-    let mut high = lines.iter().filter_map(|l| l.last()).map(|l| l.baseline + l.descent + space.max(0.0)).sum::<f64>().max(1.0);
+    // A full single-column stack is a feasible upper bound, including inter-note leading.
+    let (mut high, mut previous) = (0.0_f64, None::<f64>);
+    for ls in &lines {
+        if let (Some(a), Some(z)) = (ls.first(), ls.last()) {
+            let y = previous.map_or(0.0, |b| b + space + a.leading - a.baseline);
+            high = high.max(y + z.baseline + z.descent);
+            previous = Some(y + z.baseline);
+        }
+    }
+    high = high.max(1.0);
     let mut low = 0.0;
     // A fixed iteration bound avoids input-dependent searches and gives sub-point precision.
     for _ in 0..48 {

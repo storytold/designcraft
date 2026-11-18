@@ -136,11 +136,16 @@ impl Default for FootnoteOptions {
 }
 
 impl FootnoteOptions {
+    /// Use one sanitized gutter for sizing and placing imported note columns.
+    pub fn clamped_column_gutter(&self) -> f64 {
+        if self.column_gutter.is_finite() { self.column_gutter.clamp(0.0, 144.0) } else { 12.0 }
+    }
+
     /// Reduce the requested count until every note column is at least 36 pt wide.
     /// The single-column fallback retains even a very narrow area's positive width.
     pub fn column_geometry(&self, width: f64) -> (usize, f64) {
         let width = if width.is_finite() { width.max(f64::EPSILON) } else { 1.0 };
-        let gutter = if self.column_gutter.is_finite() { self.column_gutter.clamp(0.0, 144.0) } else { 12.0 };
+        let gutter = self.clamped_column_gutter();
         for count in (2..=usize::from(self.columns.clamp(1, 4))).rev() {
             let w = (width - gutter * (count - 1) as f64) / count as f64;
             if w >= 36.0 {
