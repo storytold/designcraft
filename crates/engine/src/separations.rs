@@ -77,7 +77,9 @@ pub struct Print {
 
 /// Exports spread `si` as Export PDF prints it with `print` (one page for the spread, with
 /// the document bleed, without printer's marks) and separates it at `dpi`, clamped to
-/// [`MIN_DPI`]–[`MAX_DPI`].
+/// [`MIN_DPI`]–[`MAX_DPI`]. A spread larger than [`craft_prepress::MAX_PLATE_PIXELS`] at that
+/// resolution is separated at a lower one; `plates.dpi` says which, and a warning says it was
+/// lowered (#2945).
 pub fn separate(doc: &Document, cache: &Cache, si: usize, dpi: f32, print: &Print) -> Result<Sheet> {
     let sp = doc.spreads.get(si).ok_or_else(|| EngineError::Other(format!("spread {si} does not exist")))?;
     let first = doc.first_page_of_spread(si);
@@ -96,7 +98,18 @@ pub fn separate(doc: &Document, cache: &Cache, si: usize, dpi: f32, print: &Prin
     let (fallback, cms) = printing_condition();
     let plates = craft_prepress::plates(&report.bytes, 0, dpi, &Options { overprint: true, fallback })
         .map_err(|e| EngineError::Other(format!("separations: {e}")))?;
-    Ok(Sheet { spread: si, area, plates, cms, warnings: report.warnings })
+    let mut warnings = report.warnings;
+    // Total-ink checks depend on resolution (a thin rich-black rule averages under the limit at a
+    // low one), so a resolution lowered to fit the plate size is said, not only reported.
+    if plates.dpi < dpi - 0.5 {
+        warnings.push(format!(
+            "separated at {:.0} dpi, not the {:.0} dpi asked for: at that resolution the spread would be more than {:.0} megapixels per plate",
+            plates.dpi,
+            dpi,
+            craft_prepress::MAX_PLATE_PIXELS / 1.0e6
+        ));
+    }
+    Ok(Sheet { spread: si, area, plates, cms, warnings })
 }
 
 impl Sheet {
@@ -197,6 +210,29 @@ mod tests {
         let inked = img.as_chunks::<4>().0.iter().filter(|px| px[0] < 128).count();
         let square = (100.0 * f64::from(sheet.plates.dpi) / 72.0).powi(2);
         assert!((inked as f64 - square).abs() < square * 0.1, "{inked} dark pixels, the square has {square}");
+    }
+
+    /// #2945: a page too large for 4 megapixels a plate at the dpi asked for is separated at a
+    /// lower one, and the result says so; one that fits says nothing.
+    #[test]
+    fn a_lowered_resolution_is_a_warning() {
+        let run = |preset: &str, dpi: u32| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"preset": preset, "facingPages": false, "pages": 1})).unwrap();
+            s.execute("ink.separations", &json!({"dpi": dpi})).unwrap()
+        };
+        let lowered = |r: &serde_json::Value| {
+            r["warnings"].as_array().unwrap().iter().filter(|w| w.as_str().is_some_and(|w| w.contains("dpi asked for"))).count()
+        };
+        let a3 = run("A3", 300);
+        let used = a3["dpi"].as_f64().unwrap();
+        assert!(used < 150.0, "{a3}");
+        assert_eq!(lowered(&a3), 1, "{a3}");
+        let text = a3["warnings"][0].as_str().unwrap_or_default();
+        assert!(text.contains(&format!("{used:.0} dpi")) && text.contains("300 dpi"), "{text}");
+        let a5 = run("A5", 72);
+        assert_eq!(a5["dpi"].as_f64(), Some(72.0));
+        assert_eq!(lowered(&a5), 0, "{a5}");
     }
 
     #[test]
