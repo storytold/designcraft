@@ -981,7 +981,8 @@ pub fn greedy(
             // A tab that starts before or at the edge stays on the line even when its stop lies
             // beyond it, and ends at the edge; the line ends after it and the tabs after it start
             // the next line (as in InDesign).
-            let clipped = g.ch == '\t' && !g.no_break && g.break_after != Some(false) && x <= w + FIT_EPS && x + adv > w + FIT_EPS;
+            let may_end = (!g.no_break && g.break_after != Some(false)) || glyphs.get(i + 1).is_none_or(|next| is_forced(next.ch));
+            let clipped = g.ch == '\t' && may_end && x <= w + FIT_EPS && x + adv > w + FIT_EPS;
             if clipped {
                 adv = (w - x).max(0.0);
             }
