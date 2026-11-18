@@ -10358,6 +10358,60 @@ fn legacy_table_skips_an_empty_frame_that_cannot_hold_the_next_row() {
 }
 
 #[test]
+fn table_final_body_row_stays_with_its_footer() {
+    use designcraft_doc::{RowHeightMode, Table};
+
+    for repeat_footer in [false, true] {
+        let mut table = Table::new(781, 1, 1, 0, 1, 180.0);
+        table.options.repeat_footer = repeat_footer;
+        for (row, height) in table.rows.iter_mut().zip([60.0, 20.0]) {
+            row.mode = RowHeightMode::Exactly;
+            row.height = height;
+        }
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0, 100.0], &[false, true], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty(), "the final body row must stay with its footer");
+        let fragment = &composed.frames[1].tables[0];
+        assert!(fragment.first && fragment.last);
+        assert_eq!(fragment.cells.len(), 2);
+        assert!((fragment.rect.height() - 80.0).abs() < 1e-6);
+
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0], &[false], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+    }
+}
+
+#[test]
+fn table_continuation_can_defer_only_a_non_repeating_footer() {
+    use designcraft_doc::{RowHeightMode, Table};
+
+    for repeat_footer in [false, true] {
+        let mut table = Table::new(782, 2, 1, 0, 1, 180.0);
+        table.options.repeat_footer = repeat_footer;
+        for (row, height) in table.rows.iter_mut().zip([60.0, 60.0, 20.0]) {
+            row.mode = RowHeightMode::Exactly;
+            row.height = height;
+        }
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0, 100.0, 100.0], &[false, true, false], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        if repeat_footer {
+            assert!(composed.frames[0].tables.is_empty(), "a repeated footer must fit with the body row");
+            let footer = composed.frames[1].tables[0].cell(2, 0).unwrap();
+            assert!(footer.repeated);
+            assert!(!composed.frames[2].tables[0].cell(2, 0).unwrap().repeated);
+        } else {
+            assert!(composed.frames[0].tables[0].cell(0, 0).is_some());
+            assert!(composed.frames[0].tables[0].cell(2, 0).is_none());
+            assert!(composed.frames[1].tables[0].cell(2, 0).is_some());
+        }
+    }
+}
+
+#[test]
 fn legacy_table_skips_frames_without_emitting_or_repeating_a_first_header() {
     let table = legacy_flow_table();
     for legacy in [false, true] {
