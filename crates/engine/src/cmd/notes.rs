@@ -204,6 +204,21 @@ mod tests {
     }
 
     #[test]
+    fn generated_hebrew_note_numbers_read_right_to_left() {
+        let (mut s, sid) = session_with_text();
+        s.execute("footnote.options", &json!({"style": "hebrewPlain", "startAt": 15, "separator": " "})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let cs = s.cache.get(&d, sid, None);
+        let x = |glyphs: &[designcraft_compose::PlacedGlyph], ch: char| glyphs.iter().find(|g| g.rendered_char == ch).unwrap().x;
+        let body = &cs.frames[0].notes[0].text.frames[0].lines[0].glyphs;
+        assert!(x(body, 'ט') > x(body, 'ו'), "note body numeral reads left to right");
+        let main = &cs.frames[0].lines.iter().find(|l| l.glyphs.iter().any(|g| g.rendered_char == 'ט')).unwrap().glyphs;
+        assert!(x(main, 'ט') > x(main, 'ו'), "reference numeral reads left to right");
+    }
+
+    #[test]
     fn hebrew_note_options_parse_both_styles() {
         let (mut s, _) = session_with_text();
         for style in ["hebrew", "hebrewPlain"] {
