@@ -1141,7 +1141,7 @@ fn round_trips_overridden_parent_items() {
 /// #2896: InDesign reads a page's `OverrideList` two ids at a time, the parent item and then the
 /// item that overrides it; a list of parent items alone crashed InDesign when it opened the file.
 /// Each overridden parent item is paired with its local copy on that page, and one whose
-/// override was deleted with an id nothing else in the package uses.
+/// override was deleted with n in the copy slot, as InDesign writes it.
 #[test]
 fn override_lists_pair_each_parent_item_with_its_override() {
     // Page 1 on a spread of its own, pages 2 and 3 facing.
@@ -1196,10 +1196,8 @@ fn override_lists_pair_each_parent_item_with_its_override() {
         let e = element(&spreads, copy).unwrap_or_else(|| panic!("page {page}: {copy} is an item on the spread"));
         assert!(e.contains(&format!("OverriddenPageItem=\"{}\"", list[0])), "page {page}: {e}");
     }
-    // The deleted override's id is used nowhere else in the package.
-    let all = zip_text(&bytes, "");
-    let orphan = &lists[0][3];
-    assert_eq!(all.matches(orphan.as_str()).count(), 1, "{orphan} appears only in the list");
+    // A deleted override uses InDesign's sentinel, not an unresolved copy id.
+    assert_eq!(lists[0][3], "n");
 
     // Read back, each page lists its parent items, as before.
     let back = import_idml(&bytes).unwrap();

@@ -95,6 +95,20 @@ pub(super) fn exported_pairs(bytes: &[u8]) -> Vec<Vec<(String, Option<String>)>>
         .collect()
 }
 
+fn exported_override_lists(bytes: &[u8]) -> Vec<Vec<String>> {
+    zip_text(bytes, "Spreads/")
+        .split('<')
+        .filter(|tag| tag.starts_with("Page "))
+        .map(|tag| {
+            let tag = tag.split('>').next().unwrap();
+            let list = tag.split("OverrideList=\"").nth(1).unwrap().split('"').next().unwrap();
+            let tokens: Vec<_> = list.split_whitespace().map(str::to_owned).collect();
+            assert!(tokens.len().is_multiple_of(2));
+            tokens
+        })
+        .collect()
+}
+
 #[test]
 fn imports_override_pairs_and_round_trips_live_copies() {
     let bytes = fixture(["parent-a copy-1 parent-b n", "parent-a copy-2", "parent-b copy-3"], "", "");
@@ -110,7 +124,8 @@ fn imports_override_pairs_and_round_trips_live_copies() {
     assert_eq!(d.spreads[1].pages[0].overridden, [a]);
     assert_eq!(d.spreads[1].pages[1].overridden, [b]);
     assert!(!d.spreads[0].items.iter().any(|i| i.overrides == Some(b)), "n has no linked copy on page 1");
-    let pairs = exported_pairs(&export_idml(d));
+    let exported = export_idml(d);
+    let pairs = exported_pairs(&exported);
     assert_eq!(
         pairs,
         [
@@ -119,8 +134,43 @@ fn imports_override_pairs_and_round_trips_live_copies() {
             vec![("parent-b".into(), Some("copy-3".into()))],
         ]
     );
-    // The unchanged exporter uses an unused id for the deleted copy; every live pair resolves.
+    // The deleted copy is n; every live pair resolves to an actual item.
+    assert_eq!(exported_override_lists(&exported)[0][3], "n");
     assert_eq!(pairs.iter().flatten().filter(|(_, copy)| copy.is_none()).count(), 1);
+}
+
+#[test]
+fn deleted_override_copies_export_as_n_and_round_trip() {
+    // Page 1's second copy was deleted; the same parent still has a live copy on page 3.
+    let source = fixture(["parent-a copy-1 parent-b n", "parent-a copy-2", "parent-b copy-3"], "", "");
+    let expected = exported_pairs(&source);
+    let mut d = import_idml(&source).unwrap();
+    for round in 1..=2 {
+        let bytes = export_idml(&d);
+        let lists = exported_override_lists(&bytes);
+        assert_eq!(lists[0][3], "n", "export {round}: a deleted copy stays n");
+        let all = zip_text(&bytes, "");
+        let self_ids: std::collections::HashSet<_> = all.split("Self=\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
+        let missing: Vec<_> = lists
+            .iter()
+            .flat_map(|list| list.iter().skip(1).step_by(2))
+            .filter(|id| *id != "n" && !self_ids.contains(id.as_str()))
+            .collect();
+        assert!(missing.is_empty(), "export {round}: unresolved copy ids: {missing:?}");
+        assert!(!self_ids.contains("n"), "n is a sentinel, not an item id");
+        assert_eq!(exported_pairs(&bytes), expected, "export {round}: live pairs and the deleted pair survive");
+
+        let report = import_idml_report(&bytes, &|_| None).unwrap();
+        assert!(report.warnings.is_empty(), "import {round}: {:?}", report.warnings);
+        let linked = items(&report.document);
+        for (copy, parent) in [("copy-1", "parent-a"), ("copy-2", "parent-a"), ("copy-3", "parent-b")] {
+            assert_eq!(linked[copy].overrides, Some(linked[parent].id), "import {round}: {copy}");
+        }
+        let (a, b) = (linked["parent-a"].id, linked["parent-b"].id);
+        assert_eq!(report.document.spreads[0].pages[0].overridden, [a, b]);
+        assert!(!report.document.spreads[0].items.iter().any(|i| i.overrides == Some(b)), "import {round}: n has no linked copy");
+        d = report.document;
+    }
 }
 
 #[test]

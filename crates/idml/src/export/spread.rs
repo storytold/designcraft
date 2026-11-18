@@ -87,9 +87,10 @@ impl<'a> Ex<'a> {
             let applied = if master { based_on } else { pg.parent };
             // InDesign reads OverrideList two ids at a time: the parent item, then the item that
             // overrides it, and a list of parent items alone crashed it on open (#2896). The copy is
-            // the one on this page paired in the first pass, else any on the spread not yet paired; a
-            // parent item whose override was deleted pairs with an id nothing else uses, as
-            // InDesign's own files do.
+            // the one on this page paired in the first pass, else any on the spread not yet paired.
+            // InDesign writes n in the copy slot for a deleted override. An unused id instead makes
+            // InDesign 2026 discard the page's whole override list, leaving local copies unlinked
+            // and the original parent items visible on top of them.
             let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
             for (j, parent) in pg.overridden.iter().enumerate() {
                 let k = own.get(i).and_then(|r| r.get(j)).copied().flatten().or_else(|| {
@@ -101,7 +102,7 @@ impl<'a> Ex<'a> {
                 });
                 let copy = match k.and_then(|k| copies.get(k)) {
                     Some(c) => uid(c.1.0),
-                    None => self.fresh(),
+                    None => "n".into(),
                 };
                 overrides.push(uid(parent.0));
                 overrides.push(copy);

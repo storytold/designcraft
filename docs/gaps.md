@@ -62,6 +62,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   verified in InDesign 2026 with synthetic files), but nothing is measured on real documents.
 - **Have:** synthetic IDML override-pair tests restore local copies, including grouped copies,
   retain deleted overrides and legacy parent lists, and report unresolved or conflicting copies.
+  Export writes `n` in the copy slot for a deleted override.
   Real-file round-trip and InDesign verification remain unmeasured here.
 - **Impact:** IDML is the main interchange format until INDD lands, and the only one that goes
   back to InDesign.

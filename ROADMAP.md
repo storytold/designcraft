@@ -14,7 +14,8 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 
 - **2026-11-19** · IDML import restores local copies' parent links from page `OverrideList` pairs,
   including copies inside groups and deleted overrides (`n`). Legacy lists keep their parent
-  order and duplicates; unresolved copies and conflicting parents warn. Synthetic round trips
+  order and duplicates; unresolved copies and conflicting parents warn. Export writes `n` for
+  a deleted override copy, matching InDesign's lists. Synthetic round trips
   and a 20,000-pair import are covered; real-file and InDesign checks remain pending.
   No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.

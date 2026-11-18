@@ -33,6 +33,7 @@ score below).
 
 IDML imports page `OverrideList` parent/copy pairs, including copies inside groups and `n` for
 deleted overrides. Legacy parent-only lists keep their original parent order and duplicates.
+Export writes `n` in the copy slot for a deleted override, rather than an unused id.
 Unresolved copy ids keep the whole page's legacy behavior with a warning; conflicting parents
 keep the first pair with a warning. Synthetic import/export and 20,000-pair import regressions
 are in `crates/idml/src/tests/override_pairs.rs`; real-file and InDesign checks remain pending.
