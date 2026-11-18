@@ -173,10 +173,13 @@ fn char_style(f: &designcraft_doc::CharFormat) -> Option<&str> {
 
 /// A paragraph's text with inline-tagged runs as elements, and character-styled runs (inside
 /// those) as elements named after their style.
-fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
+/// `runs` are the story's runs in order (collected once per story): only those reaching the
+/// paragraph are visited, found by binary search.
+fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
     let mut out = String::new();
     let (mut open, mut open_style): (Option<String>, Option<String>) = (None, None);
-    for (rr, f) in st.runs() {
+    let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+    for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
         let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
         if a >= b {
             continue;
@@ -215,10 +218,10 @@ fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
 const AID: &str = "http://ns.adobe.com/AdobeInDesign/4.0/";
 
 /// Paragraph `i` (range `r`) of `st`: its text, or its table as InDesign writes one.
-fn para_or_table_xml(st: &Story, i: usize, r: std::ops::Range<usize>) -> String {
+fn para_or_table_xml(st: &Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], i: usize, r: std::ops::Range<usize>) -> String {
     match st.paras.get(i).and_then(|p| p.table).and_then(|id| st.tables.get(&id)) {
         Some(t) => table_xml(t),
-        None => para_xml(st, r),
+        None => para_xml(st, runs, r),
     }
 }
 
@@ -246,7 +249,9 @@ fn table_xml(t: &designcraft_doc::Table) -> String {
                 ""
             };
             out.push_str(&format!("<Cell aid:table=\"cell\"{section} aid:crows=\"{rs}\" aid:ccols=\"{cs}\" aid:ccolwidth=\"{width}\">"));
-            let text: Vec<String> = cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, i, r)).collect();
+            let runs: Vec<_> = cell.text.runs().collect();
+            let text: Vec<String> =
+                cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, &runs, i, r)).collect();
             out.push_str(&text.join("\n"));
             out.push_str("</Cell>");
         }
@@ -268,8 +273,10 @@ pub fn export_xml(d: &Document) -> String {
                 let Some(st) = d.story(tf.story).filter(|_| written.insert(tf.story)) else { continue };
                 let mapped = |style: &str| d.xml.style_map.iter().find(|(s, _)| s == style).map(|(_, t)| t.clone());
                 // Paragraph text with inline tags already escaped.
-                let paras: Vec<(Option<String>, String)> =
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, i, r))).collect();
+                let paras: Vec<(Option<String>, String)> = {
+                    let runs: Vec<_> = st.runs().collect();
+                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, &runs, i, r))).collect()
+                };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
                     for (m, text) in paras {
@@ -366,29 +373,8 @@ struct XTable {
     cells: Vec<Body>,
 }
 
-/// What is open while parsing below an element.
-enum Open {
-    /// A child element of the element (a mapped paragraph).
-    Child(String, Body),
-    Table(XTable),
-    Cell(Body),
-    /// Anything else (an inline element): its text belongs to what holds it, from byte `.1` on.
-    Other(String, usize),
-}
-
-/// The body text and tables go into: the innermost open cell or child, else the element's.
-fn open_body<'a>(stack: &'a mut [Open], el: &'a mut Element) -> &'a mut Body {
-    for o in stack.iter_mut().rev() {
-        match o {
-            Open::Cell(b) | Open::Child(_, b) => return b,
-            Open::Table(_) | Open::Other(..) => {}
-        }
-    }
-    &mut el.body
-}
-
-fn is_table(e: &quick_xml::events::BytesStart) -> bool {
-    e.local_name().as_ref() == b"Table"
+fn is_table(e: &craft_xml::El) -> bool {
+    e.name == "Table"
 }
 
 struct Image {
@@ -397,20 +383,10 @@ struct Image {
     crop: Option<String>,
 }
 
-/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`, unescaped.
-fn image_attrs(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<Image>, String> {
-    let (mut href, mut fit, mut crop) = (None, None, None);
-    for a in e.attributes() {
-        let a = a.map_err(|e| e.to_string())?;
-        let slot = match a.key.local_name().as_ref() {
-            b"href" => &mut href,
-            b"fit" => &mut fit,
-            b"crop" => &mut crop,
-            _ => continue,
-        };
-        *slot = Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string());
-    }
-    Ok(href.map(|href| Image { href, fit, crop }))
+/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`.
+fn image_attrs(e: &craft_xml::El) -> Option<Image> {
+    let get = |name: &str| e.attr_local(name).map(str::to_string);
+    get("href").map(|href| Image { href, fit: get("fit"), crop: get("crop") })
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -465,109 +441,68 @@ const MAX_XML_DEPTH: usize = 64;
 /// The elements under the root. Elements `inline` names are runs in the text holding them at
 /// any depth (character styles), never child elements.
 fn parse(xml: &str, inline: &dyn Fn(&str) -> bool) -> std::result::Result<Vec<Element>, String> {
-    use quick_xml::events::Event;
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut depth = 0usize;
-    let mut out: Vec<Element> = Vec::new();
-    // What is open below the current element (depth 3 and deeper).
-    let mut stack: Vec<Open> = Vec::new();
-    let anchor = designcraft_doc::story::TABLE_ANCHOR.to_string();
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                depth += 1;
-                if depth > MAX_XML_DEPTH {
-                    return Err(format!("elements nested deeper than {MAX_XML_DEPTH}"));
-                }
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                if depth == 2 {
-                    stack.clear();
-                    out.push(Element { name, body: Body::default(), children: vec![], image: image_attrs(&e)? });
-                    continue;
-                }
-                let Some(el) = out.last_mut().filter(|_| depth > 2) else { continue };
-                let open = if is_table(&e) {
-                    // The table's place in the text holding it.
-                    open_body(&mut stack, el).text.push_str(&anchor);
-                    Open::Table(XTable::default())
-                } else if name == "Cell" && matches!(stack.last(), Some(Open::Table(_))) {
-                    Open::Cell(Body::default())
-                } else if depth == 3 && !inline(&name) {
-                    Open::Child(name, Body::default())
-                } else {
-                    let start = open_body(&mut stack, el).text.len();
-                    Open::Other(name, start)
-                };
-                stack.push(open);
-            }
-            Event::Empty(e) if depth == 1 => {
-                out.push(Element {
-                    name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
-                    body: Body::default(),
-                    children: vec![],
-                    image: image_attrs(&e)?,
-                });
-            }
-            // An empty cell still takes its place.
-            Event::Empty(e) if e.local_name().as_ref() == b"Cell" => {
-                if let Some(Open::Table(t)) = stack.last_mut() {
-                    t.cells.push(Body::default());
-                }
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                // Text between a table's cells (white space) belongs to no paragraph.
-                if depth >= 2
-                    && !matches!(stack.last(), Some(Open::Table(_)))
-                    && let Some(el) = out.last_mut()
-                {
-                    open_body(&mut stack, el).text.push_str(&s);
-                }
-            }
-            Event::End(_) => {
-                if depth > 2
-                    && let Some(open) = stack.pop()
-                    && let Some(el) = out.last_mut()
-                {
-                    match open {
-                        Open::Table(t) => open_body(&mut stack, el).tables.push(t),
-                        Open::Cell(b) => {
-                            if let Some(Open::Table(t)) = stack.last_mut() {
-                                t.cells.push(b);
-                            }
-                        }
-                        Open::Child(n, b) => el.children.push((n, b)),
-                        Open::Other(n, start) => {
-                            let b = open_body(&mut stack, el);
-                            if start < b.text.len() {
-                                let end = b.text.len();
-                                b.runs.push((start..end, n));
-                            }
-                        }
+    let mut options = craft_xml::Options::local();
+    options.strict = true;
+    // The root and its elements' children sit two levels down; deeper XML is refused.
+    options.limits.max_depth = MAX_XML_DEPTH;
+    let root = options.parse(xml.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(root
+        .elements()
+        .map(|element| {
+            let mut body = Body::default();
+            let mut children = Vec::new();
+            for node in &element.children {
+                match node {
+                    craft_xml::Node::El(child) if !is_table(child) && !inline(&child.name) => {
+                        let mut b = Body::default();
+                        body_of(child, &mut b);
+                        children.push((child.name.clone(), b));
                     }
+                    node => node_into(node, &mut body),
                 }
-                depth = depth.saturating_sub(1);
             }
-            Event::Eof => break,
-            _ => {}
-        }
+            Element { name: element.name.clone(), body, children, image: image_attrs(element) }
+        })
+        .collect())
+}
+
+/// The text and tables of `e`'s content into `body`.
+fn body_of(e: &craft_xml::El, body: &mut Body) {
+    for node in &e.children {
+        node_into(node, body);
     }
-    Ok(out)
+}
+
+/// One node into `body`: text as it is, a table as an anchor plus its cells, any other element
+/// (an inline one) by its content.
+fn node_into(node: &craft_xml::Node, body: &mut Body) {
+    match node {
+        craft_xml::Node::Text(text) | craft_xml::Node::CData(text) => body.text.push_str(text),
+        craft_xml::Node::El(e) if is_table(e) => {
+            // The table's place in the text holding it; text between its cells belongs to no paragraph.
+            body.text.push(designcraft_doc::story::TABLE_ANCHOR);
+            let cells = e
+                .elements()
+                .filter(|c| c.name == "Cell")
+                .map(|c| {
+                    let mut b = Body::default();
+                    body_of(c, &mut b);
+                    b
+                })
+                .collect();
+            body.tables.push(XTable { cells });
+        }
+        // An inline element: a run over the text it holds (inner runs first).
+        craft_xml::Node::El(e) => {
+            let start = body.text.len();
+            body_of(e, body);
+            if start < body.text.len() {
+                let end = body.text.len();
+                body.runs.push((start..end, e.name.clone()));
+            }
+        }
+        craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+    }
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -732,8 +667,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let dtd = crate::dtd::parse(&text).map_err(|e| bad("xml.loadDtd", e))?;
                 let names: Vec<String> = dtd.element_names().map(str::to_string).collect();
                 s.edit(|d, _| {
+                    // The tags there are, then those added: one set, not a search per element.
+                    let mut known: std::collections::HashSet<String> = d.xml.tags.iter().map(|t| t.name.clone()).collect();
                     for n in &names {
-                        if valid_name(n) && !d.xml.tags.iter().any(|t| t.name == *n) {
+                        if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
                             d.xml.tags.push(XmlTag { name: n.clone(), color });
                         }
@@ -1184,15 +1121,14 @@ mod tests {
     #[test]
     fn image_attrs_read_href_and_xlink_href() {
         let attrs = |xml: &str| {
-            let mut r = quick_xml::Reader::from_str(xml);
-            match r.read_event().unwrap() {
-                quick_xml::events::Event::Empty(e) => super::image_attrs(&e).unwrap().map(|i| (i.href, i.fit, i.crop)),
-                ev => panic!("{ev:?}"),
-            }
+            let mut options = craft_xml::Options::local();
+            options.strict = true;
+            let root = options.parse(xml.as_bytes()).unwrap();
+            super::image_attrs(&root).map(|i| (i.href, i.fit, i.crop))
         };
         assert_eq!(attrs(r#"<photo href="a&amp;b.png" fit="fitContent"/>"#), Some(("a&b.png".into(), Some("fitContent".into()), None)));
         assert_eq!(
-            attrs(r#"<photo xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
+            attrs(r#"<photo xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
             Some(("file:///x.pdf".into(), None, Some("contentVisible".into())))
         );
         assert_eq!(attrs("<photo/>"), None);

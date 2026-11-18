@@ -38,6 +38,60 @@ fn file_stamp(path: &std::path::Path) -> Option<FileStamp> {
     std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
 }
 
+/// The code points any face of a font file maps, as sorted inclusive ranges.
+#[cfg(not(target_arch = "wasm32"))]
+fn coverage_ranges(data: &[u8]) -> Vec<(u32, u32)> {
+    // One bit per code point: memory stays fixed however many faces (or named instances of one face) map however much.
+    let mut bits = vec![0u64; 0x110000 / 64];
+    let mut last = None;
+    for (i, _, _, _) in enumerate_faces(data) {
+        if last.replace(i) == Some(i) {
+            continue;
+        }
+        if let Ok(f) = skrifa::FontRef::from_index(data, i) {
+            for (cp, _) in f.charmap().mappings() {
+                if let Some(w) = bits.get_mut((cp / 64) as usize) {
+                    *w |= 1u64 << (cp % 64);
+                }
+            }
+        }
+    }
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for (wi, &w) in bits.iter().enumerate() {
+        if w == 0 {
+            continue;
+        }
+        for b in 0..64u32 {
+            if (w >> b) & 1 == 0 {
+                continue;
+            }
+            let cp = wi as u32 * 64 + b;
+            match out.last_mut() {
+                Some(last) if last.1 + 1 == cp => last.1 = cp,
+                _ => out.push((cp, cp)),
+            }
+        }
+    }
+    out
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod coverage_tests {
+    #[test]
+    fn coverage_ranges_match_the_charmap() {
+        let data = include_bytes!("../../../../assets/fonts/SourceSans3-Regular.ttf");
+        let ranges = super::coverage_ranges(data);
+        let f = skrifa::FontRef::new(data).unwrap();
+        use skrifa::MetadataProvider as _;
+        let in_ranges = |c: char| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&u32::from(c)));
+        assert!(in_ranges('a') && !in_ranges('\u{10FFFE}'));
+        for c in ['a', 'Z', 'é', '\u{4E2D}', '\u{1F600}'] {
+            assert_eq!(in_ranges(c), f.charmap().map(c).is_some(), "{c:?}");
+        }
+        assert!(ranges.windows(2).all(|w| w[0].1 + 1 < w[1].0), "sorted and merged");
+    }
+}
+
 /// What [`FontDb::reload_fonts`] did: the faces cataloged by the rescan, and the installed font
 /// files that changed or were removed since they were read (their faces are read again, from the
 /// new file, the next time they are looked up).
@@ -272,6 +326,8 @@ impl FontDb {
         sys.generation = sys.generation.wrapping_add(1);
         sys.misses.clear();
         sys.chain_tried.clear();
+        sys.coverage.clear();
+        sys.coverage_ranges = 0;
         count
     }
 
@@ -564,13 +620,32 @@ impl FontDb {
             }
         }
         for p in paths {
-            if std::fs::metadata(&p).map(|m| m.len() > 40 << 20).unwrap_or(true) {
+            let Some(stamp) = file_stamp(&p).filter(|s| s.0 <= 40 << 20) else { continue };
+            let cached =
+                self.sys.lock().unwrap_or_else(PoisonError::into_inner).coverage.get(&p).filter(|(s, _)| *s == stamp).map(|(_, r)| r.clone());
+            let mut data = None;
+            let ranges = match cached {
+                Some(r) => r,
+                None => {
+                    let Some(d) = self.read_installed(&p) else { continue };
+                    let r = Arc::new(coverage_ranges(&d));
+                    let mut sys = self.sys.lock().unwrap_or_else(PoisonError::into_inner);
+                    if sys.coverage_ranges + r.len() <= super::fallback::MAX_COVERAGE_RANGES {
+                        sys.coverage_ranges += r.len();
+                        if let Some((_, old)) = sys.coverage.insert(p.clone(), (stamp, r.clone())) {
+                            sys.coverage_ranges -= old.len();
+                        }
+                    }
+                    data = Some(d);
+                    r
+                }
+            };
+            let cp = u32::from(c);
+            if !ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&cp)) {
                 continue;
             }
-            let Some(data) = self.read_installed(&p) else { continue };
-            let hit =
-                enumerate_faces(&data).iter().any(|(i, _, _, _)| skrifa::FontRef::from_index(&data, *i).is_ok_and(|f| f.charmap().map(c).is_some()));
-            if hit && self.add_faces(data, FontSource::Installed(p)) > 0 && covered(self) {
+            let Some(data) = data.or_else(|| self.read_installed(&p)) else { continue };
+            if self.add_faces(data, FontSource::Installed(p)) > 0 && covered(self) {
                 return true;
             }
         }
