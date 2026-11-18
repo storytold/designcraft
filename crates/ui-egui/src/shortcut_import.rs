@@ -247,6 +247,9 @@ fn parse_set_file(text: &str) -> Result<ParsedSet, String> {
                 line = line.saturating_add(lines_between(text, counted, at));
                 counted = at.max(counted);
                 start(&e, line, &mut cur, &mut header_seen);
+                // An empty `<context/>` or `<string/>` has no end tag to close it: the text after
+                // it belongs to neither.
+                cur.field = None;
             }
             Event::End(e) => {
                 depth = depth.saturating_sub(1);
@@ -692,6 +695,19 @@ mod tests {
         assert!(set.contains("<![CDATA[Cmd+E]]>"));
         let r = menus::run_ui(&mut app, "window.importShortcuts", &json!({ "text": set })).unwrap().unwrap();
         assert_eq!(menus::shortcut_of(&app, "links.editOriginal").as_deref(), Some("Cmd+E"), "{r}");
+    }
+
+    /// An empty `<string/>` holds no keys, and the text after it isn't taken for them.
+    #[test]
+    fn text_after_an_empty_element_of_a_set_file_is_not_its_content() {
+        let set = "<shortcut-set><shortcut><action-id name=\"KBSCE Edit menu:Edit Original\"/>\
+                   <context>DefaultContext</context><string/>Cmd+E</shortcut>\
+                   <shortcut><action-id name=\"KBSCE Edit menu:Edit With\"/><context/>Text<string>Cmd+F</string></shortcut></shortcut-set>";
+        let parsed = parse(set).unwrap();
+        assert_eq!(parsed.items.len(), 2);
+        assert!(parsed.items[0].entries.is_empty(), "no keys were given");
+        assert_eq!(parsed.items[1].entries.len(), 1);
+        assert_eq!((parsed.items[1].entries[0].context.as_str(), parsed.items[1].entries[0].keys.as_str()), ("", "Cmd+F"));
     }
 
     #[test]
