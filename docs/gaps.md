@@ -260,7 +260,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 150–250 h for a useful DOM subset; **owner decision**.
 
 ### 23. Plug-ins (E)
-- **Done:** WebAssembly command plug-ins on the shared `craft-plugin` runtime (RFC-0041): the
+- **Done:** WebAssembly command plug-ins on the shared `craft-plugin` runtime (RFC-0046): the
   `plugin.*` commands, the Plug-ins menu, installing from a file, a GitHub repository or a catalog
   with a confirmation, one undo step per run ([plugins.md](plugins.md)).
 - **Missing:** plug-in panels (`ui_show`), `saveFile`, the Plug-ins menu in the macOS menu bar, and

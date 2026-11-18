@@ -1,5 +1,5 @@
 //! Plug-ins: WebAssembly modules that act on the document through the same commands as the menus,
-//! the CLI, the control channel and MCP, inside the sandbox of `craft-plugin` (RFC-0041). This
+//! the CLI, the control channel and MCP, inside the sandbox of `craft-plugin` (RFC-0046). This
 //! module is DesignCraft's side of it: which commands a plug-in may call ([`policy`]), one undo step
 //! per run (rolled back when the run fails), read-only access checked after every call, the
 //! plug-ins' settings (kept with the preferences) and the installed plug-ins (the user's

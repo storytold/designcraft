@@ -4,7 +4,7 @@ DesignCraft runs **command plug-ins**: WebAssembly modules that act on the docum
 commands as the menus, the CLI, the control channel and MCP. The sandbox, the manifest
 (`craft-plugin.json`), the `.craftplugin` bundle, catalogs and installing from GitHub come from the
 shared [`craft-plugin`](https://github.com/storytold/craft-libs/tree/main/crates/plugin) crate
-([RFC-0041](https://github.com/storytold/craft-contrib/blob/main/rfcs/0041-shared-plugin-runtime.md));
+([RFC-0046](https://github.com/storytold/craft-contrib/blob/main/rfcs/0046-shared-plugin-runtime.md));
 its README describes the manifest and the ABI for plug-in authors. A plug-in for DesignCraft names
 `designcraft` in its manifest's `apps`:
 

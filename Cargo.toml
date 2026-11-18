@@ -97,7 +97,7 @@ quick-xml = "0.41"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 # Which paths stored in documents may be followed (craft-libs).
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
-# WebAssembly command plug-ins (RFC-0041): sandbox, manifest, permissions, store, catalogs and
+# WebAssembly command plug-ins (RFC-0046): sandbox, manifest, permissions, store, catalogs and
 # GitHub installs. Pinned to the fork commit the RFC's reference implementation uses.
 craft-plugin = { git = "https://github.com/Dasemu/craft-libs", rev = "77f66b33f7366abb9927113f1f5e427e2593ef84", version = "=0.1.0" }
 # Atomic file replacement for saves and exports (craft-libs).
