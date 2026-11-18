@@ -87,10 +87,10 @@ pub(crate) struct Notes {
     numbers: Vec<u32>,
     /// The restart unit each footnote was numbered in.
     keys: Vec<Option<usize>>,
-    /// The restart unit a reference was found to land in when its paragraph started in another
-    /// one; its paragraph is laid again so the reference is numbered where it is. Kept across
-    /// re-lays, and set once per reference, so the re-lays end.
+    /// The restart unit a reference was found to land in when it was numbered in another one; its paragraph is laid again so the reference is numbered where it is. Kept across re-lays and replaced when a later re-lay moves the reference again; `relays` bounds the re-lays.
     landed: HashMap<usize, Option<usize>>,
+    /// Re-lays asked for by [`Notes::moved_unit`]; bounded so a reference moving back and forth ends.
+    relays: usize,
     /// Next number and the restart unit (page / spread / section start) it counts in.
     pub num: u32,
     pub key: Option<usize>,
@@ -113,6 +113,7 @@ impl Notes {
             numbers: vec![start; refs.len()],
             keys: vec![None; refs.len()],
             landed: HashMap::new(),
+            relays: 0,
             refs,
             num: start,
             key: None,
@@ -165,20 +166,21 @@ impl Notes {
     }
 
     /// Whether a footnote of `line_notes`, placed in a frame on `page`, was numbered in another
-    /// restart unit: its paragraph started on an earlier page. Records where it landed (once per
-    /// footnote) so the paragraph can be laid again and the footnote numbered there.
+    /// restart unit: its paragraph started on an earlier page. Records where it landed (again when a re-lay moves it, up to a bound)
+    /// so the paragraph can be laid again and the footnote numbered there.
     pub fn moved_unit(&mut self, doc: &Document, line_notes: &[usize], page: Option<usize>) -> bool {
-        if doc.footnote_options.restart == NoteRestart::Never {
+        if doc.footnote_options.restart == NoteRestart::Never || self.relays >= self.refs.len().saturating_mul(4).saturating_add(16) {
             return false;
         }
         let landing = restart_key(doc, page);
         let mut moved = false;
         for &k in line_notes {
-            if self.keys.get(k).is_some_and(|&key| key != landing) && !self.landed.contains_key(&k) {
+            if self.keys.get(k).is_some_and(|&key| key != landing) && self.landed.get(&k) != Some(&landing) {
                 self.landed.insert(k, landing);
                 moved = true;
             }
         }
+        self.relays += usize::from(moved);
         moved
     }
 
