@@ -221,7 +221,9 @@ fn box_nesting(file: &craft_pdf::syntax::Pdf) -> Vec<String> {
             // The part of the box on the media is what the CropBox may cut into; past the media
             // is said above. Without a CropBox of its own the page's is its MediaBox, which cuts nothing.
             let on_media = Rect { x0: r.x0.max(media.x0), y0: r.y0.max(media.y0), x1: r.x1.min(media.x1), y1: r.y1.min(media.y1) };
-            if !inside(&on_media, &crop) {
+            // A box wholly off the media has no part on it to cut.
+            let overlaps = on_media.x1 > on_media.x0 && on_media.y1 > on_media.y0;
+            if overlaps && !inside(&on_media, &crop) {
                 add(format!("the crop box cuts into the {name} box"));
             }
         }
