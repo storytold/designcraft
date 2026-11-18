@@ -315,7 +315,7 @@ pub fn mostly_hangul_chars(chars: impl Iterator<Item = char>) -> bool {
     let (mut hangul, mut latin) = (0usize, 0usize);
     for c in chars {
         match c as u32 {
-            0xAC00..=0xD7A3 | 0x1100..=0x11FF | 0x3130..=0x318F => hangul += 1,
+            _ if crate::breaker::is_hangul(c) => hangul += 1,
             _ if c.is_ascii_alphabetic() => latin += 1,
             _ => {}
         }
