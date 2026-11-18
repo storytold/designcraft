@@ -171,6 +171,9 @@ fn shaping_key(p: &CharProps) -> CharProps {
 #[derive(Clone, Debug, Default)]
 pub struct SubstCtx {
     pub page_name: Option<String>,
+    /// The page names that replace `page_name` from a story byte on, in byte order: the lines of
+    /// a paragraph that runs on into a frame on another page show that page's number.
+    pub page_names_from: Vec<(usize, Option<String>)>,
     /// The section marker text of the page being composed (`None` on parent pages: "Section").
     pub section_marker: Option<String>,
     /// Text variable values by index (on the page being composed).
@@ -200,6 +203,14 @@ pub struct SubstCtx {
 impl SubstCtx {
     fn upright(&self) -> Upright {
         Upright { vertical: self.vertical, rotate_roman: self.rotate_roman }
+    }
+
+    /// The page name a page number marker at story byte `byte` shows.
+    pub fn page_name_at(&self, byte: usize) -> Option<&str> {
+        match self.page_names_from.iter().rev().find(|(from, _)| *from <= byte) {
+            Some((_, name)) => name.as_deref(),
+            None => self.page_name.as_deref(),
+        }
     }
 }
 
@@ -913,7 +924,7 @@ fn shape_run_raw(
                     let s = if c == story::SECTION_MARKER {
                         sub.section_marker.clone().unwrap_or_else(|| "Section".into())
                     } else {
-                        sub.page_name.clone().unwrap_or_else(|| "#".into())
+                        sub.page_name_at(i).unwrap_or("#").to_owned()
                     };
                     // Page numbers follow the text's Digits setting like typed figures do.
                     let mode = digit_mode(p, arabic_context);

@@ -1406,6 +1406,49 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     sub
 }
 
+/// Page number markers in paragraphs that run on into a frame on another page (#2886). Shaping
+/// takes the page of the frame a paragraph starts in; a line placed in a frame on another page
+/// records that page from its first byte on and lays the paragraph again.
+struct PageRelays {
+    /// For each paragraph, the page names its markers show from a story byte on, in byte order.
+    from: Vec<Vec<(usize, Option<String>)>>,
+    /// Re-lays so far, and the most allowed (a guard against a layout that swings between two
+    /// pages as the numbers change width).
+    count: usize,
+    cap: usize,
+}
+
+impl PageRelays {
+    fn new(paragraphs: usize, frames: usize) -> Self {
+        Self { from: vec![Vec::new(); paragraphs], count: 0, cap: paragraphs.saturating_add(frames).saturating_mul(2).saturating_add(64) }
+    }
+
+    /// Whether the page number markers in `line`, set in frame `f`, were shaped for another page.
+    /// If so, records the frame's page from the line's first byte on (dropping what was recorded
+    /// past it) and returns true: the paragraph is to be laid again.
+    fn record(&mut self, story: &Story, opts: &ComposeOptions, f: &FrameSpec, sub: &shape::SubstCtx, paragraph: usize, line: &[Glyph]) -> bool {
+        if self.count >= self.cap {
+            return false;
+        }
+        let shown = opts.page_name.as_deref().or(f.page_name.as_deref());
+        let is_marker = |g: &Glyph| {
+            story
+                .text
+                .get(g.byte..)
+                .and_then(|t| t.chars().next())
+                .is_some_and(|c| matches!(c, story::PAGE_NUMBER | story::NEXT_PAGE_NUMBER | story::PREV_PAGE_NUMBER))
+        };
+        if !line.iter().any(|g| is_marker(g) && sub.page_name_at(g.byte) != shown) {
+            return false;
+        }
+        let (Some(start), Some(from)) = (line.iter().map(|g| g.byte).min(), self.from.get_mut(paragraph)) else { return false };
+        from.retain(|(b, _)| *b < start);
+        from.push((start, shown.map(str::to_owned)));
+        self.count += 1;
+        true
+    }
+}
+
 fn rule_color(r: &designcraft_doc::Rule, text: &(String, f32)) -> (String, f32) {
     if r.color == designcraft_doc::TEXT_COLOR { text.clone() } else { (r.color.clone(), r.tint) }
 }
@@ -1785,6 +1828,7 @@ struct PlacementShared<'a, 'font> {
     split_budget: usize,
     hyph_relays: &'a mut usize,
     restores: &'a mut usize,
+    page_relays: &'a mut PageRelays,
 }
 
 struct ParagraphLines<'a> {
@@ -1810,6 +1854,8 @@ struct ParagraphLines<'a> {
     label_aligned: usize,
     label_tab: bool,
     list_align: ListAlign,
+    /// The substitutions the paragraph was shaped with (its page numbers' pages).
+    subst: &'a shape::SubstCtx,
 }
 
 enum LinePlacement {
@@ -2349,6 +2395,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         split_budget,
         hyph_relays,
         restores,
+        page_relays,
     } = shared;
     let ParagraphLines {
         paragraph: pi,
@@ -2373,6 +2420,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         label_aligned,
         label_tab,
         list_align,
+        subst,
     } = paragraph;
     let mut g0 = 0usize;
     let mut line_no = 0usize;
@@ -2554,6 +2602,11 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 sub_objects,
                 carry: &mut carry,
             }) {
+                // The line goes in this frame: its page numbers show this frame's page.
+                LineFit::Ready(_) if page_relays.record(story, opts, f, subst, pi, line_glyphs) => {
+                    rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+                    return LinePlacement::Restart(pi);
+                }
                 LineFit::Ready(line_notes) => line_notes,
                 LineFit::Restart(j) => return LinePlacement::Restart(j),
                 LineFit::NextSub => {
@@ -3242,6 +3295,7 @@ fn compose_run(
     let mut no_hyph: Vec<Vec<usize>> = vec![Vec::new(); np];
     let mut hyph_relays = 0usize;
     let mut restores = 0usize;
+    let mut page_relays = PageRelays::new(np, frames.len());
     let mut pi = 0;
     let var_story = vars::has_vars(story);
     let mut notes = Notes::new(doc, story);
@@ -3376,7 +3430,7 @@ fn compose_run(
         }
         // Bullets & numbering: generated prefix (shaped as its own glyphs, mapped to the paragraph start).
         let cur_frame = frames.get(cur.fi.min(frames.len().saturating_sub(1)));
-        let sub = paragraph_substitution(SubstitutionInput {
+        let mut sub = paragraph_substitution(SubstitutionInput {
             doc,
             story,
             range: prange.clone(),
@@ -3388,6 +3442,7 @@ fn compose_run(
             notes: &mut notes,
             marks: marks_before.get(pi).copied().unwrap_or_default(),
         });
+        sub.page_names_from = page_relays.from.get(pi).cloned().unwrap_or_default();
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
         let shaped = shape_paragraph(ParagraphShapeInput {
@@ -3586,6 +3641,7 @@ fn compose_run(
                 split_budget,
                 hyph_relays: &mut hyph_relays,
                 restores: &mut restores,
+                page_relays: &mut page_relays,
             },
             ParagraphLines {
                 paragraph: pi,
@@ -3610,6 +3666,7 @@ fn compose_run(
                 label_aligned,
                 label_tab,
                 list_align,
+                subst: &sub,
             },
         );
         let (line_no, col_first_line, first_line_rect) = match placement {
