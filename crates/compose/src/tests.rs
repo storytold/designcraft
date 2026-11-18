@@ -4422,6 +4422,12 @@ fn story_runs_are_checked_for_language_once_per_composition() {
         assert!(!cs.is_overset() && cs.line_count() >= 30, "every paragraph is composed");
         assert_eq!(PLAIN_ENGLISH_SCANS.with(|n| n.get()), 1, "{language:?}");
     }
+    // A paragraph whose own language isn't English never asks.
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.chars.language = Some("Swedish".into()));
+    PLAIN_ENGLISH_SCANS.with(|n| n.set(0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset() && cs.line_count() >= 30, "every paragraph is composed");
+    assert_eq!(PLAIN_ENGLISH_SCANS.with(|n| n.get()), 0, "Swedish paragraphs");
 }
 
 // A text frame's bottom inset constrains its last baseline. The full font descent
