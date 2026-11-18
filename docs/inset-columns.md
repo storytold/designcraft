@@ -49,6 +49,11 @@ retain their keep constraints.
 Commentary left after the final frame sets the same story overset signal used by document
 inspection and preflight, even when all main text fits.
 
+A stream series outside the inset's stream list can use standalone `noteStream` frames.
+Anchors feed the route on their page, in frame order, so a narrow column can continue into
+a full-width foot frame. These routes participate in the same page trials and retain their
+continuations independently of inset bands. Unplaced route commentary also sets story overset.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming

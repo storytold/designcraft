@@ -70,6 +70,79 @@ fn document(pages: usize, main: &str, left: &str, right: &str) -> (Document, Sto
     (doc, sid)
 }
 
+fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
+    let (mut doc, sid) = document(1, "Main passage.", "Inset comment.", "");
+    let host = doc.story(sid).unwrap().frames[0];
+    doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.pop();
+    let mut routes = Vec::new();
+    for rect in [Rect::new(640.0, 36.0, 670.0, 36.0 + height), Rect::new(36.0, 600.0, 636.0, 600.0 + height)] {
+        let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), rect, doc.default_layer(), "", Default::default()).unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 2 });
+        routes.push(id);
+    }
+    let story = doc.story_mut(sid).unwrap();
+    for text in ["Third route note.", "Second route note.", "First route note with several lines of text."] {
+        let id = story.insert_note(0, text, Default::default()).unwrap();
+        story.note_mut(id).unwrap().series = 2;
+    }
+    (doc, sid, routes)
+}
+
+#[test]
+fn standalone_route_beside_inset_preserves_note_order_and_all_source_text() {
+    let (doc, sid, routes) = routed_document(90.0);
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let parts: Vec<_> = routes.iter().flat_map(|id| &cs.frame(*id).expect("route frame must be composed").notes).collect();
+    assert!(routes.iter().all(|id| !cs.frame(*id).unwrap().notes.is_empty()));
+    assert!(parts.windows(2).all(|pair| pair[0].index <= pair[1].index));
+    for note in doc.story(sid).unwrap().notes.iter().filter(|n| n.series == 2) {
+        let mut end = 0;
+        for part in parts.iter().filter(|p| p.id == note.id) {
+            for frame in &part.text.frames {
+                assert_eq!(frame.range.start, end);
+                end = frame.range.end;
+            }
+        }
+        assert_eq!(end, note.text.len());
+    }
+}
+
+#[test]
+fn standalone_route_beside_inset_recomposes_after_note_edit() {
+    let (mut doc, sid, routes) = routed_document(90.0);
+    let cache = Cache::new();
+    let before = cache.get(&doc, sid, None);
+    let id = before.frame(routes[0]).unwrap().notes[0].id;
+    doc.story_mut(sid).unwrap().note_mut(id).unwrap().text.replace(0..0, "Additional route words. ");
+    let warm = cache.get(&doc, sid, None);
+    let fresh = compose_story(&doc, sid, &Default::default());
+    assert_eq!(warm.overset_at, fresh.overset_at);
+    for route in routes {
+        let signature = |cs: &ComposedStory| {
+            cs.frame(route)
+                .unwrap()
+                .notes
+                .iter()
+                .flat_map(|n| n.text.frames.iter().map(move |f| (n.id, f.range.clone(), n.origin)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(signature(&warm), signature(&fresh));
+    }
+}
+
+#[test]
+fn standalone_route_beside_inset_reports_unplaced_tail_as_overset() {
+    let (mut doc, sid, routes) = routed_document(35.0);
+    let note = doc.story_mut(sid).unwrap().notes.iter_mut().find(|n| n.series == 2).unwrap();
+    let note = Arc::make_mut(note);
+    note.text.replace(0..note.text.len(), &"Long route commentary. ".repeat(500));
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.is_overset());
+    assert!(cs.warnings.iter().any(|w| w.contains("commentary remains")));
+    assert!(cs.frame(*routes.last().unwrap()).unwrap().notes.last().unwrap().overflow);
+}
+
 #[test]
 fn main_start_matches_sixth_commentary_baseline_with_different_leading() {
     let (doc, sid) = document(1, &"Main words. ".repeat(30), &"Commentary words. ".repeat(90), &"Outside words. ".repeat(90));

@@ -21,6 +21,7 @@ struct Trial {
     cut: usize,
     areas: Vec<FrameSpec>,
     notes: Vec<crate::PlacedNote>,
+    routes: Vec<FrameText>,
     state: StreamState,
     feasible: bool,
     warnings: Vec<String>,
@@ -65,6 +66,44 @@ fn main_options(opts: &ComposeOptions, frames: &[FrameSpec]) -> ComposeOptions {
 
 fn main_layout(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
     crate::compose(doc, story, frames, &main_options(opts, frames))
+}
+
+fn fit_routes(
+    doc: &Document,
+    story: &Story,
+    routes: &[FrameSpec],
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+) -> crate::StreamPageFit {
+    let mut result = crate::StreamPageFit {
+        state: before.clone(),
+        frames: Vec::new(),
+        starts_fit: true,
+        failed_anchor: None,
+        had_continuation: false,
+        warnings: Vec::new(),
+    };
+    let mut series: Vec<_> = routes.iter().filter_map(|f| f.opts.note_stream.map(|s| s.series)).collect();
+    series.sort_unstable();
+    series.dedup();
+    for id in series {
+        let areas: Vec<_> = input.areas.iter().filter(|f| f.opts.note_stream.is_some_and(|s| s.series == id)).cloned().collect();
+        let fit = crate::notes::fit_stream_page_for(
+            doc,
+            story,
+            StreamPageInput { page: input.page, main: input.main.clone(), areas: &areas, force_starts: input.force_starts.clone() },
+            before,
+            opts,
+            Some(id),
+        );
+        result.state.take_series(&fit.state, id);
+        result.starts_fit &= fit.starts_fit;
+        result.frames.extend(fit.frames);
+        result.warnings.extend(fit.warnings);
+    }
+    result.frames.sort_by_key(|f| input.areas.iter().position(|a| a.id == f.frame));
+    result
 }
 
 fn band_frame(frame: &FrameSpec, area: Rect) -> FrameSpec {
@@ -112,6 +151,7 @@ struct Page<'a> {
     before: &'a StreamState,
     start: usize,
     opts: &'a ComposeOptions,
+    routes: &'a [FrameSpec],
 }
 impl Page<'_> {
     fn trial(&self, wanted: usize, force: bool) -> Result<Trial, super::Error> {
@@ -387,11 +427,58 @@ impl Page<'_> {
             }
             feasible &= !s.cursor.tail_pending;
         }
-        let warnings = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
+        let mut warnings: Vec<_> = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
+        let mut routes = Vec::new();
+        let page = self.frame.page.unwrap_or(0);
+        let previous = self.past.last().and_then(|f| f.page);
+        let mut route_pages: Vec<_> =
+            self.routes.iter().filter_map(|f| f.page).filter(|p| previous.is_none_or(|prev| *p > prev) && *p <= page).collect();
+        route_pages.sort_unstable();
+        route_pages.dedup();
+        if !route_pages.contains(&page) && !self.routes.is_empty() {
+            route_pages.push(page);
+        }
+        // Standalone routes share the candidate main cut, but never the inset's band geometry.
+        for route_page in route_pages {
+            let areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
+            let fit = fit_routes(
+                self.doc,
+                self.story,
+                self.routes,
+                StreamPageInput {
+                    page: route_page,
+                    main: if route_page == page { self.start..c.cut } else { 0..0 },
+                    areas: &areas,
+                    force_starts: (force && route_page == page).then_some(self.start..c.cut),
+                },
+                &state,
+                self.opts,
+            );
+            for area in &areas {
+                if let Some(route) = area.opts.note_stream {
+                    state.take_series(&fit.state, route.series);
+                }
+            }
+            // Like ordinary routes, the first-line progress fallback may retain an
+            // unstarted comment; the final source-range check reports it as overset.
+            feasible &= fit.starts_fit || (force && route_page == page);
+            warnings.extend(fit.warnings);
+            routes.extend(fit.frames);
+        }
         let notes = out.parts.into_iter().flat_map(|p| p.placement.notes).collect();
         let catchwords =
             out.streams.iter().zip(&self.options.streams).filter_map(|(s, config)| s.cursor.catchword.map(|area| (config.series, area))).collect();
-        Ok(Trial { first_line: c.first_line.or(first_line_seen), cut: c.cut, areas: c.areas.clone(), notes, state, feasible, warnings, catchwords })
+        Ok(Trial {
+            first_line: c.first_line.or(first_line_seen),
+            cut: c.cut,
+            areas: c.areas.clone(),
+            notes,
+            routes,
+            state,
+            feasible,
+            warnings,
+            catchwords,
+        })
     }
 
     fn probe(&self, key: usize, force: bool) -> Result<Trial, super::Error> {
@@ -464,6 +551,7 @@ struct PageRecord {
     state: Arc<StreamState>,
     areas: Vec<FrameSpec>,
     notes: Vec<crate::PlacedNote>,
+    routes: Vec<FrameText>,
     warnings: Vec<String>,
     catchwords: Vec<(Option<u64>, Rect)>,
 }
@@ -539,7 +627,13 @@ fn resume_page(story: &Story, before: crate::reuse::Reuse<'_>, trace: &Trace) ->
         }
         changed.push(k);
         let at = changed_byte(&previous.text.text, &note.text.text).min(format_prefix(&previous.text, &note.text));
-        let page = trace.pages.iter().position(|p| p.notes.iter().filter(|n| n.index == k).any(|n| n.text.frames.iter().any(|f| f.range.end > at)));
+        let page = trace.pages.iter().position(|p| {
+            p.notes
+                .iter()
+                .chain(p.routes.iter().flat_map(|f| &f.notes))
+                .filter(|n| n.index == k)
+                .any(|n| n.text.frames.iter().any(|f| f.range.end > at))
+        });
         first = first.min(page.unwrap_or(0));
     }
     if old.notes.len() != story.notes.len() {
@@ -557,7 +651,7 @@ fn rejoined(old: &Story, trace: &Trace, index: usize, record: &PageRecord, story
         && !record.state.pending_indices().any(|k| changed.contains(&k))
         && !changed.iter().any(|k| refs.get(*k).is_some_and(|at| *at >= record.cut))
         // A later, independently changed note may not be pending on this page yet.
-        && !trace.pages.iter().skip(index.saturating_add(1)).flat_map(|p| &p.notes).any(|n| changed.contains(&n.index))
+        && !trace.pages.iter().skip(index.saturating_add(1)).flat_map(|p| p.notes.iter().chain(p.routes.iter().flat_map(|f| &f.notes))).any(|n| changed.contains(&n.index))
 }
 
 pub(crate) fn compose_frames(
@@ -567,6 +661,12 @@ pub(crate) fn compose_frames(
     opts: &ComposeOptions,
     before: Option<crate::reuse::Reuse<'_>>,
 ) -> (ComposedStory, Option<crate::reuse::Trace>) {
+    let inset_series: Vec<_> =
+        frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
+    let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
+        .into_iter()
+        .filter(|f| f.opts.note_stream.is_some_and(|s| !inset_series.contains(&s.series)))
+        .collect();
     let old = before.and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
     let (resume, changed) = old.map_or((0, Vec::new()), |(b, trace)| resume_page(story, b, trace));
     let mut pages = old.map_or_else(Vec::new, |(_, t)| t.pages.iter().take(resume).cloned().collect::<Vec<_>>());
@@ -595,7 +695,7 @@ pub(crate) fn compose_frames(
         }
         #[cfg(test)]
         REFITTED.with(|v| v.borrow_mut().push(frame.id));
-        let page = Page { doc, story, frame, options, past: &past, before: &state, start, opts };
+        let page = Page { doc, story, frame, options, past: &past, before: &state, start, opts, routes: &routes };
         match page.fit() {
             Ok(mut trial) => {
                 if !trial.feasible {
@@ -608,6 +708,7 @@ pub(crate) fn compose_frames(
                     state: Arc::new(trial.state),
                     areas: trial.areas.clone(),
                     notes: trial.notes,
+                    routes: trial.routes,
                     warnings: trial.warnings,
                     catchwords: trial.catchwords,
                 };
@@ -674,6 +775,37 @@ pub(crate) fn compose_frames(
         frame.content_height =
             frame.lines.iter().map(|l| l.baseline + l.descent).chain(frame.notes.iter().map(|n| n.rect.y1)).fold(top, f64::max) - top;
     }
+    merged.extend(pages.iter().flat_map(|p| p.routes.iter().cloned()));
+    // Routes can continue on pages beyond the final main frame.
+    let mut state = (*state).clone();
+    let last_page = frames.last().and_then(|f| f.page);
+    let mut trailing: Vec<_> = routes.iter().filter_map(|f| f.page).filter(|p| last_page.is_none_or(|last| *p > last)).collect();
+    trailing.sort_unstable();
+    trailing.dedup();
+    for page in trailing {
+        let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
+        let fit = fit_routes(doc, story, &routes, StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None }, &state, opts);
+        for area in &areas {
+            if let Some(route) = area.opts.note_stream {
+                state.take_series(&fit.state, route.series);
+            }
+        }
+        warnings.extend(fit.warnings);
+        merged.extend(fit.frames);
+    }
+    let baselines: Vec<_> =
+        refs.iter().map(|at| merged.iter().flat_map(|f| &f.lines).find(|l| l.range.contains(at)).map_or(0.0, |l| l.baseline)).collect();
+    for note in merged.iter_mut().flat_map(|f| &mut f.notes) {
+        note.reference_baseline = baselines.get(note.index).copied().unwrap_or(0.0);
+        if let Some(source) = story.notes.get(note.index) {
+            note.source = Arc::from(source.text.text.as_str());
+        }
+    }
+    for series in state.pending_series() {
+        if let Some(note) = merged.iter_mut().rev().flat_map(|f| f.notes.iter_mut().rev()).find(|n| n.series == series) {
+            note.overflow = true;
+        }
+    }
     let commentary_overset = state.pending_series().next().is_some()
         || story.notes.iter().enumerate().any(|(index, note)| {
             let placed = merged
@@ -685,11 +817,12 @@ pub(crate) fn compose_frames(
                 .max()
                 .unwrap_or(0);
             refs.get(index).is_some_and(|at| *at < start)
-                && frames
-                    .iter()
-                    .filter_map(|f| f.opts.inset_columns.as_ref())
-                    .flat_map(|c| &c.streams)
-                    .any(|s| s.series == Some(doc.note_series_id(note.series)))
+                && (routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == doc.note_series_id(note.series)))
+                    || frames
+                        .iter()
+                        .filter_map(|f| f.opts.inset_columns.as_ref())
+                        .flat_map(|c| &c.streams)
+                        .any(|s| s.series == Some(doc.note_series_id(note.series))))
                 && placed < note.text.len()
         });
     if commentary_overset {

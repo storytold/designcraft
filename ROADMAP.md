@@ -400,6 +400,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-19** · Standalone anchored commentary routes beside inset frames now compose in route order, participate in page fitting and report unplaced tails as story overset (#2873). No readiness percentage change.
+
 - **2026-11-18** · Inset commentary retains notes starting partway down a band, widens to the ended main column's centre axis, and reports final commentary overset. `mainStartBaseline` aligns the first main baseline with a neighbouring commentary baseline (#2873).
 
 - **2026-11-16** · Catchword text variable (`nextPageFirstWord`) follows each story across pages, including multi-stream pages. No readiness percentage change.
