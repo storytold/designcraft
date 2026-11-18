@@ -163,9 +163,18 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     if text.contains("/Encrypt") {
         issues.push("the file is encrypted".into());
     }
-    let pages = text.matches("/Type/Page/").count() + text.matches("/Type/Page>").count();
-    let trims = text.matches("/TrimBox").count();
-    if pages > 0 && trims < pages {
+    // Each page's own dictionary, read as an object: counting `/Type/Page` and `/TrimBox` in the
+    // bytes found no page at all when the pages were in object streams, or written with a space
+    // after `/Type`, and passed a page without one (#2943). A TrimBox or an ArtBox will do (ISO
+    // 15930-7); neither is inherited.
+    let without_trim = match file.as_ref() {
+        Some(f) => f.pages().iter().filter(|p| !p.raw().contains_key(b"TrimBox") && !p.raw().contains_key(b"ArtBox")).count(),
+        None => {
+            let pages = text.matches("/Type/Page/").count() + text.matches("/Type/Page>").count();
+            pages.saturating_sub(text.matches("/TrimBox").count())
+        }
+    };
+    if without_trim > 0 {
         issues.push("every page needs a trim box".into());
     }
     if text.contains("/Subtype/Type3") {

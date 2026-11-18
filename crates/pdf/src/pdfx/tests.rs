@@ -565,3 +565,40 @@ fn x4_checks_read_object_streams() {
     let issues = check_pdfx4(&out);
     assert!(!issues.iter().any(|i| i == NO_INTENT || i == NO_INFO), "{issues:?}");
 }
+
+/// A one-page PDF whose page dictionary (with `entries`) is in an object stream, found through a
+/// cross-reference stream: as writers that use `/ObjStm` save it.
+fn object_stream_pdf(entries: &str) -> Vec<u8> {
+    let page = format!("<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]{entries}>>");
+    let head = "3 0 ";
+    let objstm = format!("<</Type/ObjStm/N 1/First {}/Length {}>>\nstream\n{head}{page}\nendstream", head.len(), head.len() + page.len() + 1);
+    let mut out = b"%PDF-1.6\n".to_vec();
+    let mut offsets = Vec::new();
+    for (n, body) in [(1, "<</Type/Catalog/Pages 2 0 R>>".to_string()), (2, "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string()), (4, objstm)] {
+        offsets.push((n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    let xref_at = out.len();
+    // W [1 4 2]: type, offset or object stream number, generation or index.
+    let row = |t: u8, a: u32, b: u16| -> Vec<u8> { [vec![t], a.to_be_bytes().to_vec(), b.to_be_bytes().to_vec()].concat() };
+    let at = |n: u32| offsets.iter().find(|(m, _)| *m == n).map_or(0, |(_, o)| *o as u32);
+    let data = [row(0, 0, 65535), row(1, at(1), 0), row(1, at(2), 0), row(2, 4, 0), row(1, at(4), 0), row(1, xref_at as u32, 0)].concat();
+    out.extend_from_slice(format!("5 0 obj\n<</Type/XRef/Size 6/W[1 4 2]/Root 1 0 R/Length {}>>\nstream\n", data.len()).as_bytes());
+    out.extend_from_slice(&data);
+    out.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    out
+}
+
+/// #2943: the trim check reads each page as an object, so a page with neither a TrimBox nor an
+/// ArtBox fails wherever its dictionary is, an object stream included. A TrimBox or an ArtBox
+/// passes.
+#[test]
+fn a_page_without_a_trim_box_fails_wherever_it_is_stored() {
+    let trim = |pdf: &[u8]| check_pdfx4(pdf).iter().any(|i| i == "every page needs a trim box");
+    assert_eq!(craft_pdf::syntax::Pdf::new(object_stream_pdf("").to_vec()).map(|p| p.pages().len()).ok(), Some(1), "the fixture reads");
+    assert!(trim(&object_stream_pdf("")), "in an object stream");
+    assert!(!trim(&object_stream_pdf("/TrimBox[5 5 95 95]")));
+    assert!(!trim(&object_stream_pdf("/ArtBox[5 5 95 95]")), "an ArtBox will do");
+    assert!(trim(&tiny_pdf("", "")));
+    assert!(!trim(&tiny_pdf("/TrimBox[5 5 95 95]", "")));
+}
