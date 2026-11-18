@@ -92,6 +92,7 @@ fn view_items_are_in_the_view_menu_as_in_indesign() {
         "view.separations",
         "view.taggedFrames",
         "view.tagMarkers",
+        "view.storyEditorStyleColumn",
         "view.storyEditorDepthRuler",
     ] {
         assert!(view.contains(&id), "{id} is in View");
@@ -986,6 +987,32 @@ fn fitting_has_indesigns_shortcuts() {
     assert!((width(&app) - 200.0).abs() < 1e-6, "fitted: {}", width(&app));
 }
 
+/// Frame Fitting Options shows and reads its crop amounts in the document's ruler unit (#2812).
+#[test]
+fn fitting_options_follow_the_ruler_units() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "millimeters"})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = app.run("frame.create", json!({"rect": [100, 100, 300, 300]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png", "frame": f})).unwrap();
+    app.run("selection.set", json!({"ids": [f]})).unwrap();
+    run_ui(&mut app, "app.fittingOptions", &json!({})).unwrap().unwrap();
+    let d = app.ui.dialog.as_ref().expect("Frame Fitting Options dialog");
+    assert_eq!(d.id, "fittingOptions");
+    assert_eq!(d.unit, designcraft_geom::Unit::Millimeters, "a bare number means the ruler unit");
+    for k in ["cropTop", "cropLeft", "cropBottom", "cropRight"] {
+        assert!(d.s(k).contains("mm"), "{k} is prefilled in millimetres, got {:?}", d.s(k));
+    }
+    // A bare number typed in a crop field is millimetres, not points.
+    app.ui.dialog.as_mut().unwrap().fields.insert("cropTop".into(), json!("2"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    let it = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+    let designcraft_doc::Content::Graphic(g) = &it.content else { panic!("placed graphic") };
+    let want = 2.0 * designcraft_geom::units::PT_PER_MM;
+    assert!((g.crop[0] - want).abs() < 1e-6, "cropTop 2 means 2 mm ({} pt), got {}", want, g.crop[0]);
+}
+
 #[test]
 fn tab_and_presentation_hide_floating_panels_too() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1791,6 +1818,40 @@ fn cmd_plus_zooms_the_canvas_not_the_window() {
     app.native_shortcuts.insert("view.zoomOut".to_string(), "Cmd+F11".to_string());
     assert!(!zooms_out(&mut app, egui::Key::F11), "the bar runs its own key");
     assert!(zooms_out(&mut app, egui::Key::Num9), "the second binding runs in the app");
+}
+
+#[test]
+fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
+    use egui::{Key, Modifiers};
+    // ⌥⇧P types ∏ on macOS, so the window takes the key before the menu bar sees it (#2710):
+    // the bar carries no such key equivalent, and the app runs it.
+    assert!(!crate::menus::native_key_equivalent("Alt+Shift+P"));
+    assert!(!crate::menus::native_key_equivalent("Alt+1"));
+    assert!(!crate::menus::native_key_equivalent("Alt+Space"));
+    assert!(!crate::menus::native_key_equivalent("Shift+P"));
+    for sc in ["Cmd+Shift+P", "Ctrl+P", "Cmd+Alt+P", "Alt+Shift+F11", "Alt+PageDown"] {
+        assert!(crate::menus::native_key_equivalent(sc), "{sc}");
+    }
+    let ctx = egui::Context::default();
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
+    app.run("selection.set", json!({"ids": [frame["id"]]})).unwrap();
+    run_ui(&mut app, "window.setShortcut", &json!({"id": "type.fillWithPlaceholder", "shortcut": "Alt+Shift+P"})).unwrap().unwrap();
+    // The macOS menu bar, as `NativeMenu` builds it.
+    app.native_menu = true;
+    for id in ["type.fillWithPlaceholder", "view.zoomIn"] {
+        let sc = shortcut_of(&app, id).unwrap();
+        if crate::menus::native_key_equivalent(&sc) {
+            app.native_shortcuts.insert(id.to_string(), sc);
+        }
+    }
+    assert!(app.native_shortcuts.contains_key("view.zoomIn"));
+    assert_eq!(app.session.tool_id(), "selection");
+    native_frame(&mut app, &ctx, vec![], None);
+    native_frame(&mut app, &ctx, vec![], None);
+    press(&mut app, &ctx, Key::P, Modifiers::ALT | Modifiers::SHIFT);
+    assert!(!story_text(&app, &frame["story"]).is_empty(), "⌥⇧P fills the selected frame with placeholder text");
 }
 
 #[test]
@@ -3518,4 +3579,92 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
     let kept = under(&app, rect.center());
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
+}
+
+#[test]
+fn window_menu_commands_restore_hidden_panels() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp| {
+        for _ in 0..2 {
+            let input =
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.logic(&ui.ctx().clone());
+                app.ui(ui);
+            });
+            out.textures_delta.clear();
+        }
+    };
+    let props_tab = crate::panel_docking::tab_id("properties");
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+
+    // Window › Properties unhides panels hidden by Tab.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 1);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_none());
+    run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+
+    // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
+    run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 2);
+    run_ui(&mut app, "app.characterPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.paragraphStylesPanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "paragraphStyles"));
+
+    // Float-only Tabs: opening when hidden reveals it; choosing it while already open but hidden
+    // reveals it instead of closing it invisibly.
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+
+    // Table toggle activates instead of closing while hidden.
+    run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();
+    assert!(crate::panel_docking::showing(&app, "table"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "app.tablePanel", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "table"));
+
+    // An open flyout in an iconic column isn't closed by Window › <panel> while hidden.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Typography"})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.docking_flyout.as_deref(), Some("character"));
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.panel", &json!({"panel": "character"})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(crate::panel_docking::showing(&app, "character"));
+
+    // Window › Workspace › Reset and Control restore hidden panels.
+    run_ui(&mut app, "window.workspace", &json!({"name": "Essentials"})).unwrap().unwrap();
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    frame(&mut app);
+    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+
+    app.ui.control_bar = true;
+    run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(false));
+    run_ui(&mut app, "window.controlBar", &json!({})).unwrap().unwrap();
+    assert_eq!(app.ui.hidden_panels, 0);
+    assert!(app.ui.control_bar);
+    assert_eq!(checked(&app, "window.controlBar", &Value::Null), Some(true));
 }
