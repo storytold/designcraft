@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true, features = ["native-windows"] }
+# The vendor-neutral cloud types the Open and Save pages hand back: a file
+# entry, a capability. Contracts only, so this crate still builds for the web.
+# The service is reached through the backend the host application connects
+# (see `cloud`).
+craft-cloud = { workspace = true }
 craft-window = { workspace = true }
 craft-keymap = { workspace = true }
 craft-file-formats = { workspace = true }
@@ -24,6 +29,10 @@ designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
 designcraft-textimport = { workspace = true }
 craft-prepress = { workspace = true }
+# A cloud save encodes the layout here rather than through
+# `designcraft_engine::cmd::to_bytes`, which turns a failure into empty bytes
+# (see `cloud::encode`).
+designcraft-format = { workspace = true }
 # The UI draws monochrome icon glyphs from egui's bundled emoji faces (☰, ⚠, 📋); 0.37 moved
 # them behind this feature. They stay bundled copies of OSI/CC0 faces from `epaint_default_fonts`.
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }

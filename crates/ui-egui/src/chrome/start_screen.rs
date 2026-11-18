@@ -65,6 +65,9 @@ pub fn start_screen(app: &mut DesignApp, ui: &mut egui::Ui) {
                 ui.add_space(20.0);
                 community_card(app, ui);
                 recent_files(app, ui);
+                // Beside the local picker and never in place of it. Draws
+                // nothing without a connected cloud backend.
+                crate::cloud::open_section(app, ui);
                 ui.add_space(24.0);
                 ui.label(crate::rtl::widget(
                     ui,

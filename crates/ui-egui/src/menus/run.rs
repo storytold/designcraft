@@ -196,24 +196,94 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             if app.session.active().is_some_and(|d| d.path.is_some()) {
                 return Some(save_when_checked(app, |app| app.run("file.save", json!({}))));
             }
+            // A layout that came from the cloud and has no file on this
+            // computer saves back where it came from. Saving a local layout
+            // behaves exactly as it always did.
+            if crate::cloud::has_target(app) {
+                return Some(save_when_checked(app, crate::cloud::save));
+            }
             return run_ui(app, "app.saveDialog", p);
         }
-        "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => {
-                let path = path.to_owned();
-                save_when_checked(app, move |app| app.run("file.saveAs", json!({"path": path})))
-            }
-            None => save_as_dialog(app, |_| Ok(Value::Null)),
-        },
-        "cloud.open" if !crate::cloud::available(app) => Err(crate::cloud::UNAVAILABLE.to_owned()),
-        "cloud.open" => {
-            let account = app.cloud_backend.as_ref().and_then(|b| b.account());
-            app.status(match &account {
-                Some(name) => format!("Signed in to the cloud as {name}"),
-                None => "Signed out of the cloud".to_owned(),
-            });
-            Ok(json!({"account": account}))
+        // With a backend connected, Save As asks where first. Without one it
+        // is the system Save dialog, which is all it ever was.
+        "app.saveDialog" if crate::cloud::available(app) => {
+            app.cloud_page = Some(crate::cloud::Page::Save);
+            app.cloud.save_name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
+            Ok(crate::cloud::status(app))
         }
+        "app.saveDialogLocal" if app.services.download.is_some() => download_document(app),
+        "app.saveDialog" if app.services.download.is_some() => download_document(app),
+        "app.saveDialog" | "app.saveDialogLocal" => {
+            // An ordinary Save As abandons any cloud Save As left in progress,
+            // the same as leaving the cloud page without saving.
+            crate::cloud::cancel_save_as(app);
+            match p.get("path").and_then(Value::as_str) {
+                Some(path) => {
+                    let path = path.to_owned();
+                    save_when_checked(app, move |app| app.run("file.saveAs", json!({"path": path})))
+                }
+                None => save_as_dialog(app, |_| Ok(Value::Null)),
+            }
+        }
+        // ---- cloud storage
+        id if id.starts_with("cloud.") && id != "cloud.status" && !crate::cloud::available(app) => {
+            return Some(Err(crate::cloud::UNAVAILABLE.to_owned()));
+        }
+        "cloud.status" => Ok(crate::cloud::status(app)),
+        "cloud.open" => {
+            app.cloud_page = Some(crate::cloud::Page::Open);
+            crate::cloud::start(app);
+            Ok(crate::cloud::status(app))
+        }
+        "cloud.browse" => {
+            let path = p.get("path").and_then(Value::as_str).unwrap_or("");
+            crate::cloud::browse(app, path);
+            Ok(crate::cloud::status(app))
+        }
+        "cloud.shared" => {
+            crate::cloud::load_shared(app);
+            Ok(crate::cloud::status(app))
+        }
+        "cloud.link" => {
+            crate::cloud::link(app);
+            Ok(crate::cloud::status(app))
+        }
+        // Opens something already listed, by id or by name. The listing is
+        // what the user can see, which keeps a scripted open and a clicked
+        // one on the same footing.
+        "cloud.openFile" => {
+            let id = p.get("id").and_then(Value::as_str);
+            let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+            let found = app
+                .cloud
+                .mine
+                .entries
+                .iter()
+                .chain(app.cloud.shared.entries.iter())
+                .find(|e| id.is_some_and(|id| e.id == id) || (!name.is_empty() && e.name == name))
+                .cloned();
+            match found {
+                Some(entry) if crate::cloud::opens(&entry) => {
+                    crate::cloud::open_entry(app, entry, None);
+                    Ok(crate::cloud::status(app))
+                }
+                Some(entry) => return Some(Err(format!("DesignCraft cannot open {}", entry.name))),
+                None => return Some(Err("no such file in the cloud listing".to_owned())),
+            }
+        }
+        "cloud.save" => save_when_checked(app, crate::cloud::save),
+        "cloud.saveAs" => match (p.get("folder").and_then(Value::as_str), p.get("name").and_then(Value::as_str)) {
+            (Some(folder), Some(name)) => save_when_checked(app, {
+                let (folder, name) = (folder.to_owned(), name.to_owned());
+                move |app| crate::cloud::save_as(app, &folder, &name)
+            }),
+            _ => {
+                app.cloud_page = Some(crate::cloud::Page::Save);
+                app.save_to_cloud = Some(true);
+                Ok(crate::cloud::status(app))
+            }
+        },
+        "cloud.reload" => crate::cloud::reload_active(app),
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)

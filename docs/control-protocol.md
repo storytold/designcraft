@@ -53,9 +53,13 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `app.open` / `app.save` / `app.export` | | Files |
 | `app.quit` | | Quit without asking about unsaved changes (the `app.quit` command, like ⌘Q, asks) |
 
-`cloud.open` runs through `engine.execute` too. It answers with the signed-in account's note once a
-`CloudBackend` is connected, and refuses with "no cloud service is configured" otherwise ([cloud
-storage](cloud.md)). No backend ships in this repository today.
+Cloud storage runs through `engine.execute` too, as the `cloud.*` commands. `cloud.open` shows the
+Open page. `cloud.browse {path}` and `cloud.shared` list. `cloud.openFile {id|name}` opens something
+the listing already holds. `cloud.save` and `cloud.saveAs {folder, name}` write. `cloud.reload`
+replaces the open layout with the stored copy. `cloud.status` answers with the whole cloud state
+even when no backend is configured. Every other `cloud.*` command refuses with "no cloud service is
+configured" ([cloud storage](cloud.md)). No backend is connected in production today, so every one
+of those refuses; `crates/ui-egui/tests/cloud_files.rs` drives all of them against a connected mock.
 
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new

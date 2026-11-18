@@ -153,6 +153,17 @@ const NOT_SEARCHED: &[&str] = &[
     "ui.dock",
     "ui.dock.reset",
     "window.resetWorkspace",
+    // Cloud storage: each needs a connected backend search can't supply, and each already has
+    // its own entry point (the File menu's cloud.open, the Open and Save As pages).
+    "cloud.open",
+    "cloud.status",
+    "cloud.browse",
+    "cloud.shared",
+    "cloud.link",
+    "cloud.openFile",
+    "cloud.save",
+    "cloud.saveAs",
+    "cloud.reload",
 ];
 
 /// The commands Quick Apply and the application bar's search find: (id, label, default shortcut).

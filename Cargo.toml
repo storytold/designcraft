@@ -33,8 +33,11 @@ craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "d15bf1f35b
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "eed3c28cf016723d004d6f2c79c61424c15d4558", version = "=0.1.0" }
 craft-opc = { git = "https://github.com/storytold/craft-libs", rev = "8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551", version = "=0.1.0" }
 craft-pptx = { git = "https://github.com/storytold/craft-libs", rev = "f6cab1980", version = "=0.1.0" }
-# Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
-craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", version = "=0.1.0", features = ["egui", "ui"] }
+# Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts
+# dialog. Pinned with craft-ui, not at the other craft-libs crates' revision: its "ui" feature
+# depends on craft-ui directly, and two revisions of craft-ui in the graph are two different
+# ShareBackend traits that never meet.
+craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "fd7232d7a3a03ca1ccfe059a8afc8391b65668f0", version = "=0.1.0", features = ["egui", "ui"] }
 # Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
 craft-prepress = { git = "https://github.com/storytold/craft-libs", rev = "a5ac3aa05cf3ec013961a85599ddd9e0b5c03813", version = "=0.1.0", features = ["flatten"] }
 # craft-update: app-specific pretend versions apply to startup and manual checks.
@@ -107,7 +110,13 @@ craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["serde"] }
+# `cloud` brings the Open and Save pages, the account badge and the share
+# dialog that every Craft app offers.
+craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "fd7232d7a3a03ca1ccfe059a8afc8391b65668f0", features = ["serde", "cloud"] }
+# The vendor-neutral cloud vocabulary the pages speak: a file entry, a
+# capability, a share. Contracts only, with no IO and no vendor, so the wasm
+# build is unaffected. Same revision as craft-ui's cloud feature.
+craft-cloud = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "fd7232d7a3a03ca1ccfe059a8afc8391b65668f0" }
 # The application bar as the window's title bar (craft-libs).
 craft-window = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["egui"] }
 egui = "0.37"
