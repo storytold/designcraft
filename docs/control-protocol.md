@@ -34,6 +34,12 @@ DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/.config/designcraft/control-token-7979" de
 
 (`%APPDATA%\DesignCraft\control-token-7979` on Windows; with `DESIGNCRAFT_CONFIG_DIR` set, in that folder.)
 
+On Windows the file is not given an access list of its own: it takes its folder's. Under
+`%APPDATA%` that is the user's alone. A portable install (a `DesignCraftData` folder beside the
+executable) or a `DESIGNCRAFT_CONFIG_DIR` elsewhere writes the token into that folder, and anyone
+who can read the folder can read the token and drive the app. Keep such a folder where only you can
+read it, or start the app with `DESIGNCRAFT_CONTROL_TOKEN` set, which writes no file.
+
 The app can be given its token instead: started with `DESIGNCRAFT_CONTROL_TOKEN` set, it uses that
 token, writes no file, and removes a `control-token-<port>` an earlier launch left for that port. A
 supplied token is at most 200 bytes, so that `{"token": "…"}` fits the 256-byte first line; a longer

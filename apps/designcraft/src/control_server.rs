@@ -61,19 +61,39 @@ pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiv
 fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
-        if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-            open.fetch_sub(1, Ordering::SeqCst);
+        let Some(slot) = Slot::take(&open) else {
             let _ = writeln!(stream, "{}", json!({"ok": false, "error": "too many control connections"}));
             continue;
-        }
+        };
         let tx = tx.clone();
         let ctx = ctx.clone();
-        let open = Arc::clone(&open);
         let token = token.clone();
         std::thread::spawn(move || {
+            let _slot = slot;
             serve(stream, &tx, &ctx, &token, TOKEN_WAIT);
-            open.fetch_sub(1, Ordering::SeqCst);
         });
+    }
+}
+
+/// One of the [`MAX_CONNECTIONS`] connection slots, given back when it is dropped: also when the
+/// connection's thread panics, so a handler that panics doesn't keep its slot, and 16 of them
+/// don't shut the channel (noted in review).
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    /// A slot, or `None` when all [`MAX_CONNECTIONS`] are taken.
+    fn take(open: &Arc<AtomicUsize>) -> Option<Self> {
+        if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            open.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self(Arc::clone(open)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -277,6 +297,27 @@ fn serve_lines<R: Read, W: Write>(read: R, mut out: W, mut handle: impl FnMut(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection's slot comes back when its thread ends, also by a panic, so panicking
+    /// handlers can't use up the [`MAX_CONNECTIONS`] slots and shut the channel.
+    #[test]
+    fn a_panicking_connection_gives_its_slot_back() {
+        let open = Arc::new(AtomicUsize::new(0));
+        let slots: Vec<Slot> = (0..MAX_CONNECTIONS).map(|_| Slot::take(&open).expect("a free slot")).collect();
+        assert!(Slot::take(&open).is_none(), "all {MAX_CONNECTIONS} are taken");
+        drop(slots);
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+        for _ in 0..MAX_CONNECTIONS + 1 {
+            let slot = Slot::take(&open).expect("the panicked connections gave their slots back");
+            let panicked = std::thread::spawn(move || {
+                let _slot = slot;
+                panic!("a handler that panics");
+            })
+            .join();
+            assert!(panicked.is_err());
+        }
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+    }
 
     fn run(input: &[u8]) -> (Vec<Value>, Vec<String>) {
         let mut out = Vec::new();
