@@ -1424,9 +1424,20 @@ impl PageRelays {
     }
 
     /// Whether the page number markers in `line`, set in frame `f`, were shaped for another page.
-    /// If so, records the frame's page from the line's first byte on (dropping what was recorded
-    /// past it) and returns true: the paragraph is to be laid again.
-    fn record(&mut self, story: &Story, opts: &ComposeOptions, f: &FrameSpec, sub: &shape::SubstCtx, paragraph: usize, line: &[Glyph]) -> bool {
+    /// The drop cap's glyphs (`lead`) are checked with the first line. If so, records the frame's
+    /// page from the line's first byte on (dropping what was recorded past it) and returns true:
+    /// the paragraph is to be laid again.
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        story: &Story,
+        opts: &ComposeOptions,
+        f: &FrameSpec,
+        sub: &shape::SubstCtx,
+        paragraph: usize,
+        lead: &[Glyph],
+        line: &[Glyph],
+    ) -> bool {
         if self.count >= self.cap {
             return false;
         }
@@ -1438,10 +1449,10 @@ impl PageRelays {
                 .and_then(|t| t.chars().next())
                 .is_some_and(|c| matches!(c, story::PAGE_NUMBER | story::NEXT_PAGE_NUMBER | story::PREV_PAGE_NUMBER))
         };
-        if !line.iter().any(|g| is_marker(g) && sub.page_name_at(g.byte) != shown) {
+        if !lead.iter().chain(line).any(|g| is_marker(g) && sub.page_name_at(g.byte) != shown) {
             return false;
         }
-        let (Some(start), Some(from)) = (line.iter().map(|g| g.byte).min(), self.from.get_mut(paragraph)) else { return false };
+        let (Some(start), Some(from)) = (lead.iter().chain(line).map(|g| g.byte).min(), self.from.get_mut(paragraph)) else { return false };
         from.retain(|(b, _)| *b < start);
         from.push((start, shown.map(str::to_owned)));
         self.count += 1;
@@ -2603,7 +2614,17 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 carry: &mut carry,
             }) {
                 // The line goes in this frame: its page numbers show this frame's page.
-                LineFit::Ready(_) if page_relays.record(story, opts, f, subst, pi, line_glyphs) => {
+                LineFit::Ready(_)
+                    if page_relays.record(
+                        story,
+                        opts,
+                        f,
+                        subst,
+                        pi,
+                        drop_cap.filter(|_| line_no == 0).map_or(&[] as &[Glyph], |dc| dc.glyphs.as_slice()),
+                        line_glyphs,
+                    ) =>
+                {
                     rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
                     return LinePlacement::Restart(pi);
                 }

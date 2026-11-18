@@ -10396,6 +10396,6 @@ fn page_numbers_in_a_paragraph_follow_the_frame_each_line_is_set_in() {
     for l in &cs.frames[1].lines {
         assert!(l.end_x <= 156.0 + 0.01, "{} past the column", l.end_x);
     }
-    // The paragraph after shows 10 too, and every marker is set once.
+    // Every marker is set once.
     assert_eq!(first.len() + second.len(), 300);
 }
