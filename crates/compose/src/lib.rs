@@ -2523,6 +2523,12 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 last_line_mark,
             });
             let LinePosition { x0, x1, baseline, grid_end, continues } = position;
+            // An oversized cap cannot start here; try the next column before placing any text.
+            if drop_cap.filter(|_| line_no == 0).is_some_and(|dc| dc.indent() > x1 - x0 - pp.left_indent - pp.right_indent) {
+                advance_placement_column(cur, spanning, cols);
+                moved = true;
+                break;
+            }
             // The breaker set this line for another segment width: re-break the rest of the
             // paragraph from here, starting with this line's segments as they are. A pass
             // re-breaks at its first line only for a new line, whose segments it carries, so
@@ -2651,9 +2657,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
             let ft = &mut out.frames[cur.fi];
-            if line_no == 0 {
-                first_line_rect = Some((cur.fi, baseline, asc, x0));
-            }
+            first_line_rect.get_or_insert((cur.fi, baseline, asc, x0));
             if let Some(sb) = cur.split.as_mut() {
                 sb.line0.get_or_insert(ft.lines.len());
                 sb.sub_lines += 1;
@@ -5817,7 +5821,9 @@ fn split_drop_cap(
         g.cap
     };
     let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, height(g, body_hebrew), Some(g.size)));
+    let reference = if body_hebrew { glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0 && g.ch.is_alphabetic()).or(body) } else { body };
+    let (lead, body_size) = body.map_or((base_leading, None), |g| (g.leading, Some(g.size)));
+    let cap = reference.map_or(base_cap, |g| height(g, body_hebrew));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
@@ -6962,8 +6968,12 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
             .glyphs
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
-            .flat_map(|g| [g.byte, g.byte + g.len])
-            .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
+            .flat_map(|g| {
+                let (start, end) = if g.rtl { (g.x + g.adv, g.x) } else { (g.x, g.x + g.adv) };
+                [(g.byte, start), (g.byte.saturating_add(g.len), end)]
+            })
+            .min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs()))
+            .map(|(byte, _)| byte);
     }
     let l = hit_line(ft, p)?;
     if l.glyphs.iter().any(|g| g.rtl) {

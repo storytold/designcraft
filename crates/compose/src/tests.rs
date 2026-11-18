@@ -5258,9 +5258,29 @@ fn drop_cap_words_end_at_whitespace_and_clamp_to_the_paragraph() {
 #[test]
 fn unplaced_drop_word_is_reported_overset_from_the_paragraph_start() {
     let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(2, 0) };
-    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 4.0), para);
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 4.0), para.clone());
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     assert_eq!(cs.overset_at, Some(0));
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(cs.overset_at, None);
+    assert!(all_lines(&cs).iter().any(|line| line.drop_cap.is_some()));
+}
+
+#[test]
+fn drop_word_wider_than_the_column_is_overset() {
+    let para = ParaAttrs { drop_cap_words: Some(2), ..drop_cap(3, 0) };
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, 300.0, 300.0), para.clone());
+    let wide = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(wide.overset_at, None);
+    let line = all_lines(&wide)[0];
+    let cap = line.drop_cap.unwrap();
+    let indent = text_x(line, cap.end) - line.x0;
+    assert!(indent > 0.0);
+    let (d, sid, _) = drop_doc_in("one two body", Rect::new(0.0, 0.0, indent / 2.0, 300.0), para);
+    let narrow = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(narrow.overset_at, Some(0));
+    assert!(all_lines(&narrow).is_empty());
 }
 
 #[test]
@@ -5302,6 +5322,12 @@ fn hostile_drop_cap_values_do_not_panic() {
     for (lines, chars) in [(u32::MAX, u32::MAX), (1_000_000, 1), (2, 0), (0, 3)] {
         let (d, sid, _) = drop_doc(LOREM, drop_cap(lines, chars));
         let cs = compose_story(&d, sid, &ComposeOptions::default());
+        if chars == u32::MAX {
+            // The clamped maximum cap is wider than the column and must remain unplaced.
+            assert_eq!(cs.overset_at, Some(0));
+            assert!(all_lines(&cs).is_empty());
+            continue;
+        }
         let g = &cs.frames[0].lines[0].glyphs[0];
         assert!(g.y.is_finite() && g.sy.is_finite() && g.y <= 12.0 * 25.0, "{lines}/{chars}: {}", g.y);
     }
@@ -5369,6 +5395,40 @@ fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
         g.y + ink.y0 * g.sy
     };
     assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn hebrew_body_height_skips_a_quote_in_a_latin_only_face() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Body";
+    const LATIN: &str = "DC Test Latin Body Quote";
+    let db = designcraft_fonts::FontDb::global();
+    let Some(hebrew) = designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z') else { return };
+    let Some(latin) = designcraft_fonts::testing::font_with_glyph(LATIN, &['"'], 'H') else { return };
+    db.add_font(hebrew);
+    db.add_font(latin);
+    let compose = |quote: &str| {
+        let text = format!("הדה {quote}{}", "הדה הדה ".repeat(20));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        if !quote.is_empty() {
+            let start = "הדה ".len();
+            story.format_chars(start..start + quote.len(), |f| f.over.font_family = Some(LATIN.into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("");
+    let quoted = compose("\"");
+    let plain_line = all_lines(&plain)[0];
+    let quoted_line = all_lines(&quoted)[0];
+    let quote = quoted_line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert_eq!(quote.face.family, LATIN);
+    assert_eq!(quote.face.glyph_for('ה'), 0);
+    let first = plain_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((first.sy - after_quote.sy).abs() < 1e-6, "plain scale {}, quoted scale {}", first.sy, after_quote.sy);
+    assert!((first.y - after_quote.y).abs() < 0.01);
 }
 
 #[test]
@@ -5632,6 +5692,20 @@ fn drop_cap_takes_its_character_style_and_nested_styles_count_it() {
     assert_eq!(fill(&cs, at(3)), "Initial Red", "the second nested style starts after the drop cap");
     let first_space = LOREM.find(' ').unwrap();
     assert_eq!(fill(&cs, at(first_space + 1)), "[Black]");
+}
+
+#[test]
+fn drop_word_hit_testing_reaches_both_edges() {
+    let (d, sid, _) = drop_doc("one body words", ParaAttrs { drop_cap_words: Some(1), ..drop_cap(3, 0) });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let cap = line.drop_cap.unwrap();
+    let first = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let end = "one".len();
+    let last = line.glyphs.iter().rfind(|g| g.len > 0 && g.byte < end).unwrap();
+    let y = (cap.rect.y0 + cap.rect.y1) / 2.0;
+    assert_eq!(hit(&cs, 0, Point::new((first.x + 0.01).max(cap.rect.x0), y)), Some(0));
+    assert_eq!(hit(&cs, 0, Point::new((last.x + last.adv - 0.01).min(cap.rect.x1 - 0.01), y)), Some(end));
 }
 
 #[test]

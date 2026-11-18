@@ -35,7 +35,8 @@ attr_set! {
         drop_cap_scale_descenders: bool = false,
         /// Keep Size: the drop cap keeps its own point size. A cap taller than the body hangs
         /// from the first line's tops; one no taller sits on the first baseline like any word.
-        /// The lines beside it are still indented by its width.
+        /// Only the first `drop_cap_lines` lines are indented by its width; a kept cap that
+        /// reaches lower overlaps the lines below it, so raise Lines to clear it.
         drop_cap_keep_size: bool = false,
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
