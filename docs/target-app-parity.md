@@ -1,6 +1,6 @@
 # DesignCraft parity with Adobe InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (existing pull-request CI gate; pt-BR interface ~100%, Localization unchanged at 45%; Text Frame Options layout, Preview and Paragraph Spacing Limit; Swatches rows show InDesign's type columns; Keyboard Shortcuts on craft-keymap's shared dialog, with shortcut sets; Convert Variable to Text; list buttons with the default hanging indent; custom anchored objects honour Relative to Spine; PDF/X-4 visible unembedded font detection, #909; autoflow fills the following pages first; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; image clipping paths from IDML; anchored objects wrap text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; recovery checkpoint retention; cancelable macOS Dock Quit; Based on Parent; object styles carry effects; colour management on craft-cms, Coated FOGRA39 default CMYK; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** patch (PDF export summaries include the shipped PDF/X-1a:2003 standard (#2909)) · **Target:** Adobe InDesign 2026 (21.6.0.57, macOS)
 
 The authoritative assessment of how close DesignCraft is to Adobe InDesign. [ROADMAP.md](../ROADMAP.md)
 summarizes it; [gaps.md](gaps.md) lists every known shortfall one at a time; the feature-by-feature
@@ -60,7 +60,7 @@ they receive, setting type exactly, and basic editing that never fails.
 |---|---|---|---|---|---|
 | Features (depth of each area) | 25% | 55% | 250–400 | 275 catalogue rows exist; many lack options (e.g. Books is 258 lines of engine code, Liquid Layout 329); see the area table | this file |
 | Typography and composition fidelity | 15% | 45% | 120–200 | Knuth–Plass composer, keeps, grids, CJK, Arabic all exist; no comparison with InDesign's line breaks; optical kerning falls back to metrics (#181); overset rule differs (#180); hyphenation patterns for English, Spanish, Portuguese, Norwegian, Danish, Greek, German 2006, French, Italian and Dutch only | [typography-parity.md](typography-parity.md) |
-| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, but real-file bugs open (#193, #338, #339, #340); PDF export strong; PDF/X-4 only | [file-format-parity.md](file-format-parity.md) |
+| File formats | 20% | 40% | 150–250 (+10–30 for an INDD corpus) | INDD and INDT open through indd-utils, measured on synthetic bytes only (#21); IDML both ways and verified in InDesign 2026, with open text-frame issue #193 and no real-file corpus test; PDF export includes PDF/X-4 and PDF/X-1a:2003 | [file-format-parity.md](file-format-parity.md) |
 | UI/UX fidelity | 15% | 45% | 120–180 | Measured InDesign 2026 look; but users report object copy/paste (#351, #348, #185, #164), right-click menus (#238, #187, #160), out-port threading (#352, #194, #165) failing | [ui-parity.md](ui-parity.md) |
 | Stability | 10% | 45% | 60–100 | Never-crash rules and last-resort guards; startup failures on some GPUs and machines (#334, #273, #220, #192, #167, #166); [shared quality gate](../.github/workflows/ci.yml) runs on pull requests and pushes to main | [gaps.md](gaps.md) |
 | Performance | 5% | 65% | 40–80 | 300k characters compose in ~38 ms warm; typing repaints in < 1 ms (damage regions); no incremental composition; nothing benchmarked against InDesign; no large real documents | [gaps.md](gaps.md) |
@@ -116,7 +116,7 @@ twice.
 | Tables | 5% | 55% | anchored objects in cells, Table Options submenus |
 | Layers | 3% | 75% | |
 | Effects and transparency | 3% | 50% | fidelity unmeasured |
-| Output: PDF export, print, package | 8% | 60% | PDF/X-4 strong; no X-1a or presets; physical print validation pending |
+| Output: PDF export, print, package | 8% | 60% | PDF/X-4 and PDF/X-1a:2003; PDF/X-3 and Adobe .joboptions are pending, as is physical print validation |
 | View, navigation, undo, save | 3% | 70% | |
 | **Weighted depth** | 100% | **60.7%** | |
 
@@ -126,7 +126,7 @@ Discounts (multiplicative):
 |---|---|---|
 | Interaction fidelity | ×0.88 | right-click menus fail for some macOS users (#160, #238) and on Linux (#354); Paste in Place lands on page 1 (#348); formatting at a caret discarded (#289); font search focus (#335, #86) |
 | Stability on real machines | ×0.92 | start-up failures on Intel Mac Metal (#334) and Windows drivers (#167, #273, #220, #192, #166); [shared quality gate](../.github/workflows/ci.yml) runs on pull requests and pushes to main; macOS on Apple silicon is solid |
-| File exchange with InDesign users | ×0.85 | `.indd` opens through indd-utils but is unmeasured on real files (#21); IDML import/export bugs (#193, #338, #339, #340, #211); opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
+| File exchange with InDesign users | ×0.85 | `.indd` opens through indd-utils but is unmeasured on real files (#21); IDML text-frame rendering issue (#193) and unmeasured round-trip fidelity; opened text reflows: optical kerning (#181), overset rule (#180). Harsher than VectorCraft's ×0.92 because InDesign pros receive and send native files daily |
 
 60.7% × 0.88 × 0.92 × 0.85 = 41.8% → **~42%**. It is lower than the full number (47%)
 because the full number spreads weight over dimensions DesignCraft does relatively well
@@ -190,8 +190,8 @@ anyone outside the project had used the app. New evidence since then:
 - 79 open issues, many about core editing on Windows and Linux (copy/paste, context menus,
   threading, fonts not found, startup crashes), filed against the 0.4 and 0.5 releases.
 - The first measured menu coverage: 69% of the in-scope items of InDesign 21.6's own menu dump.
-- The main file format: InDesign users receive `.indd` files, which DesignCraft can't open. The
-  previous estimate treated INDD as out of scope; a professional can't.
+- The main file format: InDesign users receive `.indd` files. DesignCraft now imports them through indd-utils.
+  Fidelity still needs measurement on a real-file corpus.
 - No comparison of composition against InDesign exists, so typographic fidelity is unproven.
 
 ## Features by area
@@ -216,7 +216,7 @@ table is the one summed.
 | Tables | 100% | 55% | 25–40 | anchored objects in cells not drawn (#163); Table ▸ Table Options submenus, Edit Header/Footer |
 | Long documents | 100% | 45% | 30–50 | Books are shallow (sync, book pagination, book PDF/TOC/index); Table of Contents Styles |
 | Interactivity & digital | 100% | 40% | 30–50 | HTML export basic (#314); fixed-layout EPUB is page images; no animation, timing, media playback |
-| Output & production | 92% | 55% | 40–70 | PDF/X-4 only (no X-1a/X-3), with visible unembedded font detection (below); no PDF/print presets or `.joboptions`, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
+| Output & production | 92% | 55% | 40–70 | PDF/X-4 (with visible unembedded font detection) and PDF/X-1a:2003; PDF/X-3 and Adobe `.joboptions` pending, print via craft-print (CUPS/Windows), no trapping; Output Preview panel |
 | XML & automation | 100% | 35% | (ecosystem dimension) | no ExtendScript/UXP; XML structure depth |
 | View & navigation | 100% | 65% | 10–20 | Navigator, display badges, Show/Hide extras (content grabber, live corners) |
 | Undo, history, saving | 100% | 70% | 5–10 | Undo/Redo name the action |
@@ -478,6 +478,8 @@ Task notes that headed ROADMAP.md:
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-17 | patch | PDF export summaries include the shipped PDF/X-1a:2003 standard (#2909) |
+| 2026-11-17 | patch | IDML warnings reflect open issues and the remaining real-file corpus gap (#2908) |
 | 2026-11-15 | minor | Correct Stability evidence to reflect the existing PR quality gate; readiness, factors and hours unchanged |
 | 2026-11-04 | minor | Localization evidence: 15 translations beyond English, pt-BR ~100%; readiness and hours unchanged |
 | 2026-10-19 | minor | Output assessment records visible unembedded font detection in PDF/X-4 export and `validate-pdf`, the invisible-text exemption, incomplete-check reporting at the operation and nesting-depth limits, and remaining placed-PDF font repair (#909); readiness and hours unchanged |

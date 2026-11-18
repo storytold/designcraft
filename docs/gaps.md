@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** patch (IDML warnings reflect open issues and the remaining real-file corpus gap (#2908)) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -55,13 +55,11 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 ### 3. IDML round-trip isn't proven on real files (FF)
 - **Missing:** a corpus test of real InDesign-authored IDML (via `storytold/photocraft-corpus` or
-  a sibling) measuring what survives import → export → reopen in InDesign. Open bugs: frames not
-  rendered without a warning (#193), `$ID/` font names reported missing (#338), no
-  `PDFAttribute` on export (#339), drag-drop open of IDML on the app icon (#211).
+  a sibling) measuring what survives import → export → reopen in InDesign. One known bug is that some text frames
+  fail to render without a warning (#193).
 - **Evidence:** importer coverage is broad (styles, tables, footnotes, xrefs, index, CJK, Arabic,
   verified in InDesign 2026 with synthetic files), but nothing is measured on real documents.
-- **Impact:** IDML is the main interchange format until INDD lands, and the only one that goes
-  back to InDesign.
+- **Impact:** IDML is the interchange format for sending a layout back to InDesign.
 - **Estimate:** 60–100 h (corpus, metric, fixes).
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 
@@ -282,6 +280,7 @@ Cue. These are excluded from every percentage.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-17 | patch | IDML warnings reflect open issues and the remaining real-file corpus gap (#2908) |
 | 2026-11-15 | trivial | Gap 7 closed: the quality gate already runs on every pull request and push to main (#1352) |
 | 2026-11-14 | minor | Gaps 19 and 20 shrunk: placed files are linked with proxies and a hash (save format 5); multi-image place cursor, grid and contact sheet |
 | 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
