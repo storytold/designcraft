@@ -1288,7 +1288,7 @@ fn many_overrides_pair_with_their_own_copies() {
         let mut copy = parent.clone();
         copy.id = ItemId(d.alloc());
         copy.overrides = Some(parent.id);
-        copies.push(format!("u{:x}", copy.id.0));
+        copies.push((format!("u{:x}", parent.id.0), format!("u{:x}", copy.id.0)));
         std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].overridden.push(parent.id);
         std::sync::Arc::make_mut(&mut d.parents[ppi]).items.push(std::sync::Arc::new(parent));
         std::sync::Arc::make_mut(&mut d.spreads[0]).items.push(std::sync::Arc::new(copy));
@@ -1297,7 +1297,7 @@ fn many_overrides_pair_with_their_own_copies() {
     let list = spreads.split("OverrideList=\"").nth(1).and_then(|l| l.split('"').next()).unwrap_or_default();
     let ids: Vec<&str> = list.split_whitespace().collect();
     assert_eq!(ids.len(), 2 * n);
-    assert!(ids.chunks(2).zip(&copies).all(|(pair, copy)| pair[1] == copy), "each parent item pairs with its own copy");
+    assert!(ids.chunks(2).zip(&copies).all(|(pair, (p, c))| pair[0] == p && pair[1] == c), "each parent item pairs with its own copy");
 }
 
 #[test]
