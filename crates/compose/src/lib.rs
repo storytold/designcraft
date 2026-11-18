@@ -2168,6 +2168,12 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         return LineFit::Restart(pi);
     }
     if fits {
+        // A reference numbered for the page its paragraph started on, landing on a later one:
+        // lay the paragraph again so it is numbered on its own page (#2969).
+        if notes.moved_unit(doc, &line_notes, f.page) {
+            rewind(pi, snaps, note_snaps, notes, out, cur, list_counter, force_col, line_cap, no_hyph);
+            return LineFit::Restart(pi);
+        }
         return LineFit::Ready(line_notes);
     }
     if cur.can_next_sub() {

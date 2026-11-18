@@ -70,11 +70,27 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
+/// The unit footnote numbers restart in (page, spread or section start) for a frame on `page`.
+fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+    page.and_then(|p| match doc.footnote_options.restart {
+        NoteRestart::Never => None,
+        NoteRestart::Page => Some(p),
+        NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
+        NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
+    })
+}
+
 pub(crate) struct Notes {
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
     /// Number of each footnote (assigned when its paragraph is shaped).
     numbers: Vec<u32>,
+    /// The restart unit each footnote was numbered in.
+    keys: Vec<Option<usize>>,
+    /// The restart unit a reference was found to land in when its paragraph started in another
+    /// one; its paragraph is laid again so the reference is numbered where it is. Kept across
+    /// re-lays, and set once per reference, so the re-lays end.
+    landed: HashMap<usize, Option<usize>>,
     /// Next number and the restart unit (page / spread / section start) it counts in.
     pub num: u32,
     pub key: Option<usize>,
@@ -95,6 +111,8 @@ impl Notes {
         let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
         Notes {
             numbers: vec![start; refs.len()],
+            keys: vec![None; refs.len()],
+            landed: HashMap::new(),
             refs,
             num: start,
             key: None,
@@ -124,18 +142,19 @@ impl Notes {
     /// Number the references in a paragraph (shaped on `page`) and hand their labels to the shaper.
     pub fn number_refs(&mut self, doc: &Document, prange: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
         let o = &doc.footnote_options;
-        let key = page.and_then(|p| match o.restart {
-            NoteRestart::Never => None,
-            NoteRestart::Page => Some(p),
-            NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
-            NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
-        });
+        let para_key = restart_key(doc, page);
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
         for k in a..b {
+            // A reference in a paragraph that runs on from an earlier page counts on the page it
+            // lands on (#2969).
+            let key = self.landed.get(&k).copied().unwrap_or(para_key);
             if o.restart != NoteRestart::Never && key != self.key {
                 self.key = key;
                 self.num = o.start_at;
+            }
+            if let Some(slot) = self.keys.get_mut(k) {
+                *slot = key;
             }
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
@@ -143,6 +162,24 @@ impl Notes {
         }
         sub.note_position = o.ref_position;
         sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
+    }
+
+    /// Whether a footnote of `line_notes`, placed in a frame on `page`, was numbered in another
+    /// restart unit: its paragraph started on an earlier page. Records where it landed (once per
+    /// footnote) so the paragraph can be laid again and the footnote numbered there.
+    pub fn moved_unit(&mut self, doc: &Document, line_notes: &[usize], page: Option<usize>) -> bool {
+        if doc.footnote_options.restart == NoteRestart::Never {
+            return false;
+        }
+        let landing = restart_key(doc, page);
+        let mut moved = false;
+        for &k in line_notes {
+            if self.keys.get(k).is_some_and(|&key| key != landing) && !self.landed.contains_key(&k) {
+                self.landed.insert(k, landing);
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Footnote indices referenced by a line's glyphs.
