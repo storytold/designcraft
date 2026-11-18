@@ -1137,6 +1137,73 @@ fn round_trips_overridden_parent_items() {
     assert_eq!(shown_parent + local.len(), 1);
 }
 
+/// #2896: InDesign reads a page's `OverrideList` two ids at a time, the parent item and then the
+/// item that overrides it; a list of parent items alone crashed InDesign when it opened the file.
+/// Each overridden parent item is paired with its local copy on that page, and one whose
+/// override was deleted with an id nothing else in the package uses.
+#[test]
+fn override_lists_pair_each_parent_item_with_its_override() {
+    // Page 1 on a spread of its own, pages 2 and 3 facing.
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    let (ppi, ppage) = d.parent_page_for(0).unwrap();
+    let px = d.parents[ppi].pages[ppage].x;
+    let parent = |d: &mut Document, y: f64| {
+        let id = designcraft_doc::ItemId(d.alloc());
+        let item = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(px + 40.0, y, px + 200.0, y + 60.0)));
+        d.insert_item(SpreadRef::Parent(ppi), item.clone(), None).unwrap();
+        item
+    };
+    let (kept, deleted) = (parent(&mut d, 40.0), parent(&mut d, 200.0));
+    // Each page overrides the first parent item with a copy of its own; page 1 also overrides the
+    // second and deleted its copy.
+    let mut copies = Vec::new();
+    for (si, pi) in [(0, 0), (1, 0), (1, 1)] {
+        let mut copy = kept.clone();
+        copy.id = designcraft_doc::ItemId(d.alloc());
+        copy.xf = designcraft_geom::Affine::translate((d.spreads[si].pages[pi].x - px, 0.0)) * copy.xf;
+        copy.overrides = Some(kept.id);
+        copies.push(format!("u{:x}", copy.id.0));
+        d.insert_item(SpreadRef::Doc(si), copy, None).unwrap();
+        std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi].overridden.push(kept.id);
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].overridden.push(deleted.id);
+
+    let bytes = export_idml(&d);
+    let (masters, spreads) = (zip_text(&bytes, "MasterSpreads/"), zip_text(&bytes, "Spreads/"));
+    let lists: Vec<Vec<String>> = spreads
+        .split("<Page ")
+        .skip(1)
+        .filter_map(|page| page.split("OverrideList=\"").nth(1)?.split('"').next().map(|l| l.split_whitespace().map(str::to_owned).collect()))
+        .collect();
+    assert_eq!(lists.iter().map(Vec::len).collect::<Vec<_>>(), [4, 2, 2], "pairs: {lists:?}");
+    // The element whose Self is `id` (its start tag).
+    let element = |xml: &str, id: &str| xml.split('<').find(|e| e.contains(&format!("Self=\"{id}\""))).map(str::to_owned);
+    for list in &lists {
+        for pair in list.chunks(2) {
+            assert!(element(&masters, &pair[0]).is_some(), "{} is a parent item: {list:?}", pair[0]);
+        }
+    }
+    // Each page pairs the first parent item with its own copy, which names it as the item it
+    // overrides.
+    for ((list, copy), page) in lists.iter().zip(&copies).zip(1..) {
+        assert_eq!(&list[1], copy, "page {page}: {lists:?}");
+        let e = element(&spreads, copy).unwrap_or_else(|| panic!("page {page}: {copy} is an item on the spread"));
+        assert!(e.contains(&format!("OverriddenPageItem=\"{}\"", list[0])), "page {page}: {e}");
+    }
+    // The deleted override's id is used nowhere else in the package.
+    let all = zip_text(&bytes, "");
+    let orphan = &lists[0][3];
+    assert_eq!(all.matches(orphan.as_str()).count(), 1, "{orphan} appears only in the list");
+
+    // Read back, each page lists its parent items, as before.
+    let back = import_idml(&bytes).unwrap();
+    let ids: Vec<_> = back.parents[ppi].items.iter().map(|i| i.id).collect();
+    assert_eq!(back.spreads[0].pages[0].overridden, ids);
+    assert_eq!(back.spreads[1].pages[0].overridden, ids[..1]);
+    assert_eq!(back.spreads[1].pages[1].overridden, ids[..1]);
+}
+
 #[test]
 fn uri_and_base64_helpers() {
     assert_eq!(import::uri_to_path("file:/a%20b/c.png"), "/a b/c.png");

@@ -64,10 +64,34 @@ impl<'a> Ex<'a> {
             },
         );
         let based_on = sp.parent.as_ref().and_then(|i| i.based_on);
+        // The spread's local copies of parent items: (parent item, copy, page the copy is on).
+        let mut copies = Vec::new();
+        for it in &sp.items {
+            let page = sp.page_at_x(it.bounds().center().x);
+            collect_copies(it, page, &mut copies);
+        }
+        let mut used = vec![false; copies.len()];
         for (i, pg) in sp.pages.iter().enumerate() {
             let name = if master { sp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default() } else { d.page_name(first_page + i) };
             let applied = if master { based_on } else { pg.parent };
-            let overrides: Vec<String> = pg.overridden.iter().map(|i| uid(i.0)).collect();
+            // InDesign reads OverrideList two ids at a time: the parent item, then the item that
+            // overrides it, and a list of parent items alone crashed it on open (#2896). The copy is
+            // the one on this page, else any on the spread not yet paired; a parent item whose
+            // override was deleted pairs with an id nothing else uses, as InDesign's own files do.
+            let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
+            for parent in &pg.overridden {
+                let free = |k: &usize| !used[*k] && copies[*k].0 == *parent;
+                let k = (0..copies.len()).find(|k| free(k) && copies[*k].2 == Some(i)).or_else(|| (0..copies.len()).find(free));
+                let copy = match k {
+                    Some(k) => {
+                        used[k] = true;
+                        uid(copies[k].1.0)
+                    }
+                    None => self.fresh(),
+                };
+                overrides.push(uid(parent.0));
+                overrides.push(copy);
+            }
             let pe = El::new("Page")
                 .attr("Self", uid(pg.id.0))
                 .attr("Name", name)
@@ -136,4 +160,25 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
         }
         pe.push(ge);
     }
+}
+
+/// The items in `it` (and `it` itself) that override a parent item: (parent item, item, `page`).
+/// Groups nested past 64 levels (only a hostile file has them) are not searched.
+fn collect_copies(it: &designcraft_doc::Item, page: Option<usize>, out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>) {
+    fn walk(
+        it: &designcraft_doc::Item,
+        page: Option<usize>,
+        depth: usize,
+        out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>,
+    ) {
+        if let Some(parent) = it.overrides {
+            out.push((parent, it.id, page));
+        }
+        if depth < 64 {
+            for child in it.children() {
+                walk(child, page, depth + 1, out);
+            }
+        }
+    }
+    walk(it, page, 0, out);
 }
