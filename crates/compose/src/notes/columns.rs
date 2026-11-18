@@ -41,16 +41,9 @@ pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) ->
                     continue;
                 }
                 let z = ls.get(end - 1)?;
-                let fragment_bottom = ls.get(start..end)?.iter().map(|line|y+line.baseline+line.descent).fold(0.0_f64,f64::max);
+                let fragment_bottom = ls.get(start..end)?.iter().map(|line| y + line.baseline + line.descent).fold(0.0_f64, f64::max);
                 bottom = bottom.max(fragment_bottom);
-                out.push(Fragment {
-                    note,
-                    column: col,
-                    lines: start..end,
-                    y,
-                    top: y + first.baseline - first.ascent,
-                    bottom: fragment_bottom,
-                });
+                out.push(Fragment { note, column: col, lines: start..end, y, top: y + first.baseline - first.ascent, bottom: fragment_bottom });
                 last = Some(y + z.baseline);
                 start = end;
                 if start < ls.len() {
@@ -110,7 +103,7 @@ pub(super) fn fragment(text: &Arc<ComposedStory>, range: Range<usize>) -> Arc<Co
         let last = ft.lines.get(range.end.saturating_sub(1));
         if let (Some(a), Some(z)) = (first, last) {
             let y0 = a.baseline - a.ascent;
-            let y1 = ft.lines.get(range.clone()).unwrap_or_default().iter().map(|l|l.baseline+l.descent).fold(z.baseline+z.descent,f64::max);
+            let y1 = ft.lines.get(range.clone()).unwrap_or_default().iter().map(|l| l.baseline + l.descent).fold(z.baseline + z.descent, f64::max);
             ft.range = a.range.start..z.range.end;
             ft.decos.retain_mut(|d| {
                 d.rect.y0 = d.rect.y0.max(y0);
