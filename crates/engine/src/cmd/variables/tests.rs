@@ -486,6 +486,35 @@ fn a_custom_variable_defined_with_a_number_shows_its_digits() {
     assert_eq!(shown_on_parent(&s, &d, sid), 4, "2026 shows");
 }
 
+#[test]
+fn catchword_in_a_host_with_an_anchored_story_composes() {
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, ParaFormat, SpreadRef, StoryId};
+    use designcraft_geom::Rect;
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord"})).unwrap();
+    let marker = var_char(s.doc().unwrap().doc.variable("Catchword").unwrap()).unwrap();
+    let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": format!("Host {marker}")})).unwrap();
+    let host_story = StoryId(host["story"].as_u64().unwrap());
+    let (anchored_story, anchored_frame) = s
+        .edit(|d, _| {
+            let layer = d.default_layer();
+            let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 200.0, 40.0), layer, "Anchored words", ParaFormat::default())?;
+            let item = d.item(fid).unwrap().clone();
+            d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+            d.story_mut(host_story).unwrap().insert_object(5, AnchoredObject::new(item, AnchorPosition::default()));
+            Ok((sid, fid))
+        })
+        .unwrap();
+    let d = &s.doc().unwrap().doc;
+    d.check().unwrap();
+    let composed_host = s.cache.get(d, host_story, None);
+    assert!(composed_host.frame(ItemId(host["id"].as_u64().unwrap())).is_some());
+    assert!(s.cache.get(d, anchored_story, None).frame(anchored_frame).is_some());
+    s.cache.running_index(d);
+}
+
 /// A forced frame break keeps the test's page boundary independent of installed fonts.
 fn catchword_story(s: &mut Session, y: f64, before: &str, after: &str) -> (designcraft_doc::StoryId, u64) {
     let first = s.doc().unwrap().doc.page_loc(0).unwrap().0;

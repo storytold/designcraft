@@ -51,6 +51,12 @@ type Key = (StoryId, ShownOn, bool);
 /// it.
 type Resolved = HashMap<(StoryId, bool, usize), Arc<ComposedStory>>;
 
+/// A host needing document-wide indexes is placed without them, because building them composes
+/// the stories it anchors.
+fn indexed(doc: &Document, sid: StoryId) -> bool {
+    doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)))
+}
+
 struct Entry {
     sig: Vec<usize>,
     _keep: (Arc<Story>, Arc<Styles>, Vec<Arc<Item>>, Vec<Arc<Story>>),
@@ -187,7 +193,13 @@ impl Cache {
     /// a frame on a spread.
     pub fn placement(&self, doc: &Document, sid: StoryId, fid: designcraft_doc::ItemId) -> Option<crate::Placement> {
         let mut resolved = Resolved::new();
-        let placed = crate::placed::placements(doc, sid, &mut |host| self.resolve(doc, host, true, 1, &mut resolved));
+        let placed = crate::placed::placements(doc, sid, &mut |host| {
+            if indexed(doc, host) {
+                Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
+            } else {
+                self.resolve(doc, host, true, 1, &mut resolved)
+            }
+        });
         placed.into_iter().find_map(|(id, p)| (id == fid).then_some(p))
     }
 
@@ -214,7 +226,13 @@ impl Cache {
         // Anchored frames compose where their host story places them, so the host is composed
         // first and the placements are part of the signature.
         let placed = if depth < crate::placed::MAX_DEPTH {
-            crate::placed::placements(doc, sid, &mut |host| self.resolve(doc, host, true, depth + 1, resolved))
+            crate::placed::placements(doc, sid, &mut |host| {
+                if indexed(doc, host) {
+                    Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
+                } else {
+                    self.resolve(doc, host, true, depth + 1, resolved)
+                }
+            })
         } else {
             Vec::new()
         };
@@ -421,9 +439,7 @@ impl Cache {
     /// stories' anchored objects (no cycles), and outside the cache when it needs the document-wide
     /// indexes (they compose every story).
     fn neighbour(&self, doc: &Document, sid: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
-        let indexed =
-            doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)));
-        if indexed {
+        if indexed(doc, sid) {
             Arc::new(crate::wrap::compose_among(doc, sid, &ComposeOptions::default(), &[]))
         } else {
             self.resolve(doc, sid, false, depth, resolved)
