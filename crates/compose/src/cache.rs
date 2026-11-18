@@ -272,7 +272,7 @@ impl Cache {
             format!("{:?}", doc.xref_formats).hash(&mut h);
             sig.extend([doc_signature(doc) as usize, h.finish() as usize]);
         }
-        if !story.notes.is_empty() {
+        if crate::notes::has_notes_or_tables(story) {
             // Footnote numbers continue from earlier stories; layout follows the options.
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -335,7 +335,16 @@ impl Cache {
         let (out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running, label: None, xrefs: with_xrefs.then(|| self.xref_index(doc)), placed },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running,
+                label: None,
+                xrefs: with_xrefs.then(|| self.xref_index(doc)),
+                placed,
+                notes_start: None,
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
