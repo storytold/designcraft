@@ -15,6 +15,7 @@ mod frame_grid;
 mod index_sort;
 mod liquid_guides;
 mod object_styles;
+mod override_pairs;
 mod rtl_binding;
 mod spread_rotation;
 mod variables;
@@ -1150,7 +1151,8 @@ fn override_lists_pair_each_parent_item_with_its_override() {
     let px = d.parents[ppi].pages[ppage].x;
     let parent = |d: &mut Document, y: f64| {
         let id = designcraft_doc::ItemId(d.alloc());
-        let item = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(px + 40.0, y, px + 200.0, y + 60.0)));
+        let mut item = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(px + 40.0, y, px + 200.0, y + 60.0)));
+        item.name = format!("parent-{y}");
         d.insert_item(SpreadRef::Parent(ppi), item.clone(), None).unwrap();
         item
     };
@@ -1165,6 +1167,7 @@ fn override_lists_pair_each_parent_item_with_its_override() {
         copy.id = designcraft_doc::ItemId(d.alloc());
         copy.xf = designcraft_geom::Affine::translate((d.spreads[si].pages[pi].x - px, 0.0)) * copy.xf;
         copy.overrides = Some(kept.id);
+        copy.name = format!("copy-{}", si + pi + 1);
         copies[si + pi] = format!("u{:x}", copy.id.0);
         d.insert_item(SpreadRef::Doc(si), copy, None).unwrap();
         std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi].overridden.push(kept.id);
@@ -1204,6 +1207,7 @@ fn override_lists_pair_each_parent_item_with_its_override() {
     assert_eq!(back.spreads[0].pages[0].overridden, ids);
     assert_eq!(back.spreads[1].pages[0].overridden, ids[..1]);
     assert_eq!(back.spreads[1].pages[1].overridden, ids[..1]);
+    assert_eq!(override_pairs::exported_pairs(&export_idml(&back)), override_pairs::exported_pairs(&bytes), "parent/copy pairs survive reallocation");
 }
 
 /// #2896: a copy inside a group is paired on the page under its own centre, not the group's, and a
