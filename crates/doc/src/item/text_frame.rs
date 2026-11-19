@@ -58,6 +58,9 @@ pub enum InsetEdge {
 pub struct InsetFollow {
     pub edge: InsetEdge,
     pub gap: f64,
+    /// Earlier same-page route whose composed bottom also constrains this edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<crate::ItemId>,
 }
 
 impl InsetFollow {
@@ -460,10 +463,10 @@ mod stream_tests {
     #[test]
     fn follow_inset_gap_is_bounded_and_finite() {
         for gap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 15553.0] {
-            assert!(!InsetFollow { edge: InsetEdge::End, gap }.valid());
+            assert!(!InsetFollow { edge: InsetEdge::End, gap, after: None }.valid());
         }
         for gap in [0.0, 15552.0] {
-            assert!(InsetFollow { edge: InsetEdge::Start, gap }.valid());
+            assert!(InsetFollow { edge: InsetEdge::Start, gap, after: None }.valid());
         }
     }
 
@@ -474,6 +477,13 @@ mod stream_tests {
             let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
             assert_eq!(serde_json::to_value(route).unwrap(), json);
         }
+    }
+
+    #[test]
+    fn follow_inset_after_json_roundtrip() {
+        let json = serde_json::json!({"story":8,"series":2,"followInset":{"edge":"start","gap":12.0,"after":42}});
+        let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(route).unwrap(), json);
     }
 
     #[test]

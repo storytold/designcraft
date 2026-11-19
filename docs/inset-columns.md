@@ -61,8 +61,8 @@ A route can follow the composed inset core on its host's page:
 {"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12}}}
 ```
 
-The core bottom is the greatest line baseline plus descent among the inset main text and
-commentary. `edge:"end"` caps the route's bottom at core bottom plus gap; `edge:"start"`
+The core bottom includes the inset main text, commentary, and reserved catchword rows.
+`edge:"end"` caps the route's bottom at core bottom plus gap; `edge:"start"`
 raises its top to at least that position, keeping its bottom. The frame's original area
 limits both adjustments. Set the foot frame's original top high enough to allow it to follow
 a shorter core upward. Each candidate page trial composes routes with these adjusted areas,
@@ -78,13 +78,25 @@ that edge into its local text area. Translation and positive axis-aligned scalin
 including containing-group transforms. Rotation, skew, or flipping on either frame makes
 `followInset` a no-op for that route and adds a composition warning.
 
+An optional `after` frame id raises the reference bottom to the greater of the core bottom
+and that route frame's composed bottom, before adding the gap:
+
+```json
+{"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12,"after":45}}}
+```
+
+The reference must name a route frame for the same host story on the same page, composed
+earlier in this fit. Missing frames, other pages or stories, later frames and cycles make
+the entire follow adjustment a no-op with a composition warning. Native saves preserve
+`after`; IDML warns that it loses this dependency along with the follow geometry.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
 feasibility is monotone. Search plus the progress probe has a budget of ceil(log2(keys)) + 2
 probes. The full-page key is tried first so nonmonotone feasibility cannot hide a full-page fit.
-After the midpoint search accepts a cut, remaining larger keys are checked in descending
-order within the same budget. If verification cannot finish, composition retains the best
+After the midpoint search, unprobed keys above the best fit are checked in descending
+order within the same budget, including when no fit has succeeded yet. If verification cannot finish, composition retains the best
 proven cut and reports a trial-budget warning.
 Each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
 may take a page with no main text only when it shrinks. An impossible start can overflow only
@@ -101,8 +113,8 @@ retain inset geometry and emits an explicit export warning. Deleting a series re
 entry from inset frames and moves its notes to series 0, as for ordinary stream routes.
 
 `catchwords:true` adds a generated catchword below each stream that has visible text on a later
-page. The word follows that stream's last rectangle, aligned right on right/single pages and
-left on left pages. Its 18-point row is part of the band geometry, so another stream cannot
+page. The word follows that stream's last rectangle at the paragraph's line end, left for
+right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
 and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
