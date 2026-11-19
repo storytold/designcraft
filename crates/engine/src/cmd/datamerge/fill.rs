@@ -417,6 +417,26 @@ fn fill_inner(st: &mut Story, fields: &[DataField], row: &[String], depth: usize
     }
 }
 
+/// Count markers in nested text to match the merge's depth limit.
+pub(super) fn count_nested_markers(st: &Story, counts: &mut HashMap<String, usize>, depth: usize) {
+    if depth >= MAX_NESTED_DEPTH {
+        return;
+    }
+    let mut count = |inner: &Story| {
+        for (_, _, name) in find_markers(&inner.text) {
+            *counts.entry(name).or_default() += 1;
+        }
+        count_nested_markers(inner, counts, depth + 1);
+    };
+    for table in st.tables.values() {
+        for cell in &table.cells {
+            count(&cell.text);
+        }
+    }
+    for note in st.notes.iter().chain(st.endnotes.iter()) {
+        count(&note.text);
+    }
+}
 /// Replace the markers of known fields in `st`'s own text with the record's values.
 fn fill_own(st: &mut Story, fields: &[DataField], row: &[String]) {
     let found: Vec<(usize, usize, String)> =
@@ -426,7 +446,7 @@ fn fill_own(st: &mut Story, fields: &[DataField], row: &[String]) {
     }
 }
 
-fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
+pub(super) fn find_markers(text: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     let mut i = 0;
     // The next `>>` at or after the `<<` being looked at: found once, kept until passed, so the
