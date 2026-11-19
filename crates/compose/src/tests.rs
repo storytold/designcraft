@@ -10784,6 +10784,13 @@ fn split_footnote_keeps_hold_into_wider_frame() {
         let ranges: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).map(|n| n.text.frames[0].range.clone()).collect();
         assert!(ranges.len() >= 2, "keep_last {keep_last}: the note must split: {ranges:?}");
         assert_note_parts(&cs, id, text.len());
+        d.item_mut(second).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 300.0));
+        let same_width = compose_story(&d, sid, &ComposeOptions::default());
+        let first_part = same_width.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(
+            ranges[0].end, first_part.text.frames[0].range.end,
+            "keep_last {keep_last}: a later frame's width must not change the frozen first part"
+        );
     }
 }
 
@@ -10832,10 +10839,22 @@ fn margin_series_align_to_reference_without_reserving_body_space() {
         note_series_doc(designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Outside, gap: 8.0, width: 72.0 });
     let cs = compose_story(&d, sid, &Default::default());
     let ft = &cs.frames[0];
+    assert_eq!(ft.notes.iter().filter(|n| n.series == 1).count(), 2);
     for n in ft.notes.iter().filter(|n| n.series == 1) {
         let first = n.text.frames[0].lines.first().unwrap();
+        let story = d.story(sid).unwrap();
+        let at = story
+            .text
+            .char_indices()
+            .filter(|(_, c)| *c == designcraft_doc::FOOTNOTE_REF)
+            .zip(&story.notes)
+            .find(|(_, note)| note.id == n.id)
+            .unwrap()
+            .0
+            .0;
+        let baseline = ft.lines.iter().find(|line| line.glyphs.iter().any(|g| g.byte == at && g.len > 0)).unwrap().baseline;
         assert!(
-            (n.origin.y + first.baseline - n.reference_baseline).abs() < 0.01,
+            (n.origin.y + first.baseline - baseline).abs() < 0.01,
             "origin {:?}, baseline {}, reference {}, lines {}",
             n.origin,
             first.baseline,
