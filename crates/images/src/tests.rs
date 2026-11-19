@@ -309,6 +309,53 @@ fn tiny_psd() -> Vec<u8> {
     b
 }
 
+/// `tiny_psd` with a ResolutionInfo resource of `ppi` horizontally and vertically.
+fn tiny_psd_at(ppi: u32) -> Vec<u8> {
+    tiny_psd_with_resolution(ppi, 16)
+}
+
+/// `tiny_psd` with a ResolutionInfo resource of `ppi`, its data cut to `len` bytes (16 in full).
+fn tiny_psd_with_resolution(ppi: u32, len: usize) -> Vec<u8> {
+    let mut b = tiny_psd();
+    let mut data = Vec::new();
+    for v in [ppi << 16, 0x0001_0002, ppi << 16, 0x0001_0002] {
+        data.extend(v.to_be_bytes());
+    }
+    data.truncate(len);
+    let mut res = Vec::new();
+    res.extend(b"8BIM");
+    res.extend(1005u16.to_be_bytes());
+    res.extend([0, 0]); // empty name, padded
+    res.extend((data.len() as u32).to_be_bytes());
+    res.extend(data);
+    let at = 26 + 4; // header and empty colour mode data; then the image resources length
+    b.splice(at..at + 4, (res.len() as u32).to_be_bytes());
+    b.splice(at + 4..at + 4, res);
+    b
+}
+
+/// A 300 ppi PSD places at its resolution (2 px = 0.48 pt), as in the reference app; without
+/// ResolutionInfo, or with a nonsense or incomplete one, at 72 ppi.
+#[test]
+fn psd_natural_size_follows_its_resolution() {
+    assert_eq!(natural_size(&tiny_psd()), Some((2.0, 1.0)));
+    let b = tiny_psd_at(300);
+    let (w, h) = natural_size(&b).unwrap();
+    assert!((w - 0.48).abs() < 1e-9 && (h - 0.24).abs() < 1e-9, "{w} {h}");
+    assert_eq!(raster_resolution(&b), Some((300.0, 300.0)));
+    assert_eq!(pixel_size(&b), Some((2, 1)));
+    assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
+    assert_eq!(natural_size(&tiny_psd_at(0)), Some((2.0, 1.0)));
+    assert_eq!(natural_size(&tiny_psd_at(20_000)), Some((2.0, 1.0)));
+    // ResolutionInfo is 16 bytes; a shorter one holding both resolutions is still not trusted.
+    assert!(psd::resolution(&tiny_psd_with_resolution(300, 16)).is_some());
+    assert_eq!(natural_size(&tiny_psd_with_resolution(300, 12)), Some((2.0, 1.0)));
+    // A resource length past the end of the file is ignored, not trusted.
+    let mut cut = tiny_psd_at(300);
+    cut.truncate(40);
+    assert!(psd::resolution(&cut).is_none());
+}
+
 #[test]
 fn psd_composite_decodes() {
     let b = tiny_psd();
@@ -1049,9 +1096,9 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
     assert!(!too_large_to_decode(&large));
     assert!(decode_rgba_reduced(&large, 3).is_none());
-    // One component of the same size stays under the limit.
-    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
-    assert_eq!(gray.dimensions(), (1_280, 1_100));
+    // A 1-component progressive JPEG that stays within the 512 MiB decoder buffer budget succeeds.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 4_400, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
@@ -1103,4 +1150,22 @@ fn planar_and_premultiplied_cmyk_tiffs_keep_their_inks() {
     assert_eq!(&r.cmyk[..4], &[0, 0, 0, 255]);
     let straight = &r.cmyk[4..];
     assert!(straight[0] <= 1 && straight[1] >= 254 && straight[2] >= 254 && straight[3] <= 1, "made straight: {straight:?}");
+}
+
+#[test]
+fn psd_resolution_preserves_axes_display_units_and_section_bounds() {
+    let mut bytes = tiny_psd_at(300);
+    // Resource payload begins after header, two section lengths and the resource framing.
+    let payload = 46;
+    bytes[payload + 8..payload + 12].copy_from_slice(&(150u32 << 16).to_be_bytes());
+    bytes[payload + 4..payload + 6].copy_from_slice(&2u16.to_be_bytes());
+    bytes[payload + 12..payload + 14].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    assert_eq!(natural_size(&bytes), Some((0.48, 0.48)));
+    // The same resource framing is used in PSB; display units do not rescale the values.
+    bytes[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    // Bytes beyond the declared resource section must never complete a short payload.
+    bytes[30..34].copy_from_slice(&24u32.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), None);
 }
