@@ -15,6 +15,7 @@ struct Cursor {
     first_line: Option<usize>,
     tail_pending: bool,
     catchword: Option<Rect>,
+    main_bottom: f64,
 }
 struct Trial {
     first_line: Option<usize>,
@@ -65,6 +66,8 @@ fn main_options(opts: &ComposeOptions, frames: &[FrameSpec]) -> ComposeOptions {
 }
 
 fn main_layout(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions) -> ComposedStory {
+    #[cfg(test)]
+    MAIN_LAYOUTS.with(|n| n.set(n.get() + 1));
     crate::compose(doc, story, frames, &main_options(opts, frames))
 }
 
@@ -239,6 +242,7 @@ impl Page<'_> {
                         first_line: None,
                         tail_pending: false,
                         catchword: None,
+                        main_bottom: self.frame.area.y0,
                     },
                     ratio: s.ratio,
                     finished,
@@ -433,6 +437,8 @@ impl Page<'_> {
                 let mut all = self.past.to_vec();
                 all.extend(areas.iter().cloned());
                 let cs = main_layout(self.doc, self.story, &all, self.opts);
+                let main_bottom = cs.frames.iter().filter(|f| f.frame == self.frame.id).flat_map(|f| &f.lines)
+                    .filter(|l| end(self.story, l) <= wanted).map(|l| l.baseline + l.descent).fold(self.frame.area.y0, f64::max);
                 let mut part = cs.frames.last().cloned().unwrap_or_default();
                 let next_line = part.lines.first().map(|l| end(self.story, l)).or_else(|| {
                     if let Some(last) = all.last_mut() {
@@ -466,7 +472,7 @@ impl Page<'_> {
                 Measurement {
                     height: height.min(rect.height()),
                     finished,
-                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, ..cursor.clone() },
+                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, main_bottom, ..cursor.clone() },
                     placement: FrameText::default(),
                 }
             }
@@ -484,15 +490,7 @@ impl Page<'_> {
         let mut warnings: Vec<_> = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
         let follows_core = self.routes.iter().any(|f| f.page == self.frame.page && f.opts.note_stream.is_some_and(|s| s.follow_inset.is_some()));
         let core_bottom = self.frame.opts.inset_columns.as_ref().filter(|_| follows_core).map(|_| {
-            let mut all = self.past.to_vec();
-            all.extend(c.areas.iter().cloned());
-            let replay = main_layout(self.doc, self.story, &all, self.opts);
-            replay
-                .frames
-                .iter()
-                .filter(|f| f.frame == self.frame.id)
-                .flat_map(|f| &f.lines)
-                .map(|line| line.baseline + line.descent)
+            std::iter::once(c.main_bottom)
                 .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
                     note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
                 }))
@@ -656,6 +654,7 @@ pub(crate) struct Trace {
 }
 #[cfg(test)]
 thread_local! {
+    pub(crate) static MAIN_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static REFITTED: std::cell::RefCell<Vec<designcraft_doc::ItemId>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 

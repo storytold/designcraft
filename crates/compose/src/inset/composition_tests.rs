@@ -122,6 +122,20 @@ fn no_reserved_catchword_regions_skip_lookup() {
 
 
 #[test]
+fn follow_inset_reuses_candidate_main_layout() {
+    let (mut doc, sid, routes) = routed_document(180.0);
+    super::fitting::MAIN_LAYOUTS.with(|n| n.set(0));
+    compose_story(&doc, sid, &Default::default());
+    let ordinary = super::fitting::MAIN_LAYOUTS.with(|n| n.get());
+    let follow = designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0 };
+    doc.item_mut(routes[0]).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset = Some(follow);
+    super::fitting::MAIN_LAYOUTS.with(|n| n.set(0));
+    compose_story(&doc, sid, &Default::default());
+    assert_eq!(super::fitting::MAIN_LAYOUTS.with(|n| n.get()), ordinary);
+}
+
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);
