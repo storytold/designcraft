@@ -327,16 +327,37 @@ impl<'r> Importer<'r> {
         if let Some(v) = e.prop(k) {
             return Some(v);
         }
+        self.para_chain(e).into_iter().find_map(|s| s.prop(k))
+    }
+
+    /// The paragraph styles `e` (a paragraph style or a range) inherits from: the `BasedOn` chain
+    /// of a style, the applied style of a range and its own `BasedOn` chain, nearest first (at
+    /// most 16, a style whose `BasedOn` names no style ends the chain).
+    fn para_chain<'a>(&'a self, e: &'a El) -> Vec<&'a El> {
         let style_ref = |r: String| if r.starts_with("ParagraphStyle/") { r } else { format!("ParagraphStyle/{}", names::escape_id(&r)) };
         let mut next =
             if e.local() == "ParagraphStyle" { e.prop("BasedOn") } else { e.get("AppliedParagraphStyle").map(str::to_string) }.map(style_ref);
+        let mut chain = Vec::new();
         for _ in 0..16 {
-            let Some(id) = next else { break };
-            let s = self.para_els.get(&id)?;
-            if let Some(v) = s.prop(k) {
-                return Some(v);
-            }
+            let Some(id) = next.take() else { break };
+            let Some(s) = self.para_els.get(&id) else { break };
+            chain.push(s);
             next = s.prop("BasedOn").map(style_ref);
+        }
+        chain
+    }
+
+    /// The glyph of the `GlyphWithFont` bullet `e` inherits, when that is what it inherits: the
+    /// nearest `BulletChar` of its paragraph style chain. A style that names a bullet font but no
+    /// bullet character keeps the character it inherits, and InDesign keeps a glyph one as the
+    /// glyph id it was stored as, drawn in the font the inheriting style names (#2620).
+    pub(super) fn inherited_bullet_glyph(&self, e: &El) -> Option<u32> {
+        for s in self.para_chain(e) {
+            let Some(bullet) = s.prop_el("BulletChar") else { continue };
+            if bullet.get("BulletCharacterType") != Some("GlyphWithFont") {
+                return None;
+            }
+            return bullet.get("BulletCharacterValue").and_then(|value| value.trim().parse::<u32>().ok());
         }
         None
     }

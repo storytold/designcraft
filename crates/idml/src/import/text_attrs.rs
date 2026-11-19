@@ -287,6 +287,9 @@ impl<'r> Importer<'r> {
         match list.bullet_type.as_deref() {
             Some("UnicodeOnly" | "UnicodeWithFont") => a.bullet_char = value.and_then(char::from_u32).map(|value| value.to_string()),
             Some("GlyphWithFont") => bullet_glyph = value,
+            // No bullet character of its own, but a bullet font: the character is inherited, and
+            // a glyph one is drawn in the font named here, not in the one it was read in.
+            None if list.bullet_font.is_some() || list.bullet_font_style.is_some() => bullet_glyph = self.inherited_bullet_glyph(e),
             _ => {}
         }
         a.balance_ragged = list.balance_ragged.map(|value| value.trim() != "NoBalancing" && value.trim() != "false");
@@ -358,7 +361,8 @@ impl<'r> Importer<'r> {
     /// that draws it (#2620). When the font can't be read, the default `•` in the text font
     /// stands in: `•` in a symbol font such as Webdings is an empty box. Without a font named
     /// here the font is that of the style this one is based on, and the glyph is still this
-    /// element's own; a glyph found in it keeps that font here.
+    /// element's own; a glyph found in it keeps that font here. A style that names a font but no
+    /// bullet character brings the glyph it inherits here, so that it is drawn in this font.
     fn glyph_bullet(&mut self, e: &El, gid: u32, a: &mut ParaAttrs) {
         let family = match a.bullet_font.clone() {
             Some(f) => f,
@@ -391,8 +395,9 @@ impl<'r> Importer<'r> {
                 if c.is_none() {
                     let (family, style, _) = &key;
                     let font = if style.is_empty() { family.clone() } else { format!("{family} {style}") };
-                    self.warnings
-                        .push(format!("bullet glyph {gid} of {font}: the font is not available, so the bullet is drawn as • in the text font"));
+                    self.warnings.push(format!(
+                        "bullet glyph {gid} of {font}: the font is not available or does not draw that glyph, so the bullet is drawn as • in the text font"
+                    ));
                 }
                 self.glyph_chars.insert(key.clone(), c);
                 c
