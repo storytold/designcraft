@@ -854,6 +854,30 @@ fn bmp_density_sets_natural_size() {
 }
 
 #[test]
+fn bmp_density_preserves_unrounded_axes_and_placement_policy() {
+    let mut bmp = bmp_with_ppm(11811);
+    bmp[42..46].copy_from_slice(&23622i32.to_le_bytes());
+    let (x, y) = raster_resolution(&bmp).unwrap();
+    assert!((x - 299.9994).abs() < 1e-9, "{x}");
+    assert!((y - 599.9988).abs() < 1e-9, "{y}");
+    let (w, h) = natural_size(&bmp).unwrap();
+    assert!((w - 144.000288000576).abs() < 1e-9, "{w}");
+    assert!((h - 108.000216000432).abs() < 1e-9, "{h}");
+    for (x, y) in [(1, 11811), (11811, 1), (i32::MAX, 11811), (11811, i32::MAX)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert!(raster_resolution(&bmp).is_some());
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+    for (x, y) in [(0i32, 11811i32), (-1, 11811), (11811, 0), (11811, -1)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert_eq!(raster_resolution(&bmp), None);
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+}
+
+#[test]
 fn tiff_resolution_tags_set_natural_size() {
     use tiff::encoder::colortype::Gray8;
     // A TIFF the encoder writes carries no density: pixels are points.
