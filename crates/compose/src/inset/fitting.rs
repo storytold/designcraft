@@ -496,6 +496,7 @@ impl Page<'_> {
                 .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
                     note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
                 }))
+                .chain(c.catchword.map(|rect| rect.y1))
                 .fold(self.frame.area.y0, f64::max)
         });
         let mut routes = Vec::new();

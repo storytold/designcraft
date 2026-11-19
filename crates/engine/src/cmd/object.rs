@@ -7112,6 +7112,23 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
+    fn follow_inset_start_clears_generated_catchword() {
+        let (mut s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.story_mut(sid).unwrap().insert(0, &"Main line.\n".repeat(200));
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true;
+        doc.insert_pages(Some(0), 1, None).unwrap();
+        let (si, pi) = doc.page_loc(1).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (next, _) = doc.add_text_frame(designcraft_doc::SpreadRef::Doc(si), designcraft_geom::Rect::new(x + 36.0, 36.0, x + 436.0, 736.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.thread(host, next).unwrap();
+        let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+        let bottom = cs.frame(host).unwrap().catchwords.iter().map(|c| c.rect.y1).reduce(f64::max).unwrap();
+        assert!(cs.frame(foot).unwrap().columns[0].y0 >= bottom + 12.0 - 0.01);
+    }
+
+
+    #[test]
     fn follow_inset_end_tracks_core_bottom() {
         let (s, sid, host, column, _) = follow_inset_fixture(36.0, 12.0);
         let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
