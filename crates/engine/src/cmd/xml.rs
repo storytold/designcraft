@@ -448,34 +448,115 @@ fn common_ends(a: &str, b: &str) -> (usize, usize) {
     (pre, suf)
 }
 
+/// `s` as tokens (byte ranges): runs of letters and digits, every other character on its own.
+fn tokens(s: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, c) in s.char_indices() {
+        let end = i + c.len_utf8();
+        match out.last_mut() {
+            Some(last) if c.is_alphanumeric() && last.end == i && s[last.clone()].chars().all(char::is_alphanumeric) => last.end = end,
+            _ => out.push(i..end),
+        }
+    }
+    out
+}
+
+/// Most token pairs [`hunks`] compares; longer paragraphs are one hunk between their common ends.
+const MAX_DIFF_CELLS: usize = 250_000;
+
+/// What turns `old` into `new`: (byte range of `old`, its replacement), in order, apart from each
+/// other, so text the two share between changes stays as it is (with its format).
+fn hunks<'a>(old: &str, new: &'a str) -> Vec<(std::ops::Range<usize>, &'a str)> {
+    let (mut pre, mut suf) = common_ends(old, new);
+    // Whole words: the common ends stop where a word does.
+    let alnum = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    while pre > 0 && alnum(old[..pre].chars().next_back()) && (alnum(old[pre..].chars().next()) || alnum(new[pre..].chars().next())) {
+        pre -= old[..pre].chars().next_back().map_or(1, char::len_utf8);
+    }
+    while suf > 0
+        && alnum(old[old.len() - suf..].chars().next())
+        && (alnum(old[..old.len() - suf].chars().next_back()) || alnum(new[..new.len() - suf].chars().next_back()))
+    {
+        suf -= old[old.len() - suf..].chars().next().map_or(1, char::len_utf8);
+    }
+    let (o, n) = (&old[pre..old.len() - suf], &new[pre..new.len() - suf]);
+    if o == n {
+        return Vec::new();
+    }
+    let (ot, nt) = (tokens(o), tokens(n));
+    if ot.len().saturating_mul(nt.len()) > MAX_DIFF_CELLS {
+        return vec![(pre..old.len() - suf, n)];
+    }
+    // Longest common token subsequence, from the end: `l[i][j]` for `ot[i..]` and `nt[j..]`.
+    let w = nt.len() + 1;
+    let mut l = vec![0u32; (ot.len() + 1) * w];
+    for i in (0..ot.len()).rev() {
+        for j in (0..nt.len()).rev() {
+            l[i * w + j] = if o[ot[i].clone()] == n[nt[j].clone()] { l[(i + 1) * w + j + 1] + 1 } else { l[(i + 1) * w + j].max(l[i * w + j + 1]) };
+        }
+    }
+    let (mut out, mut i, mut j) = (Vec::new(), 0, 0);
+    // The start (old, new byte offsets) of the hunk being gathered.
+    let mut open: Option<(usize, usize)> = None;
+    let at = |t: &[std::ops::Range<usize>], k: usize, len: usize| t.get(k).map_or(len, |r| r.start);
+    while i < ot.len() || j < nt.len() {
+        if i < ot.len() && j < nt.len() && o[ot[i].clone()] == n[nt[j].clone()] {
+            if let Some((os, ns)) = open.take() {
+                out.push((pre + os..pre + at(&ot, i, o.len()), &n[ns..at(&nt, j, n.len())]));
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        open.get_or_insert((at(&ot, i, o.len()), at(&nt, j, n.len())));
+        if j < nt.len() && (i == ot.len() || l[i * w + j + 1] >= l[(i + 1) * w + j]) {
+            j += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if let Some((os, ns)) = open {
+        out.push((pre + os..pre + o.len(), &n[ns..]));
+    }
+    out
+}
+
 /// Puts the paragraphs into the story in place, so the template's formatting stays: paragraph
-/// `i` replaces old paragraph `i` (only the part that differs, which takes the format of the
+/// `i` replaces old paragraph `i` (only the parts that differ, each taking the format of the
 /// first character it replaces), extra paragraphs copy the last one's formats, surplus old
-/// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays.
+/// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays, and an
+/// empty last paragraph in the XML is that one.
 fn fill_story(st: &mut Story, paras: &[(Option<String>, String)]) {
     let ranges = st.para_ranges();
     let keep_last = ranges.len() > 1 && ranges.last().is_some_and(|r| r.is_empty());
     let old_n = ranges.len() - usize::from(keep_last);
-    for (i, (_, new)) in paras.iter().enumerate() {
-        let ranges = st.para_ranges();
-        if i < old_n {
-            let r = ranges[i].clone();
-            let (pre, suf) = common_ends(&st.text[r.clone()], new);
-            let (a, b) = (r.start + pre, r.end - suf);
-            let repl = &new[pre..new.len() - suf];
+    let texts = match paras.split_last() {
+        Some((last, rest)) if keep_last && paras.len() > old_n && last.1.is_empty() => rest,
+        _ => paras,
+    };
+    // Edits inside paragraph `i` move only what follows it: from the last paragraph back, the
+    // ranges read once stay right.
+    for (i, (_, new)) in texts.iter().enumerate().take(old_n).rev() {
+        let r = ranges[i].clone();
+        let old = st.text[r.clone()].to_string();
+        for (h, repl) in hunks(&old, new).into_iter().rev() {
+            let (a, b) = (r.start + h.start, r.start + h.end);
             if a < b {
                 st.replace(a..b, repl);
             } else if !repl.is_empty() {
-                let fmt = if pre > 0 { st.char_format_at(a).clone() } else { st.format_after(a).clone() };
+                let fmt = if h.start > 0 { st.char_format_at(a).clone() } else { st.format_after(a).clone() };
                 st.insert_with(a, repl, fmt);
             }
-        } else if let Some(prev) = i.checked_sub(1).and_then(|p| ranges.get(p)) {
-            st.insert(prev.end, &format!("\n{new}"));
         }
     }
-    if old_n > paras.len() {
+    if texts.len() > old_n {
+        if let Some(prev) = st.para_ranges().get(old_n.wrapping_sub(1)).cloned() {
+            let extra: String = texts[old_n..].iter().map(|(_, t)| format!("\n{t}")).collect();
+            st.insert(prev.end, &extra);
+        }
+    } else if old_n > texts.len() {
         let ranges = st.para_ranges();
-        if let (Some(keep), Some(last)) = (paras.len().checked_sub(1).and_then(|k| ranges.get(k)), ranges.get(old_n - 1)) {
+        if let (Some(keep), Some(last)) = (texts.len().checked_sub(1).and_then(|k| ranges.get(k)), ranges.get(old_n - 1)) {
             st.delete(keep.end..last.end);
         }
     }
@@ -604,6 +685,55 @@ mod tests {
         assert_eq!(st.text, "Enthält: 300 g/L\n");
         assert_eq!(size(&st, 0), Some(20.0));
         assert_eq!(st.paras.len(), 2);
+    }
+
+    /// Two changes in one paragraph are two edits: the label between them keeps its format.
+    #[test]
+    fn import_xml_keeps_unchanged_text_between_two_changes() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "A: 300; B: 400", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 11})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        let bold = |s: &Session, at: usize| s.doc().unwrap().doc.stories[&sid].format_after(at).over.font_style.clone();
+        let label = bold(&s, 8);
+        assert!(label.is_some());
+        s.execute("file.importXml", &json!({"text": "<Root><c>A: 310; B: 410</c></Root>"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "A: 310; B: 410");
+        assert_eq!((bold(&s, 8), bold(&s, 10)), (label.clone(), label), "`B: ` stays bold");
+        assert_ne!(bold(&s, 11), bold(&s, 8), "the new number stays regular");
+    }
+
+    /// A story ending in a return exports its empty last paragraph; importing that back keeps
+    /// one return, not two.
+    #[test]
+    fn import_xml_of_mapped_paragraphs_keeps_one_trailing_return() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "a\n", "caret": false})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 2})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Body"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Body", "tag": "p"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("file.importXml", &json!({"text": x.clone()})).unwrap();
+        let text = s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text.clone();
+        assert_eq!(text, "a\n", "{x}");
+    }
+
+    #[test]
+    fn hunks_keep_shared_text_between_changes() {
+        fn h(a: &str, b: &str) -> Vec<(String, String)> {
+            super::hunks(a, b).into_iter().map(|(r, t)| (a[r].to_string(), t.to_string())).collect()
+        }
+        assert_eq!(h("A: 300; B: 400", "A: 310; B: 410"), [("300".to_string(), "310".to_string()), ("400".to_string(), "410".to_string())]);
+        assert!(h("same", "same").is_empty());
+        assert_eq!(h("Enthält: 300", "Contains: 300"), [("Enthält".to_string(), "Contains".to_string())]);
+        assert_eq!(h("ab", "ab cd"), [(String::new(), " cd".to_string())]);
     }
 
     #[test]
