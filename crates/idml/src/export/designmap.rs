@@ -234,7 +234,7 @@ fn mojikumi_table_el(t: &designcraft_doc::cjk::MojikumiTable) -> El {
 /// A `Layer` element with its colour property.
 fn layer_el(l: &designcraft_doc::Layer) -> El {
     let color = match names::layer_color_out(l.color) {
-        Some(n) => craft_idml::model::LayerColorValue::Named(n.into()),
+        Some(n) => craft_idml::model::LayerColorValue::Named(n),
         None => craft_idml::model::LayerColorValue::Rgb(l.color.map(f64::from)),
     };
     crate::xml::from_craft(
