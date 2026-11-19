@@ -16,6 +16,9 @@ const DIB_PAL_COLORS: u16 = 1;
 
 /// The largest number of colour table entries a DIB can have (8 bits per pixel).
 const MAX_PALETTE: u32 = 256;
+const BI_RGB: u32 = 0;
+const BI_RLE8: u32 = 1;
+const BI_RLE4: u32 = 2;
 const BI_BITFIELDS: u32 = 3;
 const BI_JPEG: u32 = 4;
 const BI_PNG: u32 = 5;
@@ -82,12 +85,13 @@ pub fn wmf_bitmap(b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A device-independent bitmap (`BITMAPINFOHEADER` or `BITMAPCOREHEADER`, colours, pixels) as a
-/// file, with its pixel count. `None` when the header doesn't describe a bitmap.
+/// file, with its pixel count. `None` when the header doesn't describe a bitmap, or when the bytes
+/// it describes are not all there: a truncated bitmap must not beat a complete smaller one.
 fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
     let header = u32_at(dib, 0)?;
     let (width, height, bits, compression, used, entry) = if header == 12 {
         // BITMAPCOREHEADER: 16-bit sizes, 3-byte colours.
-        (i32::from(u16_at(dib, 4)?), i32::from(u16_at(dib, 6)?), u16_at(dib, 10)?, 0, 0, 3)
+        (i32::from(u16_at(dib, 4)?), i32::from(u16_at(dib, 6)?), u16_at(dib, 10)?, BI_RGB, 0, 3)
     } else if (40..=124).contains(&header) {
         (i32_at(dib, 4)?, i32_at(dib, 8)?, u16_at(dib, 14)?, u32_at(dib, 16)?, u32_at(dib, 32)?, 4)
     } else {
@@ -99,7 +103,13 @@ fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
     let area = u64::from(width.unsigned_abs()) * u64::from(height.unsigned_abs());
     let header_len = usize::try_from(header).ok()?;
     if matches!(compression, BI_JPEG | BI_PNG) {
-        return Some((area, dib.get(header_len..)?.to_vec()));
+        // The pixels are the whole image file: it must be there, and be the kind it claims.
+        let payload = dib.get(header_len..)?;
+        let magic: &[u8] = if compression == BI_JPEG { &[0xFF, 0xD8, 0xFF] } else { b"\x89PNG" };
+        return payload.starts_with(magic).then(|| (area, payload.to_vec()));
+    }
+    if !matches!(compression, BI_RGB | BI_RLE8 | BI_RLE4 | BI_BITFIELDS) {
+        return None;
     }
     if !matches!(bits, 1 | 4 | 8 | 16 | 24 | 32) {
         return None;
@@ -111,8 +121,18 @@ fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
     };
     let masks = if header == 40 && compression == BI_BITFIELDS { 12 } else { 0 };
     let offset = BITMAPFILEHEADER_BYTES + header_len + masks + usize::try_from(colours).ok()? * entry;
-    if dib.len() <= offset - BITMAPFILEHEADER_BYTES {
-        return None;
+    let pixels = dib.get(offset - BITMAPFILEHEADER_BYTES..)?;
+    if matches!(compression, BI_RLE8 | BI_RLE4) {
+        // A run-length bitmap is shorter than its pixel count, so only its start can be checked.
+        if pixels.is_empty() {
+            return None;
+        }
+    } else {
+        // Every row is padded to 4 bytes, and a negative height is a top-down bitmap of the same size.
+        let stride = u64::from(width.unsigned_abs()).checked_mul(u64::from(bits))?.checked_add(31)? / 32 * 4;
+        if (pixels.len() as u64) < stride.checked_mul(u64::from(height.unsigned_abs()))? {
+            return None;
+        }
     }
     let size = u32::try_from(BITMAPFILEHEADER_BYTES + dib.len()).ok()?;
     let mut file = Vec::with_capacity(BITMAPFILEHEADER_BYTES + dib.len());
@@ -144,23 +164,43 @@ mod tests {
 
     /// A placeable WMF holding one META_STRETCHDIB of `dib`, then META_EOF.
     fn wmf(dib: &[u8]) -> Vec<u8> {
+        wmf_records(&[dib])
+    }
+
+    /// A placeable WMF holding one META_STRETCHDIB of each of `dibs`, then META_EOF.
+    fn wmf_records(dibs: &[&[u8]]) -> Vec<u8> {
         let mut w = PLACEABLE_KEY.to_vec();
         w.extend_from_slice(&[0; 18]);
         for v in [1u16, 9, 0x0300] {
             w.extend_from_slice(&v.to_le_bytes());
         }
         w.extend_from_slice(&[0; 12]);
-        let params = 22 + dib.len() + dib.len() % 2;
-        w.extend_from_slice(&u32::try_from((6 + params) / 2).unwrap().to_le_bytes());
-        w.extend_from_slice(&META_STRETCHDIB.to_le_bytes());
-        w.extend_from_slice(&0x00CC_0020u32.to_le_bytes());
-        w.extend_from_slice(&0u16.to_le_bytes());
-        w.extend_from_slice(&[0; 16]);
-        w.extend_from_slice(dib);
-        w.resize(w.len() + dib.len() % 2, 0);
+        for dib in dibs {
+            let params = 22 + dib.len() + dib.len() % 2;
+            w.extend_from_slice(&u32::try_from((6 + params) / 2).unwrap().to_le_bytes());
+            w.extend_from_slice(&META_STRETCHDIB.to_le_bytes());
+            w.extend_from_slice(&0x00CC_0020u32.to_le_bytes());
+            w.extend_from_slice(&0u16.to_le_bytes());
+            w.extend_from_slice(&[0; 16]);
+            w.extend_from_slice(dib);
+            w.resize(w.len() + dib.len() % 2, 0);
+        }
         w.extend_from_slice(&3u32.to_le_bytes());
         w.extend_from_slice(&META_EOF.to_le_bytes());
         w
+    }
+
+    /// A 100×100 24-bit DIB that claims its full 30,000-byte pixel buffer but holds two bytes of it.
+    fn truncated_dib() -> Vec<u8> {
+        let mut d = Vec::new();
+        for v in [40u32, 100, 100] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&24u16.to_le_bytes());
+        d.extend_from_slice(&[0; 24]);
+        d.extend_from_slice(&[0, 0]);
+        d
     }
 
     #[test]
@@ -170,6 +210,31 @@ mod tests {
         assert_eq!((rgba.width(), rgba.height()), (2, 1));
         assert_eq!(rgba.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(rgba.get_pixel(1, 0).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_truncated_bitmap_does_not_beat_a_complete_smaller_one() {
+        let big = truncated_dib();
+        assert!(wmf_bitmap(&wmf(&big)).is_none(), "a bitmap missing its pixel buffer is not readable");
+        // The complete 2×1 bitmap is drawn after the truncated one, and still wins.
+        let file = wmf_bitmap(&wmf_records(&[&big, &dib()])).unwrap();
+        let rgba = crate::decode_rgba(&file).unwrap();
+        assert_eq!((rgba.width(), rgba.height()), (2, 1));
+    }
+
+    #[test]
+    fn a_compressed_bitmap_with_no_image_is_not_readable() {
+        let mut jpeg = dib()[..40].to_vec();
+        jpeg[16..20].copy_from_slice(&BI_JPEG.to_le_bytes());
+        let mut png = jpeg.clone();
+        png[16..20].copy_from_slice(&BI_PNG.to_le_bytes());
+        assert!(wmf_bitmap(&wmf(&jpeg)).is_none(), "a header with no image is not readable");
+        assert!(wmf_bitmap(&wmf(&png)).is_none());
+        // The image must be the kind the header claims.
+        jpeg.extend_from_slice(b"\x89PNG");
+        assert!(wmf_bitmap(&wmf(&jpeg)).is_none());
+        png.extend_from_slice(b"\x89PNG");
+        assert!(wmf_bitmap(&wmf(&png)).is_some());
     }
 
     #[test]
