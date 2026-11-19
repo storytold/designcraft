@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, followInset?: {edge: end|start, gap: number (pt, finite 0..15552)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -628,7 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options",
             [],
             None,
-            "{ids?, noteStream?: {story, series} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
+            "{ids?, noteStream?: {story, series, followInset?: {edge: end|start, gap: number (pt, finite 0..15552)}} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
             has_selection_or_text,
             text_frame_options
         ),
@@ -1289,6 +1289,7 @@ pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, s
                         stories.get(&route.story).map(|host| designcraft_doc::NoteStream {
                             story: *host,
                             series: series.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
+                            ..route
                         })
                     });
                     if let Some(inset) = &mut tf.options.inset_columns {
@@ -2918,6 +2919,9 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Null) => Some(None),
         Some(v) => {
             let stream: designcraft_doc::NoteStream = serde_json::from_value(v.clone()).map_err(|e| bad(ID, format!("noteStream: {e}")))?;
+            if stream.follow_inset.is_some_and(|follow| !follow.valid()) {
+                return Err(bad(ID, "noteStream.followInset.gap must be finite and within 0..15552 pt"));
+            }
             if st.doc.story(stream.story).is_none() {
                 return Err(bad(ID, "noteStream.story must name an existing story"));
             }
@@ -7055,6 +7059,182 @@ mod frame_baseline_grid_tests {
     use super::*;
     use designcraft_doc::{FrameBaselineGrid, FrameGridRelative};
 
+    fn follow_inset_fixture(column_top: f64, foot_gap: f64) -> (Session, StoryId, ItemId, ItemId, ItemId) {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect":[36,36,436,736],"content":"text","text":"Main line.\n".repeat(12)})).unwrap();
+        let host_id = ItemId(host["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(host_id).unwrap().text_frame().unwrap().story;
+        let mut series = Vec::new();
+        for name in ["Inset", "Route"] {
+            series.push(
+                s.execute(
+                    "footnote.series.create",
+                    &json!({"name":name,"placement":"stream","refHidden":true,"separator":" ","spaceBefore":0,"spaceBetween":0}),
+                )
+                .unwrap()["id"]
+                    .as_u64()
+                    .unwrap(),
+            );
+        }
+        s.execute("textFrame.options", &json!({"ids":[host_id.0],"insetColumns":{"streams":[{"series":series[0]},{}]}})).unwrap();
+        for (id, text) in [(series[0], "Commentary line.\n".repeat(4)), (series[1], "Routed line.\n".repeat(30))] {
+            s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+            s.execute("footnote.insert", &json!({"series":id,"text":text})).unwrap();
+        }
+        let mut routes = Vec::new();
+        for (rect, edge, gap) in [(json!([450, column_top, 600, 736]), "end", 0.0), (json!([36, 36, 600, 800]), "start", foot_gap)] {
+            let frame = s.execute("frame.create", &json!({"rect":rect,"content":"text"})).unwrap();
+            let id = ItemId(frame["id"].as_u64().unwrap());
+            s.execute(
+                "textFrame.options",
+                &json!({"ids":[id.0],"noteStream":{"story":sid.0,"series":series[1],"followInset":{"edge":edge,"gap":gap}}}),
+            )
+            .unwrap();
+            routes.push(id);
+        }
+        (s, sid, host_id, routes[0], routes[1])
+    }
+
+    fn inset_ink_bottom(cs: &designcraft_compose::ComposedStory, host: ItemId) -> f64 {
+        let frame = cs.frame(host).unwrap();
+        frame
+            .lines
+            .iter()
+            .map(|l| l.baseline + l.descent)
+            .chain(
+                frame
+                    .notes
+                    .iter()
+                    .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| n.origin.y + l.baseline + l.descent))),
+            )
+            .fold(36.0, f64::max)
+    }
+
+    #[test]
+    fn follow_inset_end_tracks_core_bottom() {
+        let (s, sid, host, column, _) = follow_inset_fixture(36.0, 12.0);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!((cs.frame(column).unwrap().columns[0].y1 - inset_ink_bottom(&cs, host)).abs() < 0.01);
+    }
+
+    #[test]
+    fn follow_inset_start_tracks_core_bottom_and_gap() {
+        let (s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!((cs.frame(foot).unwrap().columns[0].y0 - inset_ink_bottom(&cs, host) - 12.0).abs() < 0.01);
+        assert!(!cs.frame(foot).unwrap().notes.is_empty());
+    }
+
+    #[test]
+    fn follow_inset_translated_scaled_route_tracks_core_in_spread_space() {
+        let (mut s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.item_mut(host).unwrap().xf = Affine::translate((0.0, 20.0)) * Affine::scale_non_uniform(1.0, 1.1);
+        doc.item_mut(foot).unwrap().xf = Affine::translate((0.0, -30.0)) * Affine::scale_non_uniform(1.0, 1.5);
+        let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+        let core_bottom = inset_ink_bottom(&cs, host) * 1.1 + 20.0;
+        let foot_top = cs.frame(foot).unwrap().columns[0].y0 * 1.5 - 30.0;
+        assert!((foot_top - core_bottom - 12.0).abs() < 0.01, "foot {foot_top}, core {core_bottom}");
+    }
+
+    #[test]
+    fn follow_inset_rotated_route_is_noop_with_diagnostic() {
+        let (mut s, sid, _, _, foot) = follow_inset_fixture(36.0, 12.0);
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.item_mut(foot).unwrap().xf = Affine::rotate(0.1);
+        let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+        assert_eq!(cs.frame(foot).unwrap().columns[0].y0, 36.0);
+        assert_eq!(cs.frame(foot).unwrap().columns[0].y1, 800.0);
+        assert!(cs.warnings.iter().any(|w| w.contains("followInset") && w.contains("transform")), "{:?}", cs.warnings);
+    }
+
+    #[test]
+    fn follow_inset_shorter_main_moves_foot_up() {
+        let (mut s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
+        let before = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+        s.execute("text.select", &json!({"story":sid.0,"anchor":6,"focus":len})).unwrap();
+        s.execute("text.insert", &json!({"text":"Short main."})).unwrap();
+        let after = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        let delta = inset_ink_bottom(&before, host) - inset_ink_bottom(&after, host);
+        assert!(delta > 1.0);
+        assert!((before.frame(foot).unwrap().columns[0].y0 - after.frame(foot).unwrap().columns[0].y0 - delta).abs() < 0.01);
+    }
+
+    #[test]
+    fn follow_inset_empty_column_continues_in_foot() {
+        let (s, sid, _, column, foot) = follow_inset_fixture(600.0, 12.0);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert_eq!(cs.frame(column).unwrap().columns[0].height(), 0.0);
+        assert!(cs.frame(column).unwrap().notes.is_empty());
+        assert!(!cs.frame(foot).unwrap().notes.is_empty());
+        assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    }
+
+    #[test]
+    fn follow_inset_empty_foot_reports_overset() {
+        let (s, sid, _, _, foot) = follow_inset_fixture(36.0, 15552.0);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert_eq!(cs.frame(foot).unwrap().columns[0].height(), 0.0);
+        assert!(cs.frame(foot).unwrap().notes.is_empty());
+        assert!(cs.is_overset());
+    }
+
+    #[test]
+    fn follow_inset_rejects_invalid_gap() {
+        let (mut s, sid, _, column, _) = follow_inset_fixture(36.0, 12.0);
+        for gap in [json!(-1.0), json!(15553.0), Value::Null] {
+            assert!(
+                s.execute(
+                    "textFrame.options",
+                    &json!({"ids":[column.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"end","gap":gap}}})
+                )
+                .is_err(),
+                "gap {gap}"
+            );
+        }
+    }
+
+    #[test]
+    fn follow_inset_native_roundtrip() {
+        let (s, _, _, column, foot) = follow_inset_fixture(36.0, 12.0);
+        let doc = &s.doc().unwrap().doc;
+        let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        for (id, edge, gap) in [(column, "end", 0.0), (foot, "start", 12.0)] {
+            let route = serde_json::to_value(back.item(id).unwrap().text_frame().unwrap().options.note_stream).unwrap();
+            assert_eq!(route["followInset"], json!({"edge":edge,"gap":gap}));
+        }
+    }
+
+    #[test]
+    fn follow_inset_idml_warning() {
+        let (s, _, _, _, _) = follow_inset_fixture(36.0, 12.0);
+        let (_, warnings) = designcraft_idml::export_idml_report(&s.doc().unwrap().doc, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("followInset")), "{warnings:?}");
+    }
+
+    #[test]
+    fn follow_inset_native_load_drops_invalid_gap() {
+        for gap in [-1.0, 15553.0] {
+            let (mut s, _, _, column, _) = follow_inset_fixture(36.0, 12.0);
+            let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            doc.item_mut(column).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset.as_mut().unwrap().gap = gap;
+            let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+            assert!(back.item(column).unwrap().text_frame().unwrap().options.note_stream.unwrap().follow_inset.is_none());
+            back.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn follow_inset_is_noop_without_same_page_inset() {
+        let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
+        s.execute("textFrame.options", &json!({"ids":[host.0],"insetColumns":null})).unwrap();
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert_eq!(cs.frame(column).unwrap().columns[0].y1, 736.0);
+        assert_eq!(cs.frame(foot).unwrap().columns[0].y0, 36.0);
+    }
+
     #[test]
     fn stream_caret_edits_host_note_and_series_deletion_clears_routes() {
         let mut s = Session::new();
@@ -7405,7 +7585,8 @@ mod stream_review_tests {
         .unwrap();
         assert!(s.execute("textFrame.options", &json!({"ids":[route.0],"noteStream":{"story":host.0,"series":0}})).is_err());
         let mut doc = (*s.doc().unwrap().doc).clone();
-        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: host, series: 0 });
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: host, series: 0, follow_inset: None });
         assert!(doc.check().is_err(), "native input must reject the same unsupported route");
     }
 
@@ -7492,7 +7673,8 @@ mod stream_review_tests {
         });
         let note = src.story_mut(sid).unwrap().insert_note(0, "Comment", Default::default()).unwrap();
         src.story_mut(sid).unwrap().note_mut(note).unwrap().series = 1;
-        src.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 1 });
+        src.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 1, follow_inset: None });
         let mut dst = Document::new(&Default::default());
         dst.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Existing".into(), options: Default::default() });
         let ids = duplicate_from(&mut dst, &src, &[route, host], SpreadRef::Doc(0), Vec2::ZERO).unwrap();

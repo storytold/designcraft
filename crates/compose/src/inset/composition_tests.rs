@@ -77,7 +77,8 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
     let mut routes = Vec::new();
     for rect in [Rect::new(640.0, 36.0, 670.0, 36.0 + height), Rect::new(36.0, 600.0, 636.0, 600.0 + height)] {
         let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), rect, doc.default_layer(), "", Default::default()).unwrap();
-        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 2 });
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
         routes.push(id);
     }
     let story = doc.story_mut(sid).unwrap();

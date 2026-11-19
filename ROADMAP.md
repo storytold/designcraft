@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+
 - **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
 
 - **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).

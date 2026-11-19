@@ -140,6 +140,10 @@ pub(crate) fn fit_stream_page_for(
         let mut next = 0;
         for (fi, frame) in input.areas.iter().enumerate().filter(|(_, f)| f.opts.note_stream.is_some_and(|s| s.series == series)) {
             for (ci, area) in frame.columns().iter().enumerate() {
+                // An inset-follow edge can close an area; even forced starts must skip it.
+                if area.height() <= 0.0 || area.width() <= 0.0 {
+                    continue;
+                }
                 let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
                 if opts.note_bands {
                     notes.band_previous = placed_parts(doc, story, &notes, input.areas, true)

@@ -1380,7 +1380,8 @@ impl Document {
             }
             let Some(stream) = tf.options.note_stream else { continue };
             let own = self.story(tf.story).ok_or(DocError::NoStory(tf.story))?;
-            if self.story(stream.story).is_none()
+            if stream.follow_inset.is_some_and(|follow| !follow.valid())
+                || self.story(stream.story).is_none()
                 || (stream.series != 0 && !self.note_series.iter().any(|series| series.id == stream.series))
                 || tf.story == stream.story
                 || tf.options.path.is_some()

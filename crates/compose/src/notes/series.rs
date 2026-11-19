@@ -346,7 +346,8 @@ mod tests {
             .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), doc.default_layer(), "", Default::default())
             .unwrap();
         doc.footnote_options.placement = NotePlacement::Stream;
-        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: sid, series: 0 });
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 0, follow_inset: None });
         doc.story_mut(sid).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
         let story = doc.story(sid).unwrap();
         let frames = crate::frame_specs(&doc, sid);

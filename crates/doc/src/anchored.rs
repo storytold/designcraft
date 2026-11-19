@@ -367,6 +367,7 @@ impl Document {
                             (Some(ids), Some(src)) => ids.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
                             _ => route.series,
                         },
+                        ..route
                     })
                 });
                 if let (Some(inset), Some(ids), Some(src)) = (&mut tf.options.inset_columns, &series, source) {
@@ -611,7 +612,7 @@ mod tests {
         source.story_mut(host).unwrap().note_mut(note).unwrap().series = 1;
         for (story, index) in [(container, 0), (root, 1)] {
             Arc::make_mut(&mut source.story_mut(story).unwrap().objects[index]).item.text_frame_mut().unwrap().options.note_stream =
-                Some(crate::NoteStream { story: host, series: 1 });
+                Some(crate::NoteStream { story: host, series: 1, follow_inset: None });
         }
         for cross_document in [false, true] {
             let (mut destination, target) = if cross_document { doc() } else { (source.clone(), root) };

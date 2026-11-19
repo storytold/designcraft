@@ -129,7 +129,8 @@ fn overflowing_stream_text_remains_visible_below_an_offscreen_route() {
     d.footnote_options.allow_split = false;
     let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(20.0, 0.0, 120.0, 100.0), layer, "Main", Default::default()).unwrap();
     let (route, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(200.0, 0.0, 350.0, 20.0), layer, "", Default::default()).unwrap();
-    d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream { story: host, series: 0 });
+    d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+        Some(designcraft_doc::NoteStream { story: host, series: 0, follow_inset: None });
     let text = (0..24).map(|i| format!("Comment line {i}")).collect::<Vec<_>>().join("\u{2028}");
     d.story_mut(host).unwrap().insert_note(0, &text, Default::default()).unwrap();
     let cache = Cache::new();
