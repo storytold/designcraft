@@ -177,8 +177,7 @@ fn search<T>(
     // A failed midpoint cannot rule out larger keys when feasibility is nonmonotone.
     let mut exhausted = false;
     for &key in keys.iter().rev() {
-        let Some((cut, _)) = &best else { break };
-        if key <= *cut {
+        if best.as_ref().is_some_and(|(cut, _)| key <= *cut) {
             break;
         }
         if proved.contains(&key) {
@@ -934,6 +933,17 @@ pub(crate) fn compose_frames(
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    #[test]
+    fn no_success_spends_remaining_budget_on_larger_unprobed_keys() {
+        let mut probes = Vec::new();
+        let (best, used, _) = search(&[1, 2, 3, 4, 5, 6, 7], 5, |key| {
+            probes.push(key);
+            Ok((key, key == 6, key))
+        })
+        .unwrap();
+        assert_eq!(best, Some(6), "probed {probes:?}");
+        assert_eq!(used, 5);
+    }
     #[test]
     fn interior_nonmonotone_fit_checks_larger_unproved_keys_within_budget() {
         let mut probes = Vec::new();
