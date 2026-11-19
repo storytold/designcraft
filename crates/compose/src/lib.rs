@@ -5930,13 +5930,18 @@ fn foreign_ranges(
         .collect()
 }
 
-/// Leave out the hyphenation points after the glyphs that end at story bytes `at`.
+/// Leave out the hyphenation points after the glyphs that end at story bytes `at`. A glyph
+/// without bytes of its own (len 0) is part of the cluster before it and ends where that does.
 fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
     if at.is_empty() {
         return;
     }
+    let mut end = 0;
     for (h, g) in hy.iter_mut().zip(glyphs) {
-        if *h && at.contains(&(g.byte + g.len)) {
+        if g.len > 0 || end == 0 {
+            end = g.byte + g.len;
+        }
+        if *h && at.contains(&end) {
             *h = false;
         }
     }
@@ -6060,13 +6065,17 @@ fn hyphenation_points(
                     }
                 };
                 if !pts.is_empty() {
-                    // char index p → byte → the first glyph whose cluster ends at that byte. Both
-                    // indexed once per word: looking each point up by scanning was quadratic in
-                    // a long word's length.
+                    // char index p → byte → the last glyph of the cluster that ends at that byte.
+                    // A cluster's first glyph owns its bytes and the glyphs after it (len 0) are
+                    // the rest of it: a Devanagari syllable such as वि is drawn as the ि sign
+                    // before the व, so the break goes after the last of them, not between them.
+                    // Both indexed once per word: looking each point up by scanning was quadratic
+                    // in a long word's length.
                     let char_bytes: Vec<usize> = word.char_indices().map(|(bi, _)| bi).collect();
                     let mut glyph_ending_at: HashMap<usize, usize> = HashMap::new();
                     for k in (i..j).filter(|&k| glyphs[k].len > 0) {
-                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(k);
+                        let last = (k + 1..j).take_while(|&m| glyphs[m].len == 0).last().unwrap_or(k);
+                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(last);
                     }
                     for &p in pts.iter() {
                         let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
