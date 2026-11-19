@@ -157,6 +157,31 @@ mod tests {
         }
     }
 
+    /// Offers `release` and returns once its prompt is open. The updater reads the installed files
+    /// for an offer on a thread of its own. That thread sends its answer and then asks the context
+    /// the updater keeps for an immediate repaint, and the next tick opens the prompt. The test
+    /// fails when the offer opens no prompt, for example when the launcher manages this copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
+        let ctx = egui::Context::default();
+        let (answered, wait) = std::sync::mpsc::channel();
+        ctx.set_request_repaint_callback(move |info| {
+            if info.delay.is_zero() {
+                let _ = answered.send(());
+            }
+        });
+        // Keeps `ctx` for the offer's thread.
+        updater.tick(&ctx);
+        updater.offer(release);
+        assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
+        // Without its thread, the offer opens the prompt at once.
+        if !updater.prompt_open() {
+            wait.recv().unwrap();
+            updater.tick(&ctx);
+        }
+        assert!(updater.prompt_open(), "the offer opened no prompt (launcher choice: {:?})", updater.managed());
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn startup_prompt_shows_and_closes() {
@@ -169,7 +194,7 @@ mod tests {
             html_url: "https://github.com/storytold/designcraft/releases/tag/v99.0.0".into(),
             ..Default::default()
         };
-        app.updates_rt.updater.offer(release);
+        offer_and_wait(&mut app.updates_rt.updater, release);
 
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             show(&mut app, ui.ctx());
