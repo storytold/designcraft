@@ -195,7 +195,7 @@ pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64)
         parts.sort_by_key(|(index, start, _)| (*index, *start));
     }
     let text = pages.into_iter().map(|(p, parts)| (p, parts.into_iter().map(|(_, _, t)| t).collect::<Vec<_>>().join("\n") + "\n")).collect();
-    page_words(&text, None)
+    page_words(&text, doc.note_options(series).catchword_continuation.as_deref())
 }
 
 /// Catchwords for the main source, with its shown-byte count for default-source selection.

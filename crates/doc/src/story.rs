@@ -270,7 +270,7 @@ pub fn valid_catchword_continuation(text: &str) -> bool {
     text.chars().count() <= 256 && !text.chars().any(char::is_control)
 }
 
-fn deserialize_catchword_continuation<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+pub(crate) fn deserialize_catchword_continuation<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
     let value = Option::<String>::deserialize(de)?;
     if value.as_deref().is_some_and(|s| !valid_catchword_continuation(s)) {
         return Err(serde::de::Error::custom("catchwordContinuation must contain at most 256 characters and no control characters"));

@@ -7187,6 +7187,30 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
+    fn series_terminal_continuation_roundtrips_independently_of_main() {
+        let (mut s, sid, host, _, _) = follow_inset_fixture(36.0, 12.0);
+        let options = s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":"Inner terminal"})).unwrap();
+        assert_eq!(options["catchwordContinuation"], "Inner terminal");
+        s.execute("story.options", &json!({"story":sid.0,"catchwordContinuation":"Main terminal"})).unwrap();
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(loaded.note_options(1)).unwrap()["catchwordContinuation"], "Inner terminal");
+        let cs = designcraft_compose::compose_story(&loaded, sid, &Default::default());
+        let words = &cs.frame(host).unwrap().catchwords;
+        assert_eq!(words.iter().find(|c| c.series.is_none()).unwrap().source.as_ref(), "Main terminal");
+        assert_eq!(words.iter().find(|c| c.series == Some(1)).unwrap().source.as_ref(), "Inner terminal");
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("series") && w.contains("catchwordContinuation")), "{warnings:?}");
+        for bad in [json!("x".repeat(257)), json!("bad\ntext"), json!(12)] {
+            assert!(s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":bad})).is_err());
+        }
+        s.execute("footnote.series.options", &json!({"series":1,"catchwordContinuation":null})).unwrap();
+        let cleared = s.execute("footnote.series.options", &json!({"series":1})).unwrap();
+        assert!(cleared.get("catchwordContinuation").is_none());
+    }
+
+    #[test]
     fn follow_inset_after_chains_and_shorter_route_moves_it_up() {
         let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
         s.execute("textFrame.options", &json!({"ids":[column.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":0}}}))

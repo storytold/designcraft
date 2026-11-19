@@ -462,13 +462,16 @@ impl Page<'_> {
             let bottom = rect.y1 >= self.frame.area.y1 - space - 0.01;
             let future = self.options.catchwords.enabled()
                 && match series {
-                    None => wanted < self.story.text.len(),
-                    Some(id) => self
-                        .story
-                        .notes
-                        .iter()
-                        .zip(&refs)
-                        .any(|(note, at)| self.doc.note_series_id(note.series) == id && *at >= wanted && !note.text.text.is_empty()),
+                    None => wanted < self.story.text.len() || self.story.catchword_continuation.as_deref().is_some_and(|s| !s.is_empty()),
+                    Some(id) => {
+                        self.doc.note_options(id).catchword_continuation.as_deref().is_some_and(|s| !s.is_empty())
+                            || self
+                                .story
+                                .notes
+                                .iter()
+                                .zip(&refs)
+                                .any(|(note, at)| self.doc.note_series_id(note.series) == id && *at >= wanted && !note.text.text.is_empty())
+                    }
                 };
             let mut areas = cursor.areas.clone();
             let mut f = band_frame(self.frame, rect);

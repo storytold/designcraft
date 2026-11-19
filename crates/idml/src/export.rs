@@ -74,6 +74,9 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
+    if std::iter::once(&doc.footnote_options).chain(doc.note_series.iter().map(|s| &s.options)).any(|o| o.catchword_continuation.is_some()) {
+        ex.warnings.push("IDML cannot retain note-series catchwordContinuation text; export PDF for terminal series catchwords.".into());
+    }
     ex.embed_limit = embed_limit;
     if doc.placed_items().iter().any(|item| item.text_frame().and_then(|f| f.options.note_stream).is_some_and(|s| s.follow_inset.is_some())) {
         ex.warnings.push(

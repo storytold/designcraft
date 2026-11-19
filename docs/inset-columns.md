@@ -125,6 +125,11 @@ and colour at 9 points; a long word shrinks uniformly to fit its column. Alterna
 1.5 times its leading. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
+`story.options {story,catchwordContinuation:"Next excerpt"}` supplies only the main stream's
+terminal catchword. Each note series has its own optional text, set through
+`footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
+Both accept at most 256 characters without control characters; `null` clears the value.
+Native saves preserve both fields. IDML warns that it loses terminal catchword text.
 Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
