@@ -68,7 +68,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 4. Composition isn't compared with InDesign (T)
-- **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Same-page hosts share one commentary route fit. Routes can follow the inset core including its catchword row, or an earlier route's composed bottom. Optional per-stream catchwords align to the paragraph line end; see [inset-columns.md](inset-columns.md).
+- **Inset columns:** the multi-stream band rule, positioned/mirrored frame option, whole-line page fitting and incremental re-fit are implemented (#2873). Each physical page shares one commentary route fit across all host visits. Routes can follow all inset streams' catchword rows, or an earlier route's composed bottom. Optional styled catchwords align to the paragraph line end in inset streams and the final route frame of each continuing series; see [inset-columns.md](inset-columns.md).
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's

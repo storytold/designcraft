@@ -111,7 +111,8 @@ pub(crate) fn fit_stream_page_ranges(
     only: Option<u64>,
     ranges: &[Range<usize>],
 ) -> StreamPageFit {
-    fit_stream_page_dynamic(doc, story, input, before, opts, (only, ranges), |_, _, _, _| {})
+    let selected = only.map(|id| [id]);
+    fit_stream_page_dynamic(doc, story, input, before, opts, (selected.as_ref().map(|ids| ids.as_slice()), ranges), |_, _, _, _| {})
 }
 
 /// Adjust each route using already fitted predecessors, while keeping each series cursor alive.
@@ -121,7 +122,7 @@ pub(crate) fn fit_stream_page_dynamic(
     input: StreamPageInput<'_>,
     before: &StreamState,
     opts: &ComposeOptions,
-    selection: (Option<u64>, &[Range<usize>]),
+    selection: (Option<&[u64]>, &[Range<usize>]),
     mut adjust: impl FnMut(usize, &mut [FrameSpec], &[FrameText], &mut Vec<String>),
 ) -> StreamPageFit {
     let (only, ranges) = selection;
@@ -138,7 +139,7 @@ pub(crate) fn fit_stream_page_dynamic(
         .chain(input.areas)
         .filter_map(|f| f.opts.note_stream.map(|s| s.series))
         .chain(before.series.keys().copied())
-        .filter(|id| only.is_none_or(|wanted| *id == wanted) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
+        .filter(|id| only.is_none_or(|wanted| wanted.contains(id)) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
         .collect();
     ids.sort_unstable();
     ids.dedup();

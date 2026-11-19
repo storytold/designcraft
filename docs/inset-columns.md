@@ -90,6 +90,10 @@ earlier in this fit. Missing frames, other pages or stories, later frames and cy
 the entire follow adjustment a no-op with a composition warning. Native saves preserve
 `after`; IDML warns that it loses this dependency along with the follow geometry.
 
+Each physical page's routes are fitted once using all host ranges on that page, including
+a thread that returns to an earlier page. Chained followers use already fitted route bottoms.
+Copying the host and its route chain retargets `after` to the copied frames.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
@@ -124,6 +128,11 @@ remain valid in commands and native files. IDML warns that it loses styled catch
 Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
+
+The host's catchword setting also applies to routed series. Only the last route frame of
+each series on a page reserves the bottom row. Its word comes from that series' next
+visible page; a finished series has no catchword. Side notes outside a stream's horizontal
+range do not lower its catchword row. Followers clear every inset stream's catchword row.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`

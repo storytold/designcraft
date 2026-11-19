@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).
+
 - 2026-11-19: inset catchwords accept a character style and reserve rows proportional to its leading, with native persistence and an IDML loss warning (#2873).
 
 - 2026-11-19: inset routes include catchword clearance, share one fit across same-page hosts, and can follow an earlier route's composed bottom with `followInset.after` (#2873). Cut verification uses its remaining budget; catchword lookup and core measurement avoid redundant work.
