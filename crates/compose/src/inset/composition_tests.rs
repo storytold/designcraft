@@ -210,6 +210,34 @@ fn two_same_page_hosts_share_one_route_fit_including_second_host_anchor() {
 }
 
 #[test]
+fn revisited_page_routes_include_return_visit_anchor_once() {
+    let text = "Main line.\n".repeat(30);
+    let (mut doc, sid) = document(2, &text, "", "");
+    let hosts = doc.story(sid).unwrap().frames.clone();
+    for id in &hosts {
+        let item = doc.item_mut(*id).unwrap();
+        let bounds = item.bounds();
+        item.path = designcraft_geom::shapes::rectangle(Rect::new(bounds.x0, 36.0, bounds.x1, 120.0));
+        item.text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+    let (last, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(hosts[1], last).unwrap();
+    doc.item_mut(last).unwrap().text_frame_mut().unwrap().options.inset_columns =
+        doc.item(hosts[0]).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    let (route, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(640.0, 36.0, 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+        Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
+    let at = text.rfind("Main line.").unwrap();
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Return visit note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(last).unwrap().range.contains(&at));
+    assert_eq!(cs.frames.iter().filter(|f| f.frame == route).count(), 1);
+    assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == "Return visit note."));
+}
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);

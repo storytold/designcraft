@@ -97,6 +97,20 @@ pub(crate) fn fit_stream_page_for(
     opts: &ComposeOptions,
     only: Option<u64>,
 ) -> StreamPageFit {
+    let ranges = [input.main.clone()];
+    fit_stream_page_ranges(doc, story, input, before, opts, only, &ranges)
+}
+
+/// Fit the union of host visits to one physical page without consuming other pages' anchors.
+pub(crate) fn fit_stream_page_ranges(
+    doc: &Document,
+    story: &Story,
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+    only: Option<u64>,
+    ranges: &[Range<usize>],
+) -> StreamPageFit {
     let mut result = StreamPageFit {
         state: before.clone(),
         frames: input.areas.iter().map(|f| FrameText { frame: f.id, columns: f.columns(), ..Default::default() }).collect(),
@@ -131,8 +145,11 @@ pub(crate) fn fit_stream_page_for(
                 *number = previous.carry_number;
             }
         }
-        notes.number_refs(doc, input.main.clone(), Some(input.page), &mut SubstCtx::default());
-        let anchors: Vec<_> = notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && input.main.contains(at)).then_some(k)).collect();
+        for range in ranges {
+            notes.number_refs(doc, range.clone(), Some(input.page), &mut SubstCtx::default());
+        }
+        let anchors: Vec<_> =
+            notes.refs.iter().enumerate().filter_map(|(k, at)| (notes.owns(k) && ranges.iter().any(|r| r.contains(at))).then_some(k)).collect();
         if opts.note_bands {
             notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
         }

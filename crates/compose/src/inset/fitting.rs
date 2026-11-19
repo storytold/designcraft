@@ -111,6 +111,7 @@ fn fit_routes(
     input: StreamPageInput<'_>,
     before: &StreamState,
     opts: &ComposeOptions,
+    ranges: &[std::ops::Range<usize>],
 ) -> crate::StreamPageFit {
     let mut result = crate::StreamPageFit {
         state: before.clone(),
@@ -135,13 +136,14 @@ fn fit_routes(
     series.dedup();
     for id in series {
         let areas: Vec<_> = input.areas.iter().filter(|f| f.opts.note_stream.is_some_and(|s| s.series == id)).cloned().collect();
-        let fit = crate::notes::fit_stream_page_for(
+        let fit = crate::notes::fit_stream_page_ranges(
             doc,
             story,
             StreamPageInput { page: input.page, main: input.main.clone(), areas: &areas, force_starts: input.force_starts.clone() },
             before,
             opts,
             Some(id),
+            ranges,
         );
         result.state.take_series(&fit.state, id);
         result.starts_fit &= fit.starts_fit;
@@ -236,7 +238,8 @@ struct Page<'a> {
     start: usize,
     opts: &'a ComposeOptions,
     routes: &'a [FrameSpec],
-    route_start: usize,
+    route_ranges: Vec<std::ops::Range<usize>>,
+    deferred_pages: Vec<usize>,
     last_host_on_page: bool,
     prior_core: Option<f64>,
 }
@@ -490,11 +493,9 @@ impl Page<'_> {
                 let crossed = part.lines.iter().any(|l| end(self.story, l) > wanted);
                 part.lines.retain(|l| end(self.story, l) <= wanted);
                 let cut = part.lines.last().map_or(cursor.cut, |l| end(self.story, l));
-                let height = part
-                    .lines
-                    .last()
-                    .map_or(0.0, |l| (l.baseline + l.descent - rect.y0).max(0.0))
-                    .max(part.notes.iter().filter(|n| n.rect.x0 < rect.x1 && n.rect.x1 > rect.x0).map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max));
+                let height = part.lines.last().map_or(0.0, |l| (l.baseline + l.descent - rect.y0).max(0.0)).max(
+                    part.notes.iter().filter(|n| n.rect.x0 < rect.x1 && n.rect.x1 > rect.x0).map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max),
+                );
                 let finished =
                     crossed || cut >= wanted || cut >= self.story.text.len() || (part.lines.is_empty() && next_line.is_some_and(|end| end > wanted));
                 if finished {
@@ -545,8 +546,15 @@ impl Page<'_> {
             route_pages.push(page);
         }
         route_pages.retain(|p| *p != page || self.last_host_on_page);
+        route_pages.retain(|p| !self.deferred_pages.contains(p));
         // Route feasibility uses the candidate's ink bottom, before accepting its main cut.
         for route_page in route_pages {
+            let mut ranges = self.route_ranges.clone();
+            if route_page == page {
+                ranges.push(self.start..c.cut);
+            } else {
+                ranges.clear();
+            }
             let mut areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
             if route_page == page
                 && let Some(bottom) = core_bottom
@@ -573,12 +581,13 @@ impl Page<'_> {
                             self.routes,
                             StreamPageInput {
                                 page: route_page,
-                                main: self.route_start..c.cut,
+                                main: self.start..c.cut,
                                 areas: prefix,
                                 force_starts: force.then_some(self.start..c.cut),
                             },
                             &state,
                             self.opts,
+                            &ranges,
                         );
                         let spec = areas.get(previous)?;
                         let frame = fit.frames.iter().find(|f| f.frame == spec.id)?;
@@ -608,12 +617,13 @@ impl Page<'_> {
                 self.routes,
                 StreamPageInput {
                     page: route_page,
-                    main: if route_page == page { self.route_start..c.cut } else { 0..0 },
+                    main: if route_page == page { self.start..c.cut } else { 0..0 },
                     areas: &areas,
                     force_starts: (force && route_page == page).then_some(self.start..c.cut),
                 },
                 &state,
                 self.opts,
+                &ranges,
             );
             for area in &areas {
                 if let Some(route) = area.opts.note_stream {
@@ -865,19 +875,20 @@ pub(crate) fn compose_frames(
         }
         #[cfg(test)]
         REFITTED.with(|v| v.borrow_mut().push(frame.id));
-        let first_host = frames.iter().take(index).rposition(|f| f.page != frame.page).map_or(0, |i| i + 1);
-        let route_start = pages.get(first_host).map_or(start, |p| p.start);
+        let route_ranges =
+            pages.iter().enumerate().filter(|(i, _)| frames.get(*i).is_some_and(|f| f.page == frame.page)).map(|(_, p)| p.start..p.cut).collect();
+        let deferred_pages = frames.iter().skip(index + 1).filter_map(|f| f.page).collect();
         let prior_core = pages
             .iter()
             .enumerate()
-            .skip(first_host)
+            .filter(|(i, _)| frames.get(*i).is_some_and(|f| f.page == frame.page))
             .filter_map(|(i, p)| {
                 let host = frames.get(i)?;
                 host.opts.inset_columns.as_ref()?;
                 route_edge(doc, host.id, frame.id, p.core_bottom, 0.0)
             })
             .reduce(f64::max);
-        let last_host_on_page = frames.get(index + 1).is_none_or(|f| f.page != frame.page);
+        let last_host_on_page = !frames.iter().skip(index + 1).any(|f| f.page == frame.page);
         let page = Page {
             doc,
             story,
@@ -888,7 +899,8 @@ pub(crate) fn compose_frames(
             start,
             opts,
             routes: &routes,
-            route_start,
+            route_ranges,
+            deferred_pages,
             last_host_on_page,
             prior_core,
         };
@@ -983,7 +995,7 @@ pub(crate) fn compose_frames(
     trailing.dedup();
     for page in trailing {
         let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
-        let fit = fit_routes(doc, story, &routes, StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None }, &state, opts);
+        let fit = fit_routes(doc, story, &routes, StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None }, &state, opts, &[]);
         for area in &areas {
             if let Some(route) = area.opts.note_stream {
                 state.take_series(&fit.state, route.series);
