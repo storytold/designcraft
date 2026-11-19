@@ -24,7 +24,15 @@ pub(super) fn window_control_available(app: &DesignApp, id: &str) -> bool {
     app.custom_titlebar || (app.native_menu && id == "window.minimize")
 }
 
-/// Is a command enabled (for menu greying)?
+/// Nothing cloud-shaped is offered in a build with no backend connected. Browsing needs no layout
+/// open; everything else acts on one. Shared by [`enabled`] and [`menu_enabled`], which must not
+/// each keep their own copy of this and drift apart: the control channel's `enabled` and the
+/// menu's greying answer the same question for a `cloud.*` id.
+fn cloud_enabled(app: &DesignApp, id: &str) -> bool {
+    crate::cloud::available(app) && (id == "cloud.open" || app.session.active().is_some())
+}
+
+/// Is a command enabled (for menu greying, and for the control channel's own listing)?
 pub fn enabled(app: &DesignApp, id: &str) -> bool {
     if waits_for_ime(app, id) {
         return false;
@@ -35,6 +43,9 @@ pub fn enabled(app: &DesignApp, id: &str) -> bool {
     // Shared docking commands DesignCraft does not provide (native panel windows, Lock Workspace).
     if matches!(id, "window.panel.window" | "window.workspace.lock") {
         return false;
+    }
+    if id.starts_with("cloud.") {
+        return cloud_enabled(app, id);
     }
     match designcraft_engine::find_command(id) {
         Some(c) => (c.enabled)(&app.session).is_ok(),
@@ -193,6 +204,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if id.starts_with("fit.") {
         return enabled(app, "object.fit");
+    }
+    if id.starts_with("cloud.") {
+        return cloud_enabled(app, id);
     }
     // Em Space and En Space go in at an insertion point only; they do not replace selected text.
     if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {

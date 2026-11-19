@@ -440,7 +440,13 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             });
         })),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
+        download: Some(Box::new(|name: &str, bytes: &[u8]| match download(name, bytes) {
+            ok @ Ok(()) => ok,
+            Err(e) => {
+                log::error!("download of {name} failed: {e}");
+                Err(e)
+            }
+        })),
         inbox: Some(inbox),
         ..Default::default()
     }

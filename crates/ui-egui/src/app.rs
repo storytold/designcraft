@@ -51,6 +51,14 @@ impl DesignApp {
             session,
             ui: UiState::default(),
             services,
+            cloud: super::cloud::CloudFiles::new(),
+            cloud_page: None,
+            save_to_cloud: None,
+            cloud_sent: super::cloud::Sent::new(),
+            cloud_sign_in_cancel: None,
+            cloud_sign_in_was_waiting: false,
+            share: craft_ui::share::ShareDialog::new(),
+            presence: craft_ui::presence::PresenceBar::new().badges_only(),
             views: HashMap::new(),
             page_history: HashMap::new(),
             canvas: CanvasCache::new(),
@@ -297,7 +305,20 @@ impl DesignApp {
             dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
+        // The Open and Save pages, when the File menu asked for one. Below the
+        // ordinary dialogs, because egui gives the last modal of a frame the
+        // input: an alert raised while these pages are open has to be the one
+        // the user can answer.
+        super::cloud::modal(self, &ctx);
         dialogs::show(self, &ctx);
+        // Unconditional, because this is also where the share backend's
+        // answers are collected, which has to keep happening while the dialog
+        // is shut.
+        self.share.show(&ctx);
+        // Above the message box: a refused save has to be answered, and the
+        // answer decides what happens to the user's edits.
+        super::cloud::conflict_modal(self, &ctx);
+        super::cloud::track_sign_in_cancel(self);
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);

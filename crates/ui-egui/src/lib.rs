@@ -18,6 +18,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 pub mod about;
 pub mod canvas;
 pub mod chrome;
+pub mod cloud;
 pub mod control;
 pub mod credits;
 pub mod cursors;
@@ -77,8 +78,8 @@ pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
 pub use services::{
-    ClipboardChangeFn, ClipboardFn, ClipboardImage, ClipboardImageFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn,
-    WriteFn,
+    ClipboardChangeFn, ClipboardFn, ClipboardImage, ClipboardImageFn, DownloadFn, Inbox, OpenAsyncFn, OpenUrlFn, PointerFn, ReadFn, Services,
+    WindowFrameFn, WriteFn,
 };
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
@@ -169,6 +170,31 @@ pub struct DesignApp {
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
+    /// Open and Save against cloud storage: the account, the folder being
+    /// browsed, transfers in flight, and where each open layout came from.
+    /// The pages are `craft_ui`'s, so every Craft app offers the same ones.
+    /// Inert until a host connects a backend (see [`cloud`]); no host does,
+    /// in production, today.
+    pub cloud: cloud::CloudFiles,
+    /// The cloud page over the window, when one is open.
+    pub cloud_page: Option<cloud::Page>,
+    /// Save As: whether the cloud was the destination last picked. `None`
+    /// until the user has said, which is when the account's own files decide.
+    pub save_to_cloud: Option<bool>,
+    /// The layout snapshot each cloud save in flight encoded. Only DesignCraft
+    /// knows what a version of a layout is, so the pages do not hold these.
+    pub(crate) cloud_sent: cloud::Sent,
+    /// Desktop device-flow sign-in: set when a host starts a cloud worker;
+    /// the UI raises it when the user cancels the browser wait.
+    pub cloud_sign_in_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Previous frame had a device-flow browser wait (link poll with no handle).
+    pub(crate) cloud_sign_in_was_waiting: bool,
+    /// Giving other people access to this layout. The dialog is `craft-ui`'s,
+    /// so every Craft app offers the same one. Inert until a host connects a
+    /// backend, and unavailable until that service says sharing exists.
+    pub share: craft_ui::share::ShareDialog,
+    /// Who else is in this layout. Draws nothing when nobody is.
+    pub presence: craft_ui::presence::PresenceBar,
     pub views: HashMap<u64, View>,
     /// Layout ▸ Go Back / Go Forward, by view (like `views`).
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,

@@ -53,6 +53,9 @@ pub type PointerFn = Box<dyn Fn() -> Option<egui::Pos2>>;
 /// Files delivered asynchronously with their original operation and document identity.
 pub type Inbox = std::sync::Arc<std::sync::Mutex<Vec<ImportedFile>>>;
 
+/// Open a URL in the user's browser.
+pub type OpenUrlFn = Box<dyn Fn(&str)>;
+
 /// Platform services injected by the host (desktop or web). File dialogs aren't among them: the
 /// app asks for them itself and the host shows them (`DesignApp::show_file_dialogs`).
 #[derive(Default)]
@@ -88,4 +91,8 @@ pub struct Services {
     /// pointer events fills no frame: an image loads the place cursor, and other files land in the
     /// middle of the view (`canvas::drop_point`).
     pub pointer: Option<PointerFn>,
+    /// Opens a URL somewhere other than egui's own tab request. Unset, links
+    /// go through `egui::Context::open_url`, which is what the desktop and web
+    /// hosts both want. A test sets this to watch where it was sent.
+    pub open_url: Option<OpenUrlFn>,
 }

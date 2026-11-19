@@ -460,31 +460,41 @@ impl DesignApp {
             }
             self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": e})));
         } else if let Ok(result) = &r {
-            // Each warning with the frame it is about (`warningItems`), if any.
-            let items = result.get("warningItems").and_then(Value::as_array);
-            let (warnings, lines): (Vec<&str>, Vec<Value>) = result
-                .get("warnings")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .enumerate()
-                .filter_map(|(i, w)| Some((i, w.as_str()?)))
-                .filter(|(_, warning)| !warning.is_empty())
-                .map(|(i, w)| (w, json!({"text": w, "item": items.and_then(|a| a.get(i)).cloned().unwrap_or(Value::Null)})))
-                .unzip();
-            if !warnings.is_empty() {
-                self.status(format!("{file}: {}", warnings.join("; ")));
-                // Find Font, offered for the document's missing fonts, stays up: the status line
-                // keeps the warnings.
-                if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
-                    self.ui.dialog = Some(dialogs::Dialog::new(
-                        "alert",
-                        json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n"), "lines": lines}),
-                    ));
-                }
-            }
+            self.show_open_warnings(&file, result);
         }
         r
+    }
+
+    /// Put an import's warnings to the user, in the status line and an alert.
+    ///
+    /// Separate from [`Self::open_named_file`] because a document read from
+    /// cloud storage reports its own failure (the cloud pages say which file
+    /// could not be opened, and why) while still owing the user these.
+    pub(crate) fn show_open_warnings(&mut self, file: &str, result: &Value) {
+        // Each warning with the frame it is about (`warningItems`), if any.
+        let items = result.get("warningItems").and_then(Value::as_array);
+        let (warnings, lines): (Vec<&str>, Vec<Value>) = result
+            .get("warnings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(i, w)| Some((i, w.as_str()?)))
+            .filter(|(_, warning)| !warning.is_empty())
+            .map(|(i, w)| (w, json!({"text": w, "item": items.and_then(|a| a.get(i)).cloned().unwrap_or(Value::Null)})))
+            .unzip();
+        if warnings.is_empty() {
+            return;
+        }
+        self.status(format!("{file}: {}", warnings.join("; ")));
+        // Find Font, offered for the document's missing fonts, stays up: the status line
+        // keeps the warnings.
+        if self.ui.dialog.as_ref().is_none_or(|d| d.id != "findFont") {
+            self.ui.dialog = Some(dialogs::Dialog::new(
+                "alert",
+                json!({"title": "Import Warnings", "file": file, "message": warnings.join("\n"), "lines": lines}),
+            ));
+        }
     }
 
     /// Applies what the background checks of linked files found, shows the notice about images

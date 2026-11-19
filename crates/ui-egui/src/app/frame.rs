@@ -22,10 +22,43 @@ impl DesignApp {
         }
     }
 
+    /// Carry out a save the share dialog asked for, and report the outcome back.
+    ///
+    /// Split into asking and answering because the save is asynchronous. The
+    /// dialog waits, showing its own progress, until one of these arrives.
+    fn share_save(&mut self) {
+        if let Some(request) = self.share.take_save_request() {
+            // One destination today. `request.destination` names which, and is
+            // carried through so a second provider needs no change here.
+            let _ = request.destination;
+            match crate::cloud::save_as(self, "/", &request.name) {
+                Ok(_) => self.cloud.sharing_save = true,
+                Err(reason) => self.share.save_failed(reason),
+            }
+        }
+        // The backend reports by clearing `busy`. A new origin means it landed.
+        if self.cloud.sharing_save && self.cloud.busy.is_none() {
+            self.cloud.sharing_save = false;
+            match crate::cloud::origin(self) {
+                Some(origin) => {
+                    let (id, name) = (origin.entry.id.clone(), origin.entry.name.clone());
+                    self.share.saved(id, name);
+                }
+                None => {
+                    let reason = self.cloud.status.clone().unwrap_or_else(|| "the layout was not saved".to_owned());
+                    self.share.save_failed(reason);
+                }
+            }
+        }
+    }
+
     /// Work whose identity is a consumed queue item, revision or deadline.
     pub(super) fn logic_tick(&mut self, ctx: &egui::Context) {
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
+        // Answers from a connected cloud backend, and anything still in flight.
+        crate::cloud::pump(self, ctx);
+        self.share_save();
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         let _ = self.dialog_wake.set(ctx.clone());
