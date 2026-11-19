@@ -167,7 +167,7 @@ PDF backend source
 The patched hayro 0.7.1, hayro-interpret 0.7.0, hayro-syntax 0.7.2, hayro-jbig2 0.3.0,
 hayro-cmap 0.1.0 and hayro-postscript 0.1.0 are fetched from
 https://github.com/storytold/craft-libs at revision
-453b0da782ccef39be9a6dac8d27c80b553ef1cc. The first four source snapshots were transferred
+30a568b97fa2927d2217f98ba9c799bc76102144. The first four source snapshots were transferred
 from https://github.com/storytold/pdfcraft at revision
 7437bde378f43856eada40af25b983812e615e8a and re-synced to revision
 ec0a965074f376a5bf610435948e4e5184bf3299, and hayro-cmap at revision
@@ -175,7 +175,7 @@ a2ec27b4775f53c40cad3456936d9406611e3a8d, then patched in craft-libs. hayro-post
 crates.io package, patched in craft-libs. Their upstream project is
 https://github.com/LaurenzV/hayro, licensed MIT OR Apache-2.0. The snapshot retains each
 crate's upstream licence files. The patch ledger is at
-https://github.com/storytold/craft-libs/blob/453b0da782ccef39be9a6dac8d27c80b553ef1cc/vendor/README.craft-reader.md.
+https://github.com/storytold/craft-libs/blob/30a568b97fa2927d2217f98ba9c799bc76102144/vendor/README.craft-reader.md.
 Per-crate vendor/SOURCE.json files record transferred and local source hashes; asset
 origins and unchanged per-file hashes are recorded separately in ASSETS.md.
 
