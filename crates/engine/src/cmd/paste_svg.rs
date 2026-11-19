@@ -73,6 +73,21 @@ struct PastedGradient {
     at: GradientAt,
 }
 
+/// A path's fill or stroke as the SVG tree has it, where the shared scene keeps a gradient only
+/// as its first colour.
+#[derive(Clone)]
+enum Recovered {
+    Gradient(PastedGradient),
+    /// A linear gradient with coincident endpoints, which SVG paints as its last stop's colour
+    /// and opacity, not as a ramp. `first` is the stop the shared scene kept, to check that the
+    /// paint it belongs to is the one here.
+    Solid {
+        first: [u8; 3],
+        last: [u8; 3],
+        opacity: f32,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum GradientAt {
     Linear(Point, Point),
@@ -137,7 +152,7 @@ impl GradientDefs {
 }
 
 /// The fill and stroke gradients of each path the shared scene keeps, in its order.
-type PathGradients = [Option<PastedGradient>; 2];
+type PathGradients = [Option<Recovered>; 2];
 
 fn mapped(m: usvg::Transform, x: f32, y: f32) -> Point {
     let mut p = usvg::tiny_skia_path::Point::from_xy(x, y);
@@ -169,10 +184,20 @@ fn linear_end(m: usvg::Transform, g: &usvg::LinearGradient) -> Point {
     Point::new(a.x + nx * s, a.y + ny * s)
 }
 
-fn pasted_gradient(paint: &usvg::Paint, abs: usvg::Transform, defs: &mut GradientDefs) -> Option<PastedGradient> {
+fn pasted_gradient(paint: &usvg::Paint, abs: usvg::Transform, defs: &mut GradientDefs) -> Option<Recovered> {
     use designcraft_color::GradientKind;
     let (kind, base, at): (_, &usvg::BaseGradient, _) = match paint {
         usvg::Paint::LinearGradient(g) => {
+            // Coincident endpoints leave the gradient no axis to ramp along: SVG paints it as the
+            // last stop's colour, not as a ramp fitted to the object (SVG 2 §13.2.3).
+            if g.x1() == g.x2() && g.y1() == g.y2() {
+                let rgb = |s: &usvg::Stop| {
+                    let c = s.color();
+                    [c.red, c.green, c.blue]
+                };
+                let (first, last) = (g.stops().first()?, g.stops().last()?);
+                return Some(Recovered::Solid { first: rgb(first), last: rgb(last), opacity: last.opacity().get() });
+            }
             let m = abs.pre_concat(g.transform());
             (GradientKind::Linear, g, GradientAt::Linear(mapped(m, g.x1(), g.y1()), linear_end(m, g)))
         }
@@ -187,7 +212,7 @@ fn pasted_gradient(paint: &usvg::Paint, abs: usvg::Transform, defs: &mut Gradien
         }
         usvg::Paint::Color(_) | usvg::Paint::Pattern(_) => return None,
     };
-    Some(PastedGradient { def: defs.get(kind, base)?, at })
+    Some(Recovered::Gradient(PastedGradient { def: defs.get(kind, base)?, at }))
 }
 
 /// The gradients of the paths [`SvgDocument::from_tree`] keeps, in the order it keeps them: it
@@ -228,27 +253,38 @@ struct Notes {
     too_deep: bool,
 }
 
-/// A scene paint; `gradient` is the same paint's gradient read from the SVG tree.
-fn paint(p: &SvgPaint, gradient: Option<PastedGradient>, notes: &mut Notes) -> Option<Paint> {
-    let (rgb, opacity, gradient) = match p {
-        SvgPaint::Color { rgb, opacity } => (*rgb, *opacity, None),
+/// A scene paint; `recovered` is the same paint as the SVG tree has it.
+fn paint(p: &SvgPaint, recovered: Option<Recovered>, notes: &mut Notes) -> Option<Paint> {
+    match p {
+        SvgPaint::Color { rgb, opacity } => Some(Paint { rgb: *rgb, opacity: *opacity, gradient: None }),
         SvgPaint::Gradient { first_rgb, opacity } => {
             let rgb = *first_rgb.as_ref()?;
-            // The tree's gradient, when it's this one (it starts with the scene's first colour).
-            let gradient =
-                gradient.filter(|g| g.def.gradient.stops.first().is_some_and(|s| s.color == designcraft_color::Color::rgb8(rgb[0], rgb[1], rgb[2])));
-            if gradient.is_none() {
-                // Retained as its first colour.
-                notes.gradients += 1;
+            match recovered {
+                // Painted as its last stop's colour, when the pairing is this path's.
+                Some(Recovered::Solid { first, last, opacity: stop }) if first == rgb => {
+                    Some(Paint { rgb: last, opacity: opacity * stop, gradient: None })
+                }
+                // The tree's gradient, when it's this one (it starts with the scene's first colour).
+                Some(Recovered::Gradient(g)) if starts_with(&g.def.gradient, rgb) => {
+                    Some(Paint { rgb, opacity: *opacity, gradient: Some(Box::new(g)) })
+                }
+                _ => {
+                    // Retained as its first colour.
+                    notes.gradients += 1;
+                    Some(Paint { rgb, opacity: *opacity, gradient: None })
+                }
             }
-            (rgb, *opacity, gradient.map(Box::new))
         }
         SvgPaint::Pattern => {
             notes.gradients += 1;
-            return None;
+            None
         }
-    };
-    Some(Paint { rgb, opacity, gradient })
+    }
+}
+
+/// Does `g` start with the colour `rgb` (the one the shared scene kept for it)?
+fn starts_with(g: &designcraft_color::Gradient, rgb: [u8; 3]) -> bool {
+    g.stops.first().is_some_and(|s| s.color == designcraft_color::Color::rgb8(rgb[0], rgb[1], rgb[2]))
 }
 
 /// To 1/10000 pt: SVG numbers are 32-bit floats (a 1 pt stroke reads as 0.99999994).
@@ -342,9 +378,30 @@ struct PasteSwatches {
     by_rgb: HashMap<[u32; 3], String>,
     by_gradient: HashMap<String, String>,
     names: HashSet<String>,
+    /// The number to try next after "Gradient": every name below it is taken.
+    gradient_next: usize,
 }
 
 impl PasteSwatches {
+    /// A free "Gradient" name. The search resumes where the last one was given out: every name
+    /// below it is taken, so a paste of many gradients doesn't rescan them all for each one.
+    fn gradient_name(&mut self) -> String {
+        let first = self.gradient_next.max(1);
+        // Of any `names.len() + 1` names, at most `names.len()` are taken: one in this range is free.
+        let last = first.saturating_add(self.names.len());
+        for i in first..=last {
+            let name = if i == 1 { "Gradient".to_string() } else { format!("Gradient {i}") };
+            if !self.names.contains(&name) {
+                self.gradient_next = i.saturating_add(1);
+                self.names.insert(name.clone());
+                return name;
+            }
+        }
+        let name = designcraft_doc::Styles::unique_name(|n| self.names.contains(n), "Gradient");
+        self.names.insert(name.clone());
+        name
+    }
+
     /// A gradient as a key: equal gradients, equal keys.
     fn gradient_key(g: &designcraft_color::Gradient) -> String {
         format!("{g:?}")
@@ -370,7 +427,7 @@ impl PasteSwatches {
                 _ => {}
             }
         }
-        Self { by_rgb, by_gradient, names: d.swatches.iter().map(|w| w.name.clone()).collect() }
+        Self { by_rgb, by_gradient, names: d.swatches.iter().map(|w| w.name.clone()).collect(), gradient_next: 1 }
     }
 }
 
@@ -405,8 +462,7 @@ fn gradient_swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatc
     if let Some(name) = known.by_gradient.get(&def.key) {
         return name.clone();
     }
-    let name = designcraft_doc::Styles::unique_name(|n| known.names.contains(n), "Gradient");
-    known.names.insert(name.clone());
+    let name = known.gradient_name();
     known.by_gradient.insert(def.key.clone(), name.clone());
     d.swatches.push(Swatch {
         name: name.clone(),
@@ -418,29 +474,30 @@ fn gradient_swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatc
     name
 }
 
-/// A pasted fill's or stroke's swatch and gradient vector (in the item's space, which is the
-/// spread's: pasted items aren't transformed), on an object whose bounds are `b`.
-fn paint_swatch(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, p: Paint, shift: Affine, b: Rect) -> (String, Option<[f64; 4]>) {
+/// A pasted fill's or stroke's swatch, gradient vector and radial ellipse proportions (in the
+/// item's space, which is the spread's: pasted items aren't transformed).
+fn paint_swatch(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, p: Paint, shift: Affine) -> (String, Option<[f64; 4]>, Option<f64>) {
     let Some(PastedGradient { def, at }) = p.gradient.map(|g| *g) else {
-        return (swatch_for(d, known, p.rgb), None);
+        return (swatch_for(d, known, p.rgb), None, None);
     };
     let pt = |q: Point| shift * Point::new(q.x * designcraft_images::PT_PER_PX, q.y * designcraft_images::PT_PER_PX);
     let vector = match at {
         // A gradient with no length paints no ramp; it fits the object instead.
         GradientAt::Linear(a, z) => Some((pt(a), pt(z))).filter(|(a, z)| (*z - *a).hypot() > 1e-9),
-        GradientAt::Radial(c, rx, ry) => {
-            // DesignCraft's radial gradient stretches with the object's box (`Fill::radial_ellipse`):
-            // the radius that gives the SVG ellipse's area, which is the SVG ellipse itself when
-            // it has the box's proportions (an objectBoundingBox gradient).
-            let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
-            let r = (rx * ry / k).sqrt() * designcraft_images::PT_PER_PX;
+        GradientAt::Radial(c, rx, _) => {
+            // The vector's length is the horizontal radius; the aspect keeps the SVG ellipse's
+            // proportions whatever the object's box (`Fill::radial_ellipse`).
             let c = pt(c);
-            Some((c, c + designcraft_geom::Vec2::new(r, 0.0))).filter(|(a, z)| (*z - *a).hypot() > 1e-9)
+            Some((c, c + designcraft_geom::Vec2::new(rx * designcraft_images::PT_PER_PX, 0.0))).filter(|(a, z)| (*z - *a).hypot() > 1e-9)
         }
     }
     .filter(|(a, z)| [a.x, a.y, z.x, z.y].iter().all(|v| v.is_finite()))
     .map(|(a, z)| [a.x, a.y, z.x, z.y]);
-    (gradient_swatch_for(d, known, &def), vector)
+    let aspect = match at {
+        GradientAt::Radial(_, rx, ry) if vector.is_some() => Some(ry / rx).filter(|k| k.is_finite() && *k > 0.0),
+        _ => None,
+    };
+    (gradient_swatch_for(d, known, &def), vector, aspect)
 }
 
 fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<Art>, layer: designcraft_doc::LayerId, shift: Affine) -> Vec<Item> {
@@ -460,21 +517,21 @@ fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<
                 // The object's opacity: its own times the paint's. Items have no separate fill and
                 // stroke opacity, so a path with both takes the fill's (`Notes::mixed_opacity`).
                 let paint = fill.as_ref().map(|f| f.opacity).or(stroke.as_ref().map(|(c, _)| c.opacity)).unwrap_or(1.0);
-                let b = designcraft_geom::Shape::bounding_box(&path);
                 let mut it = Item::new(ItemId(d.alloc()), layer, if line { Shape::GraphicLine } else { Shape::Path }, data);
                 it.fill = match fill {
                     Some(f) => {
-                        let (swatch, gradient_vector) = paint_swatch(d, known, f, shift, b);
-                        Fill { gradient_vector, ..Fill::swatch(&swatch) }
+                        let (swatch, gradient_vector, radial_aspect) = paint_swatch(d, known, f, shift);
+                        Fill { gradient_vector, radial_aspect, ..Fill::swatch(&swatch) }
                     }
                     None => Fill::none(),
                 };
                 it.stroke = match stroke {
                     Some((c, s)) => {
-                        let (swatch, gradient_vector) = paint_swatch(d, known, c, shift, b);
+                        let (swatch, gradient_vector, radial_aspect) = paint_swatch(d, known, c, shift);
                         Stroke {
                             swatch,
                             gradient_vector,
+                            radial_aspect,
                             weight: s.width,
                             cap: s.cap,
                             join: s.join,
@@ -691,6 +748,89 @@ mod tests {
         let v = circle.fill.gradient_vector.unwrap();
         assert!(near(v[0], b.center().x) && near(v[1], b.center().y) && near(v[2] - v[0], 15.0) && near(v[3], v[1]), "{v:?} on {b:?}");
         assert!(near(b.width(), 30.0), "{b:?}");
+        assert_eq!(circle.fill.radial_aspect, Some(1.0), "a circle stays a circle");
+    }
+
+    /// SVG 2 §13.2.3: a linear gradient whose endpoints coincide paints its last stop's colour and
+    /// opacity, not a ramp fitted to the object.
+    #[test]
+    fn a_linear_gradient_with_coincident_endpoints_pastes_as_its_last_stop() {
+        use designcraft_color::{Color, swatch::SwatchValue};
+        let mut s = session();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+            <defs><linearGradient id="a" x1="50" y1="50" x2="50" y2="50"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/></linearGradient></defs>
+            <rect width="100" height="100" fill="url(#a)"/></svg>"##;
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [300, 400]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "nothing lost: {r}");
+        let st = s.doc().unwrap();
+        let it = st.doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap();
+        assert_eq!(it.fill.gradient_vector, None, "no axis, so no ramp");
+        assert_eq!(it.fill.radial_aspect, None);
+        // The last stop's colour and its half opacity, as one solid paint.
+        assert!(matches!(&st.doc.swatch(&it.fill.swatch).unwrap().value, SwatchValue::Color { color, .. } if *color == Color::rgb8(0, 0, 255)));
+        assert!((it.opacity - 0.5).abs() < 1e-6, "{}", it.opacity);
+    }
+
+    /// A circular user-space radial gradient stays a circle on a box of another shape: the SVG
+    /// ellipse's proportions travel with the paint, not the object's box.
+    #[test]
+    fn a_circular_radial_gradient_keeps_its_circle_on_a_non_square_object() {
+        let mut s = session();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+            <defs><radialGradient id="a" gradientUnits="userSpaceOnUse" cx="100" cy="50" r="40"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient></defs>
+            <rect width="200" height="100" fill="url(#a)"/></svg>"##;
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [300, 400]})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        let st = s.doc().unwrap();
+        let it = st.doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap();
+        assert_eq!(it.fill.radial_aspect, Some(1.0));
+        let b = it.bounds();
+        // 200 × 100 px is 150 × 75 pt; the box's own ellipse would be 30 × 15 pt.
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(near(b.width(), 150.0) && near(b.height(), 75.0), "{b:?}");
+        let (c, rx, ry) = it.fill.radial_ellipse(b);
+        assert!(near(rx, 30.0) && near(ry, 30.0), "{rx} {ry} on {b:?}");
+        assert!(near(c.x, b.center().x) && near(c.y, b.center().y), "{c:?} on {b:?}");
+        // It's part of the document, so it survives a save and load.
+        let saved = serde_json::to_value(&*st.doc).unwrap();
+        let back: designcraft_doc::Document = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.item(it.id).unwrap().fill.radial_aspect, Some(1.0));
+    }
+
+    /// A paste of many gradients takes one free name each, resuming the search where the last one
+    /// stopped and skipping the names the document already has.
+    #[test]
+    fn gradient_swatch_names_are_unique_and_skip_the_documents_own() {
+        use designcraft_color::{
+            Color, ColorType,
+            swatch::{Swatch, SwatchValue},
+        };
+        let mut s = session();
+        Arc::make_mut(&mut s.doc_mut().unwrap().doc).swatches.push(Swatch {
+            name: "Gradient 2".into(),
+            value: SwatchValue::Color { color: Color::rgb8(1, 2, 3), color_type: ColorType::Process },
+            locked: false,
+            named: true,
+            hidden: false,
+        });
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100">
+            <defs><linearGradient id="a"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#000"/></linearGradient>
+            <linearGradient id="b"><stop offset="0" stop-color="#00ff00"/><stop offset="1" stop-color="#000"/></linearGradient>
+            <linearGradient id="c"><stop offset="0" stop-color="#0000ff"/><stop offset="1" stop-color="#000"/></linearGradient></defs>
+            <rect width="100" height="100" fill="url(#a)"/>
+            <rect x="100" width="100" height="100" fill="url(#b)"/>
+            <rect x="200" width="100" height="100" fill="url(#c)"/></svg>"##;
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg})).unwrap();
+        assert_eq!(r["warnings"], json!([]), "{r}");
+        let st = s.doc().unwrap();
+        let added: Vec<&str> = st
+            .doc
+            .swatches
+            .iter()
+            .filter(|w| w.hidden && !w.named && matches!(w.value, SwatchValue::Gradient { .. }))
+            .map(|w| w.name.as_str())
+            .collect();
+        assert_eq!(added, ["Gradient", "Gradient 3", "Gradient 4"], "one free name each");
     }
 
     /// A non-square objectBoundingBox gradient's colours follow SVG's constant-colour lines, which
@@ -734,10 +874,13 @@ mod tests {
         let mut out = Vec::new();
         path_gradients(tree.root(), 0, MAX_DEPTH, &mut defs, &mut out);
         assert_eq!(out.len(), 3);
-        let first = out[0][0].as_ref().unwrap().def.clone();
+        let def = |g: &Option<Recovered>| match g {
+            Some(Recovered::Gradient(p)) => Arc::clone(&p.def),
+            _ => panic!("a gradient"),
+        };
+        let first = def(&out[0][0]);
         for entry in &out[1..] {
-            let def = &entry[0].as_ref().unwrap().def;
-            assert!(std::sync::Arc::ptr_eq(&first, def), "one definition for every path");
+            assert!(Arc::ptr_eq(&first, &def(&entry[0])), "one definition for every path");
         }
         assert_eq!(defs.by_hash.values().map(Vec::len).sum::<usize>(), 1);
     }

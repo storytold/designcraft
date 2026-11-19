@@ -103,22 +103,31 @@ pub(super) fn apply_gradient(s: &mut Session, p: &Value) -> Result<Value> {
             };
             let inv = d.find(*id).map(|l| d.parent_xf(&l)).zip(d.item(*id).map(|i| i.xf)).map(|(pxf, xf)| (pxf * xf).inverse());
             let Some(it) = d.item_mut(*id) else { continue };
-            // The fill's or the stroke's paint: swatch, tint, angle, vector.
-            let (swatch, tint, g_angle, g_vector) = if stroke {
-                (&mut it.stroke.swatch, &mut it.stroke.tint, &mut it.stroke.gradient_angle, &mut it.stroke.gradient_vector)
+            // The fill's or the stroke's paint: swatch, tint, angle, vector, ellipse proportions.
+            let (swatch, tint, g_angle, g_vector, g_aspect) = if stroke {
+                (
+                    &mut it.stroke.swatch,
+                    &mut it.stroke.tint,
+                    &mut it.stroke.gradient_angle,
+                    &mut it.stroke.gradient_vector,
+                    &mut it.stroke.radial_aspect,
+                )
             } else {
-                (&mut it.fill.swatch, &mut it.fill.tint, &mut it.fill.gradient_angle, &mut it.fill.gradient_vector)
+                (&mut it.fill.swatch, &mut it.fill.tint, &mut it.fill.gradient_angle, &mut it.fill.gradient_vector, &mut it.fill.radial_aspect)
             };
             *swatch = name.clone();
             *tint = 1.0;
             if let Some(a) = angle {
                 *g_angle = Some(a);
                 *g_vector = None;
+                *g_aspect = None;
             }
             if let (Some(a), Some(b), Some(inv)) = (from, to, inv) {
                 let (a, b) = (inv * a, inv * b);
                 if (b - a).hypot() > 1e-6 {
                     *g_vector = Some([a.x, a.y, b.x, b.y]);
+                    // A vector set here is the tool's own: it stretches with the box.
+                    *g_aspect = None;
                 }
             }
             if out.is_null() {

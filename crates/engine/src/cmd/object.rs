@@ -1492,16 +1492,26 @@ fn union_bounds(d: &Document, ids: &[ItemId]) -> Rect {
 }
 
 /// Transform an item's geometry in its own space: the path and the gradient vectors (fill and
-/// stroke) with it.
+/// stroke) with it, and a radial gradient's ellipse proportions with the scaling.
 pub(crate) fn bake(it: &mut Item, inner: Affine) {
     it.path.transform(inner);
     if let Some(w) = &mut it.wrap.path {
         w.transform(inner);
     }
-    for v in [&mut it.fill.gradient_vector, &mut it.stroke.gradient_vector] {
+    let [a, b, c, d, _, _] = inner.as_coeffs();
+    let (sx, sy) = (a.hypot(b), c.hypot(d));
+    for (v, aspect) in [(&mut it.fill.gradient_vector, &mut it.fill.radial_aspect), (&mut it.stroke.gradient_vector, &mut it.stroke.radial_aspect)] {
         if let Some([x0, y0, x1, y1]) = *v {
             let (a, b) = (inner * Point::new(x0, y0), inner * Point::new(x1, y1));
             *v = Some([a.x, a.y, b.x, b.y]);
+        }
+        // The vector gives the horizontal radius; the ellipse's height must scale with the
+        // transform's own.
+        if let Some(k) = *aspect
+            && sx > 1e-9
+            && sy > 1e-9
+        {
+            *aspect = Some(k * sy / sx);
         }
     }
 }
@@ -4525,6 +4535,31 @@ mod gradient_tests {
         s.execute("object.gradient", &json!({"angle": 90})).unwrap();
         assert_eq!(fill(&s).gradient_vector, None);
         assert_eq!(fill(&s).gradient_angle, Some(90.0));
+    }
+
+    /// A pasted SVG radial gradient's ellipse proportions follow the object when it's scaled, and
+    /// the Gradient Swatch tool's own vector puts the box's proportions back.
+    #[test]
+    fn a_pasted_radial_gradients_ellipse_survives_scaling() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [100, 100, 300, 200]})).unwrap();
+        let id = ItemId(r["id"].as_u64().unwrap());
+        s.execute("object.gradient", &json!({"kind": "radial", "from": [200, 150], "to": [250, 150]})).unwrap();
+        let fill = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().fill.clone();
+        // A circle on a box of another shape, as a pasted SVG gradient has it.
+        let mut f = fill(&s);
+        f.radial_aspect = Some(1.0);
+        if let Some(it) = Arc::make_mut(&mut s.doc_mut().unwrap().doc).item_mut(id) {
+            it.fill = f;
+        }
+        assert_eq!(fill(&s).radial_aspect, Some(1.0));
+        // Twice as wide and no taller: the ellipse's height is half its width.
+        s.execute("transform.scale", &json!({"ids": [id.0], "sx": 2.0, "sy": 1.0})).unwrap();
+        let k = fill(&s).radial_aspect.unwrap_or(0.0);
+        assert!((k - 0.5).abs() < 1e-9, "{k}");
+        s.execute("object.gradient", &json!({"from": [100, 150], "to": [200, 150]})).unwrap();
+        assert_eq!(fill(&s).radial_aspect, None, "the tool's vector stretches with the box");
     }
 
     #[test]

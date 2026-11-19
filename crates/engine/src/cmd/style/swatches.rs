@@ -830,6 +830,28 @@ mod radial_gradient_tests {
         let (_, rx, ry) = f.radial_ellipse(designcraft_geom::Rect::new(0.0, 0.0, 100.0, 200.0));
         assert_eq!((rx, ry), (50.0, 100.0));
     }
+
+    /// A gradient painted on a box of another shape keeps its own ellipse (a pasted SVG gradient).
+    #[test]
+    fn a_radial_aspect_takes_the_boxs_place_in_the_ellipse() {
+        let mut f = designcraft_doc::Fill::swatch("g");
+        let box_ = designcraft_geom::Rect::new(0.0, 0.0, 200.0, 100.0);
+        f.gradient_vector = Some([100.0, 50.0, 130.0, 50.0]);
+        assert_eq!(f.radial_ellipse(box_), (designcraft_geom::Point::new(100.0, 50.0), 30.0, 15.0));
+        f.radial_aspect = Some(1.0);
+        assert_eq!(f.radial_ellipse(box_), (designcraft_geom::Point::new(100.0, 50.0), 30.0, 30.0));
+        // The vector's length is the horizontal radius, measured with the box made square.
+        f.gradient_vector = Some([100.0, 50.0, 130.0, 65.0]);
+        f.radial_aspect = Some(0.5);
+        let (_, rx, ry) = f.radial_ellipse(box_);
+        assert!((rx - 30.0_f64.hypot(30.0)).abs() < 1e-9 && (ry - rx * 0.5).abs() < 1e-9, "{rx} {ry}");
+        // A document's nonsense aspect falls back to the box's, not to an endless radius.
+        f.gradient_vector = Some([100.0, 50.0, 130.0, 50.0]);
+        for bad in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            f.radial_aspect = Some(bad);
+            assert_eq!(f.radial_ellipse(box_), (designcraft_geom::Point::new(100.0, 50.0), 30.0, 15.0), "{bad}");
+        }
+    }
 }
 
 #[cfg(test)]

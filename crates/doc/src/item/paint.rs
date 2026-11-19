@@ -13,6 +13,10 @@ pub struct Fill {
     /// centre and radius point of a radial one (`None` = fit to bounds at `gradient_angle`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gradient_vector: Option<[f64; 4]>,
+    /// A radial gradient's ellipse height over its width (`None` = the object's box, as InDesign
+    /// stretches a radial gradient). A pasted SVG gradient keeps the ellipse it was drawn with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radial_aspect: Option<f64>,
     pub overprint: bool,
 }
 
@@ -27,9 +31,12 @@ impl Fill {
     /// horizontal and vertical radii. As in InDesign, a radial gradient stretches with the object's
     /// box: by default it's centred and reaches the box's sides (an ellipse in a non-square box);
     /// with a Gradient Swatch tool vector it's centred at the vector's start, and the vector's
-    /// length, measured with the box made square, sets its size.
+    /// length, measured with the box made square, sets its size. A [`Fill::radial_aspect`] takes the
+    /// box's place for the ellipse's proportions.
     pub fn radial_ellipse(&self, b: designcraft_geom::Rect) -> (designcraft_geom::Point, f64, f64) {
-        let k = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
+        let box_aspect = if b.width() > 1e-9 && b.height() > 1e-9 { b.height() / b.width() } else { 1.0 };
+        // A document is input too: a nonsense aspect falls back to the box's.
+        let k = self.radial_aspect.filter(|k| k.is_finite() && *k > 1e-9).unwrap_or(box_aspect);
         match self.gradient_vector {
             Some([x0, y0, x1, y1]) => {
                 let r = designcraft_geom::Vec2::new(x1 - x0, (y1 - y0) / k).hypot();
@@ -41,7 +48,8 @@ impl Fill {
                 let r = b.width().max(b.height()).max(1e-3) / 2.0;
                 (b.center(), r, r)
             }
-            None => (b.center(), b.width() / 2.0, b.height() / 2.0),
+            // Fitted to the box: the box's own proportions, or the paint's.
+            None => (b.center(), b.width() / 2.0, b.width() / 2.0 * k),
         }
     }
 
@@ -61,7 +69,14 @@ impl Fill {
     }
 
     pub fn none() -> Self {
-        Fill { swatch: designcraft_color::swatch::NONE.into(), tint: 1.0, gradient_angle: None, gradient_vector: None, overprint: false }
+        Fill {
+            swatch: designcraft_color::swatch::NONE.into(),
+            tint: 1.0,
+            gradient_angle: None,
+            gradient_vector: None,
+            radial_aspect: None,
+            overprint: false,
+        }
     }
     pub fn swatch(name: &str) -> Self {
         Fill { swatch: name.into(), ..Fill::none() }
@@ -304,6 +319,9 @@ pub struct Stroke {
     /// The Gradient Swatch tool's vector on the stroke, as [`Fill::gradient_vector`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gradient_vector: Option<[f64; 4]>,
+    /// A radial gradient's ellipse proportions on the stroke, as [`Fill::radial_aspect`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radial_aspect: Option<f64>,
 }
 
 impl Default for Stroke {
@@ -326,6 +344,7 @@ impl Default for Stroke {
             gap_overprint: false,
             gradient_angle: None,
             gradient_vector: None,
+            radial_aspect: None,
         }
     }
 }
@@ -339,6 +358,7 @@ impl Stroke {
             tint: self.tint,
             gradient_angle: self.gradient_angle,
             gradient_vector: self.gradient_vector,
+            radial_aspect: self.radial_aspect,
             overprint: self.overprint,
         }
     }
