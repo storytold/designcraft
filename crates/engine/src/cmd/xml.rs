@@ -226,7 +226,7 @@ fn export_xml_with(d: &Document, xrefs: Option<&designcraft_compose::xref::XrefI
             }
             Content::Graphic(g) => {
                 let name = d.assets.get(&g.asset).map(|a| a.link.clone().unwrap_or_else(|| a.name.clone())).unwrap_or_default();
-                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&name)));
+                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&href_escape(&name))));
             }
             _ => out.push_str(&format!("  <{tag}/>\n")),
         }
@@ -254,6 +254,12 @@ struct Image {
 fn image_attrs(e: &craft_xml::El) -> Option<Image> {
     let get = |name: &str| e.attr_local(name).map(str::to_string);
     get("href").map(|href| Image { href, fit: get("fit"), crop: get("crop") })
+}
+
+/// A file path as it goes into a `file://` href: `%` and spaces escaped, so [`href_path`]'s one
+/// decoding gives the path back (`rate%20.png` stays itself).
+fn href_escape(path: &str) -> String {
+    path.replace('%', "%25").replace(' ', "%20")
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -698,7 +704,15 @@ fn import_by_tag(s: &mut Session, p: &Value, text: &str, images_only: bool) -> R
     // A frame whose image failed stays free for the next element of its tag.
     let mut failed: Vec<Value> = Vec::new();
     for (tag, image) in images {
-        let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == tag && !used) else {
+        // The next free frame of the tag that can take an image: a locked one (or one on a locked
+        // layer) only when no other is left, so it doesn't hold back the frames after it.
+        let at = {
+            let d = &s.doc()?.doc;
+            let locked = |id: ItemId| d.item(id).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked));
+            let free = |(t, id, used): &&(String, ItemId, bool)| *t == tag && !used && !locked(*id);
+            image_slots.iter().position(|x| free(&x)).or_else(|| image_slots.iter().position(|(t, _, used)| *t == tag && !used))
+        };
+        let Some(slot) = at.map(|i| &mut image_slots[i]) else {
             miss(&tag);
             continue;
         };
@@ -711,6 +725,16 @@ fn import_by_tag(s: &mut Session, p: &Value, text: &str, images_only: bool) -> R
         // An unknown fit fails before anything is placed, so `failed` means not placed.
         if let Some(mode) = image.fit.as_deref().filter(|m| !super::object::fit_mode_known(m)) {
             failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, format!("unknown fit `{mode}`")).to_string()}));
+            continue;
+        }
+        // Fit leaves a locked frame (or one on a locked layer) as it is: a fit asked for there
+        // would not happen, so the image isn't placed either.
+        let locked = {
+            let d = &s.doc()?.doc;
+            d.item(frame).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked))
+        };
+        if image.fit.is_some() && locked {
+            failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, "the frame is locked, so its fit can't be applied").to_string()}));
             continue;
         }
         let done = s.execute("file.place", &place).and_then(|_| match &image.fit {
@@ -1150,6 +1174,58 @@ mod tests {
     /// A frame takes an image only once it is placed: after a failed href, the next element of
     /// the tag goes into the frame that stayed empty.
     #[cfg(not(target_arch = "wasm32"))]
+    /// Export escapes `%` and spaces in a path, import decodes them once: the path comes back.
+    #[test]
+    fn exported_hrefs_decode_to_their_path() {
+        for path in ["C:/img/rate%20.png", "/home/me/a b%.png", "plain.png"] {
+            assert_eq!(super::href_path(&format!("file://{}", super::href_escape(path)), None), path);
+        }
+    }
+
+    /// A fit asked for on a locked frame can't happen: the image is reported, not placed.
+    #[test]
+    fn a_fit_on_a_locked_frame_fails() {
+        use designcraft_doc::ItemId;
+        let dir = std::env::temp_dir().join(format!("dc-xml-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 272, 272], "content": "graphic"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [f.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [f.0]})).unwrap();
+        let xml = "<Root><photo href=\"ok.png\" fit=\"fitProportionally\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(0), "{r}");
+        assert!(r["failed"][0]["error"].as_str().is_some_and(|e| e.contains("locked")), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A locked frame doesn't hold back the next frame of its tag.
+    #[test]
+    fn a_locked_frame_leaves_the_image_to_the_next_one() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-skip-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, x: f64| {
+            ItemId(s.execute("frame.create", &json!({"rect": [x, 72.0, x + 100.0, 172.0], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (first, second) = (frame(&mut s, 72.0), frame(&mut s, 300.0));
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0, second.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [first.0]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><photo href=\"ok.png\"/></Root>", "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(1), "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(second).unwrap().content, Content::Graphic(_)), "the unlocked frame takes it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_failed_image_leaves_its_frame_to_the_next_element() {
         use designcraft_doc::{Content, ItemId};
