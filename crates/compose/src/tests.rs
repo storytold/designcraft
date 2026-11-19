@@ -2508,8 +2508,8 @@ fn table_rows_keep_with_next_row_and_start_in_the_next_frame() {
     assert!(split > 3, "the first frame holds more than three body rows: {a:?} {b:?}");
     // Keep with Next Row on rows 2 and 3: rows 2–4 move on together.
     let (a2, b2) = rows_per_frame(|t| {
-        for r in 2..=split - 1 {
-            t.rows[r].keep_with_next = true;
+        for row in &mut t.rows[2..split] {
+            row.keep_with_next = true;
         }
     });
     assert_eq!(a2, (1..2).collect::<Vec<_>>(), "{b2:?}");
