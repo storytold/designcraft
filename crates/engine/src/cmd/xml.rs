@@ -230,6 +230,11 @@ fn esc(s: &str) -> String {
     out
 }
 
+/// A story's text with its markers dropped, forced line breaks kept.
+fn plain_keep_breaks(t: &str) -> String {
+    t.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect()
+}
+
 /// Plain text of a story (markers dropped, forced breaks as newlines).
 fn plain(t: &str) -> String {
     t.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).map(|c| if c == '\u{2028}' { '\n' } else { c }).collect()
@@ -244,6 +249,27 @@ fn style_element(style: &str) -> String {
     n
 }
 
+/// Character style name → its element name: [`style_element`], with `_2`, `_3`, … after a name an
+/// earlier style (in the styles' order) has already, so each style keeps its own element and
+/// import finds the style again.
+type StyleNames = std::collections::HashMap<String, String>;
+
+fn style_names(d: &Document) -> StyleNames {
+    let mut used = std::collections::HashSet::new();
+    let mut out = StyleNames::new();
+    for c in &d.styles.character {
+        let base = style_element(&c.name);
+        let mut name = base.clone();
+        let mut k = 1;
+        while !used.insert(name.clone()) {
+            k += 1;
+            name = format!("{base}_{k}");
+        }
+        out.insert(c.name.clone(), name);
+    }
+    out
+}
+
 /// A run's character style, if it has one.
 fn char_style(f: &designcraft_doc::CharFormat) -> Option<&str> {
     Some(f.style.as_str()).filter(|s| !s.is_empty() && *s != designcraft_doc::story::NO_CHAR_STYLE)
@@ -253,7 +279,12 @@ fn char_style(f: &designcraft_doc::CharFormat) -> Option<&str> {
 /// those) as elements named after their style.
 /// `runs` are the story's runs in order (collected once per story): only those reaching the
 /// paragraph are visited, found by binary search.
-fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
+fn para_xml(
+    st: &designcraft_doc::Story,
+    runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)],
+    r: std::ops::Range<usize>,
+    names: &StyleNames,
+) -> String {
     let mut out = String::new();
     let (mut open, mut open_style): (Option<String>, Option<String>) = (None, None);
     let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
@@ -263,7 +294,7 @@ fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &desig
             continue;
         }
         let tag = f.over.xml_tag.clone().filter(|t| !t.is_empty());
-        let style = char_style(f).map(style_element);
+        let style = char_style(f).map(|c| names.get(c).cloned().unwrap_or_else(|| style_element(c)));
         if tag != open || style != open_style {
             if let Some(s) = open_style.take() {
                 out.push_str(&format!("</{s}>"));
@@ -282,7 +313,9 @@ fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &desig
             }
             open_style = style;
         }
-        out.push_str(&esc(&plain(&st.text[a..b])));
+        // A forced line break stays one (U+2028, as InDesign writes it): a newline would be a
+        // paragraph to import.
+        out.push_str(&esc(&plain_keep_breaks(&st.text[a..b])));
     }
     if let Some(s) = open_style {
         out.push_str(&format!("</{s}>"));
@@ -295,17 +328,31 @@ fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &desig
 
 const AID: &str = "http://ns.adobe.com/AdobeInDesign/4.0/";
 
-/// Paragraph `i` (range `r`) of `st`: its text, or its table as InDesign writes one.
-fn para_or_table_xml(st: &Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], i: usize, r: std::ops::Range<usize>) -> String {
+/// Tables in cells that export writes, at most: each adds a `<Table>` and a `<Cell>` level, and
+/// import refuses XML nested deeper than [`MAX_XML_DEPTH`] (the root, the frame's element and a
+/// mapped paragraph come first).
+const MAX_TABLE_NESTING: usize = (MAX_XML_DEPTH - 4) / 2;
+
+/// Paragraph `i` (range `r`) of `st`: its text, or its table as InDesign writes one. `depth`:
+/// how many tables hold `st`; a table nested deeper than [`MAX_TABLE_NESTING`] is left out.
+fn para_or_table_xml(
+    st: &Story,
+    runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)],
+    i: usize,
+    r: std::ops::Range<usize>,
+    depth: usize,
+    names: &StyleNames,
+) -> String {
     match st.paras.get(i).and_then(|p| p.table).and_then(|id| st.tables.get(&id)) {
-        Some(t) => table_xml(t),
-        None => para_xml(st, runs, r),
+        Some(t) if depth < MAX_TABLE_NESTING => table_xml(t, depth + 1, names),
+        Some(_) => String::new(),
+        None => para_xml(st, runs, r, names),
     }
 }
 
 /// A table as InDesign's XML export writes one: `aid:` table and cells, each cell's paragraphs
 /// on lines of their own (tables in cells too).
-fn table_xml(t: &designcraft_doc::Table) -> String {
+fn table_xml(t: &designcraft_doc::Table, depth: usize, names: &StyleNames) -> String {
     let (nr, nc) = (t.nrows(), t.ncols());
     let mut out = format!("<Table xmlns:aid=\"{AID}\" aid:table=\"table\" aid:trows=\"{nr}\" aid:tcols=\"{nc}\">");
     let owners = t.owners();
@@ -330,7 +377,7 @@ fn table_xml(t: &designcraft_doc::Table) -> String {
             out.push_str(&format!("<Cell aid:table=\"cell\"{section} aid:crows=\"{rs}\" aid:ccols=\"{cs}\" aid:ccolwidth=\"{width}\"{id}>"));
             let runs: Vec<_> = cell.text.runs().collect();
             let text: Vec<String> =
-                cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, &runs, i, r)).collect();
+                cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, &runs, i, r, depth, names)).collect();
             out.push_str(&text.join("\n"));
             out.push_str("</Cell>");
         }
@@ -344,6 +391,7 @@ pub fn export_xml(d: &Document) -> String {
     let mut out = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{}>\n", root_name(d));
     // A story threaded through several tagged frames is written once, at its first.
     let mut written = std::collections::HashSet::new();
+    let names = style_names(d);
     for id in tagged(d) {
         let Some(it) = any_item(d, id) else { continue };
         let tag = &it.xml_tag;
@@ -354,7 +402,11 @@ pub fn export_xml(d: &Document) -> String {
                 // Paragraph text with inline tags already escaped.
                 let paras: Vec<(Option<String>, String)> = {
                     let runs: Vec<_> = st.runs().collect();
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, &runs, i, r))).collect()
+                    st.para_ranges()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, &runs, i, r, 0, &names)))
+                        .collect()
                 };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
@@ -371,7 +423,7 @@ pub fn export_xml(d: &Document) -> String {
             }
             Content::Graphic(g) => {
                 let name = d.assets.get(&g.asset).map(|a| a.link.clone().unwrap_or_else(|| a.name.clone())).unwrap_or_default();
-                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&name)));
+                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&href_escape(&name))));
             }
             _ => out.push_str(&format!("  <{tag}/>\n")),
         }
@@ -390,7 +442,7 @@ struct Element {
 }
 
 /// Text and the tables in it: each table's place is a table anchor in `text`, in order.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Body {
     text: String,
     tables: Vec<XTable>,
@@ -409,18 +461,75 @@ impl Body {
 
     /// The body's paragraphs (its lines, `trim` trimmed off each and off the whole), each with
     /// its runs in paragraph offsets.
-    fn paras(&self, style: Option<String>, trim: impl Fn(char) -> bool + Copy) -> Vec<XPara> {
-        let lead = self.text.len() - self.text.trim_start_matches(trim).len();
-        let all = self.text.trim_matches(trim);
+    /// `xml_layout`: the element's own text, whose hand-written indentation lines go (see
+    /// [`unindent`]).
+    fn paras(&self, style: Option<String>, trim: impl Fn(char) -> bool + Copy, xml_layout: bool) -> Vec<XPara> {
+        let all = if xml_layout { unindent(&self.text) } else { self.text.trim_matches(trim) };
+        // `all` is a slice of the text: where it starts.
+        let lead = all.as_ptr() as usize - self.text.as_ptr() as usize;
         let mut at = lead;
-        let mut out = Vec::new();
+        let mut lines = Vec::new();
         for line in all.split('\n') {
             let start = at + line.len() - line.trim_start_matches(trim).len();
-            let text = line.trim_matches(trim);
-            out.push(XPara { style: style.clone(), text: text.to_string(), runs: self.runs_in(start, text.len()) });
+            lines.push((start, line.trim_matches(trim)));
             at += line.len() + 1;
         }
+        let runs = self.runs_of(lines.iter().map(|&(start, text)| start..start + text.len()));
+        lines.into_iter().zip(runs).map(|((_, text), runs)| XPara { style: style.clone(), text: text.to_string(), runs }).collect()
+    }
+
+    /// The runs within each of `spans` (ascending, apart), in offsets from its start: one sweep
+    /// over the runs, which keep their order (inner ones first) within a span.
+    fn runs_of(&self, spans: impl Iterator<Item = std::ops::Range<usize>>) -> Vec<Vec<(std::ops::Range<usize>, String)>> {
+        let mut by_start: Vec<usize> = (0..self.runs.len()).collect();
+        by_start.sort_by_key(|&k| self.runs[k].0.start);
+        let (mut next, mut active, mut out) = (0, Vec::new(), Vec::new());
+        for span in spans {
+            while next < by_start.len() && self.runs[by_start[next]].0.start < span.end {
+                active.push(by_start[next]);
+                next += 1;
+            }
+            active.retain(|&k| self.runs[k].0.end > span.start);
+            let mut here: Vec<usize> = active.iter().copied().filter(|&k| self.runs[k].0.start < span.end).collect();
+            here.sort_unstable();
+            out.push(
+                here.into_iter()
+                    .map(|k| {
+                        let (r, n) = &self.runs[k];
+                        (r.start.max(span.start) - span.start..r.end.min(span.end) - span.start, n.clone())
+                    })
+                    .collect(),
+            );
+        }
         out
+    }
+
+    /// A mapped paragraph's content: its text (trimmed) as one paragraph, split where a table
+    /// sits in it, each table a paragraph of its own (its anchor), in order.
+    fn blocks(&self, style: Option<String>) -> Vec<XPara> {
+        let anchor = designcraft_doc::story::TABLE_ANCHOR;
+        if !self.text.contains(anchor) {
+            return vec![self.para(style)];
+        }
+        let mut pieces = Vec::new();
+        let mut at = 0;
+        for (i, _) in self.text.match_indices(anchor) {
+            pieces.push(at..i);
+            pieces.push(i..i + anchor.len_utf8());
+            at = i + anchor.len_utf8();
+        }
+        pieces.push(at..self.text.len());
+        let spans: Vec<std::ops::Range<usize>> = pieces
+            .into_iter()
+            .filter_map(|r| {
+                let t = &self.text[r.clone()];
+                let start = r.start + t.len() - t.trim_start().len();
+                let trimmed = t.trim();
+                (!trimmed.is_empty()).then_some(start..start + trimmed.len())
+            })
+            .collect();
+        let runs = self.runs_of(spans.iter().cloned());
+        spans.into_iter().zip(runs).map(|(r, runs)| XPara { style: style.clone(), text: self.text[r].to_string(), runs }).collect()
     }
 
     /// The whole body as one paragraph, white space trimmed.
@@ -449,13 +558,20 @@ struct XPara {
 }
 
 /// A `<Table>`: its `<Cell>`s in order.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct XTable {
     cells: Vec<Body>,
 }
 
+/// The cells of an XML table, those of tables in them too.
+fn cell_count(t: &XTable) -> usize {
+    t.cells.iter().map(|c| 1 + c.tables.iter().map(cell_count).sum::<usize>()).sum()
+}
+
+/// A table as export writes one (`aid:table="table"`); any other element named `Table` (a mapped
+/// paragraph tag, say) is text.
 fn is_table(e: &craft_xml::El) -> bool {
-    e.name == "Table"
+    e.name == "Table" && e.attr("table") == Some("table")
 }
 
 struct Image {
@@ -468,6 +584,12 @@ struct Image {
 fn image_attrs(e: &craft_xml::El) -> Option<Image> {
     let get = |name: &str| e.attr_local(name).map(str::to_string);
     get("href").map(|href| Image { href, fit: get("fit"), crop: get("crop") })
+}
+
+/// A file path as it goes into a `file://` href: `%` and spaces escaped, so [`href_path`]'s one
+/// decoding gives the path back (`rate%20.png` stays itself).
+fn href_escape(path: &str) -> String {
+    path.replace('%', "%25").replace(' ', "%20")
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -531,6 +653,8 @@ fn parse(xml: &str, inline: &dyn Fn(&str) -> bool) -> std::result::Result<Vec<El
         .elements()
         .map(|element| {
             let mut body = Body::default();
+            // Child elements in order; a table right inside the element is one too (no name),
+            // so it keeps its place among mapped paragraphs.
             let mut children = Vec::new();
             for node in &element.children {
                 match node {
@@ -539,8 +663,18 @@ fn parse(xml: &str, inline: &dyn Fn(&str) -> bool) -> std::result::Result<Vec<El
                         body_of(child, &mut b);
                         children.push((child.name.clone(), b));
                     }
+                    craft_xml::Node::El(child) if is_table(child) => {
+                        let mut b = Body::default();
+                        node_into(node, &mut b);
+                        node_into(node, &mut body);
+                        children.push((String::new(), b));
+                    }
                     node => node_into(node, &mut body),
                 }
+            }
+            // Only tables: the body has them, in their place in its text.
+            if children.iter().all(|(n, _)| n.is_empty()) {
+                children.clear();
             }
             Element { name: element.name.clone(), body, children, image: image_attrs(element) }
         })
@@ -815,7 +949,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import XML…",
             ["File"],
             None,
-            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag (`fit`: an object.fit mode, default fillProportionally; `crop`: a PDF box such as contentVisible) → {placed, unmatched, unmatchedTags: [tags without a free frame], failed: [{tag, href, error}]}",
+            "{path | text, imageDir?} — each element's content goes into the next text frame with that tag (child elements of mapped tags become paragraphs in their style); an element with `href` (a file:// URL or path; relative ones against imageDir, else the XML file's folder) places that image into the next graphic frame with its tag (`fit`: an object.fit mode, default fillProportionally; `crop`: a PDF box such as contentVisible) → {placed, unmatched, unmatchedTags: [tags without a free frame], lostCells: the XML's table cells with no cell to go into (an id the table hasn't, a table the story has no place for), failed: [{tag, href, error}]}",
             has_doc,
             import_xml
         ),
@@ -844,24 +978,27 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
     // Character styles by their element name.
-    let char_styles: std::collections::HashMap<String, String> =
-        s.doc()?.doc.styles.character.iter().map(|c| (style_element(&c.name), c.name.clone())).collect();
-    let elements = parse(&text, &|n| char_styles.contains_key(n)).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
-    // XML with character-styled runs says where each style goes; XML without (written before
-    // export wrote them) leaves the styles as they are.
+    let char_styles: std::collections::HashMap<String, String> = style_names(&s.doc()?.doc).into_iter().map(|(style, el)| (el, style)).collect();
+    // An element of a mapped paragraph tag is a paragraph, even where a character style has its name.
+    let mapped: std::collections::HashSet<String> = s.doc()?.doc.xml.style_map.iter().map(|(_, t)| t.clone()).collect();
+    let elements = parse(&text, &|n| char_styles.contains_key(n) && !mapped.contains(n)).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
+    // An element with character-styled runs says where each style goes; one without (XML written
+    // before export wrote them) leaves its story's styles as they are.
     let styled = |n: &str| char_styles.contains_key(n);
-    let char_styles =
-        elements.iter().any(|e| e.body.has_style(&styled) || e.children.iter().any(|(_, b)| b.has_style(&styled))).then_some(&char_styles);
     // Relative image paths: against `imageDir`, else the XML file's folder.
     let base = str_param(p, "imageDir").map(std::path::PathBuf::from).or_else(|| {
         str_param(p, "text").is_none().then(|| str_param(p, "path")).flatten().and_then(|x| std::path::Path::new(x).parent().map(Into::into))
     });
     let d = &s.doc()?.doc;
     // Frames by tag, in reading order; each element takes the next free one.
+    // A story threaded through several tagged frames takes one element, at its first frame (as
+    // export writes it).
+    let mut stories = std::collections::HashSet::new();
     let mut slots: Vec<(String, StoryId, bool)> = tagged(d)
         .into_iter()
         .filter_map(|id| any_item(d, id))
         .filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false)))
+        .filter(|(_, sid, _)| stories.insert(*sid))
         .collect();
     let mut image_slots: Vec<(String, ItemId, bool)> = tagged(d)
         .into_iter()
@@ -870,9 +1007,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|it| (it.xml_tag.clone(), it.id, false))
         .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
-    let mut fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>)> = Vec::new();
-    // Images by tag, in order: each takes a frame only once it is placed in it.
-    let mut images: Vec<(String, Image)> = Vec::new();
+    let mut fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>, bool)> = Vec::new();
+    // Images, and empty elements of a graphic frame's tag, by tag in XML order: each takes the
+    // next free graphic frame of its tag (an image only once it is placed in it).
+    let mut images: Vec<(String, Option<Image>)> = Vec::new();
     // Elements without a free frame of their tag, and those tags (once each, in order).
     let mut unmatched = 0;
     let mut unmatched_tags: Vec<String> = Vec::new();
@@ -884,16 +1022,16 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     for mut el in elements {
         if let Some(image) = el.image.take() {
-            images.push((el.name, image));
+            images.push((el.name, Some(image)));
             continue;
         }
         // An empty element of a graphic frame's tag (an empty frame, as export writes one): nothing
-        // to put in it.
+        // to put in it, but it takes its frame in turn.
         if el.body.text.trim().is_empty()
             && el.children.is_empty()
-            && let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used)
+            && images.iter().filter(|(t, _)| *t == el.name).count() < image_slots.iter().filter(|(t, ..)| *t == el.name).count()
         {
-            slot.2 = true;
+            images.push((el.name, None));
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
@@ -901,32 +1039,29 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         };
         slot.2 = true;
-        // A story an earlier element filled (another frame of its thread) keeps that text.
-        if fills.iter().any(|(sid, ..)| *sid == slot.1) {
-            continue;
-        }
+        let with_styles = el.body.has_style(&styled) || el.children.iter().any(|(_, b)| b.has_style(&styled));
         // Paragraphs, and the tables their anchors stand for, in order. Lines lose the XML's
         // indentation (spaces, tabs), not the text's own white space (no-break spaces).
         let indent = |c: char| matches!(c, ' ' | '\t' | '\r');
         let (paras, tables): (Vec<XPara>, Vec<XTable>) = if el.children.is_empty() {
-            (el.body.paras(None, indent), el.body.tables)
+            (el.body.paras(None, indent, true), el.body.tables)
         } else {
             let mut tables = Vec::new();
             let paras = el
                 .children
                 .into_iter()
-                .map(|(t, b)| {
-                    let p = b.para(reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone()));
+                .flat_map(|(t, b)| {
+                    let p = b.blocks(reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone()));
                     tables.extend(b.tables);
                     p
                 })
                 .collect();
             (paras, tables)
         };
-        fills.push((slot.1, paras, tables));
+        fills.push((slot.1, paras, tables, with_styles));
     }
     let mut placed = fills.len();
-    let mut fx = Fill { cs: char_styles, lost_cells: 0 };
+    let mut fx = Fill { cs: Some(&char_styles), lost_cells: 0 };
     if !fills.is_empty() {
         fill_stories(s, fills, &mut fx)?;
     }
@@ -939,6 +1074,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             miss(&tag);
             continue;
         };
+        let Some(image) = image else {
+            slot.2 = true;
+            continue;
+        };
         let frame = slot.1;
         let path = href_path(&image.href, base.as_deref());
         // The file the frame holds already (as export wrote it): unchanged, nothing to place.
@@ -949,8 +1088,11 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                     Content::Graphic(g) => d.assets.get(&g.asset),
                     _ => None,
                 })
-                .and_then(|a| a.link.clone().or_else(|| Some(a.name.clone())))
+                .map(|a| (a.link.clone(), a.name.clone()))
         };
+        // A linked image by its file; an embedded one (no link) by its name only while no such file
+        // is there to load instead.
+        let holds = holds.and_then(|(link, name)| link.or_else(|| (!std::path::Path::new(&path).exists()).then_some(name)));
         if image.fit.is_none() && image.crop.is_none() && holds.is_some_and(|l| image.href == format!("file://{l}") || path == l) {
             slot.2 = true;
             placed += 1;
@@ -963,6 +1105,16 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         // An unknown fit fails before anything is placed, so `failed` means not placed.
         if let Some(mode) = image.fit.as_deref().filter(|m| !super::object::fit_mode_known(m)) {
             failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, format!("unknown fit `{mode}`")).to_string()}));
+            continue;
+        }
+        // Fit leaves a locked frame (or one on a locked layer) as it is: a fit asked for there
+        // would not happen, so the image isn't placed either.
+        let locked = {
+            let d = &s.doc()?.doc;
+            d.item(frame).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked))
+        };
+        if image.fit.is_some() && locked {
+            failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, "the frame is locked, so its fit can't be applied").to_string()}));
             continue;
         }
         let done = s.execute("file.place", &place).and_then(|_| match &image.fit {
@@ -990,14 +1142,37 @@ struct Fill<'a> {
     lost_cells: usize,
 }
 
+/// An element's text without the XML's own layout around it: hand-written XML puts the text on
+/// indented lines of its own (`<c>⏎····Heading⏎</c>`), and the blank first and last lines go.
+/// Text as export writes it (never indented) keeps its empty paragraphs.
+fn unindent(text: &str) -> &str {
+    let indent = |c: char| matches!(c, ' ' | '\t' | '\r');
+    let t = text.trim_matches(indent);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let wrapped = lines.len() >= 3
+        && lines.first().is_some_and(|l| l.chars().all(indent))
+        && lines.last().is_some_and(|l| l.chars().all(indent))
+        && lines[1..lines.len() - 1].iter().any(|l| l.starts_with([' ', '\t']));
+    if !wrapped {
+        return t;
+    }
+    let t = t.strip_prefix('\n').unwrap_or(t);
+    t.strip_suffix('\n').unwrap_or(t)
+}
+
 /// Replaces each story's text with the paragraphs, in their mapped styles.
-fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>)>, fx: &mut Fill) -> Result<()> {
+/// Replaces each story's text with the paragraphs, in their mapped styles; character styles only
+/// in a story whose element has styled runs.
+fn fill_stories(s: &mut Session, fills: Vec<(StoryId, Vec<XPara>, Vec<XTable>, bool)>, fx: &mut Fill) -> Result<()> {
+    let cs = fx.cs;
     s.edit(|d, _| {
-        for (sid, paras, tables) in fills {
+        for (sid, paras, tables, with_styles) in fills {
             if let Some(st) = d.story_mut(sid) {
+                fx.cs = cs.filter(|_| with_styles);
                 fill_story(st, &paras, &tables, fx);
             }
         }
+        fx.cs = cs;
         Ok(())
     })
 }
@@ -1010,16 +1185,18 @@ fn common_ends(a: &str, b: &str) -> (usize, usize) {
     (pre, suf)
 }
 
-/// Puts the paragraphs into the story in place, so the template's formatting stays: paragraph
-/// `i` replaces old paragraph `i` (only the part that differs, which takes the format of the
-/// first character it replaces), extra paragraphs copy the last one's formats, surplus old
-/// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays.
-/// A table's paragraph is never text: it takes the next of `tables` when the XML has a table
-/// there, cell by cell, and is left as it is otherwise. With `fx.cs`, each paragraph's characters
+/// Puts the paragraphs into the story in place, so the template's formatting stays: each XML
+/// paragraph replaces the story's next text paragraph (only the part that differs, which takes
+/// the format of the first character it replaces), extra paragraphs copy the last one's formats,
+/// surplus old paragraphs are removed. A trailing empty paragraph (the story ending in a return)
+/// stays. Tables are no text: an XML table fills the story's table there, cell by cell, when the
+/// story has one at that place and is left out otherwise; a story table the XML leaves out stays
+/// as it is. Neither takes a text paragraph's place. With `fx.cs`, each paragraph's characters
 /// take the character styles of the XML's runs, and no style outside them.
 fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill) {
     let anchor = designcraft_doc::story::TABLE_ANCHOR;
-    let ranges = st.para_ranges();
+    // The story's paragraph ranges, read once and moved along as edits change lengths.
+    let mut ranges = st.para_ranges();
     let keep_last = ranges.len() > 1 && ranges.last().is_some_and(|r| r.is_empty());
     let old_n = ranges.len() - usize::from(keep_last);
     // A last empty paragraph in the XML is the story's own trailing return.
@@ -1027,23 +1204,31 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill)
         Some((last, rest)) if keep_last && last.text.is_empty() && paras.len() == ranges.len() => rest,
         _ => paras,
     };
+    let is_story_table = |st: &Story, d: usize| d < old_n && st.paras.get(d).is_some_and(|p| p.table.is_some());
     let mut next_table = tables.iter();
-    for (i, XPara { text: new, .. }) in paras.iter().enumerate() {
-        let ranges = st.para_ranges();
-        let is_table = new.trim() == anchor.to_string();
-        if let Some(tid) = st.paras.get(i).filter(|_| i < old_n).and_then(|p| p.table) {
-            if is_table
-                && let Some(x) = next_table.next()
-                && let Some(t) = st.tables.get_mut(&tid)
-            {
-                fill_table(std::sync::Arc::make_mut(t), x, fx);
+    // The story paragraph the next XML paragraph goes to, and where each XML paragraph went.
+    let mut d = 0;
+    let mut placed: Vec<(usize, usize)> = Vec::new();
+    let mut extra = String::new();
+    for (xi, XPara { text: new, .. }) in paras.iter().enumerate() {
+        if new.trim() == anchor.to_string() {
+            let x = next_table.next();
+            if is_story_table(st, d) {
+                if let (Some(x), Some(tid)) = (x, st.paras[d].table)
+                    && let Some(t) = st.tables.get_mut(&tid)
+                {
+                    fill_table(std::sync::Arc::make_mut(t), x, fx);
+                }
+                d += 1;
+            } else {
+                // The story has no table here: the XML's stays out, its cells lost.
+                fx.lost_cells += x.map_or(0, cell_count);
             }
             continue;
         }
-        if is_table {
-            // A table the story has no place for here: its paragraph stays out.
-            next_table.next();
-            continue;
+        // Story tables the XML leaves out stay where they are.
+        while is_story_table(st, d) {
+            d += 1;
         }
         // Table anchors are no text to put in.
         let stripped;
@@ -1053,8 +1238,8 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill)
         } else {
             new
         };
-        if i < old_n {
-            let r = ranges[i].clone();
+        if d < old_n {
+            let r = ranges[d].clone();
             let (pre, suf) = common_ends(&st.text[r.clone()], new);
             let (a, b) = (r.start + pre, r.end - suf);
             let repl = &new[pre..new.len() - suf];
@@ -1064,22 +1249,43 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill)
                 let fmt = if pre > 0 { st.char_format_at(a).clone() } else { st.format_after(a).clone() };
                 st.insert_with(a, repl, fmt);
             }
-        } else if let Some(prev) = i.checked_sub(1).and_then(|p| ranges.get(p)) {
-            st.insert(prev.end, &format!("\n{new}"));
+            // Later paragraphs move by what this one grew or shrank.
+            let delta = repl.len() as isize - (b - a) as isize;
+            if delta != 0 {
+                ranges[d].end = ranges[d].end.saturating_add_signed(delta);
+                for r in &mut ranges[d + 1..] {
+                    *r = r.start.saturating_add_signed(delta)..r.end.saturating_add_signed(delta);
+                }
+            }
+            placed.push((d, xi));
+            d += 1;
+        } else {
+            extra.push('\n');
+            extra.push_str(new);
+            placed.push((old_n + placed.iter().filter(|(i, _)| *i >= old_n).count(), xi));
         }
     }
-    // Surplus paragraphs go, last first, except tables (whose paragraphs aren't text).
-    for j in (paras.len().max(1)..old_n).rev() {
+    // New paragraphs after the story's last one, at once.
+    if !extra.is_empty() {
+        if let Some(last) = old_n.checked_sub(1).and_then(|i| ranges.get(i)) {
+            st.insert(last.end, &extra);
+        } else {
+            st.insert(0, &extra[1..]);
+        }
+    }
+    // Surplus paragraphs go, last first, except tables (whose paragraphs aren't text) and the
+    // first one (a story keeps a paragraph).
+    for j in (d.max(1)..old_n).rev() {
         if st.paras.get(j).is_some_and(|p| p.table.is_some()) {
             continue;
         }
-        let ranges = st.para_ranges();
-        if let (Some(prev), Some(me)) = (ranges.get(j - 1), ranges.get(j)) {
+        let rs = st.para_ranges();
+        if let (Some(prev), Some(me)) = (rs.get(j - 1), rs.get(j)) {
             st.delete(prev.end..me.end);
         }
     }
-    for (i, p) in paras.iter().enumerate() {
-        if let (Some(sty), Some(pf)) = (&p.style, st.paras.get_mut(i))
+    for &(i, xi) in &placed {
+        if let (Some(sty), Some(pf)) = (&paras[xi].style, st.paras.get_mut(i))
             && pf.table.is_none()
         {
             pf.style = sty.clone();
@@ -1087,14 +1293,16 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], fx: &mut Fill)
     }
     if let Some(cs) = fx.cs {
         let ranges = st.para_ranges();
-        for (i, p) in paras.iter().enumerate() {
+        for &(i, xi) in &placed {
+            let p = &paras[xi];
             let Some(r) = ranges.get(i).filter(|r| st.paras[i].table.is_none() && st.text[(*r).clone()] == p.text) else { continue };
             let none = designcraft_doc::story::NO_CHAR_STYLE;
             st.format_chars(r.clone(), |f| f.style = none.into());
             // Outer runs first, so inner ones win.
-            let mut runs: Vec<_> = p.runs.iter().filter_map(|(x, n)| cs.get(n).map(|sty| (x.clone(), sty))).collect();
-            runs.sort_by_key(|(x, _)| (x.start, std::cmp::Reverse(x.end)));
-            for (x, sty) in runs {
+            // Runs come inner first; for the same span the outer one goes first too.
+            let mut runs: Vec<_> = p.runs.iter().enumerate().filter_map(|(k, (x, n))| cs.get(n).map(|sty| (k, x.clone(), sty))).collect();
+            runs.sort_by_key(|(k, x, _)| (x.start, std::cmp::Reverse(x.end), std::cmp::Reverse(*k)));
+            for (_, x, sty) in runs {
                 st.format_chars(r.start + x.start..r.start + x.end, |f| f.style = sty.clone());
             }
         }
@@ -1131,7 +1339,7 @@ fn fill_table(t: &mut designcraft_doc::Table, x: &XTable, fx: &mut Fill) {
             continue;
         };
         // Export writes a cell's paragraphs as they are: nothing to trim.
-        fill_story(&mut cell.text, &xc.paras(None, |_| false), &xc.tables, fx);
+        fill_story(&mut cell.text, &xc.paras(None, |_| false, false), &xc.tables, fx);
     }
 }
 
@@ -1276,6 +1484,67 @@ mod tests {
         assert_eq!(tagged, vec![a, b], "{r}");
     }
 
+    /// Styles whose names give the same element name (`A B`, `A_B`) each get their own, and come
+    /// back as themselves.
+    #[test]
+    fn character_styles_keep_their_own_element_names() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "A B"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "A_B"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "one two", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.edit(|d, _| {
+            let st = d.story_mut(sid).unwrap();
+            st.format_chars(0..3, |c| c.style = "A B".into());
+            st.format_chars(4..7, |c| c.style = "A_B".into());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<A_B>one</A_B> <A_B_2>two</A_B_2>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x.replace("one", "uno").replace("two", "dos")})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((st.format_after(0).style.as_str(), st.format_after(4).style.as_str()), ("A B", "A_B"));
+    }
+
+    /// A paragraph tag a character style also has as its name stays a paragraph.
+    #[test]
+    fn a_mapped_paragraph_tag_wins_over_a_character_style_name() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "bold"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "x", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "bold"})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><body><bold>First</bold><bold>Second</bold></body></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "First\nSecond");
+        assert!(st.paras.iter().all(|p| p.style == "Head"));
+    }
+
+    /// Two stories with one tag, the first threaded through two frames: each story takes its own
+    /// element.
+    #[test]
+    fn a_threaded_story_takes_one_element_of_its_tag() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a1 = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "A", "caret": false})).unwrap();
+        let a2 = s.execute("frame.create", &json!({"rect": [72, 300, 500, 400], "content": "unassigned"})).unwrap();
+        s.execute("text.thread", &json!({"from": a1["id"], "to": a2["id"]})).unwrap();
+        let b1 = s.execute("frame.create", &json!({"rect": [72, 500, 500, 600], "content": "text", "text": "B", "caret": false})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [a1["id"], a2["id"], b1["id"]]})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><body>A2</body><body>B2</body></Root>"})).unwrap();
+        let text = |f: &serde_json::Value| s.doc().unwrap().doc.story(StoryId(f["story"].as_u64().unwrap())).unwrap().text.clone();
+        assert_eq!((text(&a1), text(&b1)), ("A2".to_string(), "B2".to_string()));
+    }
+
     /// Character-styled runs are elements named after their style: import puts each style where
     /// the XML has it (a translation moves it), and XML without such elements leaves styles be.
     /// A story threaded through two tagged frames is written once.
@@ -1359,6 +1628,67 @@ mod tests {
         assert!(s.doc().unwrap().doc.anchored_item(inner[1]).unwrap().xml_tag.is_empty());
     }
 
+    /// A story of mapped paragraphs with a table right inside the element: export writes the table
+    /// between them, and import puts its cells back. A table inside a mapped paragraph splits it,
+    /// and an XML table the story has no place for counts its cells as lost.
+    #[test]
+    fn tables_among_mapped_paragraphs() {
+        use designcraft_doc::{ParaFormat, Story, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": "Title", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 5, "focus": 5})).unwrap();
+        let tid = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let t = std::sync::Arc::make_mut(d.story_mut(sid).unwrap().tables.get_mut(&tid).unwrap());
+            t.cells[0].text = Story::with_text(StoryId(0), "Zelle", ParaFormat::default());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        let cell = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].cells[0].text.text.clone();
+        let table = "<Table aid:table=\"table\"><Cell>Cell</Cell></Table>";
+        let r = s.execute("file.importXml", &json!({"text": format!("<Root><body><title>Heading</title>{table}</body></Root>")})).unwrap();
+        assert_eq!(cell(&s), "Cell", "a direct table among mapped paragraphs: {r}");
+        assert!(s.doc().unwrap().doc.story(sid).unwrap().text.starts_with("Heading"));
+        let r = s
+            .execute(
+                "file.importXml",
+                &json!({"text": format!("<Root><body><title>Head{}</title></body></Root>", table.replace("Cell<", "Zelle 2<"))}),
+            )
+            .unwrap();
+        assert_eq!(cell(&s), "Zelle 2", "a table inside a mapped paragraph: {r}");
+        assert_eq!(r["lostCells"], 0, "{r}");
+        let two = format!("<Root><body><title>Head</title>{table}{table}</body></Root>");
+        let r = s.execute("file.importXml", &json!({"text": two})).unwrap();
+        assert_eq!(r["lostCells"], 1, "the second table has no place: {r}");
+    }
+
+    /// An element without a frame doesn't decide another story's character styles.
+    #[test]
+    fn unmatched_elements_leave_other_stories_styles_alone() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "bold"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "Keep bold", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.edit(|d, _| {
+            d.story_mut(sid).unwrap().format_chars(5..9, |c| c.style = "bold".into());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><body>Keep bold</body><extra><bold>Unused</bold></extra></Root>"})).unwrap();
+        assert_eq!(r["unmatched"], 1, "{r}");
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().format_after(5).style, "bold");
+    }
+
     /// Cells from a file keep its IDs: export names each cell by its `id`, and import puts a cell
     /// into the cell of its ID wherever it is in the XML; an ID the table hasn't is lost.
     #[test]
@@ -1398,6 +1728,83 @@ mod tests {
         s.execute("table.select", &json!({"story": sid.0, "table": tid, "row": 0, "col": 1})).unwrap();
         let sel = s.doc().unwrap().selection.text.unwrap();
         assert_eq!(sel.cell.map(|c| (c.row, c.col)), Some((0, 1)));
+    }
+
+    /// Text after a table the XML leaves out goes to the paragraph after the table, and a forced
+    /// line break in a cell comes back as one, not as a second paragraph.
+    #[test]
+    fn tables_left_out_keep_the_text_after_them_in_place() {
+        use designcraft_doc::{ParaFormat, Story, StoryId};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": "A\nB", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 1, "focus": 1})).unwrap();
+        let tid = s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap()["table"].as_u64().unwrap();
+        s.edit(|d, _| {
+            let t = std::sync::Arc::make_mut(d.story_mut(sid).unwrap().tables.get_mut(&tid).unwrap());
+            t.cells[0].text = Story::with_text(StoryId(0), "x\u{2028}y", ParaFormat::default());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("file.importXml", &json!({"text": x})).unwrap();
+        let cell = |s: &Session| s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].cells[0].text.text.clone();
+        assert_eq!(cell(&s), "x\u{2028}y", "one paragraph with its forced break");
+        let before = s.doc().unwrap().doc.story(sid).unwrap().text.clone();
+        s.execute("file.importXml", &json!({"text": "<Root><body>A\nB translated</body></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert!(st.text.ends_with("B translated"), "{:?} (was {before:?})", st.text);
+        assert!(st.tables.contains_key(&tid), "the table stays");
+    }
+
+    /// An element named `Table` without export's table marker is a mapped paragraph like any other.
+    #[test]
+    fn a_mapped_table_tag_is_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Title"})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "Old title", "caret": false})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Title"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Title", "tag": "Table"})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><story><Table>Revised title</Table></story></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].clone();
+        assert_eq!(st.text, "Revised title");
+    }
+
+    #[test]
+    fn xml_indentation_around_text_goes_exported_blank_paragraphs_stay() {
+        assert_eq!(super::unindent("\n    Heading\n"), "    Heading", "hand-indented: one paragraph");
+        assert_eq!(super::unindent("\n    Heading\n  "), "    Heading");
+        assert_eq!(super::unindent("\nHeading\n"), "\nHeading\n", "as export writes it: the empty paragraphs stay");
+        assert_eq!(super::unindent("Heading"), "Heading");
+    }
+
+    /// An empty element and an image of the same tag take their frames in XML order.
+    #[test]
+    fn empty_and_image_elements_take_frames_in_order() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, x: f64| {
+            ItemId(s.execute("frame.create", &json!({"rect": [x, 72.0, x + 100.0, 172.0], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (first, second) = (frame(&mut s, 72.0), frame(&mut s, 300.0));
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0, second.0]})).unwrap();
+        let xml = "<Root><photo/><photo href=\"ok.png\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(1), "{r}");
+        let holds = |id: ItemId| matches!(s.doc().unwrap().doc.item(id).unwrap().content, Content::Graphic(_));
+        assert!(!holds(first) && holds(second), "the image goes to the second frame");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Tables in a tagged frame are part of its XML: export writes them as InDesign does, import
@@ -1594,6 +2001,35 @@ mod tests {
     /// A frame takes an image only once it is placed: after a failed href, the next element of
     /// the tag goes into the frame that stayed empty.
     #[cfg(not(target_arch = "wasm32"))]
+    /// Export escapes `%` and spaces in a path, import decodes them once: the path comes back.
+    #[test]
+    fn exported_hrefs_decode_to_their_path() {
+        for path in ["C:/img/rate%20.png", "/home/me/a b%.png", "plain.png"] {
+            assert_eq!(super::href_path(&format!("file://{}", super::href_escape(path)), None), path);
+        }
+    }
+
+    /// A fit asked for on a locked frame can't happen: the image is reported, not placed.
+    #[test]
+    fn a_fit_on_a_locked_frame_fails() {
+        use designcraft_doc::ItemId;
+        let dir = std::env::temp_dir().join(format!("dc-xml-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 272, 272], "content": "graphic"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [f.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [f.0]})).unwrap();
+        let xml = "<Root><photo href=\"ok.png\" fit=\"fitProportionally\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(0), "{r}");
+        assert!(r["failed"][0]["error"].as_str().is_some_and(|e| e.contains("locked")), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_failed_image_leaves_its_frame_to_the_next_element() {
         use designcraft_doc::{Content, ItemId};

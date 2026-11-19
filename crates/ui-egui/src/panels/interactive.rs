@@ -321,6 +321,8 @@ pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
 fn go_to_element(app: &mut DesignApp, id: u64) {
     if app.run("selection.set", json!({"ids": [id]})).is_ok() {
         crate::canvas::go_to_item(app, designcraft_doc::ItemId(id));
+        // Leaving parent-page editing on the way clears the selection: the frame again.
+        let _ = app.run("selection.set", json!({"ids": [id]}));
     }
 }
 
