@@ -7271,7 +7271,7 @@ mod frame_baseline_grid_tests {
         let shorter = designcraft_compose::compose_story(doc, sid, &Default::default());
         assert!(shorter.frame(foot).unwrap().columns[0].y0 < top);
         let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
-        let follow = serde_json::to_value(&back.item(foot).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
+        let follow = serde_json::to_value(back.item(foot).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
         assert_eq!(follow["followInset"]["after"], column.0);
     }
 
@@ -7468,7 +7468,7 @@ mod frame_baseline_grid_tests {
         let doc = &s.doc().unwrap().doc;
         let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
         for (id, edge, gap) in [(column, "end", 0.0), (foot, "start", 12.0)] {
-            let route = serde_json::to_value(&back.item(id).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
+            let route = serde_json::to_value(back.item(id).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
             assert_eq!(route["followInset"], json!({"edge":edge,"gap":gap}));
         }
     }

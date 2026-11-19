@@ -993,6 +993,7 @@ pub(crate) fn compose_frames(
 
 type HostFit = (Vec<PageRecord>, Vec<FrameSpec>, Arc<StreamState>, usize, Vec<String>);
 
+#[allow(clippy::too_many_arguments)]
 fn fit_hosts(
     doc: &Document,
     story: &Story,
@@ -1127,7 +1128,14 @@ fn fit_physical_routes(
     numbers.dedup();
     for page in numbers {
         let hosts: Vec<_> = frames.iter().zip(pages.iter()).filter(|(f, _)| f.page == Some(page)).collect();
-        let Some((host, _)) = hosts.last().copied() else { continue };
+        let Some(host) = hosts
+            .last()
+            .map(|(f, _)| *f)
+            .or_else(|| frames.iter().filter(|f| f.page.is_some_and(|p| p <= page)).max_by_key(|f| f.page))
+            .or_else(|| frames.first())
+        else {
+            continue;
+        };
         let ranges: Vec<_> = hosts.iter().map(|(_, p)| p.start..p.cut).collect();
         let core = hosts
             .iter()
@@ -1156,10 +1164,11 @@ fn fit_physical_routes(
                 route_state.take_series(&fit.state, route.series);
             }
         }
-        let index = frames.iter().rposition(|f| f.page == Some(page))?;
+        // Route-only pages must consume carries before a later page with a host.
+        let index = frames.iter().rposition(|f| f.page == Some(page)).or_else(|| pages.len().checked_sub(1))?;
         if let Some(record) = pages.get_mut(index) {
-            record.routes = fit.frames;
-            record.route_catchwords = regions;
+            record.routes.extend(fit.frames);
+            record.route_catchwords.extend(regions);
             record.warnings.extend(fit.warnings);
         }
     }

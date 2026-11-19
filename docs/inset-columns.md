@@ -129,6 +129,8 @@ preceding line's descent and ends at the catchword's descent. Boolean `true` ret
 the existing placement and 18-point row. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
+Host, route and series catchword style references follow character-style rename and
+delete-with-replacement, including undo.
 Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.

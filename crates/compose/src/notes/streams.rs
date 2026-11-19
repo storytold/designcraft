@@ -264,6 +264,7 @@ thread_local! {
     pub(crate) static PART_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[allow(clippy::too_many_arguments)]
 fn placed_parts(
     doc: &Document,
     story: &Story,
