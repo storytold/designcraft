@@ -280,6 +280,44 @@ fn small_catchword_leading_does_not_scale_glyph_size() {
 }
 
 #[test]
+fn styled_catchword_baselines_follow_declared_leading_in_main_and_commentary() {
+    let leading = 16.6;
+    let (mut doc, sid) = document(3, &"Main line.\u{2028}".repeat(80), &"Inner line.\u{2028}".repeat(90), "");
+    std::sync::Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Catchword pitch".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: designcraft_doc::CharAttrs { size: Some(18.5), leading: Some(designcraft_doc::Leading::Points(leading)), ..Default::default() },
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Catchword pitch".into() };
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    let frame = &cs.frames[0];
+    for series in [None, Some(1)] {
+        let word = frame.catchwords.iter().find(|c| c.series == series).unwrap();
+        let last = if let Some(series) = series {
+            frame
+                .notes
+                .iter()
+                .filter(|n| n.series == series)
+                .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (n.origin.y + l.baseline, l.descent))))
+                .next_back()
+                .unwrap()
+        } else {
+            let line = frame.lines.last().unwrap();
+            (line.baseline, line.descent)
+        };
+        let line = &word.text.frames[0].lines[0];
+        let baseline = word.origin.y + line.baseline * word.scale;
+        assert!((baseline - last.0 - leading).abs() < 0.01, "series {series:?}: pitch {}, wanted {leading}", baseline - last.0);
+        assert!((word.rect.y0 - last.0 - last.1).abs() < 0.01);
+        assert!((word.rect.y1 - baseline - line.descent * word.scale).abs() < 0.01);
+    }
+}
+
+#[test]
 fn chained_followers_fit_each_route_area_once_per_candidate() {
     let (mut doc, sid, routes) = routed_document(180.0);
     super::fitting::ROUTE_AREAS.with(|n| n.set(0));

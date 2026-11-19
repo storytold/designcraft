@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).
+
 - 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
 
 - 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
