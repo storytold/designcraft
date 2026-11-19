@@ -2733,7 +2733,9 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                         it.graphic_frame = false;
                     }
                 }
-                ("graphic", Some(Content::Unassigned)) => {
+                // A frame for a graphic: also one that holds a graphic already (a placed image
+                // in a plain shape), so it stays one once the image is deleted.
+                ("graphic", Some(Content::Unassigned | Content::Graphic(_))) => {
                     if let Some(it) = d.item_mut(*id) {
                         it.graphic_frame = true;
                     }
