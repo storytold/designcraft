@@ -821,14 +821,24 @@ pub fn open_epub_export(app: &mut DesignApp) {
 /// File › Export PDF (Interactive)…: its options (pages, Export As Pages or Spreads, the view,
 /// the layout and the presentation), seeded from `p`, the command's own `file.exportPdf` options.
 /// OK asks where to save (#2756).
-pub fn open_interactive_pdf_export(app: &mut DesignApp, p: &Value) {
+pub fn open_interactive_pdf_export(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let mut fields = json!({});
+    // The options are for the document open now: OK exports that one, not whichever document is
+    // active by then.
+    if let Some(st) = app.session.active() {
+        fields["document"] = json!(st.uid);
+    }
     for key in ["spreads", "view", "pageLayout", "fullScreen", "bookmarksPanel", "media"] {
         if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
             fields[key] = v.clone();
         }
     }
     if let Some(pages) = p.get("pages").filter(|v| !v.is_null()) {
+        // An empty list selects no page at all: the direct export refuses it (`NoPages`). As the
+        // dialog's empty range it would export every page instead, so it is refused here too.
+        if pages.as_array().is_some_and(Vec::is_empty) {
+            return Err(crate::i18n::tr(&app.ui.language, "nothing to export (no pages selected)").to_string());
+        }
         fields["range"] = json!("range");
         fields["pages"] = json!(match pages {
             Value::String(s) => s.clone(),
@@ -841,6 +851,7 @@ pub fn open_interactive_pdf_export(app: &mut DesignApp, p: &Value) {
         fields["seconds"] = json!(secs.to_string());
     }
     app.ui.dialog = Some(Dialog::new(INTERACTIVE_PDF_EXPORT, fields));
+    Ok(Value::Null)
 }
 
 /// The id of the Export to Interactive PDF dialog.
@@ -912,12 +923,32 @@ fn interactive_pdf_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 }
 
 /// Export to Interactive PDF › OK: the `file.exportPdf` options of its fields, then the save
-/// dialog. A flip time that is not a positive number keeps the dialog open, saying why.
+/// dialog. A page range or flip time the export would refuse keeps the dialog open, saying why.
 fn confirm_interactive_pdf_export(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
+    // The options belong to the document the dialog opened in: export that one, as the save
+    // dialog then binds to it, rather than whichever document is active now.
+    if let Some(uid) = d.fields.get("document").and_then(Value::as_u64) {
+        let Some(index) = app.session.documents().iter().position(|st| st.uid == uid) else {
+            app.status(crate::i18n::tr(&app.ui.language, "Cancelled: the document the dialog was for has closed"));
+            return Ok(Value::Null);
+        };
+        if app.session.active().map(|st| st.uid) != Some(uid)
+            && let Err(e) = app.run("file.activate", json!({"index": index}))
+        {
+            app.status(e);
+            return Ok(Value::Null);
+        }
+    }
     let mut params =
         json!({"spreads": d.b("spreads"), "fullScreen": d.b("fullScreen"), "bookmarksPanel": d.b("bookmarksPanel"), "media": d.b("media")});
     let pages = d.s("pages");
     if d.s("range") == "range" && !pages.trim().is_empty() {
+        // The export's own range rules: a browser runs the export before the dialog returns, so a
+        // range it would refuse must show here instead of closing the dialog with nothing written.
+        let count = app.session.active().map(|st| st.doc.page_count()).unwrap_or(0);
+        if let Err(e) = designcraft_pdf::parse_page_range(&pages, count) {
+            return refused(app, d, e.to_string());
+        }
         params["pages"] = json!(pages);
     }
     for key in ["view", "pageLayout"] {
@@ -929,16 +960,21 @@ fn confirm_interactive_pdf_export(app: &mut DesignApp, d: Dialog) -> Result<Valu
     if d.b("flip") {
         let Some(secs) = d.n("seconds").filter(|s| s.is_finite() && *s > 0.0) else {
             let e = crate::i18n::tr(&app.ui.language, "Flip Pages Every: a number of seconds above 0").to_string();
-            let mut d = d;
-            d.fields.insert("status".into(), json!(e));
-            app.ui.dialog = Some(d);
-            return Err(e);
+            return refused(app, d, e);
         };
         params["advanceSeconds"] = json!(secs);
     }
     let title = app.session.active().map(|st| st.doc.title.clone()).unwrap_or_default();
     let name = if title.is_empty() { "Export.pdf".to_string() } else { format!("{title}.pdf") };
     app.ask_save(&name, Bound::Document, move |app, path| crate::menus::export_pdf(app, &with_path(&params, "path", path)))
+}
+
+/// Put `d` back with `message` in it, for a field the export would refuse: the dialog stays open
+/// to be corrected, and the message is what the person sees (`show` discards the error).
+fn refused(app: &mut DesignApp, mut d: Dialog, message: String) -> Result<Value, String> {
+    d.fields.insert("status".into(), json!(message.clone()));
+    app.ui.dialog = Some(d);
+    Err(message)
 }
 
 /// The Split Document setting the EPUB Export Options dialog's fields describe.

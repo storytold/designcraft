@@ -2474,6 +2474,7 @@ dependencies = [
  "designcraft-fonts",
  "designcraft-geom",
  "designcraft-idml",
+ "designcraft-pdf",
  "designcraft-render",
  "designcraft-textimport",
  "designcraft-tools",

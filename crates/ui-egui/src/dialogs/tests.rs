@@ -5988,3 +5988,51 @@ fn interactive_pdf_export_options_seed_and_refuse_a_bad_flip_time() {
     assert_eq!((d.s("pages"), d.b("bookmarksPanel"), d.b("media")), ("2,3".to_string(), false, true));
     cancel(&mut app);
 }
+
+/// A page range the export would refuse keeps Export to Interactive PDF open, saying why: a
+/// browser runs the export before the dialog returns, so a closed dialog would say nothing at all.
+#[test]
+fn interactive_pdf_export_refuses_a_bad_page_range() {
+    let mut app = test_app();
+    app.run("app.exportInteractivePdf", json!({"pages": "1-x"})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, INTERACTIVE_PDF_EXPORT);
+    assert_eq!(d.s("status"), "bad page range `1-x`");
+    // A page the document does not have is refused the same way.
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!("9"));
+    assert!(confirm(&mut app).is_err());
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("status"), "page 9 does not exist");
+    // A range the export accepts goes on to ask where to save.
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!("1"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+}
+
+/// `{"pages": []}` selects no page. The direct export refuses it (`NoPages`); the dialog must not
+/// turn the empty list into an empty range, which would export every page.
+#[test]
+fn interactive_pdf_export_refuses_an_empty_page_selection() {
+    let mut app = test_app();
+    let e = app.run("app.exportInteractivePdf", json!({"pages": []})).unwrap_err();
+    assert_eq!(e, "nothing to export (no pages selected)");
+    assert!(app.ui.dialog.is_none(), "no dialog to confirm");
+}
+
+/// The options belong to the document the dialog opened in: OK exports that one, and says so when
+/// it has closed instead of exporting another document with its page range and layout.
+#[test]
+fn interactive_pdf_export_options_are_for_the_document_they_opened_in() {
+    let mut app = test_app();
+    let first = app.session.active().unwrap().uid;
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.run("file.new", json!({"title": "second"})).unwrap();
+    assert_ne!(app.session.active().unwrap().uid, first);
+    confirm(&mut app).unwrap();
+    assert_eq!(app.session.active().unwrap().uid, first, "OK exports the document the dialog opened in");
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.run("file.close", json!({"index": 0})).unwrap();
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+    assert!(app.ui.status.contains("has closed"), "{}", app.ui.status);
+}
