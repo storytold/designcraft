@@ -274,6 +274,14 @@ impl Document {
             };
             if empty {
                 self.stories.remove(&sid);
+                self.update_placed_items(
+                    |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid),
+                    |it| {
+                        if let Some(tf) = it.text_frame_mut() {
+                            tf.options.note_stream = None;
+                        }
+                    },
+                );
             }
         }
         Ok(removed)
@@ -406,6 +414,14 @@ impl Document {
     /// Linked children follow the surviving whole story, including for an empty removed parent;
     /// their copied content stays unchanged until an explicit Update Link.
     fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
+        self.update_placed_items(
+            |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == from),
+            |it| {
+                if let Some(stream) = it.text_frame_mut().and_then(|tf| tf.options.note_stream.as_mut()) {
+                    stream.story = to;
+                }
+            },
+        );
         // The child's old snapshot is not a snapshot of the newly merged parent. Force it
         // out of date even when the old and surviving revision numbers happen to coincide.
         let stale_rev = self.story(to).map_or(0, |st| st.rev.wrapping_sub(1));
@@ -440,6 +456,10 @@ impl Document {
     /// A linked child is replaced wholesale on update. Only empty, unlinked frame
     /// extensions can join it without losing a link or newly appended body text.
     fn check_thread_links(&self, from: ItemId, to: ItemId, keep_to: bool) -> Result<()> {
+        // Stream frames display the host's notes; threading body text into them would hide it.
+        if [from, to].iter().any(|id| self.item(*id).and_then(Item::text_frame).is_some_and(|tf| tf.options.note_stream.is_some())) {
+            return Err(DocError::Invalid("remove the note stream assignment before threading this frame".into()));
+        }
         let fs = self.frame_story(from)?;
         let ts = self.frame_story(to)?;
         let first = fs.and_then(|id| self.story(id));
@@ -628,6 +648,27 @@ impl Document {
     /// quarter turn of a vertical frame).
     pub fn text_xf(&self, item: &Item) -> Affine {
         item.xf * self.text_local(item)
+    }
+
+    /// Whether an item and all its containing groups and layers are shown.
+    pub fn item_is_visible(&self, id: ItemId) -> bool {
+        let Some(loc) = self.find(id) else { return false };
+        let Some(spread) = self.spread(loc.spread) else { return false };
+        let mut children = spread.items.as_slice();
+        for (depth, &index) in loc.path.iter().enumerate() {
+            let Some(item) = children.get(index) else { return false };
+            if item.hidden || self.layer(item.layer).is_some_and(|layer| !layer.visible) {
+                return false;
+            }
+            if let Some(&next) = loc.path.get(depth + 1)
+                && !item.states.is_empty()
+                && next != item.active_state
+            {
+                return false;
+            }
+            children = item.children();
+        }
+        true
     }
 
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
@@ -1208,7 +1249,7 @@ mod placed_item_tests {
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);
-            outer.notes.push(Arc::new(crate::Footnote { id: 1, text: story }));
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, series: 0, text: story }));
             story = outer;
         }
         d.stories.insert(sid, Arc::new(story));

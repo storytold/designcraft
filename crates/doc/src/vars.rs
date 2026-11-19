@@ -71,6 +71,9 @@ pub enum VarKind {
     NextPageFirstWord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         story: Option<StoryId>,
+        /// A note series within the named host story; omitted for the main story.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        series: Option<u64>,
     },
     /// A variable type that isn't computed here (an image caption, say): it shows the result
     /// recorded in the imported file, which already includes any text before and after.

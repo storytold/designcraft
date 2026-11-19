@@ -321,11 +321,16 @@ impl Exporter<'_> {
                     me.fill_rect(s, r, c);
                 }
             }
-            for n in &ft.notes {
-                if let Some(nft) = n.text.frames.first() {
-                    s.push_transform(&tf(Affine::translate(n.origin.to_vec2())));
+            for (text, source, origin, scale) in ft
+                .notes
+                .iter()
+                .map(|n| (&n.text, &n.source, n.origin, 1.0))
+                .chain(ft.catchwords.iter().map(|c| (&c.text, &c.source, c.origin, c.scale)))
+            {
+                if let Some(nft) = text.frames.first() {
+                    s.push_transform(&tf(Affine::translate(origin.to_vec2()) * Affine::scale(scale)));
                     let area = std::mem::replace(&mut me.text_area, lines_area(nft));
-                    me.frame_text(s, &n.text, nft, &n.source, None);
+                    me.frame_text(s, text, nft, source, None);
                     me.text_area = area;
                     s.pop();
                 }

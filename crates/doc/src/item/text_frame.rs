@@ -45,10 +45,49 @@ pub enum ColumnsKind {
     FlexibleWidth,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InsetEdge {
+    End,
+    Start,
+}
+
+/// Align a route edge to the ink bottom of its host's inset core on the same page.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsetFollow {
+    pub edge: InsetEdge,
+    pub gap: f64,
+    /// Earlier same-page route whose composed bottom also constrains this edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<crate::ItemId>,
+}
+
+impl InsetFollow {
+    pub fn valid(&self) -> bool {
+        self.gap.is_finite() && (0.0..=15552.0).contains(&self.gap)
+    }
+}
+
+/// The host story and note series whose commentary this frame displays.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteStream {
+    pub story: StoryId,
+    pub series: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_inset: Option<InsetFollow>,
+}
+
 /// Text Frame Options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TextFrameOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inset_columns: Option<super::InsetColumns>,
+    /// Commentary is composed by the host, independently of this frame's own story.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_stream: Option<NoteStream>,
     pub columns: u32,
     pub columns_kind: ColumnsKind,
     pub gutter: f64,
@@ -209,6 +248,8 @@ pub enum PathAlign {
 impl Default for TextFrameOptions {
     fn default() -> Self {
         TextFrameOptions {
+            note_stream: None,
+            inset_columns: None,
             columns: 1,
             columns_kind: ColumnsKind::FixedNumber,
             gutter: 12.0,
@@ -406,4 +447,55 @@ pub struct TextFrame {
     pub story: StoryId,
     #[serde(default)]
     pub options: TextFrameOptions,
+}
+
+impl TextFrame {
+    /// The composition that supplies this frame's text, including hosted commentary.
+    pub fn composed_story(&self) -> StoryId {
+        self.options.note_stream.map_or(self.story, |stream| stream.story)
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn follow_inset_gap_is_bounded_and_finite() {
+        for gap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 15553.0] {
+            assert!(!InsetFollow { edge: InsetEdge::End, gap, after: None }.valid());
+        }
+        for gap in [0.0, 15552.0] {
+            assert!(InsetFollow { edge: InsetEdge::Start, gap, after: None }.valid());
+        }
+    }
+
+    #[test]
+    fn follow_inset_json_roundtrip() {
+        for edge in ["start", "end"] {
+            let json = serde_json::json!({"story":8,"series":2,"followInset":{"edge":edge,"gap":12.0}});
+            let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(route).unwrap(), json);
+        }
+    }
+
+    #[test]
+    fn follow_inset_after_json_roundtrip() {
+        let json = serde_json::json!({"story":8,"series":2,"followInset":{"edge":"start","gap":12.0,"after":42}});
+        let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(route).unwrap(), json);
+    }
+
+    #[test]
+    fn stream_assignment_round_trips_and_old_frames_use_their_own_story() {
+        let mut frame: TextFrame = serde_json::from_str(r#"{"story":4}"#).unwrap();
+        assert_eq!(frame.composed_story(), StoryId(4));
+        assert!(serde_json::to_value(&frame).unwrap()["options"].get("noteStream").is_none());
+        frame.options.note_stream = Some(NoteStream { story: StoryId(8), series: 2, follow_inset: None });
+        let saved = serde_json::to_value(&frame).unwrap();
+        assert_eq!(saved["options"]["noteStream"], serde_json::json!({"story":8,"series":2}));
+        let reopened: TextFrame = serde_json::from_value(saved).unwrap();
+        assert_eq!(reopened, frame);
+        assert_eq!(reopened.composed_story(), StoryId(8));
+    }
 }

@@ -63,7 +63,8 @@ struct BorderDrag {
     horizontal_drag: bool,
 }
 
-/// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
+/// The row or column border of the frontmost Type target, in an unlocked text frame.
+/// A margin note painted over a lower table takes the caret instead of its border drag.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
     let (_, id) = cx.hit(pos)?;
     let it = cx.doc.item(id)?;
@@ -85,6 +86,9 @@ fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
     let cs = cx.cache.get(cx.doc, sid, None);
     let fi = cs.frames.iter().position(|f| f.frame == id)?;
     let hit = compose::hit_border(&cs, fi, &story.tables, start, cx.tol(4.0) / det.sqrt())?;
+    if type_hit(cx, pos).is_some_and(|(_, front)| front != id) {
+        return None;
+    }
     let axis = if hit.column { Point::new(1.0, 0.0) } else { Point::new(0.0, 1.0) };
     let v = (xf * axis) - (xf * Point::ORIGIN);
     Some(BorderDrag { frame: id.0, story: sid.0, hit, inv, start, begun: false, horizontal_drag: v.x.abs() >= v.y.abs() })
@@ -161,6 +165,63 @@ fn text_canvas_xf(cx: &ToolContext, fid: ItemId) -> Option<Affine> {
     Some(cx.item_canvas_xf(fid)? * cx.doc.text_xf(cx.doc.item(fid)?))
 }
 
+/// Root layer and item path follow the renderer's layer order and each group's child order.
+fn paint_key(cx: &ToolContext, id: ItemId) -> Option<(usize, Vec<usize>)> {
+    let loc = cx.doc.find(id)?;
+    let root = cx.doc.spread(loc.spread)?.items.get(*loc.path.first()?)?;
+    Some((cx.doc.layer_rank(root.layer), loc.path))
+}
+
+/// Margin notes extend their host's painted area; merge them with ordinary hits in paint order.
+fn type_hit(cx: &ToolContext, point: Point) -> Option<(designcraft_doc::SpreadRef, ItemId)> {
+    let (spread, sp) = cx.layout.spread_at(point)?;
+    let mut hit = cx.hit(point);
+    let mut top = hit.and_then(|(_, id)| {
+        let item = cx.doc.item(id)?;
+        let front = designcraft_doc::hit_descendant(item, sp, cx.tol(4.0), &|_| true).unwrap_or(id);
+        paint_key(cx, front)
+    });
+    let margin = |series| matches!(cx.doc.note_options(series).placement, designcraft_doc::NotePlacement::Margin { .. });
+    for story in cx.doc.stories.values().filter(|st| st.notes.iter().any(|n| margin(n.series))) {
+        let cs = cx.cache.get(cx.doc, story.id, None);
+        for ft in &cs.frames {
+            let Some(loc) = cx.doc.find(ft.frame) else { continue };
+            if loc.spread != spread || !cx.doc.item_is_visible(ft.frame) {
+                continue;
+            }
+            let Some(sp) = cx.doc.spread(spread) else { continue };
+            let mut children = sp.items.as_slice();
+            let mut eligible = true;
+            for &index in &loc.path {
+                let Some(item) = children.get(index) else {
+                    eligible = false;
+                    break;
+                };
+                if cx.doc.layer(item.layer).is_some_and(|layer| layer.locked)
+                    || matches!(spread, designcraft_doc::SpreadRef::Parent(_)) && item.locked
+                {
+                    eligible = false;
+                    break;
+                }
+                children = item.children();
+            }
+            if !eligible {
+                continue;
+            }
+            let Some(xf) = text_canvas_xf(cx, ft.frame) else { continue };
+            let local = xf.inverse() * point;
+            if ft.notes.iter().any(|n| margin(n.series) && n.rect.contains(local))
+                && let Some(key) = paint_key(cx, ft.frame)
+                && top.as_ref().is_none_or(|front| key > *front)
+            {
+                top = Some(key);
+                hit = Some((spread, ft.frame));
+            }
+        }
+    }
+    hit
+}
+
 /// Where the marked text starts: the preview typed it just before the caret.
 fn marked_start(cx: &ToolContext, ts: TextSel, p: &Preedit) -> usize {
     let text = cx.doc.text_story(ts.story, ts.cell).map_or("", |s| s.text.as_str());
@@ -201,15 +262,21 @@ fn underlines(cx: &ToolContext, ts: TextSel, r: Range<usize>) -> Vec<(Point, Poi
     match ts.cell {
         // A cell's or footnote's text is composed on its own and placed in the frame.
         Some(c) => {
-            let found = match c.footnote_id() {
-                Some(id) => compose::find_note(&cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
-                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
+            let parts: Vec<_> = match c.footnote_id() {
+                Some(id) => cs
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(fi, ft)| ft.notes.iter().filter(move |n| n.id == id).map(move |n| (fi, n.origin, n.text.clone())))
+                    .collect(),
+                None => compose::find_cell(&cs, c.table, c.row, c.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())).into_iter().collect(),
             };
-            if let Some((fi, origin, text)) = found
-                && let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
-                && let Some(ft) = text.frames.first()
-            {
-                add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+            for (fi, origin, text) in parts {
+                if let Some(m) = cs.frames.get(fi).and_then(|ft| text_canvas_xf(cx, ft.frame))
+                    && let Some(ft) = text.frames.first()
+                {
+                    add(&ft.lines, m * Affine::translate(origin.to_vec2()));
+                }
             }
         }
         None => {
@@ -240,7 +307,7 @@ impl TypeTool {
         }
         // Text frames take the caret (locked ones too, as in InDesign); an empty frame
         // becomes one, unless it's locked: then the press draws a new text frame over it.
-        if let Some((_, id)) = cx.hit(ev.pos)
+        if let Some((_, id)) = type_hit(cx, ev.pos)
             && let Some(it) = cx.doc.item(id)
             && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
             && (it.is_text_frame() || !it.locked)

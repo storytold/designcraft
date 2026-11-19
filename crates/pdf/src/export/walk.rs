@@ -71,7 +71,7 @@ impl Exporter<'_> {
         if !self.opts.tagged || !item_exported(it) {
             return self.item(s, it, parent, page);
         }
-        let story = it.text_frame().map(|t| t.story);
+        let story = it.text_frame().map(|t| t.composed_story());
         let figure = !it.alt_text.is_empty() || matches!(it.content, Content::Graphic(_)) || it.has_nested_items();
         if on_parent || it.export_options.artifact || (story.is_none() && !figure) {
             // Page furniture and decoration.
@@ -205,6 +205,37 @@ impl Exporter<'_> {
         s.pop();
     }
 
+    /// Margin notes can paint on an adjacent page even when this item's own box misses it.
+    /// Include containing groups and anchored frames; their ordinary page clips still apply.
+    fn may_paint_margin_notes(doc: &Document, it: &Item) -> bool {
+        let mut items = vec![it];
+        let mut stories = Vec::new();
+        let mut seen_items = std::collections::HashSet::new();
+        let mut seen_stories = std::collections::HashSet::new();
+        while !items.is_empty() || !stories.is_empty() {
+            if let Some(item) = items.pop() {
+                if !seen_items.insert(std::ptr::from_ref(item)) || !item_exported(item) {
+                    continue;
+                }
+                items.extend(drawn_children(item).map(AsRef::as_ref));
+                if let Some(story) = item.text_frame().and_then(|frame| doc.story(frame.composed_story())) {
+                    stories.push(story);
+                }
+            } else if let Some(story) = stories.pop() {
+                if !seen_stories.insert(std::ptr::from_ref(story)) {
+                    continue;
+                }
+                if story.notes.iter().any(|note| matches!(doc.note_options(note.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
+                    return true;
+                }
+                items.extend(story.objects.iter().map(|object| &object.item));
+                stories.extend(story.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+                stories.extend(story.notes.iter().chain(&story.endnotes).map(|note| &note.text));
+            }
+        }
+        false
+    }
+
     fn item_inner(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
         if !item_exported(it) {
             return;
@@ -212,7 +243,7 @@ impl Exporter<'_> {
         let ds = &it.effects.drop_shadow;
         let grow = it.stroke.extent() + 2.0 + if ds.on { ds.distance.abs() + ds.size.abs() } else { 0.0 };
         let vb = parent.transform_rect_bbox(it.bounds()).inflate(grow, grow);
-        if !rects_overlap(vb, self.clip) {
+        if !rects_overlap(vb, self.clip) && !Self::may_paint_margin_notes(self.doc, it) {
             return;
         }
         let xf = parent * it.xf;
@@ -305,7 +336,7 @@ impl Exporter<'_> {
         if let Content::Text(tfr) = &it.content
             && !drawn
         {
-            let cs = self.composed(tfr.story, page);
+            let cs = self.composed(tfr.composed_story(), page);
             if let Some(ft) = cs.frame(it.id) {
                 self.frame_objects(s, ft, xf * self.doc.text_local(it), page);
             }
@@ -354,7 +385,7 @@ impl Exporter<'_> {
                 }
             }
             Content::Text(tfr) => {
-                let cs = self.composed(tfr.story, page);
+                let cs = self.composed(tfr.composed_story(), page);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
                     // Type on a path: the glyphs as outlines along the path.
                     for (si, gp) in designcraft_compose::path_glyphs(&cs, ft, bp, pt) {
@@ -378,7 +409,7 @@ impl Exporter<'_> {
                         }
                     }
                 } else if let Some(ft) = cs.frame(it.id) {
-                    let text = doc.story(tfr.story).map(|st| st.text.as_str()).unwrap_or("");
+                    let text = doc.story(tfr.composed_story()).map(|st| st.text.as_str()).unwrap_or("");
                     let local = doc.text_local(it);
                     if local != Affine::IDENTITY {
                         s.push_transform(&tf(local));
@@ -432,5 +463,34 @@ impl Exporter<'_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod margin_culling_tests {
+    use super::*;
+
+    #[test]
+    fn route_culling_scans_the_composed_hosts_nested_notes() {
+        let mut doc = Document::new(&Default::default());
+        let (_, host) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 100.0), doc.default_layer(), "Host", Default::default()).unwrap();
+        let (route, own) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 0.0, 220.0, 100.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Commentary".into(),
+            options: designcraft_doc::FootnoteOptions { placement: designcraft_doc::NotePlacement::Stream, ..Default::default() },
+        });
+        doc.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+        let story = doc.story_mut(host).unwrap();
+        let id = story.insert_note(0, "Commentary", Default::default()).unwrap();
+        let note = story.note_mut(id).unwrap();
+        note.series = 1;
+        note.text.insert_note(0, "External margin", Default::default()).unwrap();
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: host, series: 1, follow_inset: None });
+        assert!(doc.story(own).unwrap().notes.is_empty());
+        assert!(Exporter::may_paint_margin_notes(&doc, doc.item(route).unwrap()));
     }
 }

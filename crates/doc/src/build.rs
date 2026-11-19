@@ -159,6 +159,7 @@ impl Document {
             toc: None,
             text_variables: crate::vars::defaults(),
             footnote_options: Default::default(),
+            note_series: Vec::new(),
             xref_formats: crate::xref::default_formats(),
             index: None,
             created: crate::vars::now(),
