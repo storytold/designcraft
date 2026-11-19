@@ -467,7 +467,7 @@ pub(crate) fn case_map(src: &str, case: &str) -> Vec<String> {
         }
         out.push(m);
         // Attached marks and joiners must not turn the next letter into a word initial.
-        if grapheme_start || c.is_alphanumeric() {
+        if grapheme_start || c.is_alphanumeric() || matches!(c, '\'' | '\u{2019}') {
             prev = c;
         }
     }
@@ -553,6 +553,8 @@ mod case_tests {
             ("alpha-beta.gamma/delta_OMEGA", "Alpha-Beta.Gamma/Delta_Omega"),
             ("123ABC abc123DEF", "123abc Abc123def"),
             ("\u{600}HELLO", "\u{600}Hello"),
+            ("\u{600}'HELLO", "\u{600}'hello"),
+            ("\u{600}’HELLO", "\u{600}’hello"),
             ("\u{301}HELLO", "\u{301}Hello"),
         ] {
             assert_eq!(case_map(source, "title").concat(), expected);
