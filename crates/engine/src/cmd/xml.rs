@@ -932,7 +932,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         };
         // A linked image by its file; an embedded one (no link) by its name only while no such file
         // is there to load instead.
-        let holds = holds.and_then(|(link, name)| link.or_else(|| (!std::path::Path::new(&path).exists()).then_some(name)));
+        let holds = holds.and_then(|(link, name)| link.or_else(|| (!crate::io::exists(&path)).then_some(name)));
         if image.fit.is_none() && image.crop.is_none() && holds.is_some_and(|l| image.href == format!("file://{l}") || path == l) {
             slot.2 = true;
             placed += 1;
