@@ -78,7 +78,7 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
     for rect in [Rect::new(640.0, 36.0, 670.0, 36.0 + height), Rect::new(36.0, 600.0, 636.0, 600.0 + height)] {
         let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), rect, doc.default_layer(), "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
         routes.push(id);
     }
     let story = doc.story_mut(sid).unwrap();
@@ -152,6 +152,7 @@ fn follower_clears_lowest_commentary_catchword() {
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream {
         story: sid,
         series: 2,
+        catchword: false,
         follow_inset: Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None }),
     });
     // Series 2 is routed rather than inset.
@@ -188,7 +189,7 @@ fn routed_series_catchword_appears_only_in_last_route_on_continuing_page() {
             .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, top, x + 636.0, top + height), doc.default_layer(), "", Default::default())
             .unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true, follow_inset: None });
         routes.push(id);
     }
     let cs = compose_story(&doc, sid, &Default::default());
@@ -211,6 +212,71 @@ fn follow_inset_reuses_candidate_main_layout() {
     super::fitting::MAIN_LAYOUTS.with(|n| n.set(0));
     compose_story(&doc, sid, &Default::default());
     assert_eq!(super::fitting::MAIN_LAYOUTS.with(|n| n.get()), ordinary);
+}
+
+#[test]
+fn routed_catchword_hugs_last_line_and_its_follower() {
+    let (mut doc, sid) = document(2, "Short main.\nNext page.", "", "");
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.find("Next").unwrap();
+    story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+    enable_catchwords(&mut doc, sid);
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+    let mut follower_series = doc.note_series[1].clone();
+    follower_series.id = 3;
+    doc.note_series.push(follower_series);
+    for (at, series, text) in [(at, 2, "Following page."), (0, 2, "Route line.\nRoute line.\nRoute line."), (0, 3, "Follower.")] {
+        let id = doc.story_mut(sid).unwrap().insert_note(at, text, Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = series;
+    }
+    let mut routes = Vec::new();
+    for (page, series) in [(0, 2), (0, 3), (1, 2)] {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 800.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        let follow_inset =
+            (series == 3).then(|| designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: routes.first().copied() });
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series, catchword: series == 2, follow_inset });
+        routes.push(id);
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let route = cs.frame(routes[0]).unwrap();
+    let last = route
+        .notes
+        .iter()
+        .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (n.origin.y + l.baseline, l.descent))))
+        .next_back()
+        .unwrap();
+    let word = &route.catchwords[0];
+    assert!((word.rect.y0 - last.0 - last.1).abs() < 0.01, "row {:?}, last line {last:?}", word.rect);
+    let baseline = word.origin.y + word.text.frames[0].lines[0].baseline * word.scale;
+    assert!(baseline > last.0 && baseline - last.0 <= word.rect.height());
+    assert!((cs.frame(routes[1]).unwrap().columns[0].y0 - word.rect.y1).abs() < 0.01);
+}
+
+#[test]
+fn small_catchword_leading_does_not_scale_glyph_size() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(80), "", "");
+    std::sync::Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Small leading".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: designcraft_doc::CharAttrs { size: Some(18.0), leading: Some(designcraft_doc::Leading::Points(2.0)), ..Default::default() },
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Small leading".into() };
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    let word = &cs.frames[0].catchwords[0];
+    assert!(word.text.styles.iter().any(|s| s.size == 18.0));
+    assert_eq!(word.scale, 1.0);
 }
 
 #[test]
@@ -269,7 +335,7 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
     let (route, _) =
         doc.add_text_frame(SpreadRef::Doc(0), Rect::new(640.0, 36.0, 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
+        Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
     let at = text.rfind("Main line.").unwrap();
     let note = doc.story_mut(sid).unwrap().insert_note(at, "Return visit note.", Default::default()).unwrap();
     doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
@@ -278,7 +344,7 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
     let (other_route, _) =
         doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 640.0, 36.0, x + 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
     doc.item_mut(other_route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(designcraft_doc::NoteStream { story: sid, series: 2, follow_inset: None });
+        Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
     let first = doc.story_mut(sid).unwrap().insert_note(0, "First visit note.", Default::default()).unwrap();
     doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
     let cs = compose_story(&doc, sid, &Default::default());

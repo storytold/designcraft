@@ -1,5 +1,13 @@
 # DesignCraft roadmap
 
+- 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
+
+- 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
+
+- 2026-11-20: catchword glyphs keep their requested size when leading is small; only width fitting can shrink them (#2873).
+
+- 2026-11-20: routed catchwords follow their last composed line, and chained followers clear that row rather than the route frame's unused height (#2873).
+
 - 2026-11-19: the last routed frame of a series uses that series' continuation text at the excerpt end; clearing it removes the terminal catchword (#2869).
 
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).

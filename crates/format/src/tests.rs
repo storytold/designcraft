@@ -976,12 +976,13 @@ fn commentary_stream_routes_and_hidden_refs_survive_native_roundtrip() {
     doc.footnote_options.ref_hidden = true;
     doc.story_mut(host).unwrap().insert_note(4, "Comment", Default::default()).unwrap();
     let (frame, own) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 500.0, 400.0), layer, "", Default::default()).unwrap();
-    doc.item_mut(frame).unwrap().text_frame_mut().unwrap().options.note_stream = Some(NoteStream { story: host, series: 0, follow_inset: None });
+    doc.item_mut(frame).unwrap().text_frame_mut().unwrap().options.note_stream =
+        Some(NoteStream { story: host, series: 0, catchword: false, follow_inset: None });
     let reopened = load(&save(&doc).unwrap()).unwrap();
     assert_eq!(reopened.footnote_options, doc.footnote_options);
     let tf = reopened.item(frame).unwrap().text_frame().unwrap();
     assert_eq!(tf.story, own);
-    assert_eq!(tf.options.note_stream, Some(NoteStream { story: host, series: 0, follow_inset: None }));
+    assert_eq!(tf.options.note_stream, Some(NoteStream { story: host, series: 0, catchword: false, follow_inset: None }));
     reopened.check().unwrap();
 }
 

@@ -111,6 +111,16 @@ struct RouteGeometry<'a> {
     routes: &'a [FrameSpec],
 }
 
+fn route_catchword_rect(frame: &FrameText, reserved: Rect) -> Option<Rect> {
+    let bottom = frame
+        .notes
+        .iter()
+        .flat_map(|note| note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent)))
+        .reduce(f64::max)?;
+    let end = bottom + reserved.height();
+    (end <= reserved.y1 + 0.01).then_some(Rect::new(reserved.x0, bottom, reserved.x1, end))
+}
+
 fn fit_routes(
     doc: &Document,
     story: &Story,
@@ -160,7 +170,8 @@ fn fit_routes(
                         let spec = areas.get(previous)?;
                         let frame = fitted.get(previous)?;
                         let bottom = frame.notes.iter().map(|n| n.rect.y1).fold(spec.area.y0, f64::max);
-                        let bottom = reserved.get(&spec.id).map_or(bottom, |rect| bottom.max(rect.y1));
+                        let bottom =
+                            reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect)).map_or(bottom, |rect| bottom.max(rect.y1));
                         route_edge(doc, spec.id, id, bottom, follow.gap)
                     });
                     let Some(edge) = route_edge(doc, host, id, bottom, follow.gap).filter(|_| dependency.is_none() || reference.is_some()) else {
@@ -197,7 +208,7 @@ fn fit_routes(
         let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let mut seen = std::collections::HashSet::new();
         for area in input.areas.iter().rev() {
-            let Some(series) = area.opts.note_stream.map(|s| s.series) else { continue };
+            let Some(series) = area.opts.note_stream.filter(|s| s.catchword).map(|s| s.series) else { continue };
             if !seen.insert(series) {
                 continue;
             }
@@ -217,7 +228,8 @@ fn fit_routes(
             let (fitted, reserved) = fit(&rows);
             result = fitted;
             for spec in input.areas {
-                let Some(region) = reserved.get(&spec.id).copied() else { continue };
+                let Some(frame) = result.frames.iter().find(|f| f.frame == spec.id) else { continue };
+                let Some(region) = reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect)) else { continue };
                 let mut spec = spec.clone();
                 spec.opts.inset_columns = Some(options.clone());
                 regions.push((spec, region));
@@ -409,7 +421,7 @@ impl Page<'_> {
                         self.frame.area.y1,
                     ),
                 );
-                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
+                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
                 let fit = crate::notes::fit_stream_page_for(
                     self.doc,
                     self.story,
@@ -495,7 +507,7 @@ impl Page<'_> {
                 }
             }
             if let Some(series) = series {
-                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
+                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
             } else if future && bottom {
                 f.area.y1 = (f.area.y1 - space).max(f.area.y0);
             }

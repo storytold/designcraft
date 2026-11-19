@@ -14,12 +14,15 @@ fn attributes(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> Cha
 }
 
 pub(super) fn row_height(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> f64 {
+    if options.style().is_none_or(|style| doc.styles.char_style(style).is_none()) {
+        return super::fitting::CATCHWORD_SPACE;
+    }
     let attrs = attributes(doc, options);
     let leading = match attrs.leading {
         Some(Leading::Points(value)) => value,
         _ => attrs.size.unwrap_or(9.0) * 1.2,
     };
-    let height = leading * 1.5;
+    let height = leading;
     if height.is_finite() && height > 0.0 && height <= 1.0e6 { height } else { super::fitting::CATCHWORD_SPACE }
 }
 
@@ -57,8 +60,7 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
             let (source, at) = part.unwrap_or((story, frame.range.end));
             let text = compose(doc, source, at, word, spec, &options);
             let width = text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
-            let height = text.frames.first().map_or(0.0, |f| f.content_height);
-            let scale = (rect.width() / width.max(0.01)).min(rect.height() / height.max(0.01)).min(1.0);
+            let scale = (rect.width() / width.max(0.01)).min(1.0);
             let rtl = source
                 .paras
                 .get(source.para_at(at))
@@ -111,4 +113,23 @@ fn compose(doc: &Document, source: &Story, at: usize, word: &str, spec: &FrameSp
         ..spec.clone()
     };
     crate::compose(doc, &text, &[frame], &ComposeOptions { inset_measure: true, ..Default::default() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn styled_row_uses_leading_and_boolean_keeps_legacy_space() {
+        let mut doc = Document::new(&Default::default());
+        Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+            name: "Catchword".into(),
+            based_on: None,
+            shortcut: String::new(),
+            chars: CharAttrs { size: Some(15.0), leading: Some(Leading::Points(24.0)), ..Default::default() },
+        });
+        assert_eq!(row_height(&doc, &true.into()), 18.0);
+        assert_eq!(row_height(&doc, &designcraft_doc::InsetCatchwords::Styled { style: "Catchword".into() }), 24.0);
+        assert_eq!(row_height(&doc, &designcraft_doc::InsetCatchwords::Styled { style: "Missing".into() }), 18.0);
+    }
 }

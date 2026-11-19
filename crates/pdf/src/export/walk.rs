@@ -489,7 +489,7 @@ mod margin_culling_tests {
         note.series = 1;
         note.text.insert_note(0, "External margin", Default::default()).unwrap();
         doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: host, series: 1, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: host, series: 1, catchword: false, follow_inset: None });
         assert!(doc.story(own).unwrap().notes.is_empty());
         assert!(Exporter::may_paint_margin_notes(&doc, doc.item(route).unwrap()));
     }
