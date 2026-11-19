@@ -90,6 +90,29 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn catchwords_align_to_each_stream_paragraph_line_end() {
+    for rtl in [false, true] {
+        let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), "");
+        enable_catchwords(&mut doc, sid);
+        let direction = if rtl { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight };
+        let story = doc.story_mut(sid).unwrap();
+        story.format_paras(0..story.len(), |p| p.para.direction = Some(direction));
+        for note in &mut story.notes {
+            let note = std::sync::Arc::make_mut(note);
+            note.text.format_paras(0..note.text.len(), |p| p.para.direction = Some(direction));
+        }
+        let cs = compose_story(&doc, sid, &Default::default());
+        assert!(!cs.frames[0].catchwords.is_empty());
+        for c in cs.frames.iter().flat_map(|f| &f.catchwords) {
+            let width = c.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
+            let edge = if rtl { c.origin.x } else { c.origin.x + width * c.scale };
+            assert!((edge - if rtl { c.rect.x0 } else { c.rect.x1 }).abs() < 0.01);
+        }
+    }
+}
+
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);
@@ -510,7 +533,7 @@ fn enable_catchwords(doc: &mut Document, sid: StoryId) {
 }
 
 #[test]
-fn catchwords_follow_each_stream_and_its_mirrored_outer_edge() {
+fn catchwords_follow_each_stream_and_its_line_end() {
     let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), &"OUTER body.\u{2028}".repeat(80));
     enable_catchwords(&mut doc, sid);
     let cs = compose_story(&doc, sid, &Default::default());
@@ -528,7 +551,6 @@ fn catchwords_follow_each_stream_and_its_mirrored_outer_edge() {
     let values = crate::vars::values(&doc, Some(0), Some(&index));
     assert_eq!(values[doc.variable("Inner catchword").unwrap()], "INNER");
     for frame in &cs.frames {
-        let spec = frame_specs(&doc, sid).into_iter().find(|f| f.id == frame.frame).unwrap();
         for c in &frame.catchwords {
             let expected = match c.series {
                 None => "Main",
@@ -538,8 +560,8 @@ fn catchwords_follow_each_stream_and_its_mirrored_outer_edge() {
             };
             assert_eq!(&*c.source, expected);
             let width = c.text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
-            let edge = if spec.left_page { c.origin.x } else { c.origin.x + width * c.scale };
-            assert!((edge - if spec.left_page { c.rect.x0 } else { c.rect.x1 }).abs() < 0.01);
+            let edge = c.origin.x + width * c.scale;
+            assert!((edge - c.rect.x1).abs() < 0.01);
             for line in &frame.lines {
                 assert!(
                     line.x1 <= c.rect.x0 + 0.01

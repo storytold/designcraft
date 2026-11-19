@@ -28,7 +28,8 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
             let width = text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
             let height = text.frames.first().map_or(0.0, |f| f.content_height);
             let scale = (rect.width() / width.max(0.01)).min(rect.height() / height.max(0.01)).min(1.0);
-            let x = if spec.left_page { rect.x0 } else { rect.x1 - width * scale };
+            let rtl = source.paras.get(source.para_at(at)).is_some_and(|p| doc.styles.resolve_para(p).0.direction == designcraft_doc::TextDirection::RightToLeft);
+            let x = if rtl { rect.x0 } else { rect.x1 - width * scale };
             let origin = Point::new(x, rect.y0);
             frame.catchwords.push(PlacedCatchword {
                 series: *series,
