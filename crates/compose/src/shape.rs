@@ -1427,6 +1427,14 @@ fn fit_auto_tcy(glyphs: &mut [Glyph], auto: &[std::ops::Range<usize>]) {
     }
 }
 
+/// Whether a word broken after `g` takes no hyphen mark: Indian scripts (Devanagari, Bengali,
+/// Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada and Malayalam). Their words split between
+/// syllables at a line end without a hyphen, so nothing is drawn there and no room is kept for
+/// one. Latin and other scripts keep the hyphen.
+pub(crate) fn breaks_without_hyphen(g: &Glyph) -> bool {
+    matches!(g.ch as u32, 0x0900..=0x0DFF)
+}
+
 /// A hyphen glyph in the face/size of `g`, placed after it (zero source length).
 pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     let gid = designcraft_fonts::first_glyph(&g.face, &['-', '\u{2010}']);

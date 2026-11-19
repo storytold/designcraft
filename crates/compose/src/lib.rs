@@ -5235,7 +5235,12 @@ fn layout_line(
             g.shift += cjk_alignment_shift(g, &reference);
         }
     }
-    if hyphen && let Some(g) = line.last() {
+    // No hyphen after a word of an Indian script (its last letter before any soft hyphens).
+    let marked = line.iter().rev().find(|g| g.ch != shape::SOFT_HYPHEN).is_none_or(|g| !shape::breaks_without_hyphen(g));
+    if hyphen
+        && marked
+        && let Some(g) = line.last()
+    {
         let h = shape::hyphen_after(g);
         line.push(h);
     }

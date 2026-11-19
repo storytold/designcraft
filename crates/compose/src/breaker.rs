@@ -365,8 +365,12 @@ fn hyphen_hang(g: &Glyph, hw: f64, sp: &Spacing) -> f64 {
     if sp.optical { hw * hang('-').1 * optical_scale(g, sp) } else { 0.0 }
 }
 
-/// Advance of the hyphen glyph that would follow `g` (cached per face).
+/// Advance of the hyphen glyph that would follow `g` (cached per face); none after a letter of
+/// an Indian script, whose broken words take no hyphen ([`crate::shape::breaks_without_hyphen`]).
 fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
+    if crate::shape::breaks_without_hyphen(g) {
+        return 0.0;
+    }
     let id = g.face.id();
     let units = match cache.iter().find(|c| c.0 == id) {
         Some(c) => c.1,
@@ -887,9 +891,12 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
         let (end, hyphen, forced) = match it.kind {
             Kind::Penalty => {
                 let e = ig[b].min(n);
-                // A flagged penalty with width = an inserted hyphen (not an explicit '-').
+                // A flagged penalty with width = an inserted hyphen (not an explicit '-'). A
+                // hyphenation point after a letter of an Indian script inserts one of no width
+                // (no hyphen is drawn there) but is still a hyphenated break: `auto` tells it from
+                // the break after an explicit '-'.
                 let explicit = e > 0 && matches!(glyphs[e - 1].ch, '-' | '\u{2010}');
-                (e, it.flagged && it.w > 0.0 && !explicit || (it.flagged && e > 0 && glyphs[e - 1].ch == SOFT_HYPHEN), it.p <= -INF)
+                (e, it.flagged && (it.w > 0.0 || it.auto) && !explicit || (it.flagged && e > 0 && glyphs[e - 1].ch == SOFT_HYPHEN), it.p <= -INF)
             }
             Kind::Glue | Kind::Box => (ig[b], false, false),
         };
@@ -1005,7 +1012,10 @@ pub fn greedy(
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if g.ch == SOFT_HYPHEN {
                     if may_hyphenate(hyphens) {
-                        let hw = hyphen_width(g, &mut hy_cache);
+                        // The hyphen follows the last glyph before the soft hyphen(s), as in
+                        // Knuth–Plass and line layout.
+                        let base = glyphs[..i].iter().rev().find(|p| p.ch != SOFT_HYPHEN).unwrap_or(g);
+                        let hw = hyphen_width(base, &mut hy_cache);
                         let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
                         if x + hy <= w + shrink + FIT_EPS {
                             last_ok = Some((i + 1, true));

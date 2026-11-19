@@ -5791,7 +5791,8 @@ fn norwegian_text_gets_norwegian_hyphenation() {
 }
 
 /// Hindi and Malayalam text set in its language hyphenates between syllables, never inside a
-/// conjunct: each hyphenated line ends in a prefix the patterns allow.
+/// conjunct: each hyphenated line ends in a prefix the patterns allow, with no hyphen drawn
+/// after it (Indian scripts split words at a line end without one).
 #[test]
 fn indian_language_text_hyphenates_between_syllables() {
     for (language, word, prefixes) in [("Hindi", "विद्यार्थी", &["वि", "विद्या"][..]), ("Malayalam", "വിദ്യാർത്ഥി", &["വി", "വിദ്യാർ"][..])]
@@ -5808,6 +5809,22 @@ fn indian_language_text_hyphenates_between_syllables() {
             let tail = b.rsplit(' ').next().unwrap_or(b);
             assert!(prefixes.contains(&tail), "{language}: {b:?} ends in a syllable prefix of {word}");
         }
+        for l in all_lines(&cs).into_iter().filter(|l| l.hyphenated) {
+            assert!(l.glyphs.iter().all(|g| g.rendered_char != '-'), "{language}: no hyphen drawn on {:?}", &text[l.range.clone()]);
+        }
+    }
+}
+
+/// Latin text keeps its hyphen at a hyphenated line end.
+#[test]
+fn latin_text_still_draws_its_hyphen() {
+    let text = "internationalization internationalization internationalization";
+    let (d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 106.0, 700.0), ParaAttrs::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let hyphenated: Vec<&Line> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).collect();
+    assert!(!hyphenated.is_empty(), "English text is hyphenated");
+    for l in hyphenated {
+        assert_eq!(l.glyphs.iter().rev().find(|g| g.visible).map(|g| g.rendered_char), Some('-'), "{:?}", &text[l.range.clone()]);
     }
 }
 
