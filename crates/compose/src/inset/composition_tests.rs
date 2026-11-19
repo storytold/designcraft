@@ -1173,3 +1173,28 @@ fn series_catchword_distinguishes_hidden_controls_from_active_delimiters() {
         }
     }
 }
+
+#[test]
+fn route_dependency_chain_validation_visits_each_frame_once() {
+    let (doc, sid, _) = routed_document(90.0);
+    let prototype = stream_frame_specs(&doc, sid)[0].clone();
+    let areas: Vec<_> = (0..128)
+        .map(|i| {
+            let mut frame = prototype.clone();
+            frame.id = ItemId(10_000 + i);
+            frame.opts.note_stream.as_mut().unwrap().follow_inset = Some(designcraft_doc::InsetFollow {
+                edge: designcraft_doc::InsetEdge::Start,
+                gap: 0.0,
+                after: i.checked_sub(1).map(|previous| ItemId(10_000 + previous)),
+            });
+            frame
+        })
+        .collect();
+    super::fitting::DEPENDENCY_VISITS.with(|n| n.set(0));
+    let dependencies = super::fitting::route_dependencies(&areas);
+    assert_eq!(dependencies[0], None);
+    for (index, dependency) in dependencies.iter().enumerate().skip(1) {
+        assert_eq!(*dependency, Some(Some(index - 1)));
+    }
+    assert!(super::fitting::DEPENDENCY_VISITS.with(|n| n.get()) <= areas.len(), "visits: {}", super::fitting::DEPENDENCY_VISITS.with(|n| n.get()));
+}

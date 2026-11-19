@@ -90,20 +90,41 @@ fn route_edge(doc: &Document, host: designcraft_doc::ItemId, route: designcraft_
     edge.is_finite().then_some(edge)
 }
 
-fn earlier_route(areas: &[FrameSpec], index: usize, after: designcraft_doc::ItemId) -> Option<usize> {
-    let previous = areas.iter().position(|f| f.id == after)?;
-    if previous >= index {
-        return None;
-    }
-    let mut seen = std::collections::HashSet::new();
-    let mut next = areas.get(index).map(|f| f.id);
-    while let Some(id) = next {
-        if !seen.insert(id) {
-            return None;
+pub(super) fn route_dependencies(areas: &[FrameSpec]) -> Vec<Option<Option<usize>>> {
+    let indices: std::collections::HashMap<_, _> = areas.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
+    let after: Vec<_> = areas.iter().map(|f| f.opts.note_stream.as_ref().and_then(|s| s.follow_inset).and_then(|f| f.after)).collect();
+    // 0 = unvisited, 1 = current path, 2 = valid chain, 3 = reaches a cycle.
+    let mut status = vec![0_u8; areas.len()];
+    for root in 0..areas.len() {
+        let mut path = Vec::new();
+        let mut next = Some(root);
+        let valid = loop {
+            let Some(index) = next else { break true };
+            match status.get(index).copied() {
+                Some(0) => {
+                    #[cfg(test)]
+                    DEPENDENCY_VISITS.with(|n| n.set(n.get() + 1));
+                    if let Some(state) = status.get_mut(index) {
+                        *state = 1;
+                    }
+                    path.push(index);
+                    next = after.get(index).copied().flatten().and_then(|id| indices.get(&id).copied());
+                }
+                Some(2) | None => break true,
+                _ => break false,
+            }
+        };
+        for index in path {
+            if let Some(state) = status.get_mut(index) {
+                *state = if valid { 2 } else { 3 };
+            }
         }
-        next = areas.iter().find(|f| f.id == id).and_then(|f| f.opts.note_stream.as_ref()).and_then(|s| s.follow_inset).and_then(|f| f.after);
     }
-    Some(previous)
+    after
+        .into_iter()
+        .enumerate()
+        .map(|(index, after)| after.map(|id| indices.get(&id).copied().filter(|previous| *previous < index && status.get(index) == Some(&2))))
+        .collect()
 }
 
 struct RouteGeometry<'a> {
@@ -134,14 +155,7 @@ fn fit_routes(
     let mut series: Vec<_> = geometry.routes.iter().filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series)).collect();
     series.sort_unstable();
     series.dedup();
-    let dependencies: Vec<_> = input
-        .areas
-        .iter()
-        .enumerate()
-        .map(|(index, area)| {
-            area.opts.note_stream.as_ref().and_then(|s| s.follow_inset).and_then(|f| f.after).map(|after| earlier_route(input.areas, index, after))
-        })
-        .collect();
+    let dependencies = route_dependencies(input.areas);
     let fit = |rows: &std::collections::HashMap<designcraft_doc::ItemId, f64>| {
         #[cfg(test)]
         ROUTE_AREAS.with(|n| n.set(n.get() + input.areas.len()));
@@ -838,6 +852,7 @@ pub(crate) struct Trace {
 #[cfg(test)]
 thread_local! {
     pub(crate) static LAST_ROWS: std::cell::RefCell<Vec<(designcraft_doc::ItemId, Option<u64>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub(crate) static DEPENDENCY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static MAIN_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static ROUTE_AREAS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static REFITTED: std::cell::RefCell<Vec<designcraft_doc::ItemId>> = const { std::cell::RefCell::new(Vec::new()) };
