@@ -349,7 +349,7 @@ fn data_source_discarded_quoted_fields_keep_records_and_warning_lines() {
 }
 
 #[test]
-fn data_source_delimiter_override_and_known_extensions_win() {
+fn data_source_delimiter_override_and_tsv_extension_win() {
     let body = "Name;City\nAda;London\n";
     let csv = parse::table_from_bytes(body.as_bytes(), "people.csv", None).unwrap();
     assert_eq!(csv.delimiter, Delimiter::Semicolon);
@@ -364,7 +364,8 @@ fn data_source_delimiter_override_and_known_extensions_win() {
     assert_eq!(tab.rows, vec![vec!["Ada,Analyst", "London"]]);
 }
 
-/// #2874: a tab-delimited `.csv` file splits into separate fields and merges their values.
+/// #2874: a tab-delimited `.csv` file splits into separate fields and merges their values,
+/// while `.csv` files whose header splits on unquoted `,` stay comma-delimited.
 #[test]
 fn csv_name_sniffs_tab_and_semicolon_separators() {
     let tab_csv = "Name\tPosition\tStrasse\tPLZ\tOrt\nAda\tLead\tHauptstr 1\t10115\tBerlin\nGrace\tAdmiral\tRing 2\t80331\tMunich\n";
@@ -398,9 +399,48 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
     assert_eq!(semi_csv.delimiter, Delimiter::Semicolon);
     assert_eq!(semi_csv.rows, vec![vec!["Ada", "London"]]);
 
+    let quoted_comma_tab_csv = parse::table_from_bytes(b"\"Name, First\"\tOrt\nAda\tBerlin\n", "people.csv", None).unwrap();
+    assert_eq!(quoted_comma_tab_csv.delimiter, Delimiter::Tab);
+    assert_eq!(quoted_comma_tab_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name, First", "Ort"]);
+
+    // Comma `.csv` files whose header splits on an unquoted comma keep Comma even when rows contain `;` or `\t`.
+    let semi_in_values = parse::table_from_bytes(b"id,notes; comments\n1,a; b; c\n2,d; e; f\n", "export.csv", None).unwrap();
+    assert_eq!(semi_in_values.delimiter, Delimiter::Comma);
+    assert_eq!(semi_in_values.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["id", "notes; comments"]);
+    assert_eq!(semi_in_values.rows, vec![vec!["1", "a; b; c"], vec!["2", "d; e; f"]]);
+
+    let quoted_semi_header = parse::table_from_bytes(b"Ort,\"Name;Vorname\"\nBerlin,\"a;b;c\"\n", "people.csv", None).unwrap();
+    assert_eq!(quoted_semi_header.delimiter, Delimiter::Comma);
+    assert_eq!(quoted_semi_header.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Ort", "Name;Vorname"]);
+    assert_eq!(quoted_semi_header.rows, vec![vec!["Berlin", "a;b;c"]]);
+
+    let tab_in_values = parse::table_from_bytes(b"Name,Note\tx\nAda,hi\tthere\n", "people.csv", None).unwrap();
+    assert_eq!(tab_in_values.delimiter, Delimiter::Comma);
+    assert_eq!(tab_in_values.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name", "Note\tx"]);
+    assert_eq!(tab_in_values.rows, vec![vec!["Ada", "hi\tthere"]]);
+
     let comma_csv = parse::table_from_bytes(b"\"Name\tLabel\",City\nAda,London\n", "people.csv", None).unwrap();
     assert_eq!(comma_csv.delimiter, Delimiter::Comma);
     assert_eq!(comma_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name\tLabel", "City"]);
+}
+
+/// #2874: updating a linked source saved as a single Comma field containing `\t` or `;` re-sniffs it.
+#[test]
+fn update_resniffs_legacy_single_field_comma_source() {
+    let dir = scratch("update_resniff");
+    let path = dir.join("CSV-Visitenkarten.csv");
+    write(&path, "Name\tOrt\nAda\tBerlin\n");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    let broken = exec(&mut s, "data.source.select", json!({"path": &path, "delimiter": "comma"}));
+    assert_eq!(broken["fields"], json!([{"name": "Name\tOrt", "kind": "text"}]));
+
+    let fixed = exec(&mut s, "data.source.update", json!({}));
+    assert_eq!(fixed["fields"], json!([{"name": "Name", "kind": "text"}, {"name": "Ort", "kind": "text"}]));
+    let source = &s.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(source.delimiter, Delimiter::Tab);
+    assert_eq!(source.rows, vec![vec!["Ada", "Berlin"]]);
 }
 
 #[test]

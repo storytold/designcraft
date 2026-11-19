@@ -370,14 +370,28 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    if craft_file_formats::detect(name, &[]) == Some(craft_file_formats::Format::Tsv) {
-        return Delimiter::Tab;
+    match craft_file_formats::detect(name, &[]) {
+        Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
+        Some(craft_file_formats::Format::Csv) if header_splits_on_comma(text) => return Delimiter::Comma,
+        _ => {}
     }
     match craft_csv::sniff_delimiter(text, '"') {
         b'\t' => Delimiter::Tab,
         b';' => Delimiter::Semicolon,
         _ => Delimiter::Comma,
     }
+}
+
+fn header_splits_on_comma(text: &str) -> bool {
+    let mut split = false;
+    craft_csv::parse_records(text, ',', '"', 2, |cells| {
+        if cells.iter().all(|c| c.trim().is_empty()) {
+            return true;
+        }
+        split = cells.len() > 1;
+        false
+    });
+    split
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.

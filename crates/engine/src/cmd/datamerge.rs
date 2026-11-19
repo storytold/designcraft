@@ -110,10 +110,12 @@ fn source_update(s: &mut Session, _p: &Value) -> Result<Value> {
         let path = src.path.clone().ok_or_else(|| bad("data.source.update", "this source has no file to update"))?;
         let at =
             crate::io::document_path(&path, st.path.as_deref().map(Path::new)).map_err(|why| bad("data.source.update", format!("{path}: {why}")))?;
-        (at.to_string_lossy().into_owned(), src.name.clone(), src.delimiter, src.sheet.clone())
+        let resniff = src.delimiter == Delimiter::Comma && src.fields.len() == 1 && src.fields.first().is_some_and(|f| f.name.contains(['\t', ';']));
+        let delimiter = if resniff { None } else { Some(src.delimiter) };
+        (at.to_string_lossy().into_owned(), src.name.clone(), delimiter, src.sheet.clone())
     };
     let bytes = read_path(&path).map_err(|e| bad("data.source.update", e))?;
-    let table = parse_file(&bytes, &name, Some(delimiter), sheet.as_deref()).map_err(|e| bad("data.source.update", e))?;
+    let table = parse_file(&bytes, &name, delimiter, sheet.as_deref()).map_err(|e| bad("data.source.update", e))?;
     let report = json!({
         "fields": field_pairs(&table.fields),
         "records": table.rows.len(),
