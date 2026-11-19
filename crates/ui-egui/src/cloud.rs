@@ -132,7 +132,7 @@ fn service_host() -> String {
 /// Where a cloud service would be, as the environment gives it, for a host
 /// that connects a backend. Read by nothing in production today.
 pub fn service_url() -> Option<String> {
-    ["DESIGNCRAFT_CLOUD_URL", "CRAFT_CLOUD_URL", "COLLABCRAFT_URL"]
+    ["DESIGNCRAFT_CLOUD_URL", "CRAFT_CLOUD_URL"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .map(|value| value.trim().trim_end_matches('/').to_owned())
