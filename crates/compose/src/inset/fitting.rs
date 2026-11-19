@@ -861,34 +861,55 @@ pub(crate) fn compose_frames(
             note.overflow = true;
         }
     }
-    let commentary_overset = state.pending_series().next().is_some()
-        || story.notes.iter().enumerate().any(|(index, note)| {
-            let placed = merged
-                .iter()
-                .flat_map(|f| &f.notes)
-                .filter(|n| n.index == index)
-                .flat_map(|n| &n.text.frames)
-                .map(|f| f.range.end)
-                .max()
-                .unwrap_or(0);
-            refs.get(index).is_some_and(|at| *at < start)
-                && (routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == doc.note_series_id(note.series)))
-                    || frames
-                        .iter()
-                        .filter_map(|f| f.opts.inset_columns.as_ref())
-                        .flat_map(|c| &c.streams)
-                        .any(|s| s.series == Some(doc.note_series_id(note.series))))
-                && placed < note.text.len()
-        });
+    let commentary_overset = state.pending_series().next().is_some();
     if commentary_overset {
         warnings.push("Inset commentary remains after the final frame".into());
     }
     out.frames = merged;
     out.overset_at = out.overset_at.or((start < story.text.len() || commentary_overset).then_some(start));
     out.warnings.extend(warnings);
+    check_commentary_coverage(doc, story, frames, &routes, start, &mut out);
     let catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
     super::catchwords::place(doc, story, &mut out, frames, &catchwords);
     (out, Some(crate::reuse::Trace::inset(Trace { pages })))
+}
+
+/// Final source coverage check, independent of the pending stream cursor.
+pub(super) fn check_commentary_coverage(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    routes: &[FrameSpec],
+    start: usize,
+    out: &mut ComposedStory,
+) {
+    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
+    let incomplete = story.notes.iter().enumerate().any(|(index, note)| {
+        let placed = out
+            .frames
+            .iter()
+            .flat_map(|f| &f.notes)
+            .filter(|n| n.index == index && Arc::ptr_eq(&n.note, note))
+            .flat_map(|n| &n.text.frames)
+            .map(|f| f.range.end)
+            .max()
+            .unwrap_or(0);
+        refs.get(index).is_some_and(|at| *at < start)
+            && (routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == doc.note_series_id(note.series)))
+                || frames
+                    .iter()
+                    .filter_map(|f| f.opts.inset_columns.as_ref())
+                    .flat_map(|c| &c.streams)
+                    .any(|s| s.series == Some(doc.note_series_id(note.series))))
+            && placed < note.text.len()
+    });
+    if incomplete {
+        out.overset_at = out.overset_at.or(Some(start));
+        let warning = "Inset commentary remains after the final frame";
+        if !out.warnings.iter().any(|w| w == warning) {
+            out.warnings.push(warning.into());
+        }
+    }
 }
 
 #[cfg(test)]

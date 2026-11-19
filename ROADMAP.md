@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: inset commentary completeness checks source identity, so a complete cell note cannot hide missing host-note coverage at the same ordinal (#2611).
+
 - **2026-11-19** · Inset placements retain each cell or host note's composed source text (#2611).
   Host reference baselines are assigned once after routes are appended, using an ordered pass.
 

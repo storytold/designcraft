@@ -117,6 +117,30 @@ fn inset_cell_and_host_notes_at_ordinal_zero_keep_distinct_sources() {
 }
 
 #[test]
+fn inset_cell_note_cannot_cover_an_unplaced_host_note() {
+    let (mut doc, sid) = document(1, "Body reference.\nAfter table.", "Host.", "");
+    let story = doc.story_mut(sid).unwrap();
+    let host = story.notes[0].clone();
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 150.0);
+    table.cells[0].text.insert(0, "Cell reference.");
+    table.cells[0].text.insert_note(5, "Complete cell note longer than host.", Default::default()).unwrap();
+    let cell = table.cells[0].text.notes[0].clone();
+    story.insert_table(story.text.find('\n').unwrap(), table);
+    let mut cs = compose_story(&doc, sid, &Default::default());
+    // Model a missing host placement after page fitting, with a complete colliding cell note.
+    for frame in &mut cs.frames {
+        frame.notes.retain(|n| !Arc::ptr_eq(&n.note, &host));
+    }
+    let placed = cs.frames.iter().flat_map(|f| &f.notes).find(|n| Arc::ptr_eq(&n.note, &cell)).unwrap();
+    assert_eq!(placed.index, 0);
+    assert!(placed.text.frames.iter().map(|f| f.range.end).max().unwrap() >= host.text.len());
+    assert!(!cs.is_overset());
+    let story = doc.story(sid).unwrap();
+    super::fitting::check_commentary_coverage(&doc, story, &frame_specs(&doc, sid), &[], story.len(), &mut cs);
+    assert!(cs.is_overset(), "a cell note cannot supply missing host coverage");
+}
+
+#[test]
 fn inset_routed_host_note_parts_keep_their_reference_baselines() {
     let (doc, sid, routes) = routed_document(90.0);
     let cs = compose_story(&doc, sid, &Default::default());
