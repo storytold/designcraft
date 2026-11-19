@@ -5,6 +5,11 @@ use designcraft_geom::{Affine, BezPath, PathEl, Point};
 
 /// Flattening tolerance (points) for curved frame outlines.
 const TOLERANCE: f64 = 0.1;
+/// How far (points) an outline's edges may be from its bounding box and still be a rectangle.
+const RECT_TOLERANCE: f64 = TOLERANCE;
+/// The same as a fraction of the outline's larger side: a tall frame is a little further off square
+/// before anyone could see it (a chart's axis-label frame 239 pt tall is 0.54 pt off).
+const RECT_RELATIVE_TOLERANCE: f64 = 0.003;
 /// Most edges a flattened outline may have; a larger one is flattened coarser.
 const MAX_EDGES: usize = 4096;
 /// Scanlines sampled across each inset cap above and below a band.
@@ -49,7 +54,12 @@ impl FrameOutline {
             x1 = x1.max(a.x);
             y1 = y1.max(a.y);
         }
-        let eps = 1e-6 * (x1 - x0).abs().max((y1 - y0).abs()).max(1.0);
+        // A rectangle is a path whose every edge lies on the bounding box, to within the flattening
+        // tolerance (or 0.3% of its size): frames made by scripts and plug-ins are often a hundredth of a point off
+        // square, and InDesign composes into such a frame as into its rectangle. Treating it as a
+        // shape instead set every line's band against the slanted edge, and a one-line frame as
+        // tall as its line lost the part of its width the slant cut off.
+        let eps = RECT_TOLERANCE.max(RECT_RELATIVE_TOLERANCE * (x1 - x0).abs().max((y1 - y0).abs()));
         let on_box = |p: Point| (p.x - x0).abs() < eps || (p.x - x1).abs() < eps || (p.y - y0).abs() < eps || (p.y - y1).abs() < eps;
         let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_box(a) && on_box(b));
         if rect {
@@ -215,4 +225,59 @@ fn flatten_closed(bp: &BezPath, tol: f64) -> (Vec<(Point, Point)>, bool) {
     });
     finish(&mut sub, closed, &mut edges);
     (edges, over)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A quadrilateral 44 wide and about 10 tall whose bottom edge runs from `left` to `right`.
+    fn quad(left: f64, right: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, left));
+        bp.line_to((44.0, right));
+        bp.line_to((44.0, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// Frames made by scripts and plug-ins are often a hundredth of a point off square (a chart's
+    /// label frame has a bottom edge 0.022 pt slanted). InDesign composes into such a frame as
+    /// into its rectangle; as a shape it cut a one-line frame's slot from 44 pt to 28.
+    #[test]
+    fn a_frame_a_hundredth_of_a_point_off_square_is_its_rectangle() {
+        assert!(FrameOutline::new(&quad(9.766, 9.766), 0.0).is_none(), "an exact rectangle");
+        assert!(FrameOutline::new(&quad(9.766, 9.788), 0.0).is_none(), "0.022 pt off square");
+        assert!(FrameOutline::new(&quad(9.766, 9.856), 0.0).is_none(), "0.09 pt off square, within the flattening tolerance");
+    }
+
+    /// The same slack in a tall frame: a chart's axis-label frame, 239 pt tall and 17 pt wide, has a
+    /// bottom edge 0.54 pt slanted. A fraction of the frame's size counts as square too, so the
+    /// seven labels it holds are set as in InDesign instead of being left out of the export.
+    #[test]
+    fn a_tall_frame_a_few_tenths_of_a_point_off_square_is_its_rectangle() {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 238.76));
+        bp.line_to((16.74, 239.3));
+        bp.line_to((16.74, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_none());
+        // Three points off over the same height is a visible slant.
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 238.76));
+        bp.line_to((16.74, 241.76));
+        bp.line_to((16.74, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_some());
+    }
+
+    /// A slant a person can see still makes a shape.
+    #[test]
+    fn a_slanted_frame_is_a_shape() {
+        assert!(FrameOutline::new(&quad(9.0, 10.0), 0.0).is_some(), "1 pt over 44 pt");
+        assert!(FrameOutline::new(&quad(9.0, 9.5), 0.0).is_some(), "0.5 pt over 44 pt");
+    }
 }
