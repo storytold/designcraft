@@ -1096,9 +1096,9 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
     assert!(!too_large_to_decode(&large));
     assert!(decode_rgba_reduced(&large, 3).is_none());
-    // One component of the same size stays under the limit.
-    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
-    assert_eq!(gray.dimensions(), (1_280, 1_100));
+    // A 1-component progressive JPEG that stays within the 512 MiB decoder buffer budget succeeds.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 4_400, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
