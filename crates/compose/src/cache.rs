@@ -13,6 +13,7 @@
 //! ([`crate::reuse`]).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
@@ -51,10 +52,27 @@ type Key = (StoryId, ShownOn, bool);
 /// it.
 type Resolved = HashMap<(StoryId, bool, usize), Arc<ComposedStory>>;
 
-/// A host needing document-wide indexes is placed without them, because building them composes
-/// the stories it anchors.
+/// Hosts needing document-wide indexes are placed without them only while an index is being
+/// built, because building it composes the stories they anchor. Placements are part of a story's
+/// signature, so compositions made during a build are recomposed with full placements later.
 fn indexed(doc: &Document, sid: StoryId) -> bool {
     doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)))
+}
+
+/// Restore the build count even when an index build unwinds.
+struct IndexBuild<'a>(&'a AtomicUsize);
+
+impl<'a> IndexBuild<'a> {
+    fn new(building: &'a AtomicUsize) -> Self {
+        building.fetch_add(1, Ordering::Relaxed);
+        Self(building)
+    }
+}
+
+impl Drop for IndexBuild<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 struct Entry {
@@ -86,6 +104,8 @@ impl Entry {
 #[derive(Default)]
 pub struct Cache {
     map: Mutex<(HashMap<Key, Entry>, u64)>,
+    /// Index builds in progress, whose anchor hosts must not recursively request an index.
+    building: AtomicUsize,
     /// Running-header index with the document signature it was built for.
     running: Mutex<Option<(u64, Arc<RunningIndex>)>>,
     /// Cross-reference anchor pages with the document signature they were built for.
@@ -119,6 +139,9 @@ fn doc_signature(doc: &Document) -> u64 {
     (Arc::as_ptr(&doc.styles) as usize).hash(&mut h);
     format!("{:?}", doc.text_variables).hash(&mut h);
     sections_hash(doc).hash(&mut h);
+    for c in &doc.conditions {
+        (&c.name, c.visible).hash(&mut h);
+    }
     // The compositions the indexes are built from also depend on these (see `signature`).
     let g = &doc.settings.baseline_grid;
     (doc.font_scope, g.relative_to == designcraft_doc::GridRelative::TopMargin, g.start.to_bits(), g.increment.to_bits()).hash(&mut h);
@@ -189,17 +212,19 @@ impl Cache {
         c
     }
 
+    fn place_host(&self, doc: &Document, host: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
+        if self.building.load(Ordering::Relaxed) > 0 && indexed(doc, host) {
+            Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
+        } else {
+            self.resolve(doc, host, true, depth, resolved)
+        }
+    }
+
     /// Where the host story places anchored text frame `fid`, one of story `sid`'s frames; `None` for
     /// a frame on a spread.
     pub fn placement(&self, doc: &Document, sid: StoryId, fid: designcraft_doc::ItemId) -> Option<crate::Placement> {
         let mut resolved = Resolved::new();
-        let placed = crate::placed::placements(doc, sid, &mut |host| {
-            if indexed(doc, host) {
-                Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
-            } else {
-                self.resolve(doc, host, true, 1, &mut resolved)
-            }
-        });
+        let placed = crate::placed::placements(doc, sid, &mut |host| self.place_host(doc, host, 1, &mut resolved));
         placed.into_iter().find_map(|(id, p)| (id == fid).then_some(p))
     }
 
@@ -226,13 +251,7 @@ impl Cache {
         // Anchored frames compose where their host story places them, so the host is composed
         // first and the placements are part of the signature.
         let placed = if depth < crate::placed::MAX_DEPTH {
-            crate::placed::placements(doc, sid, &mut |host| {
-                if indexed(doc, host) {
-                    Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
-                } else {
-                    self.resolve(doc, host, true, depth + 1, resolved)
-                }
-            })
+            crate::placed::placements(doc, sid, &mut |host| self.place_host(doc, host, depth + 1, resolved))
         } else {
             Vec::new()
         };
@@ -466,7 +485,10 @@ impl Cache {
         {
             return r.clone();
         }
-        let r = Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)));
+        let r = {
+            let _build = IndexBuild::new(&self.building);
+            Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)))
+        };
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
     }
@@ -485,7 +507,10 @@ impl Cache {
         {
             return r.clone();
         }
-        let r = Arc::new(RunningIndex::build(doc, &|sid| self.get(doc, sid, None)));
+        let r = {
+            let _build = IndexBuild::new(&self.building);
+            Arc::new(RunningIndex::build(doc, &|sid| self.get(doc, sid, None)))
+        };
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
     }

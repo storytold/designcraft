@@ -515,6 +515,108 @@ fn catchword_in_a_host_with_an_anchored_story_composes() {
     s.cache.running_index(d);
 }
 
+#[test]
+fn anchored_frame_in_an_indexed_host_follows_wrap() {
+    use designcraft_doc::anchored::AnchorRelative;
+    use designcraft_doc::{AnchorPosition, AnchoredObject, ItemId, ParaFormat, SpreadRef, StoryId};
+    use designcraft_geom::{Affine, Rect};
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord"})).unwrap();
+    let marker = var_char(s.doc().unwrap().doc.variable("Catchword").unwrap()).unwrap();
+    let text = format!("{marker}\nOne line\nTwo lines\nAnchor here\nMore text");
+    let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": text})).unwrap();
+    let host_story = StoryId(host["story"].as_u64().unwrap());
+    let host_frame = ItemId(host["id"].as_u64().unwrap());
+    let (anchored_story, anchored_frame) = s
+        .edit(|d, _| {
+            let (fid, sid) =
+                d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 20.0), d.default_layer(), "Note", ParaFormat::default())?;
+            let item = d.item(fid).unwrap().clone();
+            d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+            d.story_mut(host_story).unwrap().insert_object(text.find("Anchor").unwrap(), AnchoredObject::new(item, AnchorPosition::default()));
+            Ok((sid, fid))
+        })
+        .unwrap();
+    let plain = s.cache.get(&s.doc().unwrap().doc, host_story, None).frame(host_frame).unwrap().objects[0].origin;
+
+    // A neighbouring story owns the obstacle, so its wrap is absent from the index-build bypass.
+    let neighbour = s.execute("frame.create", &json!({"rect": [420, 72, 550, 400], "content": "text", "text": "Obstacle owner"})).unwrap();
+    let obstacle = s.execute("frame.create", &json!({"rect": [0, 0, 328, 80], "content": "graphic"})).unwrap();
+    let obstacle = ItemId(obstacle["id"].as_u64().unwrap());
+    s.execute("object.textWrap", &json!({"ids": [obstacle.0], "mode": "boundingBox"})).unwrap();
+    s.edit(|d, _| {
+        let item = d.item(obstacle).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != obstacle);
+        d.story_mut(StoryId(neighbour["story"].as_u64().unwrap())).unwrap().insert_object(
+            0,
+            AnchoredObject::new(
+                item,
+                AnchorPosition::Custom {
+                    x_relative: AnchorRelative::PageEdge,
+                    y_relative: AnchorRelative::PageEdge,
+                    x_offset: 72.0,
+                    y_offset: 72.0,
+                    object_point: 0,
+                    ref_point: 0,
+                    keep_within_column: false,
+                    spine_relative: false,
+                },
+            ),
+        );
+        Ok(())
+    })
+    .unwrap();
+    let d = &s.doc().unwrap().doc;
+    d.check().unwrap();
+    // Build first: the anchored story cached with bypass placements must be recomposed later.
+    s.cache.running_index(d);
+    let displayed = s.cache.get(d, host_story, None);
+    let origin = displayed.frame(host_frame).unwrap().objects[0].origin;
+    assert!(origin.y > plain.y + 20.0, "wrap must move the anchor: {plain:?} -> {origin:?}");
+    let loc = d.find(host_frame).unwrap();
+    let want = d.parent_xf(&loc) * d.text_xf(d.item(host_frame).unwrap()) * Affine::translate(origin.to_vec2());
+    let placed = s.cache.placement(d, anchored_story, anchored_frame).unwrap();
+    assert_eq!(placed.spread, loc.spread);
+    assert_eq!(placed.xf.as_coeffs(), want.as_coeffs(), "placement must follow the displayed anchor");
+    assert!(s.cache.get(d, anchored_story, None).frame(anchored_frame).is_some());
+}
+
+#[test]
+fn catchword_follows_condition_visibility() {
+    use designcraft_doc::{ItemId, StoryId};
+
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord"})).unwrap();
+    let text = "Alpha\nBravo\nCharlie\nDelta\nEcho\nFoxtrot\nGolf\nHotel\nIndia\nJuliet";
+    let first = s.execute("frame.create", &json!({"rect": [72, 72, 400, 132], "content": "text", "text": text})).unwrap();
+    let sid = StoryId(first["story"].as_u64().unwrap());
+    let second = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+    let next = s.execute("text.thread", &json!({"from": first["id"], "spread": second, "rect": [72, 72, 400, 400]})).unwrap();
+    let next_frame = ItemId(next["to"].as_u64().unwrap());
+    s.execute("condition.new", &json!({"name": "Optional"})).unwrap();
+    s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": text.find("Charlie").unwrap()})).unwrap();
+    s.execute("condition.apply", &json!({"name": "Optional"})).unwrap();
+    let continuation = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        let cs = s.cache.get(d, sid, None);
+        let byte = cs.frame(next_frame).unwrap().lines.iter().flat_map(|l| &l.glyphs).find(|g| g.visible && g.adv > 0.0).unwrap().byte;
+        d.story(sid).unwrap().text[byte..].split_whitespace().next().unwrap().to_string()
+    };
+    let shown = continuation(&s);
+    let before = s.doc().unwrap().doc.clone();
+    assert_eq!(s.cache.running_index(&before).catchword(None, 0), shown);
+    s.execute("condition.options", &json!({"name": "Optional", "visible": false})).unwrap();
+    let hidden = continuation(&s);
+    assert_ne!(shown, hidden, "hiding the opening text must move the automatic page break");
+    let d = &s.doc().unwrap().doc;
+    assert!(std::sync::Arc::ptr_eq(&before.stories[&sid], &d.stories[&sid]));
+    assert!(before.spreads.iter().zip(&d.spreads).all(|(a, b)| std::sync::Arc::ptr_eq(a, b)));
+    assert_eq!(s.cache.running_index(d).catchword(None, 0), hidden);
+}
+
 /// A forced frame break keeps the test's page boundary independent of installed fonts.
 fn catchword_story(s: &mut Session, y: f64, before: &str, after: &str) -> (designcraft_doc::StoryId, u64) {
     let first = s.doc().unwrap().doc.page_loc(0).unwrap().0;
