@@ -275,3 +275,51 @@ fn idml_partial_dropcap_bits_resolve_both_style_and_paragraph_inheritance() {
         }
     }
 }
+
+#[test]
+fn drop_cap_keep_size_command_round_trips_and_undoes() {
+    let mut s = setup();
+    let (_, sid) = frame(&mut s, "הדה הדה");
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":13})).unwrap();
+    let props = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        d.styles.resolve_para(&d.story(StoryId(sid)).unwrap().paras[0]).0
+    };
+    assert!(!props(&s).drop_cap_keep_size);
+    for value in [json!(-1), json!(20.1), json!("NaN")] {
+        assert!(s.execute("type.para", &json!({"attrs":{"dropCapScale":value}})).is_err());
+    }
+    s.execute("type.para", &json!({"attrs":{"dropCapKeepSize":true,"dropCapScale":1.6}})).unwrap();
+    assert!(props(&s).drop_cap_keep_size);
+    assert_eq!(props(&s).drop_cap_scale, 1.6);
+    let d = &s.doc().unwrap().doc;
+    let back = designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
+    assert!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_keep_size);
+    assert_eq!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_scale, 1.6);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(!props(&s).drop_cap_keep_size);
+    assert_eq!(props(&s).drop_cap_scale, 0.0);
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert!(props(&s).drop_cap_keep_size);
+}
+
+#[test]
+fn drop_cap_words_command_round_trips_and_undoes() {
+    let mut s = setup();
+    let (_, sid) = frame(&mut s, "הדה הדה");
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":13})).unwrap();
+    let props = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        d.styles.resolve_para(&d.story(StoryId(sid)).unwrap().paras[0]).0
+    };
+    assert_eq!(props(&s).drop_cap_words, 0);
+    s.execute("type.para", &json!({"attrs":{"dropCapWords":2}})).unwrap();
+    assert_eq!(props(&s).drop_cap_words, 2);
+    let d = &s.doc().unwrap().doc;
+    let back = designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
+    assert_eq!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_words, 2);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(props(&s).drop_cap_words, 0);
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(props(&s).drop_cap_words, 2);
+}

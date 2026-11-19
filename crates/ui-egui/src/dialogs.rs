@@ -6915,6 +6915,7 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
         for (label, key, max) in [
             ("Lines:", "dropCapLines", designcraft_compose::MAX_DROP_CAP_LINES),
             ("Characters:", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS),
+            ("Words:", "dropCapWords", designcraft_compose::MAX_DROP_CAP_WORDS),
         ] {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = field_or(d, &format!("p.{key}"), &pv[key]).as_f64();
@@ -6923,6 +6924,12 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Body Size Multiplier:"));
+        let v = field_or(d, "p.dropCapScale", &pv["dropCapScale"]).as_f64();
+        if let Some(n) = crate::widgets::number(ui, "psdropCapScale", v, "", 60.0, 2) {
+            d.fields.insert("p.dropCapScale".into(), json!(n.clamp(0.0, 20.0)));
+        }
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
         let style = field_or(d, "p.dropCapStyle", &pv["dropCapStyle"]).as_str().unwrap_or("").to_string();
         let style = if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.to_string() } else { style };
@@ -6938,7 +6945,13 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             });
         ui.end_row();
     });
-    for (label, key) in [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders")] {
+    // Characters stays stored, so setting Words back to 0 restores it.
+    if field_or(d, "p.dropCapWords", &pv["dropCapWords"]).as_u64().unwrap_or(0) > 0 {
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Words overrides Characters. Set Words to 0 to use Characters.")).weak());
+    }
+    for (label, key) in
+        [("Align Left Edge", "dropCapAlignLeft"), ("Scale for Descenders", "dropCapScaleDescenders"), ("Keep Size", "dropCapKeepSize")]
+    {
         let mut on = field_or(d, &format!("p.{key}"), &pv[key]).as_bool().unwrap_or(false);
         if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).changed() {
             d.fields.insert(format!("p.{key}"), json!(on));

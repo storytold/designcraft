@@ -44,6 +44,26 @@ pub(crate) struct NoteMetrics {
     lead: f64,
     /// Descent of the last line.
     descent: f64,
+    ascent: f64,
+    cap: Option<(f64, f64)>,
+}
+
+impl NoteMetrics {
+    fn top_padding(self) -> f64 {
+        self.cap.map_or(0.0, |(top, _)| (-top).max(0.0))
+    }
+
+    /// Preserve normal baseline spacing, adding room only for overhanging drop-cap ink.
+    fn advance_to(self, next: Self) -> f64 {
+        let mut step = next.lead;
+        if let Some((_, bottom)) = self.cap {
+            step = step.max(bottom - self.last + next.ascent);
+        }
+        if let Some((top, _)) = next.cap {
+            step = step.max(self.descent + next.first - top);
+        }
+        step
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -57,17 +77,17 @@ pub(crate) struct NoteColumn<'a> {
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
-    let mut h: Option<f64> = None;
+    let mut h: Option<(f64, NoteMetrics)> = None;
     let mut descent = 0.0;
     for m in notes {
         let last = match h {
-            None => m.last,
-            Some(prev) => prev + space_between + m.lead + (m.last - m.first),
+            None => m.last + m.top_padding(),
+            Some((prev, metrics)) => prev + space_between + metrics.advance_to(*m) + (m.last - m.first),
         };
-        h = Some(last);
+        h = Some((last, *m));
         descent = m.descent;
     }
-    h.map_or(0.0, |h| h + descent)
+    h.map_or(0.0, |(h, _)| h + descent)
 }
 
 pub(crate) struct Notes {
@@ -196,12 +216,27 @@ impl Notes {
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
         let m = match (lines.first(), lines.last()) {
-            (Some(a), Some(z)) => NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent },
+            (Some(a), Some(z)) => {
+                let cap = lines.iter().filter_map(|l| l.drop_cap).map(|c| (c.rect.y0, c.rect.y1)).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+                NoteMetrics {
+                    first: a.baseline,
+                    last: z.baseline,
+                    lead: a.leading,
+                    ascent: a.ascent,
+                    descent: cap.map_or(z.descent, |(_, bottom)| z.descent.max(bottom - z.baseline)),
+                    cap,
+                }
+            }
             _ => NoteMetrics::default(),
         };
         let v = (Arc::new(cs), m);
         self.cache.insert(key, v.clone());
         v
+    }
+
+    /// Whether every referenced footnote composes completely at this column's width.
+    pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, ks: &[usize], opts: &ComposeOptions) -> bool {
+        ks.iter().all(|&k| self.compose(doc, k, column.width, column.frame, opts).0.overset_at.is_none())
     }
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
@@ -267,13 +302,13 @@ impl Notes {
                 });
             }
             // Previous footnote's last baseline and bottom.
-            let mut prev: Option<(f64, f64)> = None;
+            let mut prev: Option<(f64, f64, NoteMetrics)> = None;
             for p in here {
                 let Some(note) = story.notes.get(p.k) else { continue };
                 let (y, y0) = match prev {
-                    None => (top, top),
-                    Some((last, bottom)) => {
-                        let first = last + o.space_between + p.m.lead;
+                    None => (top + p.m.top_padding(), top),
+                    Some((last, bottom, metrics)) => {
+                        let first = last + o.space_between + metrics.advance_to(p.m);
                         (first - p.m.first, (bottom + o.space_between).min(first))
                     }
                 };
@@ -288,7 +323,7 @@ impl Notes {
                     text: p.text.clone(),
                     source: Arc::from(note.text.text.as_str()),
                 });
-                prev = Some((y + p.m.last, y1));
+                prev = Some((y + p.m.last, y1, p.m));
             }
         }
     }
