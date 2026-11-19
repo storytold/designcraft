@@ -42,7 +42,8 @@ fn shown(c: &Cms, [cy, m, y, k]: [f32; 4]) -> [f32; 3] {
 const FOGRA39_ANCHORS: [([f32; 4], [f32; 3]); 4] = [
     ([0.0, 50.0, 100.0, 0.0], [243.0, 146.0, 0.0]),
     ([0.0, 60.0, 100.0, 0.0], [239.0, 123.0, 0.0]),
-    ([0.0, 0.0, 0.0, 100.0], [28.0, 28.0, 27.0]),
+    // Independent reference in craft-cms/tests/fogra39.rs (predates the new profile).
+    ([0.0, 0.0, 0.0, 100.0], [29.0, 29.0, 27.0]),
     ([100.0, 100.0, 0.0, 0.0], [48.0, 38.0, 131.0]),
 ];
 
@@ -160,7 +161,10 @@ fn intents_differ() {
     let rel = c.srgb_to_cmyk(g, Intent::RelativeColorimetric);
     let abs = c.srgb_to_cmyk(g, Intent::AbsoluteColorimetric);
     assert!(rel.iter().sum::<f32>() > abs.iter().sum::<f32>() + 0.02, "{rel:?} vs {abs:?}");
+    // Compare media-relative accuracy without BPC: BPC deliberately moves even in-gamut
+    // colours, while perceptual mapping may preserve this chromatic colour more closely.
     // Perceptual compresses in-gamut saturated colours too (relative leaves them alone).
+    let c = cms_no_bpc();
     let red = lab::srgb_to_lab([0.8, 0.25, 0.25]);
     let pr = c.cmyk_to_lab(c.srgb_to_cmyk([0.8, 0.25, 0.25], Intent::Perceptual));
     let rr = c.cmyk_to_lab(c.srgb_to_cmyk([0.8, 0.25, 0.25], Intent::RelativeColorimetric));

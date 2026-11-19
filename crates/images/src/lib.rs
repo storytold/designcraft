@@ -13,7 +13,7 @@ mod jpeg;
 mod psd;
 mod resolution;
 mod tone;
-pub use craft_eps::is_eps;
+pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 
@@ -306,6 +306,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
+        tree_depth: MAX_SVG_DEPTH,
         refuse_entity_markup: true,
         xml_nodes: MAX_SVG_EVENTS as u32,
         embedded_bytes: 32 * 1024 * 1024,
@@ -402,7 +403,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
     let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
     if decoded.layout().is_cmyk() {
-        let raster = cmyk_raster(&decoded, bytes)?;
+        let raster = cmyk_raster(&decoded)?;
         return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
     let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8())?;
@@ -479,39 +480,20 @@ fn decode_options() -> craft_image_codecs::DecodeOptions {
     craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
 }
 
-/// Whether an APP14 "Adobe" segment comes before the image data.
-fn adobe_marker(bytes: &[u8]) -> bool {
-    let mut i = 2;
-    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i + 4).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
-        // Start of scan or end of image: no more header segments.
-        if marker == 0xDA || marker == 0xD9 {
-            return false;
-        }
-        let len = usize::from(u16::from_be_bytes([hi, lo]));
-        if marker == 0xEE && bytes.get(i + 4..i + 9) == Some(b"Adobe".as_slice()) {
-            return true;
-        }
-        i += 2 + len;
-    }
-    false
-}
-
-fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRaster> {
+/// Convert the shared decoder's CMYK values to the app's ink raster without changing their
+/// polarity. `craft-image-codecs` already interprets Adobe-marked and unmarked JPEG CMYK and
+/// YCCK samples; inverting unmarked JPEGs here reverses their documented device-ink values.
+fn cmyk_raster(image: &craft_image_codecs::Image) -> Option<CmykRaster> {
     let converted = image.convert(craft_image_codecs::ChannelLayout::CmykA, craft_image_codecs::SampleType::U8);
     let pixels = usize::try_from(converted.width()).ok()?.checked_mul(usize::try_from(converted.height()).ok()?)?;
     let data = converted.as_u8()?;
     if data.len() != pixels.checked_mul(5)? {
         return None;
     }
-    let invert = bytes.starts_with(&[0xFF, 0xD8]) && !adobe_marker(bytes);
     let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
     let mut alpha = Vec::with_capacity(pixels);
     for &[c, m, y, k, a] in data.as_chunks::<5>().0 {
-        if invert {
-            cmyk.extend([255 - c, 255 - m, 255 - y, 255 - k]);
-        } else {
-            cmyk.extend([c, m, y, k]);
-        }
+        cmyk.extend([c, m, y, k]);
         alpha.push(a);
     }
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
@@ -609,7 +591,7 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
-    image.layout().is_cmyk().then(|| cmyk_raster(&image, bytes)).flatten()
+    image.layout().is_cmyk().then(|| cmyk_raster(&image)).flatten()
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.
