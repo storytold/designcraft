@@ -749,7 +749,7 @@ mod tests {
             id,
             name: name.into(),
             mime: "application/pdf".into(),
-            data: Arc::new(format!("%PDF-1.7 {name}").into_bytes()),
+            data: crate::AssetData::embedded(format!("%PDF-1.7 {name}").into_bytes()),
             ..Default::default()
         };
         let (mut a, host) = doc();

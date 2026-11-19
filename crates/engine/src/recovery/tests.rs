@@ -394,8 +394,8 @@ fn no_other_sessions_write_of_the_uid_is_queued_during_a_write_now() {
     other.recovery_dir = Some(dir.path().to_path_buf());
     other.docs[0].uid = uid;
     let now = worker::write_now(dir.path(), uid, writing.recovery_owner.0).expect("nothing else is in flight");
-    let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
-    assert_eq!(queued["queued"], 0, "another session's write was queued during the write now: {queued}");
+    let err = other.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
+    assert!(err.to_string().contains("another session"), "{err}");
     assert!(worker::write_now(dir.path(), uid, other.recovery_owner.0).is_none(), "a second write now of the uid started");
     drop(now);
     let queued = other.execute("file.recovery.save", &json!({"background": true})).unwrap();
@@ -702,6 +702,40 @@ fn a_clean_document_leaves_another_sessions_write_queued_behind_its_own() {
     let mut reopened = Session::new();
     assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
     assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 2, "its snapshot was kept");
+    discard(dir.path(), uid);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn another_sessions_write_queued_behind_a_cancelled_one_is_not_replaced() {
+    let _turn = background();
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = dirty_session();
+    a.recovery_dir = Some(dir.path().to_path_buf());
+    let uid = a.docs[0].uid;
+    let mut b = dirty_session();
+    b.recovery_dir = Some(dir.path().to_path_buf());
+    b.docs[0].uid = uid;
+    b.execute("frame.create", &json!({"rect": [20, 20, 60, 60]})).unwrap();
+    let held = testing::hold_next_write(dir.path());
+    a.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    held.wait_until_held();
+    // Saving cancels the held write, so the other session's write is queued to follow it.
+    let saved = tempfile::tempdir().unwrap();
+    a.execute("file.saveAs", &json!({"path": saved.path().join("saved.designcraft").to_string_lossy()})).unwrap();
+    let queued = b.execute("file.recovery.save", &json!({"background": true})).unwrap();
+    assert_eq!(queued["queued"], 1, "{queued}");
+    // A later edit in the first session does not take the place of that waiting write.
+    a.execute("frame.create", &json!({"rect": [30, 30, 50, 50]})).unwrap();
+    a.execute("frame.create", &json!({"rect": [40, 40, 50, 50]})).unwrap();
+    let err = a.execute("file.recovery.save", &json!({"background": true})).unwrap_err();
+    assert!(err.to_string().contains("another session"), "{err}");
+    held.release();
+    assert_eq!(finished_writes(&mut b), 1, "the other session's write ran");
+    let mut reopened = Session::new();
+    assert_eq!(open(&mut reopened, dir.path()).unwrap().len(), 1);
+    assert_eq!(reopened.doc().unwrap().doc.spreads[0].items.len(), 2, "the other session's snapshot was kept");
+    discard(dir.path(), reopened.doc().unwrap().uid);
     discard(dir.path(), uid);
 }
 

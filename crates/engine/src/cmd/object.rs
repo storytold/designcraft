@@ -26,6 +26,22 @@ pub(crate) fn known_swatch(doc: &designcraft_doc::Document, name: &str, cmd: &st
     Err(bad(cmd, format!("{key}: no swatch named `{name}`{hint}; create one with `swatch.create` and use its returned name")))
 }
 
+/// The fields of a stroke `type` object must be `kind` and the one its kind takes (`pattern` for
+/// dashed, `bands` for stripes, `name` for style). `kind` is the type's own, else `base_kind`.
+pub(crate) fn check_stroke_type_fields(v: &Value, base_kind: Option<&str>, cmd: &str) -> Result<()> {
+    let Some(fields) = v.as_object() else { return Ok(()) };
+    let field = match v.get("kind").and_then(Value::as_str).or(base_kind) {
+        Some("dashed") => Some("pattern"),
+        Some("stripes") => Some("bands"),
+        Some("style") => Some("name"),
+        _ => None,
+    };
+    match fields.keys().find(|key| *key != "kind" && Some(key.as_str()) != field) {
+        Some(key) => Err(bad(cmd, format!("type: unknown field `{key}`"))),
+        None => Ok(()),
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -259,25 +275,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?, weight?, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?, gapOverprint?: bool, ids?}",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
                     .get("type")
                     .map(|v| {
-                        if let Some(fields) = v.as_object() {
-                            let field = match v.get("kind").and_then(Value::as_str) {
-                                Some("dashed") => Some("pattern"),
-                                Some("stripes") => Some("bands"),
-                                Some("style") => Some("name"),
-                                _ => None,
-                            };
-                            for key in fields.keys() {
-                                if key != "kind" && Some(key.as_str()) != field {
-                                    return Err(bad("object.stroke", format!("type: unknown field `{key}`")));
-                                }
-                            }
-                        }
+                        check_stroke_type_fields(v, None, "object.stroke")?;
                         serde_json::from_value(v.clone()).map_err(|e| bad("object.stroke", format!("type: {e}")))
                     })
                     .transpose()?;
@@ -286,10 +290,31 @@ pub fn specs() -> Vec<CommandSpec> {
                         known_swatch(&s.doc()?.doc, name, "object.stroke", key)?;
                     }
                 }
+                // A number out of range or a name the stroke doesn't have is an error, not clamped or skipped.
+                let ranged = |key: &str, lo: f64, hi: f64, what: &str| match p.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => match v.as_f64() {
+                        Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(Some(x)),
+                        _ => Err(bad("object.stroke", format!("{key} must be {what} from {lo} to {hi}, not {v}"))),
+                    },
+                };
+                let tint = ranged("tint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let weight = ranged("weight", 0.0, 1000.0, "a number of points")?;
+                let miter_limit = ranged("miterLimit", 1.0, 500.0, "a number")?;
+                let gap_tint = ranged("gapTint", 0.0, 1.0, "a tint")?.map(|t| t as f32);
+                let gap_overprint = match p.get("gapOverprint") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_bool().ok_or_else(|| bad("object.stroke", format!("gapOverprint must be true or false, not {v}")))?),
+                };
+                let align = stroke_choice_param(p, "align", "center, inside or outside")?;
+                let cap = stroke_choice_param(p, "cap", "butt, round or projecting")?;
+                let join = stroke_choice_param(p, "join", "miter, round or bevel")?;
+                let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
+                let start = stroke_choice_param(p, "start", arrowheads)?;
+                let end = stroke_choice_param(p, "end", arrowheads)?;
                 // With nothing selected, the swatch and tint are those of new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    let tint = p.get("tint").and_then(Value::as_f64).map(|t| t.clamp(0.0, 1.0) as f32);
                     if sw.is_none() && tint.is_none() {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
@@ -315,38 +340,22 @@ pub fn specs() -> Vec<CommandSpec> {
                         if let Some(v) = p2.get("swatch").and_then(Value::as_str) {
                             st.swatch = v.into();
                         }
-                        if let Some(v) = p2.get("tint").and_then(Value::as_f64) {
-                            st.tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("weight").and_then(Value::as_f64) {
-                            st.weight = v.max(0.0);
-                        }
-                        if let Some(v) = p2.get("miterLimit").and_then(Value::as_f64) {
-                            st.miter_limit = v.clamp(1.0, 500.0);
-                        }
+                        st.tint = tint.unwrap_or(st.tint);
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
                         if let Some(v) = p2.get("gapSwatch").and_then(Value::as_str) {
                             st.gap_swatch = v.into();
                         }
-                        if let Some(v) = p2.get("gapTint").and_then(Value::as_f64) {
-                            st.gap_tint = v.clamp(0.0, 1.0) as f32;
-                        }
-                        if let Some(v) = p2.get("gapOverprint").and_then(Value::as_bool) {
-                            st.gap_overprint = v;
-                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
                         if let Some(kind) = &kind {
                             st.kind = kind.clone();
                         }
-                        for (k, apply) in [("align", 0), ("cap", 2), ("join", 3), ("start", 4), ("end", 5)] {
-                            if let Some(v) = p2.get(k).cloned() {
-                                let _ = match apply {
-                                    0 => serde_json::from_value(v).map(|x| st.align = x),
-                                    2 => serde_json::from_value(v).map(|x| st.cap = x),
-                                    3 => serde_json::from_value(v).map(|x| st.join = x),
-                                    4 => serde_json::from_value(v).map(|x| st.start = x),
-                                    _ => serde_json::from_value(v).map(|x| st.end = x),
-                                };
-                            }
-                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
                         i.stroke = st;
                     },
                     false,
@@ -1281,19 +1290,41 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
     }
 }
 
-/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522), each `depth`
-/// levels deep. False when one of them nests groups deeper than [`MAX_COPY_DEPTH`].
+/// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes down to
+/// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
+/// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0)
+}
+
+/// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
+#[must_use = "false means the copy is incomplete and must not be inserted"]
+fn renumber_anchored_in(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    level: usize,
+) -> bool {
     let mut complete = true;
-    let mut fresh = |t: &mut Story| {
-        for o in &mut t.objects {
-            complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    for o in &mut st.objects {
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+    }
+    if level >= MAX_COPY_DEPTH {
+        let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
+        return complete
+            && st.tables.values().all(|t| t.cells.iter().all(|c| leaf(&c.text)))
+            && st.notes.iter().chain(&st.endnotes).all(|n| leaf(&n.text));
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
         }
-    };
-    st.for_each_text_mut(&mut fresh);
-    for n in &mut st.endnotes {
-        Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
     }
     complete
 }
@@ -2706,7 +2737,6 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The most columns a text frame takes.
 const MAX_FRAME_COLUMNS: u64 = 40;
-
 /// The frames `object.textFrameOptions` changes when the call names none: the selected objects,
 /// or with the Type tool the frame that shows the caret or every frame holding part of the
 /// selected text.
@@ -3058,6 +3088,14 @@ fn frame_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, name
     }
 }
 
+/// An `object.stroke` choice: absent or null leaves it, a name outside `names` is an error.
+fn stroke_choice_param<T: serde::de::DeserializeOwned>(p: &Value, key: &str, names: &str) -> Result<Option<T>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad("object.stroke", format!("{key} must be one of {names}, not {v}"))),
+    }
+}
+
 fn apply_custom_frame_grid(
     options: &mut TextFrameOptions,
     custom: Option<Option<(Option<f64>, Option<f64>, Option<designcraft_doc::FrameGridRelative>)>>,
@@ -3076,37 +3114,6 @@ fn apply_custom_frame_grid(
     }
 }
 
-/// The gap at `p` on spread `sr`: (vertical gap?, edge a, edge b, ids ending at a, ids starting at b).
-pub(crate) fn find_gap(d: &Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<(bool, f64, f64, Vec<ItemId>, Vec<ItemId>)> {
-    let sp = d.spread(sr)?;
-    let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
-    let items: Vec<(ItemId, Rect)> = sp
-        .items
-        .iter()
-        .filter(|it| !it.hidden && !it.locked && d.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
-        .map(|it| (it.id, it.bounds()))
-        .collect();
-    if items.iter().any(|(_, b)| b.contains(p)) {
-        return None;
-    }
-    // Between left and right neighbours (a vertical gap), or above and below (horizontal).
-    let side = |vertical: bool| {
-        let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
-        let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
-        let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
-        let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
-        let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
-        let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
-        let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
-        let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
-        (!before.is_empty() || !after.is_empty()).then_some((vertical, a, z, before, after))
-    };
-    match (side(true), side(false)) {
-        (Some(v), Some(h)) => Some(if v.2 - v.1 <= h.2 - h.1 { v } else { h }),
-        (v, h) => v.or(h),
-    }
-}
-
 fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "gap.move";
     let at = p
@@ -3115,19 +3122,20 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
         .and_then(|a| Some(Point::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
         .ok_or_else(|| bad(ID, "missing at"))?;
     let sr = spread_param(p, ID)?;
-    let (vertical, a, z, before, after) = find_gap(&s.doc()?.doc, sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
+    let gap = s.doc()?.doc.find_gap(sr, at).ok_or_else(|| bad(ID, "no gap there"))?;
     // `delta` along the gap's axis, or a drag (dx, dy) of which the axis part counts.
-    let delta =
-        p.get("delta").and_then(Value::as_f64).unwrap_or_else(|| p.get(if vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
-    let _ = (a, z);
+    let delta = p
+        .get("delta")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| p.get(if gap.vertical { "dx" } else { "dy" }).and_then(Value::as_f64).unwrap_or(0.0));
     s.edit(|d, _| {
         let mut n = 0;
-        for (ids, is_before) in [(&before, true), (&after, false)] {
+        for (ids, is_before) in [(&gap.before, true), (&gap.after, false)] {
             for id in ids {
                 let Some(it) = d.item_mut(*id) else { continue };
                 let b = it.bounds();
                 let mut to = b;
-                match (vertical, is_before) {
+                match (gap.vertical, is_before) {
                     (true, true) => to.x1 = (b.x1 + delta).max(b.x0 + 1.0),
                     (true, false) => to.x0 = (b.x0 + delta).min(b.x1 - 1.0),
                     (false, true) => to.y1 = (b.y1 + delta).max(b.y0 + 1.0),
@@ -3145,7 +3153,7 @@ fn gap_move(s: &mut Session, p: &Value) -> Result<Value> {
                 n += 1;
             }
         }
-        Ok(json!({"axis": if vertical { "x" } else { "y" }, "changed": n}))
+        Ok(json!({"axis": if gap.vertical { "x" } else { "y" }, "changed": n}))
     })
 }
 
@@ -3169,7 +3177,7 @@ fn clipping_path(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(it) = d.item(*id) else { continue };
             let Some(g) = it.graphic() else { continue };
             let Some(asset) = d.assets.get(&g.asset) else { continue };
-            let Some(px) = designcraft_render::decode_pixmap_page(&asset.data, asset.page) else { continue };
+            let Some(px) = asset.data.load().ok().and_then(|b| designcraft_render::decode_pixmap_page(&b, asset.page)) else { continue };
             // A placed PDF cropped to a box: trace that box, which graphic space spans.
             let px = match designcraft_render::shown_box(asset) {
                 // A crop too big to trace is skipped, as a graphic that fails to decode is: tracing
@@ -5870,6 +5878,52 @@ mod stroke_type_tests {
             assert_eq!(item.stroke.kind, serde_json::from_value::<designcraft_doc::StrokeType>(kind).unwrap());
         }
     }
+
+    /// A tint, weight or miter limit out of range, a gap overprint that isn't true or false, or an
+    /// alignment, cap, join or arrowhead name the stroke doesn't have is refused, with or without a
+    /// selection, and the document stays as it was. Values at the ends of each range are taken.
+    #[test]
+    fn stroke_settings_out_of_range_or_unknown_are_refused() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+        for (key, value) in [
+            ("tint", json!(1.5)),
+            ("tint", json!(-0.1)),
+            ("tint", json!("half")),
+            ("gapTint", json!(2)),
+            ("weight", json!(-1)),
+            ("weight", json!(1001)),
+            ("miterLimit", json!(0.5)),
+            ("miterLimit", json!(501)),
+            ("gapOverprint", json!("yes")),
+            ("align", json!("middle")),
+            ("cap", json!("square")),
+            ("join", json!("sharp")),
+            ("start", json!("arrow")),
+            ("end", json!(3)),
+        ] {
+            for ids in [json!([id]), json!([])] {
+                let before = s.doc().unwrap().doc.clone();
+                let error = s.execute("object.stroke", &json!({"ids": ids, "swatch": "[Black]", key: value})).unwrap_err();
+                assert!(matches!(error, crate::EngineError::BadParams { .. }), "{error}");
+                assert!(error.to_string().contains(key), "{key} {value}: {error}");
+                assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc), "{key} {value}: nothing changed");
+            }
+        }
+        let settings = json!({
+            "ids": [id], "swatch": "[Black]", "tint": 0, "weight": 1000, "miterLimit": 500, "gapTint": 1, "gapOverprint": true,
+            "align": "outside", "cap": "projecting", "join": "bevel", "start": "simpleWide", "end": "bar",
+        });
+        assert_eq!(s.execute("object.stroke", &settings).unwrap()["changed"], 1);
+        let st = s.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().stroke.clone();
+        assert_eq!((st.tint, st.weight, st.miter_limit, st.gap_tint, st.gap_overprint), (0.0, 1000.0, 500.0, 1.0, true));
+        assert_eq!(
+            (st.align, st.cap, st.join),
+            (designcraft_doc::StrokeAlign::Outside, designcraft_doc::Cap::Projecting, designcraft_doc::Join::Bevel)
+        );
+        assert_eq!((st.start, st.end), (designcraft_doc::Arrowhead::SimpleWide, designcraft_doc::Arrowhead::Bar));
+    }
 }
 
 #[cfg(test)]
@@ -6103,6 +6157,48 @@ mod copy_ids_tests {
         s.execute("edit.copy", &json!({})).unwrap();
         assert!(s.execute("edit.paste", &json!({})).is_err());
         assert_eq!(s.doc().unwrap().doc, before, "nothing is pasted");
+    }
+
+    #[test]
+    fn objects_anchored_in_cells_nested_too_deeply_are_not_copied() {
+        use std::sync::Arc;
+
+        // The first cell of the story's table holds `n` tables, each in the first cell of the one before, and the cell
+        // of the innermost one holds an anchored object.
+        fn nested(n: usize) -> crate::Session {
+            let mut s = crate::Session::new();
+            let (f, sid) = marked_frame(&mut s);
+            let leaf = s.execute("frame.create", &json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+            let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+            let item = d.item(designcraft_doc::ItemId(leaf)).cloned().unwrap();
+            Arc::make_mut(&mut d.spreads[0]).items.retain(|i| i.id.0 != leaf);
+            let mut chain: Option<designcraft_doc::Table> = None;
+            for _ in 0..n {
+                let mut t = designcraft_doc::Table::new(d.alloc(), 1, 1, 0, 0, 40.0);
+                match chain.take() {
+                    Some(inner) => {
+                        t.cells[0].text.insert_table(0, inner);
+                    }
+                    None => {
+                        t.cells[0].text.insert_object(0, designcraft_doc::AnchoredObject::new(item.clone(), Default::default()));
+                    }
+                }
+                chain = Some(t);
+            }
+            let st = d.story_mut(sid).unwrap();
+            let text = &mut Arc::make_mut(st.tables.values_mut().next().unwrap()).cells[0].text;
+            text.insert_table(text.len(), chain.unwrap());
+            s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+            s
+        }
+        let mut s = nested(super::MAX_COPY_DEPTH - 1);
+        s.execute("edit.duplicate", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.anchored_items().len(), 2, "the anchored object is copied");
+        let mut s = nested(super::MAX_COPY_DEPTH);
+        let before = s.doc().unwrap().doc.clone();
+        let e = s.execute("edit.duplicate", &json!({})).unwrap_err().to_string();
+        assert!(e.contains("too deeply to copy"), "{e}");
+        assert_eq!(s.doc().unwrap().doc, before, "nothing is copied");
     }
 
     #[test]

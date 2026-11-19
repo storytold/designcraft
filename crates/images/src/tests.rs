@@ -105,15 +105,18 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
-/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+/// Each SVG parse gets a fresh shared nested-image budget.
 #[test]
-fn nested_svg_data_shares_one_budget() {
-    NESTED_SVG_BYTES.set(0);
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(1).is_none());
-    assert!(svg_tree(SVG.as_bytes()).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+fn nested_svg_data_budget_is_fresh_per_parse() {
+    let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><circle r="1"/></svg>"#;
+    let encoded = nested.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image width="1" height="1" href="data:image/svg+xml,{encoded}"/></svg>"#
+    );
+    for _ in 0..2 {
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        assert_eq!(tree.root().children().len(), 1);
+    }
 }
 
 #[test]
@@ -164,8 +167,8 @@ fn svg_images_come_only_from_data_urls() {
 }
 
 /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
-fn glyph_families(svg: &str) -> Vec<(String, u16)> {
-    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+fn glyph_families(svg: &str) -> Vec<(String, u32)> {
+    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u32)>) {
         for n in g.children() {
             match n {
                 usvg::Node::Group(g) => walk(g, tree, out),
@@ -306,6 +309,53 @@ fn tiny_psd() -> Vec<u8> {
     b
 }
 
+/// `tiny_psd` with a ResolutionInfo resource of `ppi` horizontally and vertically.
+fn tiny_psd_at(ppi: u32) -> Vec<u8> {
+    tiny_psd_with_resolution(ppi, 16)
+}
+
+/// `tiny_psd` with a ResolutionInfo resource of `ppi`, its data cut to `len` bytes (16 in full).
+fn tiny_psd_with_resolution(ppi: u32, len: usize) -> Vec<u8> {
+    let mut b = tiny_psd();
+    let mut data = Vec::new();
+    for v in [ppi << 16, 0x0001_0002, ppi << 16, 0x0001_0002] {
+        data.extend(v.to_be_bytes());
+    }
+    data.truncate(len);
+    let mut res = Vec::new();
+    res.extend(b"8BIM");
+    res.extend(1005u16.to_be_bytes());
+    res.extend([0, 0]); // empty name, padded
+    res.extend((data.len() as u32).to_be_bytes());
+    res.extend(data);
+    let at = 26 + 4; // header and empty colour mode data; then the image resources length
+    b.splice(at..at + 4, (res.len() as u32).to_be_bytes());
+    b.splice(at + 4..at + 4, res);
+    b
+}
+
+/// A 300 ppi PSD places at its resolution (2 px = 0.48 pt), as in the reference app; without
+/// ResolutionInfo, or with a nonsense or incomplete one, at 72 ppi.
+#[test]
+fn psd_natural_size_follows_its_resolution() {
+    assert_eq!(natural_size(&tiny_psd()), Some((2.0, 1.0)));
+    let b = tiny_psd_at(300);
+    let (w, h) = natural_size(&b).unwrap();
+    assert!((w - 0.48).abs() < 1e-9 && (h - 0.24).abs() < 1e-9, "{w} {h}");
+    assert_eq!(raster_resolution(&b), Some((300.0, 300.0)));
+    assert_eq!(pixel_size(&b), Some((2, 1)));
+    assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
+    assert_eq!(natural_size(&tiny_psd_at(0)), Some((2.0, 1.0)));
+    assert_eq!(natural_size(&tiny_psd_at(20_000)), Some((2.0, 1.0)));
+    // ResolutionInfo is 16 bytes; a shorter one holding both resolutions is still not trusted.
+    assert!(psd::resolution(&tiny_psd_with_resolution(300, 16)).is_some());
+    assert_eq!(natural_size(&tiny_psd_with_resolution(300, 12)), Some((2.0, 1.0)));
+    // A resource length past the end of the file is ignored, not trusted.
+    let mut cut = tiny_psd_at(300);
+    cut.truncate(40);
+    assert!(psd::resolution(&cut).is_none());
+}
+
 #[test]
 fn psd_composite_decodes() {
     let b = tiny_psd();
@@ -370,6 +420,49 @@ fn cmyk_tiff_keeps_inks() {
     assert_eq!(decode_cmyk_tiff(&rgb), None);
     assert!(!is_cmyk_tiff(b"II*\0"), "truncated");
     assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
+}
+
+/// A decode holds the samples as decoded beside the copies they are converted to.
+#[test]
+fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
+    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB16};
+    // CMYK: the stored samples, the 8-bit CMYKA copy, and the ink and alpha planes split from it.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 14);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 15);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 18);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<Cmyka16>(1, 1, &[0; 5], true)), 20);
+    // Two copies of the 16-bit samples while they are turned upright.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 12);
+    // A progressive JPEG's coefficients beside its 8-bit RGB output.
+    assert_eq!(decode_bytes_per_pixel(&progressive_jpeg(64, 48, 3)), 9);
+    let mut psd = b"8BPS".to_vec();
+    psd.resize(26, 0);
+    assert_eq!(decode_bytes_per_pixel(&psd), 9);
+    assert_eq!(decode_bytes_per_pixel(b"not an image"), 8);
+    // An EPS counts as its TIFF preview, or 8 without one.
+    let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nnewpath\n%%EOF\n";
+    assert_eq!(decode_bytes_per_pixel(ps), 8);
+    let preview = tiff_of::<CMYK16>(1, 1, &[0; 4], false);
+    let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+    for v in [30, ps.len(), 0, 0, 30 + ps.len(), preview.len()] {
+        dos.extend((v as u32).to_le_bytes());
+    }
+    dos.extend([0xFF, 0xFF]);
+    dos.extend_from_slice(ps);
+    dos.extend_from_slice(&preview);
+    assert_eq!(decode_bytes_per_pixel(&dos), 18);
+}
+
+/// 16-bit CMYK with an alpha sample, which the `tiff` encoder has no type for.
+struct Cmyka16;
+impl tiff::encoder::colortype::ColorType for Cmyka16 {
+    type Inner = u16;
+    const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::CMYK;
+    const BITS_PER_SAMPLE: &[u16] = &[16; 5];
+    const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 5];
+    fn horizontal_predict(row: &[u16], result: &mut Vec<u16>) {
+        result.extend_from_slice(row);
+    }
 }
 
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
@@ -885,4 +978,194 @@ fn a_webp_icc_chunk_that_declares_more_than_it_holds_is_refused_before_decoding(
     assert!(embedded_icc(&webp_with(&[(b"ICCP", u32::MAX, &[1; 4])])).is_none());
     assert!(webp_icc_is_sane(b"\x89PNG not a webp"));
     assert!(webp_icc_is_sane(&webp_with(&[(b"VP8L", 6, &[0; 6])])));
+}
+
+/// A JPEG of a smooth gradient, `w` × `h`.
+fn gradient_jpeg(w: u32, h: u32, gray: bool) -> Vec<u8> {
+    let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+    let img = if gray { image::DynamicImage::ImageRgb8(rgb).into_luma8().into() } else { image::DynamicImage::ImageRgb8(rgb) };
+    let mut out = Vec::new();
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
+    out
+}
+
+#[test]
+fn reduced_jpegs_decode_at_a_half_quarter_or_eighth_rounded_up() {
+    let jpeg = gradient_jpeg(1001, 77, false);
+    let full = decode_rgba(&jpeg).unwrap();
+    for (shrink, size) in [(1, (501, 39)), (2, (251, 20)), (3, (126, 10))] {
+        let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+        assert_eq!(img.dimensions(), size, "shrink {shrink}");
+        // The same picture as the full decode sampled at the block centres, give or take rounding.
+        let step = 1u32 << shrink;
+        let (mut total, mut n) = (0u64, 0u64);
+        for y in 0..size.1 - 1 {
+            for x in 0..size.0 - 1 {
+                let (p, q) = (img.get_pixel(x, y).0, full.get_pixel(x * step + step / 2, y * step + step / 2).0);
+                total += (0..3).map(|c| u64::from(p[c].abs_diff(q[c]))).sum::<u64>();
+                n += 3;
+                assert_eq!(p[3], 255);
+            }
+        }
+        assert!(total / n <= 3, "shrink {shrink}: mean difference {}", total / n);
+    }
+    // Only 1/2, 1/4 and 1/8 are read from the blocks.
+    assert!(decode_rgba_reduced(&jpeg, 0).is_none());
+    assert!(decode_rgba_reduced(&jpeg, 4).is_none());
+}
+
+#[test]
+fn a_thin_reduced_jpeg_keeps_its_long_side_at_the_requested_reduction() {
+    // The short side rounds up to 1 at every reduction, so it cannot pick the scale.
+    for (w, h) in [(100, 2), (2, 100)] {
+        let jpeg = gradient_jpeg(w, h, false);
+        for (shrink, long) in [(1, 50), (2, 25), (3, 13)] {
+            let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+            let size = if w > h { (long, 1) } else { (1, long) };
+            assert_eq!(img.dimensions(), size, "{w} × {h}, shrink {shrink}");
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
+    let gray = decode_rgba_reduced(&gradient_jpeg(64, 64, true), 2).unwrap();
+    assert_eq!(gray.dimensions(), (16, 16));
+    assert!(gray.pixels().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255));
+    let png = png_from_rgba(16, 16, vec![255; 16 * 16 * 4]).unwrap();
+    assert!(decode_rgba_reduced(&png, 1).is_none());
+    assert!(decode_rgba_reduced(&[0xFF, 0xD8], 1).is_none());
+    let jpeg = gradient_jpeg(200, 150, false);
+    for n in (0..jpeg.len()).step_by(37) {
+        if let Some(img) = decode_rgba_reduced(&jpeg[..n], 1) {
+            assert_eq!(img.dimensions(), (100, 75));
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_refuses_a_jpeg_whose_size_the_size_check_cannot_read() {
+    let jpeg = gradient_jpeg(64, 48, false);
+    assert_eq!(decode_rgba_reduced(&jpeg, 1).unwrap().dimensions(), (32, 24));
+    // A stray byte after the start marker: the JPEG decoder skips it, but `pixel_size` doesn't
+    // recognize the file, so `too_large_to_decode` has no size to check.
+    let mut stray = jpeg.clone();
+    stray.insert(2, 0);
+    assert_eq!(pixel_size(&stray), None);
+    assert!(decode_rgba_reduced(&stray, 1).is_none());
+    assert!(decode_rgba(&stray).is_none());
+}
+
+/// A progressive JPEG with only its DC scan, `w` × `h` with `components` 1×1-sampled components:
+/// every coefficient is zero (a flat mid-gray image).
+fn progressive_jpeg(w: u16, h: u16, components: u8) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8];
+    // One quantization table of ones.
+    out.extend([0xFF, 0xDB, 0, 67, 0]);
+    out.extend([1; 64]);
+    // Start of frame, progressive DCT.
+    out.extend([0xFF, 0xC2, 0, 8 + 3 * components, 8]);
+    out.extend(h.to_be_bytes());
+    out.extend(w.to_be_bytes());
+    out.push(components);
+    for id in 1..=components {
+        out.extend([id, 0x11, 0]);
+    }
+    // A DC table with one code, "0", for a difference of 0.
+    out.extend([0xFF, 0xC4, 0, 20, 0x00, 1]);
+    out.extend([0; 15]);
+    out.push(0);
+    // The DC scan of every component (Ss, Se, Ah/Al all 0), then zero bits.
+    out.extend([0xFF, 0xDA, 0, 6 + 2 * components, components]);
+    for id in 1..=components {
+        out.extend([id, 0x00]);
+    }
+    out.extend([0, 0, 0]);
+    out.extend([0; 16]);
+    out.extend([0xFF, 0xD9]);
+    out
+}
+
+#[test]
+fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_over_the_limit() {
+    let small = decode_rgba_reduced(&progressive_jpeg(64, 48, 3), 3).unwrap();
+    assert_eq!(small.dimensions(), (8, 6));
+    // 10,240 × 8,800 is within the RGBA limit, but its three components' coefficients take
+    // 10,240 × 8,800 × 3 × 2 bytes, over 512 MiB, whatever the output size.
+    let large = progressive_jpeg(10_240, 8_800, 3);
+    assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
+    assert!(!too_large_to_decode(&large));
+    assert!(decode_rgba_reduced(&large, 3).is_none());
+    // One component of the same size stays under the limit.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 1_100));
+}
+
+/// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
+/// the shared decoder, so the PDF export's RGB fallback is only for other inks and oversized files.
+#[test]
+fn planar_and_premultiplied_cmyk_tiffs_keep_their_inks() {
+    use tiff::encoder::colortype::CMYKA8;
+    // 2×1, PlanarConfiguration 2: one strip per ink, 100% K then C0 M100 Y100 K0.
+    let (bps, offsets, counts, data) = (134u32, 142u32, 158u32, 174u32);
+    let entries: [(u16, u16, u32, u32); 10] = [
+        (256, 4, 1, 2),       // width
+        (257, 4, 1, 1),       // height
+        (258, 3, 4, bps),     // bits per sample
+        (259, 3, 1, 1),       // no compression
+        (262, 3, 1, 5),       // separated (CMYK)
+        (273, 4, 4, offsets), // strip offsets
+        (277, 3, 1, 4),       // samples per pixel
+        (278, 4, 1, 1),       // rows per strip
+        (279, 4, 4, counts),  // strip byte counts
+        (284, 3, 1, 2),       // planar
+    ];
+    let mut t = b"II*\0".to_vec();
+    t.extend(8u32.to_le_bytes());
+    t.extend(10u16.to_le_bytes());
+    for (tag, kind, count, value) in entries {
+        t.extend(tag.to_le_bytes());
+        t.extend(kind.to_le_bytes());
+        t.extend(count.to_le_bytes());
+        t.extend(value.to_le_bytes());
+    }
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len(), bps as usize);
+    t.extend([8u16; 4].iter().flat_map(|b| b.to_le_bytes()));
+    t.extend((0..4u32).flat_map(|i| (data + 2 * i).to_le_bytes()));
+    t.extend([2u32; 4].iter().flat_map(|c| c.to_le_bytes()));
+    assert_eq!(t.len(), data as usize);
+    t.extend([0, 0, 0, 255, 0, 255, 255, 0]);
+    assert!(is_cmyk_tiff(&t));
+    assert_eq!(decode_cmyk_tiff(&t), Some(CmykRaster { width: 2, height: 1, cmyk: vec![0, 0, 0, 255, 0, 255, 255, 0], alpha: None }));
+
+    // ExtraSamples 1 (associated alpha): the second pixel is C0 M100 Y100 K0 at half coverage.
+    let mut b = Vec::new();
+    let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
+    let mut img = enc.new_image::<CMYKA8>(2, 1).unwrap();
+    img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+    img.write_data(&[0, 0, 0, 255, 255, 0, 128, 128, 0, 128]).unwrap();
+    let r = decode_cmyk_tiff(&b).expect("a CMYK TIFF with associated alpha keeps its inks");
+    assert_eq!(r.alpha, Some(vec![255, 128]));
+    assert_eq!(&r.cmyk[..4], &[0, 0, 0, 255]);
+    let straight = &r.cmyk[4..];
+    assert!(straight[0] <= 1 && straight[1] >= 254 && straight[2] >= 254 && straight[3] <= 1, "made straight: {straight:?}");
+}
+
+#[test]
+fn psd_resolution_preserves_axes_display_units_and_section_bounds() {
+    let mut bytes = tiny_psd_at(300);
+    // Resource payload begins after header, two section lengths and the resource framing.
+    let payload = 46;
+    bytes[payload + 8..payload + 12].copy_from_slice(&(150u32 << 16).to_be_bytes());
+    bytes[payload + 4..payload + 6].copy_from_slice(&2u16.to_be_bytes());
+    bytes[payload + 12..payload + 14].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    assert_eq!(natural_size(&bytes), Some((0.48, 0.48)));
+    // The same resource framing is used in PSB; display units do not rescale the values.
+    bytes[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    // Bytes beyond the declared resource section must never complete a short payload.
+    bytes[30..34].copy_from_slice(&24u32.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), None);
 }
