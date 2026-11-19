@@ -14,7 +14,7 @@ mod psd;
 mod resolution;
 mod tone;
 mod wmf;
-pub use craft_eps::is_eps;
+pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 pub use wmf::{is_wmf, wmf_bitmap};

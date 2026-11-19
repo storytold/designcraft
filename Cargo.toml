@@ -17,6 +17,7 @@ craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "a5ac3aa05cf3ec013961a85599ddd9e0b5c03813", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b1b4602a71d19e09ad33f7752a10d6598cf39b2b", version = "=0.1.0" }
 craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
+craft-ps = { git = "https://github.com/storytold/craft-libs", rev = "5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac", version = "=0.1.0", features = ["read"] }
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "899e396b9e2710fcdf1ad9b6249d6c456b7ca9a2", version = "=0.1.0" }
 craft-indd = { git = "https://github.com/storytold/craft-libs", rev = "47bf5650b0d503b97bfb5e841746c4957897d11f", version = "=0.1.0" }

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 craft-eps = { workspace = true }
+craft-ps = { workspace = true }
 craft-svg = { workspace = true }
 designcraft-color = { workspace = true }
 designcraft-fonts = { workspace = true }
