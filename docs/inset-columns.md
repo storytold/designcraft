@@ -133,13 +133,13 @@ terminal catchword. Each note series has its own optional text, set through
 `footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
 Both accept at most 256 characters without control characters; `null` clears the value.
 Native saves preserve both fields. IDML warns that it loses terminal catchword text.
-Ended and overset
-streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
+Without continuation text, ended streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
 The host's catchword setting also applies to routed series. Only the last route frame of
 each series on a page reserves the bottom row. Its word comes from that series' next
-visible page; a finished series has no catchword. Side notes outside a stream's horizontal
+visible page, or from its own `catchwordContinuation` at the excerpt end. A finished series
+without continuation text has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
 
 A separate text-variable frame can use

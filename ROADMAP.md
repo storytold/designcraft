@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: the last routed frame of a series uses that series' continuation text at the excerpt end; clearing it removes the terminal catchword (#2869).
+
 - 2026-11-19: adding or clearing story and series continuation text composes the same inset rows and follower geometry through the cache as a fresh layout (#2869).
 
 - 2026-11-19: each note series has an independent `catchwordContinuation`, with command validation, native persistence and an IDML loss warning. Story continuation remains main-stream-only (#2869).

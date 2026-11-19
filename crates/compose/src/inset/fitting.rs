@@ -208,7 +208,8 @@ fn fit_routes(
                     .zip(&refs)
                     .any(|(note, at)| doc.note_series_id(note.series) == series && *at >= input.main.end && !note.text.is_empty());
             let shown = result.frames.iter().flat_map(|f| &f.notes).any(|n| n.series == series);
-            if shown && (future || result.state.pending_series().any(|id| id == series)) {
+            let terminal = doc.note_options(series).catchword_continuation.as_deref().is_some_and(|s| !s.is_empty());
+            if shown && (future || terminal || result.state.pending_series().any(|id| id == series)) {
                 rows.insert(area.id, height);
             }
         }
