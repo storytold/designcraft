@@ -1070,7 +1070,15 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     // A frame whose image failed stays free for the next element of its tag.
     let mut failed: Vec<Value> = Vec::new();
     for (tag, image) in images {
-        let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == tag && !used) else {
+        // The next free frame of the tag that can take an image: a locked one (or one on a locked
+        // layer) only when no other is left, so it doesn't hold back the frames after it.
+        let at = {
+            let d = &s.doc()?.doc;
+            let locked = |id: ItemId| d.item(id).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked));
+            let free = |(t, id, used): &&(String, ItemId, bool)| *t == tag && !used && !locked(*id);
+            image_slots.iter().position(|x| free(&x)).or_else(|| image_slots.iter().position(|(t, _, used)| *t == tag && !used))
+        };
+        let Some(slot) = at.map(|i| &mut image_slots[i]) else {
             miss(&tag);
             continue;
         };
@@ -1323,15 +1331,12 @@ fn fill_table(t: &mut designcraft_doc::Table, x: &XTable, fx: &mut Fill) {
             by_id.entry(cell.source_id.as_str()).and_modify(|at| *at = None).or_insert(Some((r, c)));
         }
     }
+    // Cells with an ID take theirs first; those without take the cells left, in order.
+    let by_xml_id: Vec<Option<(usize, usize)>> = x.cells.iter().map(|xc| xc.id.as_deref().and_then(|id| by_id.get(id).copied().flatten())).collect();
+    let taken: std::collections::HashSet<(usize, usize)> = by_xml_id.iter().flatten().copied().collect();
     let targets: Vec<Option<(usize, usize)>> = {
-        let mut next = order.iter();
-        x.cells
-            .iter()
-            .map(|xc| match &xc.id {
-                Some(id) => by_id.get(id.as_str()).copied().flatten(),
-                None => next.next().copied(),
-            })
-            .collect()
+        let mut next = order.iter().filter(|at| !taken.contains(at));
+        x.cells.iter().zip(&by_xml_id).map(|(xc, at)| if xc.id.is_some() { *at } else { next.next().copied() }).collect()
     };
     for (xc, at) in x.cells.iter().zip(targets) {
         let Some(cell) = at.and_then(|(r, c)| t.cell_mut(r, c)) else {
@@ -1728,6 +1733,16 @@ mod tests {
         s.execute("table.select", &json!({"story": sid.0, "table": tid, "row": 0, "col": 1})).unwrap();
         let sel = s.doc().unwrap().selection.text.unwrap();
         assert_eq!(sel.cell.map(|c| (c.row, c.col)), Some((0, 1)));
+        // A cell without an ID takes the first cell no ID claims, not one an ID cell goes to.
+        s.edit(|d, _| {
+            std::sync::Arc::make_mut(d.story_mut(sid).unwrap().tables.get_mut(&tid).unwrap()).cells[1].source_id.clear();
+            Ok(())
+        })
+        .unwrap();
+        let table = "<Table aid:table=\"table\"><Cell id=\"ua1i1\">L</Cell><Cell>R</Cell></Table>";
+        let r = s.execute("file.importXml", &json!({"text": format!("<Root><body>T\n{table}</body></Root>")})).unwrap();
+        let t = s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].clone();
+        assert_eq!((t.cells[0].text.text.as_str(), t.cells[1].text.text.as_str(), r["lostCells"].as_u64()), ("L", "R", Some(0)), "{r}");
     }
 
     /// Text after a table the XML leaves out goes to the paragraph after the table, and a forced
@@ -2027,6 +2042,29 @@ mod tests {
         let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
         assert_eq!(r["placed"].as_u64(), Some(0), "{r}");
         assert!(r["failed"][0]["error"].as_str().is_some_and(|e| e.contains("locked")), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A locked frame doesn't hold back the next frame of its tag.
+    #[test]
+    fn a_locked_frame_leaves_the_image_to_the_next_one() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-skip-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, x: f64| {
+            ItemId(s.execute("frame.create", &json!({"rect": [x, 72.0, x + 100.0, 172.0], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (first, second) = (frame(&mut s, 72.0), frame(&mut s, 300.0));
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0, second.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [first.0]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><photo href=\"ok.png\"/></Root>", "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(1), "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(second).unwrap().content, Content::Graphic(_)), "the unlocked frame takes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
