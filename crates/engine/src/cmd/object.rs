@@ -3595,19 +3595,15 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt
     if width && tf.options.columns <= 1 {
         let cs = compose(out);
         if let Some(ft) = cs.frame(id) {
-            let (start, right) = if matches!(anchors.x, FitSide::Start) {
-                // Keep measuring from out.x0 when left-anchored or when `ref` is omitted so menu
-                // Fit Frame to Content does not shift right- or center-aligned text leftward.
-                let hi = ft.lines.iter().map(|l| l.end_x).fold(f64::NEG_INFINITY, f64::max);
-                (out.x0, hi)
-            } else {
-                let mut lo = f64::INFINITY;
-                let mut hi = f64::NEG_INFINITY;
-                for l in &ft.lines {
-                    let (ind_l, ind_r) = line_h_indents(d, story, l.para, l.first_in_para);
-                    if l.end_x.is_finite() {
-                        hi = hi.max(l.end_x + ind_r);
-                    }
+            let measure_start = !matches!(anchors.x, FitSide::Start);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for l in &ft.lines {
+                let (ind_l, ind_r) = line_h_indents(d, story, l.para, l.first_in_para);
+                if l.end_x.is_finite() {
+                    hi = hi.max(l.end_x + ind_r);
+                }
+                if measure_start {
                     for g in l.glyphs.iter().filter(|g| g.visible || (g.rendered_char == '\t' && g.adv > 0.0)) {
                         let pen = g.x - g.dx;
                         if pen.is_finite() && g.adv.is_finite() {
@@ -3618,20 +3614,21 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt
                         }
                     }
                 }
-                for t in &ft.tables {
-                    let (ind_l, ind_r) = ft.lines.get(t.line).map_or((0.0, 0.0), |l| line_h_indents(d, story, l.para, false));
-                    if t.rect.x0.is_finite() {
-                        lo = lo.min(t.rect.x0 - ind_l);
-                    }
-                    if t.rect.x1.is_finite() {
-                        hi = hi.max(t.rect.x1 + ind_r);
-                    }
+            }
+            for t in &ft.tables {
+                let (ind_l, ind_r) = ft.lines.get(t.line).map_or((0.0, 0.0), |l| line_h_indents(d, story, l.para, false));
+                if measure_start && t.rect.x0.is_finite() {
+                    lo = lo.min(t.rect.x0 - ind_l);
                 }
-                let start = if lo.is_finite() { lo - inset_l } else { out.x0 };
-                (start, hi)
-            };
-            if right.is_finite() && start.is_finite() {
-                let span_w = (right - start + inset_r + 0.001).max(1.0);
+                if t.rect.x1.is_finite() {
+                    hi = hi.max(t.rect.x1 + ind_r);
+                }
+            }
+            // Keep measuring from out.x0 when left-anchored or when `ref` is omitted so menu
+            // Fit Frame to Content does not shift right- or center-aligned text leftward.
+            let start = if measure_start && lo.is_finite() { lo - inset_l } else { out.x0 };
+            if hi.is_finite() && start.is_finite() {
+                let span_w = (hi - start + inset_r + 0.001).max(1.0);
                 if span_w.is_finite() {
                     out = rect_with_width(out, span_w, anchors.x);
                 }
@@ -6808,7 +6805,8 @@ mod fit_text_frame_tests {
         let ctr_b = bounds(&s, ctr);
         let ctr_cs = s.cache.get(&s.doc().unwrap().doc, ctr_sid, None);
         assert!(!ctr_cs.is_overset() && (ctr_b.center().y - 200.0).abs() < 1e-6 && ctr_b.height() < 50.0, "{ctr_b:?}");
-        assert!((ctr_cs.frame(ctr).unwrap().lines[0].baseline - ctr_y0).abs() < 1.0);
+        let ctr_y1 = ctr_cs.frame(ctr).unwrap().lines[0].baseline;
+        assert!((ctr_y1 - ctr_y0).abs() < 1e-3, "center-VJ baseline shifted: {ctr_y0} -> {ctr_y1}");
 
         // Top and Justify without ref stay anchored to the top edge.
         for vj in ["top", "justify"] {
@@ -6939,6 +6937,43 @@ mod fit_text_frame_tests {
         assert!(!r_cs.is_overset() && r_cs.frame(rtab).unwrap().lines.len() == 1);
         assert!((rb.x1 - 500.0).abs() < 1e-9 && rb.width() < 200.0, "{rb:?}");
         assert!(tb.width() > rb.width() + 25.0, "leading tab advance missing: tb={tb:?} vs rb={rb:?}");
+    }
+
+    #[test]
+    fn left_anchored_width_fit_keeps_right_indent() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-anchored width fit (e.g. double-clicking the right handle, ref=3) accounts for
+        // paragraph right indent so a one-line paragraph does not rewrap or overset.
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"rightIndent": 24.0}})).unwrap();
+        let sid = s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, sid, None).frame(id).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!cs.is_overset(), "right indent caused overset after left-anchored width fit: {b:?}");
+        assert_eq!(cs.frame(id).unwrap().lines.len(), 1, "right indent caused rewrap after left-anchored width fit: {b:?}");
+        assert!((b.x0 - 100.0).abs() < 1e-9 && b.width() < 300.0, "{b:?}");
+
+        // Baseline-grid aligned bottom-justified text keeps its bottom edge and grid baselines.
+        let grid = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Grid line one\nGrid line two");
+        s.execute("type.para", &json!({"attrs": {"gridAlign": "allLines"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [grid.0], "verticalJustification": "bottom"})).unwrap();
+        let g_sid = s.doc().unwrap().doc.item(grid).unwrap().text_frame().unwrap().story;
+        let before: Vec<f64> = s.cache.get(&s.doc().unwrap().doc, g_sid, None).frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert_eq!(before.len(), 2);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [grid.0]})).unwrap();
+        let gb = bounds(&s, grid);
+        let g_cs = s.cache.get(&s.doc().unwrap().doc, g_sid, None);
+        let after: Vec<f64> = g_cs.frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert!(!g_cs.is_overset() && (gb.y1 - 300.0).abs() < 1e-9 && gb.height() < 120.0, "{gb:?}");
+        assert_eq!(after.len(), 2);
+        for (a, b) in before.iter().zip(after.iter()) {
+            assert!((a - b).abs() < 1e-6, "baseline-grid line shifted: {before:?} -> {after:?}");
+        }
     }
 }
 
