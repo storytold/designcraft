@@ -429,10 +429,14 @@ pub(super) fn fill_placeholder(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The case-changed text of `src`, char by char (a char may map to several, e.g. ß → SS).
 pub(crate) fn case_map(src: &str, case: &str) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let mut out = Vec::with_capacity(src.len());
+    let mut graphemes = src.grapheme_indices(true).peekable();
     let mut prev = ' ';
     let mut sentence_start = true;
-    for c in src.chars() {
+    for (at, c) in src.char_indices() {
+        let grapheme_start = graphemes.next_if(|(i, _)| *i == at).is_some();
         let word_start = !(prev.is_alphanumeric() || matches!(prev, '\'' | '\u{2019}'));
         let up = |c: char| c.to_uppercase().collect::<String>();
         let low = |c: char| c.to_lowercase().collect::<String>();
@@ -462,7 +466,10 @@ pub(crate) fn case_map(src: &str, case: &str) -> Vec<String> {
             sentence_start = true;
         }
         out.push(m);
-        prev = c;
+        // Attached marks and joiners must not turn the next letter into a word initial.
+        if grapheme_start || c.is_alphanumeric() {
+            prev = c;
+        }
     }
     out
 }
@@ -521,6 +528,47 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(Value::Null)
     })
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::case_map;
+
+    #[test]
+    fn title_case_keeps_attached_marks_inside_the_word() {
+        for (source, expected) in
+            [("e\u{301}CLAIR", "E\u{301}clair"), ("a\u{308}\u{301}BC", "A\u{308}\u{301}bc"), ("ÉCLAIR E\u{301}CLAIR", "Éclair E\u{301}clair")]
+        {
+            let mapped = case_map(source, "title");
+            assert_eq!(mapped.len(), source.chars().count(), "one mapping per source character");
+            assert_eq!(mapped.concat(), expected);
+        }
+    }
+
+    #[test]
+    fn title_case_preserves_existing_word_boundaries() {
+        for (source, expected) in [
+            ("don't stop o’NEILL", "Don't Stop O’neill"),
+            ("'HELLO' ’WORLD’", "'hello' ’world’"),
+            ("alpha-beta.gamma/delta_OMEGA", "Alpha-Beta.Gamma/Delta_Omega"),
+            ("123ABC abc123DEF", "123abc Abc123def"),
+            ("\u{600}HELLO", "\u{600}Hello"),
+            ("\u{301}HELLO", "\u{301}Hello"),
+        ] {
+            assert_eq!(case_map(source, "title").concat(), expected);
+        }
+    }
+
+    #[test]
+    fn case_mapping_preserves_other_modes_and_script_policy() {
+        assert_eq!(case_map("ßİ", "upper"), ["SS", "İ"]);
+        assert_eq!(case_map("ßİ", "lower"), ["ß", "i\u{307}"]);
+        assert_eq!(case_map("HELLO. E\u{301}CLAIR!", "sentence").concat(), "Hello. E\u{301}clair!");
+        let georgian = "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ WORLD";
+        assert_eq!(case_map(georgian, "title").concat(), "გამარჯობა World");
+        assert_eq!(case_map(georgian, "sentence").concat(), "გამარჯობა world");
+        assert_eq!(case_map(georgian, "upper").concat(), georgian);
+    }
 }
 
 #[cfg(test)]
