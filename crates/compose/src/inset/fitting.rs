@@ -1,5 +1,5 @@
 //! Page trials keep original stories intact and replay accepted whole-line rectangles.
-use super::{Config, MainPosition, Measurement, Stream, layout};
+use super::{Config, MainPosition, Measurement, Stream, layout_with_state};
 use crate::{ComposeOptions, ComposedStory, FrameSpec, FrameText, StreamPageInput, StreamState};
 use designcraft_doc::{Document, InsetColumns, InsetStream, NoteStream, Story};
 use designcraft_geom::Rect;
@@ -473,7 +473,7 @@ impl Page<'_> {
             position: (positioned && main_active).then_some(MainPosition { top, left, right }),
         };
         let mut first_line_seen = None;
-        let out = layout(cfg, streams, |index, cursor, rect| {
+        let out = layout_with_state(cfg, streams, |index, cursor, rect, committed| {
             let series = self.options.streams.get(index).and_then(|s| s.series);
             if cursor.tail_pending {
                 let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false, cursor.catchword_space);
@@ -497,8 +497,24 @@ impl Page<'_> {
                 };
             let mut areas = cursor.areas.clone();
             let mut f = band_frame(self.frame, rect);
+            for (other, stream) in committed.iter().enumerate() {
+                if other != index
+                    && stream.finished
+                    && let Some(row) = stream.cursor.catchword.filter(|r| r.x0 < rect.x1 && r.x1 > rect.x0)
+                {
+                    f.exclusions.push(crate::Exclusion {
+                        rect: row,
+                        mode: designcraft_doc::WrapMode::BoundingBox,
+                        side: designcraft_doc::WrapSide::BothSides,
+                        contour: None,
+                        after: None,
+                        anchor_baseline: None,
+                    });
+                }
+            }
             if let Some(previous) = cursor.areas.last() {
                 // A stream keeps its old measure until a whole line clears the ended neighbour.
+                // The band's top includes that neighbour's catchword descent, not just its body.
                 // Baselines continue normally; only the line's available horizontal span changes.
                 let old = previous.area;
                 let top = self.frame.area.y0 - self.frame.area.height();

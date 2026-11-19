@@ -140,6 +140,9 @@ that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next
 visible page; a finished series has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
+When a neighbour widens into a finished stream's column, its widened lines start below
+the finished stream's full catchword row, including the catchword descent. This applies
+to commentary and main-text widening while preserving their baseline progression.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`

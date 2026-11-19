@@ -317,6 +317,83 @@ fn styled_catchword_baselines_follow_declared_leading_in_main_and_commentary() {
     }
 }
 
+fn widening_clears_finished_catchword(main_widens: bool) {
+    let main = if main_widens { "Main words continue through the changing column. ".repeat(100) } else { "Short main.\nNext page.".into() };
+    let right = if main_widens { String::new() } else { "Long commentary words continue through the changing column. ".repeat(100) };
+    let (mut doc, sid) = document(3, &main, &"Short comment.\u{2028}".repeat(4), &right);
+    let at = if main_widens {
+        doc.story(sid).unwrap().text.rfind("Main words").unwrap()
+    } else {
+        let story = doc.story_mut(sid).unwrap();
+        let at = story.text.find("Next").unwrap();
+        story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+        at
+    };
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Later comment.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 1;
+    if main_widens {
+        let story = doc.story_mut(sid).unwrap();
+        story.format_chars(0..story.len(), |f| {
+            f.over.size = Some(20.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(17.0));
+        });
+    } else {
+        let note = doc.story_mut(sid).unwrap().notes.iter_mut().find(|n| n.series == 2).unwrap();
+        let text = &mut std::sync::Arc::make_mut(note).text;
+        text.format_chars(0..text.len(), |f| {
+            f.over.size = Some(18.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(17.0));
+        });
+    }
+    std::sync::Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Obstacle".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: designcraft_doc::CharAttrs { size: Some(18.5), leading: Some(designcraft_doc::Leading::Points(16.6)), ..Default::default() },
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Obstacle".into() };
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    let frame = &cs.frames[0];
+    let caption = frame.catchwords.iter().find(|c| c.series == Some(1)).unwrap();
+    let line = &caption.text.frames[0].lines[0];
+    let rendered_bottom = caption.origin.y + (line.baseline + line.descent) * caption.scale;
+    let row = Rect::new(caption.rect.x0, caption.rect.y0, caption.rect.x1, caption.rect.y1.max(rendered_bottom));
+    let lines: Vec<_> = if main_widens {
+        frame.lines.iter().map(|l| (l.x0, l.x1, l.baseline - l.ascent, l.baseline + l.descent)).collect()
+    } else {
+        frame
+            .notes
+            .iter()
+            .filter(|n| n.series == 2)
+            .flat_map(|n| {
+                n.text.frames.iter().flat_map(move |f| {
+                    f.lines
+                        .iter()
+                        .map(move |l| (n.origin.x + l.x0, n.origin.x + l.x1, n.origin.y + l.baseline - l.ascent, n.origin.y + l.baseline + l.descent))
+                })
+            })
+            .collect()
+    };
+    let widened: Vec<_> = lines.iter().filter(|(x0, x1, _, _)| *x0 < row.x1 - 0.01 && *x1 > row.x0 + 0.01).collect();
+    assert!(!widened.is_empty(), "fixture must widen across {row:?}");
+    for line in widened {
+        assert!(line.2 >= row.y1 - 0.01, "main_widens {main_widens}: row {row:?}, widened line {line:?}");
+    }
+}
+
+#[test]
+fn commentary_widening_clears_finished_catchword() {
+    widening_clears_finished_catchword(false);
+}
+
+#[test]
+fn main_widening_clears_finished_catchword() {
+    widening_clears_finished_catchword(true);
+}
+
 #[test]
 fn chained_followers_fit_each_route_area_once_per_candidate() {
     let (mut doc, sid, routes) = routed_document(180.0);
