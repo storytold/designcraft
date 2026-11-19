@@ -89,6 +89,53 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn inset_cell_and_host_notes_at_ordinal_zero_keep_distinct_sources() {
+    let (mut doc, sid) = document(1, "Body reference.\nAfter table.", "", "");
+    let story = doc.story_mut(sid).unwrap();
+    story.insert_note(5, "Host ordinal zero.", Default::default()).unwrap();
+    let host = story.notes[0].clone();
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 150.0);
+    table.cells[0].text.insert(0, "Cell reference.");
+    table.cells[0].text.insert_note(5, "Cell ordinal zero.", Default::default()).unwrap();
+    let cell = table.cells[0].text.notes[0].clone();
+    story.insert_table(story.text.find('\n').unwrap(), table);
+
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let notes: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).collect();
+    let body_note = notes.iter().find(|n| Arc::ptr_eq(&n.note, &host)).unwrap();
+    let cell_note = notes.iter().find(|n| Arc::ptr_eq(&n.note, &cell)).unwrap();
+    assert_eq!(body_note.index, 0);
+    assert_eq!(cell_note.index, 0);
+    assert_eq!(body_note.source.as_ref(), "Host ordinal zero.");
+    assert_eq!(cell_note.source.as_ref(), "Cell ordinal zero.");
+    assert_eq!(cell_note.reference_baseline, 0.0, "a cell note must not inherit the host's reference baseline");
+    let at = doc.story(sid).unwrap().text.find(designcraft_doc::FOOTNOTE_REF).unwrap();
+    let baseline = cs.frames.iter().flat_map(|f| &f.lines).find(|l| l.range.contains(&at)).unwrap().baseline;
+    assert_eq!(body_note.reference_baseline, baseline);
+    assert!(baseline > 0.0);
+}
+
+#[test]
+fn inset_routed_host_note_parts_keep_their_reference_baselines() {
+    let (doc, sid, routes) = routed_document(90.0);
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let story = doc.story(sid).unwrap();
+    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
+    let parts: Vec<_> = routes.iter().flat_map(|id| &cs.frame(*id).unwrap().notes).collect();
+    assert!(parts.len() > 3, "a routed note must split into multiple parts");
+    for part in parts {
+        let at = refs[part.index];
+        let baseline =
+            cs.frames.iter().filter(|f| !routes.contains(&f.frame)).flat_map(|f| &f.lines).find(|l| l.range.contains(&at)).unwrap().baseline;
+        assert!(baseline > 0.0);
+        assert_eq!(part.reference_baseline, baseline);
+        assert_eq!(part.source.as_ref(), story.notes[part.index].text.text);
+    }
+}
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);

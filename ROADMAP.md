@@ -1,5 +1,8 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Inset placements retain each cell or host note's composed source text (#2611).
+  Host reference baselines are assigned once after routes are appended, using an ordered pass.
+
 - **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
 
 - **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).

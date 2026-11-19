@@ -152,6 +152,7 @@ Note series (#2871) now provide independent numbering/styles and column-foot or 
 - **Have:** cell footnotes share the column-foot area with body notes; row groups reserve their
   notes before fitting, and repeated headers/footers do not duplicate notes (#2611). Spanning
   cell notes rewind earlier columns when their enlarged area overlaps body text.
+  Inset placements retain distinct cell and host note sources even when their ordinals match.
 - **Still missing:** cell-footnote numbering in the enclosing story (#2612), insertion (#2613),
   listing (#2614), and editing existing cell notes on the canvas. The caret currently resolves
   footnote ids only in the host story, not in its table cells.

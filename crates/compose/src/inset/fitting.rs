@@ -803,12 +803,7 @@ pub(crate) fn compose_frames(
     }
     for (index, page) in pages.iter().enumerate() {
         let Some(id) = frames.get(index).map(|f| f.id) else { continue };
-        for mut note in page.notes.clone() {
-            note.reference_baseline =
-                refs.get(note.index).and_then(|at| merged.iter().flat_map(|f| &f.lines).find(|l| l.range.contains(at))).map_or(0.0, |l| l.baseline);
-            if let Some(source) = story.notes.get(note.index) {
-                note.source = std::sync::Arc::from(source.text.text.as_str());
-            }
+        for note in page.notes.clone() {
             if let Some(frame) = merged.iter_mut().find(|f| f.frame == id) {
                 frame.notes.push(note);
             }
@@ -838,12 +833,27 @@ pub(crate) fn compose_frames(
         warnings.extend(fit.warnings);
         merged.extend(fit.frames);
     }
-    let baselines: Vec<_> =
-        refs.iter().map(|at| merged.iter().flat_map(|f| &f.lines).find(|l| l.range.contains(at)).map_or(0.0, |l| l.baseline)).collect();
+    // Only main-story lines locate host references. Route lines have their own byte ranges.
+    let mut main_lines: Vec<_> = merged.iter().filter(|f| frames.iter().any(|spec| spec.id == f.frame)).flat_map(|f| &f.lines).collect();
+    main_lines.sort_by_key(|line| line.range.start);
+    let mut references: Vec<_> = refs.iter().copied().enumerate().collect();
+    references.sort_by_key(|&(_, at)| at);
+    let mut baselines = vec![0.0; refs.len()];
+    let mut line_index = 0;
+    for (index, at) in references {
+        while main_lines.get(line_index).is_some_and(|line| line.range.end <= at) {
+            line_index += 1;
+        }
+        if let Some(line) = main_lines.get(line_index).filter(|line| line.range.contains(&at))
+            && let Some(baseline) = baselines.get_mut(index)
+        {
+            *baseline = line.baseline;
+        }
+    }
     for note in merged.iter_mut().flat_map(|f| &mut f.notes) {
-        note.reference_baseline = baselines.get(note.index).copied().unwrap_or(0.0);
-        if let Some(source) = story.notes.get(note.index) {
-            note.source = Arc::from(source.text.text.as_str());
+        // Cell notes can share an ordinal and id with a host note, but keep their own owner.
+        if story.notes.get(note.index).is_some_and(|host| Arc::ptr_eq(host, &note.note)) {
+            note.reference_baseline = baselines.get(note.index).copied().unwrap_or(0.0);
         }
     }
     for series in state.pending_series() {

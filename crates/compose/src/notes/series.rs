@@ -342,7 +342,7 @@ impl Notes {
                 });
             } else {
                 for ft in &mut out.frames {
-                    for n in ft.notes.iter_mut().filter(|n| n.id == story.notes[k].id && n.series == s.series) {
+                    for n in ft.notes.iter_mut().filter(|n| Arc::ptr_eq(&n.note, &story.notes[k]) && n.series == s.series) {
                         n.reference_baseline = baseline;
                     }
                 }
