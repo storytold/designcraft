@@ -804,13 +804,13 @@ impl<'r> Importer<'r> {
             inks: std::mem::take(&mut self.inks),
             stroke_styles: std::mem::take(&mut self.stroke_styles),
             articles: vec![],
-            xml: designcraft_doc::XmlSettings {
+            xml: std::sync::Arc::new(designcraft_doc::XmlSettings {
                 root: std::mem::take(&mut self.xml.root),
                 tags: std::mem::take(&mut self.xml.tags),
                 elements: std::mem::take(&mut self.xml.elements),
                 root_children: std::mem::take(&mut self.xml.root_children),
                 ..Default::default()
-            },
+            }),
             endnote_options: Default::default(),
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),

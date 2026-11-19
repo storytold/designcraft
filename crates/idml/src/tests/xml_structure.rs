@@ -219,7 +219,7 @@ fn a_document_without_xml_writes_no_xml_parts() {
 #[test]
 fn a_custom_tag_colour_comes_back() {
     let mut d = tagged();
-    if let Some(t) = d.xml.tags.iter_mut().find(|t| t.name == "Translation") {
+    if let Some(t) = d.xml_mut().tags.iter_mut().find(|t| t.name == "Translation") {
         t.color = [10, 20, 30];
     }
     let back = import_idml(&export_idml(&d)).unwrap();

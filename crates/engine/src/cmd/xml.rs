@@ -124,7 +124,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
         for (id, tag, _) in &plan {
             if !d.xml.tags.iter().any(|x| x.name == *tag) {
                 let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                d.xml.tags.push(XmlTag { name: tag.clone(), color });
+                d.xml_mut().tags.push(XmlTag { name: tag.clone(), color });
             }
             if let Some(it) = d.item_mut(*id) {
                 it.xml_tag = tag.clone();
@@ -387,7 +387,7 @@ pub fn specs() -> Vec<CommandSpec> {
             s.edit(|d, _| {
                 if !d.xml.tags.iter().any(|t| t.name == name) {
                     let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                    d.xml.tags.push(XmlTag { name: name.clone(), color });
+                    d.xml_mut().tags.push(XmlTag { name: name.clone(), color });
                 }
                 Ok(json!({"name": name}))
             })
@@ -399,8 +399,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 tagged(d).into_iter().filter(|i| d.item(*i).is_some_and(|it| it.xml_tag == name)).collect()
             };
             s.edit(|d, _| {
-                d.xml.tags.retain(|t| t.name != name);
-                d.xml.style_map.retain(|(_, t)| *t != name);
+                d.xml_mut().tags.retain(|t| t.name != name);
+                d.xml_mut().style_map.retain(|(_, t)| *t != name);
                 for id in &ids {
                     if let Some(it) = d.item_mut(*id) {
                         it.xml_tag.clear();
@@ -423,7 +423,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.edit(|d, _| {
                     if !d.xml.tags.iter().any(|x| x.name == *t) {
                         let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                        d.xml.tags.push(XmlTag { name: t.clone(), color });
+                        d.xml_mut().tags.push(XmlTag { name: t.clone(), color });
                     }
                     ok()
                 })?;
@@ -446,7 +446,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     && !d.xml.tags.iter().any(|x| x.name == *t)
                 {
                     let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                    d.xml.tags.push(XmlTag { name: t.clone(), color });
+                    d.xml_mut().tags.push(XmlTag { name: t.clone(), color });
                 }
                 for id in &ids {
                     if let Some(it) = d.item_mut(*id) {
@@ -484,13 +484,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     return Err(bad("xml.mapStyle", format!("no paragraph style `{style}`")));
                 }
                 s.edit(|d, _| {
-                    d.xml.style_map.retain(|(st, _)| *st != style);
+                    d.xml_mut().style_map.retain(|(st, _)| *st != style);
                     if let Some(t) = tag {
                         if !d.xml.tags.iter().any(|x| x.name == t) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                            d.xml.tags.push(XmlTag { name: t.clone(), color });
+                            d.xml_mut().tags.push(XmlTag { name: t.clone(), color });
                         }
-                        d.xml.style_map.push((style.clone(), t));
+                        d.xml_mut().style_map.push((style.clone(), t));
                     }
                     ok()
                 })
@@ -543,15 +543,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     for n in &names {
                         if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
-                            d.xml.tags.push(XmlTag { name: n.clone(), color });
+                            d.xml_mut().tags.push(XmlTag { name: n.clone(), color });
                         }
                     }
                     if d.xml.root.is_empty()
                         && let Some(first) = names.first()
                     {
-                        d.xml.root = first.clone();
+                        d.xml_mut().root = first.clone();
                     }
-                    d.xml.dtd = text.clone();
+                    d.xml_mut().dtd = text.clone();
                     Ok(json!({"elements": names.len()}))
                 })
             }
@@ -564,7 +564,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{}",
             |s: &Session| { if s.doc().is_ok_and(|d| !d.doc.xml.dtd.is_empty()) { Ok(()) } else { Err("no DTD loaded".into()) } },
             |s, _| s.edit(|d, _| {
-                d.xml.dtd.clear();
+                d.xml_mut().dtd.clear();
                 ok()
             })
         ),

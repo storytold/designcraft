@@ -204,7 +204,16 @@ pub struct LayoutRange {
     pub end: usize,
 }
 
+fn xml_is_empty(x: &Arc<XmlSettings>) -> bool {
+    x.is_empty()
+}
+
 impl Document {
+    /// The XML structure to change: copied first if an undo step still shares it.
+    pub fn xml_mut(&mut self) -> &mut XmlSettings {
+        Arc::make_mut(&mut self.xml)
+    }
+
     /// A stroke type with named styles resolved (unknown names draw solid).
     pub fn stroke_kind(&self, t: &StrokeType) -> StrokeType {
         match t {
@@ -923,8 +932,10 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub color_groups: Vec<ColorGroup>,
     /// XML: the tags (Tags panel) and the paragraph style → tag map (Map Styles to Tags).
-    #[serde(default, skip_serializing_if = "XmlSettings::is_empty")]
-    pub xml: XmlSettings,
+    /// Shared between a document and its undo steps until an edit changes it: a file's XML
+    /// structure can hold tens of thousands of elements, and every edit copies the document.
+    #[serde(default, skip_serializing_if = "xml_is_empty")]
+    pub xml: Arc<XmlSettings>,
     /// Articles panel: named reading-order lists of objects (EPUB / HTML export order).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub articles: Vec<Article>,

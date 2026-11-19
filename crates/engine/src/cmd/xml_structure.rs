@@ -1041,10 +1041,10 @@ mod tests {
                 content,
                 children: Vec::new(),
             };
-            d.xml.root = "Root".into();
-            d.xml.elements.insert(1, el("Story", &[], 0, XmlContent::Story { story: sid }));
-            d.xml.elements.insert(2, el("Translation", &[("Id", "7"), ("SourceText", "Hallo \"x\" <y>")], 1, XmlContent::Text));
-            d.xml.root_children = vec![1];
+            d.xml_mut().root = "Root".into();
+            d.xml_mut().elements.insert(1, el("Story", &[], 0, XmlContent::Story { story: sid }));
+            d.xml_mut().elements.insert(2, el("Translation", &[("Id", "7"), ("SourceText", "Hallo \"x\" <y>")], 1, XmlContent::Text));
+            d.xml_mut().root_children = vec![1];
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(0..5, |f| f.over.xml_element = Some(2));
             }
@@ -1120,7 +1120,7 @@ mod tests {
     fn a_story_element_keeps_the_text_of_its_nested_elements() {
         let (mut s, sid) = tagged();
         s.edit(|d, _| {
-            if let Some(e) = d.xml.elements.get_mut(&1) {
+            if let Some(e) = d.xml_mut().elements.get_mut(&1) {
                 e.attrs = vec![("Id".into(), "S".into())];
             }
             Ok(())
@@ -1179,10 +1179,10 @@ mod tests {
                     content,
                     children: Vec::new(),
                 };
-                d.xml
+                d.xml_mut()
                     .elements
                     .insert(3, el("Table", Vec::new(), 1, XmlContent::Table { table, added_break_before: false, added_break_after: false }));
-                d.xml.elements.insert(4, el("Cell", vec![("Id".into(), "C".into())], 3, XmlContent::Cell { table, cell: 0 }));
+                d.xml_mut().elements.insert(4, el("Cell", vec![("Id".into(), "C".into())], 3, XmlContent::Cell { table, cell: 0 }));
                 Ok(())
             })
             .unwrap();
@@ -1220,7 +1220,7 @@ mod tests {
     fn story_with_id() -> (Session, StoryId) {
         let (mut s, sid) = tagged();
         s.edit(|d, _| {
-            if let Some(e) = d.xml.elements.get_mut(&1) {
+            if let Some(e) = d.xml_mut().elements.get_mut(&1) {
                 e.attrs = vec![("Id".into(), "S".into())];
             }
             Ok(())
@@ -1273,7 +1273,7 @@ mod tests {
     fn a_story_id_leaves_its_cals_table_alone() {
         let (mut s, sid, table) = with_table(false);
         s.edit(|d, _| {
-            if let Some(e) = d.xml.elements.get_mut(&1) {
+            if let Some(e) = d.xml_mut().elements.get_mut(&1) {
                 e.attrs = vec![("Id".into(), "S".into())];
             }
             Ok(())
@@ -1293,7 +1293,7 @@ mod tests {
     fn a_table_id_is_reported() {
         let (mut s, _, _) = with_table(true);
         s.edit(|d, _| {
-            if let Some(e) = d.xml.elements.get_mut(&3) {
+            if let Some(e) = d.xml_mut().elements.get_mut(&3) {
                 e.attrs = vec![("Id".into(), "T".into())];
             }
             Ok(())
@@ -1317,8 +1317,8 @@ mod tests {
                 content: XmlContent::Text,
                 children: Vec::new(),
             };
-            d.xml.elements.insert(3, el("Outer", "P", 1));
-            d.xml.elements.insert(4, el("Inner", "C", 3));
+            d.xml_mut().elements.insert(3, el("Outer", "P", 1));
+            d.xml_mut().elements.insert(4, el("Inner", "C", 3));
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(6..8, |f| f.over.xml_element = Some(3));
                 st.format_chars(5..6, |f| f.over.xml_element = Some(4));
@@ -1390,7 +1390,7 @@ mod tests {
         let (mut s, sid, _) = with_table(true);
         s.edit(|d, _| {
             for (k, id) in [(1, "S"), (3, "T")] {
-                if let Some(e) = d.xml.elements.get_mut(&k) {
+                if let Some(e) = d.xml_mut().elements.get_mut(&k) {
                     e.attrs = vec![("Id".into(), id.into())];
                 }
             }
@@ -1416,9 +1416,9 @@ mod tests {
                 content: XmlContent::Text,
                 children: Vec::new(),
             };
-            d.xml.elements.insert(3, el("Outer", "P", 1));
-            d.xml.elements.insert(4, el("Mid", "Q", 3));
-            d.xml.elements.insert(5, el("Inner", "C", 4));
+            d.xml_mut().elements.insert(3, el("Outer", "P", 1));
+            d.xml_mut().elements.insert(4, el("Mid", "Q", 3));
+            d.xml_mut().elements.insert(5, el("Inner", "C", 4));
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(4..5, |f| f.over.xml_element = Some(3));
                 st.format_chars(9..10, |f| f.over.xml_element = Some(3));
@@ -1466,8 +1466,8 @@ mod tests {
                 content: XmlContent::Text,
                 children: Vec::new(),
             };
-            d.xml.elements.insert(3, el("Outer", "P", 1));
-            d.xml.elements.insert(4, el("Inner", "C", 3));
+            d.xml_mut().elements.insert(3, el("Outer", "P", 1));
+            d.xml_mut().elements.insert(4, el("Inner", "C", 3));
             if let Some(st) = d.story_mut(sid) {
                 if let Some(r) = parent.clone() {
                     st.format_chars(r, |f| f.over.xml_element = Some(3));
@@ -1523,8 +1523,8 @@ mod tests {
         let pic = |id: &str| vec![("Id".to_string(), id.to_string())];
         let (mut s, sid) = tagged();
         s.edit(|d, _| {
-            d.xml.elements.insert(3, el("Pic", pic("P"), 1, XmlContent::None));
-            d.xml.elements.insert(4, el("Caption", Vec::new(), 3, XmlContent::Text));
+            d.xml_mut().elements.insert(3, el("Pic", pic("P"), 1, XmlContent::None));
+            d.xml_mut().elements.insert(4, el("Caption", Vec::new(), 3, XmlContent::Text));
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(6..10, |f| f.over.xml_element = Some(4));
             }
@@ -1539,8 +1539,8 @@ mod tests {
 
         let (mut s, sid, table) = with_table(true);
         s.edit(|d, _| {
-            d.xml.elements.insert(5, el("Pic", pic("Q"), 4, XmlContent::None));
-            d.xml.elements.insert(6, el("Caption", Vec::new(), 5, XmlContent::Text));
+            d.xml_mut().elements.insert(5, el("Pic", pic("Q"), 4, XmlContent::None));
+            d.xml_mut().elements.insert(6, el("Caption", Vec::new(), 5, XmlContent::Text));
             if let Some(t) = d.story_mut(sid).and_then(|st| st.tables.get_mut(&table)) {
                 let cell = &mut std::sync::Arc::make_mut(t).cells[0].text;
                 let end = cell.text.len();
@@ -1559,7 +1559,7 @@ mod tests {
     fn children_out_of_order_leave_their_parent() {
         let (mut s, sid) = story_with_id();
         s.edit(|d, _| {
-            d.xml.elements.insert(
+            d.xml_mut().elements.insert(
                 3,
                 XmlElement {
                     tag: "Translation".into(),
@@ -1632,8 +1632,8 @@ mod tests {
                 content: XmlContent::Text,
                 children: Vec::new(),
             };
-            d.xml.elements.insert(3, el("Outer", "P", 1));
-            d.xml.elements.insert(4, el("Inner", "C", 3));
+            d.xml_mut().elements.insert(3, el("Outer", "P", 1));
+            d.xml_mut().elements.insert(4, el("Inner", "C", 3));
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(5..10, |f| f.over.xml_element = Some(3));
                 st.format_chars(4..5, |f| f.over.xml_element = Some(4));
@@ -1658,8 +1658,8 @@ mod tests {
         let (mut s, sid) = tagged();
         s.edit(|d, _| {
             let el = |tag: &str, parent: u64, content| XmlElement { tag: tag.into(), attrs: Vec::new(), parent, content, children: Vec::new() };
-            d.xml.elements.insert(3, el("Pic", 1, XmlContent::None));
-            d.xml.elements.insert(4, el("Caption", 3, XmlContent::Text));
+            d.xml_mut().elements.insert(3, el("Pic", 1, XmlContent::None));
+            d.xml_mut().elements.insert(4, el("Caption", 3, XmlContent::Text));
             if let Some(st) = d.story_mut(sid) {
                 st.format_chars(6..10, |f| f.over.xml_element = Some(4));
             }
