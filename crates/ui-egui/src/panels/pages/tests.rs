@@ -417,6 +417,9 @@ fn caret_moves_redraw_no_thumbnails_and_typing_only_its_page() {
     app.run("condition.apply", json!({"name": "EU"})).unwrap();
     redraws_after(&mut app, "text.move", json!({"dir": "left"}));
     assert_eq!(redraws_after(&mut app, "condition.options", json!({"name": "EU", "visible": false})), shown);
+    // Hyphenation exceptions and endnote options are document-level inputs damage doesn't compare.
+    assert_eq!(redraws_after(&mut app, "hyphenation.addException", json!({"word": "ex~am~ple"})), shown);
+    assert_eq!(redraws_after(&mut app, "endnote.options", json!({"startAt": 2})), shown);
     // Reloaded fonts compose the same document again: every thumbnail is drawn again.
     assert_eq!(redraws_after(&mut app, "font.reload", json!({})), shown);
 }
