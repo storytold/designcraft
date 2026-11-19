@@ -946,8 +946,14 @@ fn confirm_interactive_pdf_export(app: &mut DesignApp, d: Dialog) -> Result<Valu
         // The export's own range rules: a browser runs the export before the dialog returns, so a
         // range it would refuse must show here instead of closing the dialog with nothing written.
         let count = app.session.active().map(|st| st.doc.page_count()).unwrap_or(0);
-        if let Err(e) = designcraft_pdf::parse_page_range(&pages, count) {
-            return refused(app, d, e.to_string());
+        // `","` parses to no page at all rather than to an error, and the export then refuses it
+        // (`NoPages`): the dialog must refuse that too, or OK would close it with nothing written.
+        match designcraft_pdf::parse_page_range(&pages, count) {
+            Err(e) => return refused(app, d, e.to_string()),
+            Ok(selected) if selected.is_empty() => {
+                return refused(app, d, crate::i18n::tr(&app.ui.language, "nothing to export (no pages selected)").to_string());
+            }
+            Ok(_) => {}
         }
         params["pages"] = json!(pages);
     }

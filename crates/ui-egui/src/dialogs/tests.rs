@@ -6009,6 +6009,24 @@ fn interactive_pdf_export_refuses_a_bad_page_range() {
     assert!(app.ui.dialog.is_none());
 }
 
+/// A range of only commas parses to no page at all (not to an error), which the export refuses
+/// (`NoPages`). The dialog must refuse it too, rather than close with nothing written and no
+/// explanation; a range with the same stray commas around a page still exports that page.
+#[test]
+fn interactive_pdf_export_refuses_a_range_that_selects_no_page() {
+    let mut app = test_app();
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("range".into(), json!("range"));
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!(","));
+    assert!(confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, INTERACTIVE_PDF_EXPORT);
+    assert_eq!(d.s("status"), "nothing to export (no pages selected)");
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!(",1,"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+}
+
 /// `{"pages": []}` selects no page. The direct export refuses it (`NoPages`); the dialog must not
 /// turn the empty list into an empty range, which would export every page.
 #[test]
