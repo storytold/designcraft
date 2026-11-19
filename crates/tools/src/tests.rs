@@ -2616,3 +2616,126 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
+
+#[test]
+fn type_tool_hits_a_margin_note_outside_the_host_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", ParaFormat::default());
+    let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cs = cache.get(&d, sid, None);
+    let n = &cs.frames[0].notes[0];
+    let cx = ctx(&d, &sel, &cache, &layout);
+    let xf = cx.item_canvas_xf(fid).unwrap() * d.text_xf(d.item(fid).unwrap());
+    let point = xf * Point::new(n.rect.x0 + 10.0, n.rect.y0 + 5.0);
+    assert!(cx.hit(point).is_none(), "the point is outside the frame's path");
+    let mut tool = create("type");
+    let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+    assert!(actions.iter().any(|a| matches!(a, Action::Exec(cmd, p) if cmd == "text.placeCaret" && p["frame"] == fid.0)));
+}
+
+#[test]
+fn review_hidden_margin_note_cannot_receive_a_type_click() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cs = cache.get(&d, sid, None);
+    let n = &cs.frames[0].notes[0];
+    let xf = ctx(&d, &sel, &cache, &layout).item_canvas_xf(fid).unwrap() * d.text_xf(d.item(fid).unwrap());
+    let point = xf * Point::new(n.rect.x0 + 10.0, n.rect.y0 + 5.0);
+    for hidden in [true, false] {
+        d.item_mut(fid).unwrap().hidden = hidden;
+        let layer = d.layers.iter_mut().find(|l| l.id == lid).unwrap();
+        layer.visible = hidden; // host hidden, then layer hidden
+        let cx = ctx(&d, &sel, &cache, &layout);
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Exec(cmd, _) if cmd == "text.placeCaret")));
+    }
+}
+
+#[test]
+fn type_tool_respects_foreground_frames_over_margin_notes() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let cache = Cache::new();
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    let rect = d.text_xf(d.item(host).unwrap()).transform_rect_bbox(note);
+    let (front, _) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, "Foreground", Default::default()).unwrap();
+    let sel = Selection::default();
+    for (reverse, upper_layer, expected) in [(false, false, front), (true, false, host), (false, true, front)] {
+        if reverse {
+            Arc::make_mut(&mut d.spreads[0]).items.reverse();
+        }
+        if upper_layer {
+            let mut layer = d.layers[0].clone();
+            layer.id = designcraft_doc::LayerId(d.alloc());
+            layer.name = "Foreground".into();
+            d.item_mut(front).unwrap().layer = layer.id;
+            d.layers.insert(0, layer);
+        }
+        let layout = CanvasLayout::new(&d, false);
+        let point = layout.to_canvas(SpreadRef::Doc(0), rect.center());
+        let cx = ctx(&d, &sel, &cache, &layout);
+        assert_eq!(cx.hit(point).unwrap().1, front, "the host path does not cover its note");
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        assert!(
+            matches!(actions.as_slice(), [Action::Exec(cmd, params)] if cmd == "text.placeCaret" && params["frame"] == expected.0),
+            "{actions:?}"
+        );
+    }
+}
+
+#[test]
+fn foreground_margin_note_takes_the_caret_over_a_lower_table_border() {
+    let (mut d, table_frame) = table_frame(0.0);
+    let table_story = d.item(table_frame).unwrap().text_frame().unwrap().story;
+    let cache = Cache::new();
+    let cs = cache.get(&d, table_story, None);
+    let cell = cs.frames[0].tables[0].cell(1, 0).unwrap();
+    let table_xf = d.text_xf(d.item(table_frame).unwrap());
+    let border = table_xf * Point::new(cell.rect.x1, (cell.rect.y0 + cell.rect.y1) / 2.0);
+    let edge = border.x - 8.0 - 36.0;
+    let (host, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(edge - 120.0, 72.0, edge, 400.0), d.default_layer(), "Host", Default::default()).unwrap();
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    let center = d.text_xf(d.item(host).unwrap()) * note.center();
+    d.item_mut(host).unwrap().xf = designcraft_geom::Affine::translate((0.0, border.y - center.y));
+    let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
+    assert!(note.contains(d.text_xf(d.item(host).unwrap()).inverse() * border));
+    let sel = Selection::default();
+    for foreground_note in [true, false] {
+        if !foreground_note {
+            Arc::make_mut(&mut d.spreads[0]).items.reverse();
+        }
+        let layout = CanvasLayout::new(&d, false);
+        let point = layout.to_canvas(SpreadRef::Doc(0), border);
+        let cx = ctx(&d, &sel, &cache, &layout);
+        assert_eq!(cx.hit(point).unwrap().1, table_frame);
+        let mut tool = create("type");
+        let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Down, point.x, point.y));
+        if foreground_note {
+            assert!(matches!(actions.as_slice(), [Action::Exec(cmd, p)] if cmd == "text.placeCaret" && p["frame"] == host.0), "{actions:?}");
+            tool.pointer(&cx, &PointerEvent::new(PointerKind::Up, point.x, point.y));
+            assert_eq!(tool.cursor(&cx, point, Mods::default()), Cursor::Text);
+        } else {
+            assert!(actions.is_empty(), "the foreground table still starts a border drag: {actions:?}");
+            assert_eq!(tool.cursor(&cx, point, Mods::default()), Cursor::ResizeH);
+            let actions = tool.pointer(&cx, &PointerEvent::new(PointerKind::Drag, point.x + 20.0, point.y));
+            assert!(
+                matches!(actions.as_slice(), [Action::Begin(_), Action::Preview(cmd, p)] if cmd == "table.resizeBorder" && p["frame"] == table_frame.0)
+            );
+        }
+    }
+}

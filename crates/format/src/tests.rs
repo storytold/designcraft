@@ -936,3 +936,32 @@ fn embedded_documents_keep_their_older_version_and_version_5_loads() {
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
 }
+
+#[test]
+fn note_series_native_roundtrip_and_legacy_defaults() {
+    use designcraft_doc::{FootnoteOptions, MarginSide, NotePlacement, NoteSeries};
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
+    d.note_series.push(NoteSeries {
+        id: 1,
+        name: "Sources".into(),
+        options: FootnoteOptions { placement: NotePlacement::Margin { side: MarginSide::Outside, gap: 8.0, width: 72.0 }, ..Default::default() },
+    });
+    let st = d.story_mut(sid).unwrap();
+    let id = st.insert_note(4, "Source", ParaFormat::default()).unwrap();
+    st.note_mut(id).unwrap().series = 1;
+    let bytes = save(&d).unwrap();
+    let back = load(&bytes).unwrap();
+    assert_eq!(back.note_series, d.note_series);
+    assert_eq!(back.story(sid).unwrap().notes[0].series, 1);
+    // The original native JSON has neither the series list nor the note's series field.
+    d.note_series.clear();
+    d.story_mut(sid).unwrap().note_mut(id).unwrap().series = 0;
+    let value = serde_json::to_value(&d).unwrap();
+    assert!(value.get("noteSeries").is_none());
+    let legacy = load(&serde_json::to_vec(&d).unwrap()).unwrap();
+    assert!(legacy.note_series.is_empty());
+    assert_eq!(legacy.story(sid).unwrap().notes[0].series, 0);
+    assert_eq!(legacy.footnote_options, d.footnote_options);
+}

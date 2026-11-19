@@ -34,7 +34,7 @@ pub(crate) struct StoryWriter<'a, 'f> {
     footnote_ids: u32,
     endnote_ids: u32,
     /// Number shown on the next footnote and endnote of the current story.
-    next_footnote: u32,
+    next_footnote: std::collections::HashMap<u64, u32>,
     next_endnote: u32,
     /// Endnotes met so far: (number, list item markup).
     endnotes: Vec<(u32, String)>,
@@ -70,7 +70,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             epub,
             footnote_ids: 0,
             endnote_ids: 0,
-            next_footnote: 1,
+            next_footnote: std::collections::HashMap::new(),
             next_endnote: 1,
             endnotes: Vec::new(),
             img_src,
@@ -103,7 +103,11 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     pub(crate) fn story(&mut self, sid: StoryId, heading_ids: Option<&str>) -> String {
         let Some(st) = self.doc.story(sid) else { return String::new() };
         self.heading_ids = heading_ids.map(str::to_string);
-        self.next_footnote = self.doc.footnote_start(sid);
+        self.next_footnote.clear();
+        self.next_footnote.insert(0, self.doc.footnote_start(sid));
+        for series in &self.doc.note_series {
+            self.next_footnote.insert(series.id, self.doc.footnote_series_start(sid, series.id));
+        }
         self.next_endnote = self.doc.endnote_start(sid);
         let mut out = String::new();
         self.paragraphs(st, 0, "", &mut out);
@@ -350,9 +354,10 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let k = self.note_index(st, pos, false);
         let Some(note) = st.notes.get(k) else { return };
         let doc = self.doc;
-        let o = &doc.footnote_options;
-        let n = self.next_footnote;
-        self.next_footnote = n.saturating_add(1);
+        let o = doc.note_options(note.series);
+        let counter = self.next_footnote.entry(doc.note_series_id(note.series)).or_insert(o.start_at);
+        let n = *counter;
+        *counter = n.saturating_add(1);
         self.footnote_ids = self.footnote_ids.saturating_add(1);
         let id = self.footnote_ids;
         let _ = write!(

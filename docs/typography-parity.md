@@ -61,7 +61,7 @@ Fidelity: **unmeasured** unless stated.
 | Optical margin alignment | per story with a size, Ignore Optical Margin per paragraph and style | ✓ (hang table of our own, scaled by the story's size; Story panel; IDML `StoryPreference`, `IgnoreEdgeAlignment`) | ~ | hang amounts are ours, InDesign's unknown (#947) |
 | Text wrap | bounding box, shape, jump object/column, wrap sides (text on both sides of an object), contour options, on page items and anchored objects | ✓ | ~ | Alpha Channel contours follow the outline of the image's visible pixels (an image over 40 megapixels, or one that can't be decoded, follows the frame's path); Detect Edges and Photoshop Path contours follow the frame's path |
 | Anchored objects | inline, above line, custom | ✓ | ~ | anchored objects in table cells not drawn (#163) |
-| Footnotes, endnotes | ✓ | ✓ | ~ | footnotes don't split across columns yet |
+| Footnotes, endnotes | ✓ | ✓ | ~ | long footnotes split across columns and threaded frames; paragraph keeps govern each part |
 | Type on a path | ✓ | ✓ | ✓ | |
 | Vertical text (CJK) | ✓ | ✓ | ~ | see cjk.md |
 | CJK composition | mojikumi, kinsoku, aki, tsume, ruby, kenten, warichu, frame grid | most; mojikumi tables kept but not applied; ruby group-only; no frame grid | ~ | cjk.md, cjk-typography.md |
@@ -92,3 +92,5 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 |---|---|---|
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
+
+Independent note series (#2871): `footnote.series.create/options/delete/list`, `footnote.insert {series}` and `footnote.list {series}`. Series 0 remains `footnote.options`; deleting another series moves its notes to 0. Each series owns all footnote options. `placement` is `{kind: "columnFoot"}` or `{kind: "margin", side: "inside"|"outside"|"left"|"right", gap, width}` in points. Margin notes align their first baseline to the reference line and stack below earlier notes on that page side with the moving series' spacing. They retain their position past the bottom margin, with `PlacedNote::overflow` and a composition warning, without changing body overset. Cell-local notes stay in series 0. Native files preserve series; IDML exports all notes as ordinary footnotes and warns when additional series are used.

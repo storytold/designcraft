@@ -80,8 +80,9 @@ fn in_page_order(hits: Vec<Hit>) -> Vec<(usize, String)> {
 }
 
 impl RunningIndex {
-    /// Index the paragraphs / runs that running-header variables refer to. `get` composes a story
-    /// (normally through the cache); stories that themselves contain running headers are skipped.
+    /// Index the paragraphs / runs that running-header variables refer to. `get` supplies body
+    /// layouts without resolving document-wide indexes, including indirect margin dependencies.
+    /// Stories that themselves contain running headers are skipped.
     pub fn build(doc: &Document, get: &dyn Fn(StoryId) -> Arc<ComposedStory>) -> RunningIndex {
         let wanted: Vec<(String, bool)> = doc
             .text_variables

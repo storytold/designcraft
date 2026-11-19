@@ -1,6 +1,7 @@
 # DesignCraft roadmap
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
+- 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
@@ -12,6 +13,8 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-17** · A pending split note advances before deferring the next reference, using its own series' splitting and spacing options. Deleting a series resets memberships inside table cells and note bodies before its numeric ID can be reused; undo restores them (#2871, #1941). No readiness percentage change.
+- **2026-11-16** · Independent footnote series retain their own numbering and styles, with series 0 preserving existing documents and commands. Margin series follow their reference baselines, mirror inside/outside on facing pages, and stack across series without shortening body text; overflowing notes remain placed and report warnings. Margin-note clicks respect foreground frames and table borders; anchored hosts share the page stack, indexed wrap neighbours retain stacked-note host placements and displayed variable/reference text, and PDF exports retain notes beyond the host page. Cached layouts follow resolved cross-references, running headers and table-cell note spacing changes. Running-header source pages also use resolved references (#2871). No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.
