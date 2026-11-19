@@ -1051,3 +1051,21 @@ fn find_next_selects_the_threaded_frame_that_shows_the_cell() {
     let frame = s.doc().unwrap().selection.text.and_then(|t| t.frame).map(|f| f.0);
     assert_eq!(frame, second["id"].as_u64());
 }
+
+/// Change All with a long change and many matches is refused before any copy of the change is
+/// made, not after the memory for all of them has gone.
+#[test]
+fn change_all_is_bounded_by_what_it_would_put_in() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let text = "x ".repeat(2048);
+    s.execute("frame.create", &json!({"rect": [36, 36, 300, 300], "content": "text", "text": text})).unwrap();
+    let huge = "y".repeat(40_000);
+    let e = s.execute("find.change", &json!({"find": "x", "change": huge})).unwrap_err().to_string();
+    assert!(e.contains("would put more than"), "{e}");
+    // GREP replacements are held to the same total while they are made.
+    let e = s.execute("find.change", &json!({"find": "x", "change": huge, "grep": true})).unwrap_err().to_string();
+    assert!(e.contains("would put more than"), "{e}");
+    let r = s.execute("find.change", &json!({"find": "x", "change": "yy"})).unwrap();
+    assert_eq!(r["count"], 2048);
+}
