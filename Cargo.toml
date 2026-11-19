@@ -13,6 +13,8 @@ repository = "https://github.com/storytold/designcraft"
 [workspace.dependencies]
 # Shared RFC 4648 encoding; document decoding policies remain local.
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "30a568b97fa2927d2217f98ba9c799bc76102144" }
+# Shared JSON-RPC 2.0 / MCP server framing and lifecycle.
+craft-mcp-server = { git = "https://github.com/storytold/craft-libs", rev = "3e82d1719cb0c6a5e0e4978a73d6893072c2ce17", version = "=0.1.0" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "30a568b97fa2927d2217f98ba9c799bc76102144", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "30a568b97fa2927d2217f98ba9c799bc76102144", version = "=0.1.0" }
