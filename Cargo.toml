@@ -17,6 +17,7 @@ craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "a5ac3aa05cf3ec013961a85599ddd9e0b5c03813", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "b1b4602a71d19e09ad33f7752a10d6598cf39b2b", version = "=0.1.0" }
 craft-eps = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
+craft-ps = { git = "https://github.com/storytold/craft-libs", rev = "5bd7eb9e88e8574a9cd011accaa9b4beaf4118ac", version = "=0.1.0", features = ["read"] }
 craft-epub = { git = "https://github.com/storytold/craft-libs", rev = "ba24fe2435adb3c81ad6057faf36365fbba736cf", version = "=0.1.0" }
 craft-idml = { git = "https://github.com/storytold/craft-libs", rev = "899e396b9e2710fcdf1ad9b6249d6c456b7ca9a2", version = "=0.1.0" }
 craft-indd = { git = "https://github.com/storytold/craft-libs", rev = "47bf5650b0d503b97bfb5e841746c4957897d11f", version = "=0.1.0" }
@@ -28,7 +29,8 @@ craft-xlsx = { git = "https://github.com/storytold/craft-libs", rev = "2b9a325f5
 craft-docx = { git = "https://github.com/storytold/craft-libs", rev = "7ad4765ee55496d0ccdb7659ad7a6375c7bbb484", version = "=0.1.0" }
 craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "7ad4765ee55496d0ccdb7659ad7a6375c7bbb484", version = "=0.1.0" }
 craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "387c64892b30fdad491b263cc3d9eac660d88dcc", version = "=0.1.0" }
-craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "bfea7d9800a9f14e496209f9df30e9ef45655701", version = "=0.1.0" }
+craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "010702ee9b030844c852939095b1da0d0656a890", version = "=0.1.0" }
+craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "e7873217287876f76a045550369c90a541693c33", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "d15bf1f35b17b759870f9e5111b9a5d243f64888", version = "=0.1.0" }
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "eed3c28cf016723d004d6f2c79c61424c15d4558", version = "=0.1.0" }
 craft-opc = { git = "https://github.com/storytold/craft-libs", rev = "8abfa9d0f14bafbfc3449fc552ffeafb9ca6a551", version = "=0.1.0" }
