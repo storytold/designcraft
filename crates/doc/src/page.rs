@@ -153,9 +153,9 @@ impl Guide {
     pub fn visible_in(&self, d: &crate::Document) -> bool {
         self.layer.is_none_or(|l| d.layer(l).is_none_or(|l| l.visible && l.show_guides))
     }
-    /// Can be dragged: neither it nor its layer is locked.
+    /// Can be dragged: neither it nor its layer is locked, nor are the layer's guides.
     pub fn editable_in(&self, d: &crate::Document) -> bool {
-        !self.locked && self.layer.is_none_or(|l| d.layer(l).is_none_or(|l| !l.locked && l.visible && l.show_guides))
+        !self.locked && self.layer.is_none_or(|l| d.layer(l).is_none_or(|l| !l.locked && !l.lock_guides && l.visible && l.show_guides))
     }
 }
 
