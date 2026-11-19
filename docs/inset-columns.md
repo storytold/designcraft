@@ -123,7 +123,7 @@ occupy it. Intermediate width changes do not add rows. Catchwords use the stream
 and colour at 9 points; a long word shrinks uniformly only to fit its column width.
 Row height never scales the catchword's glyph size. Alternatively,
 `catchwords:{"style":"Catchword"}` applies that character style and reserves a row at
-1.5 times its leading. An unknown style produces a composition warning and uses the
+exactly its leading. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
 Ended and overset
