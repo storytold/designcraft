@@ -125,8 +125,10 @@ right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point ro
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
 and colour at 9 points; a long word shrinks uniformly only to fit its column width.
 Row height never scales the catchword's glyph size. Alternatively,
-`catchwords:{"style":"Catchword"}` applies that character style and reserves a row at
-exactly its leading. An unknown style produces a composition warning and uses the
+`catchwords:{"style":"Catchword"}` applies that character style. Its baseline is the
+preceding line's baseline plus the style's leading. The reserved row starts at the
+preceding line's descent and ends at the catchword's descent. Boolean `true` retains
+the existing placement and 18-point row. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
 `story.options {story,catchwordContinuation:"Next excerpt"}` supplies only the main stream's
@@ -145,6 +147,9 @@ that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next
 visible page, or its own `catchwordContinuation` at the excerpt end. A finished series without continuation text has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
+When a neighbour widens into a finished stream's column, its widened lines start below
+the finished stream's full catchword row, including the catchword descent. This applies
+to commentary and main-text widening while preserving their baseline progression.
 
 A separate text-variable frame can use
 `variables.define {name:"Inner",type:"nextPageFirstWord",story:11,series:1}`. A routed `frame`

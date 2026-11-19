@@ -176,8 +176,17 @@ fn valid_measurement<C, P>(m: &Measurement<C, P>, height: f64) -> bool {
 /// Speculative placements are discarded; only the clipped remeasurements appear in `parts`.
 pub fn layout<C, P>(
     cfg: Config,
-    mut streams: Vec<Stream<C>>,
+    streams: Vec<Stream<C>>,
     mut measure: impl FnMut(usize, &C, Rect) -> Measurement<C, P>,
+) -> Result<Layout<C, P>, Error> {
+    layout_with_state(cfg, streams, |index, cursor, rect, _| measure(index, cursor, rect))
+}
+
+/// Measurements can inspect committed stream state to retain finished neighbours' obstacles.
+fn layout_with_state<C, P>(
+    cfg: Config,
+    mut streams: Vec<Stream<C>>,
+    mut measure: impl FnMut(usize, &C, Rect, &[Stream<C>]) -> Measurement<C, P>,
 ) -> Result<Layout<C, P>, Error> {
     let b = cfg.bounds;
     if streams.len() > MAX_STREAMS
@@ -217,7 +226,7 @@ pub fn layout<C, P>(
         for region in &regions {
             let cursor = &streams.get(region.stream).ok_or(Error::InvalidGeometry)?.cursor;
             let rect = rectangle(cfg, *region, top, deadline);
-            let m = measure(region.stream, cursor, rect);
+            let m = measure(region.stream, cursor, rect, &streams);
             if !valid_measurement(&m, rect.height()) {
                 return Err(Error::InvalidMeasurement);
             }
@@ -227,12 +236,13 @@ pub fn layout<C, P>(
         }
         let mut ended = false;
         for region in &regions {
-            let stream = streams.get_mut(region.stream).ok_or(Error::InvalidGeometry)?;
+            let stream = streams.get(region.stream).ok_or(Error::InvalidGeometry)?;
             let rect = rectangle(cfg, *region, top, bottom);
-            let m = measure(region.stream, &stream.cursor, rect);
+            let m = measure(region.stream, &stream.cursor, rect, &streams);
             if !valid_measurement(&m, rect.height()) {
                 return Err(Error::InvalidMeasurement);
             }
+            let stream = streams.get_mut(region.stream).ok_or(Error::InvalidGeometry)?;
             stream.cursor = m.cursor;
             stream.finished = m.finished;
             ended |= m.finished;

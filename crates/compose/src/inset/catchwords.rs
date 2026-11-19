@@ -13,6 +13,40 @@ fn attributes(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> Cha
     attrs
 }
 
+fn styled(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> bool {
+    options.style().is_some_and(|style| doc.styles.char_style(style).is_some())
+}
+
+pub(super) fn last_line(frame: &crate::FrameText, series: Option<u64>) -> Option<(f64, f64)> {
+    if let Some(series) = series {
+        frame
+            .notes
+            .iter()
+            .filter(|n| n.series == series)
+            .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (n.origin.y + l.baseline, l.descent))))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    } else {
+        frame.lines.last().map(|l| (l.baseline, l.descent))
+    }
+}
+
+/// Measure the inherited catchword face before the next page's visible word is known.
+pub(super) fn row_space(
+    doc: &Document,
+    source: &Story,
+    at: usize,
+    spec: &FrameSpec,
+    options: &designcraft_doc::InsetCatchwords,
+    previous_descent: f64,
+) -> f64 {
+    if !styled(doc, options) {
+        return super::fitting::CATCHWORD_SPACE;
+    }
+    let sample = compose(doc, source, at, "\u{00a0}", spec, options);
+    let descent = sample.frames.first().and_then(|f| f.lines.first()).map_or(previous_descent, |l| l.descent);
+    (row_height(doc, options) + descent - previous_descent).max(0.0)
+}
+
 pub(super) fn row_height(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> f64 {
     if options.style().is_none_or(|style| doc.styles.char_style(style).is_none()) {
         return super::fitting::CATCHWORD_SPACE;
@@ -66,15 +100,19 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
                 .get(source.para_at(at))
                 .is_some_and(|p| doc.styles.resolve_para(p).0.direction == designcraft_doc::TextDirection::RightToLeft);
             let x = if rtl { rect.x0 } else { rect.x1 - width * scale };
-            let origin = Point::new(x, rect.y0);
-            frame.catchwords.push(PlacedCatchword {
-                series: *series,
-                rect: *rect,
-                origin,
-                scale,
-                text: Arc::new(text),
-                source: Arc::from(word.as_str()),
-            });
+            let (rect, y) = if styled(doc, &options)
+                && let Some((previous, descent)) = last_line(frame, *series)
+                && let Some(line) = text.frames.first().and_then(|f| f.lines.first())
+            {
+                let baseline = previous + row_height(doc, &options);
+                let top = previous + descent;
+                let rect = Rect::new(rect.x0, top, rect.x1, (baseline + line.descent * scale).max(top));
+                (rect, baseline - line.baseline * scale)
+            } else {
+                (*rect, rect.y0)
+            };
+            let origin = Point::new(x, y);
+            frame.catchwords.push(PlacedCatchword { series: *series, rect, origin, scale, text: Arc::new(text), source: Arc::from(word.as_str()) });
             // Keep auto-size accounting consistent with the caption row reserved by page fitting.
             frame.content_height = frame.content_height.max(rect.y1 - spec.area.y0);
         }

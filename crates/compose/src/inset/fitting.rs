@@ -1,5 +1,5 @@
 //! Page trials keep original stories intact and replay accepted whole-line rectangles.
-use super::{Config, MainPosition, Measurement, Stream, layout};
+use super::{Config, MainPosition, Measurement, Stream, layout_with_state};
 use crate::{ComposeOptions, ComposedStory, FrameSpec, FrameText, StreamPageInput, StreamState};
 use designcraft_doc::{Document, InsetColumns, InsetStream, NoteStream, Story};
 use designcraft_geom::Rect;
@@ -16,6 +16,7 @@ struct Cursor {
     tail_pending: bool,
     catchword: Option<Rect>,
     main_bottom: f64,
+    catchword_space: f64,
 }
 struct Trial {
     core_bottom: f64,
@@ -221,6 +222,17 @@ fn fit_routes(
             let shown = result.frames.iter().flat_map(|f| &f.notes).any(|n| n.series == series);
             let terminal = doc.note_options(series).catchword_continuation.as_deref().is_some_and(|s| !s.is_empty());
             if shown && (future || terminal || result.state.pending_series().any(|id| id == series)) {
+                let height = result
+                    .frames
+                    .iter()
+                    .find(|f| f.frame == area.id)
+                    .and_then(|f| f.notes.last())
+                    .and_then(|note| {
+                        let source = story.notes.get(note.index)?;
+                        let line = note.text.frames.iter().rev().find_map(|f| f.lines.last())?;
+                        Some(super::catchwords::row_space(doc, &source.text, line.range.end, area, &options.catchwords, line.descent))
+                    })
+                    .unwrap_or(height);
                 rows.insert(area.id, height);
             }
         }
@@ -362,6 +374,7 @@ impl Page<'_> {
                         tail_pending: false,
                         catchword: None,
                         main_bottom: self.frame.area.y0,
+                        catchword_space: space,
                     },
                     ratio: s.ratio,
                     finished,
@@ -461,10 +474,10 @@ impl Page<'_> {
             position: (positioned && main_active).then_some(MainPosition { top, left, right }),
         };
         let mut first_line_seen = None;
-        let out = layout(cfg, streams, |index, cursor, rect| {
+        let out = layout_with_state(cfg, streams, |index, cursor, rect, committed| {
             let series = self.options.streams.get(index).and_then(|s| s.series);
             if cursor.tail_pending {
-                let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false, space);
+                let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false, cursor.catchword_space);
                 return Measurement {
                     height,
                     finished,
@@ -488,8 +501,24 @@ impl Page<'_> {
                 };
             let mut areas = cursor.areas.clone();
             let mut f = band_frame(self.frame, rect);
+            for (other, stream) in committed.iter().enumerate() {
+                if other != index
+                    && stream.finished
+                    && let Some(row) = stream.cursor.catchword.filter(|r| r.x0 < rect.x1 && r.x1 > rect.x0)
+                {
+                    f.exclusions.push(crate::Exclusion {
+                        rect: row,
+                        mode: designcraft_doc::WrapMode::BoundingBox,
+                        side: designcraft_doc::WrapSide::BothSides,
+                        contour: None,
+                        after: None,
+                        anchor_baseline: None,
+                    });
+                }
+            }
             if let Some(previous) = cursor.areas.last() {
                 // A stream keeps its old measure until a whole line clears the ended neighbour.
+                // The band's top includes that neighbour's catchword descent, not just its body.
                 // Baselines continue normally; only the line's available horizontal span changes.
                 let old = previous.area;
                 let top = self.frame.area.y0 - self.frame.area.height();
@@ -539,7 +568,16 @@ impl Page<'_> {
                 let part = fit.frames.last().cloned().unwrap_or_default();
                 let height = part.notes.iter().map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max).min(rect.height());
                 let finished = fit.starts_fit && !fit.state.pending_series().any(|id| id == series);
-                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom, space);
+                let catchword_space = part
+                    .notes
+                    .last()
+                    .and_then(|note| {
+                        let source = self.story.notes.get(note.index)?;
+                        let line = note.text.frames.iter().rev().find_map(|f| f.lines.last())?;
+                        Some(super::catchwords::row_space(self.doc, &source.text, line.range.end, self.frame, &self.options.catchwords, line.descent))
+                    })
+                    .unwrap_or(cursor.catchword_space);
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom, catchword_space);
                 Measurement {
                     height,
                     finished,
@@ -553,6 +591,7 @@ impl Page<'_> {
                         tail_pending,
                         catchword,
                         main_bottom: cursor.main_bottom,
+                        catchword_space,
                     },
                     placement: part,
                 }
@@ -595,11 +634,14 @@ impl Page<'_> {
                         areas.pop();
                     }
                 }
-                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom, space);
+                let catchword_space = part.lines.last().map_or(cursor.catchword_space, |line| {
+                    super::catchwords::row_space(self.doc, self.story, cut, self.frame, &self.options.catchwords, line.descent)
+                });
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom, catchword_space);
                 Measurement {
                     height: height.min(rect.height()),
                     finished,
-                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, main_bottom, ..cursor.clone() },
+                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, main_bottom, catchword_space, ..cursor.clone() },
                     placement: FrameText::default(),
                 }
             }
