@@ -10538,3 +10538,54 @@ fn xref_index_running_header_build_breaks_anchored_wrap_neighbour_cycle() {
     let idx = Cache::new().xref_index(&d);
     assert_eq!(idx.page_index(anchor_id), Some(0));
 }
+
+/// Composing a running header on a cold cache terminates when a heading source is wrapped by a
+/// story anchored in the story that holds the running header: the index being built must not ask
+/// for itself again, and the header still shows the heading.
+#[test]
+fn running_header_build_breaks_anchored_wrap_neighbour_cycle() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let rh_idx = d.text_variables.iter().position(|v| v.name == "Running Header").unwrap();
+    let rh_char = designcraft_doc::vars::var_char(rh_idx).unwrap();
+    // Heading source S (its style is the one the default Running Header variable reads).
+    let (_, s_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "Chapter One", ParaFormat::default()).unwrap();
+    // Running-header story H.
+    let (_, h_sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 300.0, 240.0), lid, &format!("{rh_char} Target"), ParaFormat::default()).unwrap();
+    // S's wrap neighbour T, whose own frame is anchored in H: composing T needs H's composition,
+    // which needs the running-header index that is being built.
+    let (_, t_sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(320.0, 36.0, 500.0, 140.0),
+            lid,
+            "Wrap neighbour",
+            ParaFormat { style: "Body".into(), ..Default::default() },
+        )
+        .unwrap();
+    anchor_box(&mut d, t_sid, 0, 0.0, 0.0, false, WrapMode::BoundingBox);
+    let t_anchored_id = ItemId(d.alloc());
+    let mut t_anchored = designcraft_doc::Item::new(
+        t_anchored_id,
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 80.0, 30.0)),
+    );
+    t_anchored.content = Content::Text(designcraft_doc::TextFrame { story: t_sid, options: Default::default() });
+    d.story_mut(t_sid).unwrap().frames.push(t_anchored_id);
+    d.story_mut(h_sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(t_anchored, Default::default()));
+
+    assert!(d.check().is_ok());
+    assert!(crate::wrap::neighbours(&d, s_sid).contains(&t_sid));
+    assert!(d.story(t_sid).unwrap().frames.iter().any(|f| d.find(*f).is_none()));
+    assert!(crate::vars::has_running(&d, d.story(h_sid).unwrap()));
+
+    let cache = Cache::new();
+    let composed = cache.get(&d, h_sid, None);
+    assert!(!composed.frames.is_empty());
+    let running = cache.running_index(&d);
+    assert_eq!(running.value(designcraft_doc::story::BASIC_PARAGRAPH, false, designcraft_doc::vars::Use::FirstOnPage, 0), "Chapter One");
+    // The composition made with the finished index is the cached one.
+    assert!(cache.composed_for(&d, h_sid).is_some());
+}
