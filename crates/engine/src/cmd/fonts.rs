@@ -134,6 +134,45 @@ pub(super) fn tally_range(d: &Document, st: &Story, within: std::ops::Range<usiz
     }
 }
 
+/// How many missing fonts an open's warning names before "and N more".
+const OPEN_WARNING_LISTED: usize = 6;
+
+/// The fonts a document just opened sets text in that this machine lacks (a missing family, or a
+/// family that lacks the style): a warning for the open's `warnings` and the fonts for its
+/// `missingFonts`, as Find/Replace Font (`font.list`) describes them. `None` and an empty list
+/// when every font is there. Call it once the document's own fonts (`Document Fonts`) are loaded.
+pub(crate) fn missing_on_open(d: &Document) -> (Option<String>, Vec<Value>) {
+    let fonts: Vec<UsedFont> = used_fonts(d).into_iter().filter(|f| f.missing || f.style_missing).collect();
+    if fonts.is_empty() {
+        return (None, Vec::new());
+    }
+    let named: Vec<String> = fonts.iter().take(OPEN_WARNING_LISTED).map(|f| format!("{} {}", f.family, f.style)).collect();
+    let more = match fonts.len().saturating_sub(OPEN_WARNING_LISTED) {
+        0 => String::new(),
+        n => format!(" and {n} more"),
+    };
+    let what = if fonts.len() == 1 { "font is" } else { "fonts are" };
+    let warning = format!(
+        "{} {what} missing: {}{more}. The text is set in substitute fonts; Type › Find/Replace Font lists them.",
+        fonts.len(),
+        named.join(", ")
+    );
+    let list = fonts
+        .iter()
+        .map(|f| {
+            json!({
+                "family": f.family,
+                "style": f.style,
+                "matchStatus": f.match_status,
+                "replacementFamily": f.replacement_family,
+                "replacementStyle": f.replacement_style,
+                "characters": f.characters,
+            })
+        })
+        .collect();
+    (Some(warning), list)
+}
+
 pub(super) fn used_fonts(d: &Document) -> Vec<UsedFont> {
     let mut used = FontTally::new();
     for_each_story(d, &mut |st| tally_story(d, st, &mut used));

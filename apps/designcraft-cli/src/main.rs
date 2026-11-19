@@ -504,7 +504,12 @@ fn run(args: &[String]) -> Result<(), String> {
         match a.as_str() {
             "--in" => {
                 let p = val()?;
-                s.execute("file.open", &json!({"path": p})).map_err(|e| e.to_string())?;
+                let r = s.execute("file.open", &json!({"path": p})).map_err(|e| e.to_string())?;
+                // What the open itself reports (missing fonts, skipped font files, conversion
+                // problems) goes to stderr, as an export's warnings do.
+                for w in r["warnings"].as_array().into_iter().flatten() {
+                    eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                }
                 opened = true;
             }
             "--sample" => {

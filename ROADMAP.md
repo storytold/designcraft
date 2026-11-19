@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-19** · A file that opens set in fonts this machine lacks says so wherever it is opened, not only in the Find/Replace Font dialog of the window: `file.open`, `file.openIdml` and `file.openBytes` return `missingFonts` (family, style, whether the family or only the style is missing, the replacement and the character count, as `font.list` has it, after the `Document Fonts` folder has loaded) and add "N fonts are missing: …" to their `warnings`, so `designcraft-cli run --in`, scripts, the control channel and MCP see it (the CLI prints the open's warnings to stderr, which it dropped); File › Open Recent offers Find/Replace Font for the missing fonts as File › Open does. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

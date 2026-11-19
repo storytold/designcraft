@@ -666,9 +666,11 @@ mod import_warning_tests {
         app.run("file.save", json!({"path": path})).unwrap();
         let result = app.open_file("file.open", json!({"path": path}));
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(result.unwrap()["warnings"].as_array().unwrap().len(), 1);
+        // The GREP style and the missing font: both warnings, and the status line keeps them.
+        assert_eq!(result.unwrap()["warnings"].as_array().unwrap().len(), 2);
         assert_eq!(app.ui.dialog.as_ref().unwrap().id, "findFont");
         assert!(app.ui.status.contains("GREP style not applied"), "{}", app.ui.status);
+        assert!(app.ui.status.contains("1 font is missing: Unavailable Test Family Regular"), "{}", app.ui.status);
     }
 
     #[test]
