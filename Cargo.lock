@@ -1326,6 +1326,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-mcp-server"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=30a568b97fa2927d2217f98ba9c799bc76102144#30a568b97fa2927d2217f98ba9c799bc76102144"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "craft-metadata"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=30a568b97fa2927d2217f98ba9c799bc76102144#30a568b97fa2927d2217f98ba9c799bc76102144"
@@ -1981,6 +1989,7 @@ name = "designcraft-mcp"
 version = "0.21.0"
 dependencies = [
  "craft-file-formats",
+ "craft-mcp-server",
  "designcraft-engine",
  "designcraft-geom",
  "designcraft-render",

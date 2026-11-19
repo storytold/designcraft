@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources methods, backed by
 //! `craft-mcp-server`.
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 pub use craft_mcp_server::PROTOCOL_VERSION;
 use craft_mcp_server::{Contents, Incoming, Info, Options, Tools};
@@ -15,10 +15,34 @@ const INVALID_PARAMS: i64 = -32602;
 /// Most messages in one JSON-RPC batch.
 const MAX_BATCH: usize = 1000;
 
-/// Most bytes one request line's content may hold. A client that never sends a newline must not
-/// grow the reader's buffer without bound (audit: DesignCraft #3). Kept one byte below 4 MiB so
-/// a 4 MiB line plus its newline is refused as oversized.
-const MAX_LINE_BYTES: usize = (4 << 20) - 1;
+/// Most bytes one request line may hold, including its terminator when present.
+/// Keep the legacy EOF allowance without relaxing the raw-byte limit.
+const MAX_LINE_BYTES: usize = 4 << 20;
+
+/// Count raw bytes without duplicating the shared framing or buffering implementation.
+struct CountedInput<R> {
+    inner: R,
+    consumed: usize,
+}
+
+impl<R: BufRead> Read for CountedInput<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(output)?;
+        self.consumed = self.consumed.saturating_add(count);
+        Ok(count)
+    }
+}
+
+impl<R: BufRead> BufRead for CountedInput<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.inner.consume(count);
+        self.consumed = self.consumed.saturating_add(count);
+    }
+}
 
 const INSTRUCTIONS: &str = "DesignCraft is a page-layout app (an InDesign clone). Coordinates are points in spread \
 space (y down; on a single-page spread the page's top-left is (0,0); a default Letter page is 612×792). Every action \
@@ -97,8 +121,16 @@ impl Server {
 
     /// Serve newline-delimited JSON-RPC until `input` closes. Logs go to stderr only (stdout is
     /// the protocol stream).
-    pub fn serve(&mut self, mut input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+        let mut input = CountedInput { inner: input, consumed: 0 };
         while let Some(incoming) = craft_mcp_server::read_message(&mut input, MAX_LINE_BYTES)? {
+            // The shared limit excludes LF; DesignCraft's historical limit includes it.
+            let incoming = if input.consumed > MAX_LINE_BYTES {
+                Incoming::Refused(json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32600,"message":"request line is too long"}}).to_string())
+            } else {
+                incoming
+            };
+            input.consumed = 0;
             let reply = match incoming {
                 Incoming::Line(line) => self.handle_line(&line),
                 Incoming::Refused(reply) => Some(reply),
@@ -145,6 +177,12 @@ impl Server {
                     return Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": INVALID_PARAMS, "message": m}}));
                 }
             }
+        }
+        if msg.get("method").and_then(Value::as_str) == Some("resources/read")
+            && let Some(id) = msg.get("id").filter(|id| id.is_string() || id.is_number())
+            && msg.get("params").and_then(|params| params.get("uri")).and_then(Value::as_str).is_none()
+        {
+            return Some(json!({"jsonrpc":"2.0", "id":id, "error":{"code":INVALID_PARAMS,"message":"missing `uri`"}}));
         }
         self.0.handle(msg)
     }
