@@ -10,7 +10,7 @@ const ID: &str = "ink.separations";
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![cmd!(query "ink.separations", "Separations Preview", [], None,
-        "{page?: 1-based page position (default 1; its spread is separated), dpi?: 9–300 (default 72), inkLimit?: percent, standard?: none|x4|a2b, compressImages?: bool, flatten?: high|medium|low|ppi (as file.exportPdf)} — the spread exported as Export PDF prints it and separated → {spread, dpi, width, height, conversion, inks: [{name, spot, max, mean, area} (percent)], unseparated: [spot names past 32], maxTotal, maxTotalAt?: [x, y] (pt, spread), overLimit?: {limit, pixels, regions: [{x, y, width, height}] (pt, spread)}, warnings}",
+        "{page?: 1-based page position (default 1; its spread is separated), dpi?: 9–300 (default 72; lowered to fit 4 megapixels per plate, as for an A5 page or larger at 300, which `dpi` and a warning then say), inkLimit?: percent, standard?: none|x4|a2b, compressImages?: bool, flatten?: high|medium|low|ppi (as file.exportPdf)} — the spread exported as Export PDF prints it and separated → {spread, dpi, width, height, conversion, inks: [{name, spot, max, mean, area} (percent)], unseparated: [spot names past 32], maxTotal, maxTotalAt?: [x, y] (pt, spread), overLimit?: {limit, pixels, regions: [{x, y, width, height}] (pt, spread)}, warnings}",
         has_doc, separations)]
 }
 
