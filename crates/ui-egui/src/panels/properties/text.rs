@@ -607,6 +607,30 @@ fn is_shaped(item: &designcraft_doc::Item) -> bool {
     item.text_frame().is_some_and(|tf| tf.options.path.is_none()) && designcraft_compose::FrameOutline::of_item(item, 0.0).is_some()
 }
 
+/// Story direction across every selected story (matching `story.setDirection`), falling back to `fid`:
+/// `None` if no story is present, `Some(Some(d))` if all agree on `d`, or `Some(None)` when mixed.
+fn selected_story_direction(app: &DesignApp, fid: designcraft_doc::ItemId) -> Option<Option<designcraft_doc::TextDirection>> {
+    let st = app.session.active()?;
+    let mut stories: Vec<designcraft_doc::StoryId> =
+        st.selection.text.map(|t| t.story).into_iter().chain(st.selection.cells.map(|c| c.story)).collect();
+    for id in &st.selection.items {
+        if let Some(tf) = st.doc.item(*id).and_then(|i| i.text_frame())
+            && !stories.contains(&tf.story)
+        {
+            stories.push(tf.story);
+        }
+    }
+    if stories.is_empty()
+        && let Some(tf) = st.doc.item(fid).and_then(|i| i.text_frame())
+    {
+        stories.push(tf.story);
+    }
+    let mut dirs = stories.into_iter().filter_map(|sid| st.doc.story(sid).map(|s| s.direction));
+    let first = dirs.next()?;
+    let all_same = dirs.all(|d| d == first);
+    Some(all_same.then_some(first))
+}
+
 /// Text Frame section: columns, gutter, [Options]; Inset Spacing (Top and Bottom, the link that
 /// makes all four the same, Left and Right; one Inset for a non-rectangular frame); the four
 /// Vertical Justification buttons (neither for type on a path). With the Type tool it changes the
@@ -615,8 +639,7 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
     let Some((fid, opts, shaped)) = text_frame_target(app) else { return };
-    let story_dir =
-        app.session.active().and_then(|st| st.doc.item(fid).and_then(|i| i.text_frame()).and_then(|tf| st.doc.story(tf.story))).map(|s| s.direction);
+    let story_dir = selected_story_direction(app, fid);
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
     if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {
@@ -656,14 +679,15 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     });
     if let Some(story_dir) = story_dir {
         ui.add_space(4.0);
-        let rtl = story_dir == designcraft_doc::TextDirection::RightToLeft;
+        let is_ltr = story_dir == Some(designcraft_doc::TextDirection::LeftToRight);
+        let is_rtl = story_dir == Some(designcraft_doc::TextDirection::RightToLeft);
         ui.horizontal(|ui| {
             widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Story Direction"));
             ui.spacing_mut().item_spacing.x = 4.0;
-            if icon_toggle(ui, "story-dir-ltr", !rtl, crate::i18n::tr(&app.ui.language, "Left to Right")).clicked() && rtl {
+            if icon_toggle(ui, "story-dir-ltr", is_ltr, crate::i18n::tr(&app.ui.language, "Left to Right")).clicked() && !is_ltr {
                 let _ = app.run("story.setDirection", json!({"direction": "leftToRight"}));
             }
-            if icon_toggle(ui, "story-dir-rtl", rtl, crate::i18n::tr(&app.ui.language, "Right to Left")).clicked() && !rtl {
+            if icon_toggle(ui, "story-dir-rtl", is_rtl, crate::i18n::tr(&app.ui.language, "Right to Left")).clicked() && !is_rtl {
                 let _ = app.run("story.setDirection", json!({"direction": "rightToLeft"}));
             }
         });

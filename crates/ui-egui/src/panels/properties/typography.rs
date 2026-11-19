@@ -461,17 +461,13 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     if item(ui, "Define Lists…", None, true) {
         command = Some("list.define");
     }
-    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment.
+    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment per paragraph.
     ui.separator();
-    let rtl = p["direction"] == "rightToLeft";
-    for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+    let pdir = p["direction"].as_str();
+    for (target, is_rtl, label) in [("leftToRight", false, "Left to Right"), ("rightToLeft", true, "Right to Left")] {
+        let on = pdir == Some(target);
         if item(ui, label, Some(on), true) && !on {
-            let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
-                Align::Left => Align::Right,
-                Align::Right => Align::Left,
-                a => a,
-            };
-            attrs = Some(json!({"direction": dir, "align": align}));
+            set_paragraph_direction(app, is_rtl);
         }
     }
     if let Some(attrs) = attrs {
