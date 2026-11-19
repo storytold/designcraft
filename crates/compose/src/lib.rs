@@ -167,6 +167,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -1698,6 +1702,9 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
             let mut gl = sp.glyphs.clone();
+            // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
+            // of the vector, and the drop cap's character still votes (#1688).
+            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
             let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
             let width = |j: usize| {
                 let ind = match &dc {
@@ -1709,7 +1716,8 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &mut gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let mut hy =
+                hyphenation_points(&story.text, &mut gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2861,6 +2869,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // Classified before the drop cap is split off (see the same call in the measuring loop above).
+    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2950,7 +2960,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &mut glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let mut hyph_after =
+        hyphenation_points(&story.text, &mut glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -5486,6 +5497,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -5653,6 +5670,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         generated_text: g.generated_text.clone(),
         hyphen_inserted: g.hyphen_inserted,
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,
@@ -5983,9 +6001,21 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
+        return out;
+    }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English. See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
@@ -5994,6 +6024,8 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -6015,6 +6047,24 @@ fn hyphenation_points(
         let b = glyphs[i..j].iter().map(|g| g.byte.saturating_add(g.len)).max().unwrap_or(a);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);

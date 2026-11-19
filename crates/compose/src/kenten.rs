@@ -124,6 +124,7 @@ fn shape_mark(face: FaceRef, text: &str, m: &KentenMark, b: &PlacedGlyph) -> Vec
         let adv = f64::from(sg.x_advance) * sx;
         out.push(PlacedGlyph {
             hyphen_inserted: false,
+            list_label: false,
             rendered_char: ch,
             face,
             gid: sg.gid,
