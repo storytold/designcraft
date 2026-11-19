@@ -253,8 +253,7 @@ pub(crate) fn place_table(
     // Compose owner cells in logical row/column order; column 0 is already rightmost in RTL.
     // Cell footnotes are numbered in the host story's sequence, so each cell carries on from the
     // one before it and the host story continues after the table.
-    // shortcut: repeated footer notes number from their last page but print on first appearance;
-    // numbering/pagination settles for at most three passes. Revisit for unstable row placement.
+    // shortcut: numbering/pagination settles for at most three passes. Revisit for unstable row placement.
     let start = notes.cell_start(doc, frames[cur.fi].page);
     let saved_cur = cur.clone();
     let placed_len = notes.placed.len();
@@ -320,9 +319,14 @@ pub(crate) fn place_table(
         }
         (heights, group_end)
     };
+    let header = table.header_rows();
+    let footer = table.footer_rows();
+    let body_end = nr - footer;
     for pass in 0..3 {
         let mut col = col_rect(cur);
         let mut note_number = start;
+        // Footer notes print on their first fragment, while the host resumes on the final body page.
+        let mut footer_number = start.at_page(doc, row_page.get(body_end).copied().flatten());
         let mut layouts: Vec<Option<CellLayout>> = (0..nr * nc).map(|_| None).collect();
         for r in 0..nr {
             for c in 0..nc {
@@ -332,17 +336,22 @@ pub(crate) fn place_table(
                 let cell = &table.cells[r * nc + c];
                 let cs = (cell.col_span.max(1) as usize).min(nc - c);
                 let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-                note_number = note_number.at_page(doc, row_page[r]);
-                let layout = compose_cell(doc, cell, w, opts, side, row_page[r], note_number);
-                note_number = layout.notes_after.unwrap_or(note_number);
+                let number = if r < body_end { note_number } else { footer_number }.at_page(doc, row_page[r]);
+                let layout = compose_cell(doc, cell, w, opts, side, row_page[r], number);
+                let after = layout.notes_after.unwrap_or(number);
+                if r >= body_end {
+                    footer_number = after;
+                } else {
+                    note_number = after;
+                    if note_number.key == footer_number.key {
+                        footer_number = note_number;
+                    }
+                }
                 layouts[r * nc + c] = Some(layout);
             }
         }
-        notes.resume(note_number);
+        notes.resume(if footer > 0 && footer_number.key == note_number.key { footer_number } else { note_number });
         let (heights, group_end) = geometry(&layouts);
-        let header = table.header_rows();
-        let footer = table.footer_rows();
-        let body_end = nr - footer;
         let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
         let footer_h = sum(body_end, nr);
         let o = &table.options;
@@ -474,15 +483,7 @@ pub(crate) fn place_table(
             cur.last_descent = 0.0;
             cur.pending = o.space_after;
         }
-        let mut placed_page = row_page.clone();
-        for (offset, &(.., table_len)) in frame_lengths.iter().enumerate() {
-            let fi = saved_cur.fi + offset;
-            for frag in out.frames[fi].tables.iter().skip(table_len) {
-                for &(r, _, _) in &frag.rows {
-                    placed_page[r] = frames[fi].page;
-                }
-            }
-        }
+        let placed_page = first_row_pages(frames, out, saved_cur.fi, &frame_lengths, &row_page);
         let changed = (0..nr).any(|r| {
             (0..nc).any(|c| is_owner(r, c)) && crate::notes::restart_key(doc, row_page[r]) != crate::notes::restart_key(doc, placed_page[r])
         });
@@ -498,6 +499,32 @@ pub(crate) fn place_table(
         row_page = placed_page;
     }
     true
+}
+
+/// First emitted page of each row in this table's new fragments, including repeated footers.
+fn first_row_pages(
+    frames: &[FrameSpec],
+    out: &ComposedStory,
+    start: usize,
+    frame_lengths: &[(usize, usize)],
+    previous: &[Option<usize>],
+) -> Vec<Option<usize>> {
+    let mut pages = previous.to_vec();
+    let mut seen = vec![false; pages.len()];
+    for (offset, &(.., table_len)) in frame_lengths.iter().enumerate() {
+        let fi = start + offset;
+        for frag in out.frames[fi].tables.iter().skip(table_len) {
+            // `rows` excludes repeats; cells include the footer's first emitted appearance.
+            for cell in &frag.cells {
+                let r = cell.row;
+                if !seen[r] {
+                    pages[r] = frames[fi].page;
+                    seen[r] = true;
+                }
+            }
+        }
+    }
+    pages
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.

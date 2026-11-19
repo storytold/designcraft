@@ -3610,6 +3610,37 @@ fn table_cell_footnotes_are_not_duplicated_by_repeated_headers_and_footers() {
 }
 
 #[test]
+fn repeated_footer_note_numbers_on_its_first_page_and_preserves_the_last_page_counter() {
+    let (mut d, sid, _) = doc_with("After.", Rect::new(0.0, 0.0, 240.0, 200.0), ParaAttrs::default());
+    d.footnote_options.restart = designcraft_doc::notes::NoteRestart::Page;
+    let mut table = designcraft_doc::Table::new(77, 4, 1, 0, 1, 220.0);
+    table.options.repeat_footer = true;
+    for row in &mut table.rows {
+        row.mode = designcraft_doc::RowHeightMode::Exactly;
+        row.height = 30.0;
+    }
+    for (i, cell) in table.cells.iter_mut().enumerate() {
+        cell.text.insert(0, "Cell.");
+        cell.text.insert_note(4, &format!("Row {i}."), ParaFormat::default());
+    }
+    let st = d.story_mut(sid).unwrap();
+    st.insert_table(0, table);
+    st.insert_note(st.len(), "After note.", ParaFormat::default());
+    let mut frames = frame_specs(&d, sid);
+    frames[0].page = Some(0);
+    let mut second = frames[0].clone();
+    second.id = ItemId(999);
+    second.page = Some(1);
+    frames.push(second);
+    let cs = compose(&d, d.story(sid).unwrap(), &frames, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let labels = |fi: usize| cs.frames[fi].notes.iter().map(|n| (n.source.as_ref(), n.label.as_str())).collect::<Vec<_>>();
+    assert_eq!(labels(0), [("Row 0.", "1"), ("Row 1.", "2"), ("Row 2.", "3"), ("Row 4.", "4")]);
+    assert_eq!(labels(1), [("Row 3.", "1"), ("After note.", "2")]);
+    assert!(cs.frames[1].tables.iter().flat_map(|t| &t.cells).any(|c| c.row == 4));
+}
+
+#[test]
 fn footnotes_stack_baseline_to_baseline() {
     // Single-line footnotes read as one text: consecutive baselines sit one leading (plus
     // Space Between Footnotes) apart, and only the last footnote's descent adds to the area.
