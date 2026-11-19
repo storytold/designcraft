@@ -85,7 +85,8 @@ pub fn wmf_bitmap(b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A device-independent bitmap (`BITMAPINFOHEADER` or `BITMAPCOREHEADER`, colours, pixels) as a
-/// file, with its pixel count. `None` when the header doesn't describe a bitmap, when the bytes it
+/// file, with its pixel count: for a compressed payload, the size of the image it decodes to, not
+/// the size its header claims. `None` when the header doesn't describe a bitmap, when the bytes it
 /// describes are not all there, or when it is too large to decode: a bitmap that can't be drawn
 /// must not beat a smaller one that can.
 fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
@@ -112,7 +113,13 @@ fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
         // The pixels are the whole image file: it must be there, be the kind it claims, and decode.
         let payload = dib.get(header_len..)?;
         let magic: &[u8] = if compression == BI_JPEG { &[0xFF, 0xD8, 0xFF] } else { b"\x89PNG" };
-        return (payload.starts_with(magic) && crate::decode_rgba(payload).is_some()).then(|| (area, payload.to_vec()));
+        if !payload.starts_with(magic) {
+            return None;
+        }
+        // The header's width and height are only a recommendation for a compressed payload, so
+        // rank by the image that actually decoded: a small picture in a large header is small.
+        let (wide, tall) = crate::decode_rgba(payload)?.dimensions();
+        return Some((u64::from(wide) * u64::from(tall), payload.to_vec()));
     }
     if !matches!(compression, BI_RGB | BI_RLE8 | BI_RLE4 | BI_BITFIELDS) {
         return None;
@@ -269,6 +276,33 @@ mod tests {
         let file = wmf_bitmap(&wmf_records(&[&fake, &dib()])).unwrap();
         let rgba = crate::decode_rgba(&file).unwrap();
         assert_eq!((rgba.width(), rgba.height()), (2, 1));
+    }
+
+    /// A `width`×1 24-bit DIB of black pixels.
+    fn dib_row(width: u32) -> Vec<u8> {
+        let mut d = Vec::new();
+        for v in [40u32, width, 1] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&24u16.to_le_bytes());
+        d.extend_from_slice(&[0; 24]);
+        d.resize(d.len() + (width as usize * 3).div_ceil(4) * 4, 0);
+        d
+    }
+
+    #[test]
+    fn a_compressed_bitmap_is_ranked_by_the_image_it_holds() {
+        // A header claiming 100×100 around a readable 2×1 PNG is a 2×1 bitmap, so the complete
+        // 3×1 bitmap beside it is the larger one.
+        let mut fake = dib()[..40].to_vec();
+        fake[4..8].copy_from_slice(&100i32.to_le_bytes());
+        fake[8..12].copy_from_slice(&100i32.to_le_bytes());
+        fake[16..20].copy_from_slice(&BI_PNG.to_le_bytes());
+        fake.extend_from_slice(&png_file());
+        let file = wmf_bitmap(&wmf_records(&[&fake, &dib_row(3)])).unwrap();
+        let rgba = crate::decode_rgba(&file).unwrap();
+        assert_eq!((rgba.width(), rgba.height()), (3, 1));
     }
 
     /// A 20,000 × 20,000 run-length DIB: a few bytes whose RGBA is 1.6 GB, over the decode budget.
