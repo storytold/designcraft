@@ -414,6 +414,46 @@ fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges
 }
 
 #[test]
+fn cell_options_ok_edits_nothing_when_the_picked_stroke_type_is_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.cellOptionsDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // The Type list picks a stroke type by name.
+    d.fields.insert("type".into(), json!("solid"));
+    let (undo, revision) = {
+        let st = app.session.active().unwrap();
+        (st.history.undo.len(), st.revision)
+    };
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!((st.history.undo.len(), st.revision), (undo, revision), "no edit and no undo step");
+}
+
+#[test]
+fn cell_options_edge_change_reseeds_a_picked_stroke_type_that_was_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("table.setCell", json!({"stroke": {"type": "dotted", "edges": "innerHorizontal"}})).unwrap();
+    app.run("app.cellOptionsDialog", json!({})).unwrap();
+    let mut d = app.ui.dialog.take().unwrap();
+    cell_options_edges_changed(&mut app, &mut d, &[true, true, true, true, false, false]);
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // Solid picked by name for the outer edges is what they show; the inner horizontal edges
+    // chosen next show their own type.
+    d.fields.insert("type".into(), json!("solid"));
+    cell_options_edges_changed(&mut app, &mut d, &[false, false, false, false, true, false]);
+    assert_eq!(d.fields["type"], json!({"kind": "dotted"}));
+}
+
+#[test]
 fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
@@ -438,6 +478,222 @@ fn cell_options_edge_changes_reseed_every_stroke_field_and_survive_a_bad_seed() 
     let st = app.session.active().unwrap();
     let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
     assert_eq!([t.cell(0, 0).unwrap().strokes[2].weight, t.cell(1, 1).unwrap().strokes[0].weight], [1.0; 2]);
+}
+
+#[test]
+fn diagonal_lines_dialog_draws_and_applies_its_values_but_not_a_mixed_one() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.setCell", json!({"row": 0, "col": 0, "diagonal": {"color": "[Paper]"}})).unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let ctx = dialog_context("");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    // The first frame sizes the window without painting it.
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for shown in ["Line Stroke", "Weight:", "Draw:", "Diagonal In Front"] {
+        visible_label(&labels, screen, shown);
+    }
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, "diagonalLines");
+    assert_eq!((&d.fields["lines"], &d.fields["color"], &d.fields["inFront"]), (&json!("none"), &Value::Null, &json!(true)));
+    // The fourth line button, in the row above Line Stroke, is Crossed Diagonal Lines.
+    let caption = visible_label(&labels, screen, "Line Stroke");
+    let gap = ctx.global_style().spacing.item_spacing;
+    let crossed = egui::pos2(caption.left() + 3.0 * (32.0 + gap.x) + 16.0, caption.top() - 10.0 - gap.y - 16.0);
+    click_dialog(&mut app, &ctx, screen, crossed);
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["lines"], json!("crossed"));
+    d.fields.insert("inFront".into(), json!(false));
+    d.fields.insert("weight".into(), json!(0.5));
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(
+        t.cells
+            .iter()
+            .all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::Crossed && !c.diagonal.in_front && c.diagonal.stroke.weight == 0.5)
+    );
+    let colors: Vec<_> = t.cells.iter().map(|c| c.diagonal.stroke.color.as_str()).collect();
+    assert_eq!(colors, ["[Paper]", "[Black]", "[Black]", "[Black]"], "a mixed value is left as it is");
+}
+
+#[test]
+fn cell_options_menu_items_need_a_table_target() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let items = ["app.cellOptionsDialog", "app.diagonalLinesDialog"];
+    for id in items {
+        assert!(!crate::menus::menu_enabled(&app, id), "{id} without a table");
+    }
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    for id in items {
+        assert!(crate::menus::menu_enabled(&app, id), "{id} in a table");
+    }
+}
+
+#[test]
+fn enter_on_a_diagonal_line_button_picks_it_and_leaves_the_dialog_open() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.select", json!({"what": "table"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let ctx = dialog_context("");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    // Tab past the title bar and the first line button to Diagonal Line from Top Left to Bottom
+    // Right, then press Enter.
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Tab)]);
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Enter)]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().expect("Enter on a line button leaves the dialog open");
+    assert_eq!(d.fields["lines"], json!("topLeft"));
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::None), "nothing is applied yet");
+    // Enter with no line button focused still confirms.
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    dialog_frame(&mut app, &ctx, screen, vec![key(egui::Key::Enter)]);
+    assert!(app.ui.dialog.is_none());
+    let st = app.session.active().unwrap();
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    assert!(t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::TopLeft));
+}
+
+/// A document holding a 2×2 table with cell (0, 0) selected; returns the table id.
+fn table_document_for_diagonals(app: &mut DesignApp) -> u64 {
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    tid
+}
+
+/// The diagonal lines of the cells of table `tid` in document `doc`, row by row.
+fn diagonal_lines_of(app: &DesignApp, doc: usize, tid: u64) -> Vec<designcraft_doc::DiagonalLines> {
+    let st = &app.session.documents()[doc];
+    let t = st.doc.stories.values().find_map(|s| s.tables.get(&tid)).unwrap();
+    t.cells.iter().map(|c| c.diagonal.lines).collect()
+}
+
+#[test]
+fn diagonal_lines_dialog_applies_to_the_cells_and_document_it_opened_for() {
+    use designcraft_doc::DiagonalLines::{Crossed, None as No, TopRight};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let a = table_document_for_diagonals(&mut app);
+    // The selection moves to another cell while the dialog is open: OK still edits cell (0, 0).
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.run("table.select", json!({"rows": [1, 1], "cols": [1, 1]})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(diagonal_lines_of(&app, 0, a), [Crossed, No, No, No]);
+    // Another document with a table selection becomes active: OK is refused and changes neither
+    // document, and the dialog stays open.
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let b = table_document_for_diagonals(&mut app);
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("topRight"));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some(), "the dialog stays open while its document is open");
+    assert_eq!(diagonal_lines_of(&app, 1, b), [No; 4]);
+    assert_eq!(diagonal_lines_of(&app, 0, a), [Crossed, No, No, No]);
+    // Back in the first document, OK applies there.
+    app.run("file.activate", json!({"index": 0})).unwrap();
+    confirm(&mut app).unwrap();
+    assert_eq!(diagonal_lines_of(&app, 0, a), [TopRight, No, No, No]);
+    // A row is added above the target cell while the dialog is open: the document changed and the
+    // saved range would name another cell, so OK is refused, nothing changes and the dialog closes.
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.run("table.insertRowAbove", json!({})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose table changed closes");
+    // The new row takes the formatting of the row below it.
+    assert_eq!(diagonal_lines_of(&app, 0, a), [TopRight, No, TopRight, No, No, No]);
+    // The first document is closed while the dialog is open: OK is refused and the dialog closes.
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.run("file.close", json!({"index": 0})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose document was closed closes");
+    assert_eq!(diagonal_lines_of(&app, 0, b), [No; 4]);
+}
+
+#[test]
+fn diagonal_lines_dialog_is_refused_when_new_contents_reuse_the_old_address() {
+    use designcraft_doc::DiagonalLines::None as No;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let tid = table_document_for_diagonals(&mut app);
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    // A row is added above the target cell, and the edit is undone: the contents the dialog
+    // opened with are back, and the undo stack no longer holds them.
+    app.run("table.insertRowAbove", json!({})).unwrap();
+    let edited = (*app.session.active().unwrap().doc).clone();
+    app.session.execute("edit.undo", &json!({})).unwrap();
+    // The edited contents are written in place when nothing else holds the old contents, at the
+    // address an allocation that reuses freed memory would give them. The saved cell range now
+    // names the new row.
+    let st = app.session.active_mut().unwrap();
+    *std::sync::Arc::make_mut(&mut st.doc) = edited;
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose table changed closes");
+    assert_eq!(diagonal_lines_of(&app, 0, tid), [No; 6]);
+}
+
+#[test]
+fn diagonal_lines_dialog_ok_edits_nothing_when_the_picked_stroke_type_is_the_cells() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    table_document_for_diagonals(&mut app);
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_mut().unwrap();
+    assert_eq!(d.fields["seed"]["type"], json!({"kind": "solid"}));
+    // The Type list picks a stroke type by name.
+    d.fields.insert("type".into(), json!("solid"));
+    let (undo, revision) = {
+        let st = app.session.active().unwrap();
+        (st.history.undo.len(), st.revision)
+    };
+    confirm(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!((st.history.undo.len(), st.revision), (undo, revision), "no edit and no undo step");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn diagonal_lines_dialog_is_refused_after_its_document_is_reverted() {
+    use designcraft_doc::DiagonalLines::None as No;
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let tid = table_document_for_diagonals(&mut app);
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("diagonal.designcraft")})).unwrap();
+    app.run("table.setCell", json!({"row": 1, "col": 1, "text": "unsaved"})).unwrap();
+    app.run("app.diagonalLinesDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lines".into(), json!("crossed"));
+    app.session.execute("file.revert", &json!({})).unwrap();
+    // The reverted document holds the same table; a selection in it does not let OK through.
+    let story = app.session.active().unwrap().doc.stories.iter().find(|(_, s)| s.tables.contains_key(&tid)).map(|(k, _)| k.0).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_none(), "a dialog whose document was reverted closes");
+    assert_eq!(diagonal_lines_of(&app, 0, tid), [No; 4]);
 }
 
 #[test]
@@ -1253,6 +1509,39 @@ fn paragraph_style_options_justification_sets_auto_leading_and_single_word_justi
     assert_eq!((para.auto_leading, para.single_word_justify), (Some(1.0), Some(designcraft_doc::Align::Right)));
 }
 
+/// Paragraph Style Options › Justification fits at the normal dialog width: the spacing table
+/// keeps its own narrow columns (the wide Single Word Justification menu must not stretch
+/// them), so Minimum/Desired sit close together and Maximum stays in view with no horizontal
+/// scrolling.
+#[test]
+fn paragraph_style_options_justification_fits_without_horizontal_scrolling() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Headline"})).unwrap();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Headline", "section": "justify"})));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    let rect_of =
+        |text: &str| labels.iter().find(|(t, _, _)| t.trim() == text).map(|(_, r, _)| *r).unwrap_or_else(|| panic!("{text} is painted: {labels:?}"));
+    let (minimum, desired) = (rect_of("Minimum"), rect_of("Desired"));
+    // Left edge to left edge of the two header labels. With the 130 pt Single Word menu sharing
+    // the grid's column, column 1 stretches and this distance measures ~130+; with the spacing
+    // table in its own grid it is ~70. The bound sits comfortably between the two.
+    let gap = desired.min.x - minimum.min.x;
+    assert!(gap < 100.0, "Minimum/Desired headers {gap:.1} pt apart: {minimum:?} {desired:?}");
+    // The whole section stays inside the dialog: Maximum and every control label are painted
+    // unclipped on screen (no horizontal scrolling needed to reach them).
+    visible_label(&labels, screen, "Maximum");
+    visible_label(&labels, screen, "Single Word Justification:");
+    visible_label(&labels, screen, "Composer:");
+    visible_label(&labels, screen, "Insert Kashidas:");
+    visible_label(&labels, screen, "Korean Line Breaks:");
+}
+
 fn command_app(id: &str, fields: Value) -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.dialog = Some(Dialog::new(&format!("cmd:{id}"), fields));
@@ -1512,6 +1801,59 @@ fn text_frame_options_set_columns_baseline_and_wrap_as_indesign_does() {
     assert_eq!((opts(&app).columns_kind, opts(&app).column_width), (designcraft_doc::ColumnsKind::FixedNumber, 120.0));
 }
 
+/// The frames Text Frame Options took while typing belong to the document it opened on: when
+/// another document becomes active before OK, OK changes nothing there.
+#[test]
+fn text_frame_options_from_the_type_tool_stay_with_their_document() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let make = |app: &mut crate::DesignApp| {
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 300, 300], "content": "text", "text": "Hello"})).unwrap();
+        let (id, story) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+        app.run("text.select", json!({"story": story, "anchor": 2})).unwrap();
+        id
+    };
+    let a = make(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert_eq!(d.fields.get("_targets"), Some(&json!([a])));
+    d.fields.insert("columns".into(), json!(3));
+    // A second document, with a caret in a frame that has the same id, becomes active.
+    let b = make(&mut app);
+    assert_eq!(a, b);
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    let columns = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the other document's frame is unchanged");
+}
+
+/// Revert replaces the document while Text Frame Options taken while typing stay open: OK is
+/// refused, since the saved frame ids can name another frame in the reverted document.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn text_frame_options_from_the_type_tool_are_refused_after_revert() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Unsaved"})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 1})).unwrap();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    d.fields.insert("columns".into(), json!(3));
+    app.run("file.revert", json!({})).unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 200, 300, 300], "content": "text", "text": "After"})).unwrap();
+    assert_eq!(a["id"], b["id"], "the reverted document gives a new frame the same id");
+    app.ui.dialog = Some(d);
+    let err = confirm(&mut app).unwrap_err().to_string();
+    assert!(err.contains("no longer the active one"), "{err}");
+    assert!(app.ui.dialog.is_some(), "the dialog stays open");
+    let b = designcraft_doc::ItemId(b["id"].as_u64().unwrap());
+    let columns = app.session.active().unwrap().doc.item(b).and_then(|i| i.text_frame().map(|t| t.options.columns));
+    assert_eq!(columns, Some(1), "the new frame is unchanged");
+}
+
 #[test]
 fn baseline_grid_increment_error_explains_the_positive_measure_rule() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1637,6 +1979,47 @@ fn text_frame_options_show_four_sides_for_a_mixed_selection() {
     assert!(d.b("_shaped"));
 }
 
+/// With the Type tool, text selected through an oval and a threaded rectangle shows the four
+/// sides even when the caret's frame is the oval, and a changed side leaves the rectangle's other
+/// sides as they were.
+#[test]
+fn text_frame_options_show_four_sides_for_text_through_an_oval_and_a_rectangle() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
+    let oval = app.run("frame.create", json!({"rect": [36, 36, 236, 136], "shape": "ellipse", "content": "text", "text": text})).unwrap();
+    let sid = oval["story"].as_u64().unwrap();
+    let oval = designcraft_doc::ItemId(oval["id"].as_u64().unwrap());
+    let rect = app.run("frame.create", json!({"rect": [36, 200, 336, 700], "content": "text", "text": "", "caret": false})).unwrap();
+    let rect = designcraft_doc::ItemId(rect["id"].as_u64().unwrap());
+    app.run("text.thread", json!({"from": oval.0, "to": rect.0})).unwrap();
+    app.run("object.textFrameOptions", json!({"ids": [oval.0, rect.0], "inset": [6, 2, 3, 4]})).unwrap();
+    let opts = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+    let select_through_both = |app: &mut DesignApp| {
+        app.run("text.select", json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        // The caret's stored frame is the oval.
+        if let Some(t) = app.session.active_mut().unwrap().selection.text.as_mut() {
+            t.frame = Some(oval);
+        }
+        assert_eq!(designcraft_engine::cmd::text_frame_options_frames(&app.session), vec![oval, rect], "the selected text runs through both frames");
+    };
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("_shaped") && !d.fields.contains_key("inset"), "text through a rectangle shows the four sides");
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(opts(&app, rect).inset, [12.0, 2.0, 3.0, 4.0]);
+    assert_eq!(opts(&app, oval).inset, [12.0, 2.0, 3.0, 4.0]);
+    // An even oval does not link the sides while the rectangle's sides are uneven.
+    app.run("object.textFrameOptions", json!({"ids": [oval.0], "inset": [5, 5, 5, 5]})).unwrap();
+    select_through_both(&mut app);
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("insetLinked"), "a frame with uneven sides among the targets leaves the link off");
+}
+
 /// The dialog dims Top, Left, Bottom, Right and the link for a non-rectangular frame and adds an
 /// Inset field; for a rectangle it shows no Inset field and the sides stay editable.
 #[test]
@@ -1652,8 +2035,7 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
         app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
         app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
-        // The General tab's Columns and Align dropdowns have no accessible name yet.
-        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).with_accessibility_check(false).build_ui_state(
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("text_frame_inset_test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
@@ -1666,17 +2048,31 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
             app,
         );
         h.run_steps(3);
-        for side in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-            let label = format!("Increase tfo_{side}");
+        // The Columns and Align dropdowns carry their captions as accessible names.
+        for name in ["Columns:", "Align:"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, name);
+        }
+        // The numeric fields and their spinners are named from the captions beside them.
+        for name in ["Number", "Width", "Gutter", "Maximum", "Paragraph Spacing Limit"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name);
+            let _ = h.get_by_label(&format!("Increase {name}"));
+        }
+        for side in ["Top", "Left", "Bottom", "Right"] {
+            let _ = h.get_by_role_and_label(egui::accesskit::Role::TextInput, side);
+            let label = format!("Increase {side}");
             assert_eq!(h.get_by_label(&label).accesskit_node().is_disabled(), shaped, "{shape}: {side}");
         }
         assert_eq!(h.query_by_label("Inset:").is_some(), shaped, "{shape}: the Inset caption");
-        assert_eq!(h.query_by_label("Increase tfo_inset").is_some(), shaped, "{shape}: the Inset field");
+        assert_eq!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Inset").is_some(), shaped, "{shape}: the Inset editor");
+        assert_eq!(h.query_by_label("Increase Inset").is_some(), shaped, "{shape}: the Inset field");
         // The General tab fits in the dialog's fixed height: the buttons stay put on another tab.
         let (wrap, cancel) = (h.get_by_label("Ignore Text Wrap").rect().bottom(), h.get_by_label("Cancel").rect().top());
         assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
-        h.get_by_label("Auto-Size").click();
-        h.run_steps(3);
+        // Every tab names its inputs (the harness checks after each settled run).
+        for tab in ["Column Rules", "Baseline Options", "Auto-Size"] {
+            h.get_by_label(tab).click();
+            h.run();
+        }
         assert_eq!(h.get_by_label("Cancel").rect().top(), cancel, "{shape}: the buttons stay put on another tab");
         h.get_by_label("General").click();
         h.run_steps(3);
@@ -1686,6 +2082,62 @@ fn text_frame_options_dims_the_sides_for_a_non_rectangular_frame() {
         h.get_by_label("Make all settings the same").click();
         h.run_steps(3);
         assert_eq!(linked(&h) != before, !shaped, "{shape}: the link");
+    }
+}
+
+/// Text Frame Options shows the insets (or a non-rectangular frame's one Inset), the gutter and
+/// the other measures in the document's ruler unit, not always in picas, and reads a bare number
+/// typed there in that unit (#2739).
+#[test]
+fn text_frame_options_follow_the_ruler_units() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mm = |pt: f64| format_measure(pt, Unit::Millimeters);
+    for shape in ["rectangle", "ellipse"] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.textFrameOptions", json!({"ids": [id.0], "columns": 2, "gutter": 18, "inset": [9, 9, 9, 9]})).unwrap();
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("text_frame_units_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        let value = |h: &Harness<'_, DesignApp>, name: &str| h.get_by_role_and_label(Role::TextInput, name).value().unwrap_or_default();
+        let sides: &[&str] = if shape == "ellipse" { &["Inset"] } else { &["Top", "Left", "Bottom", "Right"] };
+        for side in sides {
+            assert_eq!(value(&h, side), mm(9.0), "{shape}: {side}");
+        }
+        assert_eq!(value(&h, "Gutter"), mm(18.0), "{shape}: the gutter");
+        assert_eq!(value(&h, "Paragraph Spacing Limit"), mm(0.0), "{shape}: the paragraph spacing limit");
+        let width = value(&h, "Width");
+        assert!(width.ends_with(" mm"), "{shape}: the column width {width:?} in millimetres");
+        // Bare numbers typed in the fields are millimetres.
+        let mut app = h.into_state();
+        let d = app.ui.dialog.as_mut().expect("the dialog stays open");
+        assert_eq!(d.unit, Unit::Millimeters, "{shape}");
+        let inset_key = if shape == "ellipse" { "inset" } else { "insetTop" };
+        for (k, v) in [(inset_key, "5"), ("gutter", "4"), ("firstBaselineMin", "2")] {
+            d.fields.insert(k.into(), json!(v));
+        }
+        confirm(&mut app).unwrap();
+        let o = app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let pt = |n: f64| Unit::Millimeters.to_pt(n);
+        assert!((o.inset[0] - pt(5.0)).abs() < 1e-6, "{shape}: the inset {:?}", o.inset);
+        assert!((o.gutter - pt(4.0)).abs() < 1e-6, "{shape}: the gutter {}", o.gutter);
+        assert!((o.first_baseline_min - pt(2.0)).abs() < 1e-6, "{shape}: the first baseline minimum {}", o.first_baseline_min);
     }
 }
 
@@ -1736,6 +2188,57 @@ fn text_frame_options_change_only_what_was_edited() {
         app.run("edit.undo", json!({})).unwrap();
     }
     assert_eq!(opts(&app), before);
+}
+
+#[test]
+fn text_frame_options_link_the_insets_only_when_every_selected_frame_has_even_sides() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = |app: &mut DesignApp, rect: [u32; 4], inset: Value| {
+        let r = app.run("frame.create", json!({"rect": rect, "content": "text", "text": "Hello"})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        app.run("object.textFrameOptions", json!({"ids": [id], "inset": inset})).unwrap();
+        (designcraft_doc::ItemId(id), r["story"].clone())
+    };
+    let (even, _) = frame(&mut app, [36, 36, 236, 236], json!(6));
+    let (uneven, uneven_story) = frame(&mut app, [300, 36, 500, 236], json!([1, 2, 3, 4]));
+    let (other_even, other_even_story) = frame(&mut app, [36, 300, 236, 500], json!(9));
+    let inset = |app: &DesignApp, id| app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.inset;
+    let seeded = |app: &DesignApp| {
+        let mut d = Dialog::new("textFrameOptions", json!({}));
+        seed_text_frame_options(app, &mut d);
+        d
+    };
+    // The frame with even sides is selected first: the uneven one still turns the link off.
+    app.run("selection.set", json!({"ids": [even.0, uneven.0]})).unwrap();
+    let mut d = seeded(&app);
+    assert_eq!(d.s("insetTop"), "0p6");
+    assert!(!d.b("insetLinked"), "a selected frame with uneven sides leaves the link off");
+    // Top edited while unlinked: only Top changes, and each frame keeps its other sides.
+    d.fields.insert("insetTop".into(), json!("1p0"));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert_eq!(inset(&app, even), [12.0, 6.0, 6.0, 6.0]);
+    assert_eq!(inset(&app, uneven), [12.0, 2.0, 3.0, 4.0]);
+    // A frame with even sides alone keeps the link on; selected with the uneven one, the link is off.
+    app.run("selection.set", json!({"ids": [other_even.0]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("selection.set", json!({"ids": [other_even.0, uneven.0]})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    // A caret: the frames the dialog changes decide.
+    app.run("text.select", json!({"story": uneven_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(!seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": other_even_story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    // A story threaded on into the uneven frame: a caret placed in the first frame, or a caret
+    // with no stored frame drawn in the first frame, changes only that frame.
+    let (first, story) = frame(&mut app, [300, 300, 500, 500], json!(6));
+    let (last, _) = frame(&mut app, [300, 520, 500, 700], json!([1, 2, 3, 4]));
+    app.run("text.thread", json!({"from": first.0, "to": last.0})).unwrap();
+    app.run("text.placeCaret", json!({"frame": first.0, "point": [310, 310]})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    assert!(seeded(&app).b("insetLinked"));
 }
 
 #[test]
@@ -4048,6 +4551,113 @@ fn create_guides_dialog_covers_the_spread_in_view() {
 }
 
 #[test]
+fn go_to_row_dialog_selects_the_row_and_shows_its_page() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let a = app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+    let b = app.run("frame.create", json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "unassigned"})).unwrap();
+    app.run("text.thread", json!({"from": a["id"], "to": b["id"]})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 20, "cols": 2, "headerRows": 1})).unwrap();
+    for row in 0..21 {
+        app.run("table.setRowHeight", json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+    }
+    app.run("table.select", json!({"rows": [2, 2]})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    let d = app.ui.dialog.clone().unwrap();
+    assert_eq!(d.id, "goToRow");
+    assert_eq!((d.s("section"), d.s("row")), ("body".to_string(), "2".to_string()), "it opens on the selected row");
+    assert!(d.b("hasHeader") && !d.b("hasFooter"));
+    // A row that is not a whole number keeps the dialog open with the reason, and the view stays.
+    ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": "x"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], false);
+    assert!(app.ui.dialog.as_ref().is_some_and(|d| d.id == "goToRow" && d.fields.contains_key("status")));
+    assert_eq!(crate::canvas::current_page(&app), Some(0));
+    ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": "20"}));
+    assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+    assert!(app.ui.dialog.is_none());
+    let range = app.session.active().unwrap().selection.cells.unwrap().range;
+    assert_eq!((range.r0, range.r1, range.c0, range.c1), (20, 20, 0, 1));
+    assert_eq!(crate::canvas::current_page(&app), Some(1), "the view goes to the page that shows the row");
+}
+
+/// Go to Row's OK scrolls the row to the middle of the view at the same zoom: a row off screen on the
+/// page in view, and a row on another page away from that page's center.
+#[test]
+fn go_to_row_dialog_scrolls_the_row_to_the_middle_of_the_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false})).unwrap();
+    app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+    let a = app.run("frame.create", json!({"rect": [72, 72, 400, 200], "content": "text", "text": ""})).unwrap();
+    let b = app.run("frame.create", json!({"spread": 1, "rect": [72, 72, 400, 600], "content": "unassigned"})).unwrap();
+    app.run("text.thread", json!({"from": a["id"], "to": b["id"]})).unwrap();
+    app.run("text.select", json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("table.insert", json!({"rows": 20, "cols": 2, "headerRows": 1})).unwrap();
+    for row in 0..21 {
+        app.run("table.setRowHeight", json!({"row": row, "height": 20, "mode": "exactly"})).unwrap();
+    }
+    app.run("table.select", json!({"rows": [1, 1]})).unwrap();
+    crate::canvas::go_to_page(&mut app, 0);
+    crate::canvas::set_zoom(&mut app, 4.0);
+    // The row's middle and the view's middle, from top to bottom, on the canvas.
+    let middles = |app: &mut DesignApp, row: u64| {
+        let r = app.run("table.goToRow", json!({"row": row})).unwrap();
+        let spread: designcraft_doc::SpreadRef = serde_json::from_value(r["spread"].clone()).unwrap();
+        let n: Vec<f64> = r["rowBounds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let st = app.session.active().unwrap();
+        let slot = designcraft_tools::CanvasLayout::new(&st.doc, false).slot(spread).unwrap().xf;
+        let row_y = slot.transform_rect_bbox(designcraft_geom::Rect::new(n[0], n[1], n[2], n[3])).center().y;
+        let (v, rect) = (app.view().unwrap(), app.canvas_rect.unwrap());
+        (row_y, v.origin.y + rect.height() as f64 / 2.0 / v.zoom)
+    };
+    let x = app.view().unwrap().origin.x;
+    for row in ["3", "20"] {
+        crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+        ctl(&mut app, "ui.dialog.set", json!({"field": "row", "value": row}));
+        assert_eq!(ctl(&mut app, "ui.dialog.confirm", json!({}))["ok"], true);
+        let (row_y, view_y) = middles(&mut app, row.parse().unwrap());
+        assert!((row_y - view_y).abs() < 0.5, "row {row} is in the middle of the view: {row_y} against {view_y}");
+        let v = app.view().unwrap();
+        assert!((v.zoom - 4.0).abs() < 1e-9, "the zoom stays");
+        assert!((v.origin.x - x).abs() < 1e-9, "the row was in view across, so the view does not scroll sideways");
+    }
+    assert_eq!(crate::canvas::current_page(&app), Some(1));
+}
+
+/// Go to Row's OK goes to the row of the table in the document the dialog was opened for, even
+/// when another document became active meanwhile; when that document has closed, nothing is selected.
+#[test]
+fn go_to_row_dialog_goes_to_the_document_it_was_opened_for() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let table_doc = |app: &mut DesignApp, title: &str| {
+        app.run("file.new", json!({"title": title})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [72, 72, 500, 700], "content": "text", "text": ""})).unwrap();
+        app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        app.run("table.insert", json!({"rows": 3, "cols": 2})).unwrap();
+    };
+    table_doc(&mut app, "first");
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    table_doc(&mut app, "second");
+    setup_fields(&mut app, json!({"row": "3"}));
+    confirm(&mut app).unwrap();
+    let active = app.session.active().unwrap();
+    assert_eq!(active.doc.title, "first", "the dialog's document becomes active");
+    assert_eq!(active.selection.cells.map(|c| (c.range.r0, c.range.r1)), Some((2, 2)));
+    let second = app.session.documents().iter().find(|d| d.doc.title == "second").unwrap();
+    assert!(second.selection.cells.is_none(), "the other document's selection stays");
+
+    crate::menus::activate(&mut app, "table.goToRow", &Value::Null);
+    app.run("file.close", json!({})).unwrap();
+    let before = app.session.active().unwrap().selection.clone();
+    setup_fields(&mut app, json!({"row": "1"}));
+    assert_eq!(confirm(&mut app), Ok(Value::Null));
+    assert!(app.ui.dialog.is_none());
+    assert_eq!(app.session.active().unwrap().selection, before, "the dialog's document closed");
+}
+
+#[test]
 fn parent_dialogs_cover_both_pages_of_the_parent_spread_by_default() {
     let mut app = facing_app(4);
     app.run("layout.parents.edit", json!({"on": true})).unwrap();
@@ -4139,12 +4749,20 @@ fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Wind
     h.run_steps(3);
 }
 
+/// The dialog's "Make all settings the same" links, in reading order: the Properties panel's
+/// own links (its Text Frame insets, with a caret in a frame) are to the right of its Quick
+/// Actions heading's left edge and are left out.
+fn dialog_links(h: &egui_kittest::Harness<'static, crate::test_window::Window>) -> Vec<egui::Rect> {
+    use egui_kittest::kittest::Queryable;
+    let panel_left = h.query_by_label("Quick Actions").map_or(f32::INFINITY, |n| n.rect().left());
+    h.get_all_by_label("Make all settings the same").map(|n| n.rect()).filter(|r| r.center().x < panel_left).collect()
+}
+
 /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
 /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
 /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
 #[test]
 fn paragraph_border_sides_and_corners_link_as_indesigns() {
-    use egui_kittest::kittest::Queryable;
     let (app, _) = ruled_paragraph();
     let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
     h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
@@ -4159,7 +4777,7 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
     // scrolls as fields take focus.
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
         links[n].center()
     };
@@ -4216,7 +4834,7 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
     assert_eq!(field(&h, "shadingOverprint"), json!(true));
     // The corners' link (0) and the offsets' (1).
     let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links: Vec<egui::Rect> = h.get_all_by_label("Make all settings the same").map(|n| n.rect()).collect();
+        let links = dialog_links(h);
         assert_eq!(links.len(), 2, "corners and offsets each have a link");
         links[n].center()
     };

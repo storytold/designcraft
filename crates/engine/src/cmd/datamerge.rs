@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
 use fill::{FillReport, ImageCache, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
-use parse::{Table, TileInput, extension, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
+pub(crate) use parse::relative_between;
+use parse::{Table, TileInput, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use parse::fingerprint_from;
@@ -146,8 +147,27 @@ fn fields_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = st.doc.data_merge.sources.first() else {
         return Ok(json!([]));
     };
-    let placeholders = st.doc.data_merge.placeholders.clone();
-    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count()))
+    let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+    let placeholders = &doc.data_merge.placeholders;
+    let mut marker_counts = std::collections::HashMap::<String, usize>::new();
+    for (story_id, story) in &doc.stories {
+        // The generated endnote frame repeats note text already counted in its owning story.
+        if Some(*story_id) == doc.endnote_story {
+            continue;
+        }
+        for (start, end, name) in fill::find_markers(&story.text) {
+            // A bound placeholder already accounts for its marker in the usage count.
+            let covered = placeholders.iter().any(|ph| {
+                matches!((&ph.role, &ph.anchor), (PlaceholderRole::Text | PlaceholderRole::Image, PlaceholderAnchor::Text { story, start: a, end: b })
+                    if story == story_id && start < *b && end > *a)
+            });
+            if !covered {
+                *marker_counts.entry(name).or_default() += 1;
+            }
+        }
+        fill::count_nested_markers(story, &mut marker_counts, 0);
+    }
+    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count() + marker_counts.get(name).copied().unwrap_or(0)))
 }
 
 fn placeholder_add(s: &mut Session, p: &Value) -> Result<Value> {
@@ -210,6 +230,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let images = ImageCache::default();
     let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
+    // An image the record placed gets its Alpha Channel outline, as an edit's would.
+    crate::cmd::alpha_wrap::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
@@ -261,6 +283,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
+    // The merged images' Alpha Channel outlines first: the overset count composes with them.
+    crate::cmd::alpha_wrap::sync(&mut merged);
     let overset = overset_count(&merged);
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();
@@ -823,11 +847,10 @@ fn take_file(p: &Value) -> std::result::Result<(Vec<u8>, String, Option<String>)
 }
 
 fn parse_file(bytes: &[u8], name: &str, delimiter: Option<Delimiter>, sheet: Option<&str>) -> std::result::Result<Table, String> {
-    let ext = extension(name);
-    if ext == "xls" || ext == "xlsm" {
-        return Err(format!("{ext} workbooks are not supported"));
+    if craft_file_formats::detect(name, &[]) == Some(craft_file_formats::Format::LegacyExcel) {
+        return Err("legacy Excel .xls/.xlsm workbooks are not supported".into());
     }
-    if ext == "xlsx" {
+    if craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Xlsx) {
         let grid = designcraft_textimport::xlsx_records(bytes, sheet).map_err(|e| e.to_string())?;
         return table_from_grid(grid, Delimiter::Comma);
     }

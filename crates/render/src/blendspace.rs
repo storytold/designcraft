@@ -118,6 +118,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         modified,
         next_id,
         font_scope,
+        alpha_outlines,
     } = new;
     let same_spreads = |a: &[std::sync::Arc<designcraft_doc::Spread>], b: &[std::sync::Arc<designcraft_doc::Spread>]| {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
@@ -129,6 +130,8 @@ fn same_document(old: &Document, new: &Document) -> bool {
         && old.stories.iter().zip(stories).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
         && old.assets.len() == assets.len()
         && old.assets.iter().zip(assets).all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
+        && old.alpha_outlines.len() == alpha_outlines.len()
+        && old.alpha_outlines.iter().zip(alpha_outlines).all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
         && old.title == *title
         && old.file_info == *file_info
         && old.settings == *settings
@@ -368,10 +371,18 @@ impl Renderer {
             }
         }
         // What an object can paint on the spread: its bounds with its (and its children's)
-        // strokes and effects.
+        // strokes and effects, which are drawn through each one's transform and grow with it.
+        fn outset(it: &Item, outer: Affine, o: &mut f64) {
+            let xf = outer * it.xf;
+            let scale = crate::fx::max_scale(xf).unwrap_or(1.0);
+            *o = o.max(crate::fx::outset_scaled(it, scale) + it.stroke.extent() * scale);
+            for c in it.children() {
+                outset(c, xf, o);
+            }
+        }
         let reach = |it: &Item| {
             let mut o: f64 = 0.0;
-            it.walk(&mut |c| o = o.max(crate::fx::outset(c) + c.stroke.extent()));
+            outset(it, Affine::IDENTITY, &mut o);
             it.bounds().inflate(o + 2.0, o + 2.0)
         };
         let items: Vec<(Rect, bool)> = sp.items.iter().filter(|it| visible(it)).map(|it| (reach(it), transparent(it))).collect();
@@ -596,6 +607,39 @@ mod tests {
         assert!(mixed[0] < 100 && mixed[1] < 100 && mixed[2] > 100, "cyan times magenta is blue, not magenta: {mixed:?}");
         renderer.threads = 2;
         assert_eq!(draw(&doc, &mut renderer).pixels, rgb.pixels);
+    }
+
+    /// A hardened outer glow is stroked through the object's transform, and through its group's,
+    /// so the ink-pass area grows by the scaled growth: the square at 30..60 glows out to -30.
+    #[test]
+    fn cmyk_area_holds_a_scaled_objects_glow() {
+        for nested in [false, true] {
+            let mut doc = document();
+            let mut item = Item::new(
+                ItemId(doc.alloc()),
+                doc.default_layer(),
+                Shape::Rectangle,
+                designcraft_geom::shapes::rectangle(Rect::new(10.0, 10.0, 20.0, 20.0)),
+            );
+            item.fill = Fill::swatch("C=100 M=0 Y=0 K=0");
+            let g = &mut item.effects.outer_glow;
+            (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+            if nested {
+                let mut group = Item::new(ItemId(doc.alloc()), doc.default_layer(), Shape::Group, Default::default());
+                group.xf = Affine::scale(3.0);
+                group.content = Content::Group { items: vec![Arc::new(item)] };
+                doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+            } else {
+                item.xf = Affine::scale(3.0);
+                doc.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+            }
+            let cache = Cache::new();
+            let opts = RenderOptions::default();
+            let f =
+                Frame { doc: &doc, cache: &cache, view: Affine::IDENTITY, visible: Rect::new(-1e4, -1e4, 1e4, 1e4), px: 1.0, opts: &opts, mt: false };
+            let area = Renderer::new().transparent_area(&f, SpreadRef::Doc(0)).unwrap();
+            assert!(area.x0 <= -30.0, "nested {nested}: the area {area:?} holds the glow out to -30");
+        }
     }
 
     #[test]

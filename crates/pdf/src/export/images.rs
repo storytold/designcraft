@@ -17,8 +17,7 @@ pub(super) struct ConvertedImage {
     pub(super) warning: Option<&'static str>,
 }
 
-pub(super) const CMYK_FALLBACK_WARNING: &str =
-    "converted to RGB (a CMYK TIFF that is planar, has premultiplied alpha, uses other inks or is over 256 MiB)";
+pub(super) const CMYK_FALLBACK_WARNING: &str = "converted to RGB (a CMYK TIFF that uses other inks or is over 256 MiB)";
 
 #[cfg(not(test))]
 pub(super) type ImageContentCache = HashMap<Arc<Vec<u8>>, ConvertedImage>;
@@ -46,12 +45,7 @@ pub(super) struct RasterMode {
 
 /// The ICC profile embedded in an image file, if it has one.
 pub(super) fn embedded_icc(data: &[u8]) -> Option<Vec<u8>> {
-    use image::ImageDecoder;
-    if !designcraft_images::webp_icc_is_sane(data) {
-        return None;
-    }
-    let mut dec = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok()?.into_decoder().ok()?;
-    dec.icc_profile().ok().flatten()
+    craft_image_codecs::embedded_icc(data).ok().flatten()
 }
 
 /// Whether an ICC profile describes RGB (its colour space signature, header bytes 16 to 20).
@@ -66,12 +60,12 @@ pub(super) fn is_grey_icc(icc: &[u8]) -> bool {
 
 /// Whether `data` decodes to grey (with or without alpha), read from its header.
 pub(super) fn is_grey(data: &[u8]) -> bool {
-    use image::ImageDecoder;
-    image::ImageReader::new(std::io::Cursor::new(data))
-        .with_guessed_format()
-        .ok()
-        .and_then(|r| r.into_decoder().ok())
-        .is_some_and(|dec| !dec.color_type().has_color())
+    craft_image_codecs::inspect_raster(data).ok().flatten().is_some_and(|info| {
+        matches!(
+            info.color_type,
+            craft_image_codecs::RasterColorType::Bitmap | craft_image_codecs::RasterColorType::Gray | craft_image_codecs::RasterColorType::GrayAlpha
+        )
+    })
 }
 
 /// A JPEG, passed through. With `tag_rgb`, a JPEG keeps its own profile, and one without gets
@@ -89,30 +83,27 @@ pub(super) fn jpeg(data: krilla::Data, icc: impl FnOnce() -> Option<Vec<u8>>, mo
 }
 
 /// Whether krilla would write this PNG, GIF or WebP as untagged RGB: not grey, and no profile of
-/// its own.
+/// its own. The header inspection doesn't read WebP, which has no grey form, so a file it can't
+/// read counts as colour.
 fn untagged_rgb(data: &[u8]) -> bool {
-    use image::ImageDecoder;
-    if !designcraft_images::webp_icc_is_sane(data) {
-        return false;
-    }
-    let Some(mut dec) = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format().ok().and_then(|r| r.into_decoder().ok()) else {
-        return false;
-    };
-    let grey = matches!(dec.color_type(), image::ColorType::L8 | image::ColorType::La8 | image::ColorType::L16 | image::ColorType::La16);
-    !grey && dec.icc_profile().ok().flatten().is_none()
+    !is_grey(data) && embedded_icc(data).is_none()
 }
 
-pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<image::ImageFormat>, mode: RasterMode) -> Option<Image> {
+pub(super) fn lossless(data: &Arc<Vec<u8>>, fmt: Option<craft_image_codecs::Format>, mode: RasterMode) -> Option<Image> {
     // krilla reads PNG, GIF and WebP lazily: a damaged file is accepted here and fails the whole
     // export when the PDF is written. Decoding it first means it is skipped, like any other
     // image that can't be decoded.
     let rgba = designcraft_images::decode_rgba(data)?;
     let i = mode.interpolate;
     let direct = match fmt {
-        Some(image::ImageFormat::Png | image::ImageFormat::Gif | image::ImageFormat::WebP) if mode.tag_rgb && untagged_rgb(data) => None,
-        Some(image::ImageFormat::Png) => Image::from_png(data.clone().into(), i).ok(),
-        Some(image::ImageFormat::Gif) => Image::from_gif(data.clone().into(), i).ok(),
-        Some(image::ImageFormat::WebP) => Image::from_webp(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::Png | craft_image_codecs::Format::Gif | craft_image_codecs::Format::WebP)
+            if mode.tag_rgb && untagged_rgb(data) =>
+        {
+            None
+        }
+        Some(craft_image_codecs::Format::Png) => Image::from_png(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::Gif) => Image::from_gif(data.clone().into(), i).ok(),
+        Some(craft_image_codecs::Format::WebP) => Image::from_webp(data.clone().into(), i).ok(),
         _ => None,
     };
     direct.or_else(|| {
@@ -183,21 +174,20 @@ pub(super) fn recompress(data: &[u8], mode: RasterMode) -> Option<Image> {
     {
         RECOMPRESS_DECODES.with(|n| n.set(n.get() + 1));
     }
-    let img = image::load_from_memory(data).ok()?;
-    if img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p[3] < 255) {
+    let img = craft_image_codecs::decode(data).ok()?;
+    let rgba = img.to_rgba8();
+    if img.layout().has_alpha() && rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255) {
         return None;
     }
-    let mut buf = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
     // A grey image stays a grey JPEG (#1426).
-    let grey = !img.color().has_color();
-    if grey {
-        let l = img.to_luma8();
-        image::ImageEncoder::write_image(enc, l.as_raw(), l.width(), l.height(), image::ExtendedColorType::L8).ok()?;
+    let grey = img.layout().is_gray();
+    let jpeg_image = if grey {
+        img.convert(craft_image_codecs::ChannelLayout::Gray, craft_image_codecs::SampleType::U8)
     } else {
-        let rgb = img.to_rgb8();
-        image::ImageEncoder::write_image(enc, rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8).ok()?;
-    }
+        img.convert(craft_image_codecs::ChannelLayout::Rgb, craft_image_codecs::SampleType::U8)
+    };
+    let options = craft_image_codecs::EncodeOptions { jpeg_quality: 90, ..Default::default() };
+    let buf = craft_image_codecs::encode(&jpeg_image, craft_image_codecs::Format::Jpeg, &options).ok()?;
     jpeg(buf.into(), || embedded_icc(data).filter(|p| if grey { is_grey_icc(p) } else { is_rgb_icc(p) }), mode)
 }
 
@@ -214,7 +204,16 @@ mod image_content_cache_tests {
     }
     fn asset(doc: &mut Document, bytes: Vec<u8>, name: &str) -> AssetId {
         let id = AssetId(doc.alloc());
-        doc.assets.insert(id, Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(bytes), ..Default::default() }));
+        doc.assets.insert(
+            id,
+            Arc::new(Asset {
+                id,
+                name: name.into(),
+                mime: "image/png".into(),
+                data: designcraft_doc::AssetData::embedded(bytes),
+                ..Default::default()
+            }),
+        );
         id
     }
     fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {
@@ -228,6 +227,7 @@ mod image_content_cache_tests {
             clip: Rect::ZERO,
             warnings: Vec::new(),
             images: HashMap::new(),
+            outputs: HashMap::new(),
             images_by_content: ImageContentCache::default(),
             image_conversions: 0,
             pdfs: HashMap::new(),
@@ -289,7 +289,7 @@ mod image_content_cache_tests {
         // a, b, and a with its layer hidden (a copy of its own).
         assert_eq!(ex.pdfs.len(), 3);
         let variant = ex.variants.get(&(a, None)).unwrap();
-        assert!(Arc::ptr_eq(&variant.data, &doc.assets[&a].data));
+        assert!(Arc::ptr_eq(&variant.data, doc.assets[&a].data.embedded_bytes().unwrap()));
         surface.finish();
         page.finish();
         assert!(writer.finish().is_ok());
@@ -304,14 +304,14 @@ mod image_content_cache_tests {
         let b1 = asset(&mut d, blue.clone(), "b1");
         let a2 = asset(&mut d, red, "a2");
         let b2 = asset(&mut d, blue, "b2");
-        assert!(!Arc::ptr_eq(&d.assets[&a1].data, &d.assets[&a2].data));
+        assert!(!Arc::ptr_eq(d.assets[&a1].data.embedded_bytes().unwrap(), d.assets[&a2].data.embedded_bytes().unwrap()));
         let cache = Cache::new();
         let opts = PdfOptions::default();
         let mut ex = exporter(&d, &cache, &opts);
         let mut h1 = ex.images_by_content.hasher().build_hasher();
-        h1.write(&d.assets[&a1].data);
+        h1.write(d.assets[&a1].data.embedded_bytes().unwrap());
         let mut h2 = ex.images_by_content.hasher().build_hasher();
-        h2.write(&d.assets[&b1].data);
+        h2.write(d.assets[&b1].data.embedded_bytes().unwrap());
         assert_eq!(h1.finish(), h2.finish());
         assert_ne!(d.assets[&a1].data, d.assets[&b1].data);
         for (id, count, size) in [(a1, 1, (2, 1)), (b1, 2, (1, 2)), (a2, 2, (2, 1)), (a1, 2, (2, 1)), (b2, 2, (1, 2))] {
@@ -320,8 +320,8 @@ mod image_content_cache_tests {
         }
         assert_eq!(ex.images.len(), 4);
         assert_eq!(ex.images_by_content.len(), 2);
-        let first_key = ex.images_by_content.keys().find(|key| key.as_slice() == d.assets[&a1].data.as_slice()).unwrap();
-        assert!(Arc::ptr_eq(first_key, &d.assets[&a1].data), "cache keys share the original encoded payload");
+        let first_key = ex.images_by_content.keys().find(|key| key.as_slice() == d.assets[&a1].data.embedded_bytes().unwrap().as_slice()).unwrap();
+        assert!(Arc::ptr_eq(first_key, d.assets[&a1].data.embedded_bytes().unwrap()), "cache keys share the original encoded payload");
         ex.images_by_content.clear();
         assert_eq!(ex.load_image(a1).unwrap().size(), (2, 1));
         assert_eq!(ex.image_conversions, 2, "the AssetId cache remains the first lookup");
@@ -398,28 +398,18 @@ mod image_content_cache_tests {
                 let opts = PdfOptions { standard, ..Default::default() };
                 let mut ex = exporter(&d, &cache, &opts);
                 ex.rgb_only = standard == Standard::PdfA2b;
-                // Unassociated alpha (2) decodes as inks, and as RGB for RGB-only exports.
-                // Associated alpha is rejected by both paths: retain both failure names.
-                let succeeds = alpha.is_none() || alpha == Some(2);
-                let first = ex.load_image(a);
-                assert_eq!(first.is_some(), succeeds, "{alpha:?} {standard:?}");
-                if alpha.is_none() {
-                    let (space, samples) = image_color_samples(first.unwrap());
-                    assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" });
-                    assert_eq!(samples, if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() });
-                }
-                assert_eq!(ex.load_image(b).is_some(), succeeds, "{alpha:?} {standard:?}");
-                assert_eq!(ex.load_image(a).is_some(), succeeds);
-                assert_eq!(ex.image_conversions, if succeeds { 1 } else { 2 });
-                assert_eq!(ex.images_by_content.len(), usize::from(succeeds));
-                if succeeds {
-                    assert!(ex.warnings.is_empty());
-                } else {
-                    for name in ["a.tif", "b.tif"] {
-                        assert!(ex.warnings.contains(&format!("image `{name}` could not be decoded and was skipped")));
-                        assert_eq!(ex.warnings.contains(&format!("{name}: {CMYK_FALLBACK_WARNING}")), !ex.rgb_only);
-                    }
-                }
+                // Every alpha kind decodes as inks, and as RGB for RGB-only exports; associated
+                // alpha (1) is made straight, so it gives the same inks as unassociated (2).
+                let first = ex.load_image(a).unwrap();
+                let (space, samples) = image_color_samples(first);
+                assert_eq!(space, if ex.rgb_only { "DeviceRGB" } else { "DeviceCMYK" }, "{alpha:?} {standard:?}");
+                let want = if ex.rgb_only { screen_rgb.clone() } else { crate::image_fixtures::INKS.to_vec() };
+                assert_eq!(samples, want, "{alpha:?} {standard:?}");
+                assert!(ex.load_image(b).is_some(), "{alpha:?} {standard:?}");
+                assert!(ex.load_image(a).is_some());
+                assert_eq!(ex.image_conversions, 1);
+                assert_eq!(ex.images_by_content.len(), 1);
+                assert!(ex.warnings.is_empty());
             }
         }
     }
@@ -427,7 +417,7 @@ mod image_content_cache_tests {
     // Serialize the converted raster without an archival validator so the RGB-only pixel
     // contract stays independent of main's existing PDF/A interpolation validation failure.
     fn image_color_samples(image: Image) -> (String, Vec<u8>) {
-        use hayro_syntax::object::Name;
+        use craft_pdf::syntax::object::{Name, Stream};
         let mut pdf = krilla::Document::new();
         let size = Size::from_wh(20.0, 20.0).unwrap();
         let mut page = pdf.start_page_with(PageSettings::new(size));
@@ -436,12 +426,14 @@ mod image_content_cache_tests {
         surface.finish();
         page.finish();
         let bytes = pdf.finish().unwrap();
-        let pdf = hayro_syntax::Pdf::new(bytes).unwrap();
+        let pdf = craft_pdf::syntax::Pdf::new(bytes).unwrap();
         let stream = pdf
             .objects()
             .into_iter()
             .filter_map(|o| o.into_stream())
-            .find(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            .filter(|s| s.dict().get::<Name>("Subtype").is_some_and(|n| n.as_str() == "Image"))
+            // An image with alpha comes with its soft mask, another image; take the masked one.
+            .max_by_key(|s| s.dict().get::<Stream<'_>>("SMask").is_some())
             .unwrap();
         (stream.dict().get::<Name>("ColorSpace").unwrap().as_str().to_owned(), stream.decoded().unwrap().into_owned())
     }
@@ -452,8 +444,8 @@ mod image_content_cache_tests {
         let bytes = png(2, 1, [20, 30, 40, 255]);
         let a = asset(&mut d, bytes.clone(), "a.png");
         let b = asset(&mut d, bytes, "b.png");
-        let payload = Arc::downgrade(&d.assets[&a].data);
-        let duplicate = Arc::downgrade(&d.assets[&b].data);
+        let payload = Arc::downgrade(d.assets[&a].data.embedded_bytes().unwrap());
+        let duplicate = Arc::downgrade(d.assets[&b].data.embedded_bytes().unwrap());
         let cache = Cache::new();
         let opts = PdfOptions::default();
         let mut ex = exporter(&d, &cache, &opts);
@@ -461,7 +453,7 @@ mod image_content_cache_tests {
         assert!(ex.load_image(b).is_some());
         assert_eq!(duplicate.strong_count(), 1, "a content hit must not retain the second encoded allocation");
         let key = ex.images_by_content.keys().next().unwrap();
-        assert!(Arc::ptr_eq(key, &d.assets[&a].data));
+        assert!(Arc::ptr_eq(key, d.assets[&a].data.embedded_bytes().unwrap()));
         drop(ex);
         drop(d);
         assert!(payload.upgrade().is_none(), "no converted image or encoded key outlives this exporter");
@@ -472,7 +464,7 @@ mod image_content_cache_tests {
 #[cfg(test)]
 mod eps_tests {
     use super::*;
-    use hayro_syntax::object::Name;
+    use craft_pdf::syntax::object::Name;
 
     #[test]
     fn eps_tiff_preview_keeps_cmyk_inks_in_pdf() {
@@ -500,7 +492,7 @@ mod eps_tests {
                 name: "cmyk.eps".into(),
                 mime: "application/postscript".into(),
                 link: None,
-                data: Arc::new(eps),
+                data: designcraft_doc::AssetData::embedded(eps),
                 pixels: Some((2, 1)),
                 page: 0,
                 ..Default::default()
@@ -528,7 +520,7 @@ mod eps_tests {
         for standard in [Standard::None, Standard::PdfX4] {
             let report = export_pdf_with_report(&doc, &Cache::new(), &PdfOptions { standard, ..Default::default() }).unwrap();
             assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-            let pdf = hayro_syntax::Pdf::new(report.bytes).unwrap();
+            let pdf = craft_pdf::syntax::Pdf::new(report.bytes).unwrap();
             let images: Vec<_> = pdf
                 .objects()
                 .into_iter()
