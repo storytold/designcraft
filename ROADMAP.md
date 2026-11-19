@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-19** · Placing a Markdown file (`.md`, `.markdown`) reads it with craft-markdown, the reader WordCraft uses, into the same word-processing model a Word file becomes, so headings, emphasis, lists, block quotes and pipe tables arrive as paragraph styles and real tables and go through the same style mapping (#77). Until now a `.md` file was placed as plain text, with its `#`, `**` and `|` on the page. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

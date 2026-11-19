@@ -14,6 +14,7 @@ craft-rtf = { workspace = true }
 craft-xlsx = { workspace = true }
 craft-docx = { workspace = true }
 craft-wordmodel = { workspace = true }
+craft-markdown = { workspace = true }
 craft-idml = { workspace = true }
 craft-file-formats = { workspace = true }
 zip = { workspace = true }

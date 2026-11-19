@@ -77,7 +77,8 @@ external PDF/X certification.
 | Word | `.docx` | ✓ styles, footnotes, tables, track changes, options | ✓ styles by name, footnotes, tables, tabs, breaks, moved text (#257), bullets and numbering from `numbering.xml` (#626; levels become list levels, parent numbers in a label level references), style mapping and conflicts | `.doc` not supported (InDesign reads it) | 2% |
 | RTF | `.rtf` | ✓ | ✓ | | <1% |
 | Excel | `.xlsx`, `.xls` | ✓ | ~ `.xlsx` first sheet's used range | cached numbers keep their precision and formula strings stay text; no sheet/range options; `.xls` ✗ | <1% |
-| Plain text, Markdown | `.txt`, `.md` | ✓ (txt) | ✓ | | <1% |
+| Plain text | `.txt` | ✓ | ✓ | | <1% |
+| Markdown | `.md`, `.markdown` | ✗ | ✓ through craft-markdown (WordCraft's reader): ATX and setext headings, emphasis, strikethrough, code, lists, block quotes and GitHub pipe tables become styles and tables, with the Word file's style mapping and conflicts (#77) | images other than `data:` URIs come in as their alt text; footnotes stay text | <1% |
 | InDesign Tagged Text | `.txt` | ✓ | ✓ import and export | | <1% |
 | CSV / TSV (Data Merge) | | ✓ | ✓ (+ Excel) | | <1% |
 | Audio / video | `.mp4`, `.mp3`, … | ✓ placeholders for EPUB/PDF | ~ placed as media objects | no in-app playback | <1% |
