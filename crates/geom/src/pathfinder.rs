@@ -92,11 +92,31 @@ fn from_flo(paths: &[SimpleBezierPath]) -> PathData {
     PathData::new(subpaths)
 }
 
+/// Unions of more shapes than this combine in pairs; up to it each is added in turn (as always).
+const BALANCED_UNION_FROM: usize = 16;
+
 /// Combine `shapes` (back to front, all in one coordinate space). `None` when nothing is left.
 pub fn combine(op: Op, shapes: &[PathData]) -> Option<PathData> {
     let flo: Vec<Vec<SimpleBezierPath>> = shapes.iter().map(to_flo).filter(|p| !p.is_empty()).collect();
     let (first, rest) = flo.split_first()?;
     let union = |v: &[Vec<SimpleBezierPath>]| -> Vec<SimpleBezierPath> {
+        if v.len() > BALANCED_UNION_FROM {
+            // Pairs, then pairs of pairs: adding each shape to everything so far reprocesses the
+            // growing result every time (quadratic for many shapes).
+            let mut level: Vec<Vec<SimpleBezierPath>> = v.to_vec();
+            while level.len() > 1 {
+                level = level
+                    .chunks(2)
+                    .map(|c| match c {
+                        [a, b] if a.is_empty() => b.clone(),
+                        [a, b] if b.is_empty() => a.clone(),
+                        [a, b] => path_add(a, b, ACCURACY),
+                        _ => c.first().cloned().unwrap_or_default(),
+                    })
+                    .collect();
+            }
+            return level.pop().unwrap_or_default();
+        }
         let mut acc: Vec<SimpleBezierPath> = Vec::new();
         for p in v {
             acc = if acc.is_empty() { p.clone() } else { path_add(&acc, p, ACCURACY) };
@@ -145,6 +165,19 @@ mod tests {
 
     fn area(p: &PathData) -> f64 {
         p.subpaths.iter().map(|s| s.area()).sum::<f64>().abs()
+    }
+
+    #[test]
+    fn a_union_of_many_shapes_adds_up() {
+        // 40 squares in a row, each overlapping the next by 5: width 40 * 10 + 5, height 10.
+        let shapes: Vec<PathData> = (0..40).map(|i| shapes::rectangle(Rect::new(f64::from(i) * 5.0, 0.0, f64::from(i) * 5.0 + 10.0, 10.0))).collect();
+        let u = combine(Op::Add, &shapes).unwrap();
+        assert!((area(&u) - 205.0 * 10.0).abs() < 1.0, "{}", area(&u));
+        // Far-apart squares stay separate.
+        let apart: Vec<PathData> =
+            (0..40).map(|i| shapes::rectangle(Rect::new(f64::from(i) * 50.0, 0.0, f64::from(i) * 50.0 + 10.0, 10.0))).collect();
+        let u = combine(Op::Add, &apart).unwrap();
+        assert_eq!(u.subpaths.len(), 40);
     }
 
     #[test]

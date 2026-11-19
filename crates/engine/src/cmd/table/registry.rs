@@ -1,7 +1,7 @@
-use super::cell::{get_cell_stroke, set_cell};
+use super::cell::{get_cell_diagonal, get_cell_stroke, set_cell};
 use super::content::{drop_cells, place_graphic, sort_rows};
 use super::options::{get, options};
-use super::selection::{move_rc, select, step_cell, toggle_selection};
+use super::selection::{go_to_row, move_rc, select, step_cell, toggle_selection};
 use super::sizing::{distribute_cols, distribute_rows, resize_border, set_col_width, set_row_height};
 use super::structure::{
     can_convert_rows, convert_from_text, convert_rows, convert_to_text, delete_cols, delete_rows, delete_table, insert, insert_col, insert_row,
@@ -210,7 +210,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Convert Cell to Graphic Cell",
             ["Table"],
             None,
-            "{path? | base64?, name?: with base64, fit?: proportional|fill (default proportional), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — an image in the target cell (its text is kept but hidden)",
+            "{path? | base64?, name?: with base64, embed? (keep the bytes in the document; default: an image from a path links to its file), fit?: proportional|fill (default proportional), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — an image in the target cell (its text is kept but hidden)",
             in_table,
             place_graphic
         ),
@@ -292,7 +292,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Cell Options",
             [],
             None,
-            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
+            "{fill?: swatch, tint?: 0..1, insets?: n | [t,l,b,r], vj? | verticalJustification?: top|center|bottom|justify, firstBaseline?: ascent|capHeight|leading|xHeight|fixed|emboxHeight, firstBaselineMin?: pt, rotation?: 0|90|180|270 (Cell Options › Text › Rotation; kept and written back to IDML, composed horizontally for now), text?, stroke?: {weight?, color?: swatch, tint?: 0..1, type?: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed | {kind:…}, gapColor?: swatch, gapTint?: 0..1, edges?: name | [names] (all|outer|inner|top|left|bottom|right|innerHorizontal|innerVertical; default all)}, diagonal?: {lines?: none|topLeft|topRight|crossed (Cell Options › Diagonal Lines: top left to bottom right, top right to bottom left, or both), weight?, color?, tint?, type?, gapColor?, gapTint? (as stroke), inFront?: bool (true: Diagonal In Front, false: Content In Front)}, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)} — top/left/bottom/right are the target range's outer sides, innerHorizontal/innerVertical the lines between its rows/columns",
             in_table,
             set_cell
         ),
@@ -304,6 +304,15 @@ fn table_specs() -> Vec<CommandSpec> {
             "{story?, table?, rows?, cols?, edges?} → {weight, color, tint, type, gapColor, gapTint, fill, fillTint, edges: count} of the chosen edges of the target cells; a value that differs between them is null",
             in_table_or_ids,
             get_cell_stroke
+        ),
+        cmd!(
+            query "table.getCellDiagonal",
+            "Get Cell Diagonal Lines",
+            [],
+            None,
+            "{story?, table?, rows?, cols?} → {lines, weight, color, tint, type, gapColor, gapTint, inFront} of the target cells' diagonal lines (a value that differs between them is null), with story, table, rows: [a, b] and cols: [a, b] naming the target cells",
+            in_table_or_ids,
+            get_cell_diagonal
         ),
         cmd!(
             "table.setRowHeight",
@@ -396,6 +405,15 @@ fn table_specs() -> Vec<CommandSpec> {
         cmd!(noundo "table.selectColumn", "Select Column", ["Table", "Select"], None, "{story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}", in_table, |s, p| {
             select(s, &crate::cmd::with_param(p, "what", json!("column")))
         }),
+        cmd!(
+            noundo "table.goToRow",
+            "Go to Row…",
+            ["Table"],
+            None,
+            "{row: number (from 1, counted within the section), section?: header|body|footer (default: body), story?, table?}: selects the row → {story, table, range, page: the document page showing the row (from 1), spread: {kind: doc|parent, index} of the spread showing it, rowBounds: [x0, y0, x1, y1] of the row on that spread; each null when the row is overset, and page on a parent spread}",
+            in_table_or_ids,
+            go_to_row
+        ),
         cmd!(noundo "table.nextCell", "Next Cell", [], None, "{}", in_cell, |s, _| step_cell(s, true)),
         cmd!(noundo "table.prevCell", "Previous Cell", [], None, "{}", in_cell, |s, _| step_cell(s, false)),
         cmd!(
@@ -407,6 +425,6 @@ fn table_specs() -> Vec<CommandSpec> {
             in_cell,
             |s, _| toggle_selection(s)
         ),
-        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?} → rows, columns, cells (text, spans, fill), options", in_table_or_ids, get),
+        cmd!(query "table.get", "Get Table", [], None, "{story?, table?, rows?: [a,b] | row?, cols?: [a,b] | col?, cells?: bool (false leaves out the cells)} → rows, columns, cells (text, spans, fill), options. Supplied `story` and `table` values must be nonnegative integer IDs. When a table ID occurs in multiple stories, supply `story` with `table`.", in_table_or_ids, get),
     ]
 }
