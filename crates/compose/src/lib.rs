@@ -1184,7 +1184,7 @@ pub fn stream_frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
     for spread in &doc.spreads {
         for item in &spread.items {
             item.walk(&mut |it| {
-                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid) {
+                if it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == sid) {
                     ids.push(it.id);
                 }
             });

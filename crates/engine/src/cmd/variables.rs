@@ -451,7 +451,7 @@ fn catchword_source(d: &designcraft_doc::Document, p: &Value) -> Result<VarKind>
         if d.story(frame.composed_story()).is_none() {
             return Err(bad("variables.define", "unknown story"));
         }
-        (Some(frame.composed_story()), frame.options.note_stream.map(|route| route.series))
+        (Some(frame.composed_story()), frame.options.note_stream.as_ref().map(|route| route.series))
     } else {
         (None, None)
     };

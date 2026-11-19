@@ -145,6 +145,9 @@ pub struct FootnoteOptions {
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::story::deserialize_catchword_continuation")]
     pub catchword_continuation: Option<String>,
     pub ref_char_style: String,
+    /// Overrides the host inset catchword character style for this series.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catchword_style: Option<String>,
     /// Footnote text formatting.
     pub para_style: String,
     /// Between the number and the footnote text.
@@ -179,6 +182,7 @@ impl Default for FootnoteOptions {
             ref_hidden: false,
             catchword_continuation: None,
             ref_char_style: NO_CHAR_STYLE.into(),
+            catchword_style: None,
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),
             space_before: 0.0,

@@ -78,7 +78,7 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
     for rect in [Rect::new(640.0, 36.0, 670.0, 36.0 + height), Rect::new(36.0, 600.0, 636.0, 600.0 + height)] {
         let (id, _) = doc.add_text_frame(SpreadRef::Doc(0), rect, doc.default_layer(), "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
         routes.push(id);
     }
     let story = doc.story_mut(sid).unwrap();
@@ -152,7 +152,7 @@ fn follower_clears_lowest_commentary_catchword() {
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream {
         story: sid,
         series: 2,
-        catchword: false,
+        catchword: false.into(),
         follow_inset: Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None }),
     });
     // Series 2 is routed rather than inset.
@@ -164,6 +164,66 @@ fn follower_clears_lowest_commentary_catchword() {
     let commentary = cs.frame(host).unwrap().catchwords.iter().find(|c| c.series == Some(1)).unwrap();
     assert!(commentary.rect.y1 > main.rect.y1);
     assert!(cs.frame(route).unwrap().columns[0].y0 >= commentary.rect.y1 - 0.01);
+}
+
+#[test]
+fn unsized_catchword_style_inherits_each_stream_metrics() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(100), &"Inner line.\u{2028}".repeat(110), "");
+    Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Inherited".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: Default::default(),
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Inherited".into() };
+    }
+    let story = doc.story_mut(sid).unwrap();
+    story.format_chars(0..story.len(), |f| {
+        f.over.size = Some(15.0);
+        f.over.leading = Some(designcraft_doc::Leading::Points(20.0));
+    });
+    let cs = compose_story(&doc, sid, &Default::default());
+    for (series, size, leading) in [(None, 15.0, 20.0), (Some(1), 9.0, 11.0)] {
+        let frame = cs.frame(doc.story(sid).unwrap().frames[0]).unwrap();
+        let caption = frame.catchwords.iter().find(|c| c.series == series).unwrap();
+        let line = &caption.text.frames[0].lines[0];
+        assert!(caption.text.styles.iter().any(|s| (s.size - size).abs() < 0.01), "series {series:?}: {:?} vs {size}", caption.text.styles);
+        let previous = super::catchwords::last_line(frame, series).unwrap().0;
+        assert!((caption.origin.y + line.baseline * caption.scale - previous - leading).abs() < 0.01);
+    }
+}
+
+#[test]
+fn same_page_hosts_reserve_only_the_last_text_bearing_catchword() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(100), &"Inner line.\u{2028}".repeat(100), "");
+    enable_catchwords(&mut doc, sid);
+    let first = doc.story(sid).unwrap().frames[0];
+    doc.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(36.0, 36.0, 636.0, 140.0));
+    let (second, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 160.0, 636.0, 290.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(first, second).unwrap();
+    doc.item_mut(second).unwrap().text_frame_mut().unwrap().options.inset_columns =
+        doc.item(first).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    let cs = compose_story(&doc, sid, &Default::default());
+    for series in [None, Some(1)] {
+        assert!(cs.frame(second).unwrap().catchwords.iter().any(|c| c.series == series));
+        assert!(!cs.frame(first).unwrap().catchwords.iter().any(|c| c.series == series), "earlier host printed {series:?}");
+        let trace = super::fitting::LAST_ROWS.with(|v| v.borrow().clone());
+        assert_eq!(trace.iter().filter(|(id, stream)| (*id == first || *id == second) && *stream == series).count(), 1, "reserved rows {trace:?}");
+    }
+    // The final host for main text can have no text from a particular commentary stream.
+    let story = doc.story_mut(sid).unwrap();
+    let first_note = story.notes[0].id;
+    let note = story.note_mut(first_note).unwrap();
+    note.text.replace(0..note.text.len(), "Short inner.");
+    let at = story.text.match_indices("Main").nth(30).unwrap().0;
+    let future = story.insert_note(at, "Future inner.", Default::default()).unwrap();
+    story.note_mut(future).unwrap().series = 1;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(first).unwrap().catchwords.iter().any(|c| c.series == Some(1)));
+    assert!(!cs.frame(second).unwrap().catchwords.iter().any(|c| c.series == Some(1)));
 }
 
 #[test]
@@ -189,7 +249,7 @@ fn routed_series_catchword_appears_only_in_last_route_on_continuing_page() {
             .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, top, x + 636.0, top + height), doc.default_layer(), "", Default::default())
             .unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true.into(), follow_inset: None });
         routes.push(id);
     }
     let cs = compose_story(&doc, sid, &Default::default());
@@ -241,7 +301,7 @@ fn routed_catchword_hugs_last_line_and_its_follower() {
         let follow_inset =
             (series == 3).then(|| designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: routes.first().copied() });
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series, catchword: series == 2, follow_inset });
+            Some(designcraft_doc::NoteStream { story: sid, series, catchword: (series == 2).into(), follow_inset });
         routes.push(id);
     }
     let cs = compose_story(&doc, sid, &Default::default());
@@ -434,40 +494,86 @@ fn two_same_page_hosts_share_one_route_fit_including_second_host_anchor() {
 
 #[test]
 fn revisited_page_routes_include_return_visit_anchor_once() {
-    let text = "Main line.\n".repeat(30);
-    let (mut doc, sid) = document(2, &text, "", "");
-    let hosts = doc.story(sid).unwrap().frames.clone();
-    for id in &hosts {
-        let item = doc.item_mut(*id).unwrap();
-        let bounds = item.bounds();
-        item.path = designcraft_geom::shapes::rectangle(Rect::new(bounds.x0, 36.0, bounds.x1, 120.0));
-        item.text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    for page_count in [2, 3] {
+        let text = "Main line.\n".repeat(30);
+        let (mut doc, sid) = document(page_count, &text, "", "");
+        if page_count == 3 {
+            let unused = doc.story(sid).unwrap().frames[1];
+            doc.remove_item(unused).unwrap();
+        }
+        let hosts = doc.story(sid).unwrap().frames.clone();
+        for id in &hosts {
+            let item = doc.item_mut(*id).unwrap();
+            let bounds = item.bounds();
+            item.path = designcraft_geom::shapes::rectangle(Rect::new(bounds.x0, 36.0, bounds.x1, 120.0));
+            item.text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+        }
+        let (last, _) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.thread(hosts[1], last).unwrap();
+        doc.item_mut(last).unwrap().text_frame_mut().unwrap().options.inset_columns =
+            doc.item(hosts[0]).unwrap().text_frame().unwrap().options.inset_columns.clone();
+        let (route, _) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(640.0, 36.0, 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
+        let at = text.rfind("Main line.").unwrap();
+        let return_text = "Return visit line.\u{2028}".repeat(50);
+        let note = doc.story_mut(sid).unwrap().insert_note(at, &return_text, Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+        let (si, pi) = doc.page_loc(1).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (other_route, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 340.0, 36.0, x + 636.0, 830.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(other_route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
+        let later_route = if page_count == 3 {
+            let (si, pi) = doc.page_loc(2).unwrap();
+            let x = doc.spreads[si].pages[pi].x;
+            let (id, _) = doc
+                .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 340.0, 36.0, x + 636.0, 96.0), doc.default_layer(), "", Default::default())
+                .unwrap();
+            doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+                Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
+            Some(id)
+        } else {
+            None
+        };
+        let first = doc.story_mut(sid).unwrap().insert_note(0, "First visit note.", Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
+        let cs = compose_story(&doc, sid, &Default::default());
+        assert!(cs.frame(last).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
+        assert!(
+            !cs.is_overset(),
+            "{:?}; {:?}",
+            cs.warnings,
+            cs.frames
+                .iter()
+                .map(|f| (
+                    f.frame,
+                    f.range.clone(),
+                    f.notes.iter().map(|n| (n.id, n.text.frames.iter().map(|f| f.range.clone()).collect::<Vec<_>>())).collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>()
+        );
+        let mut end = 0;
+        for id in [route, other_route] {
+            let part = cs.frame(id).unwrap().notes.iter().find(|n| n.id == note).expect("return-visit note must continue in physical page order");
+            for frame in &part.text.frames {
+                assert_eq!(frame.range.start, end);
+                end = frame.range.end;
+            }
+        }
+        assert_eq!(end, return_text.len());
+        assert_eq!(cs.frames.iter().filter(|f| f.frame == route).count(), 1);
+        assert_eq!(cs.frames.iter().filter(|f| f.frame == other_route).count(), 1);
+        assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == first));
+        assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == return_text));
+        if let Some(id) = later_route {
+            assert!(cs.frame(id).unwrap().notes.is_empty(), "the hostless page must consume the continuation first");
+        }
     }
-    let (last, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
-    doc.thread(hosts[1], last).unwrap();
-    doc.item_mut(last).unwrap().text_frame_mut().unwrap().options.inset_columns =
-        doc.item(hosts[0]).unwrap().text_frame().unwrap().options.inset_columns.clone();
-    let (route, _) =
-        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(640.0, 36.0, 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
-    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
-    let at = text.rfind("Main line.").unwrap();
-    let note = doc.story_mut(sid).unwrap().insert_note(at, "Return visit note.", Default::default()).unwrap();
-    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
-    let (si, pi) = doc.page_loc(1).unwrap();
-    let x = doc.spreads[si].pages[pi].x;
-    let (other_route, _) =
-        doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 640.0, 36.0, x + 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
-    doc.item_mut(other_route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false, follow_inset: None });
-    let first = doc.story_mut(sid).unwrap().insert_note(0, "First visit note.", Default::default()).unwrap();
-    doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
-    let cs = compose_story(&doc, sid, &Default::default());
-    assert!(cs.frame(last).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
-    assert_eq!(cs.frames.iter().filter(|f| f.frame == route).count(), 1);
-    assert_eq!(cs.frames.iter().filter(|f| f.frame == other_route).count(), 1);
-    assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == first));
-    assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == "Return visit note."));
 }
 
 #[test]
@@ -1089,4 +1195,29 @@ fn series_catchword_distinguishes_hidden_controls_from_active_delimiters() {
             );
         }
     }
+}
+
+#[test]
+fn route_dependency_chain_validation_visits_each_frame_once() {
+    let (doc, sid, _) = routed_document(90.0);
+    let prototype = stream_frame_specs(&doc, sid)[0].clone();
+    let areas: Vec<_> = (0..128)
+        .map(|i| {
+            let mut frame = prototype.clone();
+            frame.id = ItemId(10_000 + i);
+            frame.opts.note_stream.as_mut().unwrap().follow_inset = Some(designcraft_doc::InsetFollow {
+                edge: designcraft_doc::InsetEdge::Start,
+                gap: 0.0,
+                after: i.checked_sub(1).map(|previous| ItemId(10_000 + previous)),
+            });
+            frame
+        })
+        .collect();
+    super::fitting::DEPENDENCY_VISITS.with(|n| n.set(0));
+    let dependencies = super::fitting::route_dependencies(&areas);
+    assert_eq!(dependencies[0], None);
+    for (index, dependency) in dependencies.iter().enumerate().skip(1) {
+        assert_eq!(*dependency, Some(Some(index - 1)));
+    }
+    assert!(super::fitting::DEPENDENCY_VISITS.with(|n| n.get()) <= areas.len(), "visits: {}", super::fitting::DEPENDENCY_VISITS.with(|n| n.get()));
 }

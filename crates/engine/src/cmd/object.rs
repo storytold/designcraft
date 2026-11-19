@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?: bool|{style: character style name} (baseline pitch = style leading; true keeps the 18 pt row; unknown styles warn and use 9/12 pt defaults),gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, catchword?: bool (default false; last opted-in route per series/page uses the host catchword setting), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?: bool|{style: character style name} (baseline pitch = style leading; true keeps the 18 pt row; unknown styles warn and use 9/12 pt defaults),gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -628,7 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options",
             [],
             None,
-            "{ids?, noteStream?: {story, series, catchword?: bool (default false; last opted-in route per series/page uses the host catchword setting), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
+            "{ids?, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
             has_selection_or_text,
             text_frame_options
         ),
@@ -1291,7 +1291,7 @@ pub(crate) fn retarget_copied_note_streams(
             },
             |it| {
                 if let Some(tf) = it.text_frame_mut() {
-                    tf.options.note_stream = tf.options.note_stream.and_then(|route| {
+                    tf.options.note_stream = tf.options.note_stream.take().and_then(|route| {
                         stories.get(&route.story).map(|host| {
                             let mut route = route;
                             route.story = *host;
@@ -2828,7 +2828,7 @@ fn content_type(s: &mut Session, p: &Value) -> Result<Value> {
                     if empty {
                         d.stories.remove(&tf.story);
                         d.update_placed_items(
-                            |it| it.text_frame().and_then(|frame| frame.options.note_stream).is_some_and(|stream| stream.story == tf.story),
+                            |it| it.text_frame().and_then(|frame| frame.options.note_stream.as_ref()).is_some_and(|stream| stream.story == tf.story),
                             |it| {
                                 if let Some(frame) = it.text_frame_mut() {
                                     frame.options.note_stream = None;
@@ -2951,7 +2951,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     for id in &ids {
         if let Some(tf) = st.doc.item(*id).and_then(Item::text_frame) {
             let inset = inset_columns.as_ref().map_or(tf.options.inset_columns.as_ref(), |v| v.as_ref());
-            let stream = note_stream.unwrap_or(tf.options.note_stream);
+            let stream = note_stream.as_ref().map_or(tf.options.note_stream.as_ref(), |v| v.as_ref());
             if inset.is_some() && stream.is_some() {
                 return Err(bad(ID, "an inset frame cannot also be a separate commentary route"));
             }
@@ -3057,14 +3057,15 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let p = p.clone();
     let edited = s.edit(|d, sel| {
         sel.text = sel.text.filter(|text| {
-            note_stream.flatten().is_none() || !ids.iter().any(|id| d.item(*id).and_then(Item::text_frame).is_some_and(|tf| tf.story == text.story))
+            note_stream.as_ref().is_none_or(Option::is_none)
+                || !ids.iter().any(|id| d.item(*id).and_then(Item::text_frame).is_some_and(|tf| tf.story == text.story))
         });
         for id in &ids {
             let Some(tf) = d.item_mut(*id).and_then(Item::text_frame_mut) else { continue };
             let o = &mut tf.options;
             o.inset_columns = inset_columns.as_ref().unwrap_or(&o.inset_columns).clone();
-            if let Some(stream) = note_stream {
-                o.note_stream = stream;
+            if let Some(stream) = &note_stream {
+                o.note_stream = stream.clone();
             }
             if let Some(v) = columns {
                 o.columns = v;
@@ -7262,7 +7263,7 @@ mod frame_baseline_grid_tests {
         s.execute("footnote.series.options", &json!({"series":2,"catchwordContinuation":"Route terminal"})).unwrap();
         let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
         doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
-        doc.item_mut(foot).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().catchword = true;
+        doc.item_mut(foot).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().catchword = true.into();
         let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
         assert!(!cs.is_overset(), "{:?}", cs.warnings);
         let words = &cs.frame(foot).unwrap().catchwords;
@@ -7282,10 +7283,14 @@ mod frame_baseline_grid_tests {
         Arc::make_mut(&mut s.doc_mut().unwrap().doc).thread(ItemId(host["id"].as_u64().unwrap()), ItemId(next["id"].as_u64().unwrap())).unwrap();
         let sid = StoryId(host["story"].as_u64().unwrap());
         s.execute("textFrame.options", &json!({"ids":[host["id"],next["id"]],"insetColumns":{"streams":[{}],"catchwords":true}})).unwrap();
+        s.execute("style.character.create", &json!({"name":"Route caption","chars":{"size":15.0,"leading":{"kind":"points","value":20.0}}})).unwrap();
+        s.execute("style.character.create", &json!({"name":"Series caption","chars":{"size":11.0,"leading":{"kind":"points","value":16.0}}}))
+            .unwrap();
         let mut first_routes = Vec::new();
         for (index, word) in ["One", "Two"].iter().enumerate() {
             let series =
                 s.execute("footnote.series.create", &json!({"name":word,"placement":"stream","refHidden":true})).unwrap()["id"].as_u64().unwrap();
+            s.execute("footnote.series.options", &json!({"series":series,"catchwordStyle":"Series caption"})).unwrap();
             s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
             s.execute("footnote.insert", &json!({"series":series,"text":format!("{word}.\n").repeat(30)})).unwrap();
             for page in 0..2 {
@@ -7296,7 +7301,7 @@ mod frame_baseline_grid_tests {
                         .unwrap();
                 let mut stream = json!({"story":sid.0,"series":series});
                 if index == 0 {
-                    stream["catchword"] = json!(true);
+                    stream["catchword"] = json!({"style":"Route caption"});
                 }
                 s.execute("textFrame.options", &json!({"ids":[route],"noteStream":stream})).unwrap();
                 if page == 0 {
@@ -7308,14 +7313,19 @@ mod frame_baseline_grid_tests {
         let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
         assert!(!cs.is_overset(), "{:?}", cs.warnings);
         assert_eq!(cs.frame(first_routes[0]).unwrap().catchwords.len(), 1);
+        let caption = &cs.frame(first_routes[0]).unwrap().catchwords[0];
+        assert!(caption.text.styles.iter().any(|s| s.size == 15.0));
+        assert!((caption.text.frames[0].lines[0].leading - 20.0).abs() < 0.01);
         assert!(cs.frame(first_routes[1]).unwrap().catchwords.is_empty(), "default-false route must not get a catchword");
         let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
         for (index, id) in first_routes.iter().enumerate() {
-            let stream = serde_json::to_value(loaded.item(*id).unwrap().text_frame().unwrap().options.note_stream.unwrap()).unwrap();
-            assert_eq!(stream.get("catchword"), (index == 0).then_some(&json!(true)));
+            let stream = serde_json::to_value(loaded.item(*id).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap()).unwrap();
+            assert_eq!(stream.get("catchword"), (index == 0).then_some(&json!({"style":"Route caption"})));
         }
+        assert_eq!(loaded.note_options(1).catchword_style.as_deref(), Some("Series caption"));
         let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
         assert!(warnings.iter().any(|w| w.contains("noteStream.catchword")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("catchwordStyle")), "{warnings:?}");
         assert!(
             s.execute("textFrame.options", &json!({"ids":[first_routes[0].0],"noteStream":{"story":sid.0,"series":1,"catchword":"yes"}})).is_err()
         );
@@ -7342,7 +7352,7 @@ mod frame_baseline_grid_tests {
         let shorter = designcraft_compose::compose_story(doc, sid, &Default::default());
         assert!(shorter.frame(foot).unwrap().columns[0].y0 < top);
         let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
-        let follow = serde_json::to_value(back.item(foot).unwrap().text_frame().unwrap().options.note_stream).unwrap();
+        let follow = serde_json::to_value(back.item(foot).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
         assert_eq!(follow["followInset"]["after"], column.0);
     }
 
@@ -7359,7 +7369,7 @@ mod frame_baseline_grid_tests {
         let copies =
             duplicate_from(dst, &source, &[host, column, foot], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::new(10.0, 10.0)).unwrap();
         let copied_host = dst.item(copies[0]).unwrap().text_frame().unwrap().story;
-        let route = dst.item(copies[2]).unwrap().text_frame().unwrap().options.note_stream.unwrap();
+        let route = dst.item(copies[2]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap();
         assert_eq!(route.story, copied_host);
         assert_eq!(route.follow_inset.unwrap().after, Some(copies[1]));
     }
@@ -7402,7 +7412,7 @@ mod frame_baseline_grid_tests {
                         Default::default(),
                     )
                     .unwrap();
-                let route = doc.item(column).unwrap().text_frame().unwrap().options.note_stream;
+                let route = doc.item(column).unwrap().text_frame().unwrap().options.note_stream.clone();
                 doc.item_mut(other).unwrap().text_frame_mut().unwrap().options.note_stream = route;
                 after = other;
             } else {
@@ -7552,7 +7562,7 @@ mod frame_baseline_grid_tests {
         let doc = &s.doc().unwrap().doc;
         let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
         for (id, edge, gap) in [(column, "end", 0.0), (foot, "start", 12.0)] {
-            let route = serde_json::to_value(back.item(id).unwrap().text_frame().unwrap().options.note_stream).unwrap();
+            let route = serde_json::to_value(back.item(id).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
             assert_eq!(route["followInset"], json!({"edge":edge,"gap":gap}));
         }
     }
@@ -7571,7 +7581,7 @@ mod frame_baseline_grid_tests {
             let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
             doc.item_mut(column).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset.as_mut().unwrap().gap = gap;
             let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
-            assert!(back.item(column).unwrap().text_frame().unwrap().options.note_stream.unwrap().follow_inset.is_none());
+            assert!(back.item(column).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().follow_inset.is_none());
             back.check().unwrap();
         }
     }
@@ -7620,7 +7630,7 @@ mod frame_baseline_grid_tests {
         assert_eq!(s.doc().unwrap().doc.item(stream_id).unwrap().text_frame().unwrap().options.note_stream, None);
         s.doc().unwrap().doc.check().unwrap();
         s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.item(stream_id).unwrap().text_frame().unwrap().options.note_stream.unwrap().series, series);
+        assert_eq!(s.doc().unwrap().doc.item(stream_id).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().series, series);
         s.execute("object.content", &json!({"ids":[host_id.0],"type":"graphic"})).unwrap();
         assert_eq!(s.doc().unwrap().doc.item(stream_id).unwrap().text_frame().unwrap().options.note_stream, None);
         s.doc().unwrap().doc.check().unwrap();
@@ -7936,7 +7946,7 @@ mod stream_review_tests {
         assert!(s.execute("textFrame.options", &json!({"ids":[route.0],"noteStream":{"story":host.0,"series":0}})).is_err());
         let mut doc = (*s.doc().unwrap().doc).clone();
         doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: host, series: 0, catchword: false, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None });
         assert!(doc.check().is_err(), "native input must reject the same unsupported route");
     }
 
@@ -7961,7 +7971,7 @@ mod stream_review_tests {
             let route = doc.item(ItemId(pair[0].as_u64().unwrap())).unwrap().text_frame().unwrap();
             let host = doc.item(ItemId(pair[1].as_u64().unwrap())).unwrap().text_frame().unwrap();
             assert_ne!(host.story, sid);
-            assert_eq!(route.options.note_stream.unwrap().story, host.story, "{command}");
+            assert_eq!(route.options.note_stream.as_ref().unwrap().story, host.story, "{command}");
         }
         doc.check().unwrap();
     }
@@ -7979,13 +7989,13 @@ mod stream_review_tests {
         let d = &s.doc().unwrap().doc;
         let copied: Vec<_> = d.all_items().into_iter().filter_map(|id| d.item(id)).filter(|item| item.layer == copied_layer).collect();
         let copied_host = copied.iter().find_map(|it| it.text_frame().filter(|tf| tf.options.note_stream.is_none()).map(|tf| tf.story)).unwrap();
-        let copied_route = copied.iter().find_map(|it| it.text_frame().and_then(|tf| tf.options.note_stream)).unwrap();
+        let copied_route = copied.iter().find_map(|it| it.text_frame().and_then(|tf| tf.options.note_stream.as_ref())).unwrap();
         assert_ne!(copied_host, host);
         assert_eq!(copied_route.story, copied_host);
         assert_eq!(copied_route.series, 0);
         d.check().unwrap();
         s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(s.doc().unwrap().doc.item(route).unwrap().text_frame().unwrap().options.note_stream.unwrap().story, host);
+        assert_eq!(s.doc().unwrap().doc.item(route).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().story, host);
     }
 
     #[test]
@@ -8024,12 +8034,12 @@ mod stream_review_tests {
         let note = src.story_mut(sid).unwrap().insert_note(0, "Comment", Default::default()).unwrap();
         src.story_mut(sid).unwrap().note_mut(note).unwrap().series = 1;
         src.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(designcraft_doc::NoteStream { story: sid, series: 1, catchword: false, follow_inset: None });
+            Some(designcraft_doc::NoteStream { story: sid, series: 1, catchword: false.into(), follow_inset: None });
         let mut dst = Document::new(&Default::default());
         dst.note_series.push(designcraft_doc::NoteSeries { id: 1, name: "Existing".into(), options: Default::default() });
         let ids = duplicate_from(&mut dst, &src, &[route, host], SpreadRef::Doc(0), Vec2::ZERO).unwrap();
         let new_host = dst.item(ids[1]).unwrap().text_frame().unwrap().story;
-        let mapped = dst.item(ids[0]).unwrap().text_frame().unwrap().options.note_stream.unwrap();
+        let mapped = dst.item(ids[0]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap();
         assert_eq!(mapped.story, new_host);
         assert_ne!(mapped.series, 1);
         assert_eq!(mapped.series, dst.story(new_host).unwrap().notes[0].series);

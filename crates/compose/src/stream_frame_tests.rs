@@ -38,7 +38,7 @@ fn commentary(pages: usize, count: usize, height: f64) -> (Document, StoryId, Ve
         let (stream, _) =
             doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 300.0, 36.0, x + 540.0, 36.0 + height), layer, "", Default::default()).unwrap();
         doc.item_mut(stream).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: sid, series: 1, catchword: false, follow_inset: None });
+            Some(NoteStream { story: sid, series: 1, catchword: false.into(), follow_inset: None });
         streams.push(stream);
     }
     let host = host.unwrap();
@@ -202,7 +202,7 @@ fn two_streams_fit_the_same_main_page_cut() {
         let bounds = doc.item(first).unwrap().bounds();
         let (id, _) = doc.add_text_frame(loc.spread, bounds, doc.default_layer(), "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: host, series: 2, catchword: false, follow_inset: None });
+            Some(NoteStream { story: host, series: 2, catchword: false.into(), follow_inset: None });
         outer.push(id);
     }
     let cs = compose_story(&doc, host, &Default::default());
@@ -323,7 +323,7 @@ fn stream_route_includes_pages_without_host_frames_and_invalidates_host_cache() 
     for page in [2, 0, 1] {
         let (id, own) = doc.add_text_frame(SpreadRef::Doc(page), Rect::new(270.0, 36.0, 400.0, 400.0), layer, "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: host, series: 0, catchword: false, follow_inset: None });
+            Some(NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None });
         assert!(frame_specs(&doc, own).is_empty(), "the frame never composes its own body story");
         route.push(id);
     }
@@ -414,4 +414,37 @@ fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
         end = note.text.frames[0].range.end;
     }
     assert_eq!(end, long.len());
+}
+
+#[test]
+fn route_parts_are_emitted_once_and_share_the_note_source() {
+    let (mut doc, sid, _) = commentary(1, 1, 60.0);
+    let note = doc.story_mut(sid).unwrap().notes[0].id;
+    let text = "Line.\u{2028}".repeat(20);
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().text.replace(0.."Comment 0.\u{2028}Second line.".len(), &text);
+    let prototype = stream_frame_specs(&doc, sid)[0].clone();
+    let areas: Vec<_> = (0..8)
+        .map(|i| {
+            let mut frame = prototype.clone();
+            frame.id = ItemId(10_000 + i);
+            frame
+        })
+        .collect();
+    for note_bands in [false, true] {
+        notes::streams::PART_VISITS.with(|n| n.set(0));
+        let fit = fit_stream_page(
+            &doc,
+            doc.story(sid).unwrap(),
+            StreamPageInput { page: 0, main: 0..doc.story(sid).unwrap().len(), areas: &areas, force_starts: None },
+            &StreamState::default(),
+            &ComposeOptions { note_bands, ..Default::default() },
+        );
+        assert!(fit.starts_fit);
+        let parts: Vec<_> = fit.frames.iter().flat_map(|f| &f.notes).collect();
+        assert!(parts.len() > 1);
+        let visits = notes::streams::PART_VISITS.with(|n| n.get());
+        assert_eq!(visits, parts.len(), "each newly fitted part must be visited once, bands={note_bands}");
+        assert!(parts.iter().all(|p| Arc::ptr_eq(&parts[0].source, &p.source)));
+        assert_eq!(parts.last().unwrap().text.frames.last().unwrap().range.end, text.len());
+    }
 }

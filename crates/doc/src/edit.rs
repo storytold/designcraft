@@ -275,7 +275,7 @@ impl Document {
             if empty {
                 self.stories.remove(&sid);
                 self.update_placed_items(
-                    |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == sid),
+                    |it| it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == sid),
                     |it| {
                         if let Some(tf) = it.text_frame_mut() {
                             tf.options.note_stream = None;
@@ -415,7 +415,7 @@ impl Document {
     /// their copied content stays unchanged until an explicit Update Link.
     fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
         self.update_placed_items(
-            |it| it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == from),
+            |it| it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == from),
             |it| {
                 if let Some(stream) = it.text_frame_mut().and_then(|tf| tf.options.note_stream.as_mut()) {
                     stream.story = to;

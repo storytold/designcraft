@@ -5,9 +5,32 @@ use designcraft_doc::{CharAttrs, Document, FirstBaseline, Leading, Story, StoryI
 use designcraft_geom::{Point, Rect};
 use std::sync::Arc;
 
-fn attributes(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> CharAttrs {
-    let mut attrs = CharAttrs { size: Some(9.0), leading: Some(Leading::Points(12.0)), ..Default::default() };
+pub(super) fn options(
+    doc: &Document,
+    spec: &FrameSpec,
+    series: Option<u64>,
+    host: &designcraft_doc::InsetCatchwords,
+) -> designcraft_doc::InsetCatchwords {
+    let route = spec.opts.note_stream.as_ref().filter(|r| Some(r.series) == series).and_then(|r| r.catchword.style());
+    let style = route.or_else(|| series.and_then(|id| doc.note_options(id).catchword_style.as_deref()));
+    style.map_or_else(|| host.clone(), |style| designcraft_doc::InsetCatchwords::Styled { style: style.into() })
+}
+
+fn attributes(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> CharAttrs {
+    let base = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p).1).unwrap_or_default();
+    let chars = doc.styles.resolve_char(&base, source.char_format_at(at));
+    let mut attrs = CharAttrs {
+        font_family: Some(chars.font_family),
+        font_style: Some(chars.font_style),
+        fill: Some(chars.fill),
+        no_break: Some(true),
+        size: Some(9.0),
+        leading: Some(Leading::Points(12.0)),
+        ..Default::default()
+    };
     if let Some(style) = options.style().filter(|s| doc.styles.char_style(s).is_some()) {
+        attrs.size = Some(chars.size);
+        attrs.leading = Some(chars.leading);
         attrs.merge(&doc.styles.char_style_attrs(style));
     }
     attrs
@@ -44,20 +67,19 @@ pub(super) fn row_space(
     }
     let sample = compose(doc, source, at, "\u{00a0}", spec, options);
     let descent = sample.frames.first().and_then(|f| f.lines.first()).map_or(previous_descent, |l| l.descent);
-    (row_height(doc, options) + descent - previous_descent).max(0.0)
+    (sample.frames.first().and_then(|f| f.lines.first()).map_or(12.0, |l| l.leading) + descent - previous_descent).max(0.0)
 }
 
-pub(super) fn row_height(doc: &Document, options: &designcraft_doc::InsetCatchwords) -> f64 {
+pub(super) fn row_height(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> f64 {
     if options.style().is_none_or(|style| doc.styles.char_style(style).is_none()) {
         return super::fitting::CATCHWORD_SPACE;
     }
-    let attrs = attributes(doc, options);
+    let attrs = attributes(doc, source, at, options);
     let leading = match attrs.leading {
         Some(Leading::Points(value)) => value,
         _ => attrs.size.unwrap_or(9.0) * 1.2,
     };
-    let height = leading;
-    if height.is_finite() && height > 0.0 && height <= 1.0e6 { height } else { super::fitting::CATCHWORD_SPACE }
+    if leading.is_finite() && leading > 0.0 && leading <= 1.0e6 { leading } else { super::fitting::CATCHWORD_SPACE }
 }
 
 #[cfg(test)]
@@ -74,14 +96,15 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
     let index = crate::vars::CatchwordIndex::build(doc, out, story);
     for (spec, regions) in frames.iter().zip(areas) {
         let options = spec.opts.inset_columns.as_ref().map(|c| c.catchwords.clone()).unwrap_or_default();
-        if let Some(style) = options.style().filter(|s| doc.styles.char_style(s).is_none()) {
-            let warning = format!("Unknown catchword character style `{style}`; using default 9 pt size and 12 pt leading");
-            if !out.warnings.contains(&warning) {
-                out.warnings.push(warning);
-            }
-        }
         let Some(page) = spec.page else { continue };
         for (series, rect) in regions {
+            let options = self::options(doc, spec, *series, &options);
+            if let Some(style) = options.style().filter(|s| doc.styles.char_style(s).is_none()) {
+                let warning = format!("Unknown catchword character style `{style}`; using default 9 pt size and 12 pt leading");
+                if !out.warnings.contains(&warning) {
+                    out.warnings.push(warning);
+                }
+            }
             let word = match series {
                 Some(id) => index.series.get(id).and_then(|pages| pages.get(&page)),
                 None => index.main.get(&page).map(|(_, word)| word),
@@ -104,7 +127,7 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
                 && let Some((previous, descent)) = last_line(frame, *series)
                 && let Some(line) = text.frames.first().and_then(|f| f.lines.first())
             {
-                let baseline = previous + row_height(doc, &options);
+                let baseline = previous + line.leading;
                 let top = previous + descent;
                 let rect = Rect::new(rect.x0, top, rect.x1, (baseline + line.descent * scale).max(top));
                 (rect, baseline - line.baseline * scale)
@@ -120,31 +143,17 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
 }
 
 fn compose(doc: &Document, source: &Story, at: usize, word: &str, spec: &FrameSpec, options: &designcraft_doc::InsetCatchwords) -> ComposedStory {
-    let base = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p).1).unwrap_or_default();
-    let chars = doc.styles.resolve_char(&base, source.char_format_at(at));
+    let attrs = attributes(doc, source, at, options);
     let mut text = Story::new(StoryId(0));
     text.insert(0, word);
-    text.format_chars(0..word.len(), |f| {
-        f.over = CharAttrs {
-            font_family: Some(chars.font_family.clone()),
-            font_style: Some(chars.font_style.clone()),
-            fill: Some(chars.fill.clone()),
-            no_break: Some(true),
-            ..Default::default()
-        };
-        f.over.merge(&attributes(doc, options));
-    });
+    text.format_chars(0..word.len(), |f| f.over = attrs.clone());
     text.format_paras(0..word.len(), |p| {
         p.style = designcraft_doc::styles::NO_PARA_STYLE.into();
         p.para.hyphenate = Some(false);
     });
     let frame = FrameSpec {
         area: Rect::new(0.0, 0.0, 1.0e6, 1.0e6),
-        opts: TextFrameOptions {
-            first_baseline: FirstBaseline::Ascent,
-            first_baseline_min: attributes(doc, options).size.unwrap_or(9.0),
-            ..Default::default()
-        },
+        opts: TextFrameOptions { first_baseline: FirstBaseline::Ascent, first_baseline_min: attrs.size.unwrap_or(9.0), ..Default::default() },
         exclusions: Vec::new(),
         outline: None,
         grid: None,
@@ -166,8 +175,8 @@ mod tests {
             shortcut: String::new(),
             chars: CharAttrs { size: Some(15.0), leading: Some(Leading::Points(24.0)), ..Default::default() },
         });
-        assert_eq!(row_height(&doc, &true.into()), 18.0);
-        assert_eq!(row_height(&doc, &designcraft_doc::InsetCatchwords::Styled { style: "Catchword".into() }), 24.0);
-        assert_eq!(row_height(&doc, &designcraft_doc::InsetCatchwords::Styled { style: "Missing".into() }), 18.0);
+        assert_eq!(row_height(&doc, &Story::new(StoryId(0)), 0, &true.into()), 18.0);
+        assert_eq!(row_height(&doc, &Story::new(StoryId(0)), 0, &designcraft_doc::InsetCatchwords::Styled { style: "Catchword".into() }), 24.0);
+        assert_eq!(row_height(&doc, &Story::new(StoryId(0)), 0, &designcraft_doc::InsetCatchwords::Styled { style: "Missing".into() }), 18.0);
     }
 }

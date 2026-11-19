@@ -1,5 +1,17 @@
 # DesignCraft roadmap
 
+- 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
+
+- 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
+
+- 2026-11-20: commentary routes emit newly fitted parts once, carrying baseline metrics and sharing note source text (#2873).
+
+- 2026-11-20: revisited-page routes fit in physical page order after host ranges are known; failed starts revalidate their host cuts (#2873).
+
+- 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).
+
+- 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
+
 - 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
 
 - 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).

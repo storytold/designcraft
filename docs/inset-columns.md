@@ -120,17 +120,20 @@ retain inset geometry and emits an explicit export warning. Deleting a series re
 entry from inset frames and moves its notes to series 0, as for ordinary stream routes.
 
 `catchwords:true` adds a generated catchword below each stream that has visible text on a later
-page. The word follows that stream's last rectangle at the paragraph's line end, left for
+page. A stream reserves and prints its row only at its last text-bearing host on that physical
+page, including when a thread visits the page more than once. The word follows that stream's last rectangle at the paragraph's line end, left for
 right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
 and colour at 9 points; a long word shrinks uniformly only to fit its column width.
 Row height never scales the catchword's glyph size. Alternatively,
 `catchwords:{"style":"Catchword"}` applies that character style. Its baseline is the
-preceding line's baseline plus the style's leading. The reserved row starts at the
+preceding line's baseline plus the style's leading. An unsized style inherits the source stream's resolved size and leading at the catchword position. The reserved row starts at the
 preceding line's descent and ends at the catchword's descent. Boolean `true` retains
 the existing placement and 18-point row. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
 remain valid in commands and native files. IDML warns that it loses styled catchwords.
+Host, route and series catchword style references follow character-style rename and
+delete-with-replacement, including undo.
 `story.options {story,catchwordContinuation:"Next excerpt"}` supplies only the main stream's
 terminal catchword. Each note series has its own optional text, set through
 `footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
@@ -141,7 +144,9 @@ unchanged, and are included in native rendering and PDF export.
 
 Routed frames opt in with `noteStream.catchword:true` (default `false`, omitted when false
 in native files). The host inset's catchword setting supplies their style and must also
-be enabled. Only the last opted-in route frame of each series on a page reserves a row
+be enabled. `noteStream.catchword:{"style":"Route caption"}` overrides the style for that route.
+Series options accept `catchwordStyle:"Series caption"` to override the host style; a route style takes precedence.
+Only the last opted-in route frame of each series on a page reserves a row
 directly below its last composed line. Native saves preserve the opt-in flag; IDML warns
 that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next

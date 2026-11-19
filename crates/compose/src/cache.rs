@@ -653,7 +653,9 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     for spread in &doc.spreads {
         for item in &spread.items {
             item.walk(&mut |it| {
-                if it.text_frame().and_then(|tf| tf.options.note_stream).is_some_and(|stream| stream.story == story.id) && !frames.contains(&it.id) {
+                if it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == story.id)
+                    && !frames.contains(&it.id)
+                {
                     frames.push(it.id);
                 }
             });
