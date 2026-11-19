@@ -75,10 +75,14 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
     Some((loc.spread, d.parent_xf(&loc) * d.item_at(&loc)?.xf))
 }
 
-/// Containment tests `orient_holes` makes at most (after the bounding-box filter). A compound path
-/// of thousands of nested contours would otherwise take quadratic time; past this the command is
-/// refused rather than leave later subpaths with the wrong direction.
-const MAX_HOLE_TESTS: usize = 4_000_000;
+/// Containment work `orient_holes` does at most (after the bounding-box filter), counted in path
+/// elements walked. A compound path of thousands of nested contours would otherwise take quadratic
+/// time; past this the command is refused rather than leave later subpaths with the wrong direction.
+pub(super) const MAX_HOLE_TESTS: usize = 4_000_000;
+
+/// Contours `orient_holes` takes at most: each one's start is checked against every other
+/// contour's box, so the box checks grow with the square of the count.
+const MAX_HOLE_CONTOURS: usize = 8_000;
 
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
@@ -87,27 +91,90 @@ fn orient_holes(path: &mut PathData, command: &str) -> Result<()> {
 }
 
 fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> Result<()> {
-    let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
-    // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
-    let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
-    let n = path.subpaths.len();
-    let mut tests = 0usize;
-    for (i, sp) in path.subpaths.iter_mut().enumerate() {
-        let Some(p) = sp.anchors.first().map(|a| a.p) else { continue };
-        let mut depth = 0;
-        for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
-            tests += 1;
-            if tests > max_tests {
-                return Err(bad(command, "too many nested contours to tell holes from fills"));
-            }
-            depth += usize::from(designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p));
-        }
-        let cw = sp.area() > 0.0;
-        if cw == (depth % 2 == 1) {
+    let mut budget = max_tests;
+    let mut boxes = MAX_HOLE_CONTOURS * MAX_HOLE_CONTOURS;
+    let nest = nesting(path, command, &mut budget, &mut boxes)?;
+    // A contour of zero area (an open line) fills nothing either way: it keeps its direction, and
+    // with it where its stroke starts.
+    for (sp, k) in path.subpaths.iter_mut().zip(nest) {
+        if k.fills && k.cw == (k.depth % 2 == 1) {
             sp.reverse();
         }
     }
     Ok(())
+}
+
+/// Where a contour sits in its path, as filled (an open subpath closed by a straight edge).
+pub(super) struct Nesting {
+    /// How many other contours hold its first anchor.
+    pub depth: usize,
+    /// The outermost contour holding it, or itself when none does.
+    pub outer: usize,
+    /// Does it run clockwise?
+    pub cw: bool,
+    /// Does it enclose any area? (A contour along one line fills nothing either way it runs.)
+    pub fills: bool,
+}
+
+/// Each contour's [`Nesting`]. Every winding count takes the counted contour's element count
+/// from `budget`, and every contour start takes the number of boxes it is checked against from
+/// `boxes_left`; when either runs out the path is refused.
+pub(super) fn nesting(path: &PathData, command: &str, budget: &mut usize, boxes_left: &mut usize) -> Result<Vec<Nesting>> {
+    let n = path.subpaths.len();
+    if n > MAX_HOLE_CONTOURS {
+        return Err(bad(command, "too many contours to tell holes from fills"));
+    }
+    let beziers: Vec<BezPath> = path.subpaths.iter().map(SubPath::to_filled_bezpath).collect();
+    // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
+    let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
+    let mut holders: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for (i, sp) in path.subpaths.iter().enumerate() {
+        let mut held = Vec::new();
+        if let Some(p) = sp.anchors.first().map(|a| a.p) {
+            *boxes_left = boxes_left.checked_sub(n - 1).ok_or_else(|| bad(command, "too many contours to tell holes from fills"))?;
+            for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
+                let cost = beziers[j].elements().len().max(1);
+                *budget = budget.checked_sub(cost).ok_or_else(|| bad(command, "too many nested contours to tell holes from fills"))?;
+                if designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p) {
+                    held.push(j);
+                }
+            }
+        }
+        holders.push(held);
+    }
+    // Signed area measured from the contour's own first anchor: far from the origin, absolute
+    // coordinates would lose the sign of a small contour to rounding.
+    let area = |i: usize| {
+        let origin = path.subpaths[i].anchors.first().map_or(designcraft_geom::Vec2::ZERO, |a| a.p.to_vec2());
+        (Affine::translate(-origin) * beziers[i].clone()).area()
+    };
+    // Zero signed area alone does not mean an empty fill (a symmetric bow tie): a contour fills
+    // nothing only when the points of its drawn segments, handles included, lie on one line. (The
+    // handles at the open ends of an open path are not drawn.)
+    let on_one_line = |sp: &SubPath| {
+        let pts = || {
+            (0..sp.segment_count()).flat_map(|i| {
+                let c = sp.segment(i);
+                [c.p0, c.p1, c.p2, c.p3]
+            })
+        };
+        let Some(p0) = pts().next() else { return true };
+        match pts().find(|&p| p != p0) {
+            Some(q) => pts().all(|p| (p - p0).cross(q - p0) == 0.0),
+            None => true,
+        }
+    };
+    Ok((0..n)
+        .map(|i| {
+            let a = area(i);
+            Nesting {
+                depth: holders[i].len(),
+                outer: holders[i].iter().copied().find(|&j| holders[j].is_empty()).unwrap_or(i),
+                cw: a > 0.0,
+                fills: a != 0.0 || !on_one_line(&path.subpaths[i]),
+            }
+        })
+        .collect())
 }
 
 fn make_compound(s: &mut Session, p: &Value) -> Result<Value> {
@@ -469,6 +536,95 @@ mod tests {
         }
         assert!(orient_holes_within(&mut PathData::new(subs.clone()), "test", 3).is_err());
         assert!(orient_holes_within(&mut PathData::new(subs), "test", 100).is_ok());
+        // Each contour's start is checked against every other's box: past the contour limit the
+        // path is refused before that quadratic scan.
+        let many: Vec<SubPath> = (0..=MAX_HOLE_CONTOURS)
+            .map(|k| {
+                let x = 20.0 * k as f64;
+                rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths.remove(0)
+            })
+            .collect();
+        assert!(orient_holes(&mut PathData::new(many), "test").is_err());
+        // Box checks are counted too, even when every box misses: three apart squares check two
+        // boxes each.
+        let apart = PathData::new(
+            (0..3)
+                .map(|k| {
+                    let x = 20.0 * f64::from(k);
+                    rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths.remove(0)
+                })
+                .collect(),
+        );
+        assert!(nesting(&apart, "test", &mut 100, &mut 5).is_err());
+        assert!(nesting(&apart, "test", &mut 100, &mut 6).is_ok());
+    }
+
+    #[test]
+    fn orient_holes_keeps_the_direction_of_open_lines() {
+        use designcraft_geom::{Anchor, Point};
+        let line = SubPath::new(vec![Anchor::corner(Point::new(10.0, 0.0)), Anchor::corner(Point::new(10.0, 10.0))], false);
+        // A handle on an open end is not drawn: off the line, it does not change that.
+        let mut handled = line.clone();
+        handled.anchors[0].h_in = Point::new(20.0, -5.0);
+        for line in [line, handled] {
+            let mut path = PathData::new(vec![line]);
+            orient_holes(&mut path, "test").unwrap();
+            assert_eq!(path.subpaths[0].anchors[0].p, Point::new(10.0, 0.0), "the line still starts where it was drawn");
+        }
+    }
+
+    #[test]
+    fn orient_holes_turns_a_bow_tie_around_a_square_in_its_lobe() {
+        use designcraft_geom::{Anchor, FillRule, Point, Rect, hit::fill_contains, shapes::rectangle};
+        // A symmetric bow tie (lobes above and below its middle) has zero signed area but fills
+        // both lobes; a square sits in the upper one.
+        let corner = |x, y| Anchor::corner(Point::new(x, y));
+        let bow = SubPath::new(vec![corner(0.0, 0.0), corner(10.0, 10.0), corner(0.0, 10.0), corner(10.0, 0.0)], true);
+        let square = rectangle(Rect::new(4.0, 1.0, 6.0, 3.0)).subpaths.remove(0);
+        let mut reversed = square.clone();
+        reversed.reverse();
+        for square in [square, reversed] {
+            let mut path = PathData::new(vec![bow.clone(), square]);
+            orient_holes(&mut path, "test").unwrap();
+            let bp = path.to_bezpath();
+            assert!(fill_contains(&bp, FillRule::NonZero, Point::new(2.0, 1.0)), "the lobe is filled");
+            assert!(!fill_contains(&bp, FillRule::NonZero, Point::new(5.0, 2.0)), "the square is a hole");
+        }
+    }
+
+    #[test]
+    fn orient_holes_tells_small_contours_direction_far_from_the_origin() {
+        use designcraft_geom::{Rect, shapes::rectangle};
+        let (c, local_cw) = (1e8, |sp: &SubPath| {
+            let o = sp.anchors[0].p.to_vec2();
+            (Affine::translate(-o) * sp.to_filled_bezpath()).area() > 0.0
+        });
+        let mut path = rectangle(Rect::new(c - 10.0, c - 10.0, c + 10.0, c + 10.0));
+        path.subpaths.extend(rectangle(Rect::new(c - 1.0, c - 1.0, c + 1.0, c + 1.0)).subpaths);
+        assert_eq!(local_cw(&path.subpaths[0]), local_cw(&path.subpaths[1]), "drawn the same way");
+        orient_holes(&mut path, "test").unwrap();
+        assert_ne!(local_cw(&path.subpaths[0]), local_cw(&path.subpaths[1]), "the small square is a hole");
+    }
+
+    #[test]
+    fn orient_holes_closes_open_contours_as_their_fill_does() {
+        use designcraft_geom::{Anchor, Point, Rect, shapes::rectangle};
+        // An outer square drawn without its last edge, then a square inside it running the same way.
+        let corner = |x, y| Anchor::corner(Point::new(x, y));
+        let outer = SubPath::new(vec![corner(0.0, 0.0), corner(100.0, 0.0), corner(100.0, 100.0), corner(0.0, 100.0)], false);
+        let mut inner = rectangle(Rect::new(40.0, 40.0, 60.0, 60.0)).subpaths.remove(0);
+        let mut closed_outer = outer.clone();
+        closed_outer.closed = true;
+        if (inner.area() > 0.0) != (closed_outer.area() > 0.0) {
+            inner.reverse();
+        }
+        let mut path = PathData::new(vec![outer, inner]);
+        orient_holes(&mut path, "test").unwrap();
+        let mut closed = path.clone();
+        closed.subpaths[0].closed = true;
+        let dirs: Vec<bool> = closed.subpaths.iter().map(|s| s.area() > 0.0).collect();
+        assert_ne!(dirs[0], dirs[1], "the inner square is a hole");
+        assert!(!path.subpaths[0].closed, "the outline stays open");
     }
 
     #[test]

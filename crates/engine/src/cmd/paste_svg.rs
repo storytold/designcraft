@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use craft_svg::tree::document::{Document as SvgDocument, LineCap, LineJoin, Node as SvgNode, Paint as SvgPaint, Segment};
+use craft_svg::tree::document::{Document as SvgDocument, FillRule, LineCap, LineJoin, Node as SvgNode, Paint as SvgPaint, Segment};
 use designcraft_doc::{Content, Fill, Item, ItemId, Selection, Shape, Stroke, StrokeType};
 use designcraft_geom::{Affine, BezPath, PathData, Point, Rect};
 use serde_json::{Value, json};
@@ -32,9 +32,9 @@ pub fn is_svg_markup(text: &str) -> bool {
 /// Cap conversion nesting too; the shared SVG scene builder enforces this limit.
 const MAX_DEPTH: usize = 64;
 
-/// A converted SVG node, in points.
+/// A converted SVG node, in points. `even_odd`: the path is filled with `fill-rule="evenodd"`.
 enum Art {
-    Path { path: BezPath, fill: Option<Paint>, stroke: Option<(Paint, StrokeStyle)>, opacity: f32 },
+    Path { path: BezPath, fill: Option<Paint>, even_odd: bool, stroke: Option<(Paint, StrokeStyle)>, opacity: f32 },
     Group(Vec<Art>, f32),
 }
 
@@ -67,6 +67,10 @@ struct Notes {
     images: usize,
     /// Paths whose fill-opacity and stroke-opacity differ (one object opacity holds only one).
     mixed_opacity: usize,
+    /// Even-odd paths left as they were: their contours cross or touch, or they are too large to check.
+    even_odd_kept: usize,
+    /// Dashed even-odd paths with a contour reversed (its dashes run the other way).
+    dashes_reversed: usize,
     too_deep: bool,
 }
 
@@ -140,7 +144,8 @@ fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
                 {
                     notes.mixed_opacity += 1;
                 }
-                out.push(Art::Path { path: bezpath(&path.segments), fill, stroke, opacity: 1.0 });
+                let even_odd = fill.is_some() && path.fill_rule == FillRule::EvenOdd;
+                out.push(Art::Path { path: bezpath(&path.segments), fill, even_odd, stroke, opacity: 1.0 });
             }
             SvgNode::Group { children, opacity, .. } => {
                 let mut items = Vec::new();
@@ -221,14 +226,81 @@ fn swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, rgb:
     name
 }
 
-fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<Art>, layer: designcraft_doc::LayerId, shift: Affine) -> Vec<Item> {
+/// Flattening tolerance (pt) and limits for checking an even-odd path's contours for crossings.
+const CROSS_TOLERANCE: f64 = 0.05;
+
+/// What one paste may spend checking and turning even-odd paths, across all of them: flattened
+/// edges, edge comparisons, contour boxes checked and containment work (path elements walked).
+struct FillBudget {
+    edges: usize,
+    tests: usize,
+    boxes: usize,
+    containment: usize,
+}
+
+impl FillBudget {
+    fn new() -> Self {
+        Self { edges: 200_000, tests: 4_000_000, boxes: 16_000_000, containment: super::paths::MAX_HOLE_TESTS }
+    }
+}
+
+/// Items fill with the non-zero rule. Turn an even-odd path's contours so that each one nested an
+/// odd number of times runs against the contour around it, and the item fills the same area. Each
+/// outer contour and the contours inside it take whichever of the two working directions reverses
+/// fewer of them, so contours that already fill alike keep their direction. Contours that enclose
+/// no area (an open two-point line) fill nothing either way: they are not counted or reversed.
+/// Returns how many contours were reversed, or `None`, leaving the path as it was, when contours
+/// cross or touch (reversing contours is not checked to fill the same area there) or the paste's
+/// budget runs out.
+fn even_odd_to_non_zero(data: &mut PathData, budget: &mut FillBudget) -> Option<usize> {
+    if designcraft_geom::hit::edges_cross(data, CROSS_TOLERANCE, &mut budget.edges, &mut budget.tests) != Some(false) {
+        return None;
+    }
+    let nest = super::paths::nesting(data, "edit.pasteSvg", &mut budget.containment, &mut budget.boxes).ok()?;
+    // Contours to reverse for the directions where every even depth runs clockwise, counted with
+    // all the contours per outer contour.
+    let turn: Vec<bool> = nest.iter().map(|k| k.fills && k.cw == (k.depth % 2 == 1)).collect();
+    let mut per_outer: HashMap<usize, (usize, usize)> = HashMap::new();
+    for (k, t) in nest.iter().zip(&turn).filter(|(k, _)| k.fills) {
+        let e = per_outer.entry(k.outer).or_default();
+        e.0 += usize::from(*t);
+        e.1 += 1;
+    }
+    let mut reversed = 0;
+    for ((sp, k), t) in data.subpaths.iter_mut().zip(&nest).zip(turn) {
+        let (turned, total) = per_outer.get(&k.outer).copied().unwrap_or_default();
+        if k.fills && t != (turned * 2 > total) {
+            sp.reverse();
+            reversed += 1;
+        }
+    }
+    Some(reversed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build(
+    d: &mut designcraft_doc::Document,
+    known: &mut PasteSwatches,
+    notes: &mut Notes,
+    budget: &mut FillBudget,
+    art: Vec<Art>,
+    layer: designcraft_doc::LayerId,
+    shift: Affine,
+) -> Vec<Item> {
     let mut out = Vec::new();
     for a in art {
         match a {
-            Art::Path { path, fill, stroke, opacity } => {
-                let data = PathData::from_bezpath(&(shift * path));
+            Art::Path { path, fill, even_odd, stroke, opacity } => {
+                let mut data = PathData::from_bezpath(&(shift * path));
                 if data.subpaths.is_empty() {
                     continue;
+                }
+                if even_odd {
+                    match even_odd_to_non_zero(&mut data, budget) {
+                        None => notes.even_odd_kept += 1,
+                        Some(reversed) if reversed > 0 && stroke.as_ref().is_some_and(|(_, s)| s.dashes.is_some()) => notes.dashes_reversed += 1,
+                        Some(_) => {}
+                    }
                 }
                 let anchors: usize = data.subpaths.iter().map(|s| s.anchors.len()).sum();
                 // A straight two-point segment is a graphic line (Line tool); anything else a path.
@@ -258,7 +330,7 @@ fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<
                 out.push(it);
             }
             Art::Group(items, opacity) => {
-                let children = build(d, known, items, layer, shift);
+                let children = build(d, known, notes, budget, items, layer, shift);
                 if children.is_empty() {
                     continue;
                 }
@@ -314,7 +386,19 @@ fn paste_svg(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.edit(|d, sel| {
         let mut known = PasteSwatches::new(d);
-        let items = build(d, &mut known, art, layer, shift);
+        let items = build(d, &mut known, &mut notes, &mut FillBudget::new(), art, layer, shift);
+        if notes.even_odd_kept > 0 {
+            warnings.push(format!(
+                "{} even-odd path(s) pasted as drawn with the non-zero rule: their contours cross or touch, or could not be checked",
+                notes.even_odd_kept
+            ));
+        }
+        if notes.dashes_reversed > 0 {
+            warnings.push(format!(
+                "{} dashed even-odd path(s) had contours reversed to keep their holes: their dashes run the other way",
+                notes.dashes_reversed
+            ));
+        }
         let mut ids = Vec::new();
         for it in items {
             ids.push(it.id);
@@ -412,6 +496,98 @@ mod tests {
         let id = ItemId(r["ids"][0].as_u64().unwrap());
         assert!((s.doc().unwrap().doc.item(id).unwrap().opacity - 0.4).abs() < 1e-3);
         assert_eq!(r["warnings"], json!([]), "equal opacities fit the object's");
+    }
+
+    /// Paste `svg` centered on (100, 100) and report whether the pasted path fills the center and a
+    /// point inside its outer band, as the item draws (non-zero rule).
+    fn fills_center_and_band(s: &mut Session, svg: &str) -> (bool, bool) {
+        use designcraft_geom::{FillRule as Rule, hit::fill_contains};
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [100, 100]})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap().clone();
+        let bp = it.xf * it.path.to_bezpath();
+        (fill_contains(&bp, Rule::NonZero, Point::new(100.0, 100.0)), fill_contains(&bp, Rule::NonZero, Point::new(60.0, 60.0)))
+    }
+
+    #[test]
+    fn even_odd_holes_stay_holes() {
+        let mut s = session();
+        // 100 units = 100 pt: the square spans 50..150 and the inner one 80..120. Both subpaths run
+        // the same way, so only the even-odd rule leaves the center empty.
+        let svg = |rule: &str, inner: &str| {
+            format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="100pt" viewBox="0 0 100 100"><path fill="#000" fill-rule="{rule}" d="M0,0H100V100H0Z {inner}"/></svg>"##
+            )
+        };
+        assert_eq!(fills_center_and_band(&mut s, &svg("evenodd", "M30,30H70V70H30Z")), (false, true), "even-odd: a hole");
+        assert_eq!(fills_center_and_band(&mut s, &svg("evenodd", "M30,30V70H70V30Z")), (false, true), "even-odd, reversed inner: a hole");
+        assert_eq!(fills_center_and_band(&mut s, &svg("nonzero", "M30,30H70V70H30Z")), (true, true), "non-zero, same way: solid");
+        assert_eq!(fills_center_and_band(&mut s, &svg("nonzero", "M30,30V70H70V30Z")), (false, true), "non-zero, reversed inner: a hole");
+        // An island inside the hole is filled again, as even-odd draws it.
+        let island = svg("evenodd", "M20,20H80V80H20Z M40,40H60V60H40Z");
+        assert_eq!(fills_center_and_band(&mut s, &island), (true, true), "even-odd island");
+    }
+
+    /// Paste `d` as one even-odd path centered on (100, 100); the item and the paste's warnings.
+    fn paste_even_odd(s: &mut Session, d: &str, extra: &str) -> (Item, Value) {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="100pt" viewBox="0 0 100 100"><path fill="#000" fill-rule="evenodd" {extra} d="{d}"/></svg>"##
+        );
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg, "at": [100, 100]})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap().clone();
+        (it, r["warnings"].clone())
+    }
+
+    /// Does the square start at its top left corner going down, as drawn?
+    fn starts_down(sp: &designcraft_geom::SubPath) -> bool {
+        let v = sp.anchors[1].p - sp.anchors[0].p;
+        v.x.abs() < 1e-6 && v.y > 0.0 && sp.anchors[0].p.x < sp.anchors[2].p.x
+    }
+
+    fn warns_even_odd(w: &Value) -> bool {
+        w.as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("even-odd"))
+    }
+
+    #[test]
+    fn even_odd_paths_that_fill_alike_keep_their_contours_direction() {
+        let mut s = session();
+        // One square drawn against the usual direction, dashed: nothing to turn, so its dashes
+        // start where they did.
+        let (one, w) = paste_even_odd(&mut s, "M0,0V100H100V0Z", r##"stroke="#000" stroke-dasharray="10 5""##);
+        assert_eq!(w, json!([]));
+        assert!(starts_down(&one.path.subpaths[0]));
+        // A ring whose hole already runs the other way is left as drawn.
+        let (ring, _) = paste_even_odd(&mut s, "M0,0V100H100V0Z M30,30H70V70H30Z", "");
+        assert!(starts_down(&ring.path.subpaths[0]));
+        assert!((ring.path.subpaths[0].area() > 0.0) != (ring.path.subpaths[1].area() > 0.0));
+        // Two separate squares drawn opposite ways fill alike under both rules: both kept.
+        let (two, w) = paste_even_odd(&mut s, "M0,0V40H40V0Z M60,0H100V40H60Z", r##"stroke="#000" stroke-dasharray="10 5""##);
+        assert_eq!(w, json!([]));
+        assert!(starts_down(&two.path.subpaths[0]));
+        let v = two.path.subpaths[1].anchors[1].p - two.path.subpaths[1].anchors[0].p;
+        assert!(v.y.abs() < 1e-6 && v.x > 0.0, "the second square still starts going right");
+        // A line inside a square encloses no area: it does not count, so the square keeps its dashes.
+        let (lined, w) = paste_even_odd(&mut s, "M0,0V100H100V0Z M30,50H70", r##"stroke="#000" stroke-dasharray="10 5""##);
+        assert_eq!(w, json!([]));
+        assert!(starts_down(&lined.path.subpaths[0]));
+        // A dashed ring drawn one way needs a contour reversed: its dashes change, and the paste says so.
+        let (_, w) = paste_even_odd(&mut s, "M0,0V100H100V0Z M30,30V70H70V30Z", r##"stroke="#000" stroke-dasharray="10 5""##);
+        assert!(w.as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("dashes run the other way")), "{w}");
+    }
+
+    #[test]
+    fn even_odd_paths_with_crossing_contours_are_pasted_as_drawn_with_a_warning() {
+        use designcraft_geom::{FillRule as Rule, hit::fill_contains};
+        let mut s = session();
+        // A plus sign of two bars running opposite ways: the middle is empty under both rules, and
+        // turning the bars to run the same way would fill it.
+        let (plus, w) = paste_even_odd(&mut s, "M0,40H100V60H0Z M40,0V100H60V0Z", "");
+        assert!(warns_even_odd(&w), "{w}");
+        assert!(!fill_contains(&(plus.xf * plus.path.to_bezpath()), Rule::NonZero, Point::new(100.0, 100.0)), "the middle stays empty");
+        // Too many edge comparisons to check: pasted as drawn, with the warning, not refused.
+        let d: String = (0..3000).map(|i| format!("M{a},{a}H{e}V{e}H{a}Z", a = f64::from(i) / 100.0, e = 100.0 - f64::from(i) / 100.0)).collect();
+        let (many, w) = paste_even_odd(&mut s, &d, "");
+        assert_eq!(many.path.subpaths.len(), 3000);
+        assert!(warns_even_odd(&w), "{w}");
     }
 
     #[test]

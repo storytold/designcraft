@@ -215,6 +215,16 @@ impl SubPath {
             out.close_path();
         }
     }
+    /// The outline as it is filled: an open subpath is closed with a straight edge from its last
+    /// anchor to its first (the handles there are not used).
+    pub fn to_filled_bezpath(&self) -> BezPath {
+        let mut bp = BezPath::new();
+        self.to_bezpath_into(&mut bp);
+        if !self.closed && self.anchors.len() > 1 {
+            bp.close_path();
+        }
+        bp
+    }
     pub fn reverse(&mut self) {
         self.anchors.reverse();
         for a in &mut self.anchors {
