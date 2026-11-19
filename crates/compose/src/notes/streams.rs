@@ -111,6 +111,20 @@ pub(crate) fn fit_stream_page_ranges(
     only: Option<u64>,
     ranges: &[Range<usize>],
 ) -> StreamPageFit {
+    fit_stream_page_dynamic(doc, story, input, before, opts, (only, ranges), |_, _, _, _| {})
+}
+
+/// Adjust each route using already fitted predecessors, while keeping each series cursor alive.
+pub(crate) fn fit_stream_page_dynamic(
+    doc: &Document,
+    story: &Story,
+    input: StreamPageInput<'_>,
+    before: &StreamState,
+    opts: &ComposeOptions,
+    selection: (Option<u64>, &[Range<usize>]),
+    mut adjust: impl FnMut(usize, &mut [FrameSpec], &[FrameText], &mut Vec<String>),
+) -> StreamPageFit {
+    let (only, ranges) = selection;
     let mut result = StreamPageFit {
         state: before.clone(),
         frames: input.areas.iter().map(|f| FrameText { frame: f.id, columns: f.columns(), ..Default::default() }).collect(),
@@ -128,9 +142,9 @@ pub(crate) fn fit_stream_page_ranges(
         .collect();
     ids.sort_unstable();
     ids.dedup();
+    let mut contexts = HashMap::new();
     for series in ids {
         let mut notes = SeriesNotes::new(doc, story, series, false);
-        let allow_split = doc.note_options(series).allow_split;
         // Stream columns are a route, even when the series spans ordinary column feet.
         notes.span = false;
         if let Some(previous) = before.series.get(&series) {
@@ -154,58 +168,75 @@ pub(crate) fn fit_stream_page_ranges(
             notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
         }
         let had_carry = notes.carry.is_some();
-        let mut next = 0;
-        for (fi, frame) in input.areas.iter().enumerate().filter(|(_, f)| f.opts.note_stream.is_some_and(|s| s.series == series)) {
-            for (ci, area) in frame.columns().iter().enumerate() {
-                // An inset-follow edge can close an area; even forced starts must skip it.
-                if area.height() <= 0.0 || area.width() <= 0.0 {
+        contexts.insert(series, (notes, anchors, 0usize, had_carry));
+    }
+    let mut areas = input.areas.to_vec();
+    for fi in 0..areas.len() {
+        adjust(fi, &mut areas, &result.frames, &mut result.warnings);
+        let Some(frame) = areas.get(fi) else { continue };
+        let Some(series) = frame.opts.note_stream.map(|s| s.series) else { continue };
+        let Some((notes, anchors, next, had_carry)) = contexts.get_mut(&series) else { continue };
+        let allow_split = doc.note_options(series).allow_split;
+        if let Some(out) = result.frames.get_mut(fi) {
+            out.columns = frame.columns();
+        }
+        for (ci, area) in frame.columns().iter().enumerate() {
+            // An inset-follow edge can close an area; even forced starts must skip it.
+            if area.height() <= 0.0 || area.width() <= 0.0 {
+                continue;
+            }
+            let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
+            if opts.note_bands {
+                notes.band_previous = placed_parts(doc, story, notes, &areas, true)
+                    .last()
+                    .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+            }
+            notes.band_span = opts.note_bands.then_some(area.height());
+            notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
+            let room = area.height();
+            if notes.carry.is_some() {
+                let available = room - notes.area_space(doc, column, &[], opts);
+                if notes.reserve(doc, column, &[], opts) <= room + 0.01 {
+                    notes.place_line(doc, column, &[], None, opts);
+                } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
+                    notes.place_line(doc, column, &[], Some(plan), opts);
+                }
+                if notes.carry.is_some() {
                     continue;
                 }
-                let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
-                if opts.note_bands {
-                    notes.band_previous = placed_parts(doc, story, &notes, input.areas, true)
-                        .last()
-                        .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+            }
+            while let Some(&k) = anchors.get(*next) {
+                let available = room - notes.area_space(doc, column, &[k], opts);
+                if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
+                    notes.place_line(doc, column, &[k], None, opts);
+                } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
+                    notes.place_line(doc, column, &[k], Some(plan), opts);
+                } else if !*had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
+                    notes.place(doc, k, column, opts);
+                    if let Some(note) = story.notes.get(k) {
+                        result.warnings.push(format!(
+                            "Stream note {} in series {series} cannot start within its empty area on page {}",
+                            note.id,
+                            input.page.saturating_add(1)
+                        ));
+                    }
+                } else {
+                    break;
                 }
-                notes.band_span = opts.note_bands.then_some(area.height());
-                notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
-                let room = area.height();
+                *next += 1;
                 if notes.carry.is_some() {
-                    let available = room - notes.area_space(doc, column, &[], opts);
-                    if notes.reserve(doc, column, &[], opts) <= room + 0.01 {
-                        notes.place_line(doc, column, &[], None, opts);
-                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
-                        notes.place_line(doc, column, &[], Some(plan), opts);
-                    }
-                    if notes.carry.is_some() {
-                        continue;
-                    }
-                }
-                while let Some(&k) = anchors.get(next) {
-                    let available = room - notes.area_space(doc, column, &[k], opts);
-                    if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
-                        notes.place_line(doc, column, &[k], None, opts);
-                    } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[k], available, opts).filter(respects_keeps) {
-                        notes.place_line(doc, column, &[k], Some(plan), opts);
-                    } else if !had_carry && notes.refs.get(k).is_some_and(|at| input.force_starts.as_ref().is_some_and(|range| range.contains(at))) {
-                        notes.place(doc, k, column, opts);
-                        if let Some(note) = story.notes.get(k) {
-                            result.warnings.push(format!(
-                                "Stream note {} in series {series} cannot start within its empty area on page {}",
-                                note.id,
-                                input.page.saturating_add(1)
-                            ));
-                        }
-                    } else {
-                        break;
-                    }
-                    next += 1;
-                    if notes.carry.is_some() {
-                        break;
-                    }
+                    break;
                 }
             }
         }
+        for (_, part) in placed_parts(doc, story, notes, &areas, opts.note_bands).into_iter().filter(|(index, _)| *index == fi) {
+            if let Some(out) = result.frames.get_mut(fi) {
+                out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
+                out.notes.push(part);
+            }
+        }
+    }
+    for (series, (notes, anchors, next, _)) in contexts {
         if let Some(&k) = anchors.get(next) {
             result.starts_fit = false;
             let anchor = notes.refs.get(k).copied();
@@ -223,12 +254,6 @@ pub(crate) fn fit_stream_page_ranges(
             .or_else(|| before.series.get(&series).map(|s| s.offset))
             .unwrap_or(0);
         result.state.series.insert(series, StreamSeriesState { offset, num: notes.num, key: notes.key, carry: notes.carry.clone(), carry_number });
-        for (fi, part) in placed_parts(doc, story, &notes, input.areas, opts.note_bands) {
-            if let Some(frame) = result.frames.get_mut(fi) {
-                frame.content_height = frame.content_height.max(part.rect.y1 - input.areas.get(fi).map_or(0.0, |f| f.area.y0));
-                frame.notes.push(part);
-            }
-        }
     }
     result
 }

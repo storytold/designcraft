@@ -27,7 +27,7 @@ use crate::{ComposeOptions, ComposedStory, Deco, FrameSpec, PlacedNote};
 
 pub(crate) mod streams;
 pub use streams::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
-pub(crate) use streams::{fit_stream_page_for, fit_stream_page_ranges};
+pub(crate) use streams::{fit_stream_page_dynamic, fit_stream_page_for};
 
 /// A footnote assigned to a column.
 pub(crate) struct Placed {

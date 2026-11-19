@@ -107,51 +107,53 @@ fn earlier_route(areas: &[FrameSpec], index: usize, after: designcraft_doc::Item
 fn fit_routes(
     doc: &Document,
     story: &Story,
-    routes: &[FrameSpec],
+    core: Option<(designcraft_doc::ItemId, f64)>,
     input: StreamPageInput<'_>,
     before: &StreamState,
     opts: &ComposeOptions,
     ranges: &[std::ops::Range<usize>],
 ) -> crate::StreamPageFit {
-    let mut result = crate::StreamPageFit {
-        state: before.clone(),
-        frames: Vec::new(),
-        starts_fit: true,
-        failed_anchor: None,
-        had_continuation: false,
-        warnings: Vec::new(),
-    };
-    for (index, area) in input.areas.iter().enumerate() {
-        if let Some(after) = area.opts.note_stream.and_then(|s| s.follow_inset).and_then(|f| f.after)
-            && earlier_route(input.areas, index, after).is_none()
-        {
-            result.warnings.push(format!(
-                "followInset ignored on frame {}: after must name an earlier route of the same story and page without a cycle",
-                area.id
-            ));
+    #[cfg(test)]
+    ROUTE_AREAS.with(|n| n.set(n.get() + input.areas.len()));
+    let dependencies: Vec<_> = input
+        .areas
+        .iter()
+        .enumerate()
+        .map(|(index, area)| {
+            area.opts.note_stream.and_then(|s| s.follow_inset).and_then(|f| f.after).map(|after| earlier_route(input.areas, index, after))
+        })
+        .collect();
+    crate::notes::fit_stream_page_dynamic(doc, story, input, before, opts, (None, ranges), |index, areas, fitted, warnings| {
+        let Some(spec) = areas.get(index) else { return };
+        let id = spec.id;
+        let Some(follow) = spec.opts.note_stream.and_then(|s| s.follow_inset).filter(|f| f.valid()) else { return };
+        let dependency = dependencies.get(index).copied().flatten();
+        if dependency == Some(None) {
+            warnings
+                .push(format!("followInset ignored on frame {}: after must name an earlier route of the same story and page without a cycle", id));
+            return;
         }
-    }
-    let mut series: Vec<_> = routes.iter().filter_map(|f| f.opts.note_stream.map(|s| s.series)).collect();
-    series.sort_unstable();
-    series.dedup();
-    for id in series {
-        let areas: Vec<_> = input.areas.iter().filter(|f| f.opts.note_stream.is_some_and(|s| s.series == id)).cloned().collect();
-        let fit = crate::notes::fit_stream_page_ranges(
-            doc,
-            story,
-            StreamPageInput { page: input.page, main: input.main.clone(), areas: &areas, force_starts: input.force_starts.clone() },
-            before,
-            opts,
-            Some(id),
-            ranges,
-        );
-        result.state.take_series(&fit.state, id);
-        result.starts_fit &= fit.starts_fit;
-        result.frames.extend(fit.frames);
-        result.warnings.extend(fit.warnings);
-    }
-    result.frames.sort_by_key(|f| input.areas.iter().position(|a| a.id == f.frame));
-    result
+        let Some((host, bottom)) = core else { return };
+        let reference = dependency.flatten().and_then(|previous| {
+            let spec = areas.get(previous)?;
+            let frame = fitted.get(previous)?;
+            let bottom = frame.notes.iter().map(|n| n.rect.y1).fold(spec.area.y0, f64::max);
+            route_edge(doc, spec.id, id, bottom, follow.gap)
+        });
+        let Some(edge) = route_edge(doc, host, id, bottom, follow.gap).filter(|_| dependency.is_none() || reference.is_some()) else {
+            warnings.push(format!(
+                "followInset ignored on frame {}: host and route transforms must allow finite translation and positive axis-aligned scaling",
+                id
+            ));
+            return;
+        };
+        let edge = reference.map_or(edge, |r| r.max(edge));
+        let Some(area) = areas.get_mut(index) else { return };
+        match follow.edge {
+            designcraft_doc::InsetEdge::End => area.area.y1 = area.area.y1.min(edge).max(area.area.y0),
+            designcraft_doc::InsetEdge::Start => area.area.y0 = area.area.y0.max(edge).min(area.area.y1),
+        }
+    })
 }
 
 fn band_frame(frame: &FrameSpec, area: Rect) -> FrameSpec {
@@ -555,66 +557,11 @@ impl Page<'_> {
             } else {
                 ranges.clear();
             }
-            let mut areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
-            if route_page == page
-                && let Some(bottom) = core_bottom
-            {
-                for index in 0..areas.len() {
-                    let Some(spec) = areas.get(index) else { continue };
-                    let id = spec.id;
-                    let Some(follow) = spec.opts.note_stream.and_then(|s| s.follow_inset).filter(|f| f.valid()) else { continue };
-                    let previous = if let Some(after) = follow.after {
-                        let Some(previous) = earlier_route(&areas, index, after) else {
-                            continue;
-                        };
-                        Some(previous)
-                    } else {
-                        None
-                    };
-                    let reference = previous.and_then(|previous| {
-                        // Replay the prefix from the candidate's incoming state, so its
-                        // notes and numbering are consumed only by the final complete fit.
-                        let prefix = areas.get(..index)?;
-                        let fit = fit_routes(
-                            self.doc,
-                            self.story,
-                            self.routes,
-                            StreamPageInput {
-                                page: route_page,
-                                main: self.start..c.cut,
-                                areas: prefix,
-                                force_starts: force.then_some(self.start..c.cut),
-                            },
-                            &state,
-                            self.opts,
-                            &ranges,
-                        );
-                        let spec = areas.get(previous)?;
-                        let frame = fit.frames.iter().find(|f| f.frame == spec.id)?;
-                        let bottom = frame.notes.iter().map(|n| n.rect.y1).fold(spec.area.y0, f64::max);
-                        route_edge(self.doc, spec.id, id, bottom, follow.gap)
-                    });
-                    let Some(edge) =
-                        route_edge(self.doc, self.frame.id, id, bottom, follow.gap).filter(|_| previous.is_none() || reference.is_some())
-                    else {
-                        warnings.push(format!(
-                            "followInset ignored on frame {}: host and route transforms must allow finite translation and positive axis-aligned scaling",
-                            id
-                        ));
-                        continue;
-                    };
-                    let edge = reference.map_or(edge, |r| r.max(edge));
-                    let Some(area) = areas.get_mut(index) else { continue };
-                    match follow.edge {
-                        designcraft_doc::InsetEdge::End => area.area.y1 = area.area.y1.min(edge).max(area.area.y0),
-                        designcraft_doc::InsetEdge::Start => area.area.y0 = area.area.y0.max(edge).min(area.area.y1),
-                    }
-                }
-            }
+            let areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
             let fit = fit_routes(
                 self.doc,
                 self.story,
-                self.routes,
+                (route_page == page).then_some(core_bottom).flatten().map(|bottom| (self.frame.id, bottom)),
                 StreamPageInput {
                     page: route_page,
                     main: if route_page == page { self.start..c.cut } else { 0..0 },
@@ -741,6 +688,7 @@ pub(crate) struct Trace {
 #[cfg(test)]
 thread_local! {
     pub(crate) static MAIN_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static ROUTE_AREAS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static REFITTED: std::cell::RefCell<Vec<designcraft_doc::ItemId>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -995,7 +943,7 @@ pub(crate) fn compose_frames(
     trailing.dedup();
     for page in trailing {
         let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
-        let fit = fit_routes(doc, story, &routes, StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None }, &state, opts, &[]);
+        let fit = fit_routes(doc, story, None, StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None }, &state, opts, &[]);
         for area in &areas {
             if let Some(route) = area.opts.note_stream {
                 state.take_series(&fit.state, route.series);

@@ -187,6 +187,21 @@ fn follow_inset_reuses_candidate_main_layout() {
 }
 
 #[test]
+fn chained_followers_fit_each_route_area_once_per_candidate() {
+    let (mut doc, sid, routes) = routed_document(180.0);
+    super::fitting::ROUTE_AREAS.with(|n| n.set(0));
+    compose_story(&doc, sid, &Default::default());
+    let ordinary = super::fitting::ROUTE_AREAS.with(|n| n.get());
+    for (i, id) in routes.iter().enumerate() {
+        doc.item_mut(*id).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset =
+            Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: i.checked_sub(1).map(|p| routes[p]) });
+    }
+    super::fitting::ROUTE_AREAS.with(|n| n.set(0));
+    compose_story(&doc, sid, &Default::default());
+    assert_eq!(super::fitting::ROUTE_AREAS.with(|n| n.get()), ordinary);
+}
+
+#[test]
 fn two_same_page_hosts_share_one_route_fit_including_second_host_anchor() {
     let (mut doc, sid, routes) = routed_document(180.0);
     let host = doc.story(sid).unwrap().frames[0];
