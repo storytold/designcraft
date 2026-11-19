@@ -4086,6 +4086,34 @@ fn same_para_style_spacing_imports_and_round_trips() {
     assert_eq!(b.paras[1].para.same_para_style_spacing, Some(None));
 }
 
+/// A style whose name ends in a space (InDesign allows it: `Numbered List `) is still the style
+/// another one is based on: the reference is looked up as written before it is trimmed.
+#[test]
+fn a_style_based_on_one_whose_name_ends_in_a_space_inherits_from_it() {
+    let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Styles xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+  <RootCharacterStyleGroup Self="rc">
+    <CharacterStyle Self="CharacterStyle/$ID/[No character style]" Name="$ID/[No character style]"/>
+    <CharacterStyle Self="CharacterStyle/Loud " Name="Loud " PointSize="40"/>
+    <CharacterStyle Self="CharacterStyle/Louder" Name="Louder">
+      <Properties><BasedOn type="object">CharacterStyle/Loud </BasedOn></Properties>
+    </CharacterStyle>
+  </RootCharacterStyleGroup>
+  <RootParagraphStyleGroup Self="rp">
+    <ParagraphStyle Self="ParagraphStyle/$ID/[No paragraph style]" Name="$ID/[No paragraph style]" PointSize="12"/>
+    <ParagraphStyle Self="ParagraphStyle/Numbered List " Name="Numbered List " PointSize="30" LeftIndent="24"/>
+    <ParagraphStyle Self="ParagraphStyle/Step" Name="Step">
+      <Properties><BasedOn type="object">ParagraphStyle/Numbered List </BasedOn></Properties>
+    </ParagraphStyle>
+  </RootParagraphStyleGroup>
+</idPkg:Styles>"#;
+    let d = import_idml_with(&fixture_with_styles(styles), &|_| None).unwrap();
+    assert_eq!(d.styles.para("Step").unwrap().based_on.as_deref(), Some("Numbered List "));
+    let (pp, chars) = d.styles.resolve_para_style("Step");
+    assert_eq!((pp.left_indent, chars.size), (24.0, 30.0));
+    assert_eq!(d.styles.char_style("Louder").unwrap().based_on.as_deref(), Some("Loud "));
+}
+
 /// SameParaStyleSpacing set as a `Properties` element on the based-on style (`Normal`) reaches
 /// the headings: consecutive headings sit one leading apart. SetIgnore keeps the usual spacing.
 #[test]
