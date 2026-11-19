@@ -386,6 +386,8 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
     file::from_bytes(b)
 }
 pub(crate) use datamerge::sync_placeholders;
+pub use designcraft_pdf::MAX_COPIES as IMPOSE_MAX_COPIES;
+pub use export::IMPOSE_SHEET_SIZES;
 pub(crate) use file::load_document_fonts;
 pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,

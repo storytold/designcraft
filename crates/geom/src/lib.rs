@@ -13,6 +13,7 @@ pub mod decompose;
 pub mod edit_path;
 pub mod freehand;
 pub mod hit;
+pub mod impose;
 pub mod path;
 pub mod pathfinder;
 pub mod qr;

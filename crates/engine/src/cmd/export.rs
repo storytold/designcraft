@@ -9,11 +9,13 @@ use crate::{EngineError, Result, Session};
 
 mod flatten;
 mod formats;
+mod impose;
 mod pdf;
 mod registry;
 
 #[cfg(test)]
 use flatten::{rasterize_effects, shadow_coverage};
+pub use impose::SHEET_SIZES as IMPOSE_SHEET_SIZES;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use pdf::pdf_export;
 pub(crate) use pdf::{check_pdf_options, pdf_report};

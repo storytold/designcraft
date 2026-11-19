@@ -51,8 +51,8 @@ mod pdfx1a;
 mod svg_options;
 mod transitions;
 pub use export::{
-    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,
-    merge_pdfs, print_color, sheet_spreads, shown_parent_items,
+    BookletKind, BookletOptions, ImposeOptions, Imposition, MAX_COPIES, booklet_pairs, drawn_children, export_booklet, export_imposed, export_pdf,
+    export_pdf_with_report, impose, item_exported, layer_exported, merge_pdfs, print_color, sheet_spreads, shown_parent_items,
 };
 pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
@@ -204,6 +204,8 @@ pub enum PdfError {
     BadRange(String),
     #[error("PDF writer error: {0}")]
     Write(String),
+    #[error("{0}")]
+    Impose(String),
 }
 
 pub type Result<T> = std::result::Result<T, PdfError>;
@@ -254,6 +256,8 @@ impl From<craft_pdf::write::WriteError> for PdfError {
     }
 }
 
+#[cfg(test)]
+mod impose_tests;
 #[cfg(test)]
 mod print_tests;
 #[cfg(test)]

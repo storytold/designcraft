@@ -106,6 +106,11 @@ pub(super) fn export_bytes(app: &mut DesignApp, p: &Value, ext: &str, cmd: &str)
     }
 }
 
+/// File › Export Imposed PDF… to `path`, else to a file the user picks.
+pub(crate) fn export_imposed(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    export_bytes(app, p, "pdf", "file.exportImposedPdf")
+}
+
 /// View › Separations Preview (`view.separations`): updates the plate and the ink limit and
 /// reports the plates of the spread nearest the view center.
 pub(super) fn separations_view(app: &mut DesignApp, p: &Value) -> Result<Value, String> {

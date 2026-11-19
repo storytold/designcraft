@@ -125,7 +125,7 @@ config works across the suite) keep the agent to the folders you give it:
 - Every file a command writes must lie inside a **write root**: `save_document`, `export_png`,
   `render_page` with a `path`, `file.save`, `file.saveAs`, `file.saveACopy`, `file.exportPdf`,
   `file.exportEpub`, `file.exportFixedEpub`, `file.exportHtml`, `file.exportText`, `file.exportXml`,
-  `file.exportIdml`, `file.printBooklet`, `snippet.export`, `swatch.save`, `library.new` and the
+  `file.exportIdml`, `file.printBooklet`, `file.exportImposedPdf`, `snippet.export`, `swatch.save`, `library.new` and the
   library's saves, `book.new`, `book.add`, `book.paginate`, `book.syncStyles`, `book.exportPdf`,
   `file.package`, `links.copyTo` and `file.recovery.save` / `file.recovery.open` with a `dir`
   (reopening removes the entries it read). `file.package` and `links.copyTo` check their folder

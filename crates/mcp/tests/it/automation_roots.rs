@@ -81,6 +81,13 @@ fn run(server: &mut Server, command: &str, params: Value) -> (bool, String) {
     call(server, "execute", json!({"command": command, "params": params}))
 }
 
+fn with_sheet(command: &str, mut params: Value) -> Value {
+    if command == "file.exportImposedPdf" {
+        params["sheet"] = json!("A3");
+    }
+    params
+}
+
 fn run_ok(server: &mut Server, command: &str, params: Value) -> Value {
     let (error, text) = run(server, command, params.clone());
     assert!(!error, "{command} {params}: {text}");
@@ -228,6 +235,7 @@ fn every_writing_command_is_refused_outside_the_write_root() {
         ("file.exportXml", "path"),
         ("file.exportIdml", "path"),
         ("file.printBooklet", "path"),
+        ("file.exportImposedPdf", "path"),
         ("snippet.export", "path"),
         ("swatch.save", "path"),
         ("library.new", "path"),
@@ -242,7 +250,7 @@ fn every_writing_command_is_refused_outside_the_write_root() {
     run_ok(&mut server, "book.add", json!({"path": s(&base.join("in/doc.designcraft"))}));
     for (command, key) in &writes {
         let target = if *key == "dir" { outside("folder") } else { outside(&format!("out-{command}")) };
-        refused(&mut server, command, json!({*key: target}), "outside the write root");
+        refused(&mut server, command, with_sheet(command, json!({*key: target})), "outside the write root");
     }
     for tool in ["save_document", "export_png", "render_page"] {
         let (error, text) = call(&mut server, tool, json!({"path": outside("tool.out")}));
@@ -269,7 +277,7 @@ fn every_writing_command_is_refused_outside_the_write_root() {
     // Inside the write root every one of them works, and the files appear.
     for (command, key) in &writes {
         let target = if *key == "dir" { inside(&format!("dir-{command}")) } else { inside(&format!("out-{command}")) };
-        run_ok(&mut server, command, json!({*key: target}));
+        run_ok(&mut server, command, with_sheet(command, json!({*key: target})));
     }
     for tool in ["export_png", "render_page"] {
         ok(&mut server, tool, json!({"path": inside(&format!("{tool}.png"))}));
