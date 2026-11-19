@@ -208,7 +208,7 @@ fn fit_routes(
         let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let mut seen = std::collections::HashSet::new();
         for area in input.areas.iter().rev() {
-            let Some(series) = area.opts.note_stream.map(|s| s.series) else { continue };
+            let Some(series) = area.opts.note_stream.filter(|s| s.catchword).map(|s| s.series) else { continue };
             if !seen.insert(series) {
                 continue;
             }
@@ -420,7 +420,7 @@ impl Page<'_> {
                         self.frame.area.y1,
                     ),
                 );
-                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
+                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
                 let fit = crate::notes::fit_stream_page_for(
                     self.doc,
                     self.story,
@@ -503,7 +503,7 @@ impl Page<'_> {
                 }
             }
             if let Some(series) = series {
-                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
+                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
             } else if future && bottom {
                 f.area.y1 = (f.area.y1 - space).max(f.area.y0);
             }

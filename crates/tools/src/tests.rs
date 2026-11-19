@@ -2625,7 +2625,7 @@ fn stream_type_click_uses_its_route_and_respects_a_foreground_frame() {
     let (route, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), layer, "", Default::default()).unwrap();
     d.footnote_options.placement = designcraft_doc::NotePlacement::Stream;
     d.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
-        Some(designcraft_doc::NoteStream { story: host, series: 0, follow_inset: None });
+        Some(designcraft_doc::NoteStream { story: host, series: 0, catchword: false, follow_inset: None });
     d.story_mut(host).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
     let (selection, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
     let note = cache.get(&d, host, None).frame(route).unwrap().notes[0].rect;

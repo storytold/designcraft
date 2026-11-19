@@ -75,6 +75,9 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
+    if doc.placed_items().iter().any(|item| item.text_frame().and_then(|f| f.options.note_stream).is_some_and(|s| s.catchword)) {
+        ex.warnings.push("IDML cannot retain noteStream.catchword opt-in or routed catchword rows; export PDF for the composed route layout.".into());
+    }
     if doc.placed_items().iter().any(|item| item.text_frame().and_then(|f| f.options.note_stream).is_some_and(|s| s.follow_inset.is_some())) {
         ex.warnings.push(
             "IDML cannot retain noteStream followInset geometry or its after frame dependency; export PDF for the composed route layout.".into(),

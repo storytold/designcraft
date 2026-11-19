@@ -130,8 +130,11 @@ Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 
-The host's catchword setting also applies to routed series. Only the last route frame of
-each series on a page reserves a row directly below its last composed line. A
+Routed frames opt in with `noteStream.catchword:true` (default `false`, omitted when false
+in native files). The host inset's catchword setting supplies their style and must also
+be enabled. Only the last opted-in route frame of each series on a page reserves a row
+directly below its last composed line. Native saves preserve the opt-in flag; IDML warns
+that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next
 visible page; a finished series has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
