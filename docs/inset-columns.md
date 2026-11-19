@@ -111,6 +111,9 @@ and state, accepted regions and note placements. A text or formatting edit resum
 first affected page. Re-fitting stops when the outgoing cut and continuation state rejoin the
 stored trace and the remaining main text and formatting are unchanged. A changed note is
 followed through its remaining continuation before rejoining.
+Changing or clearing story continuation text invalidates the inset page trace. Series
+continuation edits invalidate the cache's note-option dependency signature, so both paths
+produce the same geometry and catchwords as a fresh composition.
 
 Native saves retain the options. PDF and raster export use the composed regions. IDML cannot
 retain inset geometry and emits an explicit export warning. Deleting a series removes its

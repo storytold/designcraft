@@ -877,7 +877,11 @@ pub(crate) fn compose_frames(
         .into_iter()
         .filter(|f| f.opts.note_stream.is_some_and(|s| !inset_series.contains(&s.series)))
         .collect();
-    let old = before.and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
+    // Terminal rows affect the page trial even when source bytes and formatting are unchanged.
+    // Series options already invalidate the cache's dependency signature.
+    let old = before
+        .filter(|b| b.story.catchword_continuation == story.catchword_continuation)
+        .and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
     let (resume, changed) = old.map_or((0, Vec::new()), |(b, trace)| resume_page(story, b, trace));
     let mut pages = old.map_or_else(Vec::new, |(_, t)| t.pages.iter().take(resume).cloned().collect::<Vec<_>>());
     let mut past: Vec<_> = pages.iter().flat_map(|p| p.areas.iter().cloned()).collect();

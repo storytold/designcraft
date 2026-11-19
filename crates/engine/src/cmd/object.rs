@@ -7211,6 +7211,46 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
+    fn terminal_continuation_edits_match_fresh_inset_composition() {
+        let (mut s, sid, host, _, _) = follow_inset_fixture(36.0, 12.0);
+        Arc::make_mut(&mut s.doc_mut().unwrap().doc)
+            .item_mut(host)
+            .unwrap()
+            .text_frame_mut()
+            .unwrap()
+            .options
+            .inset_columns
+            .as_mut()
+            .unwrap()
+            .catchwords = true.into();
+        s.cache.get(&s.doc().unwrap().doc, sid, None);
+        let rows = |cs: &designcraft_compose::ComposedStory| {
+            cs.frames
+                .iter()
+                .map(|f| {
+                    (
+                        f.frame,
+                        f.range.clone(),
+                        f.columns.clone(),
+                        f.catchwords.iter().map(|c| (c.series, c.source.to_string(), c.rect)).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (command, target) in [("story.options", json!({"story":sid.0})), ("footnote.series.options", json!({"series":1}))] {
+            for value in [json!("Following excerpt"), Value::Null] {
+                let mut params = target.clone();
+                params["catchwordContinuation"] = value;
+                s.execute(command, &params).unwrap();
+                let doc = &s.doc().unwrap().doc;
+                let warm = s.cache.get(doc, sid, None);
+                let fresh = designcraft_compose::compose_story(doc, sid, &Default::default());
+                assert_eq!(rows(&warm), rows(&fresh), "{command} {params}");
+            }
+        }
+    }
+
+    #[test]
     fn follow_inset_after_chains_and_shorter_route_moves_it_up() {
         let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
         s.execute("textFrame.options", &json!({"ids":[column.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":0}}}))
