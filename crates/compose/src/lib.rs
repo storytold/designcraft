@@ -5747,12 +5747,16 @@ fn split_drop_cap(
     };
     // A CJK drop cap (Hangul, Han, kana) has no cap height: its ink runs above the cap line and
     // below the baseline. It's sized by its ink instead, from the ink top of the CJK text after it
-    // down to line `lines`' baseline, and raised so its ink bottom sits on that baseline.
+    // down to line `lines`' baseline, and raised (or, inked only above the baseline, lowered) so
+    // its ink bottom sits on that baseline.
     let cjk = dc.iter().all(|g| g.len == 0 || upright_in_vertical(g.ch));
     let (ink_top, ink_bottom) = if cjk { ink_extent(db, &dc) } else { (0.0, 0.0) };
     let body_top = if cjk { ink_extent(db, glyphs.iter().filter(|g| g.len > 0 && upright_in_vertical(g.ch)).take(16)).0 } else { 0.0 };
-    // A one-line drop cap isn't enlarged (see below), so it stays on its baseline.
-    let by_ink = cjk && lines > 1 && ink_top + ink_bottom > 0.0 && body_top > 0.0;
+    // A one-line drop cap isn't enlarged (see below), so it stays on its baseline. A flat cap
+    // (一, ー, 〜: ink under a third of an em tall) is a stroke, not a letter-sized shape: sized by
+    // its ink it would be blown up to fill the drop, so it keeps the cap height.
+    let tall = ink_top + ink_bottom > 0.0 && ink_top + ink_bottom >= own_size / 3.0;
+    let by_ink = cjk && lines > 1 && tall && body_top > 0.0;
     let (own, target) = if by_ink { (ink_top + ink_bottom, drop + body_top) } else { (own, drop + cap) };
     let k = if own > 0.0 { target / own * ratio } else { 1.0 };
     let k = if lines == 1 { k.min(1.0) } else { k };
@@ -5805,14 +5809,19 @@ fn split_drop_cap(
 }
 
 /// How far `glyphs`' ink reaches above and below the baseline, in points (the highest top and the
-/// lowest bottom; glyphs without ink don't count).
+/// lowest bottom; glyphs without ink don't count). Both are signed: ink wholly above the baseline
+/// has a negative bottom. (0, 0) when none has ink.
 fn ink_extent<'g>(db: &ScopedFonts<'_>, glyphs: impl IntoIterator<Item = &'g Glyph>) -> (f64, f64) {
-    glyphs.into_iter().fold((0.0_f64, 0.0_f64), |(top, bottom), g| {
-        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
-        let (t, b) = (-(g.dy + ink.y0 * g.sy), g.dy + ink.y1 * g.sy);
-        // Outlines are y-down: y0 is the top, y1 the bottom.
-        if ink.height() > 0.0 && t.is_finite() && b.is_finite() { (top.max(t), bottom.max(b)) } else { (top, bottom) }
-    })
+    glyphs
+        .into_iter()
+        .filter_map(|g| {
+            let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
+            // Outlines are y-down: y0 is the top, y1 the bottom.
+            let (t, b) = (-(g.dy + ink.y0 * g.sy), g.dy + ink.y1 * g.sy);
+            (ink.height() > 0.0 && t.is_finite() && b.is_finite()).then_some((t, b))
+        })
+        .reduce(|(top, bottom), (t, b)| (top.max(t), bottom.max(b)))
+        .unwrap_or((0.0, 0.0))
 }
 
 impl DropCap {
