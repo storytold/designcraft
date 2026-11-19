@@ -308,6 +308,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
+        tree_depth: MAX_SVG_DEPTH,
         refuse_entity_markup: true,
         xml_nodes: MAX_SVG_EVENTS as u32,
         embedded_bytes: 32 * 1024 * 1024,
