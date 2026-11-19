@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: IDML export warns when a drop cap's body-size multiplier cannot be retained (#1930).
+
 - 2026-11-19: `dropCapOffset` moves the drop word in line-pitch units without changing body baselines or indents; IDML export warns about word-drop and offset losses (#1930).
 
 - #1930: Drop Cap Body Size Multiplier sets a fixed ratio independently of character-style size; Keep Size indentation follows the cap's shifted ink bounds, with Lines as an upper bound. Footnotes reserve overhanging drop-cap ink so a short note cannot overprint the next note.

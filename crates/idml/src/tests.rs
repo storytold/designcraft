@@ -1249,7 +1249,7 @@ fn explicitly_hidden_cell_edges_hide_the_default_table_border() {
 }
 
 #[test]
-fn warns_when_word_drop_or_offset_cannot_be_retained() {
+fn warns_when_word_drop_offset_or_scale_cannot_be_retained() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Opening word", ParaFormat::default()).unwrap();
@@ -1257,6 +1257,7 @@ fn warns_when_word_drop_or_offset_cannot_be_retained() {
     for attrs in [
         designcraft_doc::ParaAttrs { drop_cap_words: Some(1), ..Default::default() },
         designcraft_doc::ParaAttrs { drop_cap_offset: Some(0.5), ..Default::default() },
+        designcraft_doc::ParaAttrs { drop_cap_chars: Some(1), drop_cap_lines: Some(2), drop_cap_scale: Some(2.0), ..Default::default() },
     ] {
         d.story_mut(sid).unwrap().paras[0].para = attrs;
         assert!(export_idml_report(&d, &ExportOptions::default()).1.iter().any(|w| w.contains("word drop caps")));

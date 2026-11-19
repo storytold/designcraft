@@ -75,7 +75,9 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
     ex.embed_limit = embed_limit;
-    let unsupported = |p: &ParaAttrs| p.drop_cap_words.is_some_and(|v| v > 0) || p.drop_cap_offset.is_some_and(|v| v != 0.0);
+    let unsupported = |p: &ParaAttrs| {
+        p.drop_cap_words.is_some_and(|v| v > 0) || p.drop_cap_offset.is_some_and(|v| v != 0.0) || p.drop_cap_scale.is_some_and(|v| v != 0.0)
+    };
     let mut pending: Vec<&Story> = doc.stories.values().map(AsRef::as_ref).collect();
     let mut seen = HashSet::new();
     let mut drop_loss = doc.styles.paragraph.iter().any(|s| unsupported(&s.para));
@@ -88,7 +90,7 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
         pending.extend(story.notes.iter().chain(&story.endnotes).map(|n| &n.text));
     }
     if drop_loss {
-        ex.warnings.push("IDML cannot retain word drop caps or drop cap offsets; export PDF to preserve their placement.".into());
+        ex.warnings.push("IDML cannot retain word drop caps, drop cap offsets or drop cap scale; export PDF to preserve their placement.".into());
     }
     let parts = ex.build();
     (zip_parts(&parts), ex.warnings)
