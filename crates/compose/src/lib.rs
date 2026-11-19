@@ -1228,8 +1228,10 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
-                let tab = |j: usize, x: f64, i: usize| {
-                    let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
+                let rtl = pp.direction == designcraft_doc::TextDirection::RightToLeft;
+                let tab = |j: usize, last: bool, x: f64, i: usize| {
+                    let first = if j == 0 && !rtl { pp.first_line_indent } else { 0.0 };
+                    let (ind, _) = with_last_line_indent((pp.left_indent + first, pp.right_indent), last, &spacing, rtl);
                     tab_advance(&pp.tabs, pp.left_indent, ind + x, gl.get(i + 1..).unwrap_or_default()).0
                 };
                 breaker::greedy(&gl, &hy, &spacing, &width, &tab)
@@ -1540,7 +1542,7 @@ fn choose_paragraph_breaks(input: BreakInput<'_>) -> Vec<Break> {
         (x1 - x0 - indent).max(1.0)
     };
     if pp.composer.single_line() || has_tabs || glyphs.len() > 4000 {
-        let tab = |j: usize, x: f64, i: usize| {
+        let tab = |j: usize, last: bool, x: f64, i: usize| {
             let x0 = slots.get(j).map_or(col.x0, |s| s.0);
             let indent = pp.left_indent
                 + match drop_cap {
@@ -1551,9 +1553,10 @@ fn choose_paragraph_breaks(input: BreakInput<'_>) -> Vec<Break> {
                             dc.indent()
                         }
                     }
-                    _ if line_no + j == 0 => pp.first_line_indent,
+                    _ if line_no + j == 0 && !rtl => pp.first_line_indent,
                     _ => 0.0,
                 };
+            let (indent, _) = with_last_line_indent((indent, pp.right_indent), last, spacing, rtl);
             tab_advance(&pp.tabs, pp.left_indent, x0 + indent + x - col.x0, glyphs.get(i + 1..).unwrap_or_default()).0
         };
         breaker::greedy(glyphs, hyphens, spacing, &width, &tab)

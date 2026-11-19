@@ -412,6 +412,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if is_forced(g.ch) {
+            if i + 1 == n && g.ch != designcraft_doc::story::FORCED_LINE_BREAK {
+                break;
+            }
             it.push(Item::glue(0.0, INF, 0.0));
             ig.push(i);
             let mut p = Item::penalty(0.0, -INF, false);
@@ -543,7 +546,7 @@ pub fn knuth_plass(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &
             return b;
         }
     }
-    greedy(glyphs, hyph_after, sp, width, &|_, _, _| 0.0)
+    greedy(glyphs, hyph_after, sp, width, &|_, _, _, _| 0.0)
 }
 
 /// Width of the first word of `glyphs` after any leading spaces, fully shrunk (the boxes up to
@@ -908,14 +911,15 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
 
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
 ///
-/// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
-/// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
+/// `tab(line, last, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start
+/// of line `line` (`last`: measured as the paragraph's last line): tabs have no width until they
+/// reach their stop, which depends on where they sit.
 pub fn greedy(
     glyphs: &[Glyph],
     hyph_after: &[bool],
     sp: &Spacing,
     width: &dyn Fn(usize) -> f64,
-    tab: &dyn Fn(usize, f64, usize) -> f64,
+    tab: &dyn Fn(usize, bool, f64, usize) -> f64,
 ) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::new();
@@ -930,14 +934,15 @@ pub fn greedy(
     let next_after = |end: usize| (end..n).find(|&i| !glyphs[i].is_space()).unwrap_or(n);
     let trailing_forced = glyphs.last().is_some_and(|g| g.ch == designcraft_doc::story::FORCED_LINE_BREAK);
     while start < n {
-        let mut line_end = greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, width: width(line).max(1.0), hyphens }, &mut hy_cache, tab);
+        let mut line_end =
+            greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, last: false, width: width(line).max(1.0), hyphens }, &mut hy_cache, tab);
         // A trailing forced line break leaves an empty last line below, so no line here is last.
         if sp.last_line_indent != 0.0 && !trailing_forced {
             // The last line has its own measure: it is last when its text up to the paragraph
             // end fits that measure; a line that would reach the end only at the full measure
             // (a positive last-line indent) breaks as the narrower last line would.
             let last_width = (width(line) - sp.last_line_indent).max(1.0);
-            let last = greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, width: last_width, hyphens }, &mut hy_cache, tab);
+            let last = greedy_line(glyphs, hyph_after, sp, GreedyLine { start, line, last: true, width: last_width, hyphens }, &mut hy_cache, tab);
             if next_after(last.0) >= n || next_after(line_end.0) >= n {
                 line_end = last;
             }
@@ -968,11 +973,12 @@ pub fn greedy(
     out
 }
 
-/// One line for [`greedy`]: where it starts, its index, its measure and the hyphenated lines
-/// before it.
+/// One line for [`greedy`]: where it starts, its index, whether it is the paragraph's last line,
+/// its measure and the hyphenated lines before it.
 struct GreedyLine {
     start: usize,
     line: usize,
+    last: bool,
     width: f64,
     hyphens: u32,
 }
@@ -984,9 +990,9 @@ fn greedy_line(
     sp: &Spacing,
     at: GreedyLine,
     hy_cache: &mut Vec<(u32, f64)>,
-    tab: &dyn Fn(usize, f64, usize) -> f64,
+    tab: &dyn Fn(usize, bool, f64, usize) -> f64,
 ) -> (usize, bool, bool) {
-    let GreedyLine { start, line, width: w, hyphens } = at;
+    let GreedyLine { start, line, last, width: w, hyphens } = at;
     let n = glyphs.len();
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
     let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
@@ -1016,7 +1022,7 @@ fn greedy_line(
             continue;
         }
         let hang_r = right_hang(g, sp);
-        let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+        let adv = if g.ch == '\t' { tab(line, last, x, i) } else { g.adv };
         let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3)[1];
         let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
         if sp.kinsoku_priority == 2
