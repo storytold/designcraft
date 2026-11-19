@@ -5130,6 +5130,25 @@ fn a_flat_cjk_drop_cap_is_sized_by_the_cap_height() {
     assert!((top - (lines[0].baseline - cap_of(body))).abs() < 0.01, "cap top {top}");
 }
 
+/// A CJK drop cap is fitted to the unshifted text, as a Latin one is to its cap height: a baseline
+/// shift on the drop cap moves it by that shift, one on the text beside it leaves it alone.
+#[test]
+fn a_cjk_drop_cap_is_fitted_before_baseline_shift() {
+    let family = "DC Test Drop Hangul Shift";
+    // The drop cap's ink bottom (relative to line 3's baseline) and its scale.
+    let fit = |cs: &ComposedStory| {
+        let lines = all_lines(cs);
+        let dc = &lines[0].glyphs[0];
+        (ink_of(dc, lines[0].baseline).1 - lines[2].baseline, dc.sy)
+    };
+    let plain = fit(&hangul_drop_cap(family, 'g', |_, _| {}));
+    let cap = '가'.len_utf8();
+    let raised = fit(&hangul_drop_cap(family, 'g', |s, _| s.format_chars(0..cap, |f| f.over.baseline_shift = Some(2.0))));
+    assert!((raised.0 - (plain.0 - 2.0)).abs() < 1e-6 && (raised.1 - plain.1).abs() < 1e-9, "{raised:?} vs {plain:?}");
+    let text = fit(&hangul_drop_cap(family, 'g', |s, n| s.format_chars(cap..n, |f| f.over.baseline_shift = Some(2.0))));
+    assert!((text.0 - plain.0).abs() < 1e-6 && (text.1 - plain.1).abs() < 1e-9, "{text:?} vs {plain:?}");
+}
+
 #[test]
 fn drop_cap_spans_lines_and_indents_them() {
     let text = [LOREM; 2].join(" ");
