@@ -45,6 +45,26 @@ pub(crate) struct NoteMetrics {
     lead: f64,
     /// Descent of the last line.
     descent: f64,
+    ascent: f64,
+    cap: Option<(f64, f64)>,
+}
+
+impl NoteMetrics {
+    fn top_padding(self) -> f64 {
+        self.cap.map_or(0.0, |(top, _)| (-top).max(0.0))
+    }
+
+    /// Preserve normal baseline spacing, adding room only for overhanging drop-cap ink.
+    fn advance_to(self, next: Self) -> f64 {
+        let mut step = next.lead;
+        if let Some((_, bottom)) = self.cap {
+            step = step.max(bottom - self.last + next.ascent);
+        }
+        if let Some((top, _)) = next.cap {
+            step = step.max(self.descent + next.first - top);
+        }
+        step
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,17 +78,17 @@ pub(crate) struct NoteColumn<'a> {
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
 /// last footnote's descent.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
-    let mut h: Option<f64> = None;
+    let mut h: Option<(f64, NoteMetrics)> = None;
     let mut descent = 0.0;
     for m in notes {
         let last = match h {
-            None => m.last,
-            Some(prev) => prev + space_between + m.lead + (m.last - m.first),
+            None => m.last + m.top_padding(),
+            Some((prev, metrics)) => prev + space_between + metrics.advance_to(*m) + (m.last - m.first),
         };
-        h = Some(last);
+        h = Some((last, *m));
         descent = m.descent;
     }
-    h.map_or(0.0, |h| h + descent)
+    h.map_or(0.0, |(h, _)| h + descent)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -301,7 +321,15 @@ impl Notes {
             .enumerate()
             .map(|(i, ft)| {
                 let (Some(a), Some(z)) = (ft.lines.first(), ft.lines.last()) else { return None };
-                let m = NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent };
+                let cap = ft.lines.iter().filter_map(|l| l.drop_cap).map(|c| (c.rect.y0, c.rect.y1)).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
+                let m = NoteMetrics {
+                    first: a.baseline,
+                    last: z.baseline,
+                    lead: a.leading,
+                    ascent: a.ascent,
+                    descent: cap.map_or(z.descent, |(_, bottom)| z.descent.max(bottom - z.baseline)),
+                    cap,
+                };
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
                 frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(note.text.len(), |f| f.range.start);
@@ -396,6 +424,15 @@ impl Notes {
             h = smaller;
         }
         None
+    }
+
+    /// Whether every referenced footnote composes completely at this column's width.
+    /// Text with no placed part is unplaceable; `compose` masks it with an empty story.
+    pub fn fit(&mut self, doc: &Document, column: NoteColumn<'_>, ks: &[usize], opts: &ComposeOptions) -> bool {
+        ks.iter().all(|&k| match self.compose_parts(doc, k, column.width, column.frame, opts, &[], &[]).first() {
+            Some(Some((text, _))) => text.overset_at.is_none(),
+            _ => self.notes.get(k).is_none_or(|n| n.text.is_empty()),
+        })
     }
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
@@ -529,13 +566,13 @@ impl Notes {
                 });
             }
             // Previous footnote's last baseline and bottom.
-            let mut prev: Option<(f64, f64)> = None;
+            let mut prev: Option<(f64, f64, NoteMetrics)> = None;
             for p in here {
                 let Some(note) = story.notes.get(p.k) else { continue };
                 let (y, y0) = match prev {
-                    None => (top, top),
-                    Some((last, bottom)) => {
-                        let first = last + o.space_between + p.m.lead;
+                    None => (top + p.m.top_padding(), top),
+                    Some((last, bottom, metrics)) => {
+                        let first = last + o.space_between + metrics.advance_to(p.m);
                         (first - p.m.first, (bottom + o.space_between).min(first))
                     }
                 };
@@ -550,7 +587,7 @@ impl Notes {
                     text: p.text.clone(),
                     source: Arc::from(note.text.text.as_str()),
                 });
-                prev = Some((y + p.m.last, y1));
+                prev = Some((y + p.m.last, y1, p.m));
             }
         }
     }

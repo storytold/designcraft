@@ -510,6 +510,31 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
     assert_eq!(para(&mut h)["keepWithNext"], 2);
 }
 
+#[test]
+fn paragraph_panel_edits_drop_cap_words_when_set() {
+    let mut app = text_app();
+    app.run("type.para", json!({"attrs": {"dropCapWords": 2, "dropCapChars": 1}})).unwrap();
+    let mut h = panel_harness(app, paragraph_panel);
+    h.run_steps(3);
+    let _ = h.get_by_label("Drop Cap Number of Words");
+    assert!(h.query_by_label("Drop Cap One or More Characters").is_none());
+    for typed in ["3", "0"] {
+        let field = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Drop Cap Number of Words");
+        field.focus();
+        h.run_steps(1);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let para = text_attrs(h.state_mut()).unwrap()["para"].clone();
+        assert_eq!(para["dropCapWords"], typed.parse::<u64>().unwrap());
+        assert_eq!(para["dropCapChars"], 1);
+    }
+    let _ = h.get_by_label("Drop Cap One or More Characters");
+    assert!(h.query_by_label("Drop Cap Number of Words").is_none());
+}
+
 fn kerning(app: &mut DesignApp) -> Value {
     text_attrs(app).unwrap()["chars"]["kerning"].clone()
 }

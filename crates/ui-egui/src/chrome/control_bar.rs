@@ -550,14 +550,16 @@ fn drop_cap_fields(ui: &mut egui::Ui, para: &serde_json::Value, tr: &dyn Fn(&str
                 drop = Some(("dropCapLines", v));
             }
         } else {
-            let max = designcraft_compose::MAX_DROP_CAP_CHARS as f64;
-            if let Some(v) = icon_field(
-                ui,
-                "drop-chars",
-                &tr("Drop Cap One or More Characters"),
-                NumField::number("cdc", para["dropCapChars"].as_f64(), "", 0).width(64.0).range(0.0, max),
-            ) {
-                drop = Some(("dropCapChars", v));
+            // While Words is set it overrides Characters, so the field edits Words.
+            let (id, tip, key, max) = if para["dropCapWords"].as_u64().unwrap_or(0) > 0 {
+                ("cdw", "Drop Cap Number of Words", "dropCapWords", designcraft_compose::MAX_DROP_CAP_WORDS)
+            } else {
+                ("cdc", "Drop Cap One or More Characters", "dropCapChars", designcraft_compose::MAX_DROP_CAP_CHARS)
+            };
+            if let Some(v) =
+                icon_field(ui, "drop-chars", &tr(tip), NumField::number(id, para[key].as_f64(), "", 0).width(64.0).range(0.0, max as f64))
+            {
+                drop = Some((key, v));
             }
         }
     });

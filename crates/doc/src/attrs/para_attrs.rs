@@ -23,12 +23,27 @@ attr_set! {
         /// character style `drop_cap_style` ("" or `[None]`: the text's own formatting).
         drop_cap_lines: u32 = 0,
         drop_cap_chars: u32 = 0,
+        /// When above 0, use the paragraph's first `drop_cap_words` words instead of
+        /// `drop_cap_chars` characters. Words are runs of non-whitespace, so combining marks
+        /// and maqaf-joined words stay whole.
+        drop_cap_words: u32 = 0,
         drop_cap_style: String = String::new(),
         /// Align Left Edge: the drop cap's ink starts at the indent (its first letter's left side
         /// bearing is taken off), and the lines beside it start where its advance ends.
         drop_cap_align_left: bool = true,
         /// Scale for Descenders (kept and round-tripped; doesn't change the layout).
         drop_cap_scale_descenders: bool = false,
+        /// Keep Size: the drop cap keeps its own point size. A cap taller than the body hangs
+        /// from the first line's tops; one no taller sits on the first baseline like any word.
+        /// Intersecting line bands are indented, up to `drop_cap_lines`; a cap reaching
+        /// past that upper bound can overlap, so raise Lines to clear it. Character-style
+        /// baseline shift moves only the cap and participates in its ink bounds.
+        drop_cap_keep_size: bool = false,
+        /// Body-size multiplier, 0 disables it; (0, 20] implies Keep Size and overrides
+        /// the drop cap character style's size.
+        drop_cap_scale: f64 = 0.0,
+        /// Vertical drop in paragraph line pitches; moves only the cap, preserving body indents.
+        drop_cap_offset: f64 = 0.0 => "deserialize_drop_cap_offset",
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
         /// GREP styles: a character style for every match of a pattern (applied after nested).
@@ -207,6 +222,19 @@ attr_set! {
         bullet_font: String = String::new(),
         bullet_font_style: String = String::new(),
     }
+}
+
+fn deserialize_drop_cap_offset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.map(|v| if v.is_finite() { v.clamp(-1.0, 2.0) } else { 0.0 }))
+}
+
+#[test]
+fn loaded_drop_cap_offset_is_clamped() {
+    for (input, expected) in [(-3.0, -1.0), (0.5, 0.5), (3.0, 2.0)] {
+        let attrs: ParaAttrs = serde_json::from_value(serde_json::json!({"dropCapOffset": input})).unwrap();
+        assert_eq!(attrs.drop_cap_offset, Some(expected));
+    }
+    assert_eq!(ParaProps::default().drop_cap_offset, 0.0);
 }
 
 impl ParaAttrs {
