@@ -171,6 +171,27 @@ fn style_element(style: &str) -> String {
     n
 }
 
+/// Character style name → its element name: [`style_element`], with `_2`, `_3`, … after a name an
+/// earlier style (in the styles' order) has already, so each style keeps its own element and
+/// import finds the style again.
+type StyleNames = std::collections::HashMap<String, String>;
+
+fn style_names(d: &Document) -> StyleNames {
+    let mut used = std::collections::HashSet::new();
+    let mut out = StyleNames::new();
+    for c in &d.styles.character {
+        let base = style_element(&c.name);
+        let mut name = base.clone();
+        let mut k = 1;
+        while !used.insert(name.clone()) {
+            k += 1;
+            name = format!("{base}_{k}");
+        }
+        out.insert(c.name.clone(), name);
+    }
+    out
+}
+
 /// A run's character style, if it has one.
 fn char_style(f: &designcraft_doc::CharFormat) -> Option<&str> {
     Some(f.style.as_str()).filter(|s| !s.is_empty() && *s != designcraft_doc::story::NO_CHAR_STYLE)
@@ -180,7 +201,12 @@ fn char_style(f: &designcraft_doc::CharFormat) -> Option<&str> {
 /// those) as elements named after their style.
 /// `runs` are the story's runs in order (collected once per story): only those reaching the
 /// paragraph are visited, found by binary search.
-fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
+fn para_xml(
+    st: &designcraft_doc::Story,
+    runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)],
+    r: std::ops::Range<usize>,
+    names: &StyleNames,
+) -> String {
     let mut out = String::new();
     let (mut open, mut open_style): (Option<String>, Option<String>) = (None, None);
     let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
@@ -190,7 +216,7 @@ fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &desig
             continue;
         }
         let tag = f.over.xml_tag.clone().filter(|t| !t.is_empty());
-        let style = char_style(f).map(style_element);
+        let style = char_style(f).map(|c| names.get(c).cloned().unwrap_or_else(|| style_element(c)));
         if tag != open || style != open_style {
             if let Some(s) = open_style.take() {
                 out.push_str(&format!("</{s}>"));
@@ -237,17 +263,18 @@ fn para_or_table_xml(
     i: usize,
     r: std::ops::Range<usize>,
     depth: usize,
+    names: &StyleNames,
 ) -> String {
     match st.paras.get(i).and_then(|p| p.table).and_then(|id| st.tables.get(&id)) {
-        Some(t) if depth < MAX_TABLE_NESTING => table_xml(t, depth + 1),
+        Some(t) if depth < MAX_TABLE_NESTING => table_xml(t, depth + 1, names),
         Some(_) => String::new(),
-        None => para_xml(st, runs, r),
+        None => para_xml(st, runs, r, names),
     }
 }
 
 /// A table as InDesign's XML export writes one: `aid:` table and cells, each cell's paragraphs
 /// on lines of their own (tables in cells too).
-fn table_xml(t: &designcraft_doc::Table, depth: usize) -> String {
+fn table_xml(t: &designcraft_doc::Table, depth: usize, names: &StyleNames) -> String {
     let (nr, nc) = (t.nrows(), t.ncols());
     let mut out = format!("<Table xmlns:aid=\"{AID}\" aid:table=\"table\" aid:trows=\"{nr}\" aid:tcols=\"{nc}\">");
     let owners = t.owners();
@@ -271,7 +298,7 @@ fn table_xml(t: &designcraft_doc::Table, depth: usize) -> String {
             out.push_str(&format!("<Cell aid:table=\"cell\"{section} aid:crows=\"{rs}\" aid:ccols=\"{cs}\" aid:ccolwidth=\"{width}\">"));
             let runs: Vec<_> = cell.text.runs().collect();
             let text: Vec<String> =
-                cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, &runs, i, r, depth)).collect();
+                cell.text.para_ranges().into_iter().enumerate().map(|(i, r)| para_or_table_xml(&cell.text, &runs, i, r, depth, names)).collect();
             out.push_str(&text.join("\n"));
             out.push_str("</Cell>");
         }
@@ -285,6 +312,7 @@ pub fn export_xml(d: &Document) -> String {
     let mut out = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{}>\n", root_name(d));
     // A story threaded through several tagged frames is written once, at its first.
     let mut written = std::collections::HashSet::new();
+    let names = style_names(d);
     for id in tagged(d) {
         let Some(it) = d.item(id) else { continue };
         let tag = &it.xml_tag;
@@ -298,7 +326,7 @@ pub fn export_xml(d: &Document) -> String {
                     st.para_ranges()
                         .into_iter()
                         .enumerate()
-                        .map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, &runs, i, r, 0)))
+                        .map(|(i, r)| (mapped(&st.paras[i].style), para_or_table_xml(st, &runs, i, r, 0, &names)))
                         .collect()
                 };
                 if paras.iter().any(|(m, _)| m.is_some()) {
@@ -782,9 +810,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "file.importXml";
     let text = text_or_path(p, ID)?;
     // Character styles by their element name.
-    let char_styles: std::collections::HashMap<String, String> =
-        s.doc()?.doc.styles.character.iter().map(|c| (style_element(&c.name), c.name.clone())).collect();
-    let elements = parse(&text, &|n| char_styles.contains_key(n)).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
+    let char_styles: std::collections::HashMap<String, String> = style_names(&s.doc()?.doc).into_iter().map(|(style, el)| (el, style)).collect();
+    // An element of a mapped paragraph tag is a paragraph, even where a character style has its name.
+    let mapped: std::collections::HashSet<String> = s.doc()?.doc.xml.style_map.iter().map(|(_, t)| t.clone()).collect();
+    let elements = parse(&text, &|n| char_styles.contains_key(n) && !mapped.contains(n)).map_err(|e| bad(ID, format!("not well-formed XML: {e}")))?;
     // XML with character-styled runs says where each style goes; XML without (written before
     // export wrote them) leaves the styles as they are.
     let styled = |n: &str| char_styles.contains_key(n);
@@ -796,8 +825,15 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     });
     let d = &s.doc()?.doc;
     // Frames by tag, in reading order; each element takes the next free one.
-    let mut slots: Vec<(String, StoryId, bool)> =
-        tagged(d).into_iter().filter_map(|id| d.item(id)).filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false))).collect();
+    // A story threaded through several tagged frames takes one element, at its first frame (as
+    // export writes it).
+    let mut stories = std::collections::HashSet::new();
+    let mut slots: Vec<(String, StoryId, bool)> = tagged(d)
+        .into_iter()
+        .filter_map(|id| d.item(id))
+        .filter_map(|it| it.text_frame().map(|tf| (it.xml_tag.clone(), tf.story, false)))
+        .filter(|(_, sid, _)| stories.insert(*sid))
+        .collect();
     let mut image_slots: Vec<(String, ItemId, bool)> = tagged(d)
         .into_iter()
         .filter_map(|id| d.item(id))
@@ -837,10 +873,6 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         };
         slot.2 = true;
-        // A story an earlier element filled (another frame of its thread) keeps that text.
-        if fills.iter().any(|(sid, ..)| *sid == slot.1) {
-            continue;
-        }
         // Paragraphs, and the tables their anchors stand for, in order. Lines lose the XML's
         // indentation (spaces, tabs), not the text's own white space (no-break spaces).
         let indent = |c: char| matches!(c, ' ' | '\t' | '\r');
@@ -1085,9 +1117,10 @@ fn fill_story(st: &mut Story, paras: &[XPara], tables: &[XTable], cs: Option<&Ch
             let none = designcraft_doc::story::NO_CHAR_STYLE;
             st.format_chars(r.clone(), |f| f.style = none.into());
             // Outer runs first, so inner ones win.
-            let mut runs: Vec<_> = p.runs.iter().filter_map(|(x, n)| cs.get(n).map(|sty| (x.clone(), sty))).collect();
-            runs.sort_by_key(|(x, _)| (x.start, std::cmp::Reverse(x.end)));
-            for (x, sty) in runs {
+            // Runs come inner first; for the same span the outer one goes first too.
+            let mut runs: Vec<_> = p.runs.iter().enumerate().filter_map(|(k, (x, n))| cs.get(n).map(|sty| (k, x.clone(), sty))).collect();
+            runs.sort_by_key(|(k, x, _)| (x.start, std::cmp::Reverse(x.end), std::cmp::Reverse(*k)));
+            for (_, x, sty) in runs {
                 st.format_chars(r.start + x.start..r.start + x.end, |f| f.style = sty.clone());
             }
         }
@@ -1257,6 +1290,67 @@ mod tests {
 
     /// Character-styled runs are elements named after their style: import puts each style where
     /// the XML has it (a translation moves it), and XML without such elements leaves styles be.
+    /// Styles whose names give the same element name (`A B`, `A_B`) each get their own, and come
+    /// back as themselves.
+    #[test]
+    fn character_styles_keep_their_own_element_names() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "A B"})).unwrap();
+        s.execute("style.character.create", &json!({"name": "A_B"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "one two", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.edit(|d, _| {
+            let st = d.story_mut(sid).unwrap();
+            st.format_chars(0..3, |c| c.style = "A B".into());
+            st.format_chars(4..7, |c| c.style = "A_B".into());
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<A_B>one</A_B> <A_B_2>two</A_B_2>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x.replace("one", "uno").replace("two", "dos")})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!((st.format_after(0).style.as_str(), st.format_after(4).style.as_str()), ("A B", "A_B"));
+    }
+
+    /// A paragraph tag a character style also has as its name stays a paragraph.
+    #[test]
+    fn a_mapped_paragraph_tag_wins_over_a_character_style_name() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.character.create", &json!({"name": "bold"})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "x", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [f["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "bold"})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><body><bold>First</bold><bold>Second</bold></body></Root>"})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap().clone();
+        assert_eq!(st.text, "First\nSecond");
+        assert!(st.paras.iter().all(|p| p.style == "Head"));
+    }
+
+    /// Two stories with one tag, the first threaded through two frames: each story takes its own
+    /// element.
+    #[test]
+    fn a_threaded_story_takes_one_element_of_its_tag() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a1 = s.execute("frame.create", &json!({"rect": [72, 72, 500, 200], "content": "text", "text": "A", "caret": false})).unwrap();
+        let a2 = s.execute("frame.create", &json!({"rect": [72, 300, 500, 400], "content": "unassigned"})).unwrap();
+        s.execute("text.thread", &json!({"from": a1["id"], "to": a2["id"]})).unwrap();
+        let b1 = s.execute("frame.create", &json!({"rect": [72, 500, 500, 600], "content": "text", "text": "B", "caret": false})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "body", "ids": [a1["id"], a2["id"], b1["id"]]})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><body>A2</body><body>B2</body></Root>"})).unwrap();
+        let text = |f: &serde_json::Value| s.doc().unwrap().doc.story(StoryId(f["story"].as_u64().unwrap())).unwrap().text.clone();
+        assert_eq!((text(&a1), text(&b1)), ("A2".to_string(), "B2".to_string()));
+    }
+
     /// A story threaded through two tagged frames is written once.
     #[test]
     fn character_styles_and_threads_in_xml() {
