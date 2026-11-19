@@ -10130,6 +10130,30 @@ fn a_grouped_frame_takes_the_side_of_the_page_its_group_moves_it_to() {
     assert_eq!(spec.page, Some(2));
 }
 
+/// A group's text wrap acts on other text, not on the text of a frame inside that group: a note
+/// grouped with its artwork, the group set to Jump Object, keeps its lines (InDesign sets it as if
+/// the group had no wrap). A frame outside the group still jumps the group.
+#[test]
+fn a_groups_wrap_does_not_push_the_text_of_a_frame_inside_it() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let rect = Rect::new(36.0, 100.0, 236.0, 160.0);
+    let (fid, inside) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, "A note in its group", ParaFormat::default()).unwrap();
+    let (_, outside) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 90.0, 236.0, 400.0), lid, "Other text", ParaFormat::default()).unwrap();
+    let mut g = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Group, designcraft_geom::PathData::default());
+    g.wrap.mode = WrapMode::JumpObject;
+    let sp = Arc::make_mut(&mut d.spreads[0]);
+    let at = sp.items.iter().position(|it| it.id == fid).unwrap();
+    g.content = designcraft_doc::Content::Group { items: vec![sp.items.remove(at)] };
+    sp.items.push(Arc::new(g));
+    let own = compose_story(&d, inside, &ComposeOptions::default());
+    assert!(!own.is_overset() && own.frames[0].lines.len() == 1, "the note's own group pushed it out: {} lines", own.frames[0].lines.len());
+    assert!((own.frames[0].lines[0].baseline - 100.0) < 20.0, "the note starts at the top of its frame");
+    // The other frame starts above the group and overlaps it: its first line jumps below the group.
+    let other = compose_story(&d, outside, &ComposeOptions::default());
+    assert!(other.frames[0].lines[0].baseline > 160.0, "text outside the group still jumps it: {}", other.frames[0].lines[0].baseline);
+}
+
 /// A right-to-left paragraph's first-line indent belongs at its start side, the right. Applied on
 /// the left it moved the first line the wrong way — out of the frame for the hanging indent a
 /// numbered list uses (right indent 10 mm, first line −10 mm), while the wrapped lines sat where
