@@ -82,7 +82,7 @@ impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
         let info = Info { name: "designcraft", title: "DesignCraft", version: env!("CARGO_PKG_VERSION"), max_line: MAX_LINE_BYTES };
         let options =
-            Options { website_url: Some(designcraft_engine::links::APP_PAGE.to_string()), tool_errors_as_results: false, strict_request_ids: true };
+            Options { website_url: Some(designcraft_engine::links::APP_PAGE.to_string()), tool_errors_as_results: true, strict_request_ids: true };
         Self(craft_mcp_server::Server::new(info, DesignCraftTools { backend }).with_options(options))
     }
 
