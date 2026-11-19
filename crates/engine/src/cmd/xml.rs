@@ -765,7 +765,15 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     // A frame whose image failed stays free for the next element of its tag.
     let mut failed: Vec<Value> = Vec::new();
     for (tag, image) in images {
-        let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == tag && !used) else {
+        // The next free frame of the tag that can take an image: a locked one (or one on a locked
+        // layer) only when no other is left, so it doesn't hold back the frames after it.
+        let at = {
+            let d = &s.doc()?.doc;
+            let locked = |id: ItemId| d.item(id).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked));
+            let free = |(t, id, used): &&(String, ItemId, bool)| *t == tag && !used && !locked(*id);
+            image_slots.iter().position(|x| free(&x)).or_else(|| image_slots.iter().position(|(t, _, used)| *t == tag && !used))
+        };
+        let Some(slot) = at.map(|i| &mut image_slots[i]) else {
             miss(&tag);
             continue;
         };
@@ -1429,6 +1437,29 @@ mod tests {
         let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
         assert_eq!(r["placed"].as_u64(), Some(0), "{r}");
         assert!(r["failed"][0]["error"].as_str().is_some_and(|e| e.contains("locked")), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A locked frame doesn't hold back the next frame of its tag.
+    #[test]
+    fn a_locked_frame_leaves_the_image_to_the_next_one() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-skip-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, x: f64| {
+            ItemId(s.execute("frame.create", &json!({"rect": [x, 72.0, x + 100.0, 172.0], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (first, second) = (frame(&mut s, 72.0), frame(&mut s, 300.0));
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0, second.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [first.0]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><photo href=\"ok.png\"/></Root>", "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(1), "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(second).unwrap().content, Content::Graphic(_)), "the unlocked frame takes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
