@@ -1,3 +1,3 @@
 //! XML DTD command adapter backed by craft-xml.
 
-pub use craft_xml_dtd::dtd::{Dtd, Problem, parse, validate};
+pub use craft_xml::dtd::{Dtd, Problem, parse, validate};
