@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-18** · Generated Hebrew page numbers and note references contribute their displayed letters to paragraph bidi analysis, preserving right-to-left order in mixed lines (#2860).
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
@@ -12,6 +14,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-16** · Hebrew letter numerals (א׳ … ט״ו … תתקצ״ט, with or without geresh and gershayim) number pages, chapters, footnotes, endnotes and lists; IDML writes them as Hebrew Biblical and lists as Arabic with an export warning (#2860, Hebrew half of #1355). No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.
 - **2026-10-30** · Document Fonts lookup treats a bare document filename's empty parent as the current directory (#2014), preserving case-insensitive discovery and automation read-root checks. No readiness percentage change.

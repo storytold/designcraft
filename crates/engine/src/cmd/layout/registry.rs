@@ -625,7 +625,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Numbering & Section Options…",
             ["Layout"],
             None,
-            "{page (1-based; starts a section there), startNumber?: n (1–99999)|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits|kanji, prefix? (up to 8 characters; no + or comma), includePrefix?, marker?, remove?: bool}",
+            "{page (1-based; starts a section there), startNumber?: n (1–99999)|null (continue), style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits|kanji|hebrew|hebrewPlain, prefix? (up to 8 characters; no + or comma), includePrefix?, marker?, remove?: bool}",
             has_doc,
             |s, p| {
                 let edit = SectionEdit::parse("layout.section", s, p)?;
@@ -640,7 +640,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Chapter Numbering",
             [],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits, start?: n (Start Chapter Numbering at), source?: automatic|userDefined|sameAsPrevious} → {chapterNumber, label, style, source, book: the open book holding the document, or null}; no parameters reports the setting",
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|arabicLeadingZero|arabicThreeDigits|arabicFourDigits|hebrew|hebrewPlain, start?: n (Start Chapter Numbering at), source?: automatic|userDefined|sameAsPrevious} → {chapterNumber, label, style, source, book: the open book holding the document, or null}; no parameters reports the setting",
             has_doc,
             |s, p| {
                 if p.as_object().is_none_or(|o| o.is_empty()) {

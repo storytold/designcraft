@@ -615,6 +615,8 @@ pub fn number_style_out(n: NumberStyle) -> &'static str {
         NumberStyle::LowerLetters => "LowerLetters",
         NumberStyle::Symbols => "Symbols",
         NumberStyle::Kanji => "Kanji",
+        // Plain letters have no IDML counterpart, so InDesign draws its own Hebrew Biblical form.
+        NumberStyle::Hebrew | NumberStyle::HebrewPlain => "HebrewBiblical",
     }
 }
 pub fn number_style_in(s: &str) -> NumberStyle {
@@ -628,6 +630,7 @@ pub fn number_style_in(s: &str) -> NumberStyle {
         "LowerLetters" => NumberStyle::LowerLetters,
         "Symbols" => NumberStyle::Symbols,
         "Kanji" => NumberStyle::Kanji,
+        "HebrewBiblical" => NumberStyle::Hebrew,
         _ => NumberStyle::Arabic,
     }
 }
@@ -701,7 +704,7 @@ pub fn numbering_format_in(s: &str) -> Option<NumberStyle> {
 }
 pub fn numbering_format_out(n: NumberStyle) -> &'static str {
     match n {
-        NumberStyle::Arabic | NumberStyle::Symbols => "1, 2, 3, 4...",
+        NumberStyle::Arabic | NumberStyle::Symbols | NumberStyle::Hebrew | NumberStyle::HebrewPlain => "1, 2, 3, 4...",
         NumberStyle::ArabicLeadingZero => "01, 02, 03...",
         NumberStyle::ArabicThreeDigits => "001, 002, 003...",
         NumberStyle::ArabicFourDigits => "0001, 0002, 0003...",

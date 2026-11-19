@@ -5538,3 +5538,41 @@ fn only_exactly_generated_cross_reference_text_is_regenerated() {
     let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
     assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }
+
+#[test]
+fn hebrew_section_and_footnote_idml_round_trip() {
+    use designcraft_doc::NumberStyle;
+    for style in [NumberStyle::Hebrew, NumberStyle::HebrewPlain] {
+        let mut d = Document::new(&NewDocument::default());
+        d.sections[0].style = style;
+        d.footnote_options.style = style;
+        let bytes = export_idml(&d);
+        let map = zip_text(&bytes, "designmap.xml");
+        assert!(map.contains("<PageNumberStyle type=\"enumeration\">HebrewBiblical</PageNumberStyle>"), "{map}");
+        let prefs = zip_text(&bytes, "Resources/Preferences.xml");
+        assert!(prefs.contains("HebrewBiblical"), "{prefs}");
+        let back = import_idml(&bytes).unwrap();
+        assert_eq!(back.sections[0].style, NumberStyle::Hebrew);
+        assert_eq!(back.footnote_options.style, NumberStyle::Hebrew);
+        assert_eq!(back.page_name(0), "א׳");
+    }
+    assert_eq!(names::number_style_in("HebrewNonStandard"), NumberStyle::Arabic);
+}
+
+#[test]
+fn hebrew_list_idml_warns_once_and_writes_arabic() {
+    use designcraft_doc::{ListType, NumberStyle};
+    let mut d = Document::new(&NewDocument::default());
+    let layer = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), layer, "First\nSecond", ParaFormat::default()).unwrap();
+    let story = d.story_mut(sid).unwrap();
+    for (para, style) in story.paras.iter_mut().zip([NumberStyle::Hebrew, NumberStyle::HebrewPlain]) {
+        para.para.list_type = Some(ListType::Numbers);
+        para.para.number_style = Some(style);
+    }
+    let (bytes, warnings) = export_idml_report(&d, &ExportOptions::default());
+    let xml = zip_text(&bytes, "Stories/");
+    assert_eq!(xml.matches("<NumberingFormat type=\"string\">1, 2, 3, 4...</NumberingFormat>").count(), 2, "{xml}");
+    let warning = "Hebrew list numbering is written as Arabic numerals (1, 2, 3, 4...): IDML has no documented Hebrew list numbering format.";
+    assert_eq!(warnings.iter().filter(|w| w.as_str() == warning).count(), 1, "{warnings:?}");
+}

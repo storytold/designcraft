@@ -5909,3 +5909,12 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+#[test]
+fn hebrew_list_style_choices_parse_and_format() {
+    for (name, expected) in [("hebrew", "ט״ו"), ("hebrewPlain", "טו")] {
+        assert!(NUMBER_STYLES.iter().any(|(value, _)| *value == name));
+        let style: designcraft_doc::NumberStyle = serde_json::from_value(json!(name)).unwrap();
+        assert_eq!(style.format(15), expected);
+    }
+}

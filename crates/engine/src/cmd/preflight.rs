@@ -292,8 +292,62 @@ fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<
     })
 }
 
+/// Warns once per Hebrew-numbered section at its first page numbered past 999, and when Hebrew
+/// footnote or endnote numbering reaches past 999: those numbers print in Arabic digits
+/// (`NumberStyle::format`'s fallback).
+fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
+    use designcraft_doc::NumberStyle::{Hebrew, HebrewPlain};
+    let numbers = d.page_numbers(d.page_count());
+    for section in &d.sections {
+        if !matches!(section.style, Hebrew | HebrewPlain) {
+            continue;
+        }
+        let first = (section.start..d.page_count())
+            .take_while(|&abs| d.section_of(abs) == Some(section))
+            .find_map(|abs| numbers.get(abs).filter(|&&n| n > 999).map(|&n| (abs, n)));
+        if let Some((page, n)) = first {
+            // `Document::page_name` from the precomputed number (it would recount the sections).
+            let num = section.style.format(n);
+            let name = if section.include_prefix { format!("{}{num}", section.prefix) } else { num };
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("Page {name}: Hebrew page numbers stop at 999, so later pages print in Arabic digits"),
+                item: None,
+                page: Some(page),
+            });
+        }
+    }
+    let count = |notes: fn(&designcraft_doc::Story) -> usize| d.stories.values().map(|st| notes(st)).sum::<usize>();
+    let footnotes = &d.footnote_options;
+    let mut footnote_count = count(|st| st.notes.len());
+    if footnotes.restart != designcraft_doc::notes::NoteRestart::Never {
+        // Numbering that restarts every page, spread or section is judged by its start
+        // only; counting the notes per page needs the composed layout.
+        footnote_count = footnote_count.min(1);
+    }
+    let notes = [
+        ("Footnote", footnotes.style, footnotes.start_at, footnote_count),
+        ("Endnote", d.endnote_options.style, d.endnote_options.start_at, count(|st| st.endnotes.len())),
+    ];
+    for (kind, style, start, count) in notes {
+        let last = start.saturating_add(u32::try_from(count).unwrap_or(u32::MAX)).saturating_sub(1);
+        if matches!(style, Hebrew | HebrewPlain) && count > 0 && last > 999 {
+            let first = start.max(1000);
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("{kind} {first}: Hebrew numbers stop at 999, so it and later notes print in Arabic digits"),
+                item: None,
+                page: None,
+            });
+        }
+    }
+}
+
 pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64, links: &mut LinkListChecks) -> Vec<Issue> {
     let mut out = Vec::new();
+    hebrew_number_range(d, &mut out);
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();
