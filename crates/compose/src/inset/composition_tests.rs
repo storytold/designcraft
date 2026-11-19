@@ -525,7 +525,19 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
     doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
     let cs = compose_story(&doc, sid, &Default::default());
     assert!(cs.frame(last).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
-    assert!(!cs.is_overset(), "{:?}; {:?}", cs.warnings, cs.frames.iter().map(|f| (f.frame, f.range.clone(), f.notes.iter().map(|n| (n.id, n.text.frames.iter().map(|f| f.range.clone()).collect::<Vec<_>>())).collect::<Vec<_>>())).collect::<Vec<_>>());
+    assert!(
+        !cs.is_overset(),
+        "{:?}; {:?}",
+        cs.warnings,
+        cs.frames
+            .iter()
+            .map(|f| (
+                f.frame,
+                f.range.clone(),
+                f.notes.iter().map(|n| (n.id, n.text.frames.iter().map(|f| f.range.clone()).collect::<Vec<_>>())).collect::<Vec<_>>()
+            ))
+            .collect::<Vec<_>>()
+    );
     let mut end = 0;
     for id in [route, other_route] {
         let part = cs.frame(id).unwrap().notes.iter().find(|n| n.id == note).expect("return-visit note must continue in physical page order");

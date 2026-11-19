@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: commentary routes emit newly fitted parts once, carrying baseline metrics and sharing note source text (#2873).
+
 - 2026-11-20: revisited-page routes fit in physical page order after host ranges are known; failed starts revalidate their host cuts (#2873).
 
 - 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).

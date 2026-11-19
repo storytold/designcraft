@@ -169,14 +169,15 @@ pub(crate) fn fit_stream_page_dynamic(
             notes.band_incoming = notes.carry.as_ref().map(|c| (c.k, c.heights.len()));
         }
         let had_carry = notes.carry.is_some();
-        contexts.insert(series, (notes, anchors, 0usize, had_carry));
+        contexts.insert(series, (notes, anchors, 0usize, had_carry, None));
     }
+    let mut sources = HashMap::new();
     let mut areas = input.areas.to_vec();
     for fi in 0..areas.len() {
         adjust(fi, &mut areas, &result.frames, &mut result.warnings);
         let Some(frame) = areas.get(fi) else { continue };
         let Some(series) = frame.opts.note_stream.as_ref().map(|s| s.series) else { continue };
-        let Some((notes, anchors, next, had_carry)) = contexts.get_mut(&series) else { continue };
+        let Some((notes, anchors, next, had_carry, previous)) = contexts.get_mut(&series) else { continue };
         let allow_split = doc.note_options(series).allow_split;
         if let Some(out) = result.frames.get_mut(fi) {
             out.columns = frame.columns();
@@ -187,11 +188,11 @@ pub(crate) fn fit_stream_page_dynamic(
                 continue;
             }
             let column = NoteColumn { frame_index: fi.saturating_add(1), column_index: ci, width: area.width(), frame };
-            if opts.note_bands {
-                notes.band_previous = placed_parts(doc, story, notes, &areas, true)
-                    .last()
-                    .and_then(|(_, part)| part.text.frames.first().and_then(|f| f.lines.last()).map(|l| part.origin.y + l.baseline));
+            if !opts.note_bands {
+                *previous = None;
             }
+            notes.band_previous = previous.map(|(baseline, _)| baseline);
+            let placed_start = notes.placed.len();
             notes.band_span = opts.note_bands.then_some(area.height());
             notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
             let room = area.height();
@@ -202,11 +203,10 @@ pub(crate) fn fit_stream_page_dynamic(
                 } else if allow_split && let Some(plan) = notes.split_plan(doc, column, &[], available, opts).filter(respects_keeps) {
                     notes.place_line(doc, column, &[], Some(plan), opts);
                 }
-                if notes.carry.is_some() {
-                    continue;
-                }
             }
-            while let Some(&k) = anchors.get(*next) {
+            while notes.carry.is_none()
+                && let Some(&k) = anchors.get(*next)
+            {
                 let available = room - notes.area_space(doc, column, &[k], opts);
                 if notes.reserve(doc, column, &[k], opts) <= room + 0.01 {
                     notes.place_line(doc, column, &[k], None, opts);
@@ -229,15 +229,15 @@ pub(crate) fn fit_stream_page_dynamic(
                     break;
                 }
             }
-        }
-        for (_, part) in placed_parts(doc, story, notes, &areas, opts.note_bands).into_iter().filter(|(index, _)| *index == fi) {
-            if let Some(out) = result.frames.get_mut(fi) {
-                out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
-                out.notes.push(part);
+            for part in placed_parts(doc, story, notes, &notes.placed[placed_start..], *area, ci, opts.note_bands, previous, &mut sources) {
+                if let Some(out) = result.frames.get_mut(fi) {
+                    out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
+                    out.notes.push(part);
+                }
             }
         }
     }
-    for (series, (notes, anchors, next, _)) in contexts {
+    for (series, (notes, anchors, next, _, _)) in contexts {
         if let Some(&k) = anchors.get(next) {
             result.starts_fit = false;
             let anchor = notes.refs.get(k).copied();
@@ -259,45 +259,51 @@ pub(crate) fn fit_stream_page_dynamic(
     result
 }
 
-fn placed_parts(doc: &Document, story: &Story, notes: &SeriesNotes, areas: &[FrameSpec], bands: bool) -> Vec<(usize, PlacedNote)> {
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PART_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn placed_parts(
+    doc: &Document,
+    story: &Story,
+    notes: &SeriesNotes,
+    parts: &[super::Placed],
+    area: Rect,
+    column: usize,
+    bands: bool,
+    previous: &mut Option<(f64, f64)>,
+    sources: &mut HashMap<usize, Arc<str>>,
+) -> Vec<PlacedNote> {
     let o = doc.note_options(notes.series);
     let mut out = Vec::new();
-    let mut previous: Option<(f64, f64)> = None;
-    for (fi, frame) in areas.iter().enumerate() {
-        for (ci, area) in frame.columns().iter().enumerate() {
-            if !bands {
-                previous = None;
-            }
-            let mut first = true;
-            for part in notes.placed.iter().filter(|p| p.fi == fi.saturating_add(1) && p.col == ci) {
-                let Some(note) = story.notes.get(part.k) else { continue };
-                let y = if bands && first && part.part > 0 && previous.is_some() {
-                    area.y0
-                } else {
-                    previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first)
-                };
-                let bottom = y + part.m.last + part.m.descent;
-                let top = if first { y } else { previous.map_or(y, |(_, bottom)| bottom + o.space_between) };
-                out.push((
-                    fi,
-                    PlacedNote {
-                        id: note.id,
-                        index: part.k,
-                        series: notes.series,
-                        reference_baseline: 0.0,
-                        overflow: bottom > area.y1 + 0.01,
-                        column: ci as u32,
-                        label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
-                        origin: Point::new(area.x0, y),
-                        rect: Rect::new(area.x0, top, area.x1, bottom),
-                        text: part.text.clone(),
-                        source: Arc::from(note.text.text.as_str()),
-                    },
-                ));
-                previous = Some((y + part.m.last, bottom));
-                first = false;
-            }
-        }
+    let mut first = true;
+    for part in parts {
+        #[cfg(test)]
+        PART_VISITS.with(|n| n.set(n.get() + 1));
+        let Some(note) = story.notes.get(part.k) else { continue };
+        let y = if bands && first && part.part > 0 && previous.is_some() {
+            area.y0
+        } else {
+            previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first)
+        };
+        let bottom = y + part.m.last + part.m.descent;
+        let top = if first { y } else { previous.map_or(y, |(_, bottom)| bottom + o.space_between) };
+        out.push(PlacedNote {
+            id: note.id,
+            index: part.k,
+            series: notes.series,
+            reference_baseline: 0.0,
+            overflow: bottom > area.y1 + 0.01,
+            column: column as u32,
+            label: o.label(notes.numbers.get(part.k).copied().unwrap_or(o.start_at), true),
+            origin: Point::new(area.x0, y),
+            rect: Rect::new(area.x0, top, area.x1, bottom),
+            text: part.text.clone(),
+            source: sources.entry(part.k).or_insert_with(|| Arc::from(note.text.text.as_str())).clone(),
+        });
+        *previous = Some((y + part.m.last, bottom));
+        first = false;
     }
     out
 }

@@ -415,3 +415,36 @@ fn advancing_a_column_foot_carry_does_not_accept_a_rejected_stream_anchor() {
     }
     assert_eq!(end, long.len());
 }
+
+#[test]
+fn route_parts_are_emitted_once_and_share_the_note_source() {
+    let (mut doc, sid, _) = commentary(1, 1, 60.0);
+    let note = doc.story_mut(sid).unwrap().notes[0].id;
+    let text = "Line.\u{2028}".repeat(20);
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().text.replace(0.."Comment 0.\u{2028}Second line.".len(), &text);
+    let prototype = stream_frame_specs(&doc, sid)[0].clone();
+    let areas: Vec<_> = (0..8)
+        .map(|i| {
+            let mut frame = prototype.clone();
+            frame.id = ItemId(10_000 + i);
+            frame
+        })
+        .collect();
+    for note_bands in [false, true] {
+        notes::streams::PART_VISITS.with(|n| n.set(0));
+        let fit = fit_stream_page(
+            &doc,
+            doc.story(sid).unwrap(),
+            StreamPageInput { page: 0, main: 0..doc.story(sid).unwrap().len(), areas: &areas, force_starts: None },
+            &StreamState::default(),
+            &ComposeOptions { note_bands, ..Default::default() },
+        );
+        assert!(fit.starts_fit);
+        let parts: Vec<_> = fit.frames.iter().flat_map(|f| &f.notes).collect();
+        assert!(parts.len() > 1);
+        let visits = notes::streams::PART_VISITS.with(|n| n.get());
+        assert_eq!(visits, parts.len(), "each newly fitted part must be visited once, bands={note_bands}");
+        assert!(parts.iter().all(|p| Arc::ptr_eq(&parts[0].source, &p.source)));
+        assert_eq!(parts.last().unwrap().text.frames.last().unwrap().range.end, text.len());
+    }
+}
