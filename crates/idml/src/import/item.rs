@@ -196,12 +196,18 @@ impl<'r> Importer<'r> {
             if let Some(p) = &mut it.wrap.path {
                 p.transform(back);
             }
-            // Explicit gradient vectors are in the inner space too, so they move with the path.
-            for v in [&mut it.fill.gradient_vector, &mut it.stroke.gradient_vector] {
-                if let Some([x0, y0, x1, y1]) = *v {
-                    let (a, b) = (back * Point::new(x0, y0), back * Point::new(x1, y1));
-                    *v = Some([a.x, a.y, b.x, b.y]);
-                }
+            // Explicit gradient vectors are in the inner space too, so they move with the path. A
+            // linear gradient's colour is its parameter along the axis, which the slant changes
+            // for points off the axis, so its axis is compensated; a radial vector is a centre
+            // and a radius point, so both just move back.
+            let linear = |name: &str| {
+                designcraft_color::swatch::resolve_gradient(&self.swatches, name).is_some_and(|g| g.kind == designcraft_color::GradientKind::Linear)
+            };
+            if let Some(v) = it.fill.gradient_vector {
+                it.fill.gradient_vector = Some(unslant_gradient_vector(v, back, linear(&it.fill.swatch)));
+            }
+            if let Some(v) = it.stroke.gradient_vector {
+                it.stroke.gradient_vector = Some(unslant_gradient_vector(v, back, linear(&it.stroke.swatch)));
             }
         }
         Some(it)
@@ -479,6 +485,26 @@ fn unslant_text_frame_path(path: &PathData) -> Option<(PathData, Affine)> {
         }
     }
     Some((rect, slant))
+}
+
+/// A gradient vector in a text frame's inner space, moved into the unslanted space that `back`
+/// maps the path back to. A radial vector is a centre and a radius point, so both move back. A
+/// linear gradient's colour is its parameter along the axis, and the slant changes that parameter
+/// for points off the axis, so its axis takes the shear's inverse transpose, scaled to span the
+/// same parameter range: every point then keeps the colour it had in the original space.
+fn unslant_gradient_vector([x0, y0, x1, y1]: [f64; 4], back: Affine, linear: bool) -> [f64; 4] {
+    let (a, b) = (back * Point::new(x0, y0), back * Point::new(x1, y1));
+    let [m11, m12, m21, m22, _, _] = back.as_coeffs();
+    let det = m11 * m22 - m12 * m21;
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    // The axis's image under the shear's inverse transpose, and the factor that keeps the
+    // parameter the one it had in the original space.
+    let (ex, ey) = ((m22 * dx - m12 * dy) / det, (m11 * dy - m21 * dx) / det);
+    let k = (dx * dx + dy * dy) / (ex * ex + ey * ey);
+    if !linear || !(k.is_finite() && k > 0.0) {
+        return [a.x, a.y, b.x, b.y];
+    }
+    [a.x, a.y, a.x + k * ex, a.y + k * ey]
 }
 
 fn path_from_model(geometry: craft_idml::model::PathGeometry) -> PathData {
