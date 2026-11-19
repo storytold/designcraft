@@ -12,8 +12,8 @@
 //! new composition starts from the entry's and composes the paragraphs the edit can change
 //! ([`crate::reuse`]).
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use designcraft_doc::{Document, Item, Story, StoryId, Styles};
@@ -52,26 +52,31 @@ type Key = (StoryId, ShownOn, bool);
 /// it.
 type Resolved = HashMap<(StoryId, bool, usize), Arc<ComposedStory>>;
 
-/// Hosts needing document-wide indexes are placed without them only while an index is being
-/// built, because building it composes the stories they anchor. Placements are part of a story's
-/// signature, so compositions made during a build are recomposed with full placements later.
+/// Hosts needing document-wide indexes are placed without them only while this thread builds
+/// an index, because building it synchronously composes the stories they anchor. Other threads
+/// must keep normal neighbour wraps. Placements are part of a story's signature, so compositions
+/// made during a build are recomposed with full placements later.
 fn indexed(doc: &Document, sid: StoryId) -> bool {
     doc.stories.get(&sid).is_some_and(|st| crate::xref::has_xrefs(st) || (crate::vars::has_vars(st) && crate::vars::has_running(doc, st)))
 }
 
-/// Restore the build count even when an index build unwinds.
-struct IndexBuild<'a>(&'a AtomicUsize);
+thread_local! {
+    static INDEX_BUILDS: Cell<usize> = const { Cell::new(0) };
+}
 
-impl<'a> IndexBuild<'a> {
-    fn new(building: &'a AtomicUsize) -> Self {
-        building.fetch_add(1, Ordering::Relaxed);
-        Self(building)
+/// Restore this thread's build count even on unwind; other threads must not bypass host resolution.
+struct IndexBuild;
+
+impl IndexBuild {
+    fn new() -> Self {
+        INDEX_BUILDS.with(|building| building.set(building.get().saturating_add(1)));
+        Self
     }
 }
 
-impl Drop for IndexBuild<'_> {
+impl Drop for IndexBuild {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        INDEX_BUILDS.with(|building| building.set(building.get().saturating_sub(1)));
     }
 }
 
@@ -104,8 +109,6 @@ impl Entry {
 #[derive(Default)]
 pub struct Cache {
     map: Mutex<(HashMap<Key, Entry>, u64)>,
-    /// Index builds in progress, whose anchor hosts must not recursively request an index.
-    building: AtomicUsize,
     /// Running-header index with the document signature it was built for.
     running: Mutex<Option<(u64, Arc<RunningIndex>)>>,
     /// Cross-reference anchor pages with the document signature they were built for.
@@ -213,7 +216,7 @@ impl Cache {
     }
 
     fn place_host(&self, doc: &Document, host: StoryId, depth: usize, resolved: &mut Resolved) -> Arc<ComposedStory> {
-        if self.building.load(Ordering::Relaxed) > 0 && indexed(doc, host) {
+        if INDEX_BUILDS.with(Cell::get) > 0 && indexed(doc, host) {
             Arc::new(crate::wrap::compose_among(doc, host, &ComposeOptions::default(), &[]))
         } else {
             self.resolve(doc, host, true, depth, resolved)
@@ -486,7 +489,7 @@ impl Cache {
             return r.clone();
         }
         let r = {
-            let _build = IndexBuild::new(&self.building);
+            let _build = IndexBuild::new();
             Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)))
         };
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
@@ -508,7 +511,7 @@ impl Cache {
             return r.clone();
         }
         let r = {
-            let _build = IndexBuild::new(&self.building);
+            let _build = IndexBuild::new();
             Arc::new(RunningIndex::build(doc, &|sid| self.get(doc, sid, None)))
         };
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
@@ -580,4 +583,33 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
         }
     }
     (sig, keep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn index_build_bypass_is_per_thread() {
+        let barrier = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert_eq!(INDEX_BUILDS.with(Cell::get), 0);
+                let build = IndexBuild::new();
+                assert!(INDEX_BUILDS.with(Cell::get) > 0);
+                barrier.wait();
+                barrier.wait();
+                drop(build);
+                assert_eq!(INDEX_BUILDS.with(Cell::get), 0);
+            });
+            let observer = scope.spawn(|| {
+                barrier.wait();
+                let building = INDEX_BUILDS.with(Cell::get) > 0;
+                barrier.wait();
+                assert!(!building, "another thread's index build must not bypass host resolution");
+            });
+            observer.join().unwrap();
+        });
+    }
 }
