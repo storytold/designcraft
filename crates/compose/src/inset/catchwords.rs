@@ -5,7 +5,17 @@ use designcraft_doc::{CharAttrs, Document, FirstBaseline, Leading, Story, StoryI
 use designcraft_geom::{Point, Rect};
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, frames: &[FrameSpec], areas: &[Vec<(Option<u64>, Rect)>]) {
+    if areas.iter().all(Vec::is_empty) {
+        return;
+    }
+    #[cfg(test)]
+    LOOKUPS.with(|n| n.set(n.get() + 1));
     let main = crate::vars::story_catchwords(doc, out, story);
     let mut words = std::collections::HashMap::new();
     for id in areas.iter().flatten().filter_map(|(id, _)| *id) {

@@ -113,6 +113,15 @@ fn catchwords_align_to_each_stream_paragraph_line_end() {
 
 
 #[test]
+fn no_reserved_catchword_regions_skip_lookup() {
+    let (doc, sid) = document(1, "Main text.", "", "");
+    super::catchwords::LOOKUPS.with(|n| n.set(0));
+    compose_story(&doc, sid, &Default::default());
+    assert_eq!(super::catchwords::LOOKUPS.with(|n| n.get()), 0);
+}
+
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);
