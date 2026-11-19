@@ -32,8 +32,19 @@ pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
                 .ok_or_else(|| bad(CMD, "`opticalMarginSize` must be a finite number of points"))?,
         ),
     };
-    if on.is_none() && size.is_none() {
-        return Err(bad(CMD, "nothing to set: give opticalMargin or opticalMarginSize"));
+    let continuation = match p.get("catchwordContinuation") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => {
+            let text = v
+                .as_str()
+                .filter(|s| designcraft_doc::story::valid_catchword_continuation(s))
+                .ok_or_else(|| bad(CMD, "`catchwordContinuation` must be null or a string of at most 256 characters without control characters"))?;
+            Some(Some(text.to_string()))
+        }
+    };
+    if on.is_none() && size.is_none() && continuation.is_none() {
+        return Err(bad(CMD, "nothing to set: give opticalMargin, opticalMarginSize or catchwordContinuation"));
     }
     let explicit = |key| p.get(key).filter(|v| !v.is_null());
     let stories = if explicit("story").is_some() || explicit("frame").is_some() {
@@ -64,6 +75,12 @@ pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
         for sid in &stories {
             let st = d.story_mut(*sid).ok_or(designcraft_doc::DocError::NoStory(*sid))?;
             let mut om = st.optical_margin;
+            if let Some(value) = &continuation
+                && st.catchword_continuation != *value
+            {
+                st.catchword_continuation = value.clone();
+                st.rev = st.rev.wrapping_add(1);
+            }
             om.on = on.unwrap_or(om.on);
             om.size = size.unwrap_or(om.size);
             if om != st.optical_margin {
@@ -180,6 +197,30 @@ fn mixed_para_attrs(doc: &designcraft_doc::Document, targets: &[Target]) -> Vec<
 #[cfg(test)]
 mod story_options_tests {
     use super::*;
+
+    #[test]
+    fn catchword_continuation_validates_and_undoes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [0, 0, 200, 200], "content": "text", "text": "Excerpt"})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        for value in [json!("x".repeat(257)), json!("line\nfeed"), json!("tab\t"), json!("\u{7f}"), json!(12)] {
+            assert!(s.execute("story.options", &json!({"story": sid.0, "catchwordContinuation": value})).is_err());
+        }
+        let value = "א".repeat(256);
+        s.execute("story.options", &json!({"story": sid.0, "catchwordContinuation": value})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().catchword_continuation.as_deref(), Some(value.as_str()));
+        let bytes = designcraft_format::save(&s.doc().unwrap().doc).unwrap();
+        let loaded = designcraft_format::load(&bytes).unwrap();
+        assert_eq!(loaded.story(sid).unwrap().catchword_continuation.as_deref(), Some(value.as_str()));
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("catchwordContinuation")));
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().catchword_continuation, None);
+        s.execute("story.options", &json!({"story": sid.0, "catchwordContinuation": "Next"})).unwrap();
+        s.execute("story.options", &json!({"story": sid.0, "catchwordContinuation": null})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().catchword_continuation, None);
+    }
 
     #[test]
     fn malformed_explicit_story_targets_do_not_change_the_selection() {

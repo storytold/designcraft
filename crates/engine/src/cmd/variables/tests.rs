@@ -634,6 +634,34 @@ fn catchword_story(s: &mut Session, y: f64, before: &str, after: &str) -> (desig
 }
 
 #[test]
+fn catchword_continuation_is_used_only_without_a_following_page() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "Opening", "Following page");
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord", "story": sid.0})).unwrap();
+    s.execute("story.options", &json!({"story": sid.0, "catchwordContinuation": "Next excerpt"})).unwrap();
+    let index = s.cache.running_index(&s.doc().unwrap().doc);
+    assert_eq!(index.catchword(Some(sid), 0), "Following");
+    assert_eq!(index.catchword(Some(sid), 1), "Next excerpt");
+}
+
+#[test]
+fn catchword_omits_deleted_letters_inside_the_first_word() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "Opening", "PuHIDEblic follows");
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord", "story": sid.0})).unwrap();
+    s.edit(|d, _| {
+        let story = d.story_mut(sid).unwrap();
+        let at = story.text.find("HIDE").unwrap();
+        story.format_chars(at..at + 4, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+        Ok(json!({}))
+    })
+    .unwrap();
+    assert_eq!(s.cache.running_index(&s.doc().unwrap().doc).catchword(Some(sid), 0), "Public");
+}
+
+#[test]
 fn catchword_on_parent_page_follows_hebrew_story() {
     let mut s = Session::new();
     s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();

@@ -143,7 +143,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Story Options",
             [],
             None,
-            "{story?, frame?: a text frame of the story (default: the stories of the text selection or the selected frames), opticalMargin?: bool — Optical Margin Alignment: punctuation and letter edges hang outside the frame in every paragraph of the story except those with ignoreOpticalMargin, opticalMarginSize?: pt (0.1–1296, default 12) — the type size the hang amounts are set for} → {stories}",
+            "{story?, frame?: a text frame of the story (default: the stories of the text selection or the selected frames), opticalMargin?: bool — Optical Margin Alignment: punctuation and letter edges hang outside the frame in every paragraph of the story except those with ignoreOpticalMargin, opticalMarginSize?: pt (0.1–1296, default 12) — the type size the hang amounts are set for, catchwordContinuation?: string|null (at most 256 characters, no controls; null clears) — catchword only after the final composed page of this excerpt} → {stories}",
             has_doc,
             story_options
         ),

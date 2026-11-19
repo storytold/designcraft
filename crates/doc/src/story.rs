@@ -157,6 +157,9 @@ pub struct Story {
     /// Story ▸ Optical Margin Alignment.
     #[serde(default, skip_serializing_if = "OpticalMargin::is_default")]
     pub optical_margin: OpticalMargin,
+    /// Catchword after the final composed page of an excerpt.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_catchword_continuation")]
+    pub catchword_continuation: Option<String>,
     /// Bumped on every edit (composition cache key).
     #[serde(default)]
     pub rev: u64,
@@ -262,6 +265,19 @@ fn is_zero_i64(v: &i64) -> bool {
     *v == 0
 }
 
+/// Shared validation for command input and native deserialization.
+pub fn valid_catchword_continuation(text: &str) -> bool {
+    text.chars().count() <= 256 && !text.chars().any(char::is_control)
+}
+
+fn deserialize_catchword_continuation<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(de)?;
+    if value.as_deref().is_some_and(|s| !valid_catchword_continuation(s)) {
+        return Err(serde::de::Error::custom("catchwordContinuation must contain at most 256 characters and no control characters"));
+    }
+    Ok(value)
+}
+
 impl Story {
     pub fn new(id: StoryId) -> Self {
         Story {
@@ -273,6 +289,7 @@ impl Story {
             direction: crate::TextDirection::LeftToRight,
             vertical: false,
             optical_margin: OpticalMargin::default(),
+            catchword_continuation: None,
             rev: 0,
             tables: BTreeMap::new(),
             notes: Vec::new(),
@@ -734,6 +751,20 @@ last");
         assert_eq!(OpticalMargin { on: true, size: 1e9 }.hang_size(), Some(OpticalMargin::MAX_SIZE));
         assert_eq!(OpticalMargin { on: true, size: -3.0 }.hang_size(), Some(OpticalMargin::MIN_SIZE));
         assert_eq!(OpticalMargin { on: false, size: 18.0 }.hang_size(), None);
+    }
+
+    #[test]
+    fn catchword_continuation_json_validates_and_defaults() {
+        let story = Story::new(StoryId(1));
+        let mut value = serde_json::to_value(&story).unwrap();
+        assert!(value.get("catchwordContinuation").is_none());
+        assert_eq!(serde_json::from_value::<Story>(value.clone()).unwrap().catchword_continuation, None);
+        value["catchwordContinuation"] = serde_json::json!("בקרוב");
+        assert_eq!(serde_json::from_value::<Story>(value.clone()).unwrap().catchword_continuation.as_deref(), Some("בקרוב"));
+        for bad in ["x".repeat(257), "new\nline".into(), "control\u{7f}".into()] {
+            value["catchwordContinuation"] = serde_json::json!(bad);
+            assert!(serde_json::from_value::<Story>(value.clone()).is_err());
+        }
     }
 
     #[test]

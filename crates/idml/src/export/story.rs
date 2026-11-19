@@ -98,6 +98,9 @@ impl<'a> Ex<'a> {
     // ---------- stories ----------
 
     pub(super) fn story_el(&mut self, s: &Story) -> El {
+        if s.catchword_continuation.is_some() {
+            self.warnings.push(format!("Story {}: catchwordContinuation is not supported by IDML and was omitted", s.id.0));
+        }
         let toc = self.d.toc.as_ref().is_some_and(|t| t.story == s.id);
         let mut el = El::new("Story")
             .attr("Self", uid(s.id.0))
