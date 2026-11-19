@@ -1288,8 +1288,6 @@ mod tests {
         assert_eq!(tagged, vec![a, b], "{r}");
     }
 
-    /// Character-styled runs are elements named after their style: import puts each style where
-    /// the XML has it (a translation moves it), and XML without such elements leaves styles be.
     /// Styles whose names give the same element name (`A B`, `A_B`) each get their own, and come
     /// back as themselves.
     #[test]
@@ -1351,6 +1349,8 @@ mod tests {
         assert_eq!((text(&a1), text(&b1)), ("A2".to_string(), "B2".to_string()));
     }
 
+    /// Character-styled runs are elements named after their style: import puts each style where
+    /// the XML has it (a translation moves it), and XML without such elements leaves styles be.
     /// A story threaded through two tagged frames is written once.
     #[test]
     fn character_styles_and_threads_in_xml() {
