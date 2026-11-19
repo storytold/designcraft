@@ -1101,6 +1101,249 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
+/// Minimal little-endian single-IFD TIFF builder supporting multiple strips, arbitrary `RowsPerStrip`,
+/// `Compression`, `InkSet` (tag 332), and `ExtraSamples` (tag 338).
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
+    let n_strips = strips.len();
+    assert_eq!(n_strips as u32, h.div_ceil(rows_per_strip));
+    let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, u32::from(spp), if spp == 1 { 8 } else { 0 }),
+        (259, 3, 1, u32::from(compression)),
+        (262, 3, 1, u32::from(photometric)),
+        (273, 4, n_strips as u32, 0),
+        (277, 3, 1, u32::from(spp)),
+        (278, 4, 1, rows_per_strip),
+        (279, 4, n_strips as u32, 0),
+    ];
+    if let Some(set) = ink_set {
+        entries.push((332, 3, 1, u32::from(set)));
+    }
+    if let Some(es) = extra_sample {
+        entries.push((338, 3, 1, u32::from(es)));
+    }
+    entries.sort_by_key(|e| e.0);
+
+    let ifd_start = 8usize;
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let mut extra_data_off = ifd_start + ifd_len;
+    let bps_off = extra_data_off;
+    if spp > 1 {
+        extra_data_off += usize::from(spp) * 2;
+    }
+    let offsets_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+    let counts_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+
+    let mut data_off = extra_data_off;
+    let mut strip_offsets = Vec::with_capacity(n_strips);
+    let mut strip_counts = Vec::with_capacity(n_strips);
+    for s in strips {
+        strip_offsets.push(u32::try_from(data_off).unwrap());
+        strip_counts.push(u32::try_from(s.len()).unwrap());
+        data_off += s.len();
+    }
+
+    for (tag, _, _, val) in &mut entries {
+        match *tag {
+            258 if spp > 1 => *val = bps_off as u32,
+            273 => *val = if n_strips == 1 { strip_offsets[0] } else { offsets_off as u32 },
+            279 => *val = if n_strips == 1 { strip_counts[0] } else { counts_off as u32 },
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::with_capacity(data_off);
+    out.extend(b"II*\0");
+    out.extend(8u32.to_le_bytes());
+    out.extend((entries.len() as u16).to_le_bytes());
+    for (tag, kind, count, val) in entries {
+        out.extend(tag.to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(val.to_le_bytes());
+    }
+    out.extend(0u32.to_le_bytes());
+    if spp > 1 {
+        for _ in 0..spp {
+            out.extend(8u16.to_le_bytes());
+        }
+    }
+    if n_strips > 1 {
+        for o in strip_offsets {
+            out.extend(o.to_le_bytes());
+        }
+        for c in strip_counts {
+            out.extend(c.to_le_bytes());
+        }
+    }
+    for s in strips {
+        out.extend_from_slice(s);
+    }
+    out
+}
+
+#[test]
+fn reduced_tiffs_decode_rgb_cmyk_alpha_and_cross_strip_boundaries() {
+    // 33 × 25 RGB gradient split across 9 strips of 3 rows each (every 8×8 cell crosses strip joins).
+    let (w, h, rps) = (33u32, 25u32, 3u32);
+    let mut strips_owned: Vec<Vec<u8>> = Vec::new();
+    for y0 in (0..h).step_by(rps as usize) {
+        let rows = (h - y0).min(rps);
+        let mut s = Vec::with_capacity((rows * w * 3) as usize);
+        for dy in 0..rows {
+            let y = y0 + dy;
+            for x in 0..w {
+                s.extend_from_slice(&[((x * 255) / w) as u8, ((y * 255) / h) as u8, 128]);
+            }
+        }
+        strips_owned.push(s);
+    }
+    let refs: Vec<&[u8]> = strips_owned.iter().map(Vec::as_slice).collect();
+    let rgb_tiff = custom_striped_tiff(w, h, rps, 2, 1, 3, &refs, None, None);
+    let full_rgb = decode_rgba(&rgb_tiff).unwrap();
+    for (shrink, want_size) in [(1u8, (17, 13)), (2, (9, 7)), (3, (5, 4))] {
+        let img = decode_rgba_reduced(&rgb_tiff, shrink).unwrap();
+        assert_eq!(img.dimensions(), want_size, "RGB shrink {shrink}");
+        let est = reduced_estimate(&rgb_tiff, shrink).unwrap();
+        assert_eq!((est.0, est.1), want_size);
+        let step = 1u32 << shrink;
+        let (mut diff, mut n) = (0u64, 0u64);
+        for ry in 0..want_size.1 {
+            for rx in 0..want_size.0 {
+                let (ux0, ux1) = (rx * step, ((rx + 1) * step).min(w));
+                let (uy0, uy1) = (ry * step, ((ry + 1) * step).min(h));
+                let mut sum = [0u64; 3];
+                let cnt = u64::from((ux1 - ux0) * (uy1 - uy0));
+                for y in uy0..uy1 {
+                    for x in ux0..ux1 {
+                        let p = full_rgb.get_pixel(x, y).0;
+                        for c in 0..3 {
+                            sum[c] += u64::from(p[c]);
+                        }
+                    }
+                }
+                let got = img.get_pixel(rx, ry).0;
+                for (c, &s) in sum.iter().enumerate() {
+                    let avg = ((s + cnt / 2) / cnt) as u8;
+                    diff += u64::from(got[c].abs_diff(avg));
+                    n += 1;
+                }
+                assert_eq!(got[3], 255);
+            }
+        }
+        assert!(diff / n <= 1, "RGB shrink {shrink} mean diff {}", diff / n);
+    }
+
+    // Odd-sized CMYK TIFF via the `tiff` encoder matches `decode_rgba` averaged over each block.
+    use tiff::encoder::colortype::{CMYK8, CMYKA8};
+    let mut cmyk_px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            cmyk_px.extend_from_slice(&[0, ((x * 255) / w) as u8, ((y * 255) / h) as u8, 20]);
+        }
+    }
+    let cmyk_tiff = tiff_of::<CMYK8>(w, h, &cmyk_px, false);
+    let full_cmyk = decode_rgba(&cmyk_tiff).unwrap();
+    let red_cmyk = decode_rgba_reduced(&cmyk_tiff, 2).unwrap();
+    assert_eq!(red_cmyk.dimensions(), (9, 7));
+    for ry in 0..6 {
+        for rx in 0..8 {
+            let p = red_cmyk.get_pixel(rx, ry).0;
+            let q = full_cmyk.get_pixel(rx * 4 + 2, ry * 4 + 2).0;
+            for c in 0..4 {
+                assert!(p[c].abs_diff(q[c]) <= 12, "CMYK ({rx},{ry}) c{c}: {} vs {}", p[c], q[c]);
+            }
+        }
+    }
+
+    // CMYKA with transparent black pixels beside an opaque pixel: alpha-weighted averaging prevents
+    // transparent pixels from darkening opaque colour.
+    #[rustfmt::skip]
+    let cmyka_px: [u8; 4 * 4 * 5] = [
+        0, 255, 255, 0, 255,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 0,       0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+    ];
+    let cmyka_tiff = tiff_of::<CMYKA8>(4, 4, &cmyka_px, true);
+    let reduced_alpha = decode_rgba_reduced(&cmyka_tiff, 1).unwrap();
+    assert_eq!(reduced_alpha.dimensions(), (2, 2));
+    let opaque_want = decode_rgba(&tiff_of::<CMYK8>(1, 1, &[0, 255, 255, 0], false)).unwrap().get_pixel(0, 0).0;
+    let tl = reduced_alpha.get_pixel(0, 0).0;
+    assert_eq!(tl[3], 64, "quarter opaque: {tl:?}");
+    for c in 0..3 {
+        assert!(tl[c].abs_diff(opaque_want[c]) <= 1, "no dark bleed in top-left {tl:?} vs {opaque_want:?}");
+    }
+    assert_eq!(reduced_alpha.get_pixel(1, 0).0[3], 0, "fully transparent cell stays alpha 0");
+
+    // Non-CMYK InkSet (InkSet = 2) is refused just like `decode_cmyk_tiff`.
+    let spot_cmyk = custom_striped_tiff(4, 4, 4, 5, 1, 4, &[&[0; 64]], None, Some(2));
+    assert!(decode_rgba_reduced(&spot_cmyk, 1).is_none());
+}
+
+/// Oversized multi-strip TIFFs (> 256 MP / 1 GiB RGBA) are refused by `decode_rgba`, yet decode
+/// cleanly at reduced proxy resolution via banded streaming (`#2381`).
+#[test]
+fn oversized_multi_strip_tiff_decodes_at_reduced_size_while_full_decode_is_refused() {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+    use tiff::encoder::colortype::CMYK8;
+
+    let side = 16_388u32; // 16,388^2 * 4 = ~1.074 GiB RGBA (> MAX_RGBA_BYTES)
+    let rps = 16u32;
+    let full_strip_raw: Vec<u8> = [0u8, 255, 255, 0].repeat((side * rps) as usize);
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::fast());
+    enc.write_all(&full_strip_raw).unwrap();
+    let full_strip_z = enc.finish().unwrap();
+
+    let rem_rows = side % rps;
+    let rem_raw: Vec<u8> = [0u8, 255, 255, 0].repeat((side * rem_rows) as usize);
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::fast());
+    enc.write_all(&rem_raw).unwrap();
+    let rem_strip_z = enc.finish().unwrap();
+
+    let full_strips = (side / rps) as usize;
+    let mut strips: Vec<&[u8]> = vec![&full_strip_z; full_strips];
+    if rem_rows > 0 {
+        strips.push(&rem_strip_z);
+    }
+    let big_tiff = custom_striped_tiff(side, side, rps, 5, 8, 4, &strips, None, None);
+
+    assert_eq!(pixel_size(&big_tiff), Some((side, side)));
+    assert!(too_large_to_decode(&big_tiff));
+    assert!(decode_rgba(&big_tiff).is_none(), "full decode exceeds 1 GiB RGBA limit");
+
+    let reduced = decode_rgba_reduced(&big_tiff, 3).expect("reduced 1/8 decode succeeds via TiffBands");
+    assert_eq!(reduced.dimensions(), (2049, 2049));
+    let want =
+        decode_rgba(&tiff_of::<CMYK8>(2, 2, &[0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0], false)).unwrap().get_pixel(0, 0).0;
+    assert_eq!(reduced.get_pixel(0, 0).0, want);
+    assert_eq!(reduced.get_pixel(2048, 2048).0, want);
+
+    // A single-strip TIFF whose single band exceeds the 512 MiB band limit is refused before decoding.
+    let single_strip_over_band = cmyk_tiff_header(side);
+    assert!(decode_rgba_reduced(&single_strip_over_band, 3).is_none());
+}
+
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
 /// the shared decoder, so the PDF export's RGB fallback is only for other inks and oversized files.
 #[test]

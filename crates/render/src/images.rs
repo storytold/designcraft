@@ -324,6 +324,26 @@ pub fn decoded(data: &AssetData, page: u32) -> Option<Arc<Pixmap>> {
     Some(pm)
 }
 
+/// Maximum RGBA byte size accepted for a decoded `Pixmap` (`1 GiB`).
+const MAX_PIXMAP_BYTES: u64 = 1 << 30;
+
+/// Smallest mip level of `size` whose halved dimensions fit in `Pixmap` (`u16::MAX` a side)
+/// and within `1 GiB` of RGBA. Returns `0` for ordinary sizes and `>= 1` for oversized rasters
+/// so zoom-in clamps to a reduced decode instead of hitting [`decode_full`].
+fn finest_level(size: (u32, u32)) -> u8 {
+    let fits = |(w, h): (u32, u32)| {
+        w <= u32::from(u16::MAX) && h <= u32::from(u16::MAX) && u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) <= MAX_PIXMAP_BYTES
+    };
+    let mut cur = size;
+    for level in 0..MAX_LEVEL {
+        if fits(cur) {
+            return level;
+        }
+        cur = halved(cur, 1);
+    }
+    MAX_LEVEL
+}
+
 /// The mip level of an image `size` pixels at full resolution closest above `on_screen` device
 /// pixels per point when drawn `width_pt` points wide.
 fn level_for(size: (u32, u32), width_pt: f64, on_screen: f64) -> u8 {
@@ -334,7 +354,7 @@ fn level_for(size: (u32, u32), width_pt: f64, on_screen: f64) -> u8 {
         w = (w / 2).max(1);
         h = (h / 2).max(1);
     }
-    level
+    level.max(finest_level(size))
 }
 
 /// `size` halved `times` times, as [`halve`] does.
@@ -868,23 +888,18 @@ pub(crate) struct Want {
     pub on_screen: f64,
 }
 
-/// Dimensions of the JPEG mip level selected for a request. `None` means the request uses the
-/// full decode or is not an eligible JPEG, so warming must reserve its full decode size.
+/// Dimensions of each mip level selected for a reduced-decode request. `None` means the request
+/// uses the full decode or is not an eligible JPEG/TIFF, so warming must reserve its full size.
 fn reduced_sizes(bytes: &[u8], page: u32, width_pt: f64, on_screen: f64) -> Option<Vec<(u32, u32)>> {
-    if page != 0 || !bytes.starts_with(&[0xFF, 0xD8]) {
+    if page != 0 || !designcraft_images::supports_reduced_decode(bytes) {
         return None;
     }
-    let (mut w, mut h) = crate::image_size(bytes)?;
-    let ppt = w as f64 / width_pt.max(1e-6);
-    let mut sizes = vec![(w, h)];
-    while ppt / (1u64 << sizes.len()) as f64 >= on_screen * 1.2 && w > 64 && h > 64 && sizes.len() <= 8 {
-        (w, h) = ((w / 2).max(1), (h / 2).max(1));
-        sizes.push((w, h));
-    }
-    Some(sizes)
+    let size = crate::image_size(bytes)?;
+    let level = level_for(size, width_pt, on_screen);
+    Some((0..=level).map(|l| halved(size, l)).collect())
 }
 
-/// Cache and peak decode estimates for a group of requests that all use reduced JPEG mips.
+/// Cache and peak decode estimates for a group of requests that all use reduced mips.
 fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
     let mut dims = None;
     let mut levels = [false; 9];
@@ -897,7 +912,7 @@ fn reduced_estimates(wants: &[Want]) -> Option<(usize, usize)> {
             return None;
         }
         let shrink = level.min(usize::from(designcraft_images::MAX_REDUCED_SHRINK));
-        let (_, _, decode_peak) = designcraft_images::reduced_jpeg_estimate(&bytes, shrink as u8)?;
+        let (_, _, decode_peak) = designcraft_images::reduced_estimate(&bytes, shrink as u8)?;
         for cached in levels.iter_mut().take(level + 1).skip(shrink) {
             *cached = true;
         }
@@ -1191,16 +1206,16 @@ fn waited(id: SourceKey) {
     WAITED.1.notify_all();
 }
 
-/// Level `level` of a JPEG for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size straight from
-/// its blocks and halved from there, so a screen-sized level needs no full-size decode. `None`
-/// when the full size is drawn, for other formats and for JPEGs only a full decode reads (CMYK).
+/// Level `level` of a JPEG or TIFF for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size without a
+/// full-size decode and halved from there. `None` when the full size is drawn, for other formats,
+/// and for variants only a full decode reads (CMYK JPEGs).
 ///
 /// `gate`: wait at [`GATE`] for the decode's peak bytes, plus the encoded bytes it holds.
 fn reduced(id: SourceKey, bytes: &[u8], page: u32, level: u8, gate: Option<usize>, colour: u64) -> Option<Arc<Pixmap>> {
     if level == 0 || page != 0 {
         return None;
     }
-    if !bytes.starts_with(&[0xFF, 0xD8]) {
+    if !designcraft_images::supports_reduced_decode(bytes) {
         return None;
     }
     let shrink = level.min(designcraft_images::MAX_REDUCED_SHRINK);
@@ -1210,10 +1225,10 @@ fn reduced(id: SourceKey, bytes: &[u8], page: u32, level: u8, gate: Option<usize
             // Cut to `halve`'s size (it rounds down, the decoder up), as the level a full
             // decode makes.
             let (sw, sh) = halved(crate::image_size(bytes)?, shrink);
-            // Gated, a JPEG without an estimate (one only a full decode reads) isn't tried here.
+            // Gated, a file without an estimate (one only a full decode reads) isn't tried here.
             let _reserved = match gate {
                 Some(held) => {
-                    let (_, _, peak) = designcraft_images::reduced_jpeg_estimate(bytes, shrink)?;
+                    let (_, _, peak) = designcraft_images::reduced_estimate(bytes, shrink)?;
                     Some(reserve((peak.saturating_mul(3) / 2).saturating_add(held), id, None))
                 }
                 None => None,
@@ -1541,6 +1556,114 @@ pub(crate) mod tests {
         assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
         assert!(with(|c| c.bad.contains_key(&(bytes.key(), 0))));
         assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
+    }
+
+    pub(crate) fn packbits_gray_tiff(side: u32, rows_per_strip: u32, val: u8) -> Vec<u8> {
+        let mut row = Vec::new();
+        let mut left = side as usize;
+        while left > 128 {
+            row.push(129);
+            row.push(val);
+            left -= 128;
+        }
+        if left > 1 {
+            row.push((-(left as i8 - 1)) as u8);
+            row.push(val);
+        } else if left == 1 {
+            row.push(0);
+            row.push(val);
+        }
+
+        let n_strips = side.div_ceil(rows_per_strip) as usize;
+        let entries_count = 9usize;
+        let offsets_off = 8 + 2 + entries_count * 12 + 4;
+        let counts_off = offsets_off + n_strips * 4;
+        let mut data_off = counts_off + n_strips * 4;
+        let full_strip = row.repeat(rows_per_strip as usize);
+        let rem_rows = (side % rows_per_strip) as usize;
+        let rem_strip = row.repeat(rem_rows);
+
+        let mut offsets = Vec::with_capacity(n_strips);
+        let mut counts = Vec::with_capacity(n_strips);
+        for i in 0..n_strips {
+            let len = if rem_rows > 0 && i + 1 == n_strips { rem_strip.len() } else { full_strip.len() };
+            offsets.push(data_off as u32);
+            counts.push(len as u32);
+            data_off += len;
+        }
+
+        let tags: [(u16, u16, u32, u32); 9] = [
+            (256, 4, 1, side),
+            (257, 4, 1, side),
+            (258, 3, 1, 8),
+            (259, 3, 1, 32773),
+            (262, 3, 1, 1),
+            (273, 4, n_strips as u32, offsets_off as u32),
+            (277, 3, 1, 1),
+            (278, 4, 1, rows_per_strip),
+            (279, 4, n_strips as u32, counts_off as u32),
+        ];
+
+        let mut out = Vec::with_capacity(data_off);
+        out.extend(b"II*\0");
+        out.extend(8u32.to_le_bytes());
+        out.extend((tags.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in tags {
+            out.extend(tag.to_le_bytes());
+            out.extend(kind.to_le_bytes());
+            out.extend(count.to_le_bytes());
+            out.extend(value.to_le_bytes());
+        }
+        out.extend(0u32.to_le_bytes());
+        for o in offsets {
+            out.extend(o.to_le_bytes());
+        }
+        for c in counts {
+            out.extend(c.to_le_bytes());
+        }
+        for i in 0..n_strips {
+            if rem_rows > 0 && i + 1 == n_strips {
+                out.extend_from_slice(&rem_strip);
+            } else {
+                out.extend_from_slice(&full_strip);
+            }
+        }
+        out
+    }
+
+    fn tiff(w: u32, h: u32) -> AssetData {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut out, image::ImageFormat::Tiff).unwrap();
+        AssetData::embedded(out.into_inner())
+    }
+
+    #[test]
+    fn screen_levels_of_a_tiff_and_oversized_tiff_need_no_full_size_decode() {
+        let bytes = tiff(1024, 768);
+        let id = bytes.key();
+        let pm = mip(&bytes, 0, 1024.0, 0.1).unwrap();
+        assert_eq!((pm.width(), pm.height()), (128, 96));
+        assert!(lookup((id, 0, 0)).is_none(), "no full-size decode is kept");
+
+        let want = Want { bytes: bytes.clone(), page: 0, width_pt: 1024.0, on_screen: 0.1 };
+        let (cached, peak) = reduced_estimates(&[want]).unwrap();
+        let full = decode_sizes(&bytes.load().unwrap(), 0);
+        assert!(cached < full.0 && peak < full.1, "reduced estimates {cached}/{peak}, full {full:?}");
+
+        // Print-scale rasters past 1 GiB RGBA clamp their finest mip level above 0 so zoom-in
+        // stays on the reduced decode path instead of falling back to `decode_full`.
+        assert_eq!(finest_level((23_800, 15_840)), 1);
+        assert_eq!(level_for((23_800, 15_840), 1000.0, 50.0), 1);
+
+        let huge = AssetData::embedded(packbits_gray_tiff(16_388, 128, 160));
+        let pm = mip(&huge, 0, 1000.0, 1.0).expect("oversized TIFF decodes via reduced bands");
+        assert!(!is_bad(huge.key(), 0));
+        assert_eq!((pm.width(), pm.height()), (2048, 2048));
+        let p = pm.data()[100 * usize::from(pm.width()) + 100];
+        assert_eq!([p.r, p.g, p.b, p.a], [160, 160, 160, 255]);
+        let thumb = mip(&huge, 0, 1000.0, 0.1).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (128, 128));
     }
 
     fn png_sized(w: u32, h: u32) -> AssetData {

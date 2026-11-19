@@ -12,6 +12,7 @@ mod eps;
 mod jpeg;
 mod psd;
 mod resolution;
+mod tiff_reduced;
 mod tone;
 pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
@@ -381,7 +382,7 @@ pub fn too_large_to_decode(bytes: &[u8]) -> bool {
 }
 
 /// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
-fn over_rgba_budget(w: u32, h: u32) -> bool {
+pub(crate) fn over_rgba_budget(w: u32, h: u32) -> bool {
     u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 
@@ -506,6 +507,17 @@ pub fn reduced_jpeg_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usiz
     jpeg::reduced_estimate(bytes, shrink)
 }
 
+/// Whether [`decode_rgba_reduced`] handles this format (JPEGs and TIFFs).
+pub fn supports_reduced_decode(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8]) || tiff_reduced::is_tiff(bytes)
+}
+
+/// Dimensions and estimated peak bytes for an image decoded at `1/2^shrink`, without decoding its
+/// pixels. `None` when [`decode_rgba_reduced`] cannot handle the image.
+pub fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
+    if tiff_reduced::is_tiff(bytes) { tiff_reduced::reduced_estimate(bytes, shrink) } else { jpeg::reduced_estimate(bytes, shrink) }
+}
+
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
 /// [`colour::MAX_ICC_BYTES`]. The decoder sizes its buffer from the declared length before it reads
 /// anything, so such a file must not reach `icc_profile()`; its pixels decode without it.
@@ -534,13 +546,17 @@ pub(crate) fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
 pub const MAX_REDUCED_SHRINK: u8 = jpeg::MAX_SHRINK;
 
-/// [`decode_rgba`] of a JPEG at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each
-/// side rounded up), read from its compressed blocks without a full-size decode. The embedded ICC
-/// profile is applied as [`decode_rgba`] applies it. `None` where only a full decode applies: other
-/// formats, CMYK, 12-bit and lossless JPEGs, files whose size [`pixel_size`] cannot read, and files
-/// [`decode_rgba`] refuses as too large.
+/// [`decode_rgba`] at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each side
+/// rounded up), read without a full-size decode. The embedded ICC profile (and working CMYK space
+/// for CMYK TIFFs) is applied as [`decode_rgba`] applies it. `None` where only a full decode
+/// applies: other formats, CMYK/12-bit/lossless JPEGs, non-CMYK separated TIFFs (`InkSet` 2),
+/// files whose size [`pixel_size`] cannot read, JPEGs whose full size is over the full decode's
+/// limit, and TIFFs whose reduced output or strip/tile band exceeds budget.
 pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
+    if tiff_reduced::is_tiff(bytes) {
+        return tiff_reduced::decode_reduced(bytes, shrink);
+    }
     // The size check must have a size to check: a header only the JPEG decoder reads is refused.
     pixel_size(bytes)?;
     if too_large_to_decode(bytes) {
@@ -565,7 +581,7 @@ pub struct CmykRaster {
 }
 
 /// The TIFF page that decoding opens; `None` for other formats.
-fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
+pub(crate) fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
     let mut info = craft_image_codecs::tiff_info(bytes).ok()?;
     let page = info.default_page()?;
     (page < info.pages.len()).then(|| info.pages.swap_remove(page))

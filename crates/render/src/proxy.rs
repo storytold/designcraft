@@ -54,9 +54,9 @@ pub fn make_proxy(bytes: &[u8], page: u32) -> Option<ProxyImage> {
     None
 }
 
-/// Decode `bytes`, through the reduced JPEG decode when it still leaves at least [`MAX_SIDE_PX`].
+/// Decode `bytes`, through reduced decoding when it still leaves at least [`MAX_SIDE_PX`].
 fn decode_for_proxy(bytes: &[u8], page: u32) -> Option<Pixmap> {
-    if page == 0 && bytes.starts_with(&[0xFF, 0xD8]) {
+    if page == 0 && designcraft_images::supports_reduced_decode(bytes) {
         let (w, h) = image_size(bytes)?;
         let long = w.max(h);
         let mut shrink = 0u8;
@@ -212,6 +212,15 @@ mod tests {
         out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).bytes());
         let p = make_proxy(&out, 0).unwrap();
         assert!(p.pixels.0.max(p.pixels.1) <= MAX_SIDE_PX && p.pixels.1 > p.pixels.0);
+        assert!(p.data.len() <= MAX_BYTES);
+    }
+
+    #[test]
+    fn oversized_tiff_builds_proxy_without_full_decode() {
+        let tiff = crate::images::tests::packbits_gray_tiff(16_388, 128, 180);
+        let p = make_proxy(&tiff, 0).expect("proxy generated via reduced banded TIFF decode");
+        assert_eq!(p.mime, "image/jpeg");
+        assert_eq!(p.pixels, (MAX_SIDE_PX, MAX_SIDE_PX));
         assert!(p.data.len() <= MAX_BYTES);
     }
 }
