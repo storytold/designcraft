@@ -49,8 +49,8 @@ pub use asset_data::{AssetData, LinkedSource, SourceKey, Unavailable, WeakAssetD
 pub use assets::{AssetIndex, find_same_asset, insert_asset, remap_story_assets, story_asset_refs};
 pub use attrs::*;
 pub use datamerge::{
-    DataField, DataFieldKind, DataMerge, DataSource, Delimiter, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor, PlaceholderRole,
-    SourceStatus,
+    DataField, DataFieldKind, DataMerge, DataSource, Delimiter, DelimiterOrigin, Fingerprint, MergeOptions, Placeholder, PlaceholderAnchor,
+    PlaceholderRole, SourceStatus,
 };
 pub use designcraft_color as color;
 pub use designcraft_geom as geom;

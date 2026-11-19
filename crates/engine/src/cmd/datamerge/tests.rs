@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use designcraft_doc::{Content, DataField, DataFieldKind, DataSource, Delimiter, HyperlinkDest, Selection, SourceStatus, StoryId, TextSel};
+use designcraft_doc::{
+    Content, DataField, DataFieldKind, DataSource, Delimiter, DelimiterOrigin, HyperlinkDest, Selection, SourceStatus, StoryId, TextSel,
+};
 use serde_json::{Value, json};
 
 use super::parse::{self, parse_csv};
@@ -424,23 +426,86 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
     assert_eq!(comma_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name\tLabel", "City"]);
 }
 
-/// #2874: updating a linked source saved as a single Comma field containing `\t` or `;` re-sniffs it.
+/// #2874: updating a legacy saved single-field Comma source re-sniffs it, while deliberate
+/// explicit or already-detected single-column Comma sources keep their delimiter and schema.
 #[test]
-fn update_resniffs_legacy_single_field_comma_source() {
+fn update_resniffs_legacy_single_field_comma_source_and_keeps_deliberate_comma() {
     let dir = scratch("update_resniff");
-    let path = dir.join("CSV-Visitenkarten.csv");
-    write(&path, "Name\tOrt\nAda\tBerlin\n");
+    let tab_path = dir.join("CSV-Visitenkarten.csv");
+    write(&tab_path, "Name\tOrt\nAda\tBerlin\n");
+
+    // 1. Legacy saved document (no `delimiterOrigin` field in JSON): Update re-sniffs and repairs it.
+    let mut legacy_doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+    let legacy_source: DataSource = serde_json::from_value(json!({
+        "id": 1,
+        "path": tab_path.to_string_lossy(),
+        "name": "CSV-Visitenkarten.csv",
+        "delimiter": "comma",
+        "fields": [{"name": "Name\tOrt", "kind": "text"}],
+        "rows": [["Ada\tBerlin"]],
+        "status": "ok",
+    }))
+    .unwrap();
+    assert_eq!(legacy_source.delimiter_origin, DelimiterOrigin::Legacy);
+    legacy_doc.data_merge.sources.push(legacy_source);
+    let legacy_file = dir.join("legacy.designcraft");
+    std::fs::write(&legacy_file, designcraft_format::save(&legacy_doc).unwrap()).unwrap();
 
     let mut s = Session::new();
-    new_doc(&mut s, 1);
-    let broken = exec(&mut s, "data.source.select", json!({"path": &path, "delimiter": "comma"}));
-    assert_eq!(broken["fields"], json!([{"name": "Name\tOrt", "kind": "text"}]));
-
+    exec(&mut s, "file.open", json!({"path": &legacy_file}));
+    assert_eq!(s.documents()[0].doc.data_merge.sources[0].delimiter_origin, DelimiterOrigin::Legacy);
     let fixed = exec(&mut s, "data.source.update", json!({}));
     assert_eq!(fixed["fields"], json!([{"name": "Name", "kind": "text"}, {"name": "Ort", "kind": "text"}]));
     let source = &s.documents()[0].doc.data_merge.sources[0];
     assert_eq!(source.delimiter, Delimiter::Tab);
+    assert_eq!(source.delimiter_origin, DelimiterOrigin::Detected);
     assert_eq!(source.rows, vec![vec!["Ada", "Berlin"]]);
+
+    // 2. Deliberate explicit Comma choice on a single-column source whose header contains `;`:
+    // Update (even after save + reopen) preserves Comma, field name, and placeholder resolution.
+    let explicit_path = dir.join("single_explicit.csv");
+    write(&explicit_path, "Notes;Tag\nAlpha;1\n");
+    let mut s2 = Session::new();
+    new_doc(&mut s2, 1);
+    let selected = exec(&mut s2, "data.source.select", json!({"path": &explicit_path, "delimiter": "comma"}));
+    assert_eq!(selected["fields"], json!([{"name": "Notes;Tag", "kind": "text"}]));
+    assert_eq!(s2.documents()[0].doc.data_merge.sources[0].delimiter_origin, DelimiterOrigin::Explicit);
+    let frame = text_frame(&mut s2, [36.0, 36.0, 300.0, 120.0], "", None);
+    let story = frame["story"].as_u64().unwrap();
+    exec(&mut s2, "data.placeholder.add", json!({"field": "Notes;Tag", "role": "text", "story": story, "at": 0}));
+    let saved_explicit = dir.join("explicit.designcraft");
+    exec(&mut s2, "file.save", json!({"path": &saved_explicit}));
+
+    write(&explicit_path, "Notes;Tag\nAlpha;1\nBeta;2\n");
+    let mut s3 = Session::new();
+    exec(&mut s3, "file.open", json!({"path": &saved_explicit}));
+    let updated = exec(&mut s3, "data.source.update", json!({}));
+    assert_eq!(updated["fields"], json!([{"name": "Notes;Tag", "kind": "text"}]));
+    let explicit_src = &s3.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(explicit_src.delimiter, Delimiter::Comma);
+    assert_eq!(explicit_src.delimiter_origin, DelimiterOrigin::Explicit);
+    assert_eq!(explicit_src.rows, vec![vec!["Alpha;1"], vec!["Beta;2"]]);
+    let merged = exec(&mut s3, "data.merge", json!({}));
+    assert_eq!(merged["records"], 2);
+    assert_eq!(texts(&s3), vec!["Alpha;1", "Beta;2"]);
+
+    // 3. Auto-detected genuine single-column Comma source whose header contains `;`:
+    // Update keeps Comma even if a later edit adds an unquoted `;` in a data row.
+    let detected_path = dir.join("single_detected.csv");
+    write(&detected_path, "\"Notes; Comments\"\n\"First; item\"\n");
+    let mut s4 = Session::new();
+    new_doc(&mut s4, 1);
+    let auto = exec(&mut s4, "data.source.select", json!({"path": &detected_path}));
+    assert_eq!(auto["fields"], json!([{"name": "Notes; Comments", "kind": "text"}]));
+    assert_eq!(s4.documents()[0].doc.data_merge.sources[0].delimiter, Delimiter::Comma);
+    assert_eq!(s4.documents()[0].doc.data_merge.sources[0].delimiter_origin, DelimiterOrigin::Detected);
+    write(&detected_path, "\"Notes; Comments\"\n\"First; item\"\nSecond; item\n");
+    let updated_auto = exec(&mut s4, "data.source.update", json!({}));
+    assert_eq!(updated_auto["fields"], json!([{"name": "Notes; Comments", "kind": "text"}]));
+    let detected_src = &s4.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(detected_src.delimiter, Delimiter::Comma);
+    assert_eq!(detected_src.delimiter_origin, DelimiterOrigin::Detected);
+    assert_eq!(detected_src.rows, vec![vec!["First; item"], vec!["Second; item"]]);
 }
 
 #[test]
@@ -1437,6 +1502,7 @@ fn relative_path_and_reopen() {
         relative_path: Some("data.csv".into()),
         name: "data.csv".into(),
         delimiter: Delimiter::Comma,
+        delimiter_origin: DelimiterOrigin::Detected,
         sheet: None,
         fields: vec![DataField { name: "Name".into(), kind: DataFieldKind::Text }],
         rows: vec![vec!["Ada".into()]],
