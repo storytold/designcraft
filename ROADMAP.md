@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: catchword glyphs keep their requested size when leading is small; only width fitting can shrink them (#2873).
+
 - 2026-11-20: routed catchwords follow their last composed line, and chained followers clear that row rather than the route frame's unused height (#2873).
 
 - 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).

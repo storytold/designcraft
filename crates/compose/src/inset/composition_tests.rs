@@ -260,6 +260,25 @@ fn routed_catchword_hugs_last_line_and_its_follower() {
 }
 
 #[test]
+fn small_catchword_leading_does_not_scale_glyph_size() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(80), "", "");
+    std::sync::Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Small leading".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: designcraft_doc::CharAttrs { size: Some(18.0), leading: Some(designcraft_doc::Leading::Points(2.0)), ..Default::default() },
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Small leading".into() };
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    let word = &cs.frames[0].catchwords[0];
+    assert!(word.text.styles.iter().any(|s| s.size == 18.0));
+    assert_eq!(word.scale, 1.0);
+}
+
+#[test]
 fn chained_followers_fit_each_route_area_once_per_candidate() {
     let (mut doc, sid, routes) = routed_document(180.0);
     super::fitting::ROUTE_AREAS.with(|n| n.set(0));

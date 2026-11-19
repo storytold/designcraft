@@ -61,8 +61,7 @@ pub(super) fn place(doc: &Document, story: &Story, out: &mut ComposedStory, fram
             let (source, at) = part.unwrap_or((story, frame.range.end));
             let text = compose(doc, source, at, word, spec, &options);
             let width = text.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).map(|g| g.x + g.adv).fold(0.0_f64, f64::max);
-            let height = text.frames.first().map_or(0.0, |f| f.content_height);
-            let scale = (rect.width() / width.max(0.01)).min(rect.height() / height.max(0.01)).min(1.0);
+            let scale = (rect.width() / width.max(0.01)).min(1.0);
             let rtl = source
                 .paras
                 .get(source.para_at(at))
