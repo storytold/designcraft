@@ -44,6 +44,7 @@ fn fields_for(nd: &NewDocument) -> Map<String, Value> {
     f.insert("pages".into(), json!(nd.pages));
     f.insert("startPage".into(), json!(nd.start_page));
     f.insert("facingPages".into(), json!(nd.facing_pages));
+    f.insert("rightToLeftBinding".into(), json!(nd.right_to_left_binding));
     f.insert("primaryTextFrame".into(), json!(nd.primary_text_frame));
     f.insert("columns".into(), json!(nd.columns));
     f.insert("gutter".into(), m(nd.gutter));
@@ -113,6 +114,7 @@ pub(crate) fn params(d: &Dialog) -> Value {
         "pages": count(d, "pages"),
         "startPage": count(d, "startPage"),
         "facingPages": d.b("facingPages"),
+        "rightToLeftBinding": d.b("rightToLeftBinding"),
         "columns": count(d, "columns"),
         "gutter": m("gutter", 12.0),
         "margins": {"top": margins[0], "bottom": margins[1], "inside": margins[2], "outside": margins[3]},
@@ -333,8 +335,12 @@ fn cards(app: &DesignApp, tab: &str) -> Vec<Card> {
         Card { key, label, nd, custom }
     };
     // Recent and Saved both start with the factory settings, as in InDesign.
-    let default =
-        Card { key: DEFAULT_CARD.into(), label: crate::i18n::tr(lang, DEFAULT_CARD).into(), nd: app.session.default_new_document(), custom: false };
+    let rtl_default = crate::i18n::is_rtl(lang);
+    let mut default_nd = app.session.default_new_document();
+    if rtl_default {
+        default_nd.right_to_left_binding = true;
+    }
+    let default = Card { key: DEFAULT_CARD.into(), label: crate::i18n::tr(lang, DEFAULT_CARD).into(), nd: default_nd, custom: false };
     match tab {
         "recent" => std::iter::once(default)
             .chain(app.ui.recent_new_documents.iter().enumerate().map(|(i, nd)| named(format!("recent:{i}"), nd.clone())))
@@ -357,11 +363,14 @@ fn cards(app: &DesignApp, tab: &str) -> Vec<Card> {
                 .iter()
                 .filter(|p| p.intent == intent)
                 .filter_map(|p| {
-                    NewDocument::from_preset(p.name).map(|nd| Card {
-                        key: p.name.into(),
-                        label: crate::i18n::tr(lang, p.name).into(),
-                        nd,
-                        custom: false,
+                    NewDocument::from_preset(p.name).map(|mut nd| {
+                        nd.right_to_left_binding = rtl_default;
+                        Card {
+                            key: p.name.into(),
+                            label: crate::i18n::tr(lang, p.name).into(),
+                            nd,
+                            custom: false,
+                        }
                     })
                 })
                 .collect()
@@ -806,7 +815,7 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
     row(ui, rtl, |ui| {
         cell(ui, rtl, tr("Height"), |ui| spin(ui, d, "height", COLUMN_W - 8.0, Step::Measure(1.0)));
-        cell(ui, rtl, tr("Orientation"), |ui| {
+        cell_w(ui, rtl, 68.0, tr("Orientation"), |ui| {
             let (w, h) = (measure(d, "width"), measure(d, "height"));
             let portrait = !matches!((w, h), (Some(w), Some(h)) if w > h);
             row(ui, rtl, |ui| {
@@ -817,6 +826,17 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
                             d.fields.insert("width".into(), h);
                             d.fields.insert("height".into(), w);
                         }
+                    }
+                }
+            });
+        });
+        let rtl_binding = d.b("rightToLeftBinding");
+        cell_w(ui, rtl, 68.0, tr("Binding"), |ui| {
+            row(ui, rtl, |ui| {
+                for (icon, tip, want) in [("binding-ltr", "Left to Right", false), ("binding-rtl", "Right to Left", true)] {
+                    if crate::widgets::icon_toggle_sized(ui, icon, rtl_binding == want, tr(tip), vec2(30.0, FIELD_H)).clicked() && rtl_binding != want
+                    {
+                        d.fields.insert("rightToLeftBinding".into(), json!(want));
                     }
                 }
             });

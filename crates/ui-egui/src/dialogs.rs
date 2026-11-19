@@ -327,7 +327,10 @@ fn table_style_value(d: &Dialog) -> Value {
 /// Table › Insert Table, laid out as InDesign's: Table Dimensions (body rows and columns, then
 /// header and footer rows, each a number with a spinner, labels on the right edge of their
 /// column) and the Table Style to apply.
-fn insert_table_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+fn insert_table_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let default_dir = crate::panels::text_attrs(app)
+        .and_then(|a| a["para"]["direction"].as_str().map(str::to_string))
+        .unwrap_or_else(|| if crate::i18n::is_rtl(&app.ui.language) { "rightToLeft".into() } else { "leftToRight".into() });
     let lang = &app.ui.language;
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Table Dimensions")).font(semibold(12.0)));
     use designcraft_engine::cmd::table::{MAX_BODY_ROWS, MAX_COLUMNS, MAX_HEADER_FOOTER_ROWS};
@@ -366,6 +369,16 @@ fn insert_table_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             }
         });
+    });
+    ui.add_space(6.0);
+    let cur_dir = if d.s("direction").is_empty() { default_dir } else { d.s("direction") };
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Table Direction:"));
+        for (k, lbl) in [("leftToRight", "Left to Right"), ("rightToLeft", "Right to Left")] {
+            if ui.selectable_label(cur_dir == k, crate::rtl::widget(ui, crate::i18n::tr(lang, lbl))).clicked() {
+                d.fields.insert("direction".into(), json!(k));
+            }
+        }
     });
 }
 
@@ -5011,12 +5024,18 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             // The table and its style in one step; a style that is gone leaves the document alone,
             // and the dialog stays open to be corrected.
             let style = table_style_value(&d);
-            let r = app.run(
-                "table.insert",
-                json!({"rows": d.n("bodyRows").unwrap_or(4.0).max(1.0) as u64, "cols": d.n("columns").unwrap_or(4.0).max(1.0) as u64,
-                    "headerRows": d.n("headerRows").unwrap_or(0.0).max(0.0) as u64, "footerRows": d.n("footerRows").unwrap_or(0.0).max(0.0) as u64,
-                    "tableStyle": style}),
-            );
+            let mut p = json!({
+                "rows": d.n("bodyRows").unwrap_or(4.0).max(1.0) as u64,
+                "cols": d.n("columns").unwrap_or(4.0).max(1.0) as u64,
+                "headerRows": d.n("headerRows").unwrap_or(0.0).max(0.0) as u64,
+                "footerRows": d.n("footerRows").unwrap_or(0.0).max(0.0) as u64,
+                "tableStyle": style,
+            });
+            let dir = d.s("direction");
+            if !dir.is_empty() {
+                p["direction"] = json!(dir);
+            }
+            let r = app.run("table.insert", p);
             if let Err(e) = &r {
                 app.status(e.clone());
                 app.ui.dialog = Some(d);
@@ -6159,6 +6178,22 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         })
                         .response
                         .labelled_by(alignment_label.id);
+                    ui.end_row();
+                    let dir_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Paragraph Direction:"));
+                    let cur_dir = cur(d, "p.direction", &pv["direction"]).as_str().unwrap_or("leftToRight").to_string();
+                    let dir_text = if cur_dir == "rightToLeft" { "Right-to-Left" } else { "Left-to-Right" };
+                    craft_ui::ComboBox::from_id_salt("psdirection")
+                        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, dir_text)))
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for (k, lbl) in [("leftToRight", "Left-to-Right"), ("rightToLeft", "Right-to-Left")] {
+                                if ui.selectable_label(cur_dir == k, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, lbl))).clicked() {
+                                    d.fields.insert("p.direction".into(), json!(k));
+                                }
+                            }
+                        })
+                        .response
+                        .labelled_by(dir_label.id);
                     ui.end_row();
                     for (label, key) in [
                         ("Left Indent:", "leftIndent"),
@@ -8110,6 +8145,42 @@ fn advanced_character_formats(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf:
                 }
             }
         });
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Character Direction:"));
+        let cur_cdir = cf.get(d, "characterDirection");
+        let shown_cdir =
+            crate::panels::properties::CHARACTER_DIRECTIONS.iter().find(|o| json!(o.0) == cur_cdir).map_or("", |o| crate::i18n::tr(lang, o.1));
+        craft_ui::ComboBox::from_id_salt(("cs", "characterDirection")).selected_text(crate::rtl::widget(ui, shown_cdir)).width(200.0).show_ui(
+            ui,
+            |ui| {
+                if cf.sparse && ui.selectable_label(cur_cdir.is_null(), " ").clicked() {
+                    cf.set(d, "characterDirection", Value::Null);
+                }
+                for (k, lbl) in crate::panels::properties::CHARACTER_DIRECTIONS {
+                    if ui.selectable_label(json!(k) == cur_cdir, crate::rtl::widget(ui, crate::i18n::tr(lang, lbl))).clicked() {
+                        cf.set(d, "characterDirection", json!(k));
+                    }
+                }
+            },
+        );
+        ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Diacritic Positioning:"));
+        let cur_diac = cf.get(d, "diacriticPosition");
+        let shown_diac =
+            crate::panels::properties::DIACRITIC_POSITIONS.iter().find(|o| json!(o.0) == cur_diac).map_or("", |o| crate::i18n::tr(lang, o.1));
+        craft_ui::ComboBox::from_id_salt(("cs", "diacriticPosition")).selected_text(crate::rtl::widget(ui, shown_diac)).width(200.0).show_ui(
+            ui,
+            |ui| {
+                if cf.sparse && ui.selectable_label(cur_diac.is_null(), " ").clicked() {
+                    cf.set(d, "diacriticPosition", Value::Null);
+                }
+                for (k, lbl) in crate::panels::properties::DIACRITIC_POSITIONS {
+                    if ui.selectable_label(json!(k) == cur_diac, crate::rtl::widget(ui, crate::i18n::tr(lang, lbl))).clicked() {
+                        cf.set(d, "diacriticPosition", json!(k));
+                    }
+                }
+            },
+        );
         ui.end_row();
     });
 }

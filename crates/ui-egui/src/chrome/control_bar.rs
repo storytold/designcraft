@@ -410,6 +410,48 @@ fn control_character(
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| crate::panels::properties::language_menu(app, ui, &lang));
         });
     });
+    vsep(ui);
+    rows(ui, |ui, row| {
+        if row == 0 {
+            let cdir = chars["characterDirection"].as_str().unwrap_or("default").to_string();
+            let cur = crate::panels::properties::CHARACTER_DIRECTIONS.iter().find(|o| o.0 == cdir).map_or("Default", |o| o.1);
+            craft_ui::ComboBox::from_id_salt("ctl_char_dir")
+                .selected_text(crate::rtl::widget(ui, tr(cur)))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for (k, lbl) in crate::panels::properties::CHARACTER_DIRECTIONS {
+                        if ui.selectable_label(*k == cdir, crate::rtl::widget(ui, tr(lbl))).clicked() {
+                            let _ = app.run("type.char", json!({"attrs": {"characterDirection": k}}));
+                        }
+                    }
+                })
+                .response
+                .on_hover_ui(|ui| {
+                    crate::rtl::label(ui, tr("Character Direction"));
+                });
+        } else {
+            let digits = chars["digits"].as_str().unwrap_or("default").to_string();
+            let cur = crate::panels::properties::DIGIT_OPTIONS.iter().find(|o| o.0 == digits).map_or_else(
+                || crate::panels::properties::digit_label(&app.ui.language, crate::panels::properties::DIGIT_OPTIONS[0]),
+                |o| crate::panels::properties::digit_label(&app.ui.language, *o),
+            );
+            craft_ui::ComboBox::from_id_salt("ctl_digits")
+                .selected_text(crate::rtl::widget(ui, cur))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for o in crate::panels::properties::DIGIT_OPTIONS {
+                        let lbl = crate::panels::properties::digit_label(&app.ui.language, o);
+                        if ui.selectable_label(o.0 == digits, crate::rtl::widget(ui, lbl)).clicked() {
+                            let _ = app.run("type.char", json!({"attrs": {"digits": o.0}}));
+                        }
+                    }
+                })
+                .response
+                .on_hover_ui(|ui| {
+                    crate::rtl::label(ui, tr("Digits"));
+                });
+        }
+    });
 }
 
 fn control_paragraph(
@@ -422,6 +464,21 @@ fn control_paragraph(
     let cur: Align = serde_json::from_value(para["align"].clone()).unwrap_or_default();
     if let Some(a) = align_buttons(ui, cur, tr) {
         let _ = app.run("type.para", json!({"attrs": {"align": a}}));
+    }
+    vsep(ui);
+    let rtl = para["direction"] == "rightToLeft";
+    let mut set_dir = None;
+    rows(ui, |ui, row| {
+        if row == 0 {
+            if icons::button(ui, "para-dir-ltr", 20.0, !rtl, &tr("Left-to-Right Paragraph Direction")).clicked() {
+                set_dir = Some(false);
+            }
+        } else if icons::button(ui, "para-dir-rtl", 20.0, rtl, &tr("Right-to-Left Paragraph Direction")).clicked() {
+            set_dir = Some(true);
+        }
+    });
+    if let Some(is_rtl) = set_dir {
+        crate::panels::properties::set_paragraph_direction(app, para, is_rtl);
     }
     vsep(ui);
     let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);

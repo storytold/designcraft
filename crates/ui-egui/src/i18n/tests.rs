@@ -7,6 +7,7 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("cs", cs::TABLE),
     ("de", de::TABLE),
     ("fr", fr::TABLE),
+    ("he", he::TABLE),
     ("hu", hu::TABLE),
     ("it", it::TABLE),
     ("ja", ja::TABLE),
@@ -22,6 +23,7 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
 const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
     ("ar", ar::CONTEXT),
     ("cs", cs::CONTEXT),
+    ("he", he::CONTEXT),
     ("hu", hu::CONTEXT),
     ("ja", ja::CONTEXT),
     ("pl", pl::CONTEXT),
@@ -344,6 +346,7 @@ fn a_column_count_and_a_list_number_read_differently() {
         ("de", "Anzahl:", "Zahl:"),
         ("ja", "数:", "番号:"),
         ("uk", "Кількість:", "Номер:"),
+        ("he", "כמות:", "מספר:"),
         ("ar", "العدد:", "الرقم:"),
         ("fr", "Nombre :", "Numéro:"),
         ("zh", "数量：", "编号："),
@@ -463,10 +466,20 @@ fn missing_translations_report() {
 }
 
 #[test]
-fn only_arabic_lays_out_right_to_left() {
+fn only_arabic_and_hebrew_lay_out_right_to_left() {
     for (code, _) in LANGUAGES {
-        assert_eq!(is_rtl(code), *code == "ar", "{code}");
+        assert_eq!(is_rtl(code), matches!(*code, "ar" | "he"), "{code}");
     }
+}
+
+#[test]
+fn hebrew_counts_of_one_use_the_singular() {
+    assert_eq!(count_label("he", "pages", 1), "1 עמוד");
+    assert_eq!(count_label("he", "pages", 5), "5 עמודים");
+    assert_eq!(count_label("he", "errors", 1), "1 שגיאה");
+    assert_eq!(count_label("he", "errors", 3), "3 שגיאות");
+    assert_eq!(count_label("he", "layers", 1), "1 שכבה");
+    assert_eq!(count_label("he", "layers", 2), "2 שכבות");
 }
 
 /// Built-in style and workspace names follow the interface language; names people give their

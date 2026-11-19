@@ -1,5 +1,5 @@
 use super::object::{open_color_picker, swatch_menu};
-use super::typography::{para_field_min, show_typography_panel};
+use super::typography::{CHARACTER_DIRECTIONS, DIACRITIC_POSITIONS, para_field_min, set_paragraph_direction, show_typography_panel};
 use super::{
     Align, DesignApp, FIELD_H, NumField, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, icon_toggle, icons, json, link_label,
     more_options, outline_button, place, pos2, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs, units, vec2, widgets,
@@ -335,6 +335,43 @@ fn character_more(app: &mut DesignApp, ui: &mut Ui, c: &Value, fw: f32) {
     if place(ui, sub(row, half + 10.0, 0.0, half, FIELD_H), |ui| widgets::outline_button(ui, &tr("OpenType"), half)).clicked() {
         show_typography_panel(app);
     }
+    // Character Direction and Diacritic Positioning (World-Ready).
+    ui.add_space(4.0);
+    let cdir = c["characterDirection"].as_str().unwrap_or("default").to_string();
+    let diac = c["diacriticPosition"].as_str().unwrap_or("default").to_string();
+    let row = block(ui, FIELD_H);
+    let cdir_label = CHARACTER_DIRECTIONS.iter().find(|o| o.0 == cdir).map_or("Default", |o| o.1);
+    let cdir_tip = tr("Character Direction");
+    let resp =
+        place(ui, sub(row, 0.0, 0.0, half, FIELD_H), |ui| widgets::dropdown(ui, crate::i18n::tr(&lang_ui, cdir_label), half)).on_hover_ui(|ui| {
+            crate::rtl::label(ui, cdir_tip.clone());
+        });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, &cdir_tip));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(half);
+        for (k, lbl) in CHARACTER_DIRECTIONS {
+            if ui.selectable_label(k == cdir, crate::rtl::widget(ui, crate::i18n::tr(&lang_ui, lbl))).clicked() {
+                let _ = app.run("type.char", json!({"attrs": {"characterDirection": k}}));
+                ui.close();
+            }
+        }
+    });
+    let diac_label = DIACRITIC_POSITIONS.iter().find(|o| o.0 == diac).map_or("Default", |o| o.1);
+    let diac_tip = tr("Diacritic Positioning");
+    let resp = place(ui, sub(row, half + 10.0, 0.0, half, FIELD_H), |ui| widgets::dropdown(ui, crate::i18n::tr(&lang_ui, diac_label), half))
+        .on_hover_ui(|ui| {
+            crate::rtl::label(ui, diac_tip.clone());
+        });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, &diac_tip));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(half);
+        for (k, lbl) in DIACRITIC_POSITIONS {
+            if ui.selectable_label(k == diac, crate::rtl::widget(ui, crate::i18n::tr(&lang_ui, lbl))).clicked() {
+                let _ = app.run("type.char", json!({"attrs": {"diacriticPosition": k}}));
+                ui.close();
+            }
+        }
+    });
     // The case and position buttons.
     ui.add_space(8.0);
     let caps = c["capitalization"].as_str().unwrap_or("normal").to_string();
@@ -405,6 +442,37 @@ pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
     });
+    ui.add_space(4.0);
+    let rtl = a["para"]["direction"] == "rightToLeft";
+    let cdir = a["chars"]["characterDirection"].as_str().unwrap_or("default").to_string();
+    let lang_ui = app.ui.language.clone();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (icon, is_rtl, tip) in
+            [("para-dir-ltr", false, "Left-to-Right Paragraph Direction"), ("para-dir-rtl", true, "Right-to-Left Paragraph Direction")]
+        {
+            if widgets::icon_toggle_sized(ui, icon, rtl == is_rtl, crate::i18n::tr(&lang_ui, tip), vec2(23.0, 21.0)).clicked() {
+                set_paragraph_direction(app, &a["para"], is_rtl);
+            }
+        }
+        ui.add_space(4.0);
+        let cdir_label = CHARACTER_DIRECTIONS.iter().find(|o| o.0 == cdir).map_or("Default", |o| o.1);
+        let cdir_tip = crate::i18n::tr(&lang_ui, "Character Direction").to_string();
+        let w = (fw - 58.0).max(90.0);
+        let resp = widgets::dropdown(ui, crate::i18n::tr(&lang_ui, cdir_label), w).on_hover_ui(|ui| {
+            crate::rtl::label(ui, cdir_tip.clone());
+        });
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, &cdir_tip));
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(w);
+            for (k, lbl) in CHARACTER_DIRECTIONS {
+                if ui.selectable_label(k == cdir, crate::rtl::widget(ui, crate::i18n::tr(&lang_ui, lbl))).clicked() {
+                    let _ = app.run("type.char", json!({"attrs": {"characterDirection": k}}));
+                    ui.close();
+                }
+            }
+        });
+    });
     let more = temp_bool(ui, "props_para_more", false);
     if more {
         paragraph_more(app, ui, &a["para"], fw);
@@ -462,6 +530,10 @@ fn paragraph_more(app: &mut DesignApp, ui: &mut Ui, p: &Value, fw: f32) {
             let _ = app.run("type.para", json!({"attrs": {"hyphenate": h}}));
         }
     });
+    let mut kashidas = p["kashidas"].as_bool().unwrap_or(false);
+    if widgets::checkbox(ui, &mut kashidas, &tr("Insert Kashidas")).changed() {
+        let _ = app.run("type.para", json!({"attrs": {"kashidas": kashidas}}));
+    }
     ui.add_space(4.0);
 }
 
@@ -542,6 +614,11 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
     let Some((fid, opts, shaped)) = text_frame_target(app) else { return };
+    let story_dir = app
+        .session
+        .active()
+        .and_then(|st| st.doc.item(fid).and_then(|i| i.text_frame()).and_then(|tf| st.doc.story(tf.story)))
+        .map(|s| s.direction);
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
     if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {
@@ -579,6 +656,20 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
     });
+    if let Some(story_dir) = story_dir {
+        ui.add_space(4.0);
+        let rtl = story_dir == designcraft_doc::TextDirection::RightToLeft;
+        ui.horizontal(|ui| {
+            widgets::caption(ui, crate::i18n::tr(&app.ui.language, "Story Direction"));
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if icon_toggle(ui, "story-dir-ltr", !rtl, crate::i18n::tr(&app.ui.language, "Left to Right")).clicked() && rtl {
+                let _ = app.run("story.setDirection", json!({"direction": "leftToRight"}));
+            }
+            if icon_toggle(ui, "story-dir-rtl", rtl, crate::i18n::tr(&app.ui.language, "Right to Left")).clicked() && !rtl {
+                let _ = app.run("story.setDirection", json!({"direction": "rightToLeft"}));
+            }
+        });
+    }
 }
 
 /// Inset Spacing under the columns: Top and Bottom, the link that makes all four the same, then

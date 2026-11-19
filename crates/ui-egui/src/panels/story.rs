@@ -28,6 +28,27 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("story.options", json!({"opticalMarginSize": size}));
             }
         });
+        ui.add_space(6.0);
+        let rtl_dir = options["direction"].as_str() == Some("rightToLeft");
+        ui.horizontal(|ui| {
+            widgets::caption(ui, &tr("Story Direction"));
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if widgets::icon_toggle(ui, "story-dir-ltr", !rtl_dir, &tr("Left to Right")).clicked() && rtl_dir {
+                let _ = app.run("story.setDirection", json!({"direction": "leftToRight"}));
+            }
+            if widgets::icon_toggle(ui, "story-dir-rtl", rtl_dir, &tr("Right to Left")).clicked() && !rtl_dir {
+                let _ = app.run("story.setDirection", json!({"direction": "rightToLeft"}));
+            }
+        });
+        let vertical = options["vertical"].as_bool().unwrap_or(false);
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!vertical, crate::rtl::widget(ui, tr("Horizontal"))).clicked() && vertical {
+                let _ = app.run("type.storyDirection", json!({"vertical": false}));
+            }
+            if ui.selectable_label(vertical, crate::rtl::widget(ui, tr("Vertical"))).clicked() && !vertical {
+                let _ = app.run("type.storyDirection", json!({"vertical": true}));
+            }
+        });
     });
 }
 

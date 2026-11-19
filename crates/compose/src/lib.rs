@@ -5328,7 +5328,13 @@ fn layout_line(
             Align::LeftJustified => Align::Left,
             Align::CenterJustified => Align::Center,
             Align::RightJustified => Align::Right,
-            Align::FullyJustified => Align::Left,
+            Align::FullyJustified => {
+                if pp.direction == designcraft_doc::TextDirection::RightToLeft {
+                    Align::Right
+                } else {
+                    Align::Left
+                }
+            }
             a => a,
         };
         offset = match last_align {
