@@ -844,7 +844,7 @@ pub(crate) fn compose_frames(
         warnings.push("Inset commentary remains after the final frame".into());
     }
     out.frames = merged;
-    out.overset_at = (start < story.text.len() || commentary_overset).then_some(start);
+    out.overset_at = out.overset_at.or((start < story.text.len() || commentary_overset).then_some(start));
     out.warnings.extend(warnings);
     let catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
     super::catchwords::place(doc, story, &mut out, frames, &catchwords);

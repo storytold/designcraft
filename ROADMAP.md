@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
+
 - **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)

@@ -89,6 +89,20 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn inset_preserves_unplaced_column_footnote_overset() {
+    let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
+    let text = "Unplaced column footnote line.\n".repeat(150);
+    doc.story_mut(sid).unwrap().insert_note(17, &text, Default::default()).unwrap();
+    let cs = compose_story(&doc, sid, &Default::default());
+    let story = doc.story(sid).unwrap();
+    assert_eq!(cs.frames.iter().map(|f| f.range.end).max(), Some(story.len()));
+    let parts: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.series == 0).collect();
+    assert!(!parts.is_empty(), "the column-foot note must start");
+    assert!(parts.iter().flat_map(|n| &n.text.frames).map(|f| f.range.end).max().unwrap() < text.len());
+    assert!(cs.is_overset(), "unplaced column-foot continuation must report overset");
+}
+
+#[test]
 fn standalone_route_beside_inset_preserves_note_order_and_all_source_text() {
     let (doc, sid, routes) = routed_document(90.0);
     let cs = compose_story(&doc, sid, &Default::default());

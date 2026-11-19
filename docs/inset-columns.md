@@ -47,7 +47,8 @@ Paragraph keeps treat same-page bands as one logical column; real page and colum
 retain their keep constraints.
 
 Commentary left after the final frame sets the same story overset signal used by document
-inspection and preflight, even when all main text fits.
+inspection and preflight, even when all main text fits. An unplaced column-footnote
+continuation also retains that signal after the accepted page slices are replayed.
 
 A stream series outside the inset's stream list can use standalone `noteStream` frames.
 Anchors feed the route on their page, in frame order, so a narrow column can continue into
