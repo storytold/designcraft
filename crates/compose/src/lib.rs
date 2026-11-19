@@ -1714,6 +1714,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
                 drop_align,
                 pp.drop_cap_keep_size,
                 (pp.drop_cap_scale, base_chars.size),
+                pp.drop_cap_offset,
                 pp.word_space_desired,
                 drop_tabs,
             );
@@ -2901,6 +2902,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         drop_align,
         pp.drop_cap_keep_size,
         (pp.drop_cap_scale, base_chars.size),
+        pp.drop_cap_offset,
         pp.word_space_desired,
         (&pp.tabs[..], drop_tab_indent),
     );
@@ -5797,6 +5799,7 @@ fn split_drop_cap(
     align_left: bool,
     keep_size: bool,
     scale: (f64, f64),
+    offset: f64,
     word_space: f64,
     tabs: (&[designcraft_doc::TabStop], f64),
 ) -> Option<DropCap> {
@@ -5948,6 +5951,8 @@ fn split_drop_cap(
         lines
     };
     let cap = if keep_size { -ink_top } else { dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max) };
+    // Offset changes placement only, after the body line bands and width are fixed.
+    let drop = drop + if offset.is_finite() { offset.clamp(-1.0, 2.0) * lead } else { 0.0 };
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap, descent: ink_bottom, kept: keep_size })
 }
 

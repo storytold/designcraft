@@ -460,6 +460,10 @@ fn paragraph_more(app: &mut DesignApp, ui: &mut Ui, p: &Value, fw: f32) {
         let _ = app.run("type.para", json!({"attrs": {"dropCapScale": v.clamp(0.0, 20.0)}}));
     }
     ui.label(tr("Drop Cap Body Size Multiplier (0 = off)"));
+    if let Some(v) = widgets::number(ui, "dropCapOffset", p["dropCapOffset"].as_f64(), "", 60.0, 2) {
+        let _ = app.run("type.para", json!({"attrs": {"dropCapOffset": v.clamp(-1.0, 2.0)}}));
+    }
+    ui.label(tr("Drop Cap Offset (line pitches)"));
     ui.horizontal(|ui| {
         // First Line Only is aligned too: the button shows it pressed, and a click turns alignment off.
         let grid = matches!(p["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));

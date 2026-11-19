@@ -6930,6 +6930,12 @@ fn drop_cap_fields(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value, cn
             d.fields.insert("p.dropCapScale".into(), json!(n.clamp(0.0, 20.0)));
         }
         ui.end_row();
+        crate::rtl::label(ui, crate::i18n::tr(lang, "Drop Cap Offset (line pitches):"));
+        let v = field_or(d, "p.dropCapOffset", &pv["dropCapOffset"]).as_f64();
+        if let Some(n) = crate::widgets::number(ui, "psdropCapOffset", v, "", 60.0, 2) {
+            d.fields.insert("p.dropCapOffset".into(), json!(n.clamp(-1.0, 2.0)));
+        }
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Character Style:"));
         let style = field_or(d, "p.dropCapStyle", &pv["dropCapStyle"]).as_str().unwrap_or("").to_string();
         let style = if style.is_empty() { designcraft_doc::NO_CHAR_STYLE.to_string() } else { style };

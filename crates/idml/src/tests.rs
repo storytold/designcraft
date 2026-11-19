@@ -1249,6 +1249,21 @@ fn explicitly_hidden_cell_edges_hide_the_default_table_border() {
 }
 
 #[test]
+fn warns_when_word_drop_or_offset_cannot_be_retained() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Opening word", ParaFormat::default()).unwrap();
+    assert!(export_idml_report(&d, &ExportOptions::default()).1.is_empty());
+    for attrs in [
+        designcraft_doc::ParaAttrs { drop_cap_words: Some(1), ..Default::default() },
+        designcraft_doc::ParaAttrs { drop_cap_offset: Some(0.5), ..Default::default() },
+    ] {
+        d.story_mut(sid).unwrap().paras[0].para = attrs;
+        assert!(export_idml_report(&d, &ExportOptions::default()).1.iter().any(|w| w.contains("word drop caps")));
+    }
+}
+
+#[test]
 fn round_trips_footnotes_and_options() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

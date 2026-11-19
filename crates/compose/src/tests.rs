@@ -5637,6 +5637,23 @@ fn keep_size_drop_cap_trailing_space_follows_word_spacing() {
 }
 
 #[test]
+fn drop_word_offset_preserves_body_baselines_and_indent() {
+    let (mut d, sid, _) = drop_doc(&"הדה הדה הדה ".repeat(40), ParaAttrs { drop_cap_words: Some(1), drop_cap_scale: Some(1.6), ..drop_cap(2, 0) });
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    for offset in [-1.0, 0.5, 2.0] {
+        d.story_mut(sid).unwrap().paras[0].para.drop_cap_offset = Some(offset);
+        let after = compose_story(&d, sid, &ComposeOptions::default());
+        let a = all_lines(&before);
+        let b = all_lines(&after);
+        let pitch = a[1].baseline - a[0].baseline;
+        assert!((b[0].drop_cap.unwrap().baseline - a[0].drop_cap.unwrap().baseline - offset * pitch).abs() < 0.01);
+        assert_eq!(a[0].baseline, b[0].baseline);
+        assert_eq!(a[1].glyphs[0].x, b[1].glyphs[0].x);
+        assert!((b[0].glyphs[0].y - a[0].glyphs[0].y - offset * pitch).abs() < 0.01);
+    }
+}
+
+#[test]
 fn s2c_inline_fixed_leading_pitch() {
     let text = format!("{LOREM} {LOREM}");
     let (mut d, sid, _) = drop_doc(&text, ParaAttrs::default());

@@ -277,6 +277,25 @@ fn idml_partial_dropcap_bits_resolve_both_style_and_paragraph_inheritance() {
 }
 
 #[test]
+fn drop_cap_offset_validates_and_round_trips() {
+    let mut s = setup();
+    let (_, sid) = frame(&mut s, "הדה הדה");
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":13})).unwrap();
+    for value in [json!(-1.1), json!(2.1), json!("NaN")] {
+        assert!(s.execute("type.para", &json!({"attrs":{"dropCapOffset":value}})).is_err());
+    }
+    for offset in [-1.0, 0.5, 2.0] {
+        s.execute("type.para", &json!({"attrs":{"dropCapOffset":offset}})).unwrap();
+        let back = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_offset, offset);
+    }
+    let mut doc = (*s.doc().unwrap().doc).clone();
+    doc.story_mut(StoryId(sid)).unwrap().paras[0].para.drop_cap_offset = Some(3.0);
+    let back = designcraft_format::load(&designcraft_format::save(&doc).unwrap()).unwrap();
+    assert_eq!(back.styles.resolve_para(&back.story(StoryId(sid)).unwrap().paras[0]).0.drop_cap_offset, 2.0);
+}
+
+#[test]
 fn drop_cap_keep_size_command_round_trips_and_undoes() {
     let mut s = setup();
     let (_, sid) = frame(&mut s, "הדה הדה");

@@ -172,6 +172,11 @@ fn percent(v: f64) -> String {
 /// the order of each row once the values are applied.
 pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
     use designcraft_doc::Align;
+    if let Some(v) = attrs.drop_cap_offset
+        && !(-1.0..=2.0).contains(&v)
+    {
+        return Err(bad(command_id, "dropCapOffset: -1 through 2 line pitches, finite only"));
+    }
     if let Some(v) = attrs.drop_cap_scale
         && !(0.0..=20.0).contains(&v)
     {

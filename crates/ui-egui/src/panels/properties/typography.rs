@@ -291,6 +291,10 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("type.para", json!({"attrs": {"dropCapScale": v.clamp(0.0, 20.0)}}));
     }
     ui.label(tr("Drop Cap Body Size Multiplier (0 = off)"));
+    if let Some(v) = widgets::number(ui, "dropCapOffset", p["dropCapOffset"].as_f64(), "", 60.0, 2) {
+        let _ = app.run("type.para", json!({"attrs": {"dropCapOffset": v.clamp(-1.0, 2.0)}}));
+    }
+    ui.label(tr("Drop Cap Offset (line pitches)"));
     // Shading and Border: on or off at the left; at the right the Paragraph Borders and Shading
     // dialog on its tab and the colour.
     ui.add_space(10.0);

@@ -42,6 +42,8 @@ attr_set! {
         /// Body-size multiplier, 0 disables it; (0, 20] implies Keep Size and overrides
         /// the drop cap character style's size.
         drop_cap_scale: f64 = 0.0,
+        /// Vertical drop in paragraph line pitches; moves only the cap, preserving body indents.
+        drop_cap_offset: f64 = 0.0 => "deserialize_drop_cap_offset",
         /// Nested styles, in order from the paragraph start.
         nested_styles: Vec<NestedStyle> = Vec::new(),
         /// GREP styles: a character style for every match of a pattern (applied after nested).
@@ -220,6 +222,19 @@ attr_set! {
         bullet_font: String = String::new(),
         bullet_font_style: String = String::new(),
     }
+}
+
+fn deserialize_drop_cap_offset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(Option::<f64>::deserialize(d)?.map(|v| if v.is_finite() { v.clamp(-1.0, 2.0) } else { 0.0 }))
+}
+
+#[test]
+fn loaded_drop_cap_offset_is_clamped() {
+    for (input, expected) in [(-3.0, -1.0), (0.5, 0.5), (3.0, 2.0)] {
+        let attrs: ParaAttrs = serde_json::from_value(serde_json::json!({"dropCapOffset": input})).unwrap();
+        assert_eq!(attrs.drop_cap_offset, Some(expected));
+    }
+    assert_eq!(ParaProps::default().drop_cap_offset, 0.0);
 }
 
 impl ParaAttrs {
