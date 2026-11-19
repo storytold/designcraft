@@ -3383,6 +3383,48 @@ fn table_reports_overset_when_every_remaining_column_has_footnotes() {
 }
 
 #[test]
+fn late_cell_footnote_reflows_earlier_columns_for_its_spanning_area() {
+    let text = "Body line.\n".repeat(16);
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 420.0, 200.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.footnote_options.span_columns = true;
+    d.footnote_options.space_before = 40.0;
+    let st = d.story_mut(sid).unwrap();
+    let mut table = designcraft_doc::Table::new(77, 1, 1, 0, 0, 180.0);
+    table.cells[0].text.insert(0, "Cell.");
+    st.insert_table(st.len(), table);
+    let plain = compose_story(&d, sid, &ComposeOptions::default());
+    let original = plain.frame(fid).unwrap();
+    assert!(!plain.is_overset());
+    assert_eq!(original.tables[0].column, 1);
+    let last_body = original.lines.iter().rfind(|l| l.column == 0).unwrap();
+
+    d.story_mut(sid).unwrap().table_mut(77).unwrap().cells[0].text.insert_note(4, "Late cell note.", ParaFormat::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = cs.frame(fid).unwrap();
+    assert_eq!(ft.tables.len(), 1);
+    assert_eq!(ft.tables[0].column, 1);
+    assert_eq!(ft.notes.len(), 1);
+    let note = &ft.notes[0];
+    assert_eq!(note.column, 1);
+    assert!((note.rect.x0 - ft.columns[0].x0).abs() < 0.01);
+    assert!((note.rect.x1 - ft.columns[1].x1).abs() < 0.01);
+    let top = note.rect.y0 - d.footnote_options.space_before;
+    assert!(last_body.baseline + last_body.descent > top + 0.01, "the note must cover the original last body line");
+    for line in &ft.lines {
+        assert!(
+            line.baseline + line.descent <= top + 0.01,
+            "column {} body bottom {} overlaps note area starting at {top}",
+            line.column,
+            line.baseline + line.descent
+        );
+    }
+    assert!(ft.lines.iter().any(|l| l.column == 1 && l.range == last_body.range), "the covered body line must reflow to column 2");
+    assert!(ft.tables[0].cells.iter().all(|c| c.rect.y1 <= top + 0.01));
+}
+
+#[test]
 fn table_cell_footnotes_share_the_column_foot_in_reading_order() {
     let (mut d, sid, fid) = doc_with("Before.\nAfter.", Rect::new(0.0, 0.0, 240.0, 400.0), ParaAttrs::default());
     let st = d.story_mut(sid).unwrap();

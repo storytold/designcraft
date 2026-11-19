@@ -11,7 +11,7 @@ use std::sync::Arc;
 use designcraft_doc::{Align, Cell, CellStroke, Document, ItemId, ParaProps, RowHeightMode, Table, TextFrameOptions, VerticalJustification};
 use designcraft_geom::{Point, Rect};
 
-use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line};
+use crate::{ComposeOptions, ComposedStory, Cursor, FrameSpec, Line, TableParagraphResult};
 
 /// A cell placed in a frame (frame inner space).
 #[derive(Clone, Debug)]
@@ -191,8 +191,8 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
     CellLayout { text: Arc::new(cs), content_h, line_heights, notes }
 }
 
-/// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
-/// when it doesn't fit the remaining frames (overset).
+/// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. A spanning
+/// cell note colliding with earlier columns requests the same story-level rewind as a body note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn place_table(
     doc: &Document,
@@ -206,9 +206,9 @@ pub(crate) fn place_table(
     out: &mut ComposedStory,
     notes: &mut crate::notes::Notes,
     opts: &ComposeOptions,
-) -> bool {
+) -> TableParagraphResult {
     if cur.fi >= frames.len() || table.nrows() == 0 || table.ncols() == 0 {
-        return false;
+        return TableParagraphResult::Overset;
     }
     let col_rect = |cur: &Cursor| cur.clip(cols[cur.fi][cur.col.min(cols[cur.fi].len() - 1)]);
     let mut col = col_rect(cur);
@@ -355,14 +355,18 @@ pub(crate) fn place_table(
         }
         v
     };
-    // ponytail: With Span Footnotes Across Columns, a cell note first placed in a later column
-    // does not re-lay earlier columns overlapping the enlarged area. Upgrade by routing through
-    // Notes::earlier_columns_collide and the story-level rewind path.
-    let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect| {
+    let place_cell_notes = |notes: &mut crate::notes::Notes, items: &[crate::notes::CellNote], cur: &Cursor, rect: Rect, out: &ComposedStory| {
         let column = note_column(notes, cols, cur.fi, cur.col, &frames[cur.fi], rect);
         for n in items {
             notes.place_cell(doc, n, column, opts);
         }
+        if !items.is_empty() {
+            let reserve = notes.reserve(doc, column, &[], opts);
+            if notes.earlier_columns_collide(&out.frames[cur.fi].lines, cur.fi, cur.col, &cols[cur.fi], reserve) {
+                return out.frames[cur.fi].lines.first().map(|l| l.para);
+            }
+        }
+        None
     };
     let mut r = header;
     loop {
@@ -386,13 +390,15 @@ pub(crate) fn place_table(
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
-                return false;
+                return TableParagraphResult::Overset;
             }
-            if pending_header {
-                place_cell_notes(notes, &cell_notes(0..header), cur, col);
+            if pending_header && let Some(j) = place_cell_notes(notes, &cell_notes(0..header), cur, col, out) {
+                return TableParagraphResult::Restart(j);
             }
             place_rows(r..ge, &mut y, false, &mut frag_rows);
-            place_cell_notes(notes, &group, cur, col);
+            if let Some(j) = place_cell_notes(notes, &group, cur, col, out) {
+                return TableParagraphResult::Restart(j);
+            }
             body_placed += 1;
             r = ge;
             continue;
@@ -401,7 +407,9 @@ pub(crate) fn place_table(
         if body_placed > 0 {
             if o.repeat_footer {
                 place_rows(body_end..nr, &mut y, true, &mut frag_rows);
-                place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
+                if let Some(j) = place_cell_notes(notes, &cell_notes(body_end..nr), cur, col, out) {
+                    return TableParagraphResult::Restart(j);
+                }
             }
             emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
             first_frag = false;
@@ -409,7 +417,7 @@ pub(crate) fn place_table(
         let was_first = first_frag;
         cur.next_column(cols);
         if cur.fi >= frames.len() {
-            return false;
+            return TableParagraphResult::Overset;
         }
         col = col_rect(cur);
         y = col.y0;
@@ -425,16 +433,21 @@ pub(crate) fn place_table(
             continue;
         }
     }
-    if body_placed == 0 && (first_frag || o.repeat_header) {
-        place_cell_notes(notes, &cell_notes(0..header), cur, col);
+    if body_placed == 0
+        && (first_frag || o.repeat_header)
+        && let Some(j) = place_cell_notes(notes, &cell_notes(0..header), cur, col, out)
+    {
+        return TableParagraphResult::Restart(j);
     }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    place_cell_notes(notes, &cell_notes(body_end..nr), cur, col);
+    if let Some(j) = place_cell_notes(notes, &cell_notes(body_end..nr), cur, col, out) {
+        return TableParagraphResult::Restart(j);
+    }
     emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
-    true
+    TableParagraphResult::Placed
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.

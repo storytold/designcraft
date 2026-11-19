@@ -1611,14 +1611,21 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     }
     let at_top = cursor.last_baseline.is_none();
     let start_at = (cursor.fi, cursor.col);
-    if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
-        if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
-            *balance_runs += 1;
+    match table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
+        TableParagraphResult::Placed => {}
+        TableParagraphResult::Restart(j) => {
             rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
             return TableParagraphResult::Restart(j);
         }
-        out.overset_at = Some(range_start);
-        return TableParagraphResult::Overset;
+        TableParagraphResult::Overset => {
+            if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
+                *balance_runs += 1;
+                rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
+                return TableParagraphResult::Restart(j);
+            }
+            out.overset_at = Some(range_start);
+            return TableParagraphResult::Overset;
+        }
     }
     info.push(ParaInfo {
         start: start_at,
