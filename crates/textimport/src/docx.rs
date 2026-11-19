@@ -487,6 +487,12 @@ fn append_blocks(ctx: &mut ImportContext<'_>, blocks: &[std::sync::Arc<Block>], 
 
 pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     let doc = craft_docx::read(bytes).map_err(|e| ImportError::Corrupt(e.to_string()))?;
+    Ok(import_document(&doc))
+}
+
+/// A craft-wordmodel document (read from Word, or from Markdown by craft-markdown) as a story with
+/// its styles.
+pub fn import_document(doc: &craft_wordmodel::Document) -> Imported {
     let (mut para_styles, mut char_styles, names) = style_records(&doc.styles);
     let builtin_styles = craft_wordmodel::styles::StyleSheet::builtin();
     let is_default_stylesheet = doc.styles.as_ref() == &builtin_styles;
@@ -511,7 +517,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
         .unwrap_or_else(|| BASIC_PARAGRAPH.into());
     let mut story = Story::new(StoryId(0));
     let mut ctx = ImportContext {
-        doc: &doc,
+        doc,
         names: &names,
         default_para,
         warned_objects: false,
@@ -541,7 +547,7 @@ pub fn import(bytes: &[u8]) -> Result<Imported, ImportError> {
     };
     keep(&mut para_styles, &used_p);
     keep(&mut char_styles, &used_c);
-    Ok(Imported { story, para_styles, char_styles, warnings: ctx.warnings })
+    Imported { story, para_styles, char_styles, warnings: ctx.warnings }
 }
 
 fn add_warning(warnings: &mut Vec<String>, message: String) {

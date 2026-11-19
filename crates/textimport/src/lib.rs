@@ -10,6 +10,7 @@
 
 mod docx;
 pub mod export;
+mod markdown;
 mod rtf;
 pub mod tagged;
 mod xlsx;
@@ -77,6 +78,9 @@ pub fn is_text_file(name: &str) -> bool {
 
 /// Import `bytes` (format from the file name, else sniffed).
 pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
+    if markdown::is_markdown(name) {
+        return markdown::import(bytes);
+    }
     match craft_file_formats::detect(name, bytes) {
         Some(craft_file_formats::Format::Xlsx) => return xlsx::import(bytes),
         Some(craft_file_formats::Format::Docx) => return docx::import(bytes),
@@ -117,6 +121,24 @@ mod tests {
     fn plain_text_drops_story_markers() {
         let i = import("a.txt", "a\u{E009}b\u{E000}c\u{E002}d".as_bytes()).unwrap();
         assert_eq!(i.story.text, "abcd");
+    }
+
+    #[test]
+    fn markdown_headings_emphasis_tables_and_quotes() {
+        let md = "# Capítulo\n\nTexto com **negrito** e *itálico*.\n\n> Citação.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let i = import("cap.md", md.as_bytes()).unwrap();
+        assert!(!i.story.text.contains('#') && !i.story.text.contains("**") && !i.story.text.contains('|'), "{}", i.story.text);
+        assert!(i.story.text.starts_with("Capítulo"));
+        let names: Vec<&str> = i.para_styles.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("Heading") || n.contains('1')), "{names:?}");
+        let at = i.story.text.find("negrito").unwrap();
+        assert_eq!(i.story.format_after(at).over.font_style.as_deref(), Some("Bold"));
+        assert!(i.story.text.contains("Citação"));
+        assert_eq!(i.story.tables.len(), 1, "the pipe table is a table, not text");
+        let table = i.story.tables.values().next().unwrap();
+        assert_eq!(table.cell(0, 1).unwrap().text.text.trim(), "B");
+        assert_eq!(table.cell(1, 0).unwrap().text.text.trim(), "1");
+        assert_eq!(import("cap.MARKDOWN", b"# T").unwrap().story.text.trim(), "T");
     }
 
     #[test]
