@@ -466,19 +466,19 @@ fn control_paragraph(
         let _ = app.run("type.para", json!({"attrs": {"align": a}}));
     }
     vsep(ui);
-    let rtl = para["direction"] == "rightToLeft";
+    let pdir = para["direction"].as_str();
     let mut set_dir = None;
     rows(ui, |ui, row| {
         if row == 0 {
-            if icons::button(ui, "para-dir-ltr", 20.0, !rtl, &tr("Left-to-Right Paragraph Direction")).clicked() {
+            if icons::button(ui, "para-dir-ltr", 20.0, pdir == Some("leftToRight"), &tr("Left-to-Right Paragraph Direction")).clicked() {
                 set_dir = Some(false);
             }
-        } else if icons::button(ui, "para-dir-rtl", 20.0, rtl, &tr("Right-to-Left Paragraph Direction")).clicked() {
+        } else if icons::button(ui, "para-dir-rtl", 20.0, pdir == Some("rightToLeft"), &tr("Right-to-Left Paragraph Direction")).clicked() {
             set_dir = Some(true);
         }
     });
     if let Some(is_rtl) = set_dir {
-        crate::panels::properties::set_paragraph_direction(app, para, is_rtl);
+        crate::panels::properties::set_paragraph_direction(app, is_rtl);
     }
     vsep(ui);
     let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);

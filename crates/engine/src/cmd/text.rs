@@ -24,14 +24,14 @@ pub(crate) use edit::delete_selection;
 pub use edit::{PLACEHOLDER, quote_marks};
 use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert};
 pub(crate) use format::{
-    Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_targets, format_targets_pub,
-    justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
+    Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_paras_with_options, format_targets,
+    format_targets_pub, justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
     validate_justification_order, validate_para_values,
 };
 use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
 use opentype::{open_type, open_type_features, set_features};
 pub(crate) use story::set_story_direction;
-use story::{selection_attrs, story_direction, story_options};
+use story::{selection_attrs, story_direction, story_options, target_stories};
 
 /// Build the text command registry: caret/selection movement, insertion/deletion, release, text and paragraph formatting, story queries, ruby and OpenType commands, with their parameters and enabled predicates.
 pub fn specs() -> Vec<CommandSpec> {
@@ -123,17 +123,22 @@ pub fn specs() -> Vec<CommandSpec> {
             "Story Column Direction",
             ["Type", "Story Column Direction"],
             None,
-            "{story?, frame?: a text frame of the story, direction: leftToRight|rightToLeft} — column progression, independent of paragraph direction",
+            "{story?, frame?: a text frame of the story (default: the stories of the selection), direction: leftToRight|rightToLeft} — column progression, independent of paragraph direction",
             has_doc,
             |s, p| {
-                let sid = story_of(s, p).ok_or_else(|| bad("story.setDirection", "no story"))?;
+                let stories = target_stories(s, p, "story.setDirection")?;
+                if stories.is_empty() {
+                    return Err(bad("story.setDirection", "no story"));
+                }
                 let direction: designcraft_doc::TextDirection =
                     serde_json::from_value(p.get("direction").cloned().ok_or_else(|| bad("story.setDirection", "missing direction"))?)
                         .map_err(|e| bad("story.setDirection", e.to_string()))?;
                 s.edit(|d, _| {
-                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                    st.direction = direction;
-                    st.rev = st.rev.wrapping_add(1);
+                    for sid in &stories {
+                        let st = d.story_mut(*sid).ok_or(designcraft_doc::DocError::NoStory(*sid))?;
+                        st.direction = direction;
+                        st.rev = st.rev.wrapping_add(1);
+                    }
                     ok()
                 })
             }
@@ -235,9 +240,28 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{mirrorAlign?: bool, attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
             has_text_or_frames,
-            |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
+            |s, p| {
+                let mirror = match p.get("mirrorAlign") {
+                    None | Some(Value::Null) => false,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("type.para", "`mirrorAlign` must be a bool"))?,
+                };
+                let owned;
+                let attrs = if let Some(a) = p.get("attrs") {
+                    a
+                } else if let Some(obj) = p.as_object()
+                    && obj.contains_key("mirrorAlign")
+                {
+                    let mut m = obj.clone();
+                    m.remove("mirrorAlign");
+                    owned = Value::Object(m);
+                    &owned
+                } else {
+                    p
+                };
+                format_paras_with_options(s, attrs, mirror)
+            }
         ),
         cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
             let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;

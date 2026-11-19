@@ -3167,12 +3167,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
 ];
 
 #[allow(dead_code)]
-pub(super) const CONTEXT: &[(&str, &str, &str)] = &[
-    ("Columns", "table", "עמודות"),
-    ("Columns:", "grid", "עמודות:"),
-    ("Group", "selection", "קבוצה"),
-    ("Number:", "count", "כמות:"),
-];
+pub(super) const CONTEXT: &[(&str, &str, &str)] =
+    &[("Columns", "table", "עמודות"), ("Columns:", "grid", "עמודות:"), ("Group", "selection", "קבוצה"), ("Number:", "count", "כמות:")];
 
 /// Singular forms for counts of exactly one ("1 עמוד", not "1 עמודים"); other counts use `TABLE`.
 pub(super) const SINGULARS: &[(&str, &str)] = &[

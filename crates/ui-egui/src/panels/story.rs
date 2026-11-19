@@ -29,23 +29,27 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         });
         ui.add_space(6.0);
-        let rtl_dir = options["direction"].as_str() == Some("rightToLeft");
+        let dir = options["direction"].as_str();
+        let is_ltr = dir == Some("leftToRight");
+        let is_rtl = dir == Some("rightToLeft");
         ui.horizontal(|ui| {
             widgets::caption(ui, &tr("Story Direction"));
             ui.spacing_mut().item_spacing.x = 4.0;
-            if widgets::icon_toggle(ui, "story-dir-ltr", !rtl_dir, &tr("Left to Right")).clicked() && rtl_dir {
+            if widgets::icon_toggle(ui, "story-dir-ltr", is_ltr, &tr("Left to Right")).clicked() && !is_ltr {
                 let _ = app.run("story.setDirection", json!({"direction": "leftToRight"}));
             }
-            if widgets::icon_toggle(ui, "story-dir-rtl", rtl_dir, &tr("Right to Left")).clicked() && !rtl_dir {
+            if widgets::icon_toggle(ui, "story-dir-rtl", is_rtl, &tr("Right to Left")).clicked() && !is_rtl {
                 let _ = app.run("story.setDirection", json!({"direction": "rightToLeft"}));
             }
         });
-        let vertical = options["vertical"].as_bool().unwrap_or(false);
+        let vertical = options["vertical"].as_bool();
+        let is_horiz = vertical == Some(false);
+        let is_vert = vertical == Some(true);
         ui.horizontal(|ui| {
-            if ui.selectable_label(!vertical, crate::rtl::widget(ui, tr("Horizontal"))).clicked() && vertical {
+            if ui.selectable_label(is_horiz, crate::rtl::widget(ui, tr("Horizontal"))).clicked() && !is_horiz {
                 let _ = app.run("type.storyDirection", json!({"vertical": false}));
             }
-            if ui.selectable_label(vertical, crate::rtl::widget(ui, tr("Vertical"))).clicked() && !vertical {
+            if ui.selectable_label(is_vert, crate::rtl::widget(ui, tr("Vertical"))).clicked() && !is_vert {
                 let _ = app.run("type.storyDirection", json!({"vertical": true}));
             }
         });

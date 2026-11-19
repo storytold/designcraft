@@ -443,16 +443,17 @@ pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
         }
     });
     ui.add_space(4.0);
-    let rtl = a["para"]["direction"] == "rightToLeft";
+    let pdir = a["para"]["direction"].as_str();
     let cdir = a["chars"]["characterDirection"].as_str().unwrap_or("default").to_string();
     let lang_ui = app.ui.language.clone();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (icon, is_rtl, tip) in
-            [("para-dir-ltr", false, "Left-to-Right Paragraph Direction"), ("para-dir-rtl", true, "Right-to-Left Paragraph Direction")]
-        {
-            if widgets::icon_toggle_sized(ui, icon, rtl == is_rtl, crate::i18n::tr(&lang_ui, tip), vec2(23.0, 21.0)).clicked() {
-                set_paragraph_direction(app, &a["para"], is_rtl);
+        for (icon, target_dir, is_rtl, tip) in [
+            ("para-dir-ltr", "leftToRight", false, "Left-to-Right Paragraph Direction"),
+            ("para-dir-rtl", "rightToLeft", true, "Right-to-Left Paragraph Direction"),
+        ] {
+            if widgets::icon_toggle_sized(ui, icon, pdir == Some(target_dir), crate::i18n::tr(&lang_ui, tip), vec2(23.0, 21.0)).clicked() {
+                set_paragraph_direction(app, is_rtl);
             }
         }
         ui.add_space(4.0);
@@ -614,11 +615,8 @@ pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let u = units(app);
     let Some((fid, opts, shaped)) = text_frame_target(app) else { return };
-    let story_dir = app
-        .session
-        .active()
-        .and_then(|st| st.doc.item(fid).and_then(|i| i.text_frame()).and_then(|tf| st.doc.story(tf.story)))
-        .map(|s| s.direction);
+    let story_dir =
+        app.session.active().and_then(|st| st.doc.item(fid).and_then(|i| i.text_frame()).and_then(|tf| st.doc.story(tf.story))).map(|s| s.direction);
     let b = block(ui, FIELD_H);
     icons::paint(ui.painter(), sub(b, 0.0, 1.0, 19.0, 19.0), "text-columns", t.icon);
     if let Some(v) = place(ui, sub(b, 22.0, 0.0, 54.0, FIELD_H), |ui| {

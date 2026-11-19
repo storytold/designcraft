@@ -5329,7 +5329,7 @@ fn layout_line(
             Align::CenterJustified => Align::Center,
             Align::RightJustified => Align::Right,
             Align::FullyJustified => {
-                if pp.direction == designcraft_doc::TextDirection::RightToLeft {
+                if seg_justifies && pp.direction == designcraft_doc::TextDirection::RightToLeft {
                     Align::Right
                 } else {
                     Align::Left

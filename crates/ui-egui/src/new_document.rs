@@ -365,12 +365,7 @@ fn cards(app: &DesignApp, tab: &str) -> Vec<Card> {
                 .filter_map(|p| {
                     NewDocument::from_preset(p.name).map(|mut nd| {
                         nd.right_to_left_binding = rtl_default;
-                        Card {
-                            key: p.name.into(),
-                            label: crate::i18n::tr(lang, p.name).into(),
-                            nd,
-                            custom: false,
-                        }
+                        Card { key: p.name.into(), label: crate::i18n::tr(lang, p.name).into(), nd, custom: false }
                     })
                 })
                 .collect()

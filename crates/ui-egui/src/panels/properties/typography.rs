@@ -277,14 +277,15 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     place(ui, sub(b, fw - 20.0, 0.0, 20.0, 21.0), |ui| crate::menus::menu_button(ui, "☰", |ui| paragraph_panel_menu(app, ui, &p)));
     ui.add_space(4.0);
     // Paragraph Direction (World-Ready): Left-to-Right (¶→) and Right-to-Left (←¶).
-    let rtl = p["direction"] == "rightToLeft";
+    let dir = p["direction"].as_str();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (icon, is_rtl, tip) in
-            [("para-dir-ltr", false, "Left-to-Right Paragraph Direction"), ("para-dir-rtl", true, "Right-to-Left Paragraph Direction")]
-        {
-            if widgets::icon_toggle_sized(ui, icon, rtl == is_rtl, &tr(tip), vec2(23.0, 21.0)).clicked() {
-                set_paragraph_direction(app, &p, is_rtl);
+        for (icon, target_dir, is_rtl, tip) in [
+            ("para-dir-ltr", "leftToRight", false, "Left-to-Right Paragraph Direction"),
+            ("para-dir-rtl", "rightToLeft", true, "Right-to-Left Paragraph Direction"),
+        ] {
+            if widgets::icon_toggle_sized(ui, icon, dir == Some(target_dir), &tr(tip), vec2(23.0, 21.0)).clicked() {
+                set_paragraph_direction(app, is_rtl);
             }
         }
     });
@@ -610,11 +611,10 @@ pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2
 /// paragraph's direction), Left-to-Right, or Right-to-Left.
 pub const CHARACTER_DIRECTIONS: [(&str, &str); 3] = [("default", "Default"), ("leftToRight", "Left-to-Right"), ("rightToLeft", "Right-to-Left")];
 
-/// The Diacritic Positioning choices (World-Ready): Default, None, Loose, Medium, Tight, OpenType,
+/// The Diacritic Positioning choices (World-Ready): Default, Loose, Medium, Tight, OpenType,
 /// or OpenType from Baseline.
-pub const DIACRITIC_POSITIONS: [(&str, &str); 7] = [
+pub const DIACRITIC_POSITIONS: [(&str, &str); 6] = [
     ("default", "Default"),
-    ("none", "None"),
     ("loose", "Loose"),
     ("medium", "Medium"),
     ("tight", "Tight"),
@@ -622,21 +622,11 @@ pub const DIACRITIC_POSITIONS: [(&str, &str); 7] = [
     ("openTypeFromBaseline", "OpenType from Baseline"),
 ];
 
-/// Set paragraph direction (`leftToRight` or `rightToLeft`), mirroring left/right alignment as in
-/// InDesign ME.
-pub fn set_paragraph_direction(app: &mut DesignApp, p: &Value, rtl: bool) {
+/// Set paragraph direction (`leftToRight` or `rightToLeft`), mirroring left/right alignment per
+/// target paragraph as in InDesign ME.
+pub fn set_paragraph_direction(app: &mut DesignApp, rtl: bool) {
     let dir = if rtl { "rightToLeft" } else { "leftToRight" };
-    if (p["direction"] == "rightToLeft") == rtl {
-        return;
-    }
-    let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
-        Align::Left if rtl => Align::Right,
-        Align::Right if !rtl => Align::Left,
-        Align::LeftJustified if rtl => Align::RightJustified,
-        Align::RightJustified if !rtl => Align::LeftJustified,
-        a => a,
-    };
-    let _ = app.run("type.para", json!({"attrs": {"direction": dir, "align": align}}));
+    let _ = app.run("type.para", json!({"attrs": {"direction": dir}, "mirrorAlign": true}));
 }
 
 /// The Digits choices: (value, caption, sample of 0–3). The values are the file format's:
