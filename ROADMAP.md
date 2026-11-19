@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
+
 - **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
 
 - **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.

@@ -121,10 +121,11 @@ fn search<T>(
     keys: &[usize],
     budget: usize,
     mut probe: impl FnMut(usize) -> Result<(usize, bool, T), super::Error>,
-) -> Result<(Option<T>, usize), super::Error> {
+) -> Result<(Option<T>, usize, bool), super::Error> {
     let (mut lo, mut hi) = (0, keys.len());
     let mut best: Option<(usize, T)> = None;
     let mut used = 0;
+    let mut proved = Vec::new();
     // Feasibility can be nonmonotone. Keep a full-page success before a failed
     // midpoint can exclude it from the bounded search.
     if budget > 0
@@ -132,19 +133,22 @@ fn search<T>(
     {
         let (cut, feasible, trial) = probe(key)?;
         used += 1;
+        proved.push(key);
         hi = hi.saturating_sub(1);
         if feasible {
             if cut == key {
-                return Ok((Some(trial), used));
+                return Ok((Some(trial), used, false));
             }
             best = Some((cut, trial));
         }
     }
-    while lo < hi && used < budget {
+    // Reserve the final trial for progress if no cut fits, or verification if one does.
+    while lo < hi && used < budget.saturating_sub(1) {
         let mid = lo + (hi - lo) / 2;
         let Some(&key) = keys.get(mid) else { break };
         let (cut, feasible, trial) = probe(key)?;
         used += 1;
+        proved.push(key);
         if feasible {
             if best.as_ref().is_none_or(|(previous, _)| cut > *previous) {
                 best = Some((cut, trial));
@@ -154,7 +158,27 @@ fn search<T>(
             hi = mid;
         }
     }
-    Ok((best.map(|(_, trial)| trial), used))
+    // A failed midpoint cannot rule out larger keys when feasibility is nonmonotone.
+    let mut exhausted = false;
+    for &key in keys.iter().rev() {
+        let Some((cut, _)) = &best else { break };
+        if key <= *cut {
+            break;
+        }
+        if proved.contains(&key) {
+            continue;
+        }
+        if used >= budget {
+            exhausted = true;
+            break;
+        }
+        let (cut, feasible, trial) = probe(key)?;
+        used += 1;
+        if feasible && best.as_ref().is_none_or(|(previous, _)| cut > *previous) {
+            best = Some((cut, trial));
+        }
+    }
+    Ok((best.map(|(_, trial)| trial), used, exhausted))
 }
 
 struct Page<'a> {
@@ -512,11 +536,17 @@ impl Page<'_> {
             return self.trial(self.start, false);
         }
         let budget = if keys.is_empty() { 2 } else { usize::BITS as usize - keys.len().saturating_sub(1).leading_zeros() as usize + 2 };
-        let (best, _) = search(&keys, budget.saturating_sub(1), |key| {
+        let (best, _, exhausted) = search(&keys, budget, |key| {
             let trial = self.probe(key, false)?;
             Ok((trial.cut, trial.feasible && trial.cut > self.start, trial))
         })?;
-        if let Some(best) = best {
+        if let Some(mut best) = best {
+            if exhausted {
+                best.warnings.push(format!(
+                    "Inset cut verification exhausted the trial budget on page {}; retaining the best proven cut",
+                    self.frame.page.unwrap_or(0).saturating_add(1)
+                ));
+            }
             return Ok(best);
         }
         self.progress_probe()
@@ -855,9 +885,49 @@ pub(crate) fn compose_frames(
 mod search_tests {
     use super::*;
     #[test]
+    fn interior_nonmonotone_fit_checks_larger_unproved_keys_within_budget() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 5, |key| {
+            probes.push(key);
+            Ok((key, key == 2 || key == 6, key))
+        })
+        .unwrap();
+        assert!(used <= 5);
+        assert_eq!(used, probes.len());
+        assert_eq!(best, Some(6), "probed {probes:?}");
+        assert!(!exhausted);
+    }
+    #[test]
+    fn verification_budget_exhaustion_keeps_the_best_proven_cut() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 5, |key| {
+            probes.push(key);
+            Ok((key, key == 2 || key == 5, key))
+        })
+        .unwrap();
+        assert_eq!(best, Some(2));
+        assert_eq!(used, 5);
+        assert_eq!(probes, [7, 4, 2, 3, 6]);
+        assert!(exhausted);
+    }
+    #[test]
+    fn verification_proves_all_larger_failures_without_repeating_probes() {
+        let mut probes = Vec::new();
+        let (best, used, exhausted) = search(&[1, 2, 3, 4, 5, 6, 7], 6, |key| {
+            probes.push(key);
+            Ok((key, key == 2, key))
+        })
+        .unwrap();
+        assert_eq!(best, Some(2));
+        assert_eq!(used, 6);
+        assert_eq!(probes, [7, 4, 2, 3, 6, 5]);
+        assert!(!exhausted);
+    }
+    #[test]
     fn full_page_fit_survives_nonmonotone_feasibility() {
-        let (best, _) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
+        let (best, _, exhausted) = search(&[1, 2, 3, 4, 5], 4, |key| Ok((key, key == 1 || key == 5, key))).unwrap();
         assert_eq!(best, Some(5));
+        assert!(!exhausted);
     }
     #[test]
     fn catchword_row_is_committed_once_and_can_wait_for_a_wider_band() {
@@ -879,7 +949,7 @@ mod search_tests {
             let keys: Vec<_> = (1..=count).collect();
             let budget = usize::BITS as usize - count.saturating_sub(1).leading_zeros() as usize + 2;
             let mut measured = Vec::new();
-            let (best, used) = search(&keys, budget, |key| {
+            let (best, used, _) = search(&keys, budget, |key| {
                 let feasible = key % 3 != 0;
                 measured.push((key, feasible));
                 Ok((key, feasible, key))

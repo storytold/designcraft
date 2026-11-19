@@ -60,6 +60,9 @@ fixed page slices and rounds its cut to a whole main line from that layout. It r
 longest cut actually measured feasible, with that exact geometry, rather than assuming
 feasibility is monotone. Search plus the progress probe has a budget of ceil(log2(keys)) + 2
 probes. The full-page key is tried first so nonmonotone feasibility cannot hide a full-page fit.
+After the midpoint search accepts a cut, remaining larger keys are checked in descending
+order within the same budget. If verification cannot finish, composition retains the best
+proven cut and reports a trial-budget warning.
 Each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
 may take a page with no main text only when it shrinks. An impossible start can overflow only
 on the actual first main line; later anchors move with their main text.
