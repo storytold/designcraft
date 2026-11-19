@@ -1,5 +1,5 @@
 use super::common::{bool_s, p, pct, pkg_root, with_props};
-use super::item::{Group, text_frame_pref};
+use super::item::text_frame_pref;
 use super::story::with_list_tab;
 use super::{
     CHAR_BUILTINS, El, Ex, NO_PARA_ID, OBJECT_BUILTINS, PARA_BUILTINS, Rule, TOC_STYLE_ID, TOC_STYLE_NAME, document, escape_id, names, num, st,
@@ -14,7 +14,7 @@ impl<'a> Ex<'a> {
         let mut root = pkg_root("Styles");
 
         // Character styles.
-        let mut cg = Group::default();
+        let mut cg = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Character, self.fresh());
         for cs in &styles.character {
             let id = names::style_self("CharacterStyle", CHAR_BUILTINS, &cs.name);
             let mut el =
@@ -28,14 +28,16 @@ impl<'a> Ex<'a> {
                 }
                 self.char_attrs(&mut el, &mut props, &cs.chars);
             }
-            cg.insert(&cs.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = styles.export_tag(&cs.name, true) {
+                el.push(self.export_tag_map(t));
+            }
+            cg.insert(&cs.name, crate::xml::to_craft(&el));
         }
-        let mut rc = El::new("RootCharacterStyleGroup").attr("Self", self.fresh());
-        cg.emit(&mut rc, "CharacterStyleGroup", "");
-        root.push(rc);
+        root.push(crate::xml::from_craft(cg.to_el()));
 
         // Paragraph styles.
-        let mut pg = Group::default();
+        let mut pg = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Paragraph, self.fresh());
         for ps in &styles.paragraph {
             let id = names::style_self("ParagraphStyle", PARA_BUILTINS, &ps.name);
             let mut el =
@@ -65,14 +67,17 @@ impl<'a> Ex<'a> {
             let pa = with_list_tab(pa, || (styles.resolve_para_style(&ps.name).0, parent_props));
             self.para_attrs(&mut el, &mut props, &pa, parent);
             self.char_attrs(&mut el, &mut props, &ca);
-            if styles.export_tag(&ps.name, false).is_some_and(|t| t.split) {
+            let tag = styles.export_tag(&ps.name, false);
+            if tag.is_some_and(|t| t.split) {
                 el.set("SplitDocument", "true");
             }
-            pg.insert(&ps.name, with_props(el, props));
+            let mut el = with_props(el, props);
+            if let Some(t) = tag {
+                el.push(self.export_tag_map(t));
+            }
+            pg.insert(&ps.name, crate::xml::to_craft(&el));
         }
-        let mut rp = El::new("RootParagraphStyleGroup").attr("Self", self.fresh());
-        pg.emit(&mut rp, "ParagraphStyleGroup", "");
-        root.push(rp);
+        root.push(crate::xml::from_craft(pg.to_el()));
 
         self.append_cell_styles(&mut root, &styles);
         self.append_table_styles(&mut root, &styles);
@@ -88,7 +93,7 @@ impl<'a> Ex<'a> {
         }
 
         // Object styles.
-        let mut og = Group::default();
+        let mut og = craft_idml::model::StyleGroupWriter::new(craft_idml::model::StyleKind::Object, self.fresh());
         let mut have: Vec<&str> = styles.object.iter().map(|o| o.name.as_str()).collect();
         let defaults = designcraft_doc::Styles::default();
         let mut all: Vec<designcraft_doc::ObjectStyle> = styles.object.clone();
@@ -112,6 +117,13 @@ impl<'a> Ex<'a> {
             el.set("EnableStroke", bool_s(os.stroke.is_some()));
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
+            el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            if let Some(c) = &os.corners {
+                for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
+                    el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
+                    el.set(&format!("{n}CornerRadius"), num(c.size));
+                }
+            }
             if let Some(f) = &os.fill {
                 el.set("FillColor", self.sw(&f.swatch));
                 el.set("FillTint", pct(f.tint as f64));
@@ -121,6 +133,7 @@ impl<'a> Ex<'a> {
             }
             if let Some(ps) = &os.paragraph_style {
                 el.set("AppliedParagraphStyle", names::style_self("ParagraphStyle", PARA_BUILTINS, ps));
+                el.set("ApplyNextParagraphStyle", bool_s(os.apply_next_style));
             }
             let mut el = with_props(el, props);
             if let Some(e) = &os.effects {
@@ -148,15 +161,19 @@ impl<'a> Ex<'a> {
                     .attr("EnableDirectionalFeather", "false")
                     .attr("EnableGradientFeather", "false"),
             );
-            og.insert(&os.name, el);
+            og.insert(&os.name, crate::xml::to_craft(&el));
         }
-        let mut ro = El::new("RootObjectStyleGroup").attr("Self", self.fresh());
-        og.emit(&mut ro, "ObjectStyleGroup", "");
-        root.push(ro);
+        root.push(crate::xml::from_craft(og.to_el()));
         if let Some(toc) = d.toc.as_ref().filter(|t| d.story(t.story).is_some()) {
             root.push(self.toc_style_el(toc));
         }
         document(&root)
+    }
+
+    /// A style's Export Tagging as its EPUB export tag map.
+    fn export_tag_map(&mut self, t: &designcraft_doc::ExportTag) -> El {
+        let model = craft_idml::model::EpubExportTagMap { tag: t.tag.clone(), class: t.class.clone(), split_document: t.split };
+        crate::xml::from_craft(model.to_el(&self.fresh()))
     }
 
     fn append_cell_styles(&mut self, root: &mut El, styles: &designcraft_doc::Styles) {
@@ -173,14 +190,18 @@ impl<'a> Ex<'a> {
             if let Some(t) = cs.fill_tint {
                 el.set("FillTint", pct(t as f64));
             }
+            let inset_names =
+                [("TextTopInset", "TopInset"), ("TextLeftInset", "LeftInset"), ("TextBottomInset", "BottomInset"), ("TextRightInset", "RightInset")];
             if let Some(i) = cs.insets {
-                for (k, v) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(i) {
-                    el.set(k, num(v));
+                for ((text, old), v) in inset_names.iter().zip(i) {
+                    el.set(text, num(v));
+                    el.set(old, num(v));
                 }
             }
-            for (key, value) in ["TopInset", "LeftInset", "BottomInset", "RightInset"].iter().zip(cs.inset_overrides) {
+            for ((text, old), value) in inset_names.iter().zip(cs.inset_overrides) {
                 if let Some(value) = value {
-                    el.set(key, num(value));
+                    el.set(text, num(value));
+                    el.set(old, num(value));
                 }
             }
             if let Some(vj) = cs.vj {

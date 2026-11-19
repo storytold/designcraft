@@ -1,6 +1,6 @@
 //! Hand (H) and Zoom (Z) tools.
 
-use designcraft_geom::Point;
+use designcraft_geom::{Point, Rect};
 use serde_json::json;
 
 use crate::{Action, Cursor, Mods, Overlay, PointerEvent, PointerKind, Tool, ToolContext};
@@ -112,6 +112,8 @@ impl Tool for ZoomTool {
 pub struct PlaceGun {
     start: Option<Point>,
     cur: Point,
+    columns: usize,
+    rows: usize,
 }
 
 impl Tool for PlaceGun {
@@ -122,6 +124,8 @@ impl Tool for PlaceGun {
         match ev.kind {
             PointerKind::Down => {
                 self.start = Some(ev.pos);
+                self.columns = 1;
+                self.rows = 1;
                 self.cur = ev.pos;
                 vec![]
             }
@@ -136,16 +140,23 @@ impl Tool for PlaceGun {
                 let click = (ev.pos - a).hypot() < cx.tol(3.0);
                 if click
                     && let Some((_, id)) = cx.hit(a)
-                    && cx
-                        .doc
-                        .item(id)
-                        .is_some_and(|i| matches!(i.content, designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_)))
+                    && cx.doc.item(id).is_some_and(|i| i.path.encloses_area() && i.takes_graphic())
                 {
                     return vec![Action::Exec("place.drop".into(), json!({"frame": id.0}))];
                 }
-                // Under the drag threshold it's a click, as the overlay shows: actual size there.
+                // Under the drag threshold it's a click, as the overlay shows: actual size there
+                // (the next queued image, with several loaded).
                 if click {
                     return vec![Action::Exec("place.drop".into(), json!({"spread": crate::spread_json(sr), "x": sa.x, "y": sa.y}))];
+                }
+                // Arrow keys during the drag set a grid: the queued images fill its cells. A drag
+                // too small for the grid's cells places one frame instead, as the overlay shows.
+                let r = designcraft_geom::Rect::from_points(sa, b);
+                if !grid_cells(r, self.columns, self.rows).is_empty() {
+                    return vec![Action::Exec(
+                        "place.grid".into(),
+                        json!({"spread": crate::spread_json(sr), "rect": [r.x0, r.y0, r.x1, r.y1], "columns": self.columns, "rows": self.rows, "gutter": PLACE_GRID_GUTTER}),
+                    )];
                 }
                 // The frame the drag drew: at the graphic's proportions from where it started.
                 let r = cx.loaded.map_or_else(|| designcraft_geom::Rect::from_points(sa, b), |size| proportional(sa, b, size).0);
@@ -157,14 +168,65 @@ impl Tool for PlaceGun {
             _ => vec![],
         }
     }
+    fn busy(&self) -> bool {
+        self.start.is_some()
+    }
+    fn key(&mut self, cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
+        use crate::ToolKey;
+        // Escape drops the current image and loads the next; `place.cancel` clears them all. With
+        // nothing loaded there is nothing to drop: Escape only leaves the tool.
+        if key == ToolKey::Escape {
+            self.start = None;
+            if cx.loaded.is_none() {
+                return vec![Action::SwitchTool("selection".into())];
+            }
+            return vec![Action::Exec("place.skip".into(), json!({}))];
+        }
+        // During a drag the arrow keys change the grid, and are handled even when it is already
+        // at its limit, so they don't go on to nudge the selection.
+        if self.start.is_some() {
+            match key {
+                ToolKey::Right => self.columns = (self.columns + 1).min(100),
+                ToolKey::Left => self.columns = self.columns.saturating_sub(1).max(1),
+                ToolKey::Up => self.rows = (self.rows + 1).min(100),
+                ToolKey::Down => self.rows = self.rows.saturating_sub(1).max(1),
+                _ => return vec![],
+            }
+            return vec![Action::Handled];
+        }
+        // Between drags the arrows cycle the loaded images, and don't nudge the selection.
+        let dir = match key {
+            ToolKey::Right | ToolKey::Down => 1,
+            ToolKey::Left | ToolKey::Up => -1,
+            _ => return vec![],
+        };
+        if cx.loaded.is_none() {
+            return vec![];
+        }
+        vec![Action::Exec("place.cycle".into(), json!({"dir": dir}))]
+    }
     fn overlays(&self, cx: &ToolContext) -> Vec<crate::Overlay> {
         let Some(a) = self.start else { return vec![] };
+        // Under the drag threshold the release is a click (actual size where it was pressed):
+        // no frame is drawn yet, the loaded cursor shows what lands.
+        let click = (self.cur - a).hypot() < cx.tol(3.0);
+        // A grid draws its cells; one too small for them falls back to the single frame, as the
+        // release does. The cells are the release's, worked out on the spread: on a rotated spread
+        // its columns don't run across the canvas.
+        if !click && let Some((sr, sa)) = cx.layout.spread_at(a) {
+            let cells = grid_cells(designcraft_geom::Rect::from_points(sa, cx.layout.to_spread(sr, self.cur)), self.columns, self.rows);
+            if !cells.is_empty() {
+                let on_canvas = |x: f64, y: f64| cx.layout.to_canvas(sr, Point::new(x, y));
+                return cells
+                    .into_iter()
+                    .map(|c| crate::Overlay::Marquee(designcraft_geom::Rect::from_points(on_canvas(c.x0, c.y0), on_canvas(c.x1, c.y1))))
+                    .collect();
+            }
+        }
         let Some(size) = cx.loaded else {
             return vec![crate::Overlay::Marquee(designcraft_geom::Rect::from_points(a, self.cur))];
         };
-        // Under the drag threshold the release is a click (actual size where it was pressed):
-        // no frame is drawn yet, the loaded cursor shows what lands.
-        if (self.cur - a).hypot() < cx.tol(3.0) {
+        if click {
             return vec![];
         }
         // As InDesign: the frame the graphic will fill, and its scale beside the pointer.
@@ -181,13 +243,6 @@ Y: {pct}"
             },
         ]
     }
-    fn key(&mut self, _cx: &ToolContext, key: crate::ToolKey, _mods: Mods) -> Vec<Action> {
-        match key {
-            // Escape unloads the place cursor.
-            crate::ToolKey::Escape => vec![Action::SwitchTool("selection".into())],
-            _ => vec![],
-        }
-    }
     fn cursor(&self, cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {
         // Drawing the frame: the crosshair (the loaded graphic's thumbnail would hide the frame).
         // Under the drag threshold no frame is drawn yet (the release is a click), so the
@@ -196,6 +251,34 @@ Y: {pct}"
         let drawing = cx.loaded.is_none() || self.start.is_some_and(|a| (self.cur - a).hypot() >= cx.tol(3.0));
         if drawing { Cursor::Crosshair } else { Cursor::LoadedGraphic }
     }
+}
+
+/// The gutter between place-grid cells, in points. The tool sends it with `place.grid`, so the
+/// preview and what lands can't disagree if the command's default changes.
+const PLACE_GRID_GUTTER: f64 = 6.0;
+
+/// The cells of a `columns` × `rows` place grid drawn over `rect`, [`PLACE_GRID_GUTTER`] apart, as
+/// `place.grid` lays them out. None for a 1 × 1 grid, or when `rect` is too small for the cells to
+/// have a positive size: then the drag places one frame.
+fn grid_cells(rect: designcraft_geom::Rect, columns: usize, rows: usize) -> Vec<designcraft_geom::Rect> {
+    let (columns, rows) = (columns.clamp(1, 100), rows.clamp(1, 100));
+    if columns == 1 && rows == 1 {
+        return vec![];
+    }
+    let w = (rect.width() - PLACE_GRID_GUTTER * (columns - 1) as f64) / columns as f64;
+    let h = (rect.height() - PLACE_GRID_GUTTER * (rows - 1) as f64) / rows as f64;
+    if !(w > 0.0 && h > 0.0) {
+        return vec![];
+    }
+    (0..rows)
+        .flat_map(|row| {
+            (0..columns).map(move |column| {
+                let x = rect.x0 + column as f64 * (w + PLACE_GRID_GUTTER);
+                let y = rect.y0 + row as f64 * (h + PLACE_GRID_GUTTER);
+                designcraft_geom::Rect::new(x, y, x + w, y + h)
+            })
+        })
+        .collect()
 }
 
 /// A dragged frame `place.drop` takes only when it is wider and taller than this, in points;
@@ -305,7 +388,9 @@ fn liquid_control_points(cx: &ToolContext, r: designcraft_geom::Rect) -> [(Liqui
 /// A page handle being dragged.
 #[derive(Clone, Copy, Debug)]
 struct PageDrag {
-    /// Absolute page index.
+    spread: designcraft_doc::SpreadRef,
+    parent: Option<designcraft_doc::SpreadId>,
+    /// Page index within the spread.
     page: usize,
     /// Reference-point index of the handle (0–8, row-major; 4 is the centre and has none).
     handle: usize,
@@ -353,6 +438,9 @@ impl PageTool {
     fn liquid_target(
         cx: &ToolContext,
     ) -> Option<(designcraft_doc::ItemId, designcraft_doc::ObjectLiquid, designcraft_geom::Rect, designcraft_geom::Rect)> {
+        if cx.layout.slots.first().is_some_and(|s| matches!(s.spread, designcraft_doc::SpreadRef::Parent(_))) {
+            return None;
+        }
         let page = cx.selection.page?;
         let [id] = cx.selection.items.as_slice() else { return None };
         let (si, _) = cx.doc.page_loc(page)?;
@@ -372,17 +460,16 @@ impl PageTool {
     }
 
     /// The selected page's handle under `p`.
-    fn handle_at(&self, cx: &ToolContext, p: Point) -> Option<(usize, usize)> {
-        let page = cx.selection.page?;
-        let r = cx.layout.page_rect(cx.doc, page)?;
-        page_handles(r).find(|(_, h)| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0)).map(|(i, _)| (page, i))
+    fn handle_at(&self, cx: &ToolContext, p: Point) -> Option<(designcraft_doc::SpreadRef, usize, usize)> {
+        let (sr, page) = cx.layout.selected_page(cx.doc, cx.selection)?;
+        let r = cx.layout.spread_page_rect(cx.doc, sr, page)?;
+        page_handles(r).find(|(_, h)| (h.x - p.x).abs() <= cx.tol(5.0) && (h.y - p.y).abs() <= cx.tol(5.0)).map(|(i, _)| (sr, page, i))
     }
 
     /// The new page size for the drag at `p`: the handle's edges follow the pointer (Shift: in
     /// proportion).
     fn size_at(cx: &ToolContext, d: &PageDrag, p: Point, shift: bool) -> (f64, f64) {
-        let si = cx.doc.page_loc(d.page).map_or(0, |l| l.0);
-        let v = cx.layout.delta_to_spread(designcraft_doc::SpreadRef::Doc(si), p - d.start);
+        let v = cx.layout.delta_to_spread(d.spread, p - d.start);
         let (col, row) = (d.handle % 3, d.handle / 3);
         let dx = match col {
             0 => -v.x,
@@ -417,10 +504,21 @@ impl Tool for PageTool {
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
             PointerKind::Down => {
-                if let Some((page, handle)) = self.handle_at(cx, ev.pos) {
-                    let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-                    let pg = &cx.doc.spreads[si].pages[pi];
-                    self.drag = Some(PageDrag { page, handle, start: ev.pos, cur: ev.pos, size: (pg.width, pg.height), alt: ev.mods.alt });
+                if let Some((spread, page, handle)) = self.handle_at(cx, ev.pos) {
+                    let Some(pg) = cx.doc.spread(spread).and_then(|sp| sp.pages.get(page)) else { return vec![] };
+                    self.drag = Some(PageDrag {
+                        spread,
+                        parent: match spread {
+                            designcraft_doc::SpreadRef::Parent(si) => cx.doc.parents.get(si).map(|sp| sp.id),
+                            _ => None,
+                        },
+                        page,
+                        handle,
+                        start: ev.pos,
+                        cur: ev.pos,
+                        size: (pg.width, pg.height),
+                        alt: ev.mods.alt,
+                    });
                     return vec![Action::Begin("Resize Page".into())];
                 }
                 // An object-based page's object: a click on a pin or lock toggles it.
@@ -429,7 +527,18 @@ impl Tool for PageTool {
                 }
                 // A click selects the page under the pointer (none on the pasteboard), and on an
                 // object-based page the object clicked too.
-                let page = (0..cx.doc.page_count()).find(|p| cx.layout.page_rect(cx.doc, *p).is_some_and(|r| r.contains(ev.pos)));
+                let target = cx.layout.page_at(cx.doc, ev.pos);
+                if let Some((designcraft_doc::SpreadRef::Parent(si), page)) = target {
+                    let Some(sp) = cx.doc.parents.get(si) else { return vec![] };
+                    return vec![Action::Exec("layout.selectParentPage".into(), json!({"parent": sp.id.0, "page": page}))];
+                }
+                if cx.layout.slots.first().is_some_and(|s| matches!(s.spread, designcraft_doc::SpreadRef::Parent(_))) {
+                    return vec![Action::Exec("layout.selectParentPage".into(), json!({"parent": null}))];
+                }
+                let page = target.and_then(|(sr, pi)| match sr {
+                    designcraft_doc::SpreadRef::Doc(si) => Some(cx.doc.first_page_of_spread(si) + pi),
+                    _ => None,
+                });
                 let object = page
                     .filter(|p| object_based(cx.doc, *p))
                     .and_then(|p| cx.hit(ev.pos).map(|(_, id)| id).filter(|id| cx.doc.page_of_item(*id) == Some(p)));
@@ -443,9 +552,21 @@ impl Tool for PageTool {
                 let Some(d) = self.drag.as_mut() else { return vec![] };
                 d.cur = ev.pos;
                 d.alt |= ev.mods.alt;
-                let d = *d;
+                let mut d = *d;
+                if let Some(id) = d.parent {
+                    let Some(si) = cx.doc.parent_index(id) else {
+                        self.drag = None;
+                        return vec![Action::Cancel];
+                    };
+                    d.spread = designcraft_doc::SpreadRef::Parent(si);
+                }
                 let (w, h) = Self::size_at(cx, &d, ev.pos, ev.mods.shift);
-                vec![Action::Preview("layout.pageSize".into(), json!({"pages": [d.page + 1], "width": w, "height": h, "anchor": 8 - d.handle}))]
+                let Some((cmd, params)) =
+                    crate::layout::page_size_command(cx.doc, d.spread, d.page, json!({"width": w, "height": h, "anchor": 8 - d.handle}))
+                else {
+                    return vec![];
+                };
+                vec![Action::Preview(cmd.into(), params)]
             }
             PointerKind::Up => match self.drag.take() {
                 // Alt-drag resizes; a plain drag previews the liquid rule and springs back.
@@ -455,12 +576,12 @@ impl Tool for PageTool {
             },
             PointerKind::DoubleClick => {
                 // Exact sizes: the Page Size dialog for the page.
-                let Some(page) = (0..cx.doc.page_count()).find(|p| cx.layout.page_rect(cx.doc, *p).is_some_and(|r| r.contains(ev.pos))) else {
+                let Some((sr, pi)) = cx.layout.page_at(cx.doc, ev.pos) else { return vec![] };
+                let Some(pg) = cx.doc.spread(sr).and_then(|sp| sp.pages.get(pi)) else { return vec![] };
+                let Some((cmd, params)) = crate::layout::page_size_command(cx.doc, sr, pi, json!({"width": pg.width, "height": pg.height})) else {
                     return vec![];
                 };
-                let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-                let pg = &cx.doc.spreads[si].pages[pi];
-                vec![Action::Dialog("cmd:layout.pageSize".into(), json!({"pages": [page + 1], "width": pg.width, "height": pg.height}))]
+                vec![Action::Dialog(format!("cmd:{cmd}"), params)]
             }
             PointerKind::Move => {
                 self.hover = Self::control_at(cx, ev.pos).map(|(_, _, c)| (c, ev.pos));
@@ -469,10 +590,9 @@ impl Tool for PageTool {
         }
     }
     fn overlays(&self, cx: &ToolContext) -> Vec<Overlay> {
-        let Some(page) = cx.selection.page else { return vec![] };
-        let Some(r) = cx.layout.page_rect(cx.doc, page) else { return vec![] };
-        let Some((si, pi)) = cx.doc.page_loc(page) else { return vec![] };
-        let pg = &cx.doc.spreads[si].pages[pi];
+        let Some((sr, pi)) = cx.layout.selected_page(cx.doc, cx.selection) else { return vec![] };
+        let Some(r) = cx.layout.spread_page_rect(cx.doc, sr, pi) else { return vec![] };
+        let Some(pg) = cx.doc.spread(sr).and_then(|sp| sp.pages.get(pi)) else { return vec![] };
         let mut v = vec![Overlay::PageHandles(r), Overlay::Tag { p: Point::new(r.x0, r.y0 - cx.tol(6.0)), text: rule_label(pg.liquid).into() }];
         if let Some((_, l, object, page)) = Self::liquid_target(cx) {
             v.push(Overlay::LiquidPins {
@@ -501,7 +621,7 @@ impl Tool for PageTool {
         if self.drag.is_none() && Self::control_at(cx, p).is_some() {
             return Cursor::Hand;
         }
-        let handle = self.drag.map(|d| d.handle).or_else(|| self.handle_at(cx, p).map(|(_, h)| h));
+        let handle = self.drag.map(|d| d.handle).or_else(|| self.handle_at(cx, p).map(|(_, _, h)| h));
         match handle {
             Some(1 | 7) => Cursor::ResizeV,
             Some(3 | 5) => Cursor::ResizeH,
@@ -539,13 +659,70 @@ impl Tool for PathTypeTool {
     }
 }
 
+struct GapDrag {
+    vertical: bool,
+    a: f64,
+    z: f64,
+    cross_lo: f64,
+    cross_hi: f64,
+    min_delta: f64,
+    max_delta: f64,
+    x_edges: [bool; 3],
+    y_edges: [bool; 3],
+    exclude: Vec<designcraft_doc::ItemId>,
+}
+
+impl GapDrag {
+    fn from_doc(doc: &designcraft_doc::Document, sr: designcraft_doc::SpreadRef, p: Point) -> Option<Self> {
+        let g = doc.find_gap(sr, p)?;
+        let mut exclude = Vec::with_capacity(g.before.len() + g.after.len());
+        exclude.extend_from_slice(&g.before);
+        exclude.extend_from_slice(&g.after);
+        let (mut cross_lo, mut cross_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for id in &exclude {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let (lo, hi) = if g.vertical { (b.y0, b.y1) } else { (b.x0, b.x1) };
+                cross_lo = cross_lo.min(lo);
+                cross_hi = cross_hi.max(hi);
+            }
+        }
+        if !cross_lo.is_finite() || !cross_hi.is_finite() {
+            let c = if g.vertical { p.y } else { p.x };
+            cross_lo = c;
+            cross_hi = c;
+        }
+        let mut min_delta = f64::NEG_INFINITY;
+        for id in &g.before {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let limit = if g.vertical { b.x0 + 1.0 - b.x1 } else { b.y0 + 1.0 - b.y1 };
+                min_delta = min_delta.max(limit);
+            }
+        }
+        let mut max_delta = f64::INFINITY;
+        for id in &g.after {
+            if let Some(it) = doc.item(*id) {
+                let b = it.bounds();
+                let limit = if g.vertical { b.x1 - 1.0 - b.x0 } else { b.y1 - 1.0 - b.y0 };
+                max_delta = max_delta.min(limit);
+            }
+        }
+        let flags = [!g.before.is_empty(), !g.before.is_empty() && !g.after.is_empty(), !g.after.is_empty()];
+        let (x_edges, y_edges) = if g.vertical { (flags, [false; 3]) } else { ([false; 3], flags) };
+        Some(Self { vertical: g.vertical, a: g.a, z: g.z, cross_lo, cross_hi, min_delta, max_delta, x_edges, y_edges, exclude })
+    }
+}
+
 /// Gap tool (U): drag the space between objects (or between an object and the page edge); the
 /// objects on both sides resize so the gap moves.
 #[derive(Default)]
 pub struct GapTool {
     /// Spread, its spread → canvas transform and the press point in spread coordinates.
     start: Option<(designcraft_doc::SpreadRef, designcraft_geom::Affine, Point)>,
+    gap: Option<GapDrag>,
     active: bool,
+    guides: Vec<Overlay>,
 }
 
 impl Tool for GapTool {
@@ -556,15 +733,18 @@ impl Tool for GapTool {
     fn pointer(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
         match ev.kind {
             PointerKind::Down => {
+                self.guides.clear();
+                self.gap = None;
                 if let Some((sr, p)) = cx.layout.spread_at(ev.pos) {
                     self.start = Some((sr, cx.layout.xf(sr), p));
+                    self.gap = GapDrag::from_doc(cx.doc, sr, p);
                 }
                 self.active = false;
                 vec![]
             }
             PointerKind::Drag => {
                 let Some((sr, xf, p)) = self.start else { return vec![] };
-                let d = (xf.inverse() * ev.pos) - p;
+                let mut d = (xf.inverse() * ev.pos) - p;
                 let mut out = vec![];
                 if !self.active {
                     if d.hypot() < cx.tol(2.0) {
@@ -572,6 +752,45 @@ impl Tool for GapTool {
                     }
                     self.active = true;
                     out.push(Action::Begin("Move Gap".into()));
+                }
+                self.guides.clear();
+                if !ev.mods.cmd
+                    && cx.snap.any()
+                    && let Some(gap) = &self.gap
+                {
+                    let raw = if gap.vertical { d.x } else { d.y };
+                    let proposed = if gap.vertical {
+                        Rect::new(gap.a + raw, gap.cross_lo, gap.z + raw, gap.cross_hi)
+                    } else {
+                        Rect::new(gap.cross_lo, gap.a + raw, gap.cross_hi, gap.z + raw)
+                    };
+                    let hit = crate::snap::snap(
+                        cx,
+                        crate::SnapRequest {
+                            spread: sr,
+                            gesture: crate::Gesture::Resize,
+                            rect: proposed,
+                            x_edges: gap.x_edges,
+                            y_edges: gap.y_edges,
+                            exclude: &gap.exclude,
+                            exclude_guides: &[],
+                            copying: false,
+                            lengths: [None, None],
+                            angle: None,
+                            radius: 0.0,
+                            pointer: p + d,
+                        },
+                    );
+                    let snap_delta = if gap.vertical { hit.delta.x } else { hit.delta.y };
+                    let snapped = raw + snap_delta;
+                    if snap_delta.is_finite() && snapped >= gap.min_delta - 1e-6 && snapped <= gap.max_delta + 1e-6 {
+                        if gap.vertical {
+                            d.x = snapped;
+                        } else {
+                            d.y = snapped;
+                        }
+                        self.guides = hit.guides;
+                    }
                 }
                 out.push(Action::Preview(
                     "gap.move".into(),
@@ -581,10 +800,16 @@ impl Tool for GapTool {
             }
             PointerKind::Up => {
                 self.start = None;
+                self.gap = None;
+                self.guides.clear();
                 if std::mem::take(&mut self.active) { vec![Action::Commit] } else { vec![] }
             }
             _ => vec![],
         }
+    }
+
+    fn overlays(&self, _cx: &ToolContext) -> Vec<Overlay> {
+        self.guides.clone()
     }
 
     fn cursor(&self, _cx: &ToolContext, _p: Point, _m: Mods) -> Cursor {

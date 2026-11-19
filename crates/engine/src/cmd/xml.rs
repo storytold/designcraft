@@ -29,9 +29,9 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     for (si, sp) in d.spreads.iter().enumerate() {
         let first = d.first_page_of_spread(si);
         for top in &sp.items {
-            top.walk(&mut |it: &Item| {
+            top.walk_placed(&mut |it: &Item, outer| {
                 if keep(it) {
-                    let b = it.bounds();
+                    let b = it.placed_bounds(outer);
                     let page = first + sp.page_at_x(b.center().x).unwrap_or(0);
                     keyed.push(((page, (b.y0 * 10.0) as i64, (b.x0 * 10.0) as i64), it.id));
                 }
@@ -40,6 +40,23 @@ fn in_reading_order(d: &Document, keep: impl Fn(&Item) -> bool) -> Vec<ItemId> {
     }
     keyed.sort_by_key(|(k, _)| *k);
     keyed.into_iter().map(|(_, i)| i).collect()
+}
+
+/// Objects on the document pages whose centre lies on a page, not on the pasteboard.
+fn on_pages(d: &Document) -> std::collections::HashSet<ItemId> {
+    let mut out = std::collections::HashSet::new();
+    for sp in &d.spreads {
+        for top in &sp.items {
+            // Placed by their groups' transforms: a group moved onto a page brings its frames.
+            top.walk_placed(&mut |it: &Item, outer| {
+                let c = it.placed_bounds(outer).center();
+                if sp.pages.iter().any(|pg| c.x >= pg.x && c.x <= pg.x + pg.width && c.y >= 0.0 && c.y <= pg.height) {
+                    out.insert(it.id);
+                }
+            });
+        }
+    }
+    out
 }
 
 /// `text` for text frames, `image` for frames holding a graphic and empty graphic frames, `None`
@@ -55,7 +72,7 @@ fn frame_kind(it: &Item) -> Option<&'static str> {
 }
 
 /// `xml.autoTag`: tags text and graphic frames on the document pages, by their Layers panel name
-/// when that is a valid XML name, otherwise `text_1`, `image_1`, … in reading order.
+/// when that is a valid XML name no other frame has, otherwise `text_1`, `image_1`, … in reading order.
 fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "xml.autoTag";
     let kinds: Vec<String> = match p.get("kinds") {
@@ -70,11 +87,14 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
     let use_names = bool_or(p, "useNames", true);
     let d = &s.doc()?.doc;
     let wanted = |it: &Item| frame_kind(it).is_some_and(|k| kinds.iter().any(|w| w == k)) && (overwrite || it.xml_tag.is_empty());
-    let ids = in_reading_order(d, wanted);
-    // Numbers already taken by tags that stay, so `text_3` isn't given twice.
+    // Frames on the pasteboard aren't the page's: they would take numbers before frames on it.
+    let on_page = on_pages(d);
+    let ids: Vec<ItemId> = in_reading_order(d, wanted).into_iter().filter(|id| on_page.contains(id)).collect();
+    let retagged: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+    // Tags that stay, so neither `text_3` nor a frame's name is given twice.
     let mut used: std::collections::HashSet<String> = in_reading_order(d, |it| !it.xml_tag.is_empty())
         .into_iter()
-        .filter(|i| !ids.contains(i))
+        .filter(|i| !retagged.contains(i))
         .filter_map(|i| d.item(i))
         .map(|it| it.xml_tag.clone())
         .collect();
@@ -84,7 +104,7 @@ fn auto_tag(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(it) = d.item(id) else { continue };
         let Some(kind) = frame_kind(it) else { continue };
         let name = it.name.trim();
-        let tag = if use_names && valid_name(name) {
+        let tag = if use_names && valid_name(name) && !used.contains(name) {
             name.to_string()
         } else {
             let counter = next.iter_mut().find(|(k, _)| *k == kind).map(|(_, n)| n);
@@ -138,10 +158,13 @@ fn plain(t: &str) -> String {
 }
 
 /// A paragraph's text with inline-tagged runs as elements.
-fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
+/// `runs` are the story's runs in order (collected once per story): only those reaching the
+/// paragraph are visited, found by binary search.
+fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
     let mut out = String::new();
     let mut open: Option<String> = None;
-    for (rr, f) in st.runs() {
+    let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+    for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
         let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
         if a >= b {
             continue;
@@ -175,8 +198,10 @@ pub fn export_xml(d: &Document) -> String {
                 let Some(st) = d.story(tf.story) else { continue };
                 let mapped = |style: &str| d.xml.style_map.iter().find(|(s, _)| s == style).map(|(_, t)| t.clone());
                 // Paragraph text with inline tags already escaped.
-                let paras: Vec<(Option<String>, String)> =
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, r))).collect();
+                let paras: Vec<(Option<String>, String)> = {
+                    let runs: Vec<_> = st.runs().collect();
+                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, &runs, r))).collect()
+                };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
                     for (m, text) in paras {
@@ -192,7 +217,7 @@ pub fn export_xml(d: &Document) -> String {
             }
             Content::Graphic(g) => {
                 let name = d.assets.get(&g.asset).map(|a| a.link.clone().unwrap_or_else(|| a.name.clone())).unwrap_or_default();
-                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&name)));
+                out.push_str(&format!("  <{tag} href=\"file://{}\"/>\n", esc(&href_escape(&name))));
             }
             _ => out.push_str(&format!("  <{tag}/>\n")),
         }
@@ -216,20 +241,16 @@ struct Image {
     crop: Option<String>,
 }
 
-/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`, unescaped.
-fn image_attrs(e: &quick_xml::events::BytesStart) -> std::result::Result<Option<Image>, String> {
-    let (mut href, mut fit, mut crop) = (None, None, None);
-    for a in e.attributes() {
-        let a = a.map_err(|e| e.to_string())?;
-        let slot = match a.key.local_name().as_ref() {
-            b"href" => &mut href,
-            b"fit" => &mut fit,
-            b"crop" => &mut crop,
-            _ => continue,
-        };
-        *slot = Some(a.normalized_value(quick_xml::XmlVersion::Implicit1_0).map_err(|e| e.to_string())?.to_string());
-    }
-    Ok(href.map(|href| Image { href, fit, crop }))
+/// The element's image: its `href` (also `xlink:href`), `fit` and `crop`.
+fn image_attrs(e: &craft_xml::El) -> Option<Image> {
+    let get = |name: &str| e.attr_local(name).map(str::to_string);
+    get("href").map(|href| Image { href, fit: get("fit"), crop: get("crop") })
+}
+
+/// A file path as it goes into a `file://` href: `%` and spaces escaped, so [`href_path`]'s one
+/// decoding gives the path back (`rate%20.png` stays itself).
+fn href_escape(path: &str) -> String {
+    path.replace('%', "%25").replace(' ', "%20")
 }
 
 /// A file path from an `href`: `file://` URLs (with `%20` escapes) or plain paths, relative ones
@@ -246,11 +267,18 @@ fn href_path(href: &str, base: Option<&std::path::Path>) -> String {
     let decoded = percent_decode(p);
     let path = std::path::Path::new(&decoded);
     match base {
-        Some(b) if path.is_relative() && !decoded.starts_with('/') && !decoded.starts_with('\\') => b.join(path).to_string_lossy().to_string(),
+        Some(b) if path.is_relative() && !decoded.starts_with(['/', '\\']) && !has_drive(&decoded) => b.join(path).to_string_lossy().to_string(),
         _ => decoded,
     }
 }
 
+/// `C:/x.png` or `C:\x.png`: absolute, also where `Path` knows no drive letters.
+fn has_drive(p: &str) -> bool {
+    let b = p.as_bytes();
+    b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+}
+
+/// `%XX` escapes decoded; a `%` without two hex digits stays as it is.
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -271,67 +299,45 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+/// How deep elements may nest: deeper XML is refused rather than built (and dropped) recursively.
+const MAX_XML_DEPTH: usize = 64;
+
+/// The elements under the root.
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
-    use quick_xml::events::Event;
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut depth = 0usize;
-    let mut out: Vec<Element> = Vec::new();
-    let mut child: Option<(String, String)> = None;
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                depth += 1;
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![], image: image_attrs(&e)? }),
-                    3 => child = Some((name, String::new())),
-                    _ => {}
-                }
+    fn descendant_text(element: &craft_xml::El, into: &mut String) {
+        for node in &element.children {
+            match node {
+                craft_xml::Node::Text(text) | craft_xml::Node::CData(text) => into.push_str(text),
+                craft_xml::Node::El(child) => descendant_text(child, into),
+                craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
             }
-            Event::Empty(e) if depth == 1 => {
-                out.push(Element {
-                    name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
-                    text: String::new(),
-                    children: vec![],
-                    image: image_attrs(&e)?,
-                });
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                match (depth, child.as_mut(), out.last_mut()) {
-                    (3.., Some(c), _) => c.1.push_str(&s),
-                    (2, _, Some(el)) => el.text.push_str(&s),
-                    _ => {}
-                }
-            }
-            Event::End(_) => {
-                if depth == 3
-                    && let (Some(c), Some(el)) = (child.take(), out.last_mut())
-                {
-                    el.children.push(c);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
-    Ok(out)
+
+    let mut options = craft_xml::Options::local();
+    options.strict = true;
+    // The root and its elements' children sit two levels down; deeper XML is refused.
+    options.limits.max_depth = MAX_XML_DEPTH;
+    let root = options.parse(xml.as_bytes()).map_err(|e| e.to_string())?;
+    root.elements()
+        .map(|element| {
+            let mut children = Vec::new();
+            for child in element.elements() {
+                let mut text = String::new();
+                descendant_text(child, &mut text);
+                children.push((child.name.clone(), text));
+            }
+            let mut text = String::new();
+            for node in &element.children {
+                match node {
+                    craft_xml::Node::Text(value) | craft_xml::Node::CData(value) => text.push_str(value),
+                    craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+                    craft_xml::Node::El(_) => {}
+                }
+            }
+            Ok(Element { name: element.name.clone(), text, children, image: image_attrs(element) })
+        })
+        .collect()
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -422,7 +428,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Tag Frames",
             [],
             None,
-            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
+            "{kinds?: [text, image] (default both), overwrite?: bool (retag tagged frames; default false), useNames?: bool (a valid XML Layers panel name is the tag unless another frame has it; default true)} — untagged frames on document pages get their name or text_1, image_1, … in reading order → {tagged: [{id, tag, kind}]}",
             has_doc,
             auto_tag
         ),
@@ -496,8 +502,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let dtd = crate::dtd::parse(&text).map_err(|e| bad("xml.loadDtd", e))?;
                 let names: Vec<String> = dtd.element_names().map(str::to_string).collect();
                 s.edit(|d, _| {
+                    // The tags there are, then those added: one set, not a search per element.
+                    let mut known: std::collections::HashSet<String> = d.xml.tags.iter().map(|t| t.name.clone()).collect();
                     for n in &names {
-                        if valid_name(n) && !d.xml.tags.iter().any(|t| t.name == *n) {
+                        if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
                             d.xml.tags.push(XmlTag { name: n.clone(), color });
                         }
@@ -590,7 +598,8 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     let reverse: Vec<(String, String)> = d.xml.style_map.iter().map(|(st, t)| (t.clone(), st.clone())).collect();
     let mut fills: Vec<(StoryId, Vec<(Option<String>, String)>)> = Vec::new();
-    let mut images: Vec<(ItemId, String, Image)> = Vec::new();
+    // Images by tag, in order: each takes a frame only once it is placed in it.
+    let mut images: Vec<(String, Image)> = Vec::new();
     // Elements without a free frame of their tag, and those tags (once each, in order).
     let mut unmatched = 0;
     let mut unmatched_tags: Vec<String> = Vec::new();
@@ -602,12 +611,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     };
     for mut el in elements {
         if let Some(image) = el.image.take() {
-            let Some(slot) = image_slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
-                miss(&el.name);
-                continue;
-            };
-            slot.2 = true;
-            images.push((slot.1, el.name, image));
+            images.push((el.name, image));
             continue;
         }
         let Some(slot) = slots.iter_mut().find(|(t, _, used)| *t == el.name && !used) else {
@@ -631,8 +635,22 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Each image fills its frame proportionally unless `fit` says otherwise; `crop` picks a PDF's
     // box. One that can't be placed is reported and the rest of the import goes on.
+    // A frame whose image failed stays free for the next element of its tag.
     let mut failed: Vec<Value> = Vec::new();
-    for (frame, tag, image) in images {
+    for (tag, image) in images {
+        // The next free frame of the tag that can take an image: a locked one (or one on a locked
+        // layer) only when no other is left, so it doesn't hold back the frames after it.
+        let at = {
+            let d = &s.doc()?.doc;
+            let locked = |id: ItemId| d.item(id).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked));
+            let free = |(t, id, used): &&(String, ItemId, bool)| *t == tag && !used && !locked(*id);
+            image_slots.iter().position(|x| free(&x)).or_else(|| image_slots.iter().position(|(t, _, used)| *t == tag && !used))
+        };
+        let Some(slot) = at.map(|i| &mut image_slots[i]) else {
+            miss(&tag);
+            continue;
+        };
+        let frame = slot.1;
         let path = href_path(&image.href, base.as_deref());
         let mut place = json!({"path": path, "frame": frame.0});
         if let Some(crop) = &image.crop {
@@ -643,12 +661,25 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
             failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, format!("unknown fit `{mode}`")).to_string()}));
             continue;
         }
+        // Fit leaves a locked frame (or one on a locked layer) as it is: a fit asked for there
+        // would not happen, so the image isn't placed either.
+        let locked = {
+            let d = &s.doc()?.doc;
+            d.item(frame).is_some_and(|it| it.locked || d.layer(it.layer).is_some_and(|l| l.locked))
+        };
+        if image.fit.is_some() && locked {
+            failed.push(json!({"tag": tag, "href": image.href, "error": bad(ID, "the frame is locked, so its fit can't be applied").to_string()}));
+            continue;
+        }
         let done = s.execute("file.place", &place).and_then(|_| match &image.fit {
             Some(mode) => s.execute("object.fit", &json!({"mode": mode, "ids": [frame.0]})),
             None => Ok(Value::Null),
         });
         match done {
-            Ok(_) => placed += 1,
+            Ok(_) => {
+                slot.2 = true;
+                placed += 1;
+            }
             Err(e) => failed.push(json!({"tag": tag, "href": image.href, "error": e.to_string()})),
         }
     }
@@ -769,9 +800,22 @@ mod tests {
     }
 
     #[test]
-    fn auto_tag_names_text_and_graphic_frames() {
+    fn import_xml_keeps_text_of_inline_tags_in_mapped_paragraphs() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "See the glossary entry", "caret": false}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 8, "focus": 16})).unwrap();
+        s.execute("xml.tagText", &json!({"tag": "term"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<title>See the <term>glossary</term> entry</title>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x})).unwrap();
         let frame = |s: &mut Session, rect: [i32; 4], content: &str| {
             s.execute("frame.create", &json!({"rect": rect, "content": content, "text": "x", "caret": false})).unwrap()["id"].clone()
         };
@@ -798,6 +842,7 @@ mod tests {
         // Reading order; a valid name is the tag; `text_1` is taken, so the counter skips it.
         assert_eq!(tags, vec![(head.clone(), "headline".into()), (body.clone(), "text_2".into()), (photo.clone(), "image_1".into())]);
         let d = &s.doc().unwrap().doc;
+        assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
         assert!(d.item(designcraft_doc::ItemId(shape.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "a plain shape stays untagged");
         assert_eq!(d.item(designcraft_doc::ItemId(kept.as_u64().unwrap())).unwrap().xml_tag, "text_1");
         assert!(d.xml.tags.iter().any(|t| t.name == "headline") && d.xml.tags.iter().any(|t| t.name == "image_1"));
@@ -809,6 +854,104 @@ mod tests {
         // The tagged frames take imported XML.
         let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
         assert_eq!(r["placed"], 2);
+        // A frame on the pasteboard isn't the page's; a text frame made a graphic frame is one.
+        let aside = frame(&mut s, [-300, 72, -100, 120], "text");
+        let converted = frame(&mut s, [450, 300, 550, 400], "text");
+        s.execute("object.content", &json!({"type": "graphic", "ids": [converted]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![converted.clone()], "{r}");
+        assert_eq!(r["tagged"][0]["kind"], "image");
+        assert!(!tagged.contains(&aside));
+        // Made unassigned again, it's a plain shape.
+        s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
+        assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
+    }
+
+    /// A Layers name another frame already has, as a tag or as a name, isn't given again: that
+    /// frame gets a numbered tag. `kinds` picks which frames are tagged.
+    #[test]
+    fn auto_tag_gives_each_name_once() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, y: i32, content: &str, name: &str| {
+            let id =
+                s.execute("frame.create", &json!({"rect": [72, y, 400, y + 40], "content": content, "text": "x", "caret": false})).unwrap()["id"]
+                    .clone();
+            s.execute("object.rename", &json!({"id": id, "name": name})).unwrap();
+            id
+        };
+        let kept = frame(&mut s, 72, "text", "kept");
+        s.execute("xml.tag", &json!({"tag": "headline", "ids": [kept]})).unwrap();
+        let a = frame(&mut s, 150, "text", "intro");
+        let b = frame(&mut s, 250, "text", "intro");
+        let c = frame(&mut s, 350, "text", "headline");
+        let photo = frame(&mut s, 450, "graphic", "photo");
+        let r = s.execute("xml.autoTag", &json!({"kinds": ["text"]})).unwrap();
+        let tags: Vec<(serde_json::Value, String)> =
+            r["tagged"].as_array().unwrap().iter().map(|t| (t["id"].clone(), t["tag"].as_str().unwrap().to_string())).collect();
+        assert_eq!(tags, vec![(a, "intro".into()), (b, "text_1".into()), (c, "text_2".into())]);
+        assert!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(photo.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "only text frames");
+    }
+
+    #[test]
+    fn href_paths() {
+        use super::{href_path, percent_decode};
+        use std::path::Path;
+        let base = Path::new("/xml/folder");
+        let joined = |rel: &str| base.join(rel).to_string_lossy().to_string();
+        for (href, want) in [
+            ("file:///C:/img/a.png", "C:/img/a.png".to_string()),
+            ("file:///home/me/a%20b.png", "/home/me/a b.png".into()),
+            ("C:\\img\\a.png", "C:\\img\\a.png".into()),
+            ("\\\\server\\share\\a.png", "\\\\server\\share\\a.png".into()),
+            ("/abs/a.png", "/abs/a.png".into()),
+            ("img/a%20b.png", joined("img/a b.png")),
+            ("img\\a.png", joined("img\\a.png")),
+            ("  a.png  ", joined("a.png")),
+        ] {
+            assert_eq!(href_path(href, Some(base)), want, "{href}");
+        }
+        assert_eq!(href_path("img/a.png", None), "img/a.png", "no base: as it is");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("a%zzb%2"), "a%zzb%2", "invalid escapes stay");
+        assert_eq!(percent_decode("%C3%A4%41"), "äA");
+    }
+
+    #[test]
+    fn image_attrs_read_href_and_xlink_href() {
+        let attrs = |xml: &str| {
+            let mut options = craft_xml::Options::local();
+            options.strict = true;
+            let root = options.parse(xml.as_bytes()).unwrap();
+            super::image_attrs(&root).map(|i| (i.href, i.fit, i.crop))
+        };
+        assert_eq!(attrs(r#"<photo href="a&amp;b.png" fit="fitContent"/>"#), Some(("a&b.png".into(), Some("fitContent".into()), None)));
+        assert_eq!(
+            attrs(r#"<photo xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="file:///x.pdf" crop="contentVisible"/>"#),
+            Some(("file:///x.pdf".into(), None, Some("contentVisible".into())))
+        );
+        assert_eq!(attrs("<photo/>"), None);
+    }
+
+    /// Frames in a group take the group's place: a group moved from the pasteboard onto a page
+    /// brings its frames, which autoTag then tags.
+    #[test]
+    fn auto_tag_places_grouped_frames_by_their_group() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, rect: [i32; 4]| {
+            s.execute("frame.create", &json!({"rect": rect, "content": "text", "text": "x", "caret": false})).unwrap()["id"].clone()
+        };
+        let (a, b) = (frame(&mut s, [-400, 72, -300, 120]), frame(&mut s, [-400, 200, -300, 250]));
+        let g = s.execute("object.group", &json!({"ids": [a, b]})).unwrap()["id"].clone();
+        s.execute("transform.move", &json!({"ids": [g], "dx": 500, "dy": 0})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let group = d.item(designcraft_doc::ItemId(g.as_u64().unwrap())).unwrap();
+        assert!(group.xf.translation().x.abs() > 1.0, "the move sits in the group's transform");
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![a, b], "{r}");
     }
 
     #[test]
@@ -852,6 +995,68 @@ mod tests {
         assert_eq!(st.paras.len(), 2);
     }
 
+    #[test]
+    fn parse_keeps_text_nested_below_a_child_element() {
+        let els = super::parse("<root><story><note>See the <term>x</term> y</note></story></root>").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].children, vec![("note".to_string(), "See the x y".to_string())]);
+    }
+
+    #[test]
+    fn auto_tag_names_text_and_graphic_frames() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, rect: [i32; 4], content: &str| {
+            s.execute("frame.create", &json!({"rect": rect, "content": content, "text": "x", "caret": false})).unwrap()["id"].clone()
+        };
+        let body = frame(&mut s, [72, 300, 400, 350], "text");
+        let head = frame(&mut s, [72, 72, 400, 120], "text");
+        let photo = frame(&mut s, [72, 400, 300, 600], "graphic");
+        let kept = frame(&mut s, [72, 700, 400, 740], "text");
+        let shape = frame(&mut s, [450, 72, 500, 120], "unassigned");
+        s.execute("object.rename", &json!({"id": head, "name": "headline"})).unwrap();
+        s.execute("object.rename", &json!({"id": body, "name": "not a tag"})).unwrap();
+        // A plain shape in the graphics frame style (as InDesign gives every rectangle) is no frame.
+        s.edit(|d, _| {
+            let style = d.styles.default_graphic_frame.clone();
+            if let Some(it) = d.item_mut(designcraft_doc::ItemId(shape.as_u64().unwrap())) {
+                it.object_style = style;
+            }
+            Ok(())
+        })
+        .unwrap();
+        s.execute("xml.tag", &json!({"tag": "text_1", "ids": [kept]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tags: Vec<(serde_json::Value, String)> =
+            r["tagged"].as_array().unwrap().iter().map(|t| (t["id"].clone(), t["tag"].as_str().unwrap().to_string())).collect();
+        // Reading order; a valid name is the tag; `text_1` is taken, so the counter skips it.
+        assert_eq!(tags, vec![(head.clone(), "headline".into()), (body.clone(), "text_2".into()), (photo.clone(), "image_1".into())]);
+        let d = &s.doc().unwrap().doc;
+        assert!(d.item(designcraft_doc::ItemId(shape.as_u64().unwrap())).unwrap().xml_tag.is_empty(), "a plain shape stays untagged");
+        assert_eq!(d.item(designcraft_doc::ItemId(kept.as_u64().unwrap())).unwrap().xml_tag, "text_1");
+        assert!(d.xml.tags.iter().any(|t| t.name == "headline") && d.xml.tags.iter().any(|t| t.name == "image_1"));
+        // Running again tags nothing new; overwrite with only images retags the photo.
+        assert_eq!(s.execute("xml.autoTag", &json!({})).unwrap()["tagged"].as_array().unwrap().len(), 0);
+        let r = s.execute("xml.autoTag", &json!({"kinds": ["image"], "overwrite": true, "useNames": false})).unwrap();
+        assert_eq!(r["tagged"][0]["tag"], "image_1");
+        assert!(s.execute("xml.autoTag", &json!({"kinds": ["table"]})).is_err());
+        // The tagged frames take imported XML.
+        let r = s.execute("file.importXml", &json!({"text": "<Root><headline>New head</headline><text_2>New body</text_2></Root>"})).unwrap();
+        assert_eq!(r["placed"], 2);
+        // A frame on the pasteboard isn't the page's; a text frame made a graphic frame is one.
+        let aside = frame(&mut s, [-300, 72, -100, 120], "text");
+        let converted = frame(&mut s, [450, 300, 550, 400], "text");
+        s.execute("object.content", &json!({"type": "graphic", "ids": [converted]})).unwrap();
+        let r = s.execute("xml.autoTag", &json!({})).unwrap();
+        let tagged: Vec<serde_json::Value> = r["tagged"].as_array().unwrap().iter().map(|t| t["id"].clone()).collect();
+        assert_eq!(tagged, vec![converted.clone()], "{r}");
+        assert_eq!(r["tagged"][0]["kind"], "image");
+        assert!(!tagged.contains(&aside));
+        // Made unassigned again, it's a plain shape.
+        s.execute("object.content", &json!({"type": "unassigned", "ids": [converted]})).unwrap();
+        assert!(!s.doc().unwrap().doc.item(designcraft_doc::ItemId(converted.as_u64().unwrap())).unwrap().graphic_frame);
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn import_xml_image_fit_attribute() {
@@ -885,6 +1090,93 @@ mod tests {
         // A 2:1 image in a square frame: filling covers the height, fitting shows the whole width.
         assert!((width(&s, fill) - 400.0).abs() < 0.5, "{}", width(&s, fill));
         assert!((width(&s, fit) - 200.0).abs() < 0.5, "{}", width(&s, fit));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hostile nesting is refused, not walked: deeper than the limit is an error.
+    #[test]
+    fn deep_nesting_is_refused() {
+        let deep = format!("<Root><a>{}x{}</a></Root>", "<b>".repeat(super::MAX_XML_DEPTH), "</b>".repeat(super::MAX_XML_DEPTH));
+        assert!(super::parse(&deep).err().is_some_and(|e| e.contains("nested deeper")));
+        let ok = format!("<Root><a>{}x{}</a></Root>", "<b>".repeat(10), "</b>".repeat(10));
+        assert!(super::parse(&ok).is_ok());
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.execute("file.importXml", &json!({"text": deep})).is_err());
+    }
+
+    /// A frame takes an image only once it is placed: after a failed href, the next element of
+    /// the tag goes into the frame that stayed empty.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Export escapes `%` and spaces in a path, import decodes them once: the path comes back.
+    #[test]
+    fn exported_hrefs_decode_to_their_path() {
+        for path in ["C:/img/rate%20.png", "/home/me/a b%.png", "plain.png"] {
+            assert_eq!(super::href_path(&format!("file://{}", super::href_escape(path)), None), path);
+        }
+    }
+
+    /// A fit asked for on a locked frame can't happen: the image is reported, not placed.
+    #[test]
+    fn a_fit_on_a_locked_frame_fails() {
+        use designcraft_doc::ItemId;
+        let dir = std::env::temp_dir().join(format!("dc-xml-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 272, 272], "content": "graphic"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [f.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [f.0]})).unwrap();
+        let xml = "<Root><photo href=\"ok.png\" fit=\"fitProportionally\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(0), "{r}");
+        assert!(r["failed"][0]["error"].as_str().is_some_and(|e| e.contains("locked")), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A locked frame doesn't hold back the next frame of its tag.
+    #[test]
+    fn a_locked_frame_leaves_the_image_to_the_next_one() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-skip-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = |s: &mut Session, x: f64| {
+            ItemId(s.execute("frame.create", &json!({"rect": [x, 72.0, x + 100.0, 172.0], "content": "graphic"})).unwrap()["id"].as_u64().unwrap())
+        };
+        let (first, second) = (frame(&mut s, 72.0), frame(&mut s, 300.0));
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0, second.0]})).unwrap();
+        s.execute("object.lock", &json!({"ids": [first.0]})).unwrap();
+        let r = s.execute("file.importXml", &json!({"text": "<Root><photo href=\"ok.png\"/></Root>", "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!(r["placed"].as_u64(), Some(1), "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(second).unwrap().content, Content::Graphic(_)), "the unlocked frame takes it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_image_leaves_its_frame_to_the_next_element() {
+        use designcraft_doc::{Content, ItemId};
+        let dir = std::env::temp_dir().join(format!("dc-xml-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = designcraft_render::Rendered { width: 20, height: 20, pixels: vec![200u8; 20 * 20 * 4] }.to_png();
+        std::fs::write(dir.join("ok.png"), &png).unwrap();
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = ItemId(s.execute("frame.create", &json!({"rect": [72, 72, 272, 272], "content": "graphic"})).unwrap()["id"].as_u64().unwrap());
+        s.execute("xml.tag", &json!({"tag": "photo", "ids": [first.0]})).unwrap();
+        let xml = "<Root><photo href=\"missing.png\"/><photo href=\"ok.png\"/></Root>";
+        let r = s.execute("file.importXml", &json!({"text": xml, "imageDir": dir.to_string_lossy()})).unwrap();
+        assert_eq!((r["placed"].as_u64(), r["unmatched"].as_u64()), (Some(1), Some(0)), "{r}");
+        assert_eq!(r["failed"][0]["href"], "missing.png", "{r}");
+        assert!(matches!(s.doc().unwrap().doc.item(first).unwrap().content, Content::Graphic(_)), "the second image fills the frame");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -936,34 +1228,6 @@ mod tests {
         assert!(!matches!(d.item(photo).unwrap().content, Content::Graphic(_)));
         assert_eq!(d.stories[&d.item(head).unwrap().text_frame().unwrap().story].text, "x");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn import_xml_keeps_text_of_inline_tags_in_mapped_paragraphs() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
-        let a = s
-            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "See the glossary entry", "caret": false}))
-            .unwrap();
-        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
-        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
-        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
-        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
-        s.execute("text.select", &json!({"story": a["story"], "anchor": 8, "focus": 16})).unwrap();
-        s.execute("xml.tagText", &json!({"tag": "term"})).unwrap();
-        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
-        assert!(x.contains("<title>See the <term>glossary</term> entry</title>"), "{x}");
-        s.execute("file.importXml", &json!({"text": x})).unwrap();
-        let d = &s.doc().unwrap().doc;
-        assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
-    }
-
-    #[test]
-    fn parse_keeps_text_nested_below_a_child_element() {
-        let els = super::parse("<root><story><note>See the <term>x</term> y</note></story></root>").unwrap();
-        assert_eq!(els.len(), 1);
-        assert_eq!(els[0].children, vec![("note".to_string(), "See the x y".to_string())]);
     }
 
     #[test]

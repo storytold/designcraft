@@ -120,10 +120,10 @@ pub fn liquid_rule_in(s: &str) -> designcraft_doc::LiquidRule {
 }
 
 pub fn escape_id(s: &str) -> String {
-    s.replace('%', "%25").replace(':', "%3a")
+    craft_idml::value::escape_id(s)
 }
 pub fn unescape_id(s: &str) -> String {
-    s.replace("%3a", ":").replace("%3A", ":").replace("%25", "%")
+    craft_idml::value::unescape_id(s)
 }
 
 /// An `AppliedFont` value → font family. InDesign can write the family with its `$ID/` prefix
@@ -147,38 +147,15 @@ pub const OBJECT_BUILTINS: &[(&str, &str)] =
 /// Our style name → IDML `Name` (groups: `A/B` → `A:B`; a literal `:` or `\` is escaped as `\:`
 /// or `\\`, so it is not read back as a group separator).
 pub fn style_name_out(builtins: &[(&str, &str)], name: &str) -> String {
-    builtins
-        .iter()
-        .find(|(o, _)| *o == name)
-        .map(|(_, i)| i.to_string())
-        .unwrap_or_else(|| name.replace('\\', "\\\\").replace(':', "\\:").replace('/', ":"))
+    craft_idml::value::style_name_out(builtins, name)
 }
 /// IDML `Name` → our style name.
 pub fn style_name_in(builtins: &[(&str, &str)], name: &str) -> String {
-    if let Some((o, _)) = builtins.iter().find(|(_, i)| *i == name) {
-        return o.to_string();
-    }
-    let name = name.strip_prefix("$ID/").unwrap_or(name);
-    let mut out = String::with_capacity(name.len());
-    let mut chars = name.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => match chars.clone().next() {
-                Some(next @ ('\\' | ':')) => {
-                    out.push(next);
-                    chars.next();
-                }
-                _ => out.push('\\'),
-            },
-            ':' => out.push('/'),
-            _ => out.push(c),
-        }
-    }
-    out
+    craft_idml::value::style_name_in(builtins, name)
 }
 /// `ParagraphStyle/…` Self id for one of our names.
 pub fn style_self(kind: &str, builtins: &[(&str, &str)], name: &str) -> String {
-    format!("{kind}/{}", escape_id(&style_name_out(builtins, name)))
+    craft_idml::value::style_self(kind, builtins, name)
 }
 
 pub fn align_out(a: Align) -> &'static str {
@@ -655,6 +632,8 @@ pub fn number_style_in(s: &str) -> NumberStyle {
     }
 }
 
+/// IDML `MeasurementUnits` of a unit. Q is `Q`; `U` is a different unit, which DesignCraft
+/// doesn't have.
 pub fn unit_out(u: Unit) -> &'static str {
     match u {
         Unit::Points => "Points",
@@ -666,27 +645,14 @@ pub fn unit_out(u: Unit) -> &'static str {
         Unit::Ciceros => "Ciceros",
         Unit::Agates => "Agates",
         Unit::Pixels => "Pixels",
-        Unit::Q => "U",
+        Unit::Q => "Q",
         Unit::Ha => "Ha",
     }
 }
-pub fn unit_in(s: &str) -> Unit {
-    [
-        Unit::Points,
-        Unit::Picas,
-        Unit::Inches,
-        Unit::InchesDecimal,
-        Unit::Millimeters,
-        Unit::Centimeters,
-        Unit::Ciceros,
-        Unit::Agates,
-        Unit::Pixels,
-        Unit::Q,
-        Unit::Ha,
-    ]
-    .into_iter()
-    .find(|u| unit_out(*u) == s)
-    .unwrap_or(Unit::Points)
+/// The unit an IDML `MeasurementUnits` value names, if DesignCraft has it (not `U`, `Bai`,
+/// `Mils`, `AmericanPoints` or `Custom`).
+pub fn unit_in(s: &str) -> Option<Unit> {
+    Unit::ALL.into_iter().find(|u| unit_out(*u) == s)
 }
 
 /// IDML layer colour enumeration names for our layer colour table.

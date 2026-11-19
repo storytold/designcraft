@@ -29,8 +29,8 @@ pub use paint::{
     path_length_bound,
 };
 pub use text_frame::{
-    AutoSize, ColumnsKind, ContourType, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame, TextFrameOptions,
-    TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+    AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame,
+    TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
 };
 
 fn is_zero_usize(v: &usize) -> bool {
@@ -287,6 +287,16 @@ impl Item {
         self.shape != Shape::Group && matches!(&self.content, Content::Group { items } if !items.is_empty())
     }
 
+    /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
+    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    pub fn takes_graphic(&self) -> bool {
+        match &self.content {
+            Content::Unassigned | Content::Graphic(_) => true,
+            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            _ => false,
+        }
+    }
+
     pub fn bounds(&self) -> Rect {
         self.bounds_under(Affine::IDENTITY).unwrap_or(Rect::ZERO)
     }
@@ -381,6 +391,27 @@ impl Item {
         f(self);
         for c in self.children() {
             c.walk(f);
+        }
+    }
+
+    /// Bounds in spread space of this item placed under `outer`, its groups' transform (as
+    /// [`Item::walk_placed`] gives it).
+    pub fn placed_bounds(&self, outer: Affine) -> Rect {
+        self.bounds_under(outer).unwrap_or(Rect::ZERO)
+    }
+
+    /// [`Item::walk`], with each item's outer transform: a nested item is placed by its groups'
+    /// transforms too, which its own [`Item::bounds`] leaves out. Bounds cost a walk of a group's
+    /// items, so callers measure ([`Item::placed_bounds`]) only the items they need.
+    pub fn walk_placed<'a>(&'a self, f: &mut impl FnMut(&'a Item, Affine)) {
+        self.walk_placed_under(Affine::IDENTITY, f);
+    }
+
+    fn walk_placed_under<'a>(&'a self, outer: Affine, f: &mut impl FnMut(&'a Item, Affine)) {
+        f(self, outer);
+        let xf = outer * self.xf;
+        for c in self.children() {
+            c.walk_placed_under(xf, f);
         }
     }
 }

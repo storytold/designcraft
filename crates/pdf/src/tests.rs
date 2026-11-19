@@ -29,12 +29,12 @@ fn uncompressed(d: &Document, opts: PdfOptions) -> String {
 
 /// Text of every page through hayro's interpreter (glyph → Unicode via ToUnicode / ActualText).
 pub(crate) fn extract_text(bytes: &[u8]) -> Vec<String> {
+    use craft_pdf::syntax::Pdf;
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
         interpret_page,
     };
-    use hayro_syntax::Pdf;
     struct Ex(String);
     impl Device<'_> for Ex {
         fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
@@ -72,7 +72,7 @@ fn exports_valid_pdf_with_one_page_per_page() {
     let d = doc_with_text("Hello DesignCraft");
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
     assert!(bytes.starts_with(b"%PDF-1.7"));
-    let pdf = hayro_syntax::Pdf::new(bytes.clone()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.clone()).expect("parse");
     assert_eq!(pdf.pages().len(), 2);
 }
 
@@ -173,15 +173,21 @@ fn spreads_and_ranges() {
     let n = d.page_count();
     assert_eq!(n, 4);
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { spreads: true, ..Default::default() }).unwrap();
-    let pages = hayro_syntax::Pdf::new(bytes).unwrap().pages().len();
+    let pages = craft_pdf::syntax::Pdf::new(bytes).unwrap().pages().len();
     assert_eq!(pages, d.spreads.len());
     assert_eq!(parse_page_range("1-2, 4", 4).unwrap(), vec![0, 1, 3]);
     assert_eq!(parse_page_range("3-", 4).unwrap(), vec![2, 3]);
     assert_eq!(parse_page_range("", 2).unwrap(), vec![0, 1]);
+    // Ranges that overlap many times over: each page is selected once, in the order first named.
+    let overlapping = std::iter::repeat_n("1-20000, 5-19000", 500).collect::<Vec<_>>().join(",");
+    let t = std::time::Instant::now();
+    assert_eq!(parse_page_range(&overlapping, 20000).unwrap().len(), 20000);
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    assert_eq!(parse_page_range("3, 1-3", 4).unwrap(), vec![2, 0, 1]);
     assert!(parse_page_range("5", 4).is_err());
     assert!(parse_page_range("x", 4).is_err());
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![1, 2]), ..Default::default() }).unwrap();
-    assert_eq!(hayro_syntax::Pdf::new(bytes).unwrap().pages().len(), 2);
+    assert_eq!(craft_pdf::syntax::Pdf::new(bytes).unwrap().pages().len(), 2);
     assert_eq!(export_pdf(&d, &Cache::new(), &PdfOptions { pages: Some(vec![9]), ..Default::default() }), Err(PdfError::BadPage(10)));
 }
 
@@ -215,7 +221,10 @@ fn standards() {
     assert_eq!((intent.identifier.as_str(), intent.condition.as_str()), ("FOGRA39", "Coated FOGRA39 (fitted, craft-cms)"));
     // A plain export fails the checks; both read with the same pages.
     let plain = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert_eq!(hayro_syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(), hayro_syntax::Pdf::new(plain.clone()).unwrap().pages().len());
+    assert_eq!(
+        craft_pdf::syntax::Pdf::new(r.bytes.clone()).unwrap().pages().len(),
+        craft_pdf::syntax::Pdf::new(plain.clone()).unwrap().pages().len()
+    );
     assert!(crate::check_pdfx4(&plain).len() >= 3);
     assert_eq!(Standard::parse("PDF/X-4"), Some(Standard::PdfX4));
     assert_eq!(Standard::parse("pdfa-2b"), Some(Standard::PdfA2b));
@@ -256,6 +265,29 @@ fn tables_export_cell_text() {
     for w in ["Before", "Ink", "Plum", "Sunset"] {
         assert!(text.contains(w), "{w} missing from {text:?}");
     }
+}
+
+#[test]
+fn cell_diagonal_lines_export_in_front_of_or_behind_the_cell_text() {
+    let export = |lines, in_front| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(9, 1, 1, 0, 0, 200.0);
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.text.insert(0, "Ink");
+        let stroke = designcraft_doc::CellStroke { weight: 3.0, ..Default::default() };
+        cell.diagonal = designcraft_doc::CellDiagonal { lines, stroke, in_front };
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        // The table's edges are 1 pt; the diagonals are the 3 pt strokes.
+        paint_order(&bytes).into_iter().filter(|(op, w)| op.ends_with("text") || *w == 3.0).map(|(op, _)| op).collect::<Vec<_>>()
+    };
+    use designcraft_doc::DiagonalLines;
+    let (text, line) = ("fill text".to_string(), "stroke path".to_string());
+    assert_eq!(export(DiagonalLines::None, true), [text.clone(), text.clone(), text.clone()]);
+    assert_eq!(export(DiagonalLines::Crossed, true), [text.clone(), text.clone(), text.clone(), line.clone(), line.clone()], "Diagonal In Front");
+    assert_eq!(export(DiagonalLines::TopLeft, false), [line.clone(), text.clone(), text.clone(), text.clone()], "Content In Front");
 }
 
 #[test]
@@ -391,8 +423,8 @@ fn an_image_past_the_decode_budget_is_skipped_with_a_warning() {
 
 /// Every image XObject in a PDF: its /ColorSpace name (`?` when not a name) and decoded samples.
 fn image_xobjects(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
-    use hayro_syntax::object::Name;
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::object::Name;
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
@@ -456,8 +488,8 @@ fn raster(fmt: image::ImageFormat, alpha: bool) -> Vec<u8> {
 
 /// Each image XObject's /Interpolate value (`None` when absent).
 fn interpolate_flags(bytes: &[u8]) -> Vec<Option<bool>> {
-    use hayro_syntax::object::Name;
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    use craft_pdf::syntax::object::Name;
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     pdf.objects()
         .into_iter()
         .filter_map(|o| o.into_stream())
@@ -523,7 +555,7 @@ fn drawn(bytes: &[u8]) -> (Vec<(String, kurbo::Rect)>, Vec<kurbo::Rect>) {
         fn pop_clip_path(&mut self) {}
         fn pop_transparency_group(&mut self) {}
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
@@ -578,7 +610,7 @@ fn paint_events(bytes: &[u8], groups: bool) -> Vec<(String, f32)> {
             }
         }
     }
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).expect("parse");
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).expect("parse");
     let cache = InterpreterCache::new();
     let page = &pdf.pages()[0];
     let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
@@ -747,6 +779,40 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
         f.over.capitalization = Some(Capitalization::OpenTypeAllSmallCaps);
     });
     assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
+}
+
+/// Links and buttons from an imported document still go through the export allowlist.
+#[test]
+fn link_annotation_export_refuses_non_web_schemes() {
+    use designcraft_doc::{ButtonAction, Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    use designcraft_geom::shapes::rectangle;
+
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let safe = ItemId(d.alloc());
+    let mut safe_item = Item::new(safe, lid, Shape::Rectangle, rectangle(Rect::new(72.0, 72.0, 200.0, 120.0)));
+    safe_item.button = Some(ButtonAction::GoToUrl { url: "https://example.com/button".into() });
+    d.insert_item(SpreadRef::Doc(0), safe_item, None).unwrap();
+    let unsafe_id = ItemId(d.alloc());
+    let mut unsafe_item = Item::new(unsafe_id, lid, Shape::Rectangle, rectangle(Rect::new(72.0, 200.0, 200.0, 248.0)));
+    unsafe_item.button = Some(ButtonAction::GoToUrl { url: "file:///etc/passwd".into() });
+    d.insert_item(SpreadRef::Doc(0), unsafe_item, None).unwrap();
+    d.hyperlinks.push(Hyperlink {
+        id: 1,
+        name: "bad".into(),
+        source: HyperlinkSource::Item { id: safe },
+        dest: HyperlinkDest::Url("javascript:alert(1)".into()),
+    });
+    d.hyperlinks.push(Hyperlink {
+        id: 2,
+        name: "good".into(),
+        source: HyperlinkSource::Item { id: safe },
+        dest: HyperlinkDest::Url("https://example.com/link".into()),
+    });
+    let s = uncompressed(&d, PdfOptions::default());
+    assert!(s.contains("https://example.com/button") && s.contains("https://example.com/link"), "safe links export: {s}");
+    assert!(!s.contains("file:///etc/passwd"), "a file URL is not exported: {s}");
+    assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
 }
 
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
@@ -1085,4 +1151,30 @@ fn each_page_shows_its_own_composition() {
     // Parent items first, then the page's own.
     assert_eq!(extract_text(&bytes), ["Folio1Alpha", "Folio2Bravo", "Folio3Charlie"]);
     assert_eq!(export_pdf(&d, &cache, &opts).unwrap(), bytes, "a warm cache exports the same bytes");
+}
+
+/// A parent page that overrode an item of its base and deleted the override hides that item on
+/// the pages that use it. The canvas hid it but PDF export, which looked only at the page's own
+/// overrides, still drew it (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let margins = d.parents[0].pages[0].margins;
+    let b = d.add_parent("B", "Parent", 1, 0.0, margins);
+    let box_id = ItemId(d.alloc());
+    let rect = Rect::new(100.0, 100.0, 200.0, 160.0);
+    let mut it = Item::new(box_id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(rect));
+    it.fill = Fill::swatch(designcraft_color::swatch::BLACK);
+    d.insert_item(SpreadRef::Parent(0), it, None).unwrap();
+    std::sync::Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].parent = Some(b);
+    let has_box = |d: &Document| {
+        let (_, paths) = drawn(&export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap());
+        paths.iter().any(|r| (r.width() - rect.width()).abs() < 0.5 && (r.height() - rect.height()).abs() < 0.5)
+    };
+    assert!(has_box(&d), "the page exports parent A's box through parent B");
+    std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
+    assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }

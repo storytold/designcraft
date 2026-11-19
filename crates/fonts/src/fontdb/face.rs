@@ -278,6 +278,19 @@ impl FontFace {
             .get_or_init(|| if self.is_variable() { None } else { self.skrifa().and_then(|f| name(&f, &[StringId::POSTSCRIPT_NAME])) })
             .as_deref()
     }
+    /// The PostScript name of this face as an instance of its variable font (Adobe TN #5902): a
+    /// named instance's name, or one built from the axis values for a point between them. `None`
+    /// for a static face; the default point gets the file's `name` ID 6.
+    ///
+    /// [`Self::postscript_name`] is the file's own `name` ID 6, which names the font's default
+    /// instance: embedding by it put every weight of a variable font into a PDF under one name
+    /// (#1690).
+    pub fn instance_postscript_name(&self) -> Option<String> {
+        if !self.is_variable() {
+            return None;
+        }
+        crate::psname::instance_postscript_name(&self.skrifa()?, &self.coords)
+    }
 
     /// Glyph id for `c` (0 = .notdef).
     pub fn glyph_for(&self, c: char) -> u32 {
@@ -329,17 +342,30 @@ pub(super) fn enumerate_faces(data: &[u8]) -> Vec<Found> {
         Ok(FileRef::Collection(c)) => c.len().min(MAX_FACES),
         Err(_) => 0,
     };
+    /// Named instances listed from one file, all its faces together: each is a face of its own,
+    /// and a collection's faces can share one table of thousands.
+    const MAX_INSTANCES: usize = 4096;
     let mut out = Vec::new();
+    let mut instances = 0usize;
+    // Records looked at, kept or not: duplicate or unnamed ones cost a name lookup too.
+    let mut inspected = 0usize;
     for i in 0..count {
         let Ok(f) = skrifa::FontRef::from_index(data, i) else { continue };
         let Some((family, style)) = face_names(&f) else { continue };
         let axes = f.axes();
         let mut named = Vec::new();
+        // The styles taken, ASCII-lowercased: a lookup, not a search of those before.
+        let mut taken = std::collections::HashSet::new();
         for ni in f.named_instances().iter() {
+            if instances >= MAX_INSTANCES || inspected >= MAX_INSTANCES {
+                break;
+            }
+            inspected += 1;
             let Some(style) = name(&f, &[ni.subfamily_name_id()]) else { continue };
-            if named.iter().any(|(_, s, _): &(u32, String, _)| s.eq_ignore_ascii_case(&style)) {
+            if !taken.insert(style.to_ascii_lowercase()) {
                 continue;
             }
+            instances += 1;
             let coords: Vec<([u8; 4], f32)> = axes.iter().zip(ni.user_coords()).map(|(a, v)| (a.tag().to_be_bytes(), v)).collect();
             named.push((i, style, coords));
         }

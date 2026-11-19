@@ -358,10 +358,10 @@ fn stroke_outline(path: &BezPath, w: f64, kind: &StrokeType, cap: Cap, join: Joi
             let p: Vec<f64> = pattern.iter().copied().filter(|v| v.is_finite() && *v >= 0.0).collect();
             Some(if p.iter().sum::<f64>() > 1e-3 { p } else { vec![3.0 * w, 2.0 * w] })
         }
-        StrokeType::Dotted => {
-            st = st.with_caps(kurbo::Cap::Round);
-            Some(vec![0.0, 2.0 * w])
-        }
+        StrokeType::Dotted => match dots(path, w) {
+            Some(d) => return d,
+            None => None,
+        },
         _ => None,
     };
     if let Some(d) = dashes {
@@ -371,4 +371,143 @@ fn stroke_outline(path: &BezPath, w: f64, kind: &StrokeType, cap: Cap, join: Joi
         }
     }
     kurbo::stroke(path.iter(), &st, &kurbo::StrokeOpts::default(), TOL)
+}
+
+/// Round dots `w` wide along `path`, about `2w` apart and evenly spaced by arc length: around a
+/// closed subpath the spacing divides its length exactly, an open one has a dot at each end.
+/// `None` (stroke solid) when there would be more than [`MAX_DASHES`] dots.
+fn dots(path: &BezPath, w: f64) -> Option<BezPath> {
+    use kurbo::{ParamCurve, ParamCurveArclen, PathEl, PathSeg};
+    // Subpaths as (segments, closed).
+    let mut subs: Vec<(Vec<PathSeg>, bool)> = Vec::new();
+    let (mut start, mut cur) = (kurbo::Point::ZERO, kurbo::Point::ZERO);
+    for el in path.elements() {
+        let seg = match *el {
+            PathEl::MoveTo(p) => {
+                subs.push((Vec::new(), false));
+                (start, cur) = (p, p);
+                continue;
+            }
+            PathEl::LineTo(p) => PathSeg::Line(kurbo::Line::new(cur, p)),
+            PathEl::QuadTo(a, p) => PathSeg::Quad(kurbo::QuadBez::new(cur, a, p)),
+            PathEl::CurveTo(a, b, p) => PathSeg::Cubic(kurbo::CubicBez::new(cur, a, b, p)),
+            PathEl::ClosePath => {
+                if let Some(s) = subs.last_mut() {
+                    s.1 = true;
+                    if cur.distance(start) > 1e-9 {
+                        s.0.push(PathSeg::Line(kurbo::Line::new(cur, start)));
+                    }
+                }
+                cur = start;
+                continue;
+            }
+        };
+        cur = seg.end();
+        if let Some(s) = subs.last_mut() {
+            s.0.push(seg);
+        }
+    }
+    const ACC: f64 = 1e-4;
+    let mut out = BezPath::new();
+    let mut count = 0.0;
+    for (segs, closed) in subs {
+        let lens: Vec<f64> = segs.iter().map(|s| s.arclen(ACC)).collect();
+        let total: f64 = lens.iter().sum();
+        if !(total.is_finite() && total > 1e-9) {
+            continue;
+        }
+        let n = (total / (2.0 * w)).round().max(1.0);
+        count += n + 1.0;
+        if count > MAX_DASHES {
+            return None;
+        }
+        let step = total / n;
+        let dots = if closed { n as usize } else { n as usize + 1 };
+        let (mut k, mut before) = (0, 0.0);
+        for i in 0..dots {
+            let s = i as f64 * step;
+            while k + 1 < segs.len() && before + lens.get(k).copied().unwrap_or(0.0) < s {
+                before += lens.get(k).copied().unwrap_or(0.0);
+                k += 1;
+            }
+            let (Some(seg), Some(&l)) = (segs.get(k), lens.get(k)) else { continue };
+            let t = if l > 1e-12 { seg.inv_arclen((s - before).clamp(0.0, l), ACC) } else { 0.0 };
+            out.extend(kurbo::Circle::new(seg.eval(t), w / 2.0).path_elements(TOL));
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod dotted_tests {
+    use super::*;
+
+    /// The centres of the dots (one subpath each) of a dotted outline.
+    fn dot_centres(p: &BezPath) -> Vec<kurbo::Point> {
+        let mut out = Vec::new();
+        let mut cur = BezPath::new();
+        for el in p.elements() {
+            if matches!(el, kurbo::PathEl::MoveTo(_)) && !cur.elements().is_empty() {
+                out.push(cur.bounding_box().center());
+                cur = BezPath::new();
+            }
+            cur.push(*el);
+        }
+        if !cur.elements().is_empty() {
+            out.push(cur.bounding_box().center());
+        }
+        out
+    }
+
+    /// Distance along the outline of `r`, clockwise from its top left corner, of point `q` on it.
+    fn along(r: Rect, q: kurbo::Point) -> f64 {
+        let (w, h) = (r.width(), r.height());
+        if (q.y - r.y0).abs() < 1e-6 {
+            q.x - r.x0
+        } else if (q.x - r.x1).abs() < 1e-6 {
+            w + q.y - r.y0
+        } else if (q.y - r.y1).abs() < 1e-6 {
+            w + h + r.x1 - q.x
+        } else {
+            2.0 * w + h + r.y1 - q.y
+        }
+    }
+
+    fn assert_even(gaps: &[f64], expected: f64) {
+        for g in gaps {
+            assert!((g - expected).abs() < 0.05, "uneven dot gaps {gaps:?}, expected {expected}");
+        }
+    }
+
+    #[test]
+    fn dotted_box_border_dots_are_evenly_spaced() {
+        let r = Rect::new(0.0, 0.0, 100.3, 37.7);
+        let path = box_outline(r, &[Corner::default(); 4], [true; 4]);
+        let len = 2.0 * (r.width() + r.height());
+        let out = stroke_outline(&path, 1.0, &StrokeType::Dotted, Cap::Butt, Join::Miter, len);
+        let mut s: Vec<f64> = dot_centres(&out).into_iter().map(|q| along(r, q)).collect();
+        s.sort_by(f64::total_cmp);
+        let n = (len / 2.0).round() as usize;
+        assert_eq!(s.len(), n, "dot count");
+        let mut gaps: Vec<f64> = s.windows(2).map(|p| p[1] - p[0]).collect();
+        gaps.push(s[0] + len - s[n - 1]);
+        assert_even(&gaps, len / n as f64);
+    }
+
+    #[test]
+    fn dotted_edge_dots_are_evenly_spaced_and_reach_both_ends() {
+        for (w, l) in [(1.0, 50.3), (2.5, 37.7), (0.7, 100.3)] {
+            let mut p = BezPath::new();
+            p.move_to((0.0, 0.0));
+            p.line_to((l, 0.0));
+            let out = stroke_outline(&p, w, &StrokeType::Dotted, Cap::Butt, Join::Miter, l);
+            let mut xs: Vec<f64> = dot_centres(&out).into_iter().map(|q| q.x).collect();
+            xs.sort_by(f64::total_cmp);
+            let n = (l / (2.0 * w)).round() as usize;
+            assert_eq!(xs.len(), n + 1, "dot count for w {w}, length {l}");
+            assert!(xs[0].abs() < 0.05 && (xs[n] - l).abs() < 0.05, "ends {xs:?}");
+            let gaps: Vec<f64> = xs.windows(2).map(|p| p[1] - p[0]).collect();
+            assert_even(&gaps, l / n as f64);
+        }
+    }
 }

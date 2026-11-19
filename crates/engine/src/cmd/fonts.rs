@@ -94,21 +94,30 @@ fn list(d: &Document) -> Vec<Value> {
     used_fonts(d).into_iter().map(|font| json!(font)).collect()
 }
 
-type FontTally = BTreeMap<(String, String), (usize, std::collections::BTreeSet<char>)>;
+pub(super) type FontTally = BTreeMap<(String, String), (usize, std::collections::BTreeSet<char>)>;
 
 /// Count the characters of every run of one story against the font each resolves to.
 fn tally_story(d: &Document, st: &Story, used: &mut FontTally) {
-    let ranges = st.para_ranges();
-    for (pi, r) in ranges.iter().enumerate() {
-        let (_, base) = d.styles.resolve_para(&st.paras[pi]);
+    tally_range(d, st, 0..st.text.len(), used);
+}
+
+/// Count the characters in the byte range `within` of a story against the font each resolves to;
+/// a composite font counts each character under the font of its entry. An empty paragraph counts
+/// the font of its mark, which still sets its line.
+pub(super) fn tally_range(d: &Document, st: &Story, within: std::ops::Range<usize>, used: &mut FontTally) {
+    let to_end = within.end >= st.text.len();
+    for (pi, r) in st.para_ranges().iter().enumerate() {
+        let Some(para) = st.paras.get(pi) else { continue };
+        let (_, base) = d.styles.resolve_para(para);
+        let mark = r.is_empty() && within.start <= r.start && (r.start < within.end || to_end);
         for (rr, fmt) in st.runs() {
-            let n = st.text[rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))].chars().count();
-            if n == 0 && !(r.is_empty() && rr.contains(&r.start)) {
+            let start = rr.start.max(r.start).max(within.start);
+            let text = st.text.get(start..rr.end.min(r.end).min(within.end).max(start)).unwrap_or("");
+            if text.is_empty() && !(mark && rr.contains(&r.start)) {
                 continue;
             }
             let p = d.styles.resolve_char(&base, fmt);
             if let Some(f) = d.styles.composite_font(&p.font_family) {
-                let text = st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("");
                 for c in text.chars() {
                     if let Some(e) = f.entry(c) {
                         let entry = used.entry((e.family.clone(), e.style.clone())).or_default();
@@ -118,17 +127,23 @@ fn tally_story(d: &Document, st: &Story, used: &mut FontTally) {
                 }
             } else {
                 let entry = used.entry((p.font_family, p.font_style)).or_default();
-                entry.0 += n;
-                entry.1.extend(st.text.get(rr.start.max(r.start)..rr.end.min(r.end).max(rr.start.max(r.start))).unwrap_or("").chars());
+                entry.0 += text.chars().count();
+                entry.1.extend(text.chars());
             }
         }
     }
 }
 
 pub(super) fn used_fonts(d: &Document) -> Vec<UsedFont> {
-    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
     let mut used = FontTally::new();
     for_each_story(d, &mut |st| tally_story(d, st, &mut used));
+    describe_fonts(d, used)
+}
+
+/// The tallied fonts as this document's fonts resolve them: missing, a substitute style, or the
+/// face itself (missing ones first).
+pub(super) fn describe_fonts(d: &Document, used: FontTally) -> Vec<UsedFont> {
+    let db = designcraft_fonts::FontDb::global().scoped(d.font_scope);
     let mut out: Vec<UsedFont> = used
         .into_iter()
         .map(|((family, style), (n, characters))| {

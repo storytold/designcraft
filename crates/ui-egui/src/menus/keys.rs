@@ -66,7 +66,7 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
 /// Whether something other than the shortcuts has the keyboard: a dialog or Quick Apply, an input
 /// method composing at the text caret, an open canvas context menu (Escape closes it, as a
 /// native menu would) or the menu search.
-fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
+pub(super) fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
     app.ui.dialog.is_some()
         || app.ui.palette.is_some()
         || app.session.tool_composing()

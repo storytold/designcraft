@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::edit::SpreadRef;
-use crate::ids::{ItemId, StoryId};
+use crate::ids::{ItemId, SpreadId, StoryId};
 use crate::table::CellRange;
 
 /// A selected ruler guide: index `index` in the guides of page `page` of spread `spread`.
@@ -93,6 +93,9 @@ pub struct Selection {
     /// The page selected with the Page tool (absolute index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<usize>,
+    /// Parent selected with the Page tool: stable spread id and page index within it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_page: Option<(SpreadId, usize)>,
     /// Selected ruler guides. Never together with items, text or cells: selecting one clears
     /// the other.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

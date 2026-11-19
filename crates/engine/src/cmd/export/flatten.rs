@@ -31,7 +31,7 @@ pub(super) fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose
                     id: aid,
                     name: format!("flattened-{}.png", aid.0),
                     mime: "image/png".into(),
-                    data: std::sync::Arc::new(img.to_png()),
+                    data: designcraft_doc::AssetData::embedded(img.to_png()),
                     pixels: Some((w, h)),
                     ..Default::default()
                 }),
@@ -147,7 +147,7 @@ pub(super) fn rasterize_effects(
     cache: &designcraft_compose::Cache,
     skip: &std::collections::HashMap<designcraft_doc::ItemId, designcraft_pdf::ShadowMask>,
 ) -> (Option<designcraft_doc::Document>, usize) {
-    rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
+    rasterize_where_with_links(d, cache, 300.0, true, true, |it| raster_effects(it) && !threaded(d, it) && !skip.contains_key(&it.id))
 }
 
 /// A drop shadow is the object's only soft effect, and the PDF writer draws its shadow itself
@@ -254,6 +254,17 @@ pub(super) fn rasterize_where(
     keep_wrap: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
+    rasterize_where_with_links(d, cache, ppi, keep_wrap, false, pred)
+}
+
+fn rasterize_where_with_links(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    ppi: f64,
+    keep_wrap: bool,
+    keep_links: bool,
+    pred: impl Fn(&designcraft_doc::Item) -> bool,
+) -> (Option<designcraft_doc::Document>, usize) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
     let todo: Vec<(usize, ItemId)> =
         d.spreads.iter().enumerate().flat_map(|(si, sp)| sp.items.iter().filter(|it| !it.hidden && pred(it)).map(move |it| (si, it.id))).collect();
@@ -299,7 +310,7 @@ pub(super) fn rasterize_where(
                 id: aid,
                 name: format!("effects-{}.png", id.0),
                 mime: "image/png".into(),
-                data: std::sync::Arc::new(img.to_png()),
+                data: designcraft_doc::AssetData::embedded(img.to_png()),
                 pixels: Some((w, h)),
                 ..Default::default()
             }),
@@ -320,11 +331,24 @@ pub(super) fn rasterize_where(
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
         img_item.export_options = it.export_options.clone();
+        let linked = keep_links
+            && d.hyperlinks.iter().any(|link| match &link.source {
+                designcraft_doc::HyperlinkSource::Item { id: source } => d.top_level_of(*source) == Some(id),
+                designcraft_doc::HyperlinkSource::Text { story, .. } => {
+                    d.story(*story).is_some_and(|st| st.frames.iter().any(|frame| d.top_level_of(*frame) == Some(id)))
+                }
+            });
         // Same place in the stacking order.
         let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
         if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
             osp.items[pos] = std::sync::Arc::new(img_item);
-            if keep_wrap && has_wrap(it, 0) {
+            if linked {
+                // Annotation bounds and text composition still need the original frame, not
+                // the image's larger effect bounds. This copy also keeps any text wrap. It keeps
+                // the frame's ItemId, which hyperlink sources and the story's frame list name,
+                // while the image takes a fresh id.
+                osp.items.insert(pos, std::sync::Arc::new(link_stand_in(it, 0)));
+            } else if keep_wrap && has_wrap(it, 0) {
                 osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
             }
             n += 1;
@@ -347,8 +371,28 @@ fn has_wrap(it: &designcraft_doc::Item, depth: usize) -> bool {
         }
 }
 
-/// Nesting depth past which groups inside a rasterised object keep no wrap stand-ins.
+/// Nesting depth past which groups inside a rasterised object keep no stand-in children.
 const MAX_STAND_IN_DEPTH: usize = 64;
+
+/// Nonprinting link geometry, retaining text stories and wrap but no interactive annotations.
+fn link_stand_in(it: &designcraft_doc::Item, depth: usize) -> designcraft_doc::Item {
+    use designcraft_doc::Content;
+    let mut c = it.clone();
+    c.nonprinting = true;
+    c.form_field = None;
+    c.button = None;
+    c.media = None;
+    if let Content::Group { items } = &it.content {
+        c.content = Content::Group {
+            items: if depth < MAX_STAND_IN_DEPTH {
+                items.iter().map(|i| std::sync::Arc::new(link_stand_in(i, depth + 1))).collect()
+            } else {
+                Vec::new()
+            },
+        };
+    }
+    c
+}
 
 /// A nonprinting copy of `it` that keeps its text wrap (and its graphic's and its items') and
 /// nothing else that reaches the PDF: no text, form field, button or media. The image of the
@@ -382,7 +426,7 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
         .filter(|it| it.has_pdf_layer_override())
         .filter_map(|it| {
             let g = it.graphic()?;
-            let a = d.assets.get(&g.asset).filter(|a| designcraft_render::is_pdf(&a.data))?;
+            let a = d.assets.get(&g.asset).filter(|a| a.output_bytes().is_ok_and(|o| designcraft_render::is_pdf(&o.bytes)))?;
             Some((it.id, g.clone(), a.clone(), it.pdf_hidden_layers.clone()))
         })
         .collect();
@@ -398,7 +442,8 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
         let [l, t, r, b] = shown.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let page_side = (g.size.0 / (r - l)).max(g.size.1 / (b - t));
         let side = (page_side * 300.0 / 72.0).clamp(64.0, 8000.0) as u32;
-        let png = designcraft_render::pdf_page_png_options_checked(&a.data, a.page as usize, side, Some(&hidden), shown)
+        let bytes = a.output_bytes().map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?.bytes;
+        let png = designcraft_render::pdf_page_png_options_checked(&bytes, a.page as usize, side, Some(&hidden), shown)
             .map_err(|e| EngineError::Other(format!("{}: {e}", a.name)))?;
         let px = designcraft_render::image_size(&png);
         let aid = designcraft_doc::AssetId(out.alloc());
@@ -408,7 +453,7 @@ pub(super) fn rasterize_layered(d: &designcraft_doc::Document) -> Result<(Option
                 id: aid,
                 name: format!("{}.png", a.name),
                 mime: "image/png".into(),
-                data: std::sync::Arc::new(png),
+                data: designcraft_doc::AssetData::embedded(png),
                 pixels: px,
                 ..Default::default()
             }),
@@ -496,7 +541,7 @@ mod placed_layer_tests {
         let aid = d.item(id).unwrap().graphic().unwrap().asset;
         let asset = Arc::make_mut(d.assets.get_mut(&aid).unwrap());
         asset.mime = "image/png".into();
-        asset.data = Arc::new(designcraft_render::Rendered { width: 1, height: 1, pixels: vec![0, 0, 0, 0] }.to_png());
+        asset.data = designcraft_doc::AssetData::embedded(designcraft_render::Rendered { width: 1, height: 1, pixels: vec![0, 0, 0, 0] }.to_png());
         let (copy, count) = super::rasterize_layered(d).unwrap();
         assert_eq!(count, 0);
         assert!(copy.is_none());

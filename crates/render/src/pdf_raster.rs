@@ -1,5 +1,6 @@
 use super::types::Rendered;
-use super::{Affine, Arc, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
+use super::{Affine, HashMap, Pixmap, Rect, pdf_bounds, pdf_hide_layers, pdf_layers, vello_cpu};
+use crate::prepare::Prepared;
 
 /// MIME type guess for encoded image bytes.
 /// Is this a PDF file (placed PDFs are graphics)?
@@ -19,6 +20,20 @@ pub fn pdf_page_size(bytes: &[u8], page: usize) -> Option<(f64, f64)> {
     let p = pdf.pages().get(page)?;
     let (w, h) = p.render_dimensions();
     Some((w as f64, h as f64))
+}
+
+/// Sizes of every page of a PDF, as [`pdf_page_size`] gives each: the file is opened once.
+pub fn pdf_page_sizes(bytes: &[u8]) -> Option<Vec<(f64, f64)>> {
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
+    Some(
+        pdf.pages()
+            .iter()
+            .map(|p| {
+                let (w, h) = p.render_dimensions();
+                (w as f64, h as f64)
+            })
+            .collect(),
+    )
 }
 
 /// A placed page could not be rasterized completely for export.
@@ -212,33 +227,72 @@ pub fn pdf_crop_box(bytes: &[u8], page: usize, crop: designcraft_doc::PdfCrop) -
 /// Box crop that import left unmeasured is measured here, once per file, page and crop: that
 /// interprets the page's drawing, which only drawing or exporting the graphic needs.
 pub fn shown_box(asset: &designcraft_doc::Asset) -> Option<[f64; 4]> {
-    if !asset.content_box_pending() {
-        return asset.shown_box();
+    match shown_box_now(asset, true) {
+        Prepared::Ready(b) => b,
+        Prepared::Pending | Prepared::Failed => None,
     }
-    asset.shown(content_box(&asset.data, asset.page, asset.pdf_crop)?)
 }
 
-type ContentBoxes = HashMap<(usize, u32, designcraft_doc::PdfCrop), (std::sync::Weak<Vec<u8>>, Option<[f64; 4]>)>;
-
-/// [`pdf_crop_box`]'s box, cached by the file's allocation. The weak reference keeps that address
-/// from naming another file while the entry lives.
-fn content_box(bytes: &Arc<Vec<u8>>, page: u32, crop: designcraft_doc::PdfCrop) -> Option<[f64; 4]> {
-    static CACHE: std::sync::Mutex<Option<ContentBoxes>> = std::sync::Mutex::new(None);
-    let key = (Arc::as_ptr(bytes) as usize, page, crop);
-    let cached = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|c| c.get(&key)).and_then(|(file, b)| {
-        let same = file.upgrade().is_some_and(|f| Arc::ptr_eq(&f, bytes));
-        same.then_some(*b)
-    });
-    if let Some(b) = cached {
-        return b;
+/// [`shown_box`]; without `wait`, a crop still to measure is measured in the background
+/// ([`Prepared::Pending`]).
+pub(crate) fn shown_box_now(asset: &designcraft_doc::Asset, wait: bool) -> Prepared<Option<[f64; 4]>> {
+    if !asset.content_box_pending() {
+        return Prepared::Ready(asset.shown_box());
     }
-    // Render outside the lock: other graphics keep drawing meanwhile.
-    let b = pdf_crop_box(bytes, page as usize, crop).map(|(frac, _)| frac);
-    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match content_box(&asset.data, asset.page, asset.pdf_crop, wait) {
+        Prepared::Ready(b) => Prepared::Ready(asset.shown(b)),
+        Prepared::Pending => Prepared::Pending,
+        Prepared::Failed => Prepared::Ready(None),
+    }
+}
+
+type ContentBoxes = HashMap<(designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop), Option<[f64; 4]>>;
+
+/// Boxes remembered; all are forgotten beyond this (measuring one again costs a render).
+const MAX_CONTENT_BOXES: usize = 1024;
+static CONTENT_BOXES: std::sync::Mutex<Option<ContentBoxes>> = std::sync::Mutex::new(None);
+
+fn known_content_box(key: &(designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop)) -> Option<Option<[f64; 4]>> {
+    CONTENT_BOXES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|c| c.get(key).copied())
+}
+
+/// Measure the box `key` names in `bytes` (outside the lock) and remember it.
+fn measure_content_box(key: (designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop), bytes: &[u8]) -> Option<[f64; 4]> {
+    let b = pdf_crop_box(bytes, key.1 as usize, key.2).map(|(frac, _)| frac);
+    let mut cache = CONTENT_BOXES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = cache.get_or_insert_with(HashMap::new);
-    cache.retain(|_, (file, _)| file.strong_count() > 0);
-    cache.insert(key, (Arc::downgrade(bytes), b));
+    if cache.len() >= MAX_CONTENT_BOXES {
+        cache.clear();
+    }
+    cache.insert(key, b);
     b
+}
+
+/// [`pdf_crop_box`]'s box, cached by the file's key. With `wait` it is measured here (reading a
+/// linked file); without, in the background. A linked file that can't be had isn't asked for
+/// again until the links change ([`crate::images::unavailable`]).
+fn content_box(data: &designcraft_doc::AssetData, page: u32, crop: designcraft_doc::PdfCrop, wait: bool) -> Prepared<[f64; 4]> {
+    let key = (data.key(), page, crop);
+    let known = |b: Option<[f64; 4]>| b.map_or(Prepared::Failed, Prepared::Ready);
+    if let Some(b) = known_content_box(&key) {
+        return known(b);
+    }
+    if crate::images::unavailable(data).is_some() {
+        return Prepared::Failed;
+    }
+    if wait {
+        return crate::images::load_bytes(data, false).map_or(Prepared::Failed, |bytes| known(measure_content_box(key, &bytes)));
+    }
+    let source = data.clone();
+    let queued = crate::prepare::later(crate::prepare::job_key(("content box", key)), move || {
+        if let Some(bytes) = crate::images::load_bytes(&source, true) {
+            measure_content_box(key, &bytes);
+        }
+    });
+    match queued {
+        crate::prepare::Queued::Yes => Prepared::Pending,
+        crate::prepare::Queued::Ran => known_content_box(&key).map_or(Prepared::Failed, known),
+    }
 }
 
 /// The part of `pm` inside `frac` (left, top, right, bottom as fractions of it); what lies outside
@@ -251,6 +305,11 @@ pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
         return None;
     }
     let (w, h) = (w as u16, h as u16);
+    // A box reaching far outside the page would mostly be transparent padding: it gets no more
+    // pixels than a page raster may have.
+    if u64::from(w) * u64::from(h) > crate::MAX_PAGE_PIXELS {
+        return None;
+    }
     let mut out = Pixmap::new(w, h);
     let src = pm.data();
     let dst = out.data_mut();
@@ -271,4 +330,61 @@ pub fn crop_pixmap(pm: &Pixmap, frac: [f64; 4]) -> Option<Pixmap> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+
+    /// A crop box reaching far outside the page gets no bigger a pixmap than a page may have.
+    #[test]
+    fn crop_outside_the_page_is_bounded() {
+        let pm = Pixmap::new(10, 10);
+        assert!(crop_pixmap(&pm, [-0.5, -0.5, 1.5, 1.5]).is_some_and(|c| (c.width(), c.height()) == (20, 20)));
+        // 60,000 × 60,000 pixels: within u16 each way, far past the page raster budget.
+        assert!(crop_pixmap(&pm, [-3000.0, -3000.0, 3000.0, 3000.0]).is_none());
+    }
+
+    /// A Bounding Box crop of a linked PDF is measured off the drawing thread, and one whose file
+    /// is missing is read once, not on every frame.
+    #[test]
+    fn a_linked_crop_is_measured_off_the_drawing_thread_and_a_missing_file_is_read_once() {
+        use crate::images::tests::linked;
+        use designcraft_doc::PdfCrop;
+        let generation = designcraft_doc::asset_data::link_generation();
+        let missing = linked::file("mem:/missing-crop.pdf", None, 100);
+        let mut failed = false;
+        for _ in 0..500 {
+            match content_box(&missing, 0, PdfCrop::ContentVisible, false) {
+                Prepared::Failed => {
+                    failed = true;
+                    break;
+                }
+                Prepared::Pending => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Prepared::Ready(_) => break,
+            }
+        }
+        assert!(failed);
+        for _ in 0..5 {
+            assert!(matches!(content_box(&missing, 0, PdfCrop::ContentVisible, true), Prepared::Failed));
+            assert!(matches!(content_box(&missing, 0, PdfCrop::ContentVisible, false), Prepared::Failed));
+        }
+        if designcraft_doc::asset_data::link_generation() == generation {
+            assert_eq!(linked::reads("mem:/missing-crop.pdf"), 1);
+        }
+        let pdf = crate::pdf_layers::tests::two_layer_pdf();
+        let data = linked::file("mem:/crop.pdf", Some(pdf.clone()), pdf.len() as u64);
+        let mut measured = None;
+        for _ in 0..500 {
+            match content_box(&data, 0, PdfCrop::ContentVisible, false) {
+                Prepared::Ready(b) => {
+                    measured = Some(b);
+                    break;
+                }
+                Prepared::Pending => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Prepared::Failed => break,
+            }
+        }
+        assert_eq!(measured, pdf_crop_box(&pdf, 0, PdfCrop::ContentVisible).map(|(frac, _)| frac));
+    }
 }
