@@ -1339,8 +1339,20 @@ fn oversized_multi_strip_tiff_decodes_at_reduced_size_while_full_decode_is_refus
     assert_eq!(reduced.get_pixel(0, 0).0, want);
     assert_eq!(reduced.get_pixel(2048, 2048).0, want);
 
-    // A single-strip TIFF whose single band exceeds the 512 MiB band limit is refused before decoding.
-    let single_strip_over_band = cmyk_tiff_header(side);
+    // A complete zlib-compressed single-strip CMYK TIFF works within the 512 MiB band cap,
+    // and is refused before pixel allocation once its single strip exceeds 512 MiB.
+    let small_single_strip = custom_striped_tiff(side, rps, rps, 5, 8, 4, &[&full_strip_z], None, None);
+    assert!(decode_rgba_reduced(&small_single_strip, 3).is_some());
+
+    let single_strips = 520u32;
+    let single_h = rps * single_strips; // 16,388 * 8,320 * 4 = ~520.1 MiB > 512 MiB band cap
+    let mut over_enc = ZlibEncoder::new(Vec::new(), Compression::fast());
+    for _ in 0..single_strips {
+        over_enc.write_all(&full_strip_raw).unwrap();
+    }
+    let over_band_z = over_enc.finish().unwrap();
+    let single_strip_over_band = custom_striped_tiff(side, single_h, single_h, 5, 8, 4, &[&over_band_z], None, None);
+    assert!(reduced_estimate(&single_strip_over_band, 3).is_none());
     assert!(decode_rgba_reduced(&single_strip_over_band, 3).is_none());
 }
 

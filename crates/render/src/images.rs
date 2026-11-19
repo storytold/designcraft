@@ -327,9 +327,10 @@ pub fn decoded(data: &AssetData, page: u32) -> Option<Arc<Pixmap>> {
 /// Maximum RGBA byte size accepted for a decoded `Pixmap` (`1 GiB`).
 const MAX_PIXMAP_BYTES: u64 = 1 << 30;
 
-/// Smallest mip level of `size` whose halved dimensions fit in `Pixmap` (`u16::MAX` a side)
-/// and within `1 GiB` of RGBA. Returns `0` for ordinary sizes and `>= 1` for oversized rasters
-/// so zoom-in clamps to a reduced decode instead of hitting [`decode_full`].
+/// Smallest mip level of `size` whose reduced decoder dimensions (each side rounded up) fit in
+/// `Pixmap` (`u16::MAX` a side) and within `1 GiB` of RGBA. Returns `0` for ordinary sizes and
+/// `>= 1` for oversized rasters so zoom-in clamps to a reduced decode instead of hitting
+/// [`decode_full`].
 fn finest_level(size: (u32, u32)) -> u8 {
     let fits = |(w, h): (u32, u32)| {
         w <= u32::from(u16::MAX) && h <= u32::from(u16::MAX) && u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) <= MAX_PIXMAP_BYTES
@@ -339,7 +340,7 @@ fn finest_level(size: (u32, u32)) -> u8 {
         if fits(cur) {
             return level;
         }
-        cur = halved(cur, 1);
+        cur = (cur.0.div_ceil(2), cur.1.div_ceil(2));
     }
     MAX_LEVEL
 }
@@ -1559,28 +1560,32 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn packbits_gray_tiff(side: u32, rows_per_strip: u32, val: u8) -> Vec<u8> {
+        packbits_gray_tiff_rect(side, side, rows_per_strip, val)
+    }
+
+    pub(crate) fn packbits_gray_tiff_rect(w: u32, h: u32, rows_per_strip: u32, val: u8) -> Vec<u8> {
         let mut row = Vec::new();
-        let mut left = side as usize;
-        while left > 128 {
+        let mut left = w as usize;
+        while left >= 128 {
             row.push(129);
             row.push(val);
             left -= 128;
         }
         if left > 1 {
-            row.push((-(left as i8 - 1)) as u8);
+            row.push((1 - left as isize) as u8);
             row.push(val);
         } else if left == 1 {
             row.push(0);
             row.push(val);
         }
 
-        let n_strips = side.div_ceil(rows_per_strip) as usize;
+        let n_strips = h.div_ceil(rows_per_strip) as usize;
         let entries_count = 9usize;
         let offsets_off = 8 + 2 + entries_count * 12 + 4;
         let counts_off = offsets_off + n_strips * 4;
         let mut data_off = counts_off + n_strips * 4;
         let full_strip = row.repeat(rows_per_strip as usize);
-        let rem_rows = (side % rows_per_strip) as usize;
+        let rem_rows = (h % rows_per_strip) as usize;
         let rem_strip = row.repeat(rem_rows);
 
         let mut offsets = Vec::with_capacity(n_strips);
@@ -1593,8 +1598,8 @@ pub(crate) mod tests {
         }
 
         let tags: [(u16, u16, u32, u32); 9] = [
-            (256, 4, 1, side),
-            (257, 4, 1, side),
+            (256, 4, 1, w),
+            (257, 4, 1, h),
             (258, 3, 1, 8),
             (259, 3, 1, 32773),
             (262, 3, 1, 1),
@@ -1655,6 +1660,9 @@ pub(crate) mod tests {
         // stays on the reduced decode path instead of falling back to `decode_full`.
         assert_eq!(finest_level((23_800, 15_840)), 1);
         assert_eq!(level_for((23_800, 15_840), 1000.0, 50.0), 1);
+        assert_eq!(finest_level((131_070, 128)), 1);
+        assert_eq!(finest_level((131_071, 128)), 2);
+        assert_eq!(finest_level((32_768, 32_769)), 2);
 
         let huge = AssetData::embedded(packbits_gray_tiff(16_388, 128, 160));
         let pm = mip(&huge, 0, 1000.0, 1.0).expect("oversized TIFF decodes via reduced bands");
@@ -1664,6 +1672,11 @@ pub(crate) mod tests {
         assert_eq!([p.r, p.g, p.b, p.a], [160, 160, 160, 255]);
         let thumb = mip(&huge, 0, 1000.0, 0.1).unwrap();
         assert_eq!((thumb.width(), thumb.height()), (128, 128));
+
+        let wide = AssetData::embedded(packbits_gray_tiff_rect(131_071, 128, 8, 170));
+        let wide_pm = mip(&wide, 0, 1000.0, 50.0).expect("131071x128 TIFF clamps to level 2 instead of failing");
+        assert!(!is_bad(wide.key(), 0));
+        assert_eq!((wide_pm.width(), wide_pm.height()), (32_767, 32));
     }
 
     fn png_sized(w: u32, h: u32) -> AssetData {
