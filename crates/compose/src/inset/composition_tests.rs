@@ -214,6 +214,52 @@ fn follow_inset_reuses_candidate_main_layout() {
 }
 
 #[test]
+fn routed_catchword_hugs_last_line_and_its_follower() {
+    let (mut doc, sid) = document(2, "Short main.\nNext page.", "", "");
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.find("Next").unwrap();
+    story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+    enable_catchwords(&mut doc, sid);
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+    let mut follower_series = doc.note_series[1].clone();
+    follower_series.id = 3;
+    doc.note_series.push(follower_series);
+    for (at, series, text) in [(at, 2, "Following page."), (0, 2, "Route line.\nRoute line.\nRoute line."), (0, 3, "Follower.")] {
+        let id = doc.story_mut(sid).unwrap().insert_note(at, text, Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = series;
+    }
+    let mut routes = Vec::new();
+    for (page, series) in [(0, 2), (0, 3), (1, 2)] {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 800.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        let follow_inset =
+            (series == 3).then(|| designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: routes.first().copied() });
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series, follow_inset });
+        routes.push(id);
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let route = cs.frame(routes[0]).unwrap();
+    let last = route
+        .notes
+        .iter()
+        .flat_map(|n| n.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |l| (n.origin.y + l.baseline, l.descent))))
+        .last()
+        .unwrap();
+    let word = &route.catchwords[0];
+    assert!((word.rect.y0 - last.0 - last.1).abs() < 0.01, "row {:?}, last line {last:?}", word.rect);
+    let baseline = word.origin.y + word.text.frames[0].lines[0].baseline * word.scale;
+    assert!(baseline > last.0 && baseline - last.0 <= word.rect.height());
+    assert!((cs.frame(routes[1]).unwrap().columns[0].y0 - word.rect.y1).abs() < 0.01);
+}
+
+#[test]
 fn chained_followers_fit_each_route_area_once_per_candidate() {
     let (mut doc, sid, routes) = routed_document(180.0);
     super::fitting::ROUTE_AREAS.with(|n| n.set(0));

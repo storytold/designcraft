@@ -130,7 +130,8 @@ streams show no catchword. Conditional visibility and tracked deletions determin
 unchanged, and are included in native rendering and PDF export.
 
 The host's catchword setting also applies to routed series. Only the last route frame of
-each series on a page reserves the bottom row. Its word comes from that series' next
+each series on a page reserves a row directly below its last composed line. A
+`followInset.after` follower clears that row. Its word comes from that series' next
 visible page; a finished series has no catchword. Side notes outside a stream's horizontal
 range do not lower its catchword row. Followers clear every inset stream's catchword row.
 

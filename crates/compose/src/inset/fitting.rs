@@ -111,6 +111,16 @@ struct RouteGeometry<'a> {
     routes: &'a [FrameSpec],
 }
 
+fn route_catchword_rect(frame: &FrameText, reserved: Rect) -> Option<Rect> {
+    let bottom = frame
+        .notes
+        .iter()
+        .flat_map(|note| note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent)))
+        .reduce(f64::max)?;
+    let end = bottom + reserved.height();
+    (end <= reserved.y1 + 0.01).then_some(Rect::new(reserved.x0, bottom, reserved.x1, end))
+}
+
 fn fit_routes(
     doc: &Document,
     story: &Story,
@@ -160,7 +170,8 @@ fn fit_routes(
                         let spec = areas.get(previous)?;
                         let frame = fitted.get(previous)?;
                         let bottom = frame.notes.iter().map(|n| n.rect.y1).fold(spec.area.y0, f64::max);
-                        let bottom = reserved.get(&spec.id).map_or(bottom, |rect| bottom.max(rect.y1));
+                        let bottom =
+                            reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect)).map_or(bottom, |rect| bottom.max(rect.y1));
                         route_edge(doc, spec.id, id, bottom, follow.gap)
                     });
                     let Some(edge) = route_edge(doc, host, id, bottom, follow.gap).filter(|_| dependency.is_none() || reference.is_some()) else {
@@ -216,7 +227,8 @@ fn fit_routes(
             let (fitted, reserved) = fit(&rows);
             result = fitted;
             for spec in input.areas {
-                let Some(region) = reserved.get(&spec.id).copied() else { continue };
+                let Some(frame) = result.frames.iter().find(|f| f.frame == spec.id) else { continue };
+                let Some(region) = reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect)) else { continue };
                 let mut spec = spec.clone();
                 spec.opts.inset_columns = Some(options.clone());
                 regions.push((spec, region));
