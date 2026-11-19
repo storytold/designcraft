@@ -365,3 +365,46 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::notes::NoteRestart;
+    use designcraft_doc::{Document, ParaFormat, SpreadRef};
+    use designcraft_geom::Rect;
+
+    use super::Notes;
+
+    /// A reference whose label width moves it back and forth between two pages stops being
+    /// re-laid after a few moves, and the other references still move to the page they land on.
+    /// With one re-lay budget for the whole story, that reference used it up (#2969).
+    #[test]
+    fn a_reference_moving_back_and_forth_leaves_the_others_their_corrections() {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 600.0), lid, "One. Two.", ParaFormat::default()).unwrap();
+        d.footnote_options.restart = NoteRestart::Page;
+        {
+            let st = d.story_mut(sid).unwrap();
+            for word in ["Two.", "One."] {
+                let at = st.text.find(word).unwrap() + word.len();
+                st.insert_note(at, "Note.", ParaFormat::default());
+            }
+        }
+        let mut notes = Notes::new(&d, d.story(sid).unwrap());
+        assert_eq!(notes.refs.len(), 2);
+        notes.keys = vec![Some(0), Some(0)];
+        // Footnote 0 alternates between pages 1 and 0, renumbered on each re-lay.
+        let mut moves = 0;
+        for i in 0..40 {
+            let page = 1 - i % 2;
+            if notes.moved_unit(&d, &[0], Some(page)) {
+                moves += 1;
+                notes.keys[0] = Some(page);
+            }
+        }
+        assert_eq!(moves, 4);
+        // Footnote 1, numbered on page 0, lands on page 1.
+        assert!(notes.moved_unit(&d, &[1], Some(1)));
+    }
+}
