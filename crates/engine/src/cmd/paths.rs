@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::{Content, Document, Fill, Item, ItemId, Selection, Shape, SpreadRef, Stroke};
-use designcraft_geom::{Affine, BezPath, PathData, Shape as _, SubPath};
+use designcraft_geom::{Affine, BezPath, PathData, Point, Shape as _, SubPath};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_selection, point_param, targets};
@@ -80,9 +80,10 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
 /// time; past this the command is refused rather than leave later subpaths with the wrong direction.
 pub(super) const MAX_HOLE_TESTS: usize = 4_000_000;
 
-/// Contours `orient_holes` takes at most: each one's start is checked against every other
-/// contour's box, so the box checks grow with the square of the count.
-const MAX_HOLE_CONTOURS: usize = 8_000;
+/// Contour boxes `orient_holes` checks contour starts against at most. Only boxes whose x range
+/// reaches a start are checked, so separate contours side by side cost little; many contours
+/// stacked over one another are refused past this.
+const MAX_HOLE_BOXES: usize = 64_000_000;
 
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
@@ -92,7 +93,7 @@ fn orient_holes(path: &mut PathData, command: &str) -> Result<()> {
 
 fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> Result<()> {
     let mut budget = max_tests;
-    let mut boxes = MAX_HOLE_CONTOURS * MAX_HOLE_CONTOURS;
+    let mut boxes = MAX_HOLE_BOXES;
     let nest = nesting(path, command, &mut budget, &mut boxes)?;
     // A contour of zero area (an open line) fills nothing either way: it keeps its direction, and
     // with it where its stroke starts.
@@ -117,30 +118,41 @@ pub(super) struct Nesting {
 }
 
 /// Each contour's [`Nesting`]. Every winding count takes the counted contour's element count
-/// from `budget`, and every contour start takes the number of boxes it is checked against from
-/// `boxes_left`; when either runs out the path is refused.
+/// from `budget`, and every contour start takes the number of boxes it is checked against (those
+/// whose left edge is at or left of it, and not yet passed) from `boxes_left`; when either runs
+/// out the path is refused.
 pub(super) fn nesting(path: &PathData, command: &str, budget: &mut usize, boxes_left: &mut usize) -> Result<Vec<Nesting>> {
     let n = path.subpaths.len();
-    if n > MAX_HOLE_CONTOURS {
-        return Err(bad(command, "too many contours to tell holes from fills"));
-    }
     let beziers: Vec<BezPath> = path.subpaths.iter().map(SubPath::to_filled_bezpath).collect();
     // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
-    let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
-    let mut holders: Vec<Vec<usize>> = Vec::with_capacity(n);
-    for (i, sp) in path.subpaths.iter().enumerate() {
-        let mut held = Vec::new();
-        if let Some(p) = sp.anchors.first().map(|a| a.p) {
-            *boxes_left = boxes_left.checked_sub(n - 1).ok_or_else(|| bad(command, "too many contours to tell holes from fills"))?;
-            for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
-                let cost = beziers[j].elements().len().max(1);
-                *budget = budget.checked_sub(cost).ok_or_else(|| bad(command, "too many nested contours to tell holes from fills"))?;
-                if designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p) {
-                    held.push(j);
-                }
+    let boxes: Vec<_> = beziers.iter().map(|b| b.bounding_box().inflate(1e-6, 1e-6)).collect();
+    // Contour starts are taken left to right, and `active` keeps the boxes whose x range reaches
+    // the current start: a start is checked only against the boxes above or below it.
+    let mut starts: Vec<(usize, Point)> = path.subpaths.iter().enumerate().filter_map(|(i, sp)| Some((i, sp.anchors.first()?.p))).collect();
+    starts.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+    let mut by_left: Vec<usize> = (0..n).collect();
+    by_left.sort_by(|&a, &b| boxes[a].x0.total_cmp(&boxes[b].x0));
+    let (mut active, mut next) = (Vec::new(), 0);
+    let mut holders: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(i, p) in &starts {
+        while let Some(&j) = by_left.get(next)
+            && boxes[j].x0 <= p.x
+        {
+            active.push(j);
+            next += 1;
+        }
+        // Each box joins and leaves `active` once: the boxes kept are charged below, and those
+        // dropped add up to at most the number of contours.
+        active.retain(|&j| boxes[j].x1 >= p.x);
+        *boxes_left = boxes_left.checked_sub(active.len()).ok_or_else(|| bad(command, "too many contours to tell holes from fills"))?;
+        for &j in active.iter().filter(|&&j| j != i && boxes[j].contains(p)) {
+            let cost = beziers[j].elements().len().max(1);
+            *budget = budget.checked_sub(cost).ok_or_else(|| bad(command, "too many nested contours to tell holes from fills"))?;
+            if designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p) {
+                holders[i].push(j);
             }
         }
-        holders.push(held);
+        holders[i].sort_unstable();
     }
     // Signed area measured from the contour's own first anchor: far from the origin, absolute
     // coordinates would lose the sign of a small contour to rounding.
@@ -150,12 +162,13 @@ pub(super) fn nesting(path: &PathData, command: &str, budget: &mut usize, boxes_
     };
     // Zero signed area alone does not mean an empty fill (a symmetric bow tie): a contour fills
     // nothing only when the points of its drawn segments, handles included, lie on one line. (The
-    // handles at the open ends of an open path are not drawn.)
+    // handles at the open ends of an open path are not drawn, and neither are handles too short
+    // for a segment to be drawn as a curve.)
     let on_one_line = |sp: &SubPath| {
         let pts = || {
             (0..sp.segment_count()).flat_map(|i| {
                 let c = sp.segment(i);
-                [c.p0, c.p1, c.p2, c.p3]
+                if sp.segment_is_line(i) { [c.p0, c.p0, c.p3, c.p3] } else { [c.p0, c.p1, c.p2, c.p3] }
             })
         };
         let Some(p0) = pts().next() else { return true };
@@ -536,27 +549,41 @@ mod tests {
         }
         assert!(orient_holes_within(&mut PathData::new(subs.clone()), "test", 3).is_err());
         assert!(orient_holes_within(&mut PathData::new(subs), "test", 100).is_ok());
-        // Each contour's start is checked against every other's box: past the contour limit the
-        // path is refused before that quadratic scan.
-        let many: Vec<SubPath> = (0..=MAX_HOLE_CONTOURS)
-            .map(|k| {
-                let x = 20.0 * k as f64;
-                rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths.remove(0)
-            })
-            .collect();
-        assert!(orient_holes(&mut PathData::new(many), "test").is_err());
-        // Box checks are counted too, even when every box misses: three apart squares check two
-        // boxes each.
-        let apart = PathData::new(
-            (0..3)
-                .map(|k| {
-                    let x = 20.0 * f64::from(k);
-                    rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths.remove(0)
-                })
-                .collect(),
-        );
-        assert!(nesting(&apart, "test", &mut 100, &mut 5).is_err());
-        assert!(nesting(&apart, "test", &mut 100, &mut 6).is_ok());
+        // Separate contours side by side check only the boxes over them: 20,000 of them take
+        // 20,000 box checks, well within the limit.
+        let row = |count: u32, dx: f64, dy: f64| {
+            PathData::new(
+                (0..count)
+                    .map(|k| {
+                        let (x, y) = (dx * f64::from(k), dy * f64::from(k));
+                        rectangle(Rect::new(x, y, x + 10.0, y + 10.0)).subpaths.remove(0)
+                    })
+                    .collect(),
+            )
+        };
+        let mut many = row(20_000, 20.0, 0.0);
+        assert!(orient_holes(&mut many, "test").is_ok());
+        assert!(many.subpaths.iter().all(|s| s.area() > 0.0));
+        assert!(nesting(&row(3, 20.0, 0.0), "test", &mut 100, &mut 2).is_err());
+        assert!(nesting(&row(3, 20.0, 0.0), "test", &mut 100, &mut 3).is_ok());
+        // Contours stacked in one column are each checked against every box over them, even
+        // though every box misses: three check 3 + 3 + 3 boxes, and past the limit the path is
+        // refused.
+        assert!(nesting(&row(3, 0.0, 20.0), "test", &mut 100, &mut 8).is_err());
+        assert!(nesting(&row(3, 0.0, 20.0), "test", &mut 100, &mut 9).is_ok());
+        assert!(orient_holes(&mut row(8_001, 0.0, 20.0), "test").is_err());
+    }
+
+    #[test]
+    fn a_line_with_a_handle_too_short_to_draw_fills_nothing() {
+        use designcraft_geom::{Anchor, Point};
+        // The middle anchor's handle is within the drawing threshold: the segment is drawn as a
+        // straight line, so the open line encloses no area.
+        let mut sp = SubPath::new([30.0, 50.0, 70.0].iter().map(|&x| Anchor::corner(Point::new(x, 50.0))).collect(), false);
+        sp.anchors[1].h_out = Point::new(50.0, 50.0 + 1e-10);
+        assert!(sp.segment_is_line(1));
+        let nest = nesting(&PathData::new(vec![sp]), "test", &mut 100, &mut 100).unwrap();
+        assert!(!nest[0].fills);
     }
 
     #[test]

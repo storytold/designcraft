@@ -61,8 +61,10 @@ const MAX_CURVE_SIZE: f64 = 1e100;
 /// share? Each subpath counts as filled, closed by a straight edge when it is open; one that
 /// encloses no area (its straight edges lie along one line) is left out. A straight edge and a
 /// curve are intersected exactly. Two curves are compared flattened to `tolerance` (more coarsely
-/// for a curve larger than `STEPS_PER_CURVE` times it), and a flattened edge that comes within that
-/// distance of another counts as touching it, so `Some(false)` means the contours are apart. Each
+/// for a curve larger than `STEPS_PER_CURVE` times it). Where the steps of two curves come within
+/// that distance, the curves themselves are halved to tell whether they meet, so the tolerance
+/// does not set how far apart they must be: `Some(false)` means the contours do not cross or touch,
+/// not that they are at least `tolerance` apart. Each
 /// edge made takes one from `edges_left` and each comparison one from `tests_left`; `None` when
 /// either runs out.
 pub fn edges_cross(path: &PathData, tolerance: f64, edges_left: &mut usize, tests_left: &mut usize) -> Option<bool> {
@@ -181,17 +183,17 @@ fn edges_meet(a: &Edge, b: &Edge, apart: &mut HashSet<[usize; 4]>, tests_left: &
     let same_or_next = a.contour == b.contour && (a.seg == b.seg || (a.seg + 1) % a.segs == b.seg || (b.seg + 1) % b.segs == a.seg);
     // Steps of neighboring curves where one heads back the way the other came: they can cross
     // right after the joint, closer than their steps show, so the curves themselves are
-    // subdivided without the thousandth next to each joint.
+    // subdivided, leaving out only the joints they share.
     if let (Some(ca), Some(cb)) = (a.curve, b.curve)
         && same_or_next
         && a.seg != b.seg
-        && let Some((pa, pb)) = turned_back(a, ca, b, cb)
+        && let Some((pa, pb, joints)) = turned_back(a, ca, b, cb)
     {
         let key = pair_key(a, b);
         if apart.contains(&key) {
             return Some(false);
         }
-        if curves_meet(pa, pb, tests_left)? {
+        if curves_meet(pa, pb, &joints, tests_left)? {
             return Some(true);
         }
         apart.insert(key);
@@ -207,7 +209,7 @@ fn edges_meet(a: &Edge, b: &Edge, apart: &mut HashSet<[usize; 4]>, tests_left: &
             let key = pair_key(a, b);
             if apart.contains(&key) || !lines_near(a.line, b.line, slack) {
                 false
-            } else if curves_meet(ca, cb, tests_left)? {
+            } else if curves_meet(ca, cb, &[], tests_left)? {
                 true
             } else {
                 apart.insert(key);
@@ -225,30 +227,78 @@ fn pair_key(a: &Edge, b: &Edge) -> [usize; 4] {
     if (a.contour, a.seg) < (b.contour, b.seg) { [a.contour, a.seg, b.contour, b.seg] } else { [b.contour, b.seg, a.contour, a.seg] }
 }
 
+/// A joint two neighboring curves share, as the ends of the first and of the second curve that
+/// meet there (`true` for t = 1).
+type Joint = (bool, bool);
+
 /// Neighboring curves `ca` (of edge `a`) and `cb` (of edge `b`), in either order: when the curve
-/// after a joint they share heads back the way the one before it came, the two curves without the
-/// thousandth next to each joint they share. `None` when neither joint turns back.
-fn turned_back(a: &Edge, ca: kurbo::CubicBez, b: &Edge, cb: kurbo::CubicBez) -> Option<(kurbo::CubicBez, kurbo::CubicBez)> {
-    let turns = |before: kurbo::CubicBez, after: kurbo::CubicBez| {
+/// after a joint they share heads back the way the one before it came, the two curves to compare
+/// and the joints [`curves_meet`] leaves out. At a cusp, where the curves leave a joint along one
+/// line, no halving can tell them apart there: the thousandth next to that joint is cut from
+/// each curve instead. `None` when neither joint turns back.
+fn turned_back(a: &Edge, ca: kurbo::CubicBez, b: &Edge, cb: kurbo::CubicBez) -> Option<(kurbo::CubicBez, kurbo::CubicBez, Vec<Joint>)> {
+    let directions = |before: kurbo::CubicBez, after: kurbo::CubicBez| {
         let into = [before.p2, before.p1, before.p0].into_iter().find(|&p| p != before.p3).map(|p| before.p3 - p);
         let out = [after.p1, after.p2, after.p3].into_iter().find(|&p| p != after.p0).map(|p| p - after.p0);
-        matches!((into, out), (Some(i), Some(o)) if i.dot(o) < 0.0)
+        into.zip(out)
     };
+    let turns = |before, after| directions(before, after).is_some_and(|(i, o)| i.dot(o) < 0.0);
+    let cusp = |before, after| directions(before, after).is_some_and(|(i, o)| i.dot(o) < 0.0 && i.cross(o).abs() <= 1e-9 * i.hypot() * o.hypot());
     let a_then_b = (a.seg + 1) % a.segs == b.seg;
     let b_then_a = (b.seg + 1) % b.segs == a.seg;
     if !(a_then_b && turns(ca, cb)) && !(b_then_a && turns(cb, ca)) {
         return None;
     }
     let (mut ra, mut rb) = (0.0..1.0, 0.0..1.0);
+    let mut joints = Vec::new();
     if a_then_b {
-        ra.end = 0.999;
-        rb.start = 0.001;
+        if cusp(ca, cb) {
+            ra.end = 0.999;
+            rb.start = 0.001;
+        } else {
+            joints.push((true, false));
+        }
     }
     if b_then_a {
-        rb.end = 0.999;
-        ra.start = 0.001;
+        if cusp(cb, ca) {
+            rb.end = 0.999;
+            ra.start = 0.001;
+        } else {
+            joints.push((false, true));
+        }
     }
-    Some((ca.subsegment(ra), cb.subsegment(rb)))
+    // An end left whole keeps its exact point, so the joint there is the same point on both curves.
+    let cut = |c: kurbo::CubicBez, r: std::ops::Range<f64>| {
+        let mut part = c.subsegment(r.clone());
+        if r.start == 0.0 {
+            part.p0 = c.p0;
+        }
+        if r.end == 1.0 {
+            part.p3 = c.p3;
+        }
+        part
+    };
+    Some((cut(ca, ra), cut(cb, rb), joints))
+}
+
+/// Can a line through a joint have the points `pa` (taken from the joint) strictly on one side and
+/// `pb` strictly on the other? Then two curve pieces with those control points meet only there.
+fn apart_at_joint(pa: &[kurbo::Vec2], pb: &[kurbo::Vec2]) -> bool {
+    use std::f64::consts::{PI, TAU};
+    // `pb` counterclockwise of `pa`: angles are measured from pa's first point, and a line at angle
+    // theta must have pa in (theta, theta + pi) and pb in (theta + pi, theta + 2 pi).
+    let ccw_of = |pa: &[kurbo::Vec2], pb: &[kurbo::Vec2]| {
+        let (Some(&r), false) = (pa.first(), pb.is_empty()) else { return false };
+        let angle = |v: kurbo::Vec2| r.cross(v).atan2(r.dot(v));
+        let range = |it: &mut dyn Iterator<Item = f64>| it.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        let (a0, a1) = range(&mut pa.iter().map(|&v| angle(v)));
+        let (b0, b1) = range(&mut pb.iter().map(|&v| {
+            let x = angle(v);
+            if x <= a1 { x + TAU } else { x }
+        }));
+        (a1 - PI).max(b1 - TAU) < a0.min(b0 - PI)
+    };
+    ccw_of(pa, pb) || ccw_of(pb, pa)
 }
 
 /// Could the cubic cross itself? Its last point is placed in the frame that takes the first three
@@ -317,7 +367,12 @@ fn line_meets_curve(line: &Edge, c: kurbo::CubicBez, curve: &Edge) -> bool {
         (false, true) => vec![d0, 1.5 * d1, 3.0 * d2],
         (true, true) => vec![3.0 * d1, 3.0 * d2],
     };
-    bernstein_roots(&e).into_iter().filter(|&t| !(at_start && t == 0.0) && !(at_end && t == 1.0)).any(|t| {
+    // After the shared end's root is divided out, the value at that end is 3 d1 (or 3 d2): it reads
+    // as zero only within the rounding of that one distance, so a crossing just past the joint is
+    // kept even when the curve's far end is huge.
+    let rounding = |p: Point| 3e-12 * dir.hypot() * (p - l.p0).hypot();
+    let ends = [at_start.then(|| rounding(c.p1)), at_end.then(|| rounding(c.p2))];
+    bernstein_roots(&e, ends).into_iter().filter(|&t| !(at_start && t == 0.0) && !(at_end && t == 1.0)).any(|t| {
         let s = (c.eval(t) - l.p0).dot(dir) / len2;
         (-1e-9..=1.0 + 1e-9).contains(&s)
     })
@@ -327,7 +382,11 @@ fn line_meets_curve(line: &Edge, c: kurbo::CubicBez, curve: &Edge) -> bool {
 /// they are apart or smaller than a billionth of the curves' size. Each pair of pieces looked at
 /// takes one from `tests_left`; `None` when it runs out, or when a piece has been halved
 /// `MAX_HALVINGS` times (far from the origin, rounding can stop the pieces from shrinking).
-fn curves_meet(a: kurbo::CubicBez, b: kurbo::CubicBez, tests_left: &mut usize) -> Option<bool> {
+///
+/// The curves meeting at a joint in `joints` does not count. A pair of pieces that holds a joint is
+/// passed over once a line through the joint has each piece's other control points on its own
+/// side; `None` when such a pair is that small and still not split this way.
+fn curves_meet(a: kurbo::CubicBez, b: kurbo::CubicBez, joints: &[Joint], tests_left: &mut usize) -> Option<bool> {
     const MAX_HALVINGS: u32 = 120;
     let hull = |c: &kurbo::CubicBez| {
         let r = Rect::from_points(c.p0, c.p1);
@@ -335,14 +394,28 @@ fn curves_meet(a: kurbo::CubicBez, b: kurbo::CubicBez, tests_left: &mut usize) -
     };
     let size = |r: Rect| r.width() + r.height();
     let tiny = 1e-9 * (size(hull(&a)) + size(hull(&b)));
-    let mut stack = vec![(a, b, 0u32)];
-    while let Some((a, b, halvings)) = stack.pop() {
+    // A piece's control points other than its end at a joint, taken from that end.
+    let away = |c: &kurbo::CubicBez, at_end: bool| {
+        let j = if at_end { c.p3 } else { c.p0 };
+        [c.p0, c.p1, c.p2, c.p3].into_iter().filter(|&p| p != j).map(|p| p - j).collect::<Vec<_>>()
+    };
+    // Each piece with whether it still reaches its curve's start and end.
+    let mut stack = vec![(a, b, 0u32, [true, true], [true, true])];
+    while let Some((a, b, halvings, ends_a, ends_b)) = stack.pop() {
         *tests_left = tests_left.checked_sub(1)?;
         let (ha, hb) = (hull(&a), hull(&b));
         if ha.x0 > hb.x1 || hb.x0 > ha.x1 || ha.y0 > hb.y1 || hb.y0 > ha.y1 {
             continue;
         }
-        if size(ha).max(size(hb)) <= tiny {
+        let joint = joints.iter().find(|&&(ea, eb)| ends_a[usize::from(ea)] && ends_b[usize::from(eb)]);
+        if let Some(&(ea, eb)) = joint {
+            if apart_at_joint(&away(&a, ea), &away(&b, eb)) {
+                continue;
+            }
+            if size(ha).max(size(hb)) <= tiny {
+                return None;
+            }
+        } else if size(ha).max(size(hb)) <= tiny {
             return Some(true);
         }
         if halvings >= MAX_HALVINGS {
@@ -350,12 +423,12 @@ fn curves_meet(a: kurbo::CubicBez, b: kurbo::CubicBez, tests_left: &mut usize) -
         }
         if size(ha) >= size(hb) {
             let (a0, a1) = a.subdivide();
-            stack.push((a0, b, halvings + 1));
-            stack.push((a1, b, halvings + 1));
+            stack.push((a0, b, halvings + 1, [ends_a[0], false], ends_b));
+            stack.push((a1, b, halvings + 1, [false, ends_a[1]], ends_b));
         } else {
             let (b0, b1) = b.subdivide();
-            stack.push((a, b0, halvings + 1));
-            stack.push((a, b1, halvings + 1));
+            stack.push((a, b0, halvings + 1, ends_a, [ends_b[0], false]));
+            stack.push((a, b1, halvings + 1, ends_a, [false, ends_b[1]]));
         }
     }
     Some(false)
@@ -364,7 +437,10 @@ fn curves_meet(a: kurbo::CubicBez, b: kurbo::CubicBez, tests_left: &mut usize) -
 /// Where in [0, 1] a polynomial given by its Bernstein coefficients (degree 3 at most) is zero,
 /// or so close to zero that rounding cannot tell: sign changes are found by bisection on each
 /// interval where it runs one way, and touching zeros at the turns between them.
-fn bernstein_roots(e: &[f64]) -> Vec<f64> {
+///
+/// `ends` gives, where set, how close to zero the value at t = 0 and at t = 1 must be to count as
+/// zero there; otherwise a value within a trillionth of the coefficients' sum does.
+fn bernstein_roots(e: &[f64], ends: [Option<f64>; 2]) -> Vec<f64> {
     // Power basis a0 + a1 t + a2 t^2 + a3 t^3.
     let a: [f64; 4] = match *e {
         [e0, e1] => [e0, e1 - e0, 0.0, 0.0],
@@ -374,13 +450,23 @@ fn bernstein_roots(e: &[f64]) -> Vec<f64> {
     };
     let f = |t: f64| ((a[3] * t + a[2]) * t + a[1]) * t + a[0];
     let zero = 1e-12 * e.iter().map(|v| v.abs()).sum::<f64>();
+    let zero_at = |t: f64| {
+        let end = if t == 0.0 {
+            ends[0]
+        } else if t == 1.0 {
+            ends[1]
+        } else {
+            None
+        };
+        end.unwrap_or(zero)
+    };
     let mut bounds: Vec<f64> = kurbo::common::solve_quadratic(a[1], 2.0 * a[2], 3.0 * a[3]).into_iter().filter(|t| *t > 0.0 && *t < 1.0).collect();
     bounds.push(0.0);
     bounds.push(1.0);
     bounds.sort_by(f64::total_cmp);
     let mut roots = Vec::new();
     for &t in &bounds {
-        if f(t).abs() <= zero {
+        if f(t).abs() <= zero_at(t) {
             roots.push(t);
         }
     }
@@ -400,7 +486,7 @@ fn bernstein_roots(e: &[f64]) -> Vec<f64> {
         }
         let t = 0.5 * (lo + hi);
         // Next to an end already taken as zero, a sign change can be rounding: that end stands for it.
-        let by_zero_end = |end: f64, value: f64| value.abs() <= zero && (t - end).abs() <= 1e-9;
+        let by_zero_end = |end: f64, value: f64| value.abs() <= zero_at(end) && (t - end).abs() <= 1e-9;
         if !by_zero_end(w[0], flo) && !by_zero_end(w[1], fhi) {
             roots.push(t);
         }
@@ -445,7 +531,9 @@ fn lines_meet(a: kurbo::Line, b: kurbo::Line) -> bool {
     let within = |p: Point, q: Point, r: Point| r.x >= p.x.min(q.x) && r.x <= p.x.max(q.x) && r.y >= p.y.min(q.y) && r.y <= p.y.max(q.y);
     let (d1, d2) = (orient(b.p0, b.p1, a.p0), orient(b.p0, b.p1, a.p1));
     let (d3, d4) = (orient(a.p0, a.p1, b.p0), orient(a.p0, a.p1, b.p1));
-    if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+    // Signs are compared, not multiplied: the product of two tiny values can round to zero.
+    let opposite = |u: f64, v: f64| (u < 0.0 && v > 0.0) || (u > 0.0 && v < 0.0);
+    if opposite(d1, d2) && opposite(d3, d4) {
         return true;
     }
     (d1 == 0.0 && within(b.p0, b.p1, a.p0))
@@ -555,14 +643,34 @@ mod tests {
     }
 
     #[test]
+    fn tiny_perpendicular_segments_cross() {
+        // Their orientation values are about 1e-180, and the products of two of them underflow to 0.
+        let a = kurbo::Line::new((-1e-90, 0.0), (1e-90, 0.0));
+        let b = kurbo::Line::new((0.0, -1e-90), (0.0, 1e-90));
+        assert!(lines_meet(a, b));
+        assert!(lines_meet(b, a));
+    }
+
+    #[test]
+    fn a_curve_crossing_its_neighbor_line_next_to_their_joint() {
+        // x = -1e13 t, y = 1e26 t (t - 5e-13): the curve leaves the joint at the origin below the
+        // line and crosses it at t = 5e-13, five points from the joint.
+        let c = kurbo::QuadBez::new((0.0, 0.0), (-5e12, -2.5e13), (-1e13, 1e26 - 5e13)).raise();
+        let edge = |seg, line, curve| Edge { contour: 0, index: seg, count: 3, line, slack: 0.0, seg, segs: 3, curve };
+        let line = edge(0, kurbo::Line::new((-10.0, 0.0), (0.0, 0.0)), None);
+        let curve = edge(1, kurbo::Line::new(c.p0, c.p3), Some(c));
+        assert!(line_meets_curve(&line, c, &curve));
+    }
+
+    #[test]
     fn bernstein_roots_find_touching_zeros() {
         // 3 (17 t - 13)^2: zero only at t = 13/17, where it touches 0 without changing sign.
-        let roots = bernstein_roots(&[507.0, 65.0, -88.0, 48.0]);
+        let roots = bernstein_roots(&[507.0, 65.0, -88.0, 48.0], [None, None]);
         assert!(roots.iter().any(|t| (t - 13.0 / 17.0).abs() < 1e-9), "{roots:?}");
         // t (1 - t): zero at both ends only.
-        assert_eq!(bernstein_roots(&[0.0, 0.5, 0.0]), vec![0.0, 1.0]);
+        assert_eq!(bernstein_roots(&[0.0, 0.5, 0.0], [None, None]), vec![0.0, 1.0]);
         // 1e6 t^2 - 1e-7: the value at t = 0 rounds to zero, and the root just after it still counts.
-        let roots = bernstein_roots(&[-1e-7, -1e-7, 1e6 / 3.0 - 1e-7, 1e6 - 1e-7]);
+        let roots = bernstein_roots(&[-1e-7, -1e-7, 1e6 / 3.0 - 1e-7, 1e6 - 1e-7], [None, None]);
         assert!(roots.iter().any(|t| (t - 1e-13f64.sqrt()).abs() < 1e-12), "{roots:?}");
     }
 
@@ -575,7 +683,7 @@ mod tests {
         // thousand steps.
         let far = kurbo::CubicBez::new((1e8, 1e8), (1e8 + 1.0, 1e8 + 1.0), (1e8 + 2.0, 1e8), (1e8 + 3.0, 1e8 + 1.0));
         let mut tests = 1_000_000;
-        assert_ne!(curves_meet(far, far, &mut tests), Some(false));
+        assert_ne!(curves_meet(far, far, &[], &mut tests), Some(false));
         assert!(tests > 990_000, "{tests}");
     }
 
@@ -594,6 +702,13 @@ mod tests {
         cross.line_to((0.0, -3.0));
         cross.close_path();
         assert_eq!(check(&cross), Some(true), "curves crossing after a turn back");
+        // The same, crossing within a thousandth of the second curve from the joint.
+        let mut close = BezPath::new();
+        close.move_to((0.0, 0.0));
+        close.quad_to((5.0, 0.02), (10.0, 0.0));
+        close.quad_to((7.5, 0.009998), (5.0, 0.1));
+        close.close_path();
+        assert_ne!(check(&close), Some(false), "curves crossing right after a turn back");
         // A crescent: both arcs leave each tip on the same side and meet only there.
         let mut crescent = BezPath::new();
         crescent.move_to((0.0, -10.0));

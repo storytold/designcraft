@@ -525,6 +525,15 @@ mod tests {
         // An island inside the hole is filled again, as even-odd draws it.
         let island = svg("evenodd", "M20,20H80V80H20Z M40,40H60V60H40Z");
         assert_eq!(fills_center_and_band(&mut s, &island), (true, true), "even-odd island");
+        // The hole between the island and the inner square stays empty. (Drawn the same way, the
+        // three squares would fill it with the non-zero rule.)
+        let r = s.execute("edit.pasteSvg", &json!({"svg": island, "at": [100, 100]})).unwrap();
+        let it = s.doc().unwrap().doc.item(ItemId(r["ids"][0].as_u64().unwrap())).unwrap().clone();
+        let bp = it.xf * it.path.to_bezpath();
+        assert!(
+            !designcraft_geom::hit::fill_contains(&bp, designcraft_geom::FillRule::NonZero, Point::new(75.0, 75.0)),
+            "the hole around the island"
+        );
     }
 
     /// Paste `d` as one even-odd path centered on (100, 100); the item and the paste's warnings.
