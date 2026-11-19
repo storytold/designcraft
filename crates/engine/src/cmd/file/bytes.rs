@@ -21,7 +21,12 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(std::ffi::OsStr::to_str);
-    if p.file_name().is_none() || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
+    // Path normalizes directory suffixes, but appending an extension would create a child file.
+    let directory_suffix = path.ends_with(std::path::is_separator) || path.strip_suffix('.').is_some_and(|p| p.ends_with(std::path::is_separator));
+    if p.file_name().is_none()
+        || directory_suffix
+        || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft))
+    {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
@@ -122,6 +127,28 @@ mod extension_tests {
         assert_eq!(with_document_extension("/a/v1.2 Brochure"), "/a/v1.2 Brochure.designcraft");
         assert_eq!(with_document_extension("/a/Brochure.DesignCraft"), "/a/Brochure.DesignCraft");
         assert_eq!(with_document_extension("/a/.."), "/a/..");
+    }
+
+    #[test]
+    fn directory_paths_do_not_gain_a_document_filename() {
+        for path in ["folder/", "folder/.", "folder//.", "folder.idml/", "folder.idml/.", "folder.DesignCraft/", "folder.DesignCraft/."] {
+            assert_eq!(with_document_extension(path), path);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_suffixes_do_not_gain_a_document_filename() {
+        for path in [r"folder\", r"folder\.", r"folder\\.", r"C:\folder\", r"C:\folder\."] {
+            assert_eq!(with_document_extension(path), path);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn backslashes_remain_filename_characters() {
+        assert_eq!(with_document_extension(r"folder\"), r"folder\.designcraft");
+        assert_eq!(with_document_extension(r"folder\."), r"folder\..designcraft");
     }
 
     #[test]
