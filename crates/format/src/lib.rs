@@ -110,7 +110,7 @@ pub fn load(bytes: &[u8]) -> Result<Document, FormatError> {
     doc.mark_differing_margins_local();
     doc.renumber_duplicate_items();
     doc.update_placed_items(
-        |item| item.text_frame().and_then(|f| f.options.note_stream).and_then(|s| s.follow_inset).is_some_and(|follow| !follow.valid()),
+        |item| item.text_frame().and_then(|f| f.options.note_stream.as_ref()).and_then(|s| s.follow_inset).is_some_and(|follow| !follow.valid()),
         |item| {
             if let Some(route) = item.text_frame_mut().and_then(|f| f.options.note_stream.as_mut()) {
                 route.follow_inset = None;

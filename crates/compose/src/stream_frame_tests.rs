@@ -38,7 +38,7 @@ fn commentary(pages: usize, count: usize, height: f64) -> (Document, StoryId, Ve
         let (stream, _) =
             doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 300.0, 36.0, x + 540.0, 36.0 + height), layer, "", Default::default()).unwrap();
         doc.item_mut(stream).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: sid, series: 1, catchword: false, follow_inset: None });
+            Some(NoteStream { story: sid, series: 1, catchword: false.into(), follow_inset: None });
         streams.push(stream);
     }
     let host = host.unwrap();
@@ -202,7 +202,7 @@ fn two_streams_fit_the_same_main_page_cut() {
         let bounds = doc.item(first).unwrap().bounds();
         let (id, _) = doc.add_text_frame(loc.spread, bounds, doc.default_layer(), "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: host, series: 2, catchword: false, follow_inset: None });
+            Some(NoteStream { story: host, series: 2, catchword: false.into(), follow_inset: None });
         outer.push(id);
     }
     let cs = compose_story(&doc, host, &Default::default());
@@ -323,7 +323,7 @@ fn stream_route_includes_pages_without_host_frames_and_invalidates_host_cache() 
     for page in [2, 0, 1] {
         let (id, own) = doc.add_text_frame(SpreadRef::Doc(page), Rect::new(270.0, 36.0, 400.0, 400.0), layer, "", Default::default()).unwrap();
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
-            Some(NoteStream { story: host, series: 0, catchword: false, follow_inset: None });
+            Some(NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None });
         assert!(frame_specs(&doc, own).is_empty(), "the frame never composes its own body story");
         route.push(id);
     }

@@ -1378,7 +1378,7 @@ impl Document {
             {
                 return Err(DocError::Invalid(format!("invalid inset columns on frame {}", item.id)));
             }
-            let Some(stream) = tf.options.note_stream else { continue };
+            let Some(stream) = tf.options.note_stream.as_ref() else { continue };
             let own = self.story(tf.story).ok_or(DocError::NoStory(tf.story))?;
             if stream.follow_inset.is_some_and(|follow| !follow.valid())
                 || self.story(stream.story).is_none()

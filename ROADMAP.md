@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
+
 - 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
 
 - 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).

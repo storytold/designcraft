@@ -123,7 +123,7 @@ occupy it. Intermediate width changes do not add rows. Catchwords use the stream
 and colour at 9 points; a long word shrinks uniformly only to fit its column width.
 Row height never scales the catchword's glyph size. Alternatively,
 `catchwords:{"style":"Catchword"}` applies that character style. Its baseline is the
-preceding line's baseline plus the style's leading. The reserved row starts at the
+preceding line's baseline plus the style's leading. An unsized style inherits the source stream's resolved size and leading at the catchword position. The reserved row starts at the
 preceding line's descent and ends at the catchword's descent. Boolean `true` retains
 the existing placement and 18-point row. An unknown style produces a composition warning and uses the
 9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
@@ -134,7 +134,9 @@ unchanged, and are included in native rendering and PDF export.
 
 Routed frames opt in with `noteStream.catchword:true` (default `false`, omitted when false
 in native files). The host inset's catchword setting supplies their style and must also
-be enabled. Only the last opted-in route frame of each series on a page reserves a row
+be enabled. `noteStream.catchword:{"style":"Route caption"}` overrides the style for that route.
+Series options accept `catchwordStyle:"Series caption"` to override the host style; a route style takes precedence.
+Only the last opted-in route frame of each series on a page reserves a row
 directly below its last composed line. Native saves preserve the opt-in flag; IDML warns
 that it loses it. A
 `followInset.after` follower clears that row. Its word comes from that series' next

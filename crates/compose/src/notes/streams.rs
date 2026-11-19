@@ -137,7 +137,7 @@ pub(crate) fn fit_stream_page_dynamic(
     let mut ids: Vec<_> = crate::stream_frame_specs(doc, story.id)
         .iter()
         .chain(input.areas)
-        .filter_map(|f| f.opts.note_stream.map(|s| s.series))
+        .filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series))
         .chain(before.series.keys().copied())
         .filter(|id| only.is_none_or(|wanted| wanted.contains(id)) && matches!(doc.note_options(*id).placement, NotePlacement::Stream))
         .collect();
@@ -175,7 +175,7 @@ pub(crate) fn fit_stream_page_dynamic(
     for fi in 0..areas.len() {
         adjust(fi, &mut areas, &result.frames, &mut result.warnings);
         let Some(frame) = areas.get(fi) else { continue };
-        let Some(series) = frame.opts.note_stream.map(|s| s.series) else { continue };
+        let Some(series) = frame.opts.note_stream.as_ref().map(|s| s.series) else { continue };
         let Some((notes, anchors, next, had_carry)) = contexts.get_mut(&series) else { continue };
         let allow_split = doc.note_options(series).allow_split;
         if let Some(out) = result.frames.get_mut(fi) {
@@ -340,7 +340,7 @@ impl StreamComposer {
     }
 
     pub(super) fn has_route(&self, series: u64) -> bool {
-        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == series))
+        self.inset_series.contains(&series) || self.routes.iter().any(|f| f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
     }
 
     pub(super) fn snapshot(&self) -> usize {
@@ -397,7 +397,8 @@ impl StreamComposer {
             .filter(|note| matches!(doc.note_options(note.series).placement, NotePlacement::Stream))
             .all(|note| {
                 let series = doc.note_series_id(note.series);
-                !self.has_route(series) || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.is_some_and(|s| s.series == series))
+                !self.has_route(series)
+                    || self.routes.iter().any(|f| f.page == Some(page) && f.opts.note_stream.as_ref().is_some_and(|s| s.series == series))
             });
         let can_force = !has_main && !fit.had_continuation && routes_present;
         if !fit.starts_fit && !can_force {

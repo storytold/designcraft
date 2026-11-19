@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, catchwordStyle?: character style name|null (overrides host catchword style for this series), paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, catchwordStyle?: character style name|null, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -352,13 +352,13 @@ fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
         d.update_placed_items(
             |it| {
                 it.text_frame().is_some_and(|tf| {
-                    tf.options.note_stream.is_some_and(|stream| stream.series == id)
+                    tf.options.note_stream.as_ref().is_some_and(|stream| stream.series == id)
                         || tf.options.inset_columns.as_ref().is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
                 })
             },
             |it| {
                 if let Some(tf) = it.text_frame_mut() {
-                    if tf.options.note_stream.is_some_and(|stream| stream.series == id) {
+                    if tf.options.note_stream.as_ref().is_some_and(|stream| stream.series == id) {
                         tf.options.note_stream = None;
                     }
                     if let Some(inset) = &mut tf.options.inset_columns {

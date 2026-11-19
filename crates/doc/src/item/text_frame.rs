@@ -70,14 +70,14 @@ impl InsetFollow {
 }
 
 /// The host story and note series whose commentary this frame displays.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteStream {
     pub story: StoryId,
     pub series: u64,
     /// Opt this frame into the host inset's routed-series catchwords.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub catchword: bool,
+    #[serde(default, skip_serializing_if = "super::InsetCatchwords::is_disabled")]
+    pub catchword: super::InsetCatchwords,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_inset: Option<InsetFollow>,
 }
@@ -455,7 +455,7 @@ pub struct TextFrame {
 impl TextFrame {
     /// The composition that supplies this frame's text, including hosted commentary.
     pub fn composed_story(&self) -> StoryId {
-        self.options.note_stream.map_or(self.story, |stream| stream.story)
+        self.options.note_stream.as_ref().map_or(self.story, |stream| stream.story)
     }
 }
 
@@ -494,7 +494,7 @@ mod stream_tests {
         let mut frame: TextFrame = serde_json::from_str(r#"{"story":4}"#).unwrap();
         assert_eq!(frame.composed_story(), StoryId(4));
         assert!(serde_json::to_value(&frame).unwrap()["options"].get("noteStream").is_none());
-        frame.options.note_stream = Some(NoteStream { story: StoryId(8), series: 2, catchword: false, follow_inset: None });
+        frame.options.note_stream = Some(NoteStream { story: StoryId(8), series: 2, catchword: false.into(), follow_inset: None });
         let saved = serde_json::to_value(&frame).unwrap();
         assert_eq!(saved["options"]["noteStream"], serde_json::json!({"story":8,"series":2}));
         let reopened: TextFrame = serde_json::from_value(saved).unwrap();

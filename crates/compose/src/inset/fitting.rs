@@ -101,7 +101,7 @@ fn earlier_route(areas: &[FrameSpec], index: usize, after: designcraft_doc::Item
         if !seen.insert(id) {
             return None;
         }
-        next = areas.iter().find(|f| f.id == id).and_then(|f| f.opts.note_stream).and_then(|s| s.follow_inset).and_then(|f| f.after);
+        next = areas.iter().find(|f| f.id == id).and_then(|f| f.opts.note_stream.as_ref()).and_then(|s| s.follow_inset).and_then(|f| f.after);
     }
     Some(previous)
 }
@@ -131,7 +131,7 @@ fn fit_routes(
     opts: &ComposeOptions,
     ranges: &[std::ops::Range<usize>],
 ) -> (crate::StreamPageFit, Vec<(FrameSpec, Rect)>) {
-    let mut series: Vec<_> = geometry.routes.iter().filter_map(|f| f.opts.note_stream.map(|s| s.series)).collect();
+    let mut series: Vec<_> = geometry.routes.iter().filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series)).collect();
     series.sort_unstable();
     series.dedup();
     let dependencies: Vec<_> = input
@@ -139,7 +139,7 @@ fn fit_routes(
         .iter()
         .enumerate()
         .map(|(index, area)| {
-            area.opts.note_stream.and_then(|s| s.follow_inset).and_then(|f| f.after).map(|after| earlier_route(input.areas, index, after))
+            area.opts.note_stream.as_ref().and_then(|s| s.follow_inset).and_then(|f| f.after).map(|after| earlier_route(input.areas, index, after))
         })
         .collect();
     let fit = |rows: &std::collections::HashMap<designcraft_doc::ItemId, f64>| {
@@ -157,7 +157,7 @@ fn fit_routes(
                 let apply_follow = |areas: &mut [FrameSpec], warnings: &mut Vec<String>| {
                     let Some(spec) = areas.get(index) else { return };
                     let id = spec.id;
-                    let Some(follow) = spec.opts.note_stream.and_then(|s| s.follow_inset).filter(|f| f.valid()) else { return };
+                    let Some(follow) = spec.opts.note_stream.as_ref().and_then(|s| s.follow_inset).filter(|f| f.valid()) else { return };
                     let dependency = dependencies.get(index).copied().flatten();
                     if dependency == Some(None) {
                         warnings.push(format!(
@@ -205,14 +205,15 @@ fn fit_routes(
     let (mut result, _) = fit(&rows);
     let mut regions = Vec::new();
     if let Some(options) = geometry.catchwords.filter(|c| c.catchwords.enabled()) {
-        let height = super::catchwords::row_height(doc, &options.catchwords);
+        let height = super::catchwords::row_height(doc, story, input.main.end, &options.catchwords);
         let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let mut seen = std::collections::HashSet::new();
         for area in input.areas.iter().rev() {
-            let Some(series) = area.opts.note_stream.filter(|s| s.catchword).map(|s| s.series) else { continue };
+            let Some(series) = area.opts.note_stream.as_ref().filter(|s| s.catchword.enabled()).map(|s| s.series) else { continue };
             if !seen.insert(series) {
                 continue;
             }
+            let catchwords = super::catchwords::options(doc, area, Some(series), &options.catchwords);
             let future = !ranges.is_empty()
                 && story
                     .notes
@@ -229,7 +230,7 @@ fn fit_routes(
                     .and_then(|note| {
                         let source = story.notes.get(note.index)?;
                         let line = note.text.frames.iter().rev().find_map(|f| f.lines.last())?;
-                        Some(super::catchwords::row_space(doc, &source.text, line.range.end, area, &options.catchwords, line.descent))
+                        Some(super::catchwords::row_space(doc, &source.text, line.range.end, area, &catchwords, line.descent))
                     })
                     .unwrap_or(height);
                 rows.insert(area.id, height);
@@ -342,7 +343,7 @@ struct Page<'a> {
 impl Page<'_> {
     fn trial(&self, wanted: usize, force: bool) -> Result<Trial, super::Error> {
         let main = self.options.main().ok_or(super::Error::InvalidGeometry)?;
-        let space = super::catchwords::row_height(self.doc, &self.options.catchwords);
+        let space = super::catchwords::row_height(self.doc, self.story, self.start, &self.options.catchwords);
         let pending: Vec<_> = self.before.pending_series().collect();
         let refs: Vec<_> = self.story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let streams: Vec<Stream<Cursor>> = self
@@ -433,7 +434,7 @@ impl Page<'_> {
                         self.frame.area.y1,
                     ),
                 );
-                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
+                area.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false.into(), follow_inset: None });
                 let fit = crate::notes::fit_stream_page_for(
                     self.doc,
                     self.story,
@@ -475,6 +476,10 @@ impl Page<'_> {
         let mut first_line_seen = None;
         let out = layout_with_state(cfg, streams, |index, cursor, rect, committed| {
             let series = self.options.streams.get(index).and_then(|s| s.series);
+            let catchwords = super::catchwords::options(self.doc, self.frame, series, &self.options.catchwords);
+            let source =
+                series.and_then(|id| self.story.notes.iter().find(|n| self.doc.note_series_id(n.series) == id)).map_or(self.story, |n| &n.text);
+            let space = super::catchwords::row_height(self.doc, source, if series.is_some() { 0 } else { cursor.cut }, &catchwords);
             if cursor.tail_pending {
                 let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false, cursor.catchword_space);
                 return Measurement {
@@ -532,7 +537,7 @@ impl Page<'_> {
                 }
             }
             if let Some(series) = series {
-                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false, follow_inset: None });
+                f.opts.note_stream = Some(NoteStream { story: self.story.id, series, catchword: false.into(), follow_inset: None });
             } else if future && bottom {
                 f.area.y1 = (f.area.y1 - space).max(f.area.y0);
             }
@@ -570,7 +575,7 @@ impl Page<'_> {
                     .and_then(|note| {
                         let source = self.story.notes.get(note.index)?;
                         let line = note.text.frames.iter().rev().find_map(|f| f.lines.last())?;
-                        Some(super::catchwords::row_space(self.doc, &source.text, line.range.end, self.frame, &self.options.catchwords, line.descent))
+                        Some(super::catchwords::row_space(self.doc, &source.text, line.range.end, self.frame, &catchwords, line.descent))
                     })
                     .unwrap_or(cursor.catchword_space);
                 let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom, catchword_space);
@@ -631,7 +636,7 @@ impl Page<'_> {
                     }
                 }
                 let catchword_space = part.lines.last().map_or(cursor.catchword_space, |line| {
-                    super::catchwords::row_space(self.doc, self.story, cut, self.frame, &self.options.catchwords, line.descent)
+                    super::catchwords::row_space(self.doc, self.story, cut, self.frame, &catchwords, line.descent)
                 });
                 let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom, catchword_space);
                 Measurement {
@@ -653,7 +658,8 @@ impl Page<'_> {
             feasible &= !s.cursor.tail_pending;
         }
         let mut warnings: Vec<_> = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
-        let follows_core = self.routes.iter().any(|f| f.page == self.frame.page && f.opts.note_stream.is_some_and(|s| s.follow_inset.is_some()));
+        let follows_core =
+            self.routes.iter().any(|f| f.page == self.frame.page && f.opts.note_stream.as_ref().is_some_and(|s| s.follow_inset.is_some()));
         let own_bottom = std::iter::once(c.main_bottom)
             .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
                 note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
@@ -703,7 +709,7 @@ impl Page<'_> {
                 &ranges,
             );
             for area in &areas {
-                if let Some(route) = area.opts.note_stream {
+                if let Some(route) = area.opts.note_stream.as_ref() {
                     state.take_series(&fit.state, route.series);
                 }
             }
@@ -926,7 +932,7 @@ pub(crate) fn compose_frames(
         frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
     let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
         .into_iter()
-        .filter(|f| f.opts.note_stream.is_some_and(|s| !inset_series.contains(&s.series)))
+        .filter(|f| f.opts.note_stream.as_ref().is_some_and(|s| !inset_series.contains(&s.series)))
         .collect();
     let old = before.and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
     let (resume, changed) = old.map_or((0, Vec::new()), |(b, trace)| resume_page(story, b, trace));
@@ -1089,7 +1095,7 @@ pub(crate) fn compose_frames(
             &[],
         );
         for area in &areas {
-            if let Some(route) = area.opts.note_stream {
+            if let Some(route) = area.opts.note_stream.as_ref() {
                 state.take_series(&fit.state, route.series);
             }
         }
@@ -1121,7 +1127,7 @@ pub(crate) fn compose_frames(
                 .max()
                 .unwrap_or(0);
             refs.get(index).is_some_and(|at| *at < start)
-                && (routes.iter().any(|f| f.opts.note_stream.is_some_and(|s| s.series == doc.note_series_id(note.series)))
+                && (routes.iter().any(|f| f.opts.note_stream.as_ref().is_some_and(|s| s.series == doc.note_series_id(note.series)))
                     || frames
                         .iter()
                         .filter_map(|f| f.opts.inset_columns.as_ref())
@@ -1139,7 +1145,7 @@ pub(crate) fn compose_frames(
     catchwords.resize_with(frames.len(), Vec::new);
     let mut catchword_frames = frames.to_vec();
     for (spec, rect) in route_catchwords {
-        catchwords.push(vec![(spec.opts.note_stream.map(|s| s.series), rect)]);
+        catchwords.push(vec![(spec.opts.note_stream.as_ref().map(|s| s.series), rect)]);
         catchword_frames.push(spec);
     }
     super::catchwords::place(doc, story, &mut out, &catchword_frames, &catchwords);
