@@ -1132,8 +1132,6 @@ mod tests {
         assert_eq!(tagged, vec![a, b], "{r}");
     }
 
-    /// Tables in a tagged frame are part of its XML: export writes them as InDesign does, import
-    /// puts the cells' texts back in place, and a table the XML leaves out stays as it is.
     /// Text after a table the XML leaves out goes to the paragraph after the table, and a forced
     /// line break in a cell comes back as one, not as a second paragraph.
     #[test]
@@ -1211,6 +1209,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Tables in a tagged frame are part of its XML: export writes them as InDesign does, import
+    /// puts the cells' texts back in place, and a table the XML leaves out stays as it is.
     #[test]
     fn tables_in_tagged_frames_export_and_import() {
         use designcraft_doc::{ParaFormat, Story, StoryId};
