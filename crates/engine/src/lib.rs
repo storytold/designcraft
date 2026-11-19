@@ -690,6 +690,7 @@ impl Session {
             if cmd::captions::refresh_live(&mut d) {
                 cmd::captions::clamp_text_selection(&d, &mut st.selection);
                 st.doc = Arc::new(d);
+                st.bump_revision();
             }
         }
         self.autosize_changed(spec, before.as_ref());
