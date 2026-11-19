@@ -1259,7 +1259,7 @@ pub(crate) fn retarget_copied_xrefs(
             copy.frames.sort_by_key(|id| frame_origins.get(id).and_then(|old| order.get(old)).copied().unwrap_or(usize::MAX));
         }
     }
-    retarget_copied_note_streams(dst, src, stories);
+    retarget_copied_note_streams(dst, src, stories, frame_origins);
     let anchors = copied_anchors(dst, src, stories);
     if !anchors.is_empty() {
         retarget_copies(dst, src, stories, &anchors);
@@ -1268,7 +1268,13 @@ pub(crate) fn retarget_copied_xrefs(
 
 /// Finalize commentary routes after all copied hosts are known. Layer duplication has
 /// its own anchor finalization and only needs this route step.
-pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>) {
+pub(crate) fn retarget_copied_note_streams(
+    dst: &mut Document,
+    src: &Document,
+    stories: &HashMap<StoryId, StoryId>,
+    frame_origins: &HashMap<ItemId, ItemId>,
+) {
+    let frames: HashMap<_, _> = frame_origins.iter().map(|(new, old)| (*old, *new)).collect();
     // Route hosts can be copied after their routes, so resolve them only after all stories.
     // A route copied without its host becomes an ordinary empty frame rather than referring
     // to an unrelated document-local story id in the destination.
@@ -1286,10 +1292,14 @@ pub(crate) fn retarget_copied_note_streams(dst: &mut Document, src: &Document, s
             |it| {
                 if let Some(tf) = it.text_frame_mut() {
                     tf.options.note_stream = tf.options.note_stream.and_then(|route| {
-                        stories.get(&route.story).map(|host| designcraft_doc::NoteStream {
-                            story: *host,
-                            series: series.get(&src.note_series_id(route.series)).copied().unwrap_or(0),
-                            ..route
+                        stories.get(&route.story).map(|host| {
+                            let mut route = route;
+                            route.story = *host;
+                            route.series = series.get(&src.note_series_id(route.series)).copied().unwrap_or(0);
+                            if let Some(follow) = &mut route.follow_inset {
+                                follow.after = follow.after.map(|id| frames.get(&id).copied().unwrap_or(id));
+                            }
+                            route
                         })
                     });
                     if let Some(inset) = &mut tf.options.inset_columns {
@@ -7158,6 +7168,24 @@ mod frame_baseline_grid_tests {
         let back = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
         let follow = serde_json::to_value(back.item(foot).unwrap().text_frame().unwrap().options.note_stream).unwrap();
         assert_eq!(follow["followInset"]["after"], column.0);
+    }
+
+    #[test]
+    fn duplicate_route_chain_follows_its_own_frames() {
+        let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
+        s.execute(
+            "textFrame.options",
+            &json!({"ids":[foot.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":12,"after":column.0}}}),
+        )
+        .unwrap();
+        let source = (*s.doc().unwrap().doc).clone();
+        let dst = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let copies =
+            duplicate_from(dst, &source, &[host, column, foot], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::new(10.0, 10.0)).unwrap();
+        let copied_host = dst.item(copies[0]).unwrap().text_frame().unwrap().story;
+        let route = dst.item(copies[2]).unwrap().text_frame().unwrap().options.note_stream.unwrap();
+        assert_eq!(route.story, copied_host);
+        assert_eq!(route.follow_inset.unwrap().after, Some(copies[1]));
     }
 
     #[test]
