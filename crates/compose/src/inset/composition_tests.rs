@@ -512,22 +512,33 @@ fn revisited_page_routes_include_return_visit_anchor_once() {
     doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
         Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
     let at = text.rfind("Main line.").unwrap();
-    let note = doc.story_mut(sid).unwrap().insert_note(at, "Return visit note.", Default::default()).unwrap();
+    let return_text = "Return visit line.\u{2028}".repeat(50);
+    let note = doc.story_mut(sid).unwrap().insert_note(at, &return_text, Default::default()).unwrap();
     doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
     let (si, pi) = doc.page_loc(1).unwrap();
     let x = doc.spreads[si].pages[pi].x;
     let (other_route, _) =
-        doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 640.0, 36.0, x + 671.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.add_text_frame(SpreadRef::Doc(si), Rect::new(x + 340.0, 36.0, x + 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
     doc.item_mut(other_route).unwrap().text_frame_mut().unwrap().options.note_stream =
         Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: false.into(), follow_inset: None });
     let first = doc.story_mut(sid).unwrap().insert_note(0, "First visit note.", Default::default()).unwrap();
     doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
     let cs = compose_story(&doc, sid, &Default::default());
     assert!(cs.frame(last).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
+    assert!(!cs.is_overset(), "{:?}; {:?}", cs.warnings, cs.frames.iter().map(|f| (f.frame, f.range.clone(), f.notes.iter().map(|n| (n.id, n.text.frames.iter().map(|f| f.range.clone()).collect::<Vec<_>>())).collect::<Vec<_>>())).collect::<Vec<_>>());
+    let mut end = 0;
+    for id in [route, other_route] {
+        let part = cs.frame(id).unwrap().notes.iter().find(|n| n.id == note).expect("return-visit note must continue in physical page order");
+        for frame in &part.text.frames {
+            assert_eq!(frame.range.start, end);
+            end = frame.range.end;
+        }
+    }
+    assert_eq!(end, return_text.len());
     assert_eq!(cs.frames.iter().filter(|f| f.frame == route).count(), 1);
     assert_eq!(cs.frames.iter().filter(|f| f.frame == other_route).count(), 1);
     assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == first));
-    assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == "Return visit note."));
+    assert!(cs.frame(route).unwrap().notes.iter().any(|n| n.id == note && n.source.as_ref() == return_text));
 }
 
 #[test]

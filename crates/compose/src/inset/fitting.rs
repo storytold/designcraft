@@ -342,6 +342,7 @@ struct Page<'a> {
     last_host_on_page: bool,
     prior_core: Option<f64>,
     catchword_owners: Option<&'a CatchwordOwners>,
+    max_cut: Option<usize>,
 }
 impl Page<'_> {
     fn owns_catchword(&self, series: Option<u64>) -> bool {
@@ -757,6 +758,7 @@ impl Page<'_> {
         full.push(band_frame(self.frame, self.frame.area));
         let cs = main_layout(self.doc, self.story, &full, self.opts);
         let mut keys: Vec<_> = cs.frames.last().into_iter().flat_map(|f| &f.lines).map(|l| end(self.story, l)).filter(|k| *k > self.start).collect();
+        keys.retain(|key| self.max_cut.is_none_or(|limit| *key <= limit));
         keys.sort_unstable();
         keys.dedup();
         if keys.is_empty() && self.start >= self.story.text.len() && self.before.pending_series().next().is_none() {
@@ -941,10 +943,8 @@ pub(crate) fn compose_frames(
     let mut result = compose_frames_owned(doc, story, frames, opts, before, None);
     // Only multi-host pages need a second fit: reclaim earlier rows after their stream's
     // last text-bearing host is known, then revalidate the cuts that used that space.
-    if !frames
-        .iter()
-        .enumerate()
-        .any(|(i, f)| frames.iter().take(i).any(|p| p.page == f.page) && f.opts.inset_columns.as_ref().is_some_and(|c| c.catchwords.enabled()))
+    if !frames.iter().any(|f| f.opts.inset_columns.as_ref().is_some_and(|c| c.catchwords.enabled()))
+        || !frames.iter().enumerate().any(|(i, f)| frames.iter().take(i).any(|p| p.page == f.page))
     {
         return result;
     }
@@ -976,20 +976,18 @@ pub(crate) fn compose_frames(
     result
 }
 
-fn compose_frames_owned(
+type HostFit = (Vec<PageRecord>, Vec<FrameSpec>, Arc<StreamState>, usize, Vec<String>);
+
+fn fit_hosts(
     doc: &Document,
     story: &Story,
     frames: &[FrameSpec],
     opts: &ComposeOptions,
     before: Option<crate::reuse::Reuse<'_>>,
     catchword_owners: Option<&CatchwordOwners>,
-) -> (ComposedStory, Option<crate::reuse::Trace>) {
-    let inset_series: Vec<_> =
-        frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
-    let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
-        .into_iter()
-        .filter(|f| f.opts.note_stream.as_ref().is_some_and(|s| !inset_series.contains(&s.series)))
-        .collect();
+    routes: &[FrameSpec],
+    limits: &std::collections::HashMap<designcraft_doc::ItemId, usize>,
+) -> HostFit {
     let old = before.and_then(|b| b.trace.inset.as_deref().map(|trace| (b, trace)));
     let (resume, changed) = old.map_or((0, Vec::new()), |(b, trace)| resume_page(story, b, trace));
     let mut pages = old.map_or_else(Vec::new, |(_, t)| t.pages.iter().take(resume).cloned().collect::<Vec<_>>());
@@ -1041,12 +1039,13 @@ fn compose_frames_owned(
             before: &state,
             start,
             opts,
-            routes: &routes,
+            routes,
             route_ranges,
             deferred_pages,
             last_host_on_page,
             prior_core,
             catchword_owners,
+            max_cut: limits.get(&frame.id).copied(),
         };
         match page.fit() {
             Ok(mut trial) => {
@@ -1091,6 +1090,101 @@ fn compose_frames_owned(
             }
         }
     }
+    (pages, past, state, start, warnings)
+}
+
+/// Host visits follow the text thread; route carries follow physical pages. Once all visits
+/// are measured, reject any earlier host cut whose newly anchored note cannot start there.
+fn fit_physical_routes(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    routes: &[FrameSpec],
+    pages: &mut [PageRecord],
+    opts: &ComposeOptions,
+    state: &mut StreamState,
+) -> Option<(designcraft_doc::ItemId, usize)> {
+    let mut route_state = StreamState::default();
+    let past: Vec<_> = pages.iter().flat_map(|p| p.areas.iter().cloned()).collect();
+    let text = main_layout(doc, story, &past, opts);
+    let mut numbers: Vec<_> = routes.iter().filter_map(|f| f.page).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    for page in numbers {
+        let hosts: Vec<_> = frames.iter().zip(pages.iter()).filter(|(f, _)| f.page == Some(page)).collect();
+        let Some((host, _)) = hosts.last().copied() else { continue };
+        let ranges: Vec<_> = hosts.iter().map(|(_, p)| p.start..p.cut).collect();
+        let core = hosts
+            .iter()
+            .filter(|(f, _)| f.opts.inset_columns.is_some())
+            .filter_map(|(f, p)| route_edge(doc, f.id, host.id, p.core_bottom, 0.0))
+            .reduce(f64::max);
+        let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
+        let force_starts = hosts.first().and_then(|(spec, _)| text.frame(spec.id).and_then(|f| f.lines.first()).map(|line| line.range.clone()));
+        let (fit, regions) = fit_routes(
+            doc,
+            story,
+            RouteGeometry { core: core.map(|b| (host.id, b)), catchwords: host.opts.inset_columns.as_ref(), routes },
+            StreamPageInput { page, main: ranges.first().map_or(0, |r| r.start)..ranges.last().map_or(0, |r| r.end), areas: &areas, force_starts },
+            &route_state,
+            opts,
+            &ranges,
+        );
+        if !fit.starts_fit
+            && let Some(at) = fit.failed_anchor
+            && let Some((spec, _)) = hosts.iter().find(|(_, p)| (p.start..p.cut).contains(&at))
+        {
+            return Some((spec.id, at));
+        }
+        for area in &areas {
+            if let Some(route) = &area.opts.note_stream {
+                route_state.take_series(&fit.state, route.series);
+            }
+        }
+        let index = frames.iter().rposition(|f| f.page == Some(page))?;
+        if let Some(record) = pages.get_mut(index) {
+            record.routes = fit.frames;
+            record.route_catchwords = regions;
+            record.warnings.extend(fit.warnings);
+        }
+    }
+    for series in routes.iter().filter_map(|f| f.opts.note_stream.as_ref().map(|s| s.series)) {
+        state.take_series(&route_state, series);
+    }
+    None
+}
+
+fn compose_frames_owned(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    opts: &ComposeOptions,
+    before: Option<crate::reuse::Reuse<'_>>,
+    catchword_owners: Option<&CatchwordOwners>,
+) -> (ComposedStory, Option<crate::reuse::Trace>) {
+    let inset_series: Vec<_> =
+        frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
+    let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
+        .into_iter()
+        .filter(|f| f.opts.note_stream.as_ref().is_some_and(|s| !inset_series.contains(&s.series)))
+        .collect();
+    let revisited = frames.windows(2).any(|pair| pair[0].page > pair[1].page);
+    let mut limits = std::collections::HashMap::new();
+    let mut fitted =
+        fit_hosts(doc, story, frames, opts, if revisited { None } else { before }, catchword_owners, if revisited { &[] } else { &routes }, &limits);
+    if revisited {
+        for _ in 0..story.notes.len().saturating_add(frames.len()).saturating_add(1) {
+            let (pages, _, state, _, warnings) = &mut fitted;
+            let Some((host, at)) = fit_physical_routes(doc, story, frames, &routes, pages, opts, Arc::make_mut(state)) else { break };
+            if limits.insert(host, at) == Some(at) {
+                warnings.push("Inset route cannot start its anchored note after revalidating the host cut".into());
+                break;
+            }
+            fitted = fit_hosts(doc, story, frames, opts, None, catchword_owners, &[], &limits);
+        }
+    }
+    let (pages, past, state, start, mut warnings) = fitted;
+    let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
     let mut out = main_layout(doc, story, &past, opts);
     let mut merged: Vec<FrameText> = Vec::new();
     for ft in out.frames {

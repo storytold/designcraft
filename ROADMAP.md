@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: revisited-page routes fit in physical page order after host ranges are known; failed starts revalidate their host cuts (#2873).
+
 - 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).
 
 - 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
