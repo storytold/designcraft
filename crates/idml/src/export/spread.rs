@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+
 use super::common::{bool_s, uid};
 use super::{Affine, Document, El, Ex, PageSide, Spread, names, num};
 
@@ -68,16 +70,23 @@ impl<'a> Ex<'a> {
         let mut copies = Vec::new();
         collect_copies(sp, &mut copies);
         let mut used = vec![false; copies.len()];
+        // Queues retain writer order. A copy occurs in both indexes, so consumed candidates
+        // must be skipped when the other queue reaches them.
+        let mut by_page: HashMap<_, VecDeque<usize>> = HashMap::new();
+        let mut by_parent: HashMap<_, VecDeque<usize>> = HashMap::new();
+        for (k, &(parent, _, page)) in copies.iter().enumerate() {
+            if let Some(page) = page {
+                by_page.entry((parent, page)).or_default().push_back(k);
+            }
+            by_parent.entry(parent).or_default().push_back(k);
+        }
         // Each page's own copies are paired first, for every page, so one page's spread-wide fallback
         // can't take the copy another page overrides with.
         let mut own: Vec<Vec<Option<usize>>> = Vec::with_capacity(sp.pages.len());
         for (i, pg) in sp.pages.iter().enumerate() {
             let mut row = Vec::with_capacity(pg.overridden.len());
             for parent in &pg.overridden {
-                let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent && copies[*k].2 == Some(i));
-                if let Some(k) = k {
-                    used[k] = true;
-                }
+                let k = by_page.get_mut(&(*parent, i)).and_then(|candidates| take_copy(candidates, &mut used));
                 row.push(k);
             }
             own.push(row);
@@ -93,13 +102,12 @@ impl<'a> Ex<'a> {
             // and the original parent items visible on top of them.
             let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
             for (j, parent) in pg.overridden.iter().enumerate() {
-                let k = own.get(i).and_then(|r| r.get(j)).copied().flatten().or_else(|| {
-                    let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent);
-                    if let Some(k) = k {
-                        used[k] = true;
-                    }
-                    k
-                });
+                let k = own
+                    .get(i)
+                    .and_then(|r| r.get(j))
+                    .copied()
+                    .flatten()
+                    .or_else(|| by_parent.get_mut(parent).and_then(|candidates| take_copy(candidates, &mut used)));
                 let copy = match k.and_then(|k| copies.get(k)) {
                     Some(c) => uid(c.1.0),
                     None => "n".into(),
@@ -127,6 +135,17 @@ impl<'a> Ex<'a> {
         }
         el
     }
+}
+
+fn take_copy(candidates: &mut VecDeque<usize>, used: &mut [bool]) -> Option<usize> {
+    while let Some(k) = candidates.pop_front() {
+        let Some(slot) = used.get_mut(k) else { continue };
+        if !*slot {
+            *slot = true;
+            return Some(k);
+        }
+    }
+    None
 }
 
 pub(super) fn margin_el(pg: &designcraft_doc::Page) -> El {
@@ -185,7 +204,7 @@ fn collect_copies(sp: &Spread, out: &mut Vec<(designcraft_doc::ItemId, designcra
     let mut stack: Vec<(&designcraft_doc::Item, Affine)> = sp.items.iter().rev().map(|it| (&**it, Affine::IDENTITY)).collect();
     while let Some((it, outer)) = stack.pop() {
         if let Some(parent) = it.overrides {
-            let centre = bounds_under(it, outer).map_or_else(|| outer * designcraft_geom::Point::ZERO, |r| r.center());
+            let centre = bounds_under(it, outer).map_or_else(|| outer * it.xf * designcraft_geom::Point::ZERO, |r| r.center());
             out.push((parent, it.id, sp.page_at_x(centre.x)));
         }
         let inner = outer * it.xf;

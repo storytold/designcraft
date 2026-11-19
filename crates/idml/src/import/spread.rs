@@ -215,18 +215,16 @@ impl<'r> Importer<'r> {
             let ov = p.override_list();
             let resolved: Vec<_> = ov.iter().map(|s| self.item_ids.get(*s).copied()).collect();
             pg.overridden = resolved.iter().flatten().copied().filter(|id| parent_items.contains(id)).collect();
-            // Old DesignCraft files listed parents only, sometimes an odd number. Do not infer
-            // links unless the entire page list can be read as (parent, local copy or n) pairs.
-            if !ov.len().is_multiple_of(2) || !resolved.iter().step_by(2).all(|id| id.is_some_and(|id| parent_items.contains(&id))) {
+            // Old DesignCraft files listed parents only, even in lists of even length. Keep
+            // those without warnings; otherwise require (parent, local copy or n) pairs.
+            if resolved.iter().all(|id| id.is_some_and(|id| parent_items.contains(&id)))
+                || !ov.len().is_multiple_of(2)
+                || !resolved.iter().step_by(2).all(|id| id.is_some_and(|id| parent_items.contains(&id)))
+            {
                 continue;
             }
-            let unresolved = ov
-                .iter()
-                .zip(&resolved)
-                .skip(1)
-                .step_by(2)
-                .filter(|(s, id)| **s != "n" && !id.is_some_and(|id| copies.contains_key(&id)))
-                .count();
+            let unresolved =
+                ov.iter().zip(&resolved).skip(1).step_by(2).filter(|(s, id)| **s != "n" && !id.is_some_and(|id| copies.contains_key(&id))).count();
             if unresolved > 0 {
                 self.warnings.push(format!(
                     "page {}: OverrideList has {unresolved} copy ids not found on this spread; keeping the parent list only",

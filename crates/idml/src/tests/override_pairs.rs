@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use super::*;
-use designcraft_doc::{Item, ItemId};
+use designcraft_doc::{Content, Item, ItemId, Spread};
+use designcraft_geom::Affine;
 
 fn rectangle(id: &str, x: i32, attribute: &str) -> String {
     format!(
@@ -57,12 +59,7 @@ fn fixture(lists: [&str; 3], attribute: &str, extra: &str) -> Vec<u8> {
         page("page-3", "3", 0, lists[2]),
         rectangle("copy-2", -190, "")
     );
-    zip_files(&[
-        ("designmap.xml", designmap),
-        ("MasterSpreads/parent.xml", &parent),
-        ("Spreads/first.xml", &first),
-        ("Spreads/facing.xml", &facing),
-    ])
+    zip_files(&[("designmap.xml", designmap), ("MasterSpreads/parent.xml", &parent), ("Spreads/first.xml", &first), ("Spreads/facing.xml", &facing)])
 }
 
 fn items(d: &Document) -> HashMap<&str, &Item> {
@@ -151,11 +148,8 @@ fn deleted_override_copies_export_as_n_and_round_trip() {
         assert_eq!(lists[0][3], "n", "export {round}: a deleted copy stays n");
         let all = zip_text(&bytes, "");
         let self_ids: std::collections::HashSet<_> = all.split("Self=\"").skip(1).map(|s| s.split('"').next().unwrap()).collect();
-        let missing: Vec<_> = lists
-            .iter()
-            .flat_map(|list| list.iter().skip(1).step_by(2))
-            .filter(|id| *id != "n" && !self_ids.contains(id.as_str()))
-            .collect();
+        let missing: Vec<_> =
+            lists.iter().flat_map(|list| list.iter().skip(1).step_by(2)).filter(|id| *id != "n" && !self_ids.contains(id.as_str())).collect();
         assert!(missing.is_empty(), "export {round}: unresolved copy ids: {missing:?}");
         assert!(!self_ids.contains("n"), "n is a sentinel, not an item id");
         assert_eq!(exported_pairs(&bytes), expected, "export {round}: live pairs and the deleted pair survive");
@@ -204,11 +198,95 @@ fn override_pairs_keep_legacy_parent_lists_and_odd_lists() {
         ("unknown copy-1", vec![]),
     ] {
         let report = import_idml_report(&fixture([list, "", ""], "", ""), &|_| None).unwrap();
+        assert!(report.warnings.is_empty(), "{list}: {:?}", report.warnings);
         let items = items(&report.document);
         let expected: Vec<ItemId> = expected.into_iter().map(|name| items[name].id).collect();
         assert_eq!(report.document.spreads[0].pages[0].overridden, expected, "{list}");
         assert!(items.values().all(|i| i.overrides.is_none()), "{list}: no inferred links");
     }
+}
+
+#[test]
+fn translated_empty_override_copy_stays_on_its_own_page() {
+    let mut d = import_idml(&fixture(["", "parent-a copy-2", "parent-a copy-3"], "", "")).unwrap();
+    let linked = items(&d);
+    let mut empty = (*linked["copy-3"]).clone();
+    let left = Arc::new((*linked["copy-2"]).clone());
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    empty.shape = Shape::Group;
+    empty.content = Content::Group { items: vec![] };
+    empty.path = Default::default();
+    empty.xf = Affine::translate((sp.pages[1].x + 10.0, 10.0));
+    // The right-page empty copy is written before the left-page nonempty copy of this parent.
+    sp.items = vec![Arc::new(empty), left];
+
+    let pairs = exported_pairs(&export_idml(&d));
+    assert_eq!(pairs[1], [("parent-a".into(), Some("copy-2".into()))]);
+    assert_eq!(pairs[2], [("parent-a".into(), Some("copy-3".into()))]);
+}
+
+/// The original two-pass scan, as a reference for the indexed export's exact OverrideList text.
+fn legacy_override_lists(sp: &Spread) -> Vec<Vec<String>> {
+    let copies: Vec<_> = sp.items.iter().filter_map(|it| Some((it.overrides?, it.id, sp.page_at_x(it.bounds().center().x)))).collect();
+    let mut used = vec![false; copies.len()];
+    let mut own = Vec::new();
+    for (i, pg) in sp.pages.iter().enumerate() {
+        let mut row = Vec::new();
+        for parent in &pg.overridden {
+            let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent && copies[*k].2 == Some(i));
+            if let Some(k) = k {
+                used[k] = true;
+            }
+            row.push(k);
+        }
+        own.push(row);
+    }
+    sp.pages
+        .iter()
+        .enumerate()
+        .map(|(i, pg)| {
+            let mut list = Vec::new();
+            for (j, parent) in pg.overridden.iter().enumerate() {
+                let k = own[i][j].or_else(|| {
+                    let k = (0..copies.len()).find(|k| !used[*k] && copies[*k].0 == *parent);
+                    if let Some(k) = k {
+                        used[k] = true;
+                    }
+                    k
+                });
+                list.push(crate::export::uid(parent.0));
+                list.push(k.map_or_else(|| "n".into(), |k| crate::export::uid(copies[k].1.0)));
+            }
+            list
+        })
+        .collect()
+}
+
+#[test]
+fn indexed_override_pairs_match_legacy_scan_with_reservations_and_fallbacks() {
+    let mut d = import_idml(&fixture(["", "", ""], "", "")).unwrap();
+    let linked = items(&d);
+    let (a, b, layer) = (linked["parent-a"].id, linked["parent-b"].id, linked["parent-a"].layer);
+    let specs = [(a, 1), (b, 0), (a, 1), (a, 0), (b, 1), (b, 0), (a, 1), (b, 0)];
+    let mut copies = Vec::new();
+    for (k, (parent, page)) in specs.into_iter().enumerate() {
+        let x = d.spreads[1].pages[page].x + 10.0;
+        let mut copy = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, shapes::rectangle(Rect::new(x, 10.0, x + 20.0, 30.0)));
+        copy.name = format!("copy-{k}");
+        copy.overrides = Some(parent);
+        copies.push(Arc::new(copy));
+    }
+    let sp = Arc::make_mut(&mut d.spreads[1]);
+    sp.items = copies;
+    sp.pages[0].overridden = vec![a, b, a, b, a, a];
+    sp.pages[1].overridden = vec![b, a, b, b, a];
+    let expected = legacy_override_lists(sp);
+    let bytes = export_idml(&d);
+    assert_eq!(exported_override_lists(&bytes)[1..], expected);
+    let pairs = exported_pairs(&bytes);
+    let labels = |page: usize| pairs[page].iter().map(|(_, copy)| copy.as_deref()).collect::<Vec<_>>();
+    assert_eq!(labels(1), [Some("copy-3"), Some("copy-1"), Some("copy-6"), Some("copy-5"), None, None]);
+    assert_eq!(labels(2), [Some("copy-4"), Some("copy-0"), Some("copy-7"), None, Some("copy-2")]);
 }
 
 #[test]
