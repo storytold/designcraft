@@ -224,6 +224,7 @@ mod image_content_cache_tests {
             cache,
             composed: HashMap::new(),
             opts,
+            field_items: Default::default(),
             clip: Rect::ZERO,
             warnings: Vec::new(),
             images: HashMap::new(),

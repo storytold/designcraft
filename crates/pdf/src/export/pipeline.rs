@@ -165,24 +165,39 @@ pub(crate) fn form_fields_exported(standard: Standard) -> bool {
 /// Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
 /// or PDF/A: this update comes after krilla's validator ran, and its NeedAppearances fields and
 /// Screen annotations aren't allowed in PDF/A.
-fn add_form_fields(bytes: &mut Vec<u8>, warnings: &mut Vec<String>, doc: &Document, sheets: &[Sheet], opts: &PdfOptions) {
+///
+/// False when fields were left out because the written file's structure couldn't be read, so the
+/// frames whose text stood in for their widgets must be drawn again.
+fn add_form_fields(bytes: &mut Vec<u8>, warnings: &mut Vec<String>, doc: &Document, sheets: &[Sheet], opts: &PdfOptions) -> bool {
     let fields = crate::forms::collect(doc, sheets);
     let media = if opts.media { crate::forms::collect_media(doc, sheets) } else { Vec::new() };
     if fields.is_empty() && media.is_empty() {
-        return;
+        return true;
     }
-    match opts.standard {
-        Standard::PdfX4 => warnings.push("PDF/X-4: form fields and media were left out".into()),
-        Standard::PdfX1a => warnings.push("PDF/X-1a: form fields and media were left out".into()),
-        Standard::PdfA2b => warnings.push("PDF/A-2b: form fields and media were left out".into()),
-        _ => match crate::forms::add_fields(&*bytes, &fields, &media) {
-            Some(b) => *bytes = b,
-            None => warnings.push("form fields and media couldn't be added to this PDF".into()),
-        },
+    if !form_fields_exported(opts.standard) {
+        warnings.push(format!("{}: form fields and media were left out", opts.standard.label()));
+        return true;
+    }
+    match crate::forms::add_fields(&*bytes, &fields, &media) {
+        Some(b) => {
+            *bytes = b;
+            true
+        }
+        None => {
+            warnings.push("form fields and media couldn't be added to this PDF".into());
+            // Media alone leaves no frame text behind, so only fields need the export redone.
+            fields.is_empty()
+        }
     }
 }
 
 fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
+    export_with_form_fields(doc, cache, opts, true)
+}
+
+/// `hide_field_text`: leave a form-field frame's text out of the page for its widget, and draw it
+/// instead when the fields can't be added (the export is redone once without this).
+fn export_with_form_fields(doc: &Document, cache: &Cache, opts: &PdfOptions, hide_field_text: bool) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
     let (version, archival) = match opts.standard {
         Standard::None => (PdfVersion::Pdf17, None),
@@ -215,6 +230,11 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         cache,
         composed: HashMap::new(),
         opts,
+        field_items: if hide_field_text && form_fields_exported(opts.standard) {
+            crate::forms::field_items(doc, &sheets)
+        } else {
+            Default::default()
+        },
         clip: Rect::ZERO,
         warnings,
         images: HashMap::new(),
@@ -294,7 +314,12 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     if ex.has_optional_content {
         bytes = crate::optional_content::register(&bytes)?;
     }
-    add_form_fields(&mut bytes, &mut warnings, doc, &sheets, opts);
+    let added = add_form_fields(&mut bytes, &mut warnings, doc, &sheets, opts);
+    if !added && hide_field_text {
+        // The field frames' text was left out for widgets that never arrived: export again with it
+        // drawn, so the page shows the text rather than nothing (#2810).
+        return export_with_form_fields(doc, cache, opts, false);
+    }
     if opts.standard == Standard::PdfX4 {
         // The XMP dates krilla doesn't write, then check the result after DefaultCMYK is attached.
         match crate::pdfx::make_pdfx4(&bytes, created) {

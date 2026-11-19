@@ -100,6 +100,8 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         cache,
         composed: HashMap::new(),
         opts: &pdf_opts,
+        // A booklet gets no form fields, so a field frame's text is the only thing showing it.
+        field_items: Default::default(),
         clip: Rect::ZERO,
         warnings,
         images: HashMap::new(),

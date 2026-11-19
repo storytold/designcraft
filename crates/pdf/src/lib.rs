@@ -90,6 +90,16 @@ impl Standard {
     pub fn is_pdfx(self) -> bool {
         matches!(self, Self::PdfX4 | Self::PdfX1a)
     }
+
+    /// The standard's name as a warning says it.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::None => "PDF",
+            Self::PdfX4 => "PDF/X-4",
+            Self::PdfX1a => "PDF/X-1a",
+            Self::PdfA2b => "PDF/A-2b",
+        }
+    }
 }
 
 /// Printer's marks (Export PDF › Marks and Bleeds).

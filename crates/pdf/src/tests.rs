@@ -671,9 +671,23 @@ fn pdfa_leaves_out_form_fields_added_after_validation() {
 /// extracts the text (#2810). Where the fields are left out (PDF/X), the text is all there is.
 #[test]
 fn a_form_fields_frame_text_is_not_hidden_under_its_widget() {
-    let mut d = Document::new(&NewDocument { pages: 1, ..NewDocument::default() });
+    let mut d = doc_with_a_text_field();
     let lid = d.default_layer();
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 80.0), lid, "Visible label", ParaFormat::default()).unwrap();
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("/AcroForm"), "the field is exported");
+    let text = extract_text(&bytes).concat();
+    assert!(text.contains("Visible label"), "other text stays: {text:?}");
+    assert!(!text.contains("private"), "the field's frame text must not be in the PDF: {text:?}");
+    let opts = PdfOptions { standard: Standard::PdfX4, created: Some(1_700_000_000), ..Default::default() };
+    let x4 = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
+    assert!(extract_text(&x4.bytes).concat().contains("my private text"), "without the field, the text is drawn");
+}
+
+/// A page with a text frame converted to a text field holding "my private text".
+fn doc_with_a_text_field() -> Document {
+    let mut d = Document::new(&NewDocument { pages: 1, ..NewDocument::default() });
+    let lid = d.default_layer();
     let (id, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 100.0, 300.0, 140.0), lid, "my private text", ParaFormat::default()).unwrap();
     d.item_mut(id).unwrap().form_field = Some(designcraft_doc::FormField {
         kind: designcraft_doc::FieldKind::TextField,
@@ -684,14 +698,31 @@ fn a_form_fields_frame_text_is_not_hidden_under_its_widget() {
         required: false,
         font_size: 0.0,
     });
-    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("/AcroForm"), "the field is exported");
-    let text = extract_text(&bytes).concat();
-    assert!(text.contains("Visible label"), "other text stays: {text:?}");
-    assert!(!text.contains("private"), "the field's frame text must not be in the PDF: {text:?}");
-    let opts = PdfOptions { standard: Standard::PdfX4, created: Some(1_700_000_000), ..Default::default() };
-    let x4 = export_pdf_with_report(&d, &Cache::new(), &opts).unwrap();
-    assert!(extract_text(&x4.bytes).concat().contains("my private text"), "without the field, the text is drawn");
+    d
+}
+
+#[test]
+fn a_field_that_cannot_be_added_keeps_its_frame_text() {
+    let d = doc_with_a_text_field();
+    let report = {
+        // As when the written file's structure isn't the kind forms::add_fields reads.
+        let _unreadable = crate::forms::unreadable_tests::unreadable();
+        export_pdf_with_report(&d, &Cache::new(), &PdfOptions::default()).unwrap()
+    };
+    assert!(report.warnings.iter().any(|w| w.contains("couldn't be added")), "{:?}", report.warnings);
+    assert!(!String::from_utf8_lossy(&report.bytes).contains("/AcroForm"), "no field to hide under");
+    let text = extract_text(&report.bytes).concat();
+    assert!(text.contains("my private text"), "the frame's text is drawn when its field can't be: {text:?}");
+}
+
+#[test]
+fn a_booklet_keeps_a_field_frames_text() {
+    // A booklet adds no form fields, so the text is the only thing showing the field.
+    let d = doc_with_a_text_field();
+    let report = export_booklet(&d, &Cache::new(), &BookletOptions::default()).unwrap();
+    assert!(!String::from_utf8_lossy(&report.bytes).contains("/AcroForm"), "a booklet adds no fields");
+    let text = extract_text(&report.bytes).concat();
+    assert!(text.contains("my private text"), "{text:?}");
 }
 
 #[test]

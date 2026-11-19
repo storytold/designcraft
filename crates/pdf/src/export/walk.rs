@@ -354,8 +354,9 @@ impl Exporter<'_> {
                 }
             }
             // A form field's widget is drawn over it in an opaque box: its frame's text would be
-            // hidden in the page yet still in the file for anyone to extract (#2810).
-            Content::Text(_) if it.form_field.is_some() && super::pipeline::form_fields_exported(self.opts.standard) => {}
+            // hidden in the page yet still in the file for anyone to extract (#2810). Only the
+            // frames that get a widget leave their text out.
+            Content::Text(_) if self.field_items.contains(&it.id) => {}
             Content::Text(tfr) => {
                 let cs = self.composed(tfr.story, page);
                 if let (Some(ft), Some(pt)) = (cs.frame(it.id), &tfr.options.path) {
