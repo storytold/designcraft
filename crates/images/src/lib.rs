@@ -383,7 +383,7 @@ pub fn too_large_to_decode(bytes: &[u8]) -> bool {
 }
 
 /// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
-fn over_rgba_budget(w: u32, h: u32) -> bool {
+pub(crate) fn over_rgba_budget(w: u32, h: u32) -> bool {
     u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 

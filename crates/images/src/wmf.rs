@@ -85,8 +85,9 @@ pub fn wmf_bitmap(b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A device-independent bitmap (`BITMAPINFOHEADER` or `BITMAPCOREHEADER`, colours, pixels) as a
-/// file, with its pixel count. `None` when the header doesn't describe a bitmap, or when the bytes
-/// it describes are not all there: a truncated bitmap must not beat a complete smaller one.
+/// file, with its pixel count. `None` when the header doesn't describe a bitmap, when the bytes it
+/// describes are not all there, or when it is too large to decode: a bitmap that can't be drawn
+/// must not beat a smaller one that can.
 fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
     let header = u32_at(dib, 0)?;
     let (width, height, bits, compression, used, entry) = if header == 12 {
@@ -100,13 +101,18 @@ fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
     if width <= 0 || height == 0 || height == i32::MIN {
         return None;
     }
-    let area = u64::from(width.unsigned_abs()) * u64::from(height.unsigned_abs());
+    let (wide, tall) = (width.unsigned_abs(), height.unsigned_abs());
+    // A bitmap too big to decode cannot be drawn, so it must not beat a smaller one that can.
+    if crate::over_rgba_budget(wide, tall) {
+        return None;
+    }
+    let area = u64::from(wide) * u64::from(tall);
     let header_len = usize::try_from(header).ok()?;
     if matches!(compression, BI_JPEG | BI_PNG) {
-        // The pixels are the whole image file: it must be there, and be the kind it claims.
+        // The pixels are the whole image file: it must be there, be the kind it claims, and decode.
         let payload = dib.get(header_len..)?;
         let magic: &[u8] = if compression == BI_JPEG { &[0xFF, 0xD8, 0xFF] } else { b"\x89PNG" };
-        return payload.starts_with(magic).then(|| (area, payload.to_vec()));
+        return (payload.starts_with(magic) && crate::decode_rgba(payload).is_some()).then(|| (area, payload.to_vec()));
     }
     if !matches!(compression, BI_RGB | BI_RLE8 | BI_RLE4 | BI_BITFIELDS) {
         return None;
@@ -129,8 +135,8 @@ fn dib_file(dib: &[u8]) -> Option<(u64, Vec<u8>)> {
         }
     } else {
         // Every row is padded to 4 bytes, and a negative height is a top-down bitmap of the same size.
-        let stride = u64::from(width.unsigned_abs()).checked_mul(u64::from(bits))?.checked_add(31)? / 32 * 4;
-        if (pixels.len() as u64) < stride.checked_mul(u64::from(height.unsigned_abs()))? {
+        let stride = u64::from(wide).checked_mul(u64::from(bits))?.checked_add(31)? / 32 * 4;
+        if (pixels.len() as u64) < stride.checked_mul(u64::from(tall))? {
             return None;
         }
     }
@@ -222,8 +228,13 @@ mod tests {
         assert_eq!((rgba.width(), rgba.height()), (2, 1));
     }
 
+    /// A 2×1 PNG: a red pixel then a blue one.
+    fn png_file() -> Vec<u8> {
+        crate::png_from_rgba(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap()
+    }
+
     #[test]
-    fn a_compressed_bitmap_with_no_image_is_not_readable() {
+    fn a_compressed_bitmap_must_hold_a_readable_image() {
         let mut jpeg = dib()[..40].to_vec();
         jpeg[16..20].copy_from_slice(&BI_JPEG.to_le_bytes());
         let mut png = jpeg.clone();
@@ -231,10 +242,59 @@ mod tests {
         assert!(wmf_bitmap(&wmf(&jpeg)).is_none(), "a header with no image is not readable");
         assert!(wmf_bitmap(&wmf(&png)).is_none());
         // The image must be the kind the header claims.
-        jpeg.extend_from_slice(b"\x89PNG");
+        jpeg.extend_from_slice(&png_file());
         assert!(wmf_bitmap(&wmf(&jpeg)).is_none());
-        png.extend_from_slice(b"\x89PNG");
+        png.extend_from_slice(&png_file());
         assert!(wmf_bitmap(&wmf(&png)).is_some());
+        // A real JPEG is readable too.
+        use image::ImageEncoder;
+        let mut jpeg = dib()[..40].to_vec();
+        jpeg[16..20].copy_from_slice(&BI_JPEG.to_le_bytes());
+        let mut file = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut file).write_image(&[255, 0, 0, 0, 0, 255], 2, 1, image::ExtendedColorType::Rgb8).unwrap();
+        jpeg.extend_from_slice(&file);
+        assert!(wmf_bitmap(&wmf(&jpeg)).is_some());
+    }
+
+    #[test]
+    fn a_signature_is_not_an_image() {
+        // A 100×100 header claiming a PNG whose payload is only the PNG signature: larger in area
+        // than the complete 2×1 bitmap, but it cannot be drawn.
+        let mut fake = dib()[..40].to_vec();
+        fake[4..8].copy_from_slice(&100i32.to_le_bytes());
+        fake[8..12].copy_from_slice(&100i32.to_le_bytes());
+        fake[16..20].copy_from_slice(&BI_PNG.to_le_bytes());
+        fake.extend_from_slice(b"\x89PNG");
+        assert!(wmf_bitmap(&wmf(&fake)).is_none());
+        let file = wmf_bitmap(&wmf_records(&[&fake, &dib()])).unwrap();
+        let rgba = crate::decode_rgba(&file).unwrap();
+        assert_eq!((rgba.width(), rgba.height()), (2, 1));
+    }
+
+    /// A 20,000 × 20,000 run-length DIB: a few bytes whose RGBA is 1.6 GB, over the decode budget.
+    /// Run-length keeps the fixture small; the budget is checked from the header, before the
+    /// compression branch.
+    fn over_budget_dib() -> Vec<u8> {
+        let mut d = Vec::new();
+        for v in [40u32, 20_000, 20_000] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&8u16.to_le_bytes());
+        d.extend_from_slice(&BI_RLE8.to_le_bytes());
+        d.extend_from_slice(&[0; 20]);
+        // The 256-entry colour table, then the start of the runs.
+        d.extend_from_slice(&[0; 256 * 4]);
+        d.extend_from_slice(&[0, 1]);
+        d
+    }
+
+    #[test]
+    fn a_bitmap_too_large_to_decode_does_not_beat_a_readable_one() {
+        assert!(wmf_bitmap(&wmf(&over_budget_dib())).is_none(), "a bitmap that cannot be decoded is not readable");
+        let file = wmf_bitmap(&wmf_records(&[&over_budget_dib(), &dib()])).unwrap();
+        let rgba = crate::decode_rgba(&file).unwrap();
+        assert_eq!((rgba.width(), rgba.height()), (2, 1));
     }
 
     #[test]
