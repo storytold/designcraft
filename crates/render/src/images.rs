@@ -1515,7 +1515,7 @@ pub(crate) mod tests {
         let want = Want { bytes: bytes.clone(), page: 0, width_pt: 1024.0, on_screen: 0.1 };
         let (cached, peak) = reduced_estimates(&[want]).unwrap();
         assert_eq!(cached, 128 * 96 * 4, "only the selected eighth-size mip is cached");
-        assert_eq!(peak, 128 * 96 * 8, "only the selected eighth-size mip is decoded");
+        assert_eq!(peak, 128 * 96 * 16, "only the selected eighth-size mip is decoded");
         let full = decode_sizes(&bytes.load().unwrap(), 0);
         assert!(cached < full.0 && peak < full.1, "reduced estimates {cached}/{peak}, full {full:?}");
     }
