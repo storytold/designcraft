@@ -10358,3 +10358,52 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Building the cross-reference index's running-header index on a cold cache terminates when a
+/// heading source has a wrap neighbour whose story also threads an anchored frame hosted in a
+/// running-header story.
+#[test]
+fn xref_index_running_header_build_breaks_anchored_wrap_neighbour_cycle() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let rh_idx = d.text_variables.iter().position(|v| v.name == "Running Header").unwrap();
+    let rh_char = designcraft_doc::vars::var_char(rh_idx).unwrap();
+    // Heading source S (style matches the default Running Header variable).
+    let (_, s_sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "Chapter One", ParaFormat::default()).unwrap();
+    // Running-header host H holding an anchor (so XrefIndex builds its running-header index).
+    let (_, h_sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 300.0, 240.0), lid, &format!("{rh_char} Target"), ParaFormat::default()).unwrap();
+    let anchor_pos = d.story(h_sid).unwrap().len();
+    let anchor_id = d.story_mut(h_sid).unwrap().insert_anchor(anchor_pos, "Target");
+    // Wrap neighbour T on S's spread, with a wrapping anchored object and an anchored frame in H.
+    let (_, t_sid) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(320.0, 36.0, 500.0, 140.0),
+            lid,
+            "Wrap neighbour",
+            ParaFormat { style: "Body".into(), ..Default::default() },
+        )
+        .unwrap();
+    anchor_box(&mut d, t_sid, 0, 0.0, 0.0, false, WrapMode::BoundingBox);
+    let t_anchored_id = ItemId(d.alloc());
+    let mut t_anchored = designcraft_doc::Item::new(
+        t_anchored_id,
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 80.0, 30.0)),
+    );
+    t_anchored.content = Content::Text(designcraft_doc::TextFrame { story: t_sid, options: Default::default() });
+    d.story_mut(t_sid).unwrap().frames.push(t_anchored_id);
+    d.story_mut(h_sid).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(t_anchored, Default::default()));
+
+    assert!(d.check().is_ok());
+    assert!(crate::wrap::neighbours(&d, s_sid).contains(&t_sid));
+    assert!(d.story(t_sid).unwrap().frames.iter().any(|f| d.find(*f).is_none()));
+    assert!(d.story(s_sid).unwrap().frames.iter().all(|f| d.find(*f).is_some()));
+    assert!(!crate::vars::has_running(&d, d.story(s_sid).unwrap()));
+    assert!(crate::vars::has_running(&d, d.story(h_sid).unwrap()));
+
+    let idx = Cache::new().xref_index(&d);
+    assert_eq!(idx.page_index(anchor_id), Some(0));
+}
