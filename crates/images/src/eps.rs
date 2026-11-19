@@ -10,8 +10,7 @@ fn sections(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
 
 /// The bounding box in points: (x0, y0, x1, y1), the high-resolution one when given.
 pub fn bounding_box(bytes: &[u8]) -> Option<[f64; 4]> {
-    let parts = craft_eps::sections(bytes).ok()?;
-    craft_eps::Comments::read(parts.postscript).page_box()
+    craft_ps::read::bounding_box(craft_ps::read::postscript_section(bytes))
 }
 
 /// Natural EPS dimensions in points. Bound sizes before fitting or allocating a proxy:

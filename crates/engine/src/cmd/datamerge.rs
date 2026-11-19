@@ -147,8 +147,27 @@ fn fields_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = st.doc.data_merge.sources.first() else {
         return Ok(json!([]));
     };
-    let placeholders = st.doc.data_merge.placeholders.clone();
-    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count()))
+    let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+    let placeholders = &doc.data_merge.placeholders;
+    let mut marker_counts = std::collections::HashMap::<String, usize>::new();
+    for (story_id, story) in &doc.stories {
+        // The generated endnote frame repeats note text already counted in its owning story.
+        if Some(*story_id) == doc.endnote_story {
+            continue;
+        }
+        for (start, end, name) in fill::find_markers(&story.text) {
+            // A bound placeholder already accounts for its marker in the usage count.
+            let covered = placeholders.iter().any(|ph| {
+                matches!((&ph.role, &ph.anchor), (PlaceholderRole::Text | PlaceholderRole::Image, PlaceholderAnchor::Text { story, start: a, end: b })
+                    if story == story_id && start < *b && end > *a)
+            });
+            if !covered {
+                *marker_counts.entry(name).or_default() += 1;
+            }
+        }
+        fill::count_nested_markers(story, &mut marker_counts, 0);
+    }
+    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count() + marker_counts.get(name).copied().unwrap_or(0)))
 }
 
 fn placeholder_add(s: &mut Session, p: &Value) -> Result<Value> {
