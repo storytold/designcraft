@@ -112,6 +112,35 @@ fn catchwords_align_to_each_stream_paragraph_line_end() {
 }
 
 #[test]
+fn margin_note_below_main_does_not_lower_catchword() {
+    let (mut doc, sid) = document(2, "Short main.\nNext page.", "", "");
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.find("Next").unwrap();
+    story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+    enable_catchwords(&mut doc, sid);
+    doc.note_series.push(NoteSeries {
+        id: 3,
+        name: "Margin".into(),
+        options: designcraft_doc::FootnoteOptions {
+            placement: NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 10.0, width: 80.0 },
+            ref_hidden: true,
+            ..Default::default()
+        },
+    });
+    let id = doc.story_mut(sid).unwrap().insert_note(5, "Small", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = 3;
+    let before = compose_story(&doc, sid, &Default::default());
+    let row = |cs: &ComposedStory| cs.frames[0].catchwords.iter().find(|c| c.series.is_none()).map(|c| c.rect);
+    let note = doc.story_mut(sid).unwrap().note_mut(id).unwrap();
+    note.text.insert(note.text.len(), &"\nMargin line".repeat(8));
+    let after = compose_story(&doc, sid, &Default::default());
+    let side = after.frames[0].notes.iter().find(|n| n.series == 3).unwrap();
+    assert!(side.rect.y1 > row(&before).unwrap().y1);
+    assert!(row(&before).is_some(), "fixture must reserve a main catchword");
+    assert_eq!(row(&after), row(&before));
+}
+
+#[test]
 fn no_reserved_catchword_regions_skip_lookup() {
     let (doc, sid) = document(1, "Main text.", "", "");
     super::catchwords::LOOKUPS.with(|n| n.set(0));

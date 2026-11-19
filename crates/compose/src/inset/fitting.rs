@@ -494,7 +494,7 @@ impl Page<'_> {
                     .lines
                     .last()
                     .map_or(0.0, |l| (l.baseline + l.descent - rect.y0).max(0.0))
-                    .max(part.notes.iter().map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max));
+                    .max(part.notes.iter().filter(|n| n.rect.x0 < rect.x1 && n.rect.x1 > rect.x0).map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max));
                 let finished =
                     crossed || cut >= wanted || cut >= self.story.text.len() || (part.lines.is_empty() && next_line.is_some_and(|end| end > wanted));
                 if finished {
