@@ -5053,6 +5053,42 @@ fn drop_cap_box_follows_vertical_justification() {
     assert!((db.rect.y0 - da.rect.y0 - dy).abs() < 1e-6 && (db.rect.y1 - da.rect.y1 - dy).abs() < 1e-6);
 }
 
+/// Ink top and bottom of a placed glyph on a line at `baseline`, y-down.
+fn ink_of(g: &PlacedGlyph, baseline: f64) -> (f64, f64) {
+    let ink = designcraft_geom::Shape::bounding_box(&*designcraft_fonts::FontDb::global().outline(&g.face, g.gid));
+    (baseline + g.y + ink.y0 * g.sy, baseline + g.y + ink.y1 * g.sy)
+}
+
+/// Hangul has no cap height: a Hangul drop cap scaled by the cap height comes out too large and
+/// runs into the line below its last one.
+#[test]
+fn a_hangul_drop_cap_is_sized_by_its_ink() {
+    // 가 is drawn as g (ink below the baseline, none up to the cap line), the text after it as H.
+    let mut map = vec![('가', 'g'), (' ', ' ')];
+    map.extend("나다라마바사".chars().map(|c| (c, 'H')));
+    let font = designcraft_fonts::testing::font_mapping("DC Test Drop Hangul", &map).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = ["가나다라 마바사"; 30].join(" ");
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test Drop Hangul".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    assert_eq!((dc.byte, dc.len), (0, '가'.len_utf8()));
+    let (top, bottom) = ink_of(dc, lines[0].baseline);
+    let body = lines[0].glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap();
+    // Its ink runs from the ink top of the text on line 1 down to line 3's baseline, not past it.
+    assert!((bottom - lines[2].baseline).abs() < 0.01, "ink bottom {bottom}, line 3 {}", lines[2].baseline);
+    assert!((top - ink_of(body, lines[0].baseline).0).abs() < 0.01, "ink top {top}");
+    // A one-line drop cap keeps its size and its baseline.
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(1, 1));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test Drop Hangul".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let (dc, body) = (&line.glyphs[0], line.glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap());
+    assert!((dc.sy - body.sy).abs() < 1e-9 && dc.y.abs() < 1e-9, "one-line drop cap: sy {} vs {}, y {}", dc.sy, body.sy, dc.y);
+}
+
 #[test]
 fn drop_cap_spans_lines_and_indents_them() {
     let text = [LOREM; 2].join(" ");
