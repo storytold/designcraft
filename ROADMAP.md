@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
@@ -11,8 +13,6 @@
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby remain unfinished. Warichu sets the selected run in smaller lines inside the line after the line is broken.
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
-
-- **2026-11-16** · Explicit, undoable recovery of older native first-baseline positioning; ambiguous format-1 files and new text keep current metrics on open. See [legacy-text-baselines.md](docs/legacy-text-baselines.md). No readiness percentage change.
 
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
 - **2026-11-06** · Automation roots refuse `COM¹` to `LPT³` and a device name before a colon (`COM1:`, `NUL:x`). A batch-export layout of that name is written with a leading `_` on every platform. No readiness percentage change.

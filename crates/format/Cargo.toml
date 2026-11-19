@@ -9,7 +9,7 @@ description = "DesignCraft native file format: zip with document.json and embedd
 workspace = true
 
 [dependencies]
-craft-designcraft-format = { git = "https://github.com/ForestParks/craft-libs", rev = "6e42e6fc0ffd5c7b35cc710896d95cc9e8684135", version = "=0.1.0" }
+craft-designcraft-format = { git = "https://github.com/ForestParks/craft-libs", rev = "a688b16be6912257228127cb4bf7c8bd5f0f6178", version = "=0.1.0" }
 designcraft-doc = { workspace = true }
 
 [dev-dependencies]

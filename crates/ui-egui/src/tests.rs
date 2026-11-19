@@ -1801,7 +1801,7 @@ fn discarded_pass_does_not_acknowledge_injected_input() {
     app.raw_input_hook(&ctx, &mut raw);
     assert!(app.synthetic_injected);
     let mut passes = 0;
-    let output = ctx.run_ui(raw, |ui| {
+    let mut output = ctx.run_ui(raw, |ui| {
         passes += 1;
         if passes == 1 {
             ui.ctx().request_discard("injected input must survive a discarded pass");
@@ -1809,6 +1809,7 @@ fn discarded_pass_does_not_acknowledge_injected_input() {
         app.logic(&ui.ctx().clone());
         app.ui(ui);
     });
+    output.textures_delta.clear();
     assert_eq!(output.platform_output.num_completed_passes, 2);
     assert!(!app.synthetic_injected, "the settled second pass acknowledges it");
     assert!(app.control_synthetic.is_empty());
