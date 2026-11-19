@@ -94,9 +94,40 @@ fn painted_bounds(it: &Item) -> Rect {
     let Some(g) = it.graphic() else { return frame };
     let Some(shown) = g.shown_bounds(frame) else { return frame };
     // A clipping path crops the image further.
-    let Some((path, _)) = g.clip_region().filter(|(p, _)| !p.is_empty()) else { return shown };
+    let Some((path, even_odd)) = g.clip_region().filter(|(p, _)| !p.is_empty()) else { return shown };
+    if even_odd {
+        // An inverted clip keeps the graphic's rectangle minus the path, so the box ends where the
+        // path removes a side of it, not at the combined region's outer edge.
+        let Some(clip) = g.clip.as_ref() else { return shown };
+        let mut excluded = clip.path.to_bezpath();
+        excluded.apply_affine(g.xf);
+        let kept = bounds_without(shown, excluded.bounding_box());
+        return if kept.width() > 0.0 && kept.height() > 0.0 { kept } else { shown };
+    }
     let clipped = shown.intersect(path.bounding_box());
     if clipped.width() > 0.0 && clipped.height() > 0.0 { clipped } else { shown }
+}
+
+/// The bounds of `outer` once `hole` is removed: the union of the strips beside it (bounding
+/// boxes), or a degenerate rect when nothing is left.
+fn bounds_without(outer: Rect, hole: Rect) -> Rect {
+    let h = outer.intersect(hole);
+    if h.width() <= 0.0 || h.height() <= 0.0 {
+        return outer;
+    }
+    let strips = [
+        Rect::new(outer.x0, outer.y0, h.x0, outer.y1),
+        Rect::new(h.x1, outer.y0, outer.x1, outer.y1),
+        Rect::new(outer.x0, outer.y0, outer.x1, h.y0),
+        Rect::new(outer.x0, h.y1, outer.x1, outer.y1),
+    ];
+    let mut kept: Option<Rect> = None;
+    for s in strips {
+        if s.width() > 0.0 && s.height() > 0.0 {
+            kept = Some(kept.map_or(s, |k| k.union(s)));
+        }
+    }
+    kept.unwrap_or(Rect::new(h.x0, h.y0, h.x0, h.y0))
 }
 
 /// (blur σ, growth) in points for an effect `size` with `pct` percent hardened.
@@ -1235,6 +1266,28 @@ mod tests {
         // The fill reaches the frame's right edge at x = 300: the fade runs 230..300.
         assert!(lum(220) < 700, "the fill before the fade: {}", lum(220));
         assert!(lum(295) > 700, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
+    /// An inverted clipping path shows the graphic outside the path, so what it paints ends where
+    /// the path removes a side of it: the directional feather fades at that retained edge.
+    #[test]
+    fn directional_feather_fades_at_an_inverted_clips_retained_edge() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // The frame's right half (x = 200 to 300) is outside the path, so it is removed.
+            let hole = designcraft_geom::Shape::to_path(&Rect::new(100.0, 0.0, 200.0, 200.0), 0.1);
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // What remains ends at x = 200: the 70 pt fade runs 130..200, not 230..300.
+        assert!(lum(120) < 60, "solid before the fade: {}", lum(120));
+        assert!(lum(195) > 600, "nearly transparent at the retained edge: {}", lum(195));
+        assert!(lum(250) > 700, "the removed part of the frame: {}", lum(250));
     }
 
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
