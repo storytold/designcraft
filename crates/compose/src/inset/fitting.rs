@@ -325,6 +325,8 @@ fn search<T>(
     Ok((best.map(|(_, trial)| trial), used, exhausted))
 }
 
+type CatchwordOwners = std::collections::HashMap<(Option<usize>, Option<u64>), designcraft_doc::ItemId>;
+
 struct Page<'a> {
     doc: &'a Document,
     story: &'a Story,
@@ -339,8 +341,12 @@ struct Page<'a> {
     deferred_pages: Vec<usize>,
     last_host_on_page: bool,
     prior_core: Option<f64>,
+    catchword_owners: Option<&'a CatchwordOwners>,
 }
 impl Page<'_> {
+    fn owns_catchword(&self, series: Option<u64>) -> bool {
+        self.catchword_owners.is_none_or(|owners| owners.get(&(self.frame.page, series)) == Some(&self.frame.id))
+    }
     fn trial(&self, wanted: usize, force: bool) -> Result<Trial, super::Error> {
         let main = self.options.main().ok_or(super::Error::InvalidGeometry)?;
         let space = super::catchwords::row_height(self.doc, self.story, self.start, &self.options.catchwords);
@@ -491,6 +497,7 @@ impl Page<'_> {
             }
             let bottom = rect.y1 >= self.frame.area.y1 - space - 0.01;
             let future = self.options.catchwords.enabled()
+                && self.owns_catchword(series)
                 && match series {
                     None => wanted < self.story.text.len(),
                     Some(id) => self
@@ -559,7 +566,9 @@ impl Page<'_> {
                     )
                 };
                 let mut fit = fit_notes(&areas);
-                let needed = self.options.catchwords.enabled() && (future || fit.state.pending_series().any(|id| id == series));
+                let needed = self.options.catchwords.enabled()
+                    && self.owns_catchword(Some(series))
+                    && (future || fit.state.pending_series().any(|id| id == series));
                 if needed && bottom {
                     if let Some(last) = areas.last_mut() {
                         last.area.y1 = (last.area.y1 - space).max(last.area.y0);
@@ -826,6 +835,7 @@ pub(crate) struct Trace {
 }
 #[cfg(test)]
 thread_local! {
+    pub(crate) static LAST_ROWS: std::cell::RefCell<Vec<(designcraft_doc::ItemId, Option<u64>)>> = const { std::cell::RefCell::new(Vec::new()) };
     pub(crate) static MAIN_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static ROUTE_AREAS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static REFITTED: std::cell::RefCell<Vec<designcraft_doc::ItemId>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -928,6 +938,52 @@ pub(crate) fn compose_frames(
     opts: &ComposeOptions,
     before: Option<crate::reuse::Reuse<'_>>,
 ) -> (ComposedStory, Option<crate::reuse::Trace>) {
+    let mut result = compose_frames_owned(doc, story, frames, opts, before, None);
+    // Only multi-host pages need a second fit: reclaim earlier rows after their stream's
+    // last text-bearing host is known, then revalidate the cuts that used that space.
+    if !frames
+        .iter()
+        .enumerate()
+        .any(|(i, f)| frames.iter().take(i).any(|p| p.page == f.page) && f.opts.inset_columns.as_ref().is_some_and(|c| c.catchwords.enabled()))
+    {
+        return result;
+    }
+    let owners = |out: &ComposedStory| {
+        let mut owners = CatchwordOwners::new();
+        for spec in frames {
+            let Some(frame) = out.frame(spec.id) else { continue };
+            if !frame.lines.is_empty() {
+                owners.insert((spec.page, None), spec.id);
+            }
+            for note in &frame.notes {
+                if note.text.frames.iter().any(|f| !f.lines.is_empty()) {
+                    owners.insert((spec.page, Some(note.series)), spec.id);
+                }
+            }
+        }
+        owners
+    };
+    let mut current = owners(&result.0);
+    for _ in 0..frames.len().saturating_add(1) {
+        result = compose_frames_owned(doc, story, frames, opts, None, Some(&current));
+        let next = owners(&result.0);
+        if next == current {
+            return result;
+        }
+        current = next;
+    }
+    result.0.warnings.push("Inset catchword ownership did not stabilize within the host count".into());
+    result
+}
+
+fn compose_frames_owned(
+    doc: &Document,
+    story: &Story,
+    frames: &[FrameSpec],
+    opts: &ComposeOptions,
+    before: Option<crate::reuse::Reuse<'_>>,
+    catchword_owners: Option<&CatchwordOwners>,
+) -> (ComposedStory, Option<crate::reuse::Trace>) {
     let inset_series: Vec<_> =
         frames.iter().filter_map(|f| f.opts.inset_columns.as_ref()).flat_map(|c| c.streams.iter().filter_map(|s| s.series)).collect();
     let routes: Vec<_> = crate::stream_frame_specs(doc, story.id)
@@ -990,6 +1046,7 @@ pub(crate) fn compose_frames(
             deferred_pages,
             last_host_on_page,
             prior_core,
+            catchword_owners,
         };
         match page.fit() {
             Ok(mut trial) => {
@@ -1143,6 +1200,10 @@ pub(crate) fn compose_frames(
     out.warnings.extend(warnings);
     let mut catchwords: Vec<_> = pages.iter().map(|p| p.catchwords.clone()).collect();
     catchwords.resize_with(frames.len(), Vec::new);
+    #[cfg(test)]
+    LAST_ROWS.with(|v| {
+        *v.borrow_mut() = frames.iter().zip(&catchwords).flat_map(|(f, rows)| rows.iter().map(move |(series, _)| (f.id, *series))).collect()
+    });
     let mut catchword_frames = frames.to_vec();
     for (spec, rect) in route_catchwords {
         catchwords.push(vec![(spec.opts.note_stream.as_ref().map(|s| s.series), rect)]);

@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).
+
 - 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
 
 - 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).

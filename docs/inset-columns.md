@@ -117,7 +117,8 @@ retain inset geometry and emits an explicit export warning. Deleting a series re
 entry from inset frames and moves its notes to series 0, as for ordinary stream routes.
 
 `catchwords:true` adds a generated catchword below each stream that has visible text on a later
-page. The word follows that stream's last rectangle at the paragraph's line end, left for
+page. A stream reserves and prints its row only at its last text-bearing host on that physical
+page, including when a thread visits the page more than once. The word follows that stream's last rectangle at the paragraph's line end, left for
 right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
 and colour at 9 points; a long word shrinks uniformly only to fit its column width.

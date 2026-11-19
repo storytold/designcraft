@@ -196,6 +196,37 @@ fn unsized_catchword_style_inherits_each_stream_metrics() {
 }
 
 #[test]
+fn same_page_hosts_reserve_only_the_last_text_bearing_catchword() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(100), &"Inner line.\u{2028}".repeat(100), "");
+    enable_catchwords(&mut doc, sid);
+    let first = doc.story(sid).unwrap().frames[0];
+    doc.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(36.0, 36.0, 636.0, 140.0));
+    let (second, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 160.0, 636.0, 290.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(first, second).unwrap();
+    doc.item_mut(second).unwrap().text_frame_mut().unwrap().options.inset_columns =
+        doc.item(first).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    let cs = compose_story(&doc, sid, &Default::default());
+    for series in [None, Some(1)] {
+        assert!(cs.frame(second).unwrap().catchwords.iter().any(|c| c.series == series));
+        assert!(!cs.frame(first).unwrap().catchwords.iter().any(|c| c.series == series), "earlier host printed {series:?}");
+        let trace = super::fitting::LAST_ROWS.with(|v| v.borrow().clone());
+        assert_eq!(trace.iter().filter(|(id, stream)| (*id == first || *id == second) && *stream == series).count(), 1, "reserved rows {trace:?}");
+    }
+    // The final host for main text can have no text from a particular commentary stream.
+    let story = doc.story_mut(sid).unwrap();
+    let first_note = story.notes[0].id;
+    let note = story.note_mut(first_note).unwrap();
+    note.text.replace(0..note.text.len(), "Short inner.");
+    let at = story.text.match_indices("Main").nth(30).unwrap().0;
+    let future = story.insert_note(at, "Future inner.", Default::default()).unwrap();
+    story.note_mut(future).unwrap().series = 1;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(first).unwrap().catchwords.iter().any(|c| c.series == Some(1)));
+    assert!(!cs.frame(second).unwrap().catchwords.iter().any(|c| c.series == Some(1)));
+}
+
+#[test]
 fn no_reserved_catchword_regions_skip_lookup() {
     let (doc, sid) = document(1, "Main text.", "", "");
     super::catchwords::LOOKUPS.with(|n| n.set(0));
