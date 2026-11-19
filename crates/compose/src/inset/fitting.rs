@@ -18,6 +18,7 @@ struct Cursor {
     main_bottom: f64,
 }
 struct Trial {
+    core_bottom: f64,
     first_line: Option<usize>,
     cut: usize,
     areas: Vec<FrameSpec>,
@@ -209,6 +210,9 @@ struct Page<'a> {
     start: usize,
     opts: &'a ComposeOptions,
     routes: &'a [FrameSpec],
+    route_start: usize,
+    last_host_on_page: bool,
+    prior_core: Option<f64>,
 }
 impl Page<'_> {
     fn trial(&self, wanted: usize, force: bool) -> Result<Trial, super::Error> {
@@ -489,14 +493,14 @@ impl Page<'_> {
         }
         let mut warnings: Vec<_> = out.streams.iter().flat_map(|s| s.cursor.warnings.iter().cloned()).collect();
         let follows_core = self.routes.iter().any(|f| f.page == self.frame.page && f.opts.note_stream.is_some_and(|s| s.follow_inset.is_some()));
-        let core_bottom = self.frame.opts.inset_columns.as_ref().filter(|_| follows_core).map(|_| {
-            std::iter::once(c.main_bottom)
+        let own_bottom = std::iter::once(c.main_bottom)
                 .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
                     note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
                 }))
                 .chain(c.catchword.map(|rect| rect.y1))
-                .fold(self.frame.area.y0, f64::max)
-        });
+                .fold(self.frame.area.y0, f64::max);
+        let core_bottom = (follows_core && (self.frame.opts.inset_columns.is_some() || self.prior_core.is_some()))
+            .then_some(self.prior_core.map_or(own_bottom, |b| b.max(own_bottom)));
         let mut routes = Vec::new();
         let page = self.frame.page.unwrap_or(0);
         let previous = self.past.last().and_then(|f| f.page);
@@ -504,9 +508,10 @@ impl Page<'_> {
             self.routes.iter().filter_map(|f| f.page).filter(|p| previous.is_none_or(|prev| *p > prev) && *p <= page).collect();
         route_pages.sort_unstable();
         route_pages.dedup();
-        if !route_pages.contains(&page) && !self.routes.is_empty() {
+        if self.last_host_on_page && !route_pages.contains(&page) && !self.routes.is_empty() {
             route_pages.push(page);
         }
+        route_pages.retain(|p| *p != page || self.last_host_on_page);
         // Route feasibility uses the candidate's ink bottom, before accepting its main cut.
         for route_page in route_pages {
             let mut areas: Vec<_> = self.routes.iter().filter(|f| f.page == Some(route_page)).cloned().collect();
@@ -534,7 +539,7 @@ impl Page<'_> {
                 self.routes,
                 StreamPageInput {
                     page: route_page,
-                    main: if route_page == page { self.start..c.cut } else { 0..0 },
+                    main: if route_page == page { self.route_start..c.cut } else { 0..0 },
                     areas: &areas,
                     force_starts: (force && route_page == page).then_some(self.start..c.cut),
                 },
@@ -556,6 +561,7 @@ impl Page<'_> {
         let catchwords =
             out.streams.iter().zip(&self.options.streams).filter_map(|(s, config)| s.cursor.catchword.map(|area| (config.series, area))).collect();
         Ok(Trial {
+            core_bottom: own_bottom,
             first_line: c.first_line.or(first_line_seen),
             cut: c.cut,
             areas: c.areas.clone(),
@@ -638,6 +644,7 @@ impl Page<'_> {
 
 #[derive(Clone, Debug)]
 struct PageRecord {
+    core_bottom: f64,
     start: usize,
     cut: usize,
     incoming: Arc<StreamState>,
@@ -789,13 +796,22 @@ pub(crate) fn compose_frames(
         }
         #[cfg(test)]
         REFITTED.with(|v| v.borrow_mut().push(frame.id));
-        let page = Page { doc, story, frame, options, past: &past, before: &state, start, opts, routes: &routes };
+        let first_host = frames.iter().take(index).rposition(|f| f.page != frame.page).map_or(0, |i| i + 1);
+        let route_start = pages.get(first_host).map_or(start, |p| p.start);
+        let prior_core = pages.iter().enumerate().skip(first_host).filter_map(|(i, p)| {
+            let host = frames.get(i)?;
+            host.opts.inset_columns.as_ref()?;
+            route_edge(doc, host.id, frame.id, p.core_bottom, 0.0)
+        }).reduce(f64::max);
+        let last_host_on_page = frames.get(index + 1).is_none_or(|f| f.page != frame.page);
+        let page = Page { doc, story, frame, options, past: &past, before: &state, start, opts, routes: &routes, route_start, last_host_on_page, prior_core };
         match page.fit() {
             Ok(mut trial) => {
                 if !trial.feasible {
                     trial.warnings.push(format!("Inset stream overflow on page {}", frame.page.unwrap_or(0).saturating_add(1)));
                 }
                 let record = PageRecord {
+                    core_bottom: trial.core_bottom,
                     start,
                     cut: trial.cut,
                     incoming: state.clone(),
@@ -809,7 +825,8 @@ pub(crate) fn compose_frames(
                 start = trial.cut;
                 past.extend(trial.areas);
                 state = record.state.clone();
-                let rejoin = old.is_some_and(|(before, trace)| rejoined(before.story, trace, index, &record, story, &changed, &refs));
+                // A page's routes still depend on every host's candidate geometry.
+                let rejoin = last_host_on_page && old.is_some_and(|(before, trace)| rejoined(before.story, trace, index, &record, story, &changed, &refs));
                 pages.push(record);
                 if rejoin {
                     if let Some((_, trace)) = old {

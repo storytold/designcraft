@@ -136,6 +136,29 @@ fn follow_inset_reuses_candidate_main_layout() {
 
 
 #[test]
+fn two_same_page_hosts_share_one_route_fit_including_second_host_anchor() {
+    let (mut doc, sid, routes) = routed_document(180.0);
+    let host = doc.story(sid).unwrap().frames[0];
+    doc.story_mut(sid).unwrap().notes.clear();
+    let text = "Main line.\n".repeat(20);
+    let len = doc.story(sid).unwrap().len();
+    doc.story_mut(sid).unwrap().replace(0..len, &text);
+    doc.item_mut(host).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(36.0, 36.0, 330.0, 120.0));
+    let (second, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(340.0, 36.0, 636.0, 500.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(host, second).unwrap();
+    let config = doc.item(host).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    doc.item_mut(second).unwrap().text_frame_mut().unwrap().options.inset_columns = config;
+    let at = text.rfind("Main line.").unwrap();
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Second host route note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(second).unwrap().range.contains(&at));
+    assert_eq!(cs.frames.iter().filter(|f| f.frame == routes[0]).count(), 1);
+    assert!(routes.iter().filter_map(|id| cs.frame(*id)).flat_map(|f| &f.notes).any(|n| n.id == note));
+}
+
+
+#[test]
 fn inset_preserves_unplaced_column_footnote_overset() {
     let (mut doc, sid) = document(1, "Opening.\nReference.", "Short commentary.", "");
     let text = "Unplaced column footnote line.\n".repeat(150);
