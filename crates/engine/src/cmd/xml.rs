@@ -1278,15 +1278,12 @@ fn fill_table(t: &mut designcraft_doc::Table, x: &XTable, fx: &mut Fill) {
             by_id.entry(cell.source_id.as_str()).and_modify(|at| *at = None).or_insert(Some((r, c)));
         }
     }
+    // Cells with an ID take theirs first; those without take the cells left, in order.
+    let by_xml_id: Vec<Option<(usize, usize)>> = x.cells.iter().map(|xc| xc.id.as_deref().and_then(|id| by_id.get(id).copied().flatten())).collect();
+    let taken: std::collections::HashSet<(usize, usize)> = by_xml_id.iter().flatten().copied().collect();
     let targets: Vec<Option<(usize, usize)>> = {
-        let mut next = order.iter();
-        x.cells
-            .iter()
-            .map(|xc| match &xc.id {
-                Some(id) => by_id.get(id.as_str()).copied().flatten(),
-                None => next.next().copied(),
-            })
-            .collect()
+        let mut next = order.iter().filter(|at| !taken.contains(at));
+        x.cells.iter().zip(&by_xml_id).map(|(xc, at)| if xc.id.is_some() { *at } else { next.next().copied() }).collect()
     };
     for (xc, at) in x.cells.iter().zip(targets) {
         let Some(cell) = at.and_then(|(r, c)| t.cell_mut(r, c)) else {
@@ -1637,6 +1634,16 @@ mod tests {
         s.execute("table.select", &json!({"story": sid.0, "table": tid, "row": 0, "col": 1})).unwrap();
         let sel = s.doc().unwrap().selection.text.unwrap();
         assert_eq!(sel.cell.map(|c| (c.row, c.col)), Some((0, 1)));
+        // A cell without an ID takes the first cell no ID claims, not one an ID cell goes to.
+        s.edit(|d, _| {
+            std::sync::Arc::make_mut(d.story_mut(sid).unwrap().tables.get_mut(&tid).unwrap()).cells[1].source_id.clear();
+            Ok(())
+        })
+        .unwrap();
+        let table = "<Table aid:table=\"table\"><Cell id=\"ua1i1\">L</Cell><Cell>R</Cell></Table>";
+        let r = s.execute("file.importXml", &json!({"text": format!("<Root><body>T\n{table}</body></Root>")})).unwrap();
+        let t = s.doc().unwrap().doc.story(sid).unwrap().tables[&tid].clone();
+        assert_eq!((t.cells[0].text.text.as_str(), t.cells[1].text.text.as_str(), r["lostCells"].as_u64()), ("L", "R", Some(0)), "{r}");
     }
 
     /// Text after a table the XML leaves out goes to the paragraph after the table, and a forced
