@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: footnote part ranges stop at nested overset text, including an unplaceable drop word after a fitting paragraph (#1941).
+
 - 2026-11-19: split-footnote fitting treats nonempty notes with no placed part as unplaceable and oversets the parent instead of hiding the note (#1941, #1930).
 
 - 2026-11-19: `dropCapOffset` moves the drop word in line-pitch units without changing body baselines or indents; IDML export warns about word-drop and offset losses (#1930).
