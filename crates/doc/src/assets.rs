@@ -108,8 +108,23 @@ impl Asset {
         }
     }
 
+    /// The same bytes: the same version, or equal embedded bytes. Linked bytes aren't read here.
     fn same_bytes(&self, other: &Asset) -> bool {
-        Arc::ptr_eq(&self.data, &other.data) || (self.data.len() == other.data.len() && *self.data == *other.data)
+        if self.data.key() == other.data.key() {
+            return true;
+        }
+        match (self.data.embedded_bytes(), other.data.embedded_bytes()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || (a.len() == b.len() && **a == **b),
+            _ => false,
+        }
+    }
+
+    /// A hash that is equal for assets with [`Asset::same_bytes`].
+    fn bytes_hash(&self, state: &std::collections::hash_map::RandomState) -> u64 {
+        match self.data.embedded_bytes() {
+            Some(b) => state.hash_one(b.as_slice()),
+            None => state.hash_one(self.data.key()),
+        }
     }
 }
 
@@ -132,7 +147,7 @@ pub fn insert_asset(assets: &mut BTreeMap<AssetId, Arc<Asset>>, mut asset: Asset
     if !asset.data.is_empty()
         && let Some(a) = assets.values().find(|a| a.same_bytes(&asset))
     {
-        asset.data = Arc::clone(&a.data);
+        asset.data = a.data.clone();
     }
     let id = asset.id;
     assets.insert(id, Arc::new(asset));
@@ -165,7 +180,7 @@ impl AssetIndex {
             assets.insert(id, Arc::new(asset));
             return id;
         }
-        let hash = self.fingerprint.hash_one(asset.data.as_slice());
+        let hash = asset.bytes_hash(&self.fingerprint);
         let key = (hash, asset.mime.clone(), asset.page, asset.link.clone());
         if let Some(id) = self.files.get(&key).and_then(|ids| ids.iter().copied().find(|id| assets.get(id).is_some_and(|a| a.same_file(&asset)))) {
             return id;
@@ -173,7 +188,7 @@ impl AssetIndex {
         if !asset.data.is_empty() {
             let bucket = self.bytes.entry(hash).or_default();
             match bucket.iter().find_map(|id| assets.get(id).filter(|a| a.same_bytes(&asset))) {
-                Some(a) => asset.data = Arc::clone(&a.data),
+                Some(a) => asset.data = a.data.clone(),
                 None => bucket.push(asset.id),
             }
         }
@@ -381,7 +396,7 @@ impl Document {
             if a.data.is_empty() && a.link.is_none() {
                 continue;
             }
-            let hash = *hashes.entry(Arc::as_ptr(&a.data)).or_insert_with(|| fingerprint.hash_one(a.data.as_slice()));
+            let hash = *hashes.entry(a.data.key()).or_insert_with(|| a.bytes_hash(&fingerprint));
             let bucket = reps.entry((hash, a.mime.as_str(), a.page, a.link.as_deref())).or_default();
             // A fingerprint only selects candidates; equality still checks the actual file.
             match bucket.iter().find(|r| r.same_file(a)) {
@@ -411,7 +426,13 @@ mod tests {
     use designcraft_geom::{Affine, Rect, shapes};
 
     fn asset(id: u64, data: &[u8]) -> Asset {
-        Asset { id: AssetId(id), name: "p.png".into(), mime: "image/png".into(), data: Arc::new(data.to_vec()), ..Default::default() }
+        Asset {
+            id: AssetId(id),
+            name: "p.png".into(),
+            mime: "image/png".into(),
+            data: crate::AssetData::embedded(data.to_vec()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -426,7 +447,7 @@ mod tests {
         assert_eq!(d.merge_duplicate_assets(), 256);
         assert_eq!(d.assets.len(), 256);
         for id in 1..=256u64 {
-            assert_eq!(d.assets[&AssetId(id)].data[1016..], id.to_le_bytes());
+            assert_eq!(d.assets[&AssetId(id)].data.embedded_bytes().unwrap()[1016..], id.to_le_bytes());
         }
     }
 
@@ -547,7 +568,10 @@ mod tests {
             assert_eq!(s, i);
         }
         assert_eq!(scanned.keys().collect::<Vec<_>>(), indexed.keys().collect::<Vec<_>>());
-        assert!(Arc::ptr_eq(&indexed[&AssetId(5)].data, &indexed[&AssetId(6)].data), "identical bytes share one buffer");
+        assert!(
+            Arc::ptr_eq(indexed[&AssetId(5)].data.embedded_bytes().unwrap(), indexed[&AssetId(6)].data.embedded_bytes().unwrap()),
+            "identical bytes share one buffer"
+        );
     }
 
     /// Many empty unlinked placements (graphics with neither bytes nor a link) insert without
@@ -581,7 +605,10 @@ mod tests {
         assert!(embedded != a && a != b && embedded != b);
         assert_eq!(d.assets[&embedded].link, None);
         assert_eq!(d.assets[&b].link.as_deref(), Some("/q/b.png"));
-        assert!(Arc::ptr_eq(&d.assets[&a].data, &d.assets[&b].data), "identical bytes share one buffer");
+        assert!(
+            Arc::ptr_eq(d.assets[&a].data.embedded_bytes().unwrap(), d.assets[&b].data.embedded_bytes().unwrap()),
+            "identical bytes share one buffer"
+        );
     }
 
     #[test]

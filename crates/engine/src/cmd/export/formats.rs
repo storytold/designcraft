@@ -25,7 +25,8 @@ pub(super) fn print_booklet(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// HTML and reflowable EPUB embed the EPS preview; keep the session's source bytes intact.
+/// HTML and reflowable EPUB read embedded bytes only: every used linked asset gets its output
+/// bytes embedded, and EPS its preview. The session's own assets stay as they are.
 fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Document>, Vec<String>) {
     // Match the exporter's reading order (including Article exclusions), not every asset
     // in the document: unused or hidden graphics must not prevent an export.
@@ -48,17 +49,40 @@ fn eps_previews(d: &designcraft_doc::Document) -> (Cow<'_, designcraft_doc::Docu
     let mut out = Cow::Borrowed(d);
     let mut warnings = Vec::new();
     for id in used {
-        let Some(a) = d.assets.get(&id).filter(|a| designcraft_images::is_eps(&a.data)) else {
-            continue;
+        let Some(a) = d.assets.get(&id) else { continue };
+        let linked = a.data.is_linked();
+        let got = match a.output_bytes() {
+            Ok(got) => got,
+            Err(e) => {
+                if linked {
+                    warnings.push(format!("{}: the linked file is unavailable ({e}); graphic omitted", a.name));
+                }
+                continue;
+            }
         };
-        let png = designcraft_images::eps_png(&a.data);
-        if png.is_none() {
-            warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+        let bytes = got.bytes;
+        let eps = designcraft_images::is_eps(&bytes);
+        // Embedded bytes the writers read as they are; a linked asset's bytes are read here
+        // (the writers only see embedded data), and EPS is replaced by its preview.
+        if !eps && !linked {
+            continue;
         }
+        warnings.extend(got.warning);
+        let data = if eps {
+            let png = designcraft_images::eps_png(&bytes);
+            if png.is_none() {
+                warnings.push(format!("{}: unusable EPS preview; graphic omitted", a.name));
+            }
+            png.unwrap_or_default()
+        } else {
+            bytes.as_ref().clone()
+        };
         if let Some(a) = out.to_mut().assets.get_mut(&id) {
             let a = Arc::make_mut(a);
-            a.mime = "image/png".into();
-            a.data = Arc::new(png.unwrap_or_default());
+            if eps {
+                a.mime = "image/png".into();
+            }
+            a.data = designcraft_doc::AssetData::embedded(data);
         }
     }
     (out, warnings)
@@ -412,6 +436,36 @@ mod pptx_tests {
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fonts are not embedded")));
         assert!(s.execute("file.exportPptx", &json!({"lineBreaks": "wrap"})).is_err());
         assert!(s.execute("file.exportPptx", &json!({"pages": [9]})).is_err());
+    }
+
+    #[test]
+    fn cell_diagonal_lines_export_as_cell_diagonal_borders() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        for (row, col, lines) in [(0, 0, "topLeft"), (0, 1, "topRight"), (1, 0, "crossed")] {
+            s.execute("table.setCell", &json!({"row": row, "col": col, "diagonal": {"lines": lines, "weight": 3}})).unwrap();
+        }
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        let x = read(&mut unzip(r["base64"].as_str().unwrap()), "ppt/slides/slide1.xml");
+        let cells: Vec<&str> = x.split("</a:tc>").filter(|c| c.contains("<a:tcPr")).collect();
+        assert_eq!(cells.len(), 4, "{x}");
+        let has = |c: &str| (c.contains("<a:lnTlToBr w=\"38100\""), c.contains("<a:lnBlToTr w=\"38100\""));
+        let got: Vec<(bool, bool)> = cells.iter().map(|c| has(c)).collect();
+        assert_eq!(got, [(true, false), (false, true), (true, true), (false, false)], "{x}");
+        // The diagonals follow the four edges and come before the cell's fill, in the schema's order.
+        let c = cells[2];
+        let at = |tag: &str| c.find(tag).unwrap_or(usize::MAX);
+        assert!(at("<a:lnB ") < at("<a:lnTlToBr") && at("<a:lnTlToBr") < at("<a:lnBlToTr"), "{c}");
+        assert!(c.rfind("Fill").is_some_and(|f| f > at("<a:lnBlToTr")), "{c}");
+        // The slide has no drawing order for them, so diagonals behind the contents are reported.
+        let behind = |r: &serde_json::Value| r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("diagonal lines"));
+        assert!(!behind(&r), "{}", r["warnings"]);
+        s.execute("table.setCell", &json!({"row": 1, "col": 0, "diagonal": {"inFront": false}})).unwrap();
+        let r = s.execute("file.exportPptx", &json!({})).unwrap();
+        assert!(behind(&r), "{}", r["warnings"]);
     }
 
     #[test]

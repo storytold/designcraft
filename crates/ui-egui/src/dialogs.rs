@@ -26,6 +26,10 @@ pub struct Dialog {
     /// from when it opened, so a bare `50` means what it did then. `None` falls back to `unit`.
     #[serde(skip)]
     pub vertical_unit: Option<Unit>,
+    /// The document contents the dialog opened with (Diagonal Lines), held while it is open: an
+    /// edit replaces them, so a dialog whose document holds other contents knows it was edited.
+    #[serde(skip)]
+    pub contents: Option<std::sync::Arc<designcraft_doc::Document>>,
 }
 
 impl Dialog {
@@ -36,6 +40,7 @@ impl Dialog {
         };
         let defaults = match id {
             "newDocument" => crate::new_document::defaults(),
+            "contactSheet" => json!({"columns": 3, "rows": 4, "gutter": "6pt", "margin": "36pt"}),
             "goToPage" => json!({"page": "1"}),
             "epubExport" => json!({"split": false, "mode": "style", "style": designcraft_doc::BASIC_PARAGRAPH, "coverImage": ""}),
             "qrCode" => json!({"type": "url", "content": "https://", "color": "[Black]"}),
@@ -85,7 +90,7 @@ impl Dialog {
         if id == "ruby" {
             fields.entry("section".to_string()).or_insert(json!("cjk.rubyPlacement"));
         }
-        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None }
+        Dialog { id: id.into(), fields, unit: Unit::Picas, vertical_unit: None, contents: None }
     }
     /// Set a field and report a genuine Find domain/mode transition to the caller.
     pub(crate) fn set_field(&mut self, key: &str, value: Value) -> bool {
@@ -1819,6 +1824,9 @@ fn text_frame_targets(app: &DesignApp, d: &Dialog) -> Result<Option<Value>, &'st
     Ok(Some(ids))
 }
 
+/// In a native batch's `pdfImport` dialog: the paths chosen after its PDF, placed once it is confirmed.
+pub(crate) const PDF_IMPORT_REST: &str = "rest";
+
 /// File › Document Setup, filled from the document.
 /// The active document's ruler unit (picas without a document).
 fn doc_unit(app: &DesignApp) -> Unit {
@@ -1877,6 +1885,20 @@ fn go_to_row_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
+}
+
+/// File › Place Contact Sheet…: bare numbers typed in the dialog are in the document's ruler unit
+/// (the defaults keep their explicit `pt`).
+pub fn open_contact_sheet(app: &mut DesignApp) {
+    app.ui.dialog = Some(contact_sheet_dialog(app, json!({})));
+}
+
+/// The Place Contact Sheet dialog with `fields`, its bare numbers in the document's ruler unit,
+/// for the menu and for `ui.dialog.open` alike.
+pub fn contact_sheet_dialog(app: &DesignApp, fields: Value) -> Dialog {
+    let mut d = Dialog::new("contactSheet", fields);
+    d.unit = doc_unit(app);
+    d
 }
 
 /// The document's vertical ruler unit: what a bare number means in a height field.
@@ -3254,7 +3276,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         // The menu items' translations (every language has them), without the ellipsis.
         "convertTextToTable" => crate::i18n::tr(&app.ui.language, "Convert Text to Table…").trim_end_matches('…').trim_end(),
         "convertTableToText" => crate::i18n::tr(&app.ui.language, "Convert Table to Text…").trim_end_matches('…').trim_end(),
-        "cellOptions" => crate::i18n::tr(&app.ui.language, "Cell Options"),
+        "cellOptions" | "diagonalLines" => crate::i18n::tr(&app.ui.language, "Cell Options"),
         "createGuides" => crate::i18n::tr(&app.ui.language, "Create Guides"),
         "marginsAndColumns" => crate::i18n::tr(&app.ui.language, "Margins and Columns"),
         "textFrameOptions" => crate::i18n::tr(&app.ui.language, "Text Frame Options"),
@@ -3303,6 +3325,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "qrCode" => crate::i18n::tr(&app.ui.language, "Generate QR Code"),
         "preferences" => crate::i18n::tr(&app.ui.language, "Preferences"),
         "print" => crate::i18n::tr(&app.ui.language, "Print"),
+        "contactSheet" => crate::i18n::tr(&app.ui.language, "Place Contact Sheet"),
         "pdfImport" => crate::i18n::tr(&app.ui.language, "Place PDF"),
         "pdfExport" => crate::i18n::tr(&app.ui.language, "Export PDF"),
         "epubExport" => crate::i18n::tr(&app.ui.language, "EPUB Export Options"),
@@ -3692,6 +3715,19 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
                     "preferences" => preferences(app, ui, &mut d, body_height),
                     "print" => print_dialog(app, ui, &mut d),
+                    "contactSheet" => {
+                        if !d.s("status").is_empty() {
+                            ui.label(d.s("status"));
+                        }
+                        ui.label(crate::i18n::tr(&app.ui.language, "Place loaded images on new pages, in file order."));
+                        for (label, key) in [("Columns", "columns"), ("Rows", "rows"), ("Gutter", "gutter"), ("Page margin", "margin")] {
+                            let label = crate::i18n::tr(&app.ui.language, label);
+                            ui.horizontal(|ui| {
+                                ui.add_sized([95.0, 20.0], egui::Label::new(label));
+                                text_field_named(ui, &mut d, key, 80.0, label);
+                            });
+                        }
+                    }
                     "pdfImport" => {
                         ui.label(egui::RichText::new(if d.b("async") { d.s("name") } else { d.s("path") }).size(11.0));
                         ui.horizontal(|ui| {
@@ -4050,12 +4086,12 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         egui::Grid::new("ff_crop").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                             for (k, l) in [("cropTop", "Top:"), ("cropLeft", "Left:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                             for (k, l) in [("cropBottom", "Bottom:"), ("cropRight", "Right:")] {
                                 crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, l));
-                                text_field(ui, &mut d, k, 70.0);
+                                measure_field(ui, &mut d, k, 70.0);
                             }
                             ui.end_row();
                         });
@@ -4129,6 +4165,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "insertTable" => insert_table_dialog(app, ui, &mut d),
                     "convertTextToTable" | "convertTableToText" => convert_table_dialog(app, ui, &mut d),
                     "cellOptions" => cell_options(app, ui, &mut d),
+                    "diagonalLines" => diagonal_lines(app, ui, &mut d),
                     "createGuides" => create_guides_dialog(app, ui, &mut d),
                     "marginsAndColumns" => margins_and_columns_dialog(app, ui, &mut d),
                     "textFrameOptions" => {
@@ -4330,12 +4367,18 @@ fn cell_options_edges_changed(app: &mut DesignApp, d: &mut Dialog, edges: &crate
         let v = cur.get(k).cloned().unwrap_or(Value::Null);
         // Null shows mixed values; the user can't type it.
         let field = d.fields.get(k).filter(|f| !f.is_null());
-        if field.is_none() || field == seed.get(k) {
+        if field.is_none_or(|f| same_cell_value(seed.get(k), k, f)) {
             d.fields.insert(k.into(), v.clone());
         }
         seed.insert(k.into(), v);
     }
     d.fields.insert("seed".into(), Value::Object(seed));
+}
+
+/// Whether the dialog field `k` holds the cells' value `seed`. The Type list picks a stroke type
+/// by name (`"solid"`), and the cells' value is the type itself (`{"kind": "solid"}`).
+fn same_cell_value(seed: Option<&Value>, k: &str, v: &Value) -> bool {
+    seed == Some(v) || (k == "type" && v.as_str().is_some_and(|name| seed == Some(&json!({"kind": name}))))
 }
 
 /// Apply the Cell Options fields that differ from the cells' values, as one `table.setCell`.
@@ -4344,7 +4387,7 @@ fn confirm_cell_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String
     let mut stroke = Map::new();
     let mut params = Map::new();
     for (k, is_stroke) in CELL_OPTION_KEYS {
-        let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && seed.get(k) != Some(*v)) else { continue };
+        let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && !same_cell_value(seed.get(k), k, v)) else { continue };
         match (is_stroke, k) {
             (true, _) => {
                 stroke.insert(k.into(), v.clone());
@@ -4364,6 +4407,170 @@ fn confirm_cell_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String
     if params.is_empty() {
         return Ok(Value::Null);
     }
+    app.run("table.setCell", Value::Object(params))
+}
+
+/// The line buttons of Cell Options › Diagonal Lines: the `diagonal.lines` name and its label.
+const DIAGONAL_LINES: [(&str, &str); 4] = [
+    ("none", "No Diagonal Lines"),
+    ("topLeft", "Diagonal Line from Top Left to Bottom Right"),
+    ("topRight", "Diagonal Line from Top Right to Bottom Left"),
+    ("crossed", "Crossed Diagonal Lines"),
+];
+
+/// Cell Options › Diagonal Lines keys (`table.getCellDiagonal` names).
+const DIAGONAL_KEYS: [&str; 8] = ["lines", "weight", "type", "color", "tint", "gapColor", "gapTint", "inFront"];
+
+/// Table › Cell Options › Diagonal Lines… for the target cells. The fields start from the
+/// cells' values (`seed`); OK applies the fields that differ from it. The dialog keeps the
+/// document it opened in (`document`: uid and identity epoch, and `Dialog::contents`) and its
+/// target cells (`cells`).
+pub fn open_diagonal_lines(app: &mut DesignApp) -> Result<Value, String> {
+    app.ui.dialog = Some(diagonal_lines_dialog(app, Value::Null)?);
+    Ok(Value::Null)
+}
+
+/// The Diagonal Lines dialog for the target cells, with the `DIAGONAL_KEYS` values in `params`
+/// (from `ui.dialog.open`) entered in place of the cells' values.
+pub fn diagonal_lines_dialog(app: &mut DesignApp, params: Value) -> Result<Dialog, String> {
+    let cur = app.session.execute("table.getCellDiagonal", &json!({})).map_err(|e| e.to_string())?;
+    let st = app.session.active().ok_or("no document open")?;
+    let document = json!({"uid": st.uid, "epoch": st.identity_epoch});
+    let contents = st.doc.clone();
+    let mut fields = Map::new();
+    for k in DIAGONAL_KEYS {
+        fields.insert(k.into(), cur[k].clone());
+    }
+    fields.insert("seed".into(), Value::Object(fields.clone()));
+    for k in DIAGONAL_KEYS {
+        if let Some(v) = params.get(k) {
+            fields.insert(k.into(), v.clone());
+        }
+    }
+    fields.insert("document".into(), document);
+    fields.insert("cells".into(), json!({"story": cur["story"], "table": cur["table"], "rows": cur["rows"], "cols": cur["cols"]}));
+    let mut d = Dialog::new("diagonalLines", Value::Object(fields));
+    d.contents = Some(contents);
+    Ok(d)
+}
+
+/// Where the document a Diagonal Lines dialog opened in is now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DiagonalLinesDocument {
+    /// Active and unchanged since the dialog opened.
+    Ready,
+    /// Open, but another document is active.
+    Inactive,
+    /// Active, but edited since the dialog opened: the saved cell range may name other cells.
+    Changed,
+    /// Closed or reverted.
+    Gone,
+}
+
+/// An edit gives the document new contents, and a selection change keeps them. The dialog holds
+/// the contents it opened with, so no new contents can take their address while it is open.
+fn diagonal_lines_document(app: &DesignApp, d: &Dialog) -> DiagonalLinesDocument {
+    let saved = d.fields.get("document");
+    let get = |k: &str| saved.and_then(|s| s.get(k)).and_then(Value::as_u64);
+    let (Some(uid), Some(epoch), Some(contents)) = (get("uid"), get("epoch"), d.contents.as_ref()) else {
+        return DiagonalLinesDocument::Gone;
+    };
+    let Some(i) = app.session.documents().iter().position(|st| st.uid == uid && st.identity_epoch == epoch) else {
+        return DiagonalLinesDocument::Gone;
+    };
+    if app.session.active_index() != Some(i) {
+        DiagonalLinesDocument::Inactive
+    } else if !std::sync::Arc::ptr_eq(&app.session.documents()[i].doc, contents) {
+        DiagonalLinesDocument::Changed
+    } else {
+        DiagonalLinesDocument::Ready
+    }
+}
+
+/// Cell Options › Diagonal Lines: the four line buttons, the Line Stroke fields and Draw.
+fn diagonal_lines(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let lang = app.ui.language.clone();
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.horizontal(|ui| {
+        for (name, label) in DIAGONAL_LINES {
+            let on = d.fields.get("lines").and_then(Value::as_str) == Some(name);
+            let text = crate::i18n::tr(&lang, label).to_string();
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &text));
+            let resp = resp.on_hover_text(&text);
+            if resp.clicked() {
+                d.fields.insert("lines".into(), json!(name));
+            }
+            // Enter on a focused line button picks that line and leaves the dialog open.
+            if resp.has_focus() {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            }
+            let p = ui.painter();
+            p.rect_filled(r, 2.0, if resp.hovered() { t.hover } else { t.input });
+            let cell = r.shrink(7.0);
+            p.rect_stroke(cell, 0.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+            let ink = egui::Stroke::new(1.5, if on { t.accent } else { t.icon });
+            if matches!(name, "topLeft" | "crossed") {
+                p.line_segment([cell.left_top(), cell.right_bottom()], ink);
+            }
+            if matches!(name, "topRight" | "crossed") {
+                p.line_segment([cell.right_top(), cell.left_bottom()], ink);
+            }
+            let rim = if on { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.field_border) };
+            p.rect_stroke(r, 2.0, rim, egui::StrokeKind::Inside);
+        }
+    });
+    ui.add_space(10.0);
+    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Line Stroke")).font(semibold(12.0)));
+    let values = Value::Object(d.fields.clone());
+    if let Some((k, v)) = crate::panels::cell_stroke::stroke_fields(app, ui, "diagonal_lines", &values) {
+        d.fields.insert(k.into(), v);
+    }
+    ui.add_space(10.0);
+    egui::Grid::new("diagonal_draw").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        crate::rtl::label(ui, crate::i18n::tr(&lang, "Draw:"));
+        let shown = match d.fields.get("inFront").and_then(Value::as_bool) {
+            Some(true) => crate::i18n::tr(&lang, "Diagonal In Front"),
+            Some(false) => crate::i18n::tr(&lang, "Content In Front"),
+            None => "",
+        }
+        .to_string();
+        craft_ui::ComboBox::from_id_salt("diagonal_draw_order").selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+            for (front, label) in [(true, "Diagonal In Front"), (false, "Content In Front")] {
+                let text = crate::i18n::tr(&lang, label);
+                if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
+                    d.fields.insert("inFront".into(), json!(front));
+                }
+            }
+        });
+        ui.end_row();
+    });
+}
+
+/// Apply the Diagonal Lines fields that differ from the cells' values, as one `table.setCell`
+/// on the cells the dialog opened for, in the document it opened in.
+fn confirm_diagonal_lines(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
+    match diagonal_lines_document(app, d) {
+        DiagonalLinesDocument::Ready => {}
+        DiagonalLinesDocument::Inactive => return Err("Diagonal Lines: the document the dialog opened in is not the active document".into()),
+        DiagonalLinesDocument::Changed => return Err("Diagonal Lines: the document changed while the dialog was open".into()),
+        DiagonalLinesDocument::Gone => return Err("Diagonal Lines: the document the dialog opened in was closed or reverted".into()),
+    }
+    let Some(Value::Object(cells)) = d.fields.get("cells") else {
+        return Err("Diagonal Lines: the dialog has no target cells".into());
+    };
+    let seed = d.fields.get("seed").cloned().unwrap_or(Value::Null);
+    let mut diagonal = Map::new();
+    for k in DIAGONAL_KEYS {
+        if let Some(v) = d.fields.get(k).filter(|v| !v.is_null() && !same_cell_value(seed.get(k), k, v)) {
+            diagonal.insert(k.into(), v.clone());
+        }
+    }
+    if diagonal.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut params = cells.clone();
+    params.insert("diagonal".into(), Value::Object(diagonal));
     app.run("table.setCell", Value::Object(params))
 }
 
@@ -4546,6 +4753,7 @@ fn format_settings(app: &mut DesignApp, ctx: &egui::Context, d: &mut Dialog) {
         fields: d.fields.get(FORMAT_EDIT).and_then(Value::as_object).cloned().unwrap_or_default(),
         unit: d.unit,
         vertical_unit: None,
+        contents: None,
     };
     let base = json!({});
     let cf = CharFields { base: &base, sparse: true };
@@ -4833,6 +5041,18 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             }
             r
         }
+        "diagonalLines" => {
+            // On an error the dialog stays open to be corrected, unless the document it opened
+            // in was closed, reverted or edited.
+            let r = confirm_diagonal_lines(app, &d);
+            if let Err(e) = &r {
+                app.status(e.clone());
+                if matches!(diagonal_lines_document(app, &d), DiagonalLinesDocument::Ready | DiagonalLinesDocument::Inactive) {
+                    app.ui.dialog = Some(d);
+                }
+            }
+            r
+        }
         "textFrameOptions" => {
             // On an error the dialog stays open to be corrected.
             let mut d = d;
@@ -5040,6 +5260,27 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.canvas.shown = None;
             Ok(r)
         }
+        "contactSheet" => {
+            let result = (|| {
+                // A bare number means the ruler unit, as typed or as a JSON number (`Dialog::m`
+                // takes the latter as points).
+                let measure = |k: &str| parse_measure(&d.s(k), d.unit).ok();
+                let params = json!({
+                    "columns": d.s("columns").trim().parse::<u64>().map_err(|_| "Columns must be a whole number")?,
+                    "rows": d.s("rows").trim().parse::<u64>().map_err(|_| "Rows must be a whole number")?,
+                    "gutter": measure("gutter").ok_or("Enter a valid gutter")?,
+                    "margin": measure("margin").ok_or("Enter a valid margin")?,
+                });
+                app.run("place.contactSheet", params)
+            })();
+            // A mistake keeps the dialog, with what was typed and why it can't be placed.
+            if let Err(error) = &result {
+                let mut d = d;
+                d.fields.insert("status".into(), json!(error));
+                app.ui.dialog = Some(d);
+            }
+            result
+        }
         "pdfImport" => {
             let crop = d.s("crop");
             // One page number, 1 or more; a blank field is page 1. A range or list ("4-5", "2,5"), a
@@ -5059,12 +5300,23 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 },
             };
             if d.b("async") {
-                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop });
+                return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, d.b("append"));
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
                 app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
             }
-            app.place_file(json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }}))
+            let placed = app.place_file(
+                json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }, "append": d.b("append")}),
+            )?;
+            // The files chosen after this PDF, which waited for its options.
+            let rest: Vec<String> = d
+                .fields
+                .get(PDF_IMPORT_REST)
+                .and_then(Value::as_array)
+                .map(|paths| paths.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default();
+            app.place_paths(rest)?;
+            Ok(placed)
         }
         "print" => {
             let pages = if d.s("range") == "range" { json!(d.s("pages")) } else { Value::Null };
@@ -5381,7 +5633,7 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             json!({"path": d.s("path"), "removeStyles": d.b("removeStyles"), "styleConflicts": d.s("styleConflicts"), "styleMap": d.fields.get("map").cloned().unwrap_or(json!({}))}),
         ),
         "fittingOptions" => {
-            let m = |k: &str| d.fields.get(k).and_then(Value::as_str).and_then(|s| parse_measure(s, Unit::Points).ok()).unwrap_or(0.0);
+            let m = |k: &str| d.m(k).unwrap_or(0.0);
             app.run(
                 "object.fittingOptions",
                 json!({"autoFit": d.b("autoFit"), "fitting": d.s("fitting"), "align": d.n("align").unwrap_or(4.0) as u64,
@@ -7629,16 +7881,21 @@ fn char_number(ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, su
 fn char_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, key: &str, opts: &[(Value, &str)]) {
     let cur = cf.get(d, key);
     let shown = opts.iter().find(|o| o.0 == cur).map_or("", |o| crate::i18n::tr(lang, o.1));
-    craft_ui::ComboBox::from_id_salt(("cs", key)).selected_text(crate::rtl::widget(ui, shown)).width(140.0).show_ui(ui, |ui| {
-        if cf.sparse && ui.selectable_label(cur.is_null(), " ").clicked() {
-            cf.set(d, key, Value::Null);
-        }
-        for (v, label) in opts {
-            if ui.selectable_label(*v == cur, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
-                cf.set(d, key, v.clone());
+    craft_ui::ComboBox::from_id_salt(("cs", key))
+        .selected_text(crate::rtl::widget(ui, shown))
+        .width(140.0)
+        .show_ui(ui, |ui| {
+            if cf.sparse && ui.selectable_label(cur.is_null(), " ").clicked() {
+                cf.set(d, key, Value::Null);
             }
-        }
-    });
+            for (v, label) in opts {
+                if ui.selectable_label(*v == cur, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
+                    cf.set(d, key, v.clone());
+                }
+            }
+        })
+        .response
+        .accessible_name(setting_label(lang, key));
 }
 
 /// An on/off attribute; for a character style a third, mixed state leaves it unset (clicks go
@@ -7665,6 +7922,42 @@ fn char_swatch(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields, d
     char_choice(lang, ui, d, cf, key, &opts);
 }
 
+/// Load styles once per popup opening, including when the selected family is missing.
+fn font_style_combo(
+    ui: &mut egui::Ui,
+    fonts: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    style: &str,
+    d: &mut Dialog,
+    cf: &CharFields,
+) -> egui::Response {
+    let key = ui.make_persistent_id(("pssty_styles", scope));
+    let frame = ui.ctx().cumulative_frame_nr();
+    let shown = craft_ui::ComboBox::from_id_salt("pssty").selected_text(style).width(200.0).show_ui(ui, |ui| {
+        let cached = ui.data(|data| data.get_temp::<(String, u64, Vec<String>)>(key));
+        let styles = if let Some((_, _, styles)) = cached.filter(|(f, last, _)| f == family && last.saturating_add(1) >= frame) {
+            styles
+        } else {
+            let _ = fonts.face(family, style);
+            fonts.styles(family)
+        };
+        ui.data_mut(|data| data.insert_temp(key, (family.to_string(), frame, styles.clone())));
+        if cf.sparse && ui.selectable_label(style.is_empty(), " ").clicked() {
+            cf.set(d, "fontStyle", Value::Null);
+        }
+        for s in styles {
+            if ui.selectable_label(s == style, &s).clicked() {
+                cf.set(d, "fontStyle", json!(s));
+            }
+        }
+    });
+    if shown.inner.is_none() {
+        ui.data_mut(|data| data.remove::<(String, u64, Vec<String>)>(key));
+    }
+    shown.response
+}
+
 /// Basic Character Formats: font, size, leading, kerning, tracking, case, position and the
 /// underline, strikethrough, ligatures and no-break switches.
 fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharFields) {
@@ -7674,7 +7967,7 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     let menu = crate::panels::font_menu(app);
     // Two columns, as InDesign's: the font, then Size | Leading, Kerning | Tracking, Case | Position.
     egui::Grid::new("psc").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
+        let name = crate::rtl::label(ui, crate::i18n::tr(lang, "Font Family:"));
         let fam = cf.get(d, "fontFamily").as_str().unwrap_or("").to_string();
         let shown = if fam.is_empty() { "—".to_string() } else { crate::panels::font_label(app, &menu, &fam) };
         let picked = craft_ui::ComboBox::from_id_salt("psfam")
@@ -7691,35 +7984,25 @@ fn basic_character_formats(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                     crate::panels::font_menu_header(app, ui, &menu, &fam, 200.0)
                 },
                 crate::panels::font_menu_list,
-            )
-            .inner
-            .flatten();
-        if let Some(f) = picked {
+            );
+        picked.response.labelled_by(name.id);
+        if let Some(f) = picked.inner.flatten() {
             cf.set(d, "fontFamily", json!(f.family));
             if let Some(style) = f.style {
                 cf.set(d, "fontStyle", json!(style));
             }
         }
         ui.end_row();
-        crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
+        let name = crate::rtl::label(ui, crate::i18n::tr(lang, "Font Style:"));
         let sty = cf.get(d, "fontStyle").as_str().unwrap_or("").to_string();
         if cf.sparse && fam.is_empty() {
             // No family to list styles of: type the style ("Italic" in whatever font the text has).
             let mut s = sty.clone();
-            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(200.0)).changed() {
+            if ui.add(egui::TextEdit::singleline(&mut s).desired_width(200.0)).labelled_by(name.id).changed() {
                 cf.set(d, "fontStyle", if s.trim().is_empty() { Value::Null } else { json!(s) });
             }
         } else {
-            craft_ui::ComboBox::from_id_salt("pssty").selected_text(&sty).width(200.0).show_ui(ui, |ui| {
-                if cf.sparse && ui.selectable_label(sty.is_empty(), " ").clicked() {
-                    cf.set(d, "fontStyle", Value::Null);
-                }
-                for s in fonts.styles(&fam) {
-                    if ui.selectable_label(s == sty, &s).clicked() {
-                        cf.set(d, "fontStyle", json!(s));
-                    }
-                }
-            });
+            font_style_combo(ui, &fonts, crate::panels::font_scope(app), &fam, &sty, d, cf).labelled_by(name.id);
         }
         ui.end_row();
     });
@@ -8290,6 +8573,9 @@ const PREVIEW_FAILED: &str = "previewFailed";
 /// edited.
 fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
     let cur = |d: &Dialog, k: &str| d.fields.get(&format!("{prefix}{k}")).cloned().unwrap_or_else(|| current[k].clone());
+    // The spacing table keeps its own grid: its columns are only as wide as the percent fields.
+    // The rows below (a wide menu, composer buttons, long checkboxes) sit outside it, so they
+    // cannot stretch its columns and push Desired and Maximum off-screen.
     egui::Grid::new("psj").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label("");
         crate::rtl::label(ui, crate::i18n::tr(lang, "Minimum"));
@@ -8313,6 +8599,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             d.fields.insert(format!("{prefix}autoLeading"), json!(auto_leading_typed(n)));
         }
         ui.end_row();
+    });
+    ui.horizontal(|ui| {
         let single_label = crate::rtl::label(ui, crate::i18n::tr(lang, "Single Word Justification:"));
         let single = cur(d, "singleWordJustify");
         // Mixed (null) shows blank until a choice is made.
@@ -8335,7 +8623,8 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             })
             .response
             .labelled_by(single_label.id);
-        ui.end_row();
+    });
+    ui.horizontal(|ui| {
         crate::rtl::label(ui, crate::i18n::tr(lang, "Composer:"));
         let composer = cur(d, "composer");
         // Mixed (null) selects neither; a Japanese composer keeps its kind.
@@ -8347,20 +8636,20 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
         if ui.selectable_label(known && single, crate::rtl::widget(ui, crate::i18n::tr(lang, "Single-line Composer"))).clicked() {
             d.fields.insert(format!("{prefix}composer"), json!(single_line));
         }
-        ui.end_row();
-        for (label, key, text, default) in [
-            ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
-            ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
-        ] {
+    });
+    for (label, key, text, default) in [
+        ("Insert Kashidas:", "kashidas", "In justified Arabic text", true),
+        ("Korean Line Breaks:", "koreanCharBreaks", "Between syllables (not only at spaces)", false),
+    ] {
+        ui.horizontal(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(lang, label));
             let v = cur(d, key);
             let mut on = v.as_bool().unwrap_or(default);
             if ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, crate::i18n::tr(lang, text))).indeterminate(v.is_null())).changed() {
                 d.fields.insert(format!("{prefix}{key}"), json!(on));
             }
-            ui.end_row();
-        }
-    });
+        });
+    }
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));
@@ -10246,4 +10535,247 @@ fn picker_field(ui: &mut egui::Ui, d: &mut Dialog, r: egui::Rect, key: &str, nam
     }
     d.fields.insert(edit_key, json!(text));
     out
+}
+
+#[cfg(test)]
+mod variable_style_regression {
+    use super::*;
+    #[test]
+    #[ignore = "requires the pinned Bricolage fixture; see docs/testing-variable-fonts.md"]
+    fn named_instance_style_widget_and_api_agree() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let path = std::env::var_os("DESIGNCRAFT_TEST_VARIABLE_FONT").expect("set DESIGNCRAFT_TEST_VARIABLE_FONT");
+        let db = designcraft_fonts::FontDb::global();
+        db.add_font(std::fs::read(path).unwrap());
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("style.paragraph.create", json!({"name":"Base VF", "chars":{"fontFamily":"Bricolage Grotesque", "fontStyle":"Regular"}})).unwrap();
+        app.run("style.paragraph.create", json!({"name":"UI VF", "basedOn":"Base VF"})).unwrap();
+        app.run("style.paragraph.create", json!({"name":"API VF", "basedOn":"Base VF"})).unwrap();
+        let base = json!({"fontFamily":"Bricolage Grotesque", "fontStyle":"Regular"});
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(
+                move |ui, state: &mut (DesignApp, Dialog)| {
+                    basic_character_formats(&mut state.0, ui, &mut state.1, &CharFields { base: &base, sparse: false });
+                },
+                (app, Dialog::new("paragraphStyleOptions", json!({"name":"UI VF"}))),
+            );
+        h.run_steps(3);
+        {
+            let (app, d) = h.state_mut();
+            let before = app.session.doc().unwrap().doc.clone();
+            let undo = app.session.doc().unwrap().history.undo.len();
+            d.fields.insert("preview".into(), json!(true));
+            d.fields.insert("c.fontStyle".into(), json!("SemiBold"));
+            style_options_preview(app, d);
+            assert_eq!(app.session.doc().unwrap().doc.styles.resolve_para_style("UI VF").1.font_style, "SemiBold");
+            assert_eq!(app.session.doc().unwrap().history.undo.len(), undo);
+            d.fields.insert("preview".into(), json!(false));
+            style_options_preview(app, d);
+            assert_eq!(app.session.doc().unwrap().doc, before);
+            d.fields.insert("preview".into(), json!(true));
+            style_options_preview(app, d);
+            app.ui.dialog = Some(d.clone());
+            cancel(app);
+            assert_eq!(app.session.doc().unwrap().doc, before);
+            d.fields.remove(PREVIEWED);
+            d.fields.insert("preview".into(), json!(true));
+            style_options_preview(app, d);
+            app.ui.dialog = Some(d.clone());
+            confirm(app).unwrap();
+            assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1);
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc, before);
+            app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc.styles.resolve_para_style("UI VF").1.font_style, "SemiBold");
+            app.run("edit.undo", json!({})).unwrap();
+            d.fields.remove(PREVIEWED);
+            d.fields.remove("c.fontStyle");
+            d.fields.insert("preview".into(), json!(false));
+        }
+        h.run_steps(3);
+        let mut current = "Regular";
+        for selected in ["SemiBold", "Bold", "Regular"] {
+            h.get_by_value(current).click();
+            h.run_steps(3);
+            h.get_by_label(selected).click();
+            h.run_steps(3);
+            let (app, d) = h.state_mut();
+            assert_eq!(d.fields["c.fontStyle"], selected);
+            assert!(!d.fields.contains_key("c.fontFamily"), "inherited family remains inherited");
+            confirm_paragraph_style_options(app, d).unwrap();
+            app.run("style.paragraph.edit", json!({"name":"API VF","chars":{"fontStyle":selected}})).unwrap();
+            let styles = &app.session.doc().unwrap().doc.styles;
+            assert_eq!(styles.para("UI VF").unwrap().chars, styles.para("API VF").unwrap().chars);
+            assert_eq!(styles.resolve_para_style("UI VF").1.font_style, selected);
+            assert_eq!(styles.para("UI VF").unwrap().based_on.as_deref(), Some("Base VF"));
+            current = selected;
+            let native = app.run("file.serialize", json!({})).unwrap();
+            app.run("file.openBytes", json!({"name":"vf.designcraft","base64":native["base64"]})).unwrap();
+            assert_eq!(app.session.doc().unwrap().doc.styles.resolve_para_style("UI VF").1.font_style, selected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod variable_cold_style_regression {
+    use super::*;
+    #[test]
+    #[ignore = "requires a fresh process with the pinned Bricolage fixture catalogued; see docs/testing-variable-fonts.md"]
+    fn cold_style_combo_contains_named_instances() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let fonts = designcraft_fonts::FontDb::global();
+        assert!(
+            !fonts.styles("Bricolage Grotesque").contains(&"SemiBold".into()),
+            "run in a fresh process with the test font catalogued but not loaded"
+        );
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let base = json!({"fontFamily":"Bricolage Grotesque", "fontStyle":"Regular"});
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(
+                move |ui, state: &mut (DesignApp, Dialog)| {
+                    basic_character_formats(&mut state.0, ui, &mut state.1, &CharFields { base: &base, sparse: false });
+                },
+                (app, Dialog::new("paragraphStyleOptions", json!({}))),
+            );
+        h.run_steps(3);
+        h.get_by_value("Regular").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("SemiBold").is_some(), "the cold Style combo must offer named instances");
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        assert_eq!(h.state().1.fields["c.fontStyle"], "SemiBold");
+    }
+}
+
+#[cfg(test)]
+mod synthetic_variable_style_regression {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn paragraph_style_formats_select_a_synthetic_named_instance() {
+        let family = "Synthetic Paragraph Wiring";
+        designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::variable_font(family).unwrap());
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("style.paragraph.create", json!({"name":"Synthetic UI", "chars":{"fontFamily":family,"fontStyle":"Regular"}})).unwrap();
+        let base = json!({"fontFamily":family,"fontStyle":"Regular"});
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(
+                |ui, state: &mut (DesignApp, Dialog)| {
+                    basic_character_formats(&mut state.0, ui, &mut state.1, &CharFields { base: &base, sparse: false });
+                },
+                (app, Dialog::new("paragraphStyleOptions", json!({"name":"Synthetic UI"}))),
+            );
+        h.run_steps(3);
+        h.get_by_value("Regular").click();
+        h.run_steps(3);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        let (app, d) = h.state_mut();
+        confirm_paragraph_style_options(app, d).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.styles.resolve_para_style("Synthetic UI").1.font_style, "SemiBold");
+    }
+    #[test]
+    fn cold_style_popup_discovers_instances_and_selects_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let family = "Synthetic Cold Style";
+        std::fs::write(dir.path().join("variable.ttf"), designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+        assert_eq!(db.styles(family), ["Regular"]);
+        let mut h = Harness::builder()
+            .with_context_setup(|ctx| {
+                crate::theme::install_fonts(ctx, "");
+            })
+            .build_ui_state(
+                |ui, d: &mut Dialog| {
+                    let style = d.fields.get("c.fontStyle").and_then(Value::as_str).unwrap_or("Regular").to_string();
+                    font_style_combo(ui, &db.scoped(0), 0, family, &style, d, &CharFields { base: &Value::Null, sparse: false })
+                        .accessible_name("Font Style".to_owned());
+                },
+                Dialog::new("paragraphStyleOptions", json!({})),
+            );
+        h.run_steps(3);
+        assert_eq!(db.styles(family), ["Regular"], "closed popup must not preload the font");
+        h.get_by_value("Regular").click();
+        h.run_steps(3);
+        assert_eq!(db.styles(family), ["Regular", "SemiBold"]);
+        h.get_by_label("SemiBold").click();
+        h.run_steps(3);
+        assert_eq!(h.state().fields["c.fontStyle"], "SemiBold");
+    }
+
+    #[test]
+    fn missing_family_styles_are_cached_until_the_popup_reopens() {
+        for retry in ["reopen", "hidden", "scope"] {
+            let dir = tempfile::tempdir().unwrap();
+            let family = "Synthetic Missing Style";
+            let path = dir.path().join("variable.ttf");
+            std::fs::write(&path, designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+            let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+            assert_eq!(db.styles(family), ["Regular"]);
+            std::fs::remove_file(&path).unwrap();
+            let mut h = Harness::builder()
+                .with_context_setup(|ctx| {
+                    crate::theme::install_fonts(ctx, "");
+                })
+                .build_ui_state(
+                    |ui, state: &mut (Dialog, bool, u32)| {
+                        if state.1 {
+                            font_style_combo(
+                                ui,
+                                &db.scoped(state.2),
+                                state.2,
+                                family,
+                                "Regular",
+                                &mut state.0,
+                                &CharFields { base: &Value::Null, sparse: false },
+                            )
+                            .accessible_name("Font Style".to_owned());
+                        }
+                    },
+                    (Dialog::new("paragraphStyleOptions", json!({})), true, 0),
+                );
+            h.run_steps(3);
+            h.get_by_value("Regular").click();
+            h.run_steps(3);
+            assert!(h.query_by_label("SemiBold").is_none());
+            std::fs::write(&path, designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+            h.run_steps(3);
+            assert_eq!(db.styles(family), ["Regular"], "an open popup must not retry the missing font every frame");
+            match retry {
+                "hidden" => {
+                    h.state_mut().1 = false;
+                    h.run_steps(3);
+                    h.state_mut().1 = true;
+                }
+                "scope" => h.state_mut().2 = 1,
+                _ => {
+                    egui::Popup::close_all(&h.ctx);
+                    h.run_steps(3);
+                    h.get_by_value("Regular").click();
+                }
+            }
+            h.run_steps(3);
+            if h.query_by_label("SemiBold").is_none() {
+                h.get_by_value("Regular").click();
+                h.run_steps(3);
+            }
+            assert!(h.query_by_label("SemiBold").is_some(), "{retry} retries the now-readable font");
+        }
+    }
 }

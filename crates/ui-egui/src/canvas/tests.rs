@@ -410,10 +410,24 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
     h
 }
 
+/// Background decodes finishing one after another are taken up in batches, and not while a
+/// render is in flight (a newer request would drop it before it is shown).
+#[test]
+fn finished_image_decodes_rerender_the_canvas_in_batches() {
+    use render::{IMAGE_BATCH_MS, image_generation};
+    let mut seen = (0, f64::NEG_INFINITY);
+    assert_eq!(image_generation(&mut seen, 1, 1000.0, false), (1, None), "the first is taken at once");
+    assert_eq!(image_generation(&mut seen, 2, 1010.0, false), (1, Some(IMAGE_BATCH_MS - 10.0)));
+    assert_eq!(image_generation(&mut seen, 9, 1100.0, false).0, 1, "more finish meanwhile");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, true), (1, None), "a render is in flight");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, false), (9, None), "all taken by one render");
+}
+
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
@@ -3425,6 +3439,37 @@ fn table_cells_show_their_hidden_characters() {
     assert!(marks.iter().any(|m| m.1 == "#" && name.rect.contains(m.0) && m.0.x > name.origin.x + 20.0), "after Name:");
     let last = marks.last().unwrap();
     assert_eq!((last.0, last.1), (designcraft_geom::Point::new(frag.rect.x1 + 1.0, frag.rect.y1), "¶"));
+}
+
+#[test]
+fn the_caret_blink_restarts_on_input_and_caret_changes() {
+    let ctx = egui::Context::default();
+    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
+
+    let shown = |t: f64, caret: designcraft_doc::TextSel, reset: bool| {
+        let mut visible = false;
+
+        let mut out = ctx.run_ui(egui::RawInput { time: Some(t), ..Default::default() }, |ui| {
+            if reset {
+                caret::reset(ui.ctx());
+            }
+            visible = caret::visible(ui.ctx(), caret);
+        });
+        out.textures_delta.clear();
+        visible
+    };
+    assert!(shown(10.0, caret, true), "a reset shows the caret");
+    assert!(shown(10.5, caret, false), "the first half is on");
+    assert!(!shown(10.7, caret, false), "the second half is off");
+    assert!(shown(11.3, caret, false), "the next cycle is on");
+    assert!(shown(10.7, caret, true), "typing shows it again");
+    assert!(!shown(11.4, caret, false), "and its phase follows the reset");
+
+    let moved = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 8);
+    assert!(shown(11.4, moved, false), "a caret that moved shows at once");
+    assert!((caret::until_flip(0.0) - 0.625).abs() < 1e-9);
+    assert!((caret::until_flip(0.96) - 0.025).abs() < 1e-9);
+    assert!((caret::until_flip(1.0) - 0.625).abs() < 1e-9);
 }
 
 #[test]
