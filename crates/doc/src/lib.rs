@@ -577,6 +577,9 @@ pub struct Layer {
     pub printable: bool,
     #[serde(default = "yes")]
     pub show_guides: bool,
+    /// Lock Guides: the layer's ruler guides can't be moved or deleted.
+    #[serde(default)]
+    pub lock_guides: bool,
     #[serde(default)]
     pub suppress_wrap_when_hidden: bool,
 }

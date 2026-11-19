@@ -1,8 +1,8 @@
 //! Embedded raster resolution: the density a placed graphic was saved with, so placing honors
 //! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide).
 //! Reads JFIF/EXIF from JPEG (and EXIF from WebP), pHYs from PNG, the resolution
-//! tags from TIFF, and the header density from BMP. GIF, PSD and files without (usable) metadata
-//! report nothing and keep the pixel-is-a-point size.
+//! tags from TIFF, the header density from BMP, and ResolutionInfo from PSD. GIF and files
+//! without (usable) metadata report nothing and keep the pixel-is-a-point size.
 
 /// Dots per inch in x and y, when the file carries usable resolution metadata.
 pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
@@ -23,6 +23,9 @@ pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     }
     if is_classic_tiff(bytes) {
         return tiff_resolution(bytes);
+    }
+    if crate::is_psd(bytes) {
+        return crate::psd::resolution(bytes);
     }
     None
 }

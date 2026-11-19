@@ -1,3 +1,4 @@
+use super::caret;
 use super::frames::{item_canvas_xf, layer_color, path_screen};
 use super::{Affine, CanvasLayout, Color32, DesignApp, Document, Point, Pos2, Rect, Stroke, Xf, compose, pos2};
 
@@ -113,11 +114,9 @@ pub(super) fn draw_text_selection(
         let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
         let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
         let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
+        if caret::visible(painter.ctx(), ts) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
 
@@ -167,11 +166,9 @@ fn draw_cell_selection(
     {
         let m = a * doc.text_xf(it);
         let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
-        let blink = (painter.ctx().input(|i| i.time) * 1.6) as i64 % 2 == 0;
-        if blink {
+        if caret::visible(painter.ctx(), ts) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
-        painter.ctx().request_repaint_after(std::time::Duration::from_millis(330));
     }
 }
 
@@ -247,7 +244,12 @@ fn draw_inverse_highlight(
                     let skew =
                         if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
                     let shatai = style.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
-                    let ga = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let mut ga = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    if ft.vertical
+                        && let Some(turn) = g.vertical_xf(l.baseline)
+                    {
+                        ga = turn * ga;
+                    }
                     rc.set_transform(view * *m * ga);
                     rc.fill_path(&outline);
                 }
