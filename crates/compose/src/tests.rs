@@ -10535,4 +10535,43 @@ fn last_line_right_indent_narrows_the_last_line() {
     }
     let last = lines.last().unwrap();
     assert!((last.end_x - (200.0 - indent)).abs() < 0.01, "the last line ends at its indent: {} vs {}", last.end_x, 200.0 - indent);
+
+    // A trailing column, frame or page break ends the paragraph without an empty line after it,
+    // so the line before that break is measured with the last-line indent. A trailing forced line
+    // break leaves an empty last line after it, so the content line before it keeps the full
+    // measure.
+    let single = "A short line that fits the full measure";
+    let (d, sid, _) = doc_with(single, rect, ParaAttrs::default());
+    let w = all_lines(&compose_story(&d, sid, &Default::default()))[0].end_x;
+    assert!(w > 150.0 && w < 199.0, "{w}");
+    let para = ParaAttrs { last_line_indent: Some(60.0), ..Default::default() };
+    for brk in [story::COLUMN_BREAK, story::FRAME_BREAK, story::PAGE_BREAK] {
+        let (d, sid, _) = doc_with(&format!("{single}{brk}"), rect, para.clone());
+        let cs = compose_story(&d, sid, &Default::default());
+        let lines = all_lines(&cs);
+        assert_eq!(lines.len(), 2, "{brk:?} wraps the line before it");
+        assert!(lines.last().unwrap().end_x <= 140.5, "{brk:?}: {}", lines.last().unwrap().end_x);
+    }
+    let (d, sid, _) = doc_with(&format!("{single}{}", story::FORCED_LINE_BREAK), rect, para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2, "forced line break keeps its empty final line");
+    assert!((lines[0].end_x - w).abs() < 0.01, "the line before a forced line break keeps the full measure");
+}
+
+#[test]
+fn rtl_last_line_indent_measures_tabs_from_the_shifted_start() {
+    let tabs = vec![designcraft_doc::TabStop { position: 324.0, align: TabAlign::Right, leader: String::new(), align_on: String::new() }];
+    let para = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        tabs: Some(tabs),
+        last_line_indent: Some(30.0),
+        nested_line_styles: Some(vec![designcraft_doc::NestedLineStyle { style: String::new(), lines: 1 }]),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("Title\t12", Rect::new(0.0, 0.0, 324.0, 200.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 1, "the tabbed line fits the 294 pt last-line measure from x0 = 30");
+    assert!((lines[0].end_x - 324.0).abs() < 0.01, "the right tab reaches 324 pt, not {}", lines[0].end_x);
 }
