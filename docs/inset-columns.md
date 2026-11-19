@@ -116,7 +116,12 @@ entry from inset frames and moves its notes to series 0, as for ordinary stream 
 page. The word follows that stream's last rectangle at the paragraph's line end, left for
 right-to-left paragraphs and right for left-to-right paragraphs. Its 18-point row is part of the band geometry, so another stream cannot
 occupy it. Intermediate width changes do not add rows. Catchwords use the stream's font family
-and colour at 9 points; a long word shrinks uniformly to fit its column. Ended and overset
+and colour at 9 points; a long word shrinks uniformly to fit its column. Alternatively,
+`catchwords:{"style":"Catchword"}` applies that character style and reserves a row at
+1.5 times its leading. An unknown style produces a composition warning and uses the
+9-point size, 12-point leading and 18-point row defaults. Boolean `true` and `false`
+remain valid in commands and native files. IDML warns that it loses styled catchwords.
+Ended and overset
 streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 

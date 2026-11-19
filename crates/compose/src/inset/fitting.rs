@@ -33,13 +33,13 @@ struct Trial {
 /// A catchword has its own row, so a neighbour cannot reclaim the space beneath its source.
 pub(super) const CATCHWORD_SPACE: f64 = 18.0;
 
-fn tail(rect: Rect, height: f64, finished: bool, needed: bool, bottom: bool) -> (f64, bool, bool, Option<Rect>) {
+fn tail(rect: Rect, height: f64, finished: bool, needed: bool, bottom: bool, space: f64) -> (f64, bool, bool, Option<Rect>) {
     if needed && (finished || bottom) {
-        if height + CATCHWORD_SPACE <= rect.height() + 0.01 {
-            let area = Rect::new(rect.x0, rect.y0 + height, rect.x1, rect.y0 + height + CATCHWORD_SPACE);
+        if height + space <= rect.height() + 0.01 {
+            let area = Rect::new(rect.x0, rect.y0 + height, rect.x1, rect.y0 + height + space);
             // The footer closes this stream's slice on this page even when its source
             // continues. Keep its carry for the next page, rather than replaying the row.
-            (height + CATCHWORD_SPACE, true, false, Some(area))
+            (height + space, true, false, Some(area))
         } else {
             (height, false, finished, None)
         }
@@ -248,6 +248,7 @@ struct Page<'a> {
 impl Page<'_> {
     fn trial(&self, wanted: usize, force: bool) -> Result<Trial, super::Error> {
         let main = self.options.main().ok_or(super::Error::InvalidGeometry)?;
+        let space = super::catchwords::row_height(self.doc, &self.options.catchwords);
         let pending: Vec<_> = self.before.pending_series().collect();
         let refs: Vec<_> = self.story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
         let streams: Vec<Stream<Cursor>> = self
@@ -380,7 +381,7 @@ impl Page<'_> {
         let out = layout(cfg, streams, |index, cursor, rect| {
             let series = self.options.streams.get(index).and_then(|s| s.series);
             if cursor.tail_pending {
-                let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false);
+                let (height, finished, tail_pending, catchword) = tail(rect, 0.0, true, true, false, space);
                 return Measurement {
                     height,
                     finished,
@@ -388,8 +389,8 @@ impl Page<'_> {
                     placement: FrameText::default(),
                 };
             }
-            let bottom = rect.y1 >= self.frame.area.y1 - CATCHWORD_SPACE - 0.01;
-            let future = self.options.catchwords
+            let bottom = rect.y1 >= self.frame.area.y1 - space - 0.01;
+            let future = self.options.catchwords.enabled()
                 && match series {
                     None => wanted < self.story.text.len(),
                     Some(id) => self
@@ -422,7 +423,7 @@ impl Page<'_> {
             if let Some(series) = series {
                 f.opts.note_stream = Some(NoteStream { story: self.story.id, series, follow_inset: None });
             } else if future && bottom {
-                f.area.y1 = (f.area.y1 - CATCHWORD_SPACE).max(f.area.y0);
+                f.area.y1 = (f.area.y1 - space).max(f.area.y0);
             }
             areas.push(f);
             if let Some(series) = series {
@@ -442,17 +443,17 @@ impl Page<'_> {
                     )
                 };
                 let mut fit = fit_notes(&areas);
-                let needed = self.options.catchwords && (future || fit.state.pending_series().any(|id| id == series));
+                let needed = self.options.catchwords.enabled() && (future || fit.state.pending_series().any(|id| id == series));
                 if needed && bottom {
                     if let Some(last) = areas.last_mut() {
-                        last.area.y1 = (last.area.y1 - CATCHWORD_SPACE).max(last.area.y0);
+                        last.area.y1 = (last.area.y1 - space).max(last.area.y0);
                     }
                     fit = fit_notes(&areas);
                 }
                 let part = fit.frames.last().cloned().unwrap_or_default();
                 let height = part.notes.iter().map(|n| n.rect.y1 - rect.y0).fold(0.0_f64, f64::max).min(rect.height());
                 let finished = fit.starts_fit && !fit.state.pending_series().any(|id| id == series);
-                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom);
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, needed, bottom, space);
                 Measurement {
                     height,
                     finished,
@@ -508,7 +509,7 @@ impl Page<'_> {
                         areas.pop();
                     }
                 }
-                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom);
+                let (height, finished, tail_pending, catchword) = tail(rect, height, finished, future, bottom, space);
                 Measurement {
                     height: height.min(rect.height()),
                     finished,
@@ -814,7 +815,7 @@ pub(crate) fn compose_frames(
             main_start_baseline: None,
             main_left_inset: None,
             main_right_inset: None,
-            catchwords: false,
+            catchwords: false.into(),
         };
         let options = frame.opts.inset_columns.as_ref().unwrap_or(&default);
         if !options.valid() {
@@ -1057,16 +1058,16 @@ mod search_tests {
     #[test]
     fn catchword_row_is_committed_once_and_can_wait_for_a_wider_band() {
         let short = Rect::new(0.0, 0.0, 100.0, 10.0);
-        let (height, finished, pending, caption) = tail(short, 9.0, true, true, false);
+        let (height, finished, pending, caption) = tail(short, 9.0, true, true, false, CATCHWORD_SPACE);
         assert_eq!(height, 9.0);
         assert!(!finished && pending && caption.is_none());
         let next = Rect::new(0.0, 10.0, 200.0, 50.0);
-        let (height, finished, pending, caption) = tail(next, 0.0, true, true, false);
+        let (height, finished, pending, caption) = tail(next, 0.0, true, true, false, CATCHWORD_SPACE);
         assert_eq!(height, CATCHWORD_SPACE);
         assert!(finished && !pending);
         assert_eq!(caption, Some(Rect::new(0.0, 10.0, 200.0, 28.0)));
-        assert_eq!(tail(next, 9.0, false, true, false), (9.0, false, false, None));
-        assert_eq!(tail(next, 9.0, false, true, true).0, 9.0 + CATCHWORD_SPACE);
+        assert_eq!(tail(next, 9.0, false, true, false, CATCHWORD_SPACE), (9.0, false, false, None));
+        assert_eq!(tail(next, 9.0, false, true, true, CATCHWORD_SPACE).0, 9.0 + CATCHWORD_SPACE);
     }
     #[test]
     fn nonmonotone_search_retains_only_a_measured_feasible_layout_within_budget() {

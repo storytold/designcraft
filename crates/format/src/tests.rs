@@ -997,7 +997,7 @@ fn inset_columns_survive_native_roundtrip() {
         main_start_baseline: Some(6),
         main_left_inset: Some(210.0),
         main_right_inset: Some(162.0),
-        catchwords: true,
+        catchwords: true.into(),
     });
     let back = load(&save(&doc).unwrap()).unwrap();
     assert_eq!(back.item(id).unwrap().text_frame().unwrap().options, doc.item(id).unwrap().text_frame().unwrap().options);

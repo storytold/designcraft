@@ -15,7 +15,7 @@ mod graphic;
 mod inset_columns;
 mod paint;
 mod text_frame;
-pub use inset_columns::{InsetColumns, InsetStream};
+pub use inset_columns::{InsetCatchwords, InsetColumns, InsetStream};
 
 pub use content::{Content, Shape};
 pub use effects::{

@@ -95,6 +95,13 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     if doc.placed_items().iter().any(|item| item.text_frame().is_some_and(|f| f.options.inset_columns.is_some())) {
         ex.warnings.push("IDML cannot retain inset-column geometry; export PDF for the composed stream layout.".into());
     }
+    if doc
+        .placed_items()
+        .iter()
+        .any(|item| item.text_frame().and_then(|f| f.options.inset_columns.as_ref()).is_some_and(|c| c.catchwords.style().is_some()))
+    {
+        ex.warnings.push("IDML cannot retain inset catchword styles or reserved rows; export PDF for the composed catchwords.".into());
+    }
     if doc.text_variables.iter().any(|v| matches!(v.kind, designcraft_doc::vars::VarKind::NextPageFirstWord { .. })) {
         ex.warnings.push("IDML cannot retain catchwords; they export as empty custom-text variables.".into());
     }

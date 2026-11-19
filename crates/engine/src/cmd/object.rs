@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?,gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?: bool|{style: character style name} (row = 1.5 × style leading; unknown styles warn and use 9/12 pt defaults),gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -7126,7 +7126,7 @@ mod frame_baseline_grid_tests {
         let (mut s, sid, host, _, foot) = follow_inset_fixture(36.0, 12.0);
         let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
         doc.story_mut(sid).unwrap().insert(0, &"Main line.\n".repeat(200));
-        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true;
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
         doc.insert_pages(Some(0), 1, None).unwrap();
         let (si, pi) = doc.page_loc(1).unwrap();
         let x = doc.spreads[si].pages[pi].x;
@@ -7143,6 +7143,47 @@ mod frame_baseline_grid_tests {
         let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
         let bottom = cs.frame(host).unwrap().catchwords.iter().map(|c| c.rect.y1).reduce(f64::max).unwrap();
         assert!(cs.frame(foot).unwrap().columns[0].y0 >= bottom + 12.0 - 0.01);
+    }
+
+    #[test]
+    fn styled_catchwords_roundtrip_and_use_style_metrics() {
+        let (mut s, sid, host, _, _) = follow_inset_fixture(36.0, 12.0);
+        s.execute("textFrame.options", &json!({"ids":[host.0],"insetColumns":{"streams":[{}],"catchwords":{"style":"Catchword"}}})).unwrap();
+        let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+            name: "Catchword".into(),
+            based_on: None,
+            shortcut: String::new(),
+            chars: designcraft_doc::CharAttrs { size: Some(15.0), leading: Some(designcraft_doc::Leading::Points(24.0)), ..Default::default() },
+        });
+        doc.story_mut(sid).unwrap().insert(0, &"Main line.\n".repeat(200));
+        doc.insert_pages(Some(0), 1, None).unwrap();
+        let (si, pi) = doc.page_loc(1).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (next, _) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(si),
+                designcraft_geom::Rect::new(x + 36.0, 36.0, x + 436.0, 736.0),
+                doc.default_layer(),
+                "",
+                Default::default(),
+            )
+            .unwrap();
+        doc.thread(host, next).unwrap();
+        let mut loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        let cs = designcraft_compose::compose_story(&loaded, sid, &Default::default());
+        let word = &cs.frame(host).unwrap().catchwords[0];
+        assert!((word.rect.height() - 36.0).abs() < 0.01);
+        assert!(word.text.styles.iter().any(|s| (s.size - 15.0).abs() < 0.01));
+        assert!(word.text.frames.iter().flat_map(|f| &f.lines).all(|l| (l.leading - 24.0).abs() < 0.01));
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("catchword") && w.contains("style")), "{warnings:?}");
+        Arc::make_mut(&mut loaded.styles).character.retain(|s| s.name != "Catchword");
+        let fallback = designcraft_compose::compose_story(&loaded, sid, &Default::default());
+        assert!(fallback.warnings.iter().any(|w| w.contains("Unknown catchword character style")), "{:?}", fallback.warnings);
+        let word = &fallback.frame(host).unwrap().catchwords[0];
+        assert!((word.rect.height() - 18.0).abs() < 0.01);
+        assert!(word.text.styles.iter().any(|s| (s.size - 9.0).abs() < 0.01));
     }
 
     #[test]
@@ -7894,7 +7935,7 @@ mod inset_review_tests {
             let config = tf.options.inset_columns.as_ref().unwrap();
             let mapped = config.streams[1].series.unwrap();
             assert_ne!(mapped, 1);
-            assert!(config.catchwords);
+            assert!(config.catchwords.enabled());
             assert!(matches!(dst.note_options(mapped).placement, designcraft_doc::NotePlacement::Stream));
             if with_note {
                 assert_eq!(dst.story(tf.story).unwrap().notes[0].series, mapped);

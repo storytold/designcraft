@@ -50,7 +50,7 @@ fn document(pages: usize, main: &str, left: &str, right: &str) -> (Document, Sto
             main_start_baseline: None,
             main_left_inset: None,
             main_right_inset: None,
-            catchwords: false,
+            catchwords: false.into(),
         });
     }
     let sid = host.unwrap();
@@ -668,7 +668,7 @@ fn commentary_keep_all_crosses_bands_on_one_physical_page() {
 
 fn enable_catchwords(doc: &mut Document, sid: StoryId) {
     for id in doc.story(sid).unwrap().frames.clone() {
-        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true;
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords = true.into();
     }
 }
 

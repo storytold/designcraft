@@ -950,7 +950,7 @@ mod tests {
         let mapped = root_config.streams[1].series.unwrap();
         assert_ne!(mapped, 1);
         assert_eq!(nested_config.streams[1].series, Some(mapped));
-        assert!(root_config.catchwords && nested_config.catchwords);
+        assert!(root_config.catchwords.enabled() && nested_config.catchwords.enabled());
         assert!(matches!(destination.note_options(mapped).placement, crate::NotePlacement::Stream));
         let story = destination.story_mut(target).unwrap();
         story.insert_story(story.len(), &copy);

@@ -16,13 +16,45 @@ fn gutter() -> f64 {
     12.0
 }
 
+/// Boolean documents retain their original shape; a named character style enables catchwords.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum InsetCatchwords {
+    Enabled(bool),
+    Styled { style: String },
+}
+impl Default for InsetCatchwords {
+    fn default() -> Self {
+        Self::Enabled(false)
+    }
+}
+impl From<bool> for InsetCatchwords {
+    fn from(value: bool) -> Self {
+        Self::Enabled(value)
+    }
+}
+impl InsetCatchwords {
+    pub fn enabled(&self) -> bool {
+        !matches!(self, Self::Enabled(false))
+    }
+    pub fn is_disabled(&self) -> bool {
+        !self.enabled()
+    }
+    pub fn style(&self) -> Option<&str> {
+        match self {
+            Self::Styled { style } => Some(style),
+            Self::Enabled(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InsetColumns {
     pub streams: Vec<InsetStream>,
     /// Add a catchword below each stream that continues on a later page.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub catchwords: bool,
+    #[serde(default, skip_serializing_if = "InsetCatchwords::is_disabled")]
+    pub catchwords: InsetCatchwords,
     #[serde(default = "gutter")]
     pub gutter: f64,
     #[serde(default)]
@@ -52,5 +84,17 @@ impl InsetColumns {
             && self.main_start_baseline.is_none_or(|n| n <= 65536)
             && [self.main_left_inset, self.main_right_inset].into_iter().flatten().all(|v| v.is_finite() && (0.0..=15552.0).contains(&v))
             && self.streams.iter().enumerate().all(|(i, s)| s.series.is_none() || !self.streams.iter().take(i).any(|p| p.series == s.series))
+    }
+}
+
+#[cfg(test)]
+mod catchword_tests {
+    use super::*;
+    #[test]
+    fn boolean_and_styled_catchwords_keep_their_json_shapes() {
+        for value in [serde_json::json!(false), serde_json::json!(true), serde_json::json!({"style":"Catchword"})] {
+            let options: InsetCatchwords = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(options).unwrap(), value);
+        }
     }
 }
