@@ -10489,3 +10489,275 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A note taller than either frame must thread without moving its reference.
+#[test]
+fn split_footnote_threads_across_frames() {
+    let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 220.0, 360.0), ParaAttrs::default());
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(250.0, 0.0, 470.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let text = (0..40).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "long footnote should thread");
+    assert!(cs.frames[0].lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == 14 && g.len > 0)));
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    let ar = &a.text.frames[0].range;
+    let br = &b.text.frames[0].range;
+    assert_eq!(ar.start, 0);
+    assert_eq!(ar.end, br.start);
+    assert_eq!(br.end, text.len());
+    assert!(!a.text.frames[0].lines.is_empty() && !b.text.frames[0].lines.is_empty());
+}
+
+fn split_footnote_fixture(columns: u32, frames: usize, span: bool, body: &str, count: usize) -> (Document, StoryId, u64, String) {
+    let width = if columns == 1 { 220.0 } else { 460.0 };
+    let (mut d, sid, mut previous) = doc_with(body, Rect::new(0.0, 0.0, width, 360.0), ParaAttrs::default());
+    d.item_mut(previous).unwrap().text_frame_mut().unwrap().options.columns = columns;
+    for _ in 1..frames {
+        let (next, _) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(500.0, 0.0, 500.0 + width, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        d.item_mut(next).unwrap().text_frame_mut().unwrap().options.columns = columns;
+        d.thread(previous, next).unwrap();
+        previous = next;
+    }
+    d.footnote_options.span_columns = span;
+    let text = (0..count).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    (d, sid, id, text)
+}
+
+fn assert_note_parts(cs: &ComposedStory, id: u64, end: usize) {
+    let mut next = 0;
+    for n in cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id) {
+        assert_eq!(n.text.frames.len(), 1);
+        let f = &n.text.frames[0];
+        assert!(!f.lines.is_empty());
+        assert_eq!(f.range.start, next, "parts must neither skip nor repeat text");
+        next = f.range.end;
+    }
+    assert_eq!(next, end);
+}
+
+/// Re-laying earlier parts for a continuation must preserve their marker widths and byte breaks.
+#[test]
+fn split_footnote_parts_keep_their_page() {
+    let mut d = Document::new(&NewDocument { pages: 2, start_page: 9, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let (first, sid) = d
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 156.0, 216.0), lid, "Opening.\nReference.\nClosing.", ParaFormat::default())
+        .unwrap();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 156.0, 756.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    // Repeated markers fill each narrow line: changing 9 to 10 adds a digit at every marker,
+    // so recomposing the first area with page 10 moves the continuation's starting byte.
+    let paragraph = vec![story::PAGE_NUMBER.to_string(); 12].join(" ");
+    let text = vec![paragraph; 20].join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let specs = frame_specs(&d, sid);
+    assert_eq!(specs.iter().map(|f| f.page_name.as_deref()).collect::<Vec<_>>(), vec![Some("9"), Some("10")]);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = cs.frames[0].notes.iter().find(|n| n.id == id).unwrap();
+    let b = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    assert_note_parts(&cs, id, text.len());
+    let first_markers: String = a.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte > 0 && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert!(!first_markers.is_empty());
+    assert!(first_markers.chars().all(|c| c == '9'), "first part markers: {first_markers}");
+    let last_marker = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .rfind(|g| text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)))
+        .unwrap()
+        .byte;
+    let continued_marker: String = b.text.frames[0]
+        .lines
+        .iter()
+        .flat_map(|l| &l.glyphs)
+        .filter(|g| g.byte == last_marker && text.get(g.byte..).is_some_and(|s| s.starts_with(story::PAGE_NUMBER)) && g.visible)
+        .map(|g| g.rendered_char)
+        .collect();
+    assert_eq!(continued_marker, "10");
+}
+
+#[test]
+fn split_footnote_threads_across_columns() {
+    let (d, sid, id, text) = split_footnote_fixture(2, 1, false, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert!(ft.lines.iter().any(|l| l.column == 0 && l.glyphs.iter().any(|g| g.byte == 14 && g.len > 0)));
+    let parts: Vec<_> = ft.notes.iter().filter(|n| n.id == id).collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!((parts[0].column, parts[1].column), (0, 1));
+    assert!((parts[1].rect.y1 - ft.columns[1].y1).abs() < 0.01);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_continuation_precedes_new_note() {
+    let body = format!("Opening.\nReference.{}Next reference.", designcraft_doc::story::COLUMN_BREAK);
+    let (mut d, sid, id, text) = split_footnote_fixture(2, 1, false, &body, 40);
+    let at = d.story(sid).unwrap().text.find("Next").unwrap() + 5;
+    let other = d.story_mut(sid).unwrap().insert_note(at, "Later note.", ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let notes: Vec<_> = cs.frames[0].notes.iter().filter(|n| n.column == 1).collect();
+    assert_eq!(notes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![id, other]);
+    assert!(notes[0].rect.y0 < notes[1].rect.y0);
+    assert!(notes[0].rect.y1 <= notes[1].rect.y0 + 0.01);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_continuation_does_not_block_the_next_reference() {
+    let body = format!("Opening.\nReference.{}Next reference.\nClosing.", story::FRAME_BREAK);
+    let (mut d, sid, id, text) = split_footnote_fixture(1, 5, false, &body, 60);
+    let at = d.story(sid).unwrap().text.find("Next reference").unwrap() + 5;
+    let other_text = "Later note.";
+    let other = d.story_mut(sid).unwrap().insert_note(at, other_text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "the pending continuation must not strand the next reference line");
+    assert_eq!(cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).count(), 3);
+    assert_note_parts(&cs, id, text.len());
+    assert_note_parts(&cs, other, other_text.len());
+    let frame = cs.frames.iter().find(|f| f.notes.iter().any(|n| n.id == other)).unwrap();
+    assert!(frame.lines.iter().any(|l| l.glyphs.iter().any(|g| g.byte == at && g.len > 0)), "note B must stay with its reference");
+}
+
+#[test]
+fn split_footnote_disabled_preserves_unsplit_behavior() {
+    let (mut d, sid, id, _) = split_footnote_fixture(1, 2, false, "Opening.\nReference.\nClosing.", 40);
+    d.footnote_options.allow_split = false;
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.is_overset());
+    assert!(cs.frames[0].notes.is_empty());
+    assert_eq!(cs.frames[1].notes.iter().filter(|n| n.id == id).count(), 1);
+    assert!(cs.frames[1].notes[0].text.frames[0].lines.len() >= 40);
+}
+
+#[test]
+fn split_footnote_caret_selects_second_part() {
+    let (d, sid, id, text) = split_footnote_fixture(1, 2, false, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let n = cs.frames[1].notes.iter().find(|n| n.id == id).unwrap();
+    let range = &n.text.frames[0].range;
+    for pos in [range.start, range.start + 1, text.len()] {
+        let (fi, _, baseline, _, _) = note_caret(&cs, id, pos).unwrap();
+        assert_eq!(fi, 1);
+        assert!(baseline >= n.rect.y0 && baseline <= n.rect.y1);
+    }
+    // The note's start stays with its reference in frame 0.
+    assert_eq!(note_caret(&cs, id, 0).unwrap().0, 0);
+}
+
+#[test]
+fn split_footnote_spanning_columns_continues_in_next_frame() {
+    let (d, sid, id, text) = split_footnote_fixture(2, 2, true, "Opening.\nReference.\nClosing.", 40);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[0].notes.len(), 1);
+    assert_eq!(cs.frames[1].notes.len(), 1);
+    assert_eq!(cs.frames[1].notes[0].id, id);
+    assert!(cs.frames[0].notes[0].rect.width() > cs.frames[0].columns[0].width());
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_finishes_after_body_and_reports_exhausted_areas() {
+    for frames in [2, 3] {
+        let (d, sid, id, text) = split_footnote_fixture(1, frames, false, "Opening.\nReference.", 60);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert_eq!(cs.is_overset(), frames == 2);
+        if frames == 2 {
+            assert_eq!(cs.overset_at, Some(d.story(sid).unwrap().text.len()));
+        } else {
+            assert_note_parts(&cs, id, text.len());
+            assert!(cs.frames[2].lines.is_empty());
+            assert_eq!(cs.frames[2].notes.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn split_footnote_obeys_paragraph_widows_and_orphans() {
+    let (mut d, sid, id, _) = split_footnote_fixture(1, 2, false, "Opening.\nReference.", 25);
+    let text = (0..25).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join(&designcraft_doc::story::FORCED_LINE_BREAK.to_string());
+    let note = d.story_mut(sid).unwrap().note_mut(id).unwrap();
+    note.text = Story::with_text(
+        StoryId(0),
+        &text,
+        ParaFormat {
+            para: ParaAttrs { keep_lines_together: Some(true), keep_first: Some(5), keep_last: Some(8), ..Default::default() },
+            ..Default::default()
+        },
+    );
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let a = &cs.frames[0].notes[0].text.frames[0];
+    let b = &cs.frames[1].notes[0].text.frames[0];
+    assert!(a.lines.len() >= 5);
+    assert!(b.lines.len() >= 8);
+    assert_eq!(a.lines.len() + b.lines.len(), 25);
+    assert_note_parts(&cs, id, text.len());
+}
+
+#[test]
+fn split_footnote_at_first_body_line_uses_available_height() {
+    let (mut d, sid, _) = doc_with("Reference.", Rect::new(0.0, 0.0, 220.0, 360.0), ParaAttrs::default());
+    let first = d.story(sid).unwrap().frames[0];
+    let (next, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(250.0, 0.0, 470.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, next).unwrap();
+    let text = (0..40).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(5, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let ft = &cs.frames[0];
+    assert!(ft.lines[0].baseline + ft.lines[0].descent <= ft.notes[0].rect.y0 + 0.01);
+    assert_eq!(cs.frames[1].notes.len(), 1);
+    assert_note_parts(&cs, id, text.len());
+}
+
+/// A continuation in a narrower frame must start where the wider first part ended.
+#[test]
+fn split_footnote_continues_into_narrower_frame() {
+    let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 260.0, 360.0), ParaAttrs::default());
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 0.0, 420.0, 360.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    d.thread(first, second).unwrap();
+    let text = (0..12).map(|i| format!("Note paragraph {i} has enough words in it to wrap over several lines.")).collect::<Vec<_>>().join("\n");
+    let id = d.story_mut(sid).unwrap().insert_note(14, &text, ParaFormat::default()).unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    assert_eq!(cs.frames[1].notes.iter().filter(|n| n.id == id).count(), 1);
+    assert_note_parts(&cs, id, text.len());
+}
+
+/// Keep options in a note decide its break; a wider continuation frame must not move that break.
+#[test]
+fn split_footnote_keeps_hold_into_wider_frame() {
+    for keep_last in 2..7 {
+        let (mut d, sid, first) = doc_with("Opening.\nReference.\nClosing.", Rect::new(0.0, 0.0, 120.0, 300.0), ParaAttrs::default());
+        let (second, _) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(200.0, 0.0, 620.0, 300.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+        d.thread(first, second).unwrap();
+        let text = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let para = ParaFormat {
+            para: ParaAttrs { keep_lines_together: Some(true), keep_first: Some(2), keep_last: Some(keep_last), ..Default::default() },
+            ..Default::default()
+        };
+        let id = d.story_mut(sid).unwrap().insert_note(14, &text, para).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ranges: Vec<_> = cs.frames.iter().flat_map(|f| &f.notes).filter(|n| n.id == id).map(|n| n.text.frames[0].range.clone()).collect();
+        assert!(ranges.len() >= 2, "keep_last {keep_last}: the note must split: {ranges:?}");
+        assert_note_parts(&cs, id, text.len());
+    }
+}

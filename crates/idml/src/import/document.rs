@@ -217,6 +217,7 @@ impl<'r> Importer<'r> {
         }
         o.first_baseline_min = values.first_baseline_minimum.unwrap_or(0.0);
         o.span_columns = values.span_columns.unwrap_or(false);
+        o.allow_split = e.get("NoSplitting") != Some("true");
         o.rule.on = values.rule_on.unwrap_or(true);
         o.rule.weight = values.rule_weight.unwrap_or(1.0);
         o.rule.tint = tint(values.rule_tint).unwrap_or(1.0);
