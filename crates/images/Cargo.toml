@@ -22,8 +22,7 @@ quick-xml = { workspace = true }
 craft-image-codecs = { workspace = true }
 craft-psd = { workspace = true }
 craft-file-formats = { workspace = true }
-# Reduced-size JPEG decoding (1/2, 1/4, 1/8 through the DCT) for screen proxies.
-jpeg-decoder = { version = "0.3", default-features = false }
+craft-jpeg = { workspace = true }
 
 [dev-dependencies]
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
