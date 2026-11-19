@@ -58,7 +58,8 @@ The page fitter uses full-width main line ends as search keys. Each isolated tri
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming
 feasibility is monotone. Search plus the progress probe has a budget of ceil(log2(keys)) + 2
-probes; each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
+probes. The full-page key is tried first so nonmonotone feasibility cannot hide a full-page fit.
+Each probe may re-lay once to resolve its whole-line cut. An incoming commentary tail
 may take a page with no main text only when it shrinks. An impossible start can overflow only
 on the actual first main line; later anchors move with their main text.
 
