@@ -13,7 +13,7 @@ mod jpeg;
 mod psd;
 mod resolution;
 mod tone;
-pub use craft_eps::is_eps;
+pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 
@@ -306,6 +306,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
+        tree_depth: MAX_SVG_DEPTH,
         refuse_entity_markup: true,
         xml_nodes: MAX_SVG_EVENTS as u32,
         embedded_bytes: 32 * 1024 * 1024,
