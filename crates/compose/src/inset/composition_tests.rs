@@ -141,6 +141,31 @@ fn margin_note_below_main_does_not_lower_catchword() {
 }
 
 #[test]
+fn follower_clears_lowest_commentary_catchword() {
+    let (mut doc, sid) = document(2, "Short main.\nNext page.", &"Commentary line.\u{2028}".repeat(100), "");
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.find("Next").unwrap();
+    story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
+    enable_catchwords(&mut doc, sid);
+    let host = doc.story(sid).unwrap().frames[0];
+    let (route, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 636.0, 850.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream {
+        story: sid,
+        series: 2,
+        follow_inset: Some(designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: None }),
+    });
+    // Series 2 is routed rather than inset.
+    for frame in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(frame).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.pop();
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    let main = cs.frame(host).unwrap().catchwords.iter().find(|c| c.series.is_none()).unwrap();
+    let commentary = cs.frame(host).unwrap().catchwords.iter().find(|c| c.series == Some(1)).unwrap();
+    assert!(commentary.rect.y1 > main.rect.y1);
+    assert!(cs.frame(route).unwrap().columns[0].y0 >= commentary.rect.y1 - 0.01);
+}
+
+#[test]
 fn no_reserved_catchword_regions_skip_lookup() {
     let (doc, sid) = document(1, "Main text.", "", "");
     super::catchwords::LOOKUPS.with(|n| n.set(0));

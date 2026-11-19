@@ -530,7 +530,7 @@ impl Page<'_> {
             .chain(out.parts.iter().flat_map(|p| &p.placement.notes).flat_map(|note| {
                 note.text.frames.iter().flat_map(move |f| f.lines.iter().map(move |line| note.origin.y + line.baseline + line.descent))
             }))
-            .chain(c.catchword.map(|rect| rect.y1))
+            .chain(out.streams.iter().filter_map(|s| s.cursor.catchword.map(|rect| rect.y1)))
             .fold(self.frame.area.y0, f64::max);
         let core_bottom = (follows_core && (self.frame.opts.inset_columns.is_some() || self.prior_core.is_some()))
             .then_some(self.prior_core.map_or(own_bottom, |b| b.max(own_bottom)));
