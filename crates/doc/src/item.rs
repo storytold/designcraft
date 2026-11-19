@@ -12,8 +12,10 @@ use crate::ids::{AssetId, ItemId, LayerId, StoryId};
 mod content;
 mod effects;
 mod graphic;
+mod inset_columns;
 mod paint;
 mod text_frame;
+pub use inset_columns::{InsetColumns, InsetStream};
 
 pub use content::{Content, Shape};
 pub use effects::{
@@ -29,8 +31,8 @@ pub use paint::{
     path_length_bound,
 };
 pub use text_frame::{
-    AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame,
-    TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+    AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, NoteStream, PathAlign,
+    PathType, TextFrame, TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
 };
 
 fn is_zero_usize(v: &usize) -> bool {

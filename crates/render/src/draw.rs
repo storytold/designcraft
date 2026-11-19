@@ -255,7 +255,12 @@ impl Renderer {
         };
         let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast;
         let fx_outset = if effects { fx::outset_scaled(it, scale) } else { 0.0 };
-        if !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
+        // Margin notes can be visible while their host frame is outside the viewport.
+        let margin_notes = it
+            .text_frame()
+            .and_then(|tf| f.doc.story(tf.composed_story()))
+            .is_some_and(|st| st.notes.iter().any(|n| !f.doc.note_options(n.series).placement.is_column_foot()));
+        if !margin_notes && !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
             return;
         }
         self.stats.items += 1;
@@ -312,7 +317,7 @@ impl Renderer {
                 ctx.pop_layer();
             }
             Content::Text(tf) => {
-                let cs = self.story(f, tf.story, page);
+                let cs = self.story(f, tf.composed_story(), page);
                 if let Some(ft) = cs.frame(it.id) {
                     match &tf.options.path {
                         Some(pt) => self.draw_path_text(ctx, f, &cs, ft, xf, bp, pt),

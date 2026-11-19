@@ -10,6 +10,8 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(query "variables.list", "Text Variables", [], None, "{} → [{index, name, type, …, value (page 1)}]", has_doc, |s, _| {
             let d = &s.doc()?.doc;
+            let running = s.cache.running_index(d);
+            let values = designcraft_compose::vars::values(d, Some(0), Some(&running));
             Ok(Value::Array(
                 d.text_variables
                     .iter()
@@ -17,7 +19,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     .map(|(i, v)| {
                         let mut o = serde_json::to_value(v).unwrap_or_default();
                         o["index"] = json!(i);
-                        o["value"] = json!(d.variable_value(i, Some(0)));
+                        o["value"] = if matches!(v.kind, VarKind::NextPageFirstWord { .. }) {
+                            json!(values.get(i))
+                        } else {
+                            json!(d.variable_value(i, Some(0)))
+                        };
                         o
                     })
                     .collect(),
@@ -28,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader|nextPageFirstWord, story? (story id for nextPageFirstWord), series? (note series in the named story), frame? (text frame id for nextPageFirstWord), text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -41,10 +47,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 let name = str_param(p, "name").ok_or_else(|| bad("variables.delete", "missing name"))?.to_string();
+                let value = {
+                    let d = &s.doc()?.doc;
+                    let i = d.variable(&name).ok_or_else(|| bad("variables.delete", format!("no variable `{name}`")))?;
+                    let running = s.cache.running_index(d);
+                    designcraft_compose::vars::values(d, Some(0), Some(&running)).get(i).cloned().unwrap_or_default()
+                };
                 s.edit(|d, _| {
                     let i = d.variable(&name).ok_or_else(|| bad("variables.delete", format!("no variable `{name}`")))?;
-                    // Replace instances with their value (first page context), then shift higher indices down.
-                    let value = d.variable_value(i, Some(0)).unwrap_or_default();
+                    // Replace instances with their composed first-page value, then shift higher indices down.
                     let n = d.text_variables.len();
                     let ids: Vec<_> = d.stories.keys().copied().collect();
                     for sid in ids {
@@ -74,6 +85,14 @@ pub fn specs() -> Vec<CommandSpec> {
                 let name = str_param(p, "name").ok_or_else(|| bad("variables.insert", "missing name"))?;
                 let i = s.doc()?.doc.variable(name).ok_or_else(|| bad("variables.insert", format!("no variable `{name}`")))?;
                 let c = var_char(i).ok_or_else(|| bad("variables.insert", "too many variables"))?;
+                let d = s.doc()?;
+                if matches!(d.doc.text_variables.get(i).map(|v| &v.kind), Some(VarKind::RunningHeader { .. } | VarKind::NextPageFirstWord { .. }))
+                    && d.selection.text.is_some_and(|sel| {
+                        d.doc.text_variables.iter().any(|v| matches!(v.kind, VarKind::NextPageFirstWord { story: Some(sid), .. } if sid == sel.story))
+                    })
+                {
+                    return Err(bad("variables.insert", "catchword source cannot contain running-header or catchword markers"));
+                }
                 s.execute("text.insert", &json!({"text": c.to_string()}))
             }
         ),
@@ -419,6 +438,35 @@ fn text_param(p: &Value, key: &str) -> Option<String> {
     }
 }
 
+fn catchword_source(d: &designcraft_doc::Document, p: &Value) -> Result<VarKind> {
+    let (story, routed_series) = if let Some(value) = p.get("story") {
+        let id = value.as_u64().map(designcraft_doc::StoryId).ok_or_else(|| bad("variables.define", "invalid story id"))?;
+        if d.story(id).is_none() {
+            return Err(bad("variables.define", "unknown story"));
+        }
+        (Some(id), None)
+    } else if let Some(value) = p.get("frame") {
+        let id = value.as_u64().map(designcraft_doc::ItemId).ok_or_else(|| bad("variables.define", "invalid frame id"))?;
+        let frame = d.item(id).and_then(|item| item.text_frame()).ok_or_else(|| bad("variables.define", "unknown or non-text frame"))?;
+        if d.story(frame.composed_story()).is_none() {
+            return Err(bad("variables.define", "unknown story"));
+        }
+        (Some(frame.composed_story()), frame.options.note_stream.map(|route| route.series))
+    } else {
+        (None, None)
+    };
+    let series = p.get("series").map(|v| v.as_u64().ok_or_else(|| bad("variables.define", "invalid series id"))).transpose()?.or(routed_series);
+    if let Some(id) = series {
+        if story.is_none() {
+            return Err(bad("variables.define", "series needs a story or frame"));
+        }
+        if id != 0 && !d.note_series.iter().any(|s| s.id == id) {
+            return Err(bad("variables.define", "unknown note series"));
+        }
+    }
+    Ok(VarKind::NextPageFirstWord { story, series })
+}
+
 fn define(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("variables.define", "missing name"))?.to_string();
     let fmt = || str_param(p, "format").unwrap_or("MM/dd/yy").to_string();
@@ -437,6 +485,7 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
         "creationDate" => VarKind::CreationDate { format: fmt() },
         "modificationDate" => VarKind::ModificationDate { format: fmt() },
         "outputDate" => VarKind::OutputDate { format: fmt() },
+        "nextPageFirstWord" => catchword_source(&s.doc()?.doc, p)?,
         "runningHeader" => VarKind::RunningHeader {
             style: str_param(p, "style").ok_or_else(|| bad("variables.define", "runningHeader needs `style`"))?.into(),
             use_: if str_param(p, "use") == Some("lastOnPage") { designcraft_doc::vars::Use::LastOnPage } else { Default::default() },
@@ -461,6 +510,16 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
                 d.text_variables.len() - 1
             }
         };
+        // Replacing a definition can turn an existing custom marker into an indexed marker.
+        // Validate after replacement so no accepted binding is silently skipped by RunningIndex.
+        for variable in &d.text_variables {
+            if let VarKind::NextPageFirstWord { story: Some(sid), .. } = variable.kind
+                && let Some(source) = d.story(sid)
+                && designcraft_compose::vars::has_running(d, source)
+            {
+                return Err(bad("variables.define", "catchword source cannot contain running-header or catchword markers"));
+            }
+        }
         Ok(json!({"index": i}))
     })
 }

@@ -485,3 +485,290 @@ fn a_custom_variable_defined_with_a_number_shows_its_digits() {
     let d = s.doc().unwrap().doc.clone();
     assert_eq!(shown_on_parent(&s, &d, sid), 4, "2026 shows");
 }
+
+/// A forced frame break keeps the test's page boundary independent of installed fonts.
+fn catchword_story(s: &mut Session, y: f64, before: &str, after: &str) -> (designcraft_doc::StoryId, u64) {
+    let first = s.doc().unwrap().doc.page_loc(0).unwrap().0;
+    let second = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+    let text = format!("{before}{}\n{after}", designcraft_doc::story::FRAME_BREAK);
+    let r = s.execute("frame.create", &json!({"spread": first, "rect": [72, y, 500, y + 100.0], "content": "text", "text": text})).unwrap();
+    let frame = r["id"].as_u64().unwrap();
+    s.execute("text.thread", &json!({"from": frame, "rect": [72, y, 500, y + 100.0], "spread": second})).unwrap();
+    let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(frame)).unwrap().text_frame().unwrap().story;
+    let d = &s.doc().unwrap().doc;
+    let cs = s.cache.get(d, sid, None);
+    assert_eq!(cs.frames[0].range.end, before.len() + designcraft_doc::story::FRAME_BREAK.len_utf8());
+    assert_eq!(cs.overset_at, None);
+    (sid, frame)
+}
+
+#[test]
+fn catchword_on_parent_page_follows_hebrew_story() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let (main, _) = catchword_story(&mut s, 100.0, "קַרְנֵנוּ וְהוֹשִׁיעֵנוּ", "בְּקְרוֹב לְמַעַן שְׁמֶךָ");
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord", "before": "[", "after": "]"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let i = d.variable("Catchword").unwrap();
+    let c = var_char(i).unwrap();
+    let serialized = serde_json::to_value(&d.text_variables[i]).unwrap();
+    assert_eq!(serialized["type"], "nextPageFirstWord");
+    assert!(serialized.get("story").is_none());
+    assert_eq!(serde_json::from_value::<TextVariable>(serialized).unwrap(), d.text_variables[i]);
+    assert_eq!(d.variable_value(i, Some(0)), None);
+    let r = s
+        .execute(
+            "frame.create",
+            &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72, 700, 500, 740], "content": "text", "text": c.to_string()}),
+        )
+        .unwrap();
+    let footer = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    let d = s.doc().unwrap().doc.clone();
+    let index = s.cache.running_index(&d);
+    assert_eq!(index.catchword(None, 0), "בְּקְרוֹב");
+    assert_eq!(index.catchword(Some(main), 0), "בְּקְרוֹב");
+    assert_eq!(index.catchword(None, 1), "");
+    assert_eq!(designcraft_compose::vars::values(&d, Some(0), Some(&index))[i], "[בְּקְרוֹב]");
+    assert_eq!(designcraft_compose::vars::values(&d, Some(1), Some(&index))[i], "");
+    assert_eq!(designcraft_compose::vars::values(&d, None, Some(&index))[i], "");
+    assert_eq!(designcraft_compose::vars::values_shown(&d, None, true, Some(&index))[i], "<Catchword>");
+    let shown = |doc: &designcraft_doc::Document, page| {
+        let cs = s.cache.get(doc, footer, Some(page));
+        cs.frames.iter().flat_map(|f| &f.lines).flat_map(|l| &l.glyphs).filter(|g| g.visible && g.adv > 0.0).count()
+    };
+    assert!(shown(&d, 0) > 0);
+    assert_eq!(shown(&d, 1), 0);
+    let old_footer = s.cache.get(&d, footer, Some(0));
+    // Editing the continuation invalidates the footer's document-dependent composition.
+    let pos = d.story(main).unwrap().text.find("בְּקְרוֹב").unwrap();
+    s.execute("text.select", &json!({"story": main.0, "anchor": pos, "focus": pos + "בְּקְרוֹב".len()})).unwrap();
+    s.execute("text.insert", &json!({"text": "שָׁלוֹם"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(s.cache.running_index(d).catchword(None, 0), "שָׁלוֹם");
+    assert!(!std::sync::Arc::ptr_eq(&old_footer, &s.cache.get(d, footer, Some(0))), "footer recomposes after editing the main story");
+}
+
+#[test]
+fn catchwords_follow_each_stream_on_the_same_page() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let (a, frame) = catchword_story(&mut s, 100.0, "First stream has more text", "Gemara continues");
+    let (b, _) = catchword_story(&mut s, 300.0, "Second stream", "Rashi continues");
+    for (name, binding) in [("Gemara", json!({"story": a.0})), ("Rashi", json!({"story": b.0})), ("By frame", json!({"frame": frame}))] {
+        let mut p = json!({"name": name, "type": "nextPageFirstWord"});
+        p.as_object_mut().unwrap().extend(binding.as_object().unwrap().clone());
+        s.execute("variables.define", &p).unwrap();
+    }
+    let d = &s.doc().unwrap().doc;
+    let index = s.cache.running_index(d);
+    assert_eq!(index.catchword(Some(a), 0), "Gemara");
+    assert_eq!(index.catchword(Some(b), 0), "Rashi");
+    assert_eq!(index.catchword(None, 0), "Gemara");
+    let values = designcraft_compose::vars::values(d, Some(0), Some(&index));
+    assert_eq!(values[d.variable("Gemara").unwrap()], "Gemara");
+    assert_eq!(values[d.variable("Rashi").unwrap()], "Rashi");
+    assert_eq!(values[d.variable("By frame").unwrap()], "Gemara");
+    assert_eq!(index.catchword(Some(a), 1), "");
+    assert_eq!(index.catchword(Some(b), 1), "");
+}
+
+#[test]
+fn catchword_rejects_invalid_bindings() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("variables.define", &json!({"name": "Invalid", "type": "nextPageFirstWord"})).unwrap();
+    let r = s.execute("frame.create", &json!({"rect": [72, 72, 100, 100], "content": "graphic"})).unwrap();
+    for binding in [json!({"story": 999999}), json!({"story": "bad"}), json!({"frame": 999999}), json!({"frame": "bad"}), json!({"frame": r["id"]})] {
+        let mut p = json!({"name": "Invalid", "type": "nextPageFirstWord"});
+        p.as_object_mut().unwrap().extend(binding.as_object().unwrap().clone());
+        assert!(s.execute("variables.define", &p).is_err(), "{p}");
+    }
+}
+
+#[test]
+fn catchword_series_requires_a_valid_host_and_survives_serialization() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let frame = s.execute("frame.create", &json!({"rect": [36, 36, 336, 336], "content": "text", "text": "Body"})).unwrap();
+    let series = s.execute("footnote.series.create", &json!({"name": "Commentary", "placement": "stream"})).unwrap()["id"].clone();
+    for binding in [json!({"series": series}), json!({"story": frame["story"], "series": 999999}), json!({"story": frame["story"], "series": "bad"})]
+    {
+        let mut p = json!({"name": "Catchword", "type": "nextPageFirstWord"});
+        p.as_object_mut().unwrap().extend(binding.as_object().unwrap().clone());
+        assert!(s.execute("variables.define", &p).is_err());
+    }
+    let route = s.execute("frame.create", &json!({"rect": [350, 36, 450, 336], "content": "text"})).unwrap();
+    s.execute("textFrame.options", &json!({"ids": [route["id"]], "noteStream": {"story": frame["story"], "series": series}})).unwrap();
+    s.execute("variables.define", &json!({"name": "Catchword", "type": "nextPageFirstWord", "frame": route["id"]})).unwrap();
+    let doc = &s.doc().unwrap().doc;
+    let variable = &doc.text_variables[doc.variable("Catchword").unwrap()];
+    let value = serde_json::to_value(variable).unwrap();
+    assert_eq!(value["series"], series);
+    assert_eq!(value["story"], frame["story"]);
+    assert_eq!(serde_json::from_value::<TextVariable>(value).unwrap(), *variable);
+    s.execute("footnote.series.delete", &json!({"series": series})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert!(matches!(d.text_variables[d.variable("Catchword").unwrap()].kind, VarKind::NextPageFirstWord { series: Some(0), .. }));
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.variable("Catchword").is_none());
+}
+
+#[test]
+fn catchword_ignores_overset_and_breaks_default_ties_by_story_id() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+    let (a, _) = catchword_story(&mut s, 100.0, "Equal", "Alpha continues");
+    let (b, _) = catchword_story(&mut s, 300.0, "Equal", "Bravo continues");
+    assert!(a < b);
+    s.execute("variables.define", &json!({"name": "Default", "type": "nextPageFirstWord"})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(s.cache.running_index(d).catchword(None, 0), "Alpha");
+    // A third, larger stream stops at the first frame; its continuation is entirely overset.
+    let text = format!("A much longer lead{}\nOverset", designcraft_doc::story::FRAME_BREAK);
+    let r = s.execute("frame.create", &json!({"spread": 0, "rect": [72, 500, 500, 600], "content": "text", "text": text})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let sid = d.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
+    assert!(s.cache.get(d, sid, None).overset_at.is_some());
+    let index = s.cache.running_index(d);
+    assert_eq!(index.catchword(Some(sid), 0), "");
+    assert_eq!(index.catchword(None, 0), "", "dominant stream has no shown continuation");
+    assert_eq!(index.catchword(Some(a), 0), "Alpha");
+}
+
+#[test]
+fn catchword_page_lookup_applies_group_transforms() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":3,"facingPages":true})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "Second page");
+    let second = s.doc().unwrap().doc.story(sid).unwrap().frames[1];
+    let spread = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+    let dummy = s.execute("frame.create", &json!({"spread":spread,"rect":[50,300,100,350]})).unwrap()["id"].as_u64().unwrap();
+    let group = s.execute("object.group", &json!({"ids":[second.0,dummy]})).unwrap()["id"].as_u64().unwrap();
+    s.edit(|d, _| {
+        let dx = d.page(2).unwrap().x - d.page(1).unwrap().x;
+        d.item_mut(designcraft_doc::ItemId(group)).unwrap().xf = designcraft_geom::Affine::translate((dx, 0.0));
+        Ok(Value::Null)
+    })
+    .unwrap();
+    let d = &s.doc().unwrap().doc;
+    let cs = s.cache.get(d, sid, None);
+    let pos = d.story(sid).unwrap().text.find("Second").unwrap() + 2;
+    assert_eq!(designcraft_compose::vars::page_of(d, &cs, pos), Some(2));
+}
+
+#[test]
+fn catchword_omits_hidden_conditions_and_deleted_characters() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "DRAFT PuHIDEblic next");
+    s.execute("condition.new", &json!({"name":"Hidden","visible":false})).unwrap();
+    s.edit(|d, _| {
+        let st = d.story_mut(sid).unwrap();
+        let at = st.text.find("DRAFT").unwrap();
+        st.format_chars(at..at + 6, |f| f.over.conditions = Some(vec!["Hidden".into()]));
+        st.format_chars(at + 8..at + 12, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+        Ok(Value::Null)
+    })
+    .unwrap();
+    s.execute("variables.define", &json!({"name":"Catchword","type":"nextPageFirstWord","story":sid.0})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let index = s.cache.running_index(d);
+    assert_eq!(index.catchword(Some(sid), 0), "Public");
+}
+
+#[test]
+fn bound_catchword_cycles_are_rejected_before_mutation() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "Next word");
+    s.execute("variables.define", &json!({"name":"Marker","text":"plain"})).unwrap();
+    s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+    s.execute("variables.insert", &json!({"name":"Marker"})).unwrap();
+    s.execute("variables.define", &json!({"name":"Bound","type":"nextPageFirstWord","story":sid.0})).unwrap();
+    assert!(s.execute("variables.define", &json!({"name":"Marker","type":"runningHeader","style":"[Basic Paragraph]"})).is_err());
+    let d = &s.doc().unwrap().doc;
+    assert!(matches!(d.text_variables[d.variable("Marker").unwrap()].kind, VarKind::Custom { .. }));
+    assert!(s.execute("variables.insert", &json!({"name":"Bound"})).is_err());
+    s.execute("variables.define", &json!({"name":"Default","type":"nextPageFirstWord"})).unwrap();
+    assert!(s.execute("variables.define", &json!({"name":"Marker","type":"nextPageFirstWord","story":sid.0})).is_err());
+}
+
+#[test]
+fn deleting_catchword_preserves_its_composed_value_and_undo() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "Next word");
+    s.execute("variables.define", &json!({"name":"Bound","type":"nextPageFirstWord","story":sid.0,"before":"[","after":"]"})).unwrap();
+    let marker = var_char(s.doc().unwrap().doc.variable("Bound").unwrap()).unwrap();
+    let frame = s.execute("frame.create", &json!({"rect":[72,700,400,740],"content":"text","text":marker.to_string()})).unwrap();
+    let footer = designcraft_doc::StoryId(frame["story"].as_u64().unwrap());
+    s.execute("variables.delete", &json!({"name":"Bound"})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.story(footer).unwrap().text, "[Next]");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.story(footer).unwrap().text, marker.to_string());
+}
+
+#[test]
+fn catchword_list_exposes_the_composed_first_page_value() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "Next word");
+    s.execute("variables.define", &json!({"name":"Bound","type":"nextPageFirstWord","story":sid.0,"before":"[","after":"]"})).unwrap();
+    let listed = s.execute("variables.list", &json!({})).unwrap();
+    assert_eq!(listed.as_array().unwrap().iter().find(|v| v["name"] == "Bound").unwrap()["value"], "[Next]");
+}
+
+#[test]
+fn catchword_distinguishes_hidden_controls_from_active_delimiters() {
+    for control in ['\t', designcraft_doc::story::FORCED_LINE_BREAK] {
+        for state in ["active", "hidden", "deleted"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+            let (sid, _) = catchword_story(&mut s, 100.0, "First", &format!("Pu{control}blic next"));
+            s.execute("condition.new", &json!({"name":"Hidden","visible":false})).unwrap();
+            s.edit(|d, _| {
+                let st = d.story_mut(sid).unwrap();
+                let at = st.text.find("Pu").unwrap() + 2;
+                st.format_chars(at..at + control.len_utf8(), |f| match state {
+                    "hidden" => f.over.conditions = Some(vec!["Hidden".into()]),
+                    "deleted" => f.over.change = Some(designcraft_doc::ChangeMark::Deleted),
+                    _ => {}
+                });
+                Ok(Value::Null)
+            })
+            .unwrap();
+            s.execute("variables.define", &json!({"name":"Catchword","type":"nextPageFirstWord","story":sid.0})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            assert_eq!(s.cache.running_index(d).catchword(Some(sid), 0), if state == "active" { "Pu" } else { "Public" }, "{state} {control:?}");
+        }
+    }
+}
+
+#[test]
+fn catchword_visibility_toggle_matches_a_fresh_index_and_undo() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+    let (sid, _) = catchword_story(&mut s, 100.0, "First", "DRAFT Public next");
+    s.execute("condition.new", &json!({"name":"Hidden","visible":false})).unwrap();
+    s.edit(|d, _| {
+        let st = d.story_mut(sid).unwrap();
+        let at = st.text.find("DRAFT").unwrap();
+        st.format_chars(at..at + 6, |f| f.over.conditions = Some(vec!["Hidden".into()]));
+        Ok(Value::Null)
+    })
+    .unwrap();
+    s.execute("variables.define", &json!({"name":"Catchword","type":"nextPageFirstWord","story":sid.0})).unwrap();
+    let value = |s: &mut Session| {
+        let listed = s.execute("variables.list", &json!({})).unwrap();
+        listed.as_array().unwrap().iter().find(|v| v["name"] == "Catchword").unwrap()["value"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(value(&mut s), "Public");
+    s.execute("condition.options", &json!({"name":"Hidden","visible":true})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let fresh = designcraft_compose::Cache::new().running_index(d).catchword(Some(sid), 0);
+    assert_eq!(fresh, "DRAFT");
+    assert_eq!(value(&mut s), fresh);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(value(&mut s), "Public");
+}

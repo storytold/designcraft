@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Footnote",
             ["Type"],
             None,
-            "{text?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
+            "{text?, series?} — a footnote reference at the insertion point; the caret moves into the new footnote's text",
             in_story_text,
             insert
         ),
@@ -22,11 +22,39 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
-        cmd!(query "footnote.list", "Footnotes", [], None, "{story?} → [{story, id, index, anchor, text}] in story order", has_doc, list),
+        cmd!(
+            "footnote.series.create",
+            "Create Note Series",
+            [],
+            None,
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, …options} → {id}",
+            has_doc,
+            series_create
+        ),
+        cmd!(
+            "footnote.series.options",
+            "Note Series Options",
+            [],
+            None,
+            "{series, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            has_doc,
+            series_options
+        ),
+        cmd!(
+            "footnote.series.delete",
+            "Delete Note Series",
+            [],
+            None,
+            "{series} — moves its notes to series 0; series 0 cannot be deleted",
+            has_doc,
+            series_delete
+        ),
+        cmd!(query "footnote.series.list", "Note Series", [], None, "{} → [{id, name, …options}] including series 0", has_doc, series_list),
+        cmd!(query "footnote.list", "Footnotes", [], None, "{story?, series?} → [{story, id, series, index, anchor, text}] in story order", has_doc, list),
         cmd!("footnote.setText", "Set Footnote Text", [], None, "{story, id, text} — replaces the footnote's text", has_doc, set_text),
         cmd!("footnote.delete", "Delete Footnote", [], None, "{story, id} — deletes the reference (and so the footnote)", has_doc, delete),
         cmd!(
@@ -59,14 +87,19 @@ fn in_note(s: &Session) -> std::result::Result<(), String> {
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let text = super::text_param(p, "text");
+    let series = series_id(p, "footnote.insert", true)?;
+    require_series(&s.doc()?.doc, series, "footnote.insert")?;
     let r = s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("footnote.insert", "no insertion point"))?;
-        let para = ParaFormat { style: d.footnote_options.para_style.clone(), ..Default::default() };
+        let para = ParaFormat { style: d.note_options(series).para_style.clone(), ..Default::default() };
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let r = t.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
         let id = st.insert_note(r.start, &text, para).ok_or_else(|| bad("footnote.insert", "the story's footnotes don't match their references"))?;
+        if let Some(note) = st.note_mut(id) {
+            note.series = series;
+        }
         d.adjust_text_ranges(t.story, r, designcraft_doc::FOOTNOTE_REF.len_utf8());
         sel.text = Some(TextSel { story: t.story, anchor: text.len(), focus: text.len(), frame: t.frame, cell: Some(CellAddr::footnote(id)) });
         Ok(json!({"story": t.story.0, "id": id}))
@@ -99,7 +132,9 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
-    let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
+    let next = read_options(v, "footnote.options")?;
+    validate_options(&next, "footnote.options")?;
+    validate_inset_placement(&s.doc()?.doc, 0, &next, "footnote.options")?;
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
         s.edit(|d, _| {
@@ -108,6 +143,240 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
     }
     Ok(out)
+}
+
+fn series_id(p: &Value, cmd: &str, default: bool) -> Result<u64> {
+    match p.get("series") {
+        None if default => Ok(0),
+        Some(v) => v.as_u64().ok_or_else(|| bad(cmd, "series must be an unsigned integer")),
+        _ => Err(bad(cmd, "missing series")),
+    }
+}
+
+fn require_series(d: &designcraft_doc::Document, id: u64, cmd: &str) -> Result<()> {
+    if id == 0 || d.note_series.iter().any(|s| s.id == id) { Ok(()) } else { Err(bad(cmd, format!("no note series {id}"))) }
+}
+
+fn validate_options(o: &FootnoteOptions, cmd: &str) -> Result<()> {
+    o.check().map_err(|e| bad(cmd, e))
+}
+
+fn validate_inset_placement(doc: &designcraft_doc::Document, id: u64, options: &FootnoteOptions, cmd: &str) -> Result<()> {
+    if options.placement != doc.note_options(id).placement
+        && !matches!(options.placement, designcraft_doc::NotePlacement::Stream)
+        && doc.placed_items().iter().any(|item| {
+            item.text_frame().and_then(|f| f.options.inset_columns.as_ref()).is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
+        })
+    {
+        return Err(bad(cmd, "clear this series from inset frames before changing its placement"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod inset_placement_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_inset_selector_does_not_block_unchanged_placement() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+        // Legacy series 0 inherits destination options when an inset frame is copied.
+        s.edit(|doc, _| {
+            doc.item_mut(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).unwrap().text_frame_mut().unwrap().options.inset_columns =
+                Some(serde_json::from_value(json!({"streams": [{}, {"series": 0}]})).unwrap());
+            Ok(Value::Null)
+        })
+        .unwrap();
+        s.execute("footnote.series.options", &json!({"series": 0})).unwrap();
+        s.execute("footnote.options", &json!({"separator": " / "})).unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn inset_selected_series_cannot_change_placement_until_cleared() {
+        for default in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+            let series = if default {
+                s.execute("footnote.options", &json!({"placement": "stream"})).unwrap();
+                json!(0)
+            } else {
+                s.execute("footnote.series.create", &json!({"name": "Commentary", "placement": "stream"})).unwrap()["id"].clone()
+            };
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": {"streams": [{}, {"series": series}]}})).unwrap();
+            for placement in [json!("columnFoot"), json!({"kind": "margin", "width": 72, "gap": 8})] {
+                assert!(s.execute("footnote.series.options", &json!({"series": series, "placement": placement})).is_err());
+                if default {
+                    assert!(s.execute("footnote.options", &json!({"placement": placement})).is_err());
+                }
+            }
+            assert!(matches!(s.doc().unwrap().doc.note_options(series.as_u64().unwrap()).placement, designcraft_doc::NotePlacement::Stream));
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": null})).unwrap();
+            s.execute("footnote.series.options", &json!({"series": series, "placement": "columnFoot"})).unwrap();
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
+}
+
+fn read_options(mut value: Value, cmd: &str) -> Result<FootnoteOptions> {
+    if let Some(slot) = value.get_mut("placement")
+        && let Some(kind) = slot.as_str().map(str::to_owned)
+    {
+        *slot = json!({"kind": kind});
+    }
+    // Native files preserve the pre-setting no-split behavior; new API options keep the
+    // documented split-enabled default. Serialized current options already contain the flag.
+    if let Some(options) = value.as_object_mut() {
+        options.entry("allowSplit").or_insert(json!(true));
+    }
+    serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))
+}
+
+fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = p
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.trim().is_empty())
+        .ok_or_else(|| bad("footnote.series.create", "missing name"))?
+        .to_owned();
+    // New command objects use API defaults; native files may default a missing allowSplit to false.
+    let mut value = serde_json::to_value(FootnoteOptions::default()).map_err(|e| bad("footnote.series.create", e.to_string()))?;
+    merge(&mut value, p);
+    let options = read_options(value, "footnote.series.create")?;
+    validate_options(&options, "footnote.series.create")?;
+    s.edit(|d, _| {
+        let id = d
+            .note_series
+            .iter()
+            .map(|s| s.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| bad("footnote.series.create", "series ids exhausted"))?;
+        d.note_series.push(designcraft_doc::NoteSeries { id, name, options });
+        Ok(json!({"id": id}))
+    })
+}
+
+fn series_options(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = series_id(p, "footnote.series.options", false)?;
+    require_series(&s.doc()?.doc, id, "footnote.series.options")?;
+    let cur = s.doc()?.doc.note_options(id).clone();
+    let mut value = serde_json::to_value(&cur).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    merge(&mut value, p);
+    let next = read_options(value, "footnote.series.options")?;
+    validate_options(&next, "footnote.series.options")?;
+    validate_inset_placement(&s.doc()?.doc, id, &next, "footnote.series.options")?;
+    let out = serde_json::to_value(&next).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    if next == cur {
+        return Ok(out);
+    }
+    s.edit(|d, _| {
+        if id == 0 {
+            d.footnote_options = next;
+        } else if let Some(series) = d.note_series.iter_mut().find(|s| s.id == id) {
+            series.options = next;
+        }
+        Ok(Value::Null)
+    })?;
+    Ok(out)
+}
+
+fn series_list(s: &mut Session, _: &Value) -> Result<Value> {
+    let d = &s.doc()?.doc;
+    let mut list = vec![
+        serde_json::to_value(designcraft_doc::NoteSeries { id: 0, name: "Footnotes".into(), options: d.footnote_options.clone() })
+            .map_err(|e| bad("footnote.series.list", e.to_string()))?,
+    ];
+    for series in &d.note_series {
+        list.push(serde_json::to_value(series).map_err(|e| bad("footnote.series.list", e.to_string()))?);
+    }
+    Ok(Value::Array(list))
+}
+
+fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = series_id(p, "footnote.series.delete", false)?;
+    if id == 0 {
+        return Err(bad("footnote.series.delete", "series 0 cannot be deleted"));
+    }
+    require_series(&s.doc()?.doc, id, "footnote.series.delete")?;
+    s.edit(|d, _| {
+        for story in d.stories.values_mut() {
+            // Embedded notes also retain document-local series ids. Clear them before a
+            // later create can reuse the deleted id for an unrelated series.
+            let needs_reset = {
+                let mut pending = vec![story.as_ref()];
+                let mut found = false;
+                while let Some(text) = pending.pop() {
+                    if text.notes.iter().any(|note| note.series == id) {
+                        found = true;
+                        break;
+                    }
+                    pending.extend(text.notes.iter().chain(&text.endnotes).map(|note| &note.text));
+                    pending.extend(text.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+                }
+                found
+            };
+            if !needs_reset {
+                continue;
+            }
+            let root = std::sync::Arc::make_mut(story);
+            let revision = root.rev;
+            let mut pending = vec![&mut *root];
+            while let Some(text) = pending.pop() {
+                let mut changed = false;
+                for note in &mut text.notes {
+                    if note.series == id {
+                        std::sync::Arc::make_mut(note).series = 0;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    text.rev = text.rev.wrapping_add(1);
+                }
+                for note in text.notes.iter_mut().chain(&mut text.endnotes) {
+                    pending.push(&mut std::sync::Arc::make_mut(note).text);
+                }
+                for table in text.tables.values_mut() {
+                    for cell in &mut std::sync::Arc::make_mut(table).cells {
+                        pending.push(&mut cell.text);
+                    }
+                }
+            }
+            drop(pending);
+            root.rev = revision.wrapping_add(1);
+        }
+        d.update_placed_items(
+            |it| {
+                it.text_frame().is_some_and(|tf| {
+                    tf.options.note_stream.is_some_and(|stream| stream.series == id)
+                        || tf.options.inset_columns.as_ref().is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
+                })
+            },
+            |it| {
+                if let Some(tf) = it.text_frame_mut() {
+                    if tf.options.note_stream.is_some_and(|stream| stream.series == id) {
+                        tf.options.note_stream = None;
+                    }
+                    if let Some(inset) = &mut tf.options.inset_columns {
+                        inset.streams.retain(|s| s.series != Some(id));
+                    }
+                }
+            },
+        );
+        d.note_series.retain(|s| s.id != id);
+        for variable in &mut d.text_variables {
+            if let designcraft_doc::vars::VarKind::NextPageFirstWord { series: Some(series), .. } = &mut variable.kind
+                && *series == id
+            {
+                *series = 0;
+            }
+        }
+        Ok(Value::Null)
+    })
 }
 
 fn story_id(p: &Value, cmd: &str) -> Result<StoryId> {
@@ -133,8 +402,8 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
-        for (k, n) in st.notes.iter().enumerate() {
-            out.push(json!({"story": st.id.0, "id": n.id, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
+        for (k, n) in st.notes.iter().enumerate().filter(|(_, n)| p.get("series").and_then(Value::as_u64).is_none_or(|id| n.series == id)) {
+            out.push(json!({"story": st.id.0, "id": n.id, "series": n.series, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
         }
     }
     Ok(Value::Array(out))
@@ -201,6 +470,14 @@ mod tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "Body text with a note here."})).unwrap();
         let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
         (s, sid)
+    }
+
+    #[test]
+    fn footnote_options_omitted_split_preserves_the_document_setting() {
+        let (mut s, _) = session_with_text();
+        assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 2.0})).unwrap()["allowSplit"], true);
+        s.execute("footnote.options", &json!({"allowSplit": false})).unwrap();
+        assert_eq!(s.execute("footnote.options", &json!({"spaceBefore": 3.0})).unwrap()["allowSplit"], false);
     }
 
     #[test]
@@ -318,5 +595,129 @@ mod tests {
         assert_eq!((t.anchor, t.focus), (4, 4));
         s.execute("text.delete", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].text.text, "é");
+    }
+}
+
+#[cfg(test)]
+mod series_tests {
+    use super::*;
+
+    #[test]
+    fn new_series_api_defaults_to_splitting_and_honors_explicit_false() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.footnote_options.allow_split);
+        for (name, explicit, expected) in [("Default", None, true), ("Unsplit", Some(false), false), ("Split", Some(true), true)] {
+            let mut params = json!({"name": name});
+            if let Some(value) = explicit {
+                params["allowSplit"] = json!(value);
+            }
+            let id = s.execute("footnote.series.create", &params).unwrap()["id"].as_u64().unwrap();
+            let options = s.execute("footnote.series.options", &json!({"series": id, "separator": " "})).unwrap();
+            assert_eq!(options["allowSplit"], expected);
+        }
+    }
+
+    #[test]
+    fn series_commands_insert_filter_delete_and_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[72,72,400,600],"content":"text","text":"Body"})).unwrap();
+        let fid = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+        let sid = s.doc().unwrap().doc.item(fid).unwrap().text_frame().unwrap().story;
+        let series = s.execute("footnote.series.create", &json!({"name":"Sources","style":"lowerLetters"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("footnote.series.options", &json!({"series":series,"placement":{"kind":"margin","side":"outside","gap":8,"width":72}})).unwrap();
+        s.execute("text.select", &json!({"story":sid.0,"anchor":4,"focus":4})).unwrap();
+        s.execute("footnote.insert", &json!({"series":series,"text":"Source"})).unwrap();
+        assert_eq!(s.execute("footnote.list", &json!({"series":series})).unwrap()[0]["series"], series);
+        assert_eq!(s.execute("footnote.series.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+        assert!(s.execute("footnote.series.delete", &json!({"series":0})).is_err());
+        assert!(s.execute("footnote.series.options", &json!({"series":series,"placement":{"width":0}})).is_err());
+        s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].series, 0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().notes[0].series, series);
+        assert!(s.execute("footnote.insert", &json!({"series":999})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod margin_default_tests {
+    use super::*;
+    #[test]
+    fn omitted_margin_side_defaults_to_right() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let o = s.execute("footnote.options", &json!({"placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
+        assert_eq!(o["placement"]["side"], "right");
+        s.execute("footnote.series.create", &json!({"name":"Sources","placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
+        let all = s.execute("footnote.series.list", &json!({})).unwrap();
+        assert_eq!(all[1]["placement"]["side"], "right");
+    }
+}
+
+#[cfg(test)]
+mod api_split_default_tests {
+    use super::*;
+
+    #[test]
+    fn new_api_options_default_to_split_and_honor_explicit_false() {
+        assert!(read_options(json!({}), "test").unwrap().allow_split);
+        assert!(read_options(json!({"allowSplit": true}), "test").unwrap().allow_split);
+        assert!(!read_options(json!({"allowSplit": false}), "test").unwrap().allow_split);
+    }
+}
+
+#[cfg(test)]
+mod nested_series_delete_tests {
+    use super::*;
+
+    #[test]
+    fn deleting_and_recreating_a_series_cannot_rebind_embedded_notes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[72,72,400,600],"content":"text","text":"Body"})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        let series = s.execute("footnote.series.create", &json!({"name":"Sources"})).unwrap()["id"].as_u64().unwrap();
+        let (table_id, outer_id, endnote_id) = s
+            .edit(|d, _| {
+                let table_id = d.alloc();
+                let st = d.story_mut(sid).unwrap();
+                let outer = st.insert_note(0, "Outer", Default::default()).unwrap();
+                let body = &mut st.note_mut(outer).unwrap().text;
+                let nested = body.insert_note(0, "Nested source", Default::default()).unwrap();
+                body.note_mut(nested).unwrap().series = series;
+                let mut table = designcraft_doc::Table::new(table_id, 1, 1, 0, 0, 240.0);
+                let cell = &mut table.cells[0].text;
+                let note = cell.insert_note(0, "Cell source", Default::default()).unwrap();
+                cell.note_mut(note).unwrap().series = series;
+                let endnote = cell.insert_endnote(cell.len(), "Endnote body", Default::default()).unwrap();
+                let body = &mut cell.endnote_mut(endnote).unwrap().text;
+                let note = body.insert_note(0, "Source in endnote", Default::default()).unwrap();
+                body.note_mut(note).unwrap().series = series;
+                st.insert_table(0, table);
+                Ok((table_id, outer, endnote))
+            })
+            .unwrap();
+        let inspect = |d: &designcraft_doc::Document| {
+            let st = d.story(sid).unwrap();
+            let cell = &st.tables[&table_id].cells[0].text;
+            let notes = [&cell.notes[0], &st.note(outer_id).unwrap().text.notes[0], &cell.endnote(endnote_id).unwrap().text.notes[0]];
+            notes.map(|note| (note.series, note.text.text.clone()))
+        };
+        let original = inspect(&s.doc().unwrap().doc);
+        assert!(original.iter().all(|(id, _)| *id == series));
+        s.execute("footnote.series.delete", &json!({"series":series})).unwrap();
+        let fresh = s.execute("footnote.series.create", &json!({"name":"Unrelated"})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(fresh, series, "the library may reuse the deleted numeric id");
+        let reset = inspect(&s.doc().unwrap().doc);
+        for ((id, text), (_, before)) in reset.iter().zip(&original) {
+            assert_eq!(*id, 0, "embedded note must not join the unrelated new series");
+            assert_eq!(text, before);
+        }
+        s.execute("edit.undo", &json!({})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(inspect(&s.doc().unwrap().doc), original);
+        assert_eq!(s.doc().unwrap().doc.note_series.iter().find(|s| s.id == series).unwrap().name, "Sources");
     }
 }

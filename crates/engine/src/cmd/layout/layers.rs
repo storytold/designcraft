@@ -80,6 +80,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
         d.layers.insert(i, layer);
         let src = d.clone();
         let mut stories = HashMap::new();
+        let mut frame_origins = HashMap::new();
         let mut ids = HashMap::new();
         let refs = (0..src.parents.len()).map(SpreadRef::Parent).chain((0..src.spreads.len()).map(SpreadRef::Doc));
         let mut copies = Vec::new();
@@ -87,7 +88,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(sp) = src.spread(r) else { continue };
             for it in sp.items.iter().filter(|it| it.layer == id) {
                 let mut copy = Item::clone(it);
-                if !super::super::object::renumber(d, &src, &mut copy, &mut stories) {
+                if !super::super::object::renumber(d, &src, &mut copy, &mut stories, &mut frame_origins) {
                     return Err(bad(ID, "the layer's objects are nested too deeply to copy"));
                 }
                 map_ids(it, &copy, &mut ids);
@@ -159,6 +160,7 @@ pub(super) fn duplicate_layer(s: &mut Session, p: &Value) -> Result<Value> {
                 remap_xrefs(st, &anchors);
             }
         }
+        super::super::object::retarget_copied_note_streams(d, &src, &stories);
         // The hyperlinks of copied objects and copied text get copies with ids of their own and the same destinations.
         let links: Vec<_> = src
             .hyperlinks

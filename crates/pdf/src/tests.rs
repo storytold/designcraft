@@ -1155,3 +1155,30 @@ fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
     std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
     assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }
+
+#[test]
+fn external_margin_note_exports_on_the_adjacent_page_when_its_host_is_culled() {
+    for grouped in [false, true] {
+        let mut d = Document::new(&NewDocument { pages: 3, width: 600.0, facing_pages: true, ..Default::default() });
+        let lid = d.default_layer();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(120.0, 72.0, 420.0, 300.0), lid, "Host", Default::default()).unwrap();
+        d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 200.0, width: 72.0 };
+        d.footnote_options.separator = " ".into();
+        d.story_mut(sid).unwrap().insert_note(4, "Unique", Default::default());
+        if grouped {
+            let frame = std::sync::Arc::make_mut(&mut d.spreads[1]).items.pop().unwrap();
+            assert_eq!(frame.id, fid);
+            let mut group = Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Group, Default::default());
+            group.content = designcraft_doc::Content::Group { items: vec![frame] };
+            std::sync::Arc::make_mut(&mut d.spreads[1]).items.push(std::sync::Arc::new(group));
+        }
+        let cache = Cache::new();
+        let cs = cache.get(&d, sid, None);
+        let note = cs.frames[0].notes[0].rect;
+        assert!(note.x0 >= 600.0 && note.x1 < 1200.0, "{note:?}");
+        let bytes = export_pdf(&d, &cache, &Default::default()).unwrap();
+        let text = extract_text(&bytes);
+        assert_eq!(text.len(), 3);
+        assert!(text[2].contains("Unique"), "grouped={grouped}: {text:?}");
+    }
+}
