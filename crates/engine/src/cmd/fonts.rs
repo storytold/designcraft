@@ -106,11 +106,20 @@ fn tally_story(d: &Document, st: &Story, used: &mut FontTally) {
 /// the font of its mark, which still sets its line.
 pub(super) fn tally_range(d: &Document, st: &Story, within: std::ops::Range<usize>, used: &mut FontTally) {
     let to_end = within.end >= st.text.len();
+    // The runs follow one another without gaps, so each paragraph starts at the first run that
+    // ends after it begins: listing them for every paragraph made a story's tally cost as many
+    // steps as it has paragraphs times runs.
+    let runs: Vec<_> = st.runs().collect();
     for (pi, r) in st.para_ranges().iter().enumerate() {
         let Some(para) = st.paras.get(pi) else { continue };
         let (_, base) = d.styles.resolve_para(para);
         let mark = r.is_empty() && within.start <= r.start && (r.start < within.end || to_end);
-        for (rr, fmt) in st.runs() {
+        let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+        for (rr, fmt) in &runs[first..] {
+            // A run that starts after the paragraph ends, and every one after it, has no text in it.
+            if rr.start > r.end {
+                break;
+            }
             let start = rr.start.max(r.start).max(within.start);
             let text = st.text.get(start..rr.end.min(r.end).min(within.end).max(start)).unwrap_or("");
             if text.is_empty() && !(mark && rr.contains(&r.start)) {
@@ -349,6 +358,78 @@ mod tests {
         let st = s.doc().unwrap();
         assert_ne!(st.revision, revision, "the canvas draws the document again");
         assert_eq!(st.history.undo.len(), undo, "reloading fonts isn't an edit");
+    }
+
+    /// The tally as it was before it found each paragraph's runs by searching: every run is looked
+    /// at for every paragraph.
+    fn tally_range_by_every_run(d: &Document, st: &Story, within: std::ops::Range<usize>, used: &mut FontTally) {
+        let to_end = within.end >= st.text.len();
+        for (pi, r) in st.para_ranges().iter().enumerate() {
+            let Some(para) = st.paras.get(pi) else { continue };
+            let (_, base) = d.styles.resolve_para(para);
+            let mark = r.is_empty() && within.start <= r.start && (r.start < within.end || to_end);
+            for (rr, fmt) in st.runs() {
+                let start = rr.start.max(r.start).max(within.start);
+                let text = st.text.get(start..rr.end.min(r.end).min(within.end).max(start)).unwrap_or("");
+                if text.is_empty() && !(mark && rr.contains(&r.start)) {
+                    continue;
+                }
+                let p = d.styles.resolve_char(&base, fmt);
+                let entry = used.entry((p.font_family, p.font_style)).or_default();
+                entry.0 += text.chars().count();
+                entry.1.extend(text.chars());
+            }
+        }
+    }
+
+    /// Finding each paragraph's runs by searching tallies what looking at every run did, over a
+    /// story with empty paragraphs, runs that end where paragraphs do and a range that starts and
+    /// ends inside paragraphs.
+    #[test]
+    fn the_tally_of_a_story_counts_what_looking_at_every_run_counted() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text: String =
+            (0..60).map(|i| if i % 7 == 3 { String::new() } else { format!("Paragraph {i} has words in it") }).collect::<Vec<_>>().join("\n");
+        s.execute("frame.create", &json!({"rect": [0, 0, 200, 200], "content": "text", "text": text})).unwrap();
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let sid = *d.stories.keys().next().unwrap();
+        let families = ["Source Sans 3", "Arial", "Unavailable Test Family", "Georgia"];
+        let len = d.story(sid).unwrap().text.len();
+        // Runs of different lengths: some end exactly at a paragraph's end, some inside one.
+        let mut at = 0;
+        for (k, step) in [5usize, 31, 1, 17, 60, 2, 44, 9].into_iter().cycle().enumerate() {
+            if at >= len {
+                break;
+            }
+            let end = (at + step).min(len);
+            d.story_mut(sid).unwrap().format_chars(at..end, |f| f.over.font_family = Some(families[k % families.len()].into()));
+            at = end;
+        }
+        // A run that starts exactly where an empty paragraph does, in a font nothing else is set in:
+        // that font is in the tally only through the empty paragraph's mark.
+        let empties: Vec<usize> = d.story(sid).unwrap().para_ranges().iter().filter(|r| r.is_empty() && r.start < len).map(|r| r.start).collect();
+        assert!(empties.len() > 3, "the story has empty paragraphs");
+        for at in empties {
+            d.story_mut(sid).unwrap().format_chars(at..at + 1, |f| f.over.font_family = Some("Marker Only Family".into()));
+        }
+        let d = &s.doc().unwrap().doc;
+        let st = d.story(sid).unwrap();
+        for within in [0..len, 0..0, 10..len / 2, 100..101, len / 3..len, len..len] {
+            let (mut found, mut expected) = (FontTally::new(), FontTally::new());
+            tally_range(d, st, within.clone(), &mut found);
+            tally_range_by_every_run(d, st, within.clone(), &mut expected);
+            assert_eq!(found, expected, "range {within:?}");
+        }
+        let all = tally_story_fonts(d, st);
+        assert!(all.len() > 2, "the story has several fonts");
+        assert!(all.keys().any(|(family, _)| family == "Marker Only Family"), "{all:?}");
+    }
+
+    fn tally_story_fonts(d: &Document, st: &Story) -> FontTally {
+        let mut used = FontTally::new();
+        tally_story(d, st, &mut used);
+        used
     }
 
     #[test]
