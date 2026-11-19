@@ -107,6 +107,41 @@ fn exported_override_lists(bytes: &[u8]) -> Vec<Vec<String>> {
 }
 
 #[test]
+fn spreads_without_override_lists_keep_pages_and_items_unlinked() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Layer Self="layer" Name="Art"/>
+      <DocumentPreference PageWidth="200" PageHeight="200" FacingPages="true"/>
+      <idPkg:MasterSpread src="MasterSpreads/parent.xml"/>
+      <idPkg:Spread src="Spreads/spread.xml"/>
+    </Document>"#;
+    let master = format!(
+        r#"<idPkg:MasterSpread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <MasterSpread Self="master"><Page GeometricBounds="0 0 200 200"/>{}</MasterSpread>
+        </idPkg:MasterSpread>"#,
+        rectangle("parent", 10, "")
+    );
+    let spread = format!(
+        r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+          <Spread>
+            <Page AppliedMaster="master" GeometricBounds="0 0 200 200" ItemTransform="1 0 0 1 -200 0"/>
+            <Page AppliedMaster="master" GeometricBounds="0 0 200 200"/>{}{}
+          </Spread>
+        </idPkg:Spread>"#,
+        rectangle("local-left", -190, ""),
+        rectangle("local-right", 10, "")
+    );
+    let bytes = zip_files(&[("designmap.xml", designmap), ("MasterSpreads/parent.xml", &master), ("Spreads/spread.xml", &spread)]);
+    let report = import_idml_report(&bytes, &|_| None).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let parent = &report.document.parents[0];
+    let spread = &report.document.spreads[0];
+    assert_eq!((parent.items.len(), spread.items.len()), (1, 2));
+    assert_eq!(spread.pages.len(), 2);
+    assert!(parent.pages.iter().chain(&spread.pages).all(|p| p.overridden.is_empty()));
+    assert!(spread.items.iter().all(|i| i.overrides.is_none()));
+}
+
+#[test]
 fn imports_override_pairs_and_round_trips_live_copies() {
     let bytes = fixture(["parent-a copy-1 parent-b n", "parent-a copy-2", "parent-b copy-3"], "", "");
     let report = import_idml_report(&bytes, &|_| None).unwrap();

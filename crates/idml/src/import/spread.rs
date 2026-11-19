@@ -190,6 +190,10 @@ impl<'r> Importer<'r> {
 
     /// Restore parent/copy links from complete page lists, keeping the first conflicting pair.
     fn link_page_overrides(&mut self, pages: &[(Rect, craft_idml::model::Page)], out_pages: &mut [Page], items: &mut [Arc<Item>]) {
+        // Spreads without override tokens need neither the parent index nor mutable copy slots.
+        if pages.iter().all(|(_, p)| p.override_list().is_empty()) {
+            return;
+        }
         // Cache the same membership as is_parent_item, and each local item's override slot once.
         // Per-token tree searches are quadratic on pages with thousands of overrides. Explicit
         // stacks also reach copies nested in groups without adding recursive walks.
