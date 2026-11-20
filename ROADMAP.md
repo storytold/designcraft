@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-16** · Fitting a bottom-aligned text frame from its top handle keeps its bottom edge and text in place (#2880): double-clicking any selection handle passes the opposite local reference point (`ref` 0..=8) to `object.fit`, menu/panel/scripting fits without `ref` anchor to vertical justification (`Bottom`/`Center`/`Top`/`Justify`), and `transform.resize` keeps unchanged edges pinned across its `1e-3` scale clamp and flips. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

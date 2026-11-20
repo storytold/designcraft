@@ -646,7 +646,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ids?} — locked objects and objects on locked layers are left as they are",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ref?: 0..8 (reference point 0..=8, row-major from top-left, kept fixed when fitting text frames; default follows vertical justification), ids?} — locked objects and objects on locked layers are left as they are",
             has_selection,
             fit
         ),
@@ -1424,19 +1424,41 @@ fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
     })
 }
 
+/// One-axis affine `(scale, from_anchor, to_anchor)` mapping `[f0, f1]` toward `[t0, t1]`.
+/// Anchors the unchanged edge (before clamping or flipping) so near-zero clamps never drift it,
+/// and leaves an unchanged axis as exact identity.
+fn resize_axis_transform(f0: f64, f1: f64, t0: f64, t1: f64) -> (f64, f64, f64) {
+    if t0 == f0 && t1 == f1 {
+        return (1.0, 0.0, 0.0);
+    }
+    let old = f1 - f0;
+    // A flat source (a horizontal or vertical line) has no size to scale on its flat axis: that axis only moves.
+    if old.abs() < 1e-9 {
+        return (1.0, f0, t0);
+    }
+    let raw = (t1 - t0) / old;
+    let s = if raw.abs() < 1e-3 { 1e-3f64.copysign(raw) } else { raw };
+    if (t1 - f1).abs() <= 1e-9 && (t0 - f0).abs() > 1e-9 {
+        (s, f1, t1)
+    } else if (t0 - f0).abs() <= 1e-9 && (t1 - f1).abs() > 1e-9 {
+        (s, f0, t0)
+    } else {
+        (s, (f0 + f1) * 0.5, (t0 + t1) * 0.5)
+    }
+}
+
 fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    let from = rect_param(p, "from").ok_or_else(|| bad("transform.resize", "missing from"))?;
-    let to = rect_param(p, "to").ok_or_else(|| bad("transform.resize", "missing to"))?;
+    let from = super::finite_rect("transform.resize", rect_param(p, "from").ok_or_else(|| bad("transform.resize", "missing from"))?)?;
+    let to = super::finite_rect("transform.resize", rect_param(p, "to").ok_or_else(|| bad("transform.resize", "missing to"))?)?;
     let scale_content = bool_or(p, "content", false);
     let distribute = bool_or(p, "distribute", false);
-    // A flat source (a horizontal or vertical line) has no size to scale on its flat axis: that axis only moves.
-    let ratio = |new: f64, old: f64| if old.abs() < 1e-9 { 1.0 } else { new / old };
-    let sx = ratio(to.width(), from.width());
-    let sy = ratio(to.height(), from.height());
-    let sx = if sx.abs() < 1e-3 { 1e-3f64.copysign(sx) } else { sx };
-    let sy = if sy.abs() < 1e-3 { 1e-3f64.copysign(sy) } else { sy };
-    let m = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
+    let (sx, fx, tx) = resize_axis_transform(from.x0, from.x1, to.x0, to.x1);
+    let (sy, fy, ty) = resize_axis_transform(from.y0, from.y1, to.y0, to.y1);
+    let m = Affine::translate((tx, ty)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-fx, -fy));
+    if !m.as_coeffs().iter().all(|v| v.is_finite()) {
+        return Err(bad("transform.resize", "the position and size must stay finite numbers"));
+    }
     let strokes = s.prefs.scale_strokes;
     s.edit(|d, _| {
         for id in &ids {
@@ -3388,23 +3410,34 @@ fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn fit_ref_param(p: &Value) -> Result<Option<usize>> {
+    let Some(v) = p.get("ref").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(r) = v.as_u64().and_then(|n| usize::try_from(n).ok()).filter(|&n| n <= 8) else {
+        return Err(bad("object.fit", "ref must be an integer from 0 to 8"));
+    };
+    Ok(Some(r))
+}
+
 fn fit(s: &mut Session, p: &Value) -> Result<Value> {
-    let doc = &s.doc()?.doc;
-    let ids: Vec<_> =
-        targets(s, p)?.into_iter().filter(|id| doc.item(*id).is_some_and(|it| !it.locked && doc.layer(it.layer).is_none_or(|l| !l.locked))).collect();
-    let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    let ref_pt = fit_ref_param(p)?;
     let (height, width) = match str_param(p, "axis").unwrap_or("both") {
         "height" => (true, false),
         "width" => (false, true),
         "both" => (true, true),
         other => return Err(bad("object.fit", format!("unknown axis `{other}`"))),
     };
+    let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    let doc = &s.doc()?.doc;
+    let ids: Vec<_> =
+        targets(s, p)?.into_iter().filter(|id| doc.item(*id).is_some_and(|it| !it.locked && doc.layer(it.layer).is_none_or(|l| !l.locked))).collect();
     // Text frames: Fit Frame to Content fits the frame to its composed text.
     let mut text_fits = Vec::new();
     if mode == "fitFrameToContent" {
         let d = s.doc()?.doc.clone();
         for id in &ids {
-            if let Some(r) = fitted_text_frame(&d, *id, height, width)? {
+            if let Some(r) = fitted_text_frame(&d, *id, height, width, ref_pt)? {
                 text_fits.push((*id, r));
             }
         }
@@ -3441,12 +3474,82 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum FitSide {
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Clone, Copy)]
+struct FitAnchors {
+    x: FitSide,
+    y: FitSide,
+}
+
+fn fit_text_anchors(tf: &TextFrame, ref_pt: Option<usize>) -> FitAnchors {
+    if let Some(r) = ref_pt {
+        let side = |k: usize| match k {
+            0 => FitSide::Start,
+            1 => FitSide::Center,
+            _ => FitSide::End,
+        };
+        return FitAnchors { x: side(r % 3), y: side(r / 3) };
+    }
+    let y = match tf.options.vertical_justification {
+        designcraft_doc::VerticalJustification::Bottom => FitSide::End,
+        designcraft_doc::VerticalJustification::Center => FitSide::Center,
+        designcraft_doc::VerticalJustification::Top | designcraft_doc::VerticalJustification::Justify => FitSide::Start,
+    };
+    FitAnchors { x: FitSide::Start, y }
+}
+
+fn anchored_span(start: f64, end: f64, size: f64, side: FitSide) -> (f64, f64) {
+    match side {
+        FitSide::Start => (start, start + size),
+        FitSide::Center => {
+            let mid = (start + end) * 0.5;
+            let half = size * 0.5;
+            (mid - half, mid + half)
+        }
+        FitSide::End => (end - size, end),
+    }
+}
+
+fn rect_with_width(cur: Rect, width: f64, side: FitSide) -> Rect {
+    let (x0, x1) = anchored_span(cur.x0, cur.x1, width, side);
+    Rect::new(x0, cur.y0, x1, cur.y1)
+}
+
+fn rect_with_height(cur: Rect, height: f64, side: FitSide) -> Rect {
+    let (y0, y1) = anchored_span(cur.y0, cur.y1, height, side);
+    Rect::new(cur.x0, y0, cur.x1, y1)
+}
+
+fn line_h_indents(d: &Document, story: &designcraft_doc::Story, para_idx: usize, first_in_para: bool) -> (f64, f64) {
+    let Some(pf) = story.paras.get(para_idx) else {
+        return (0.0, 0.0);
+    };
+    let (pp, _) = d.styles.resolve_para(pf);
+    let left = if pp.left_indent.is_finite() { pp.left_indent } else { 0.0 };
+    let right = if pp.right_indent.is_finite() { pp.right_indent } else { 0.0 };
+    let first = if first_in_para && pp.first_line_indent.is_finite() { pp.first_line_indent } else { 0.0 };
+    if pp.direction == designcraft_doc::TextDirection::RightToLeft {
+        let ind_r = right + first;
+        (left.max(0.0), if ind_r.is_finite() { ind_r.max(0.0) } else { 0.0 })
+    } else {
+        let ind_l = left + first;
+        (if ind_l.is_finite() { ind_l.max(0.0) } else { 0.0 }, right.max(0.0))
+    }
+}
+
 /// The inner rectangle that fits text frame `id` to its text (Fit Frame to Content): the smallest
-/// fitting height and the right side at the longest line's end (`width`, one column only),
-/// including insets; the top-left stays. Overset text grows the frame first. None for
-/// frames that aren't horizontal text frames, have no text, or are threaded on to another frame,
-/// and for auto-size frames, which already fit their text around their reference point.
-fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Result<Option<Rect>> {
+/// fitting height and column width (`width`, one column only), including insets, keeping `ref_pt`
+/// (or, when omitted, the vertical edge implied by vertical justification) fixed. Overset text
+/// grows the frame first. None for frames that aren't horizontal text frames, have no text, or are
+/// threaded on to another frame, and for auto-size frames, which already fit their text around
+/// their reference point.
+fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt: Option<usize>) -> Result<Option<Rect>> {
     let Some(it) = d.item(id) else { return Ok(None) };
     let Some(tf) = it.text_frame() else { return Ok(None) };
     if tf.options.auto_size != designcraft_doc::AutoSize::Off {
@@ -3464,6 +3567,17 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Res
     if !(r.width().is_finite() && r.height().is_finite() && r.width() > 0.0 && r.height() > 0.0) {
         return Err(bad("object.fit", "text frame bounds must be finite and nonempty"));
     }
+    // Composition reserves `stroke_inside()` inside every edge before applying the frame's text
+    // insets (`Item::text_area()`). Include the same allowance so stroked frames do not overset.
+    let stroke_in = it.stroke_inside();
+    let edge_inset = |v: f64| {
+        let total = if v.is_finite() { v + stroke_in } else { stroke_in };
+        if total.is_finite() { total } else { 0.0 }
+    };
+    let inset_l = edge_inset(tf.options.inset[1]);
+    let inset_b = edge_inset(tf.options.inset[2]);
+    let inset_r = edge_inset(tf.options.inset[3]);
+    let anchors = fit_text_anchors(tf, ref_pt);
     // Keep trial layouts out of the session cache. Search with the actual columns and frame
     // options: measuring a very tall frame collapses columns and includes vertical alignment's
     // extra space. A fitting trial must compose all the text, regardless of its justification.
@@ -3483,40 +3597,78 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Res
     // First fit the height at the existing width, then measure the complete text's width.
     // Recheck height after fitting width, since a small width change can change a line break.
     if height {
-        out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+        out = fit_text_height(out, id, inset_b, anchors.y, &mut compose)?;
     }
     if width && tf.options.columns <= 1 {
         let cs = compose(out);
         if let Some(ft) = cs.frame(id) {
-            let right = ft.lines.iter().map(|l| l.end_x).fold(f64::NEG_INFINITY, f64::max);
-            if right.is_finite() {
-                out.x1 = (right + tf.options.inset[3] + 0.001).max(r.x0 + 1.0);
+            let measure_start = !matches!(anchors.x, FitSide::Start);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for l in &ft.lines {
+                // Tables ignore first_line_indent in composition even when their first fragment is
+                // marked first_in_para; applying it here would inflate RTL table widths.
+                let first_in_para = l.first_in_para && story.para_table(l.para).is_none();
+                let (ind_l, ind_r) = line_h_indents(d, story, l.para, first_in_para);
+                if l.end_x.is_finite() {
+                    hi = hi.max(l.end_x + ind_r);
+                }
+                if measure_start {
+                    for g in l.glyphs.iter().filter(|g| g.visible || (g.rendered_char == '\t' && g.adv > 0.0)) {
+                        let pen = g.x - g.dx;
+                        if pen.is_finite() && g.adv.is_finite() {
+                            let edge = pen.min(pen + g.adv);
+                            if edge.is_finite() {
+                                lo = lo.min(edge - ind_l);
+                            }
+                        }
+                    }
+                }
+            }
+            for t in &ft.tables {
+                let (ind_l, ind_r) = ft.lines.get(t.line).map_or((0.0, 0.0), |l| line_h_indents(d, story, l.para, false));
+                if measure_start && t.rect.x0.is_finite() {
+                    lo = lo.min(t.rect.x0 - ind_l);
+                }
+                if t.rect.x1.is_finite() {
+                    hi = hi.max(t.rect.x1 + ind_r);
+                }
+            }
+            // Keep measuring from out.x0 when left-anchored or when `ref` is omitted so menu
+            // Fit Frame to Content does not shift right- or center-aligned text leftward.
+            let start = if measure_start && lo.is_finite() { lo - inset_l } else { out.x0 };
+            if hi.is_finite() && start.is_finite() {
+                let span_w = (hi - start + inset_r + 0.001).max(1.0);
+                if span_w.is_finite() {
+                    out = rect_with_width(out, span_w, anchors.x);
+                }
             }
         }
         if height {
-            out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+            out = fit_text_height(out, id, inset_b, anchors.y, &mut compose)?;
         }
     }
-    Ok(Some(out))
+    super::finite_rect("object.fit", out).map(Some)
 }
 
 fn fit_text_height(
-    mut rect: Rect,
+    rect: Rect,
     id: ItemId,
     inset_bottom: f64,
+    anchor_y: FitSide,
     compose: &mut impl FnMut(Rect) -> Arc<designcraft_compose::ComposedStory>,
 ) -> Result<Rect> {
     let mut low = 1.0;
     let limit = 20_000.0;
     let mut high = rect.height().clamp(1.0, limit);
-    rect.y1 = rect.y0 + high;
-    while compose(rect).is_overset() {
+    let mut cur = rect_with_height(rect, high, anchor_y);
+    while compose(cur).is_overset() {
         if high >= limit {
             return Err(bad("object.fit", "text does not fit within the 20,000 pt fitting limit"));
         }
         low = high;
         high = (high * 2.0).min(limit);
-        rect.y1 = rect.y0 + high;
+        cur = rect_with_height(rect, high, anchor_y);
     }
     // Bounded search, always retaining a verified fitting upper bound.
     for _ in 0..32 {
@@ -3524,22 +3676,23 @@ fn fit_text_height(
             break;
         }
         let mid = low + (high - low) / 2.0;
-        rect.y1 = rect.y0 + mid;
-        if compose(rect).is_overset() {
+        let candidate = rect_with_height(rect, mid, anchor_y);
+        if compose(candidate).is_overset() {
             low = mid;
         } else {
             high = mid;
         }
     }
-    rect.y1 = rect.y0 + high;
+    cur = rect_with_height(rect, high, anchor_y);
     // A line is set when its baseline is within 0.01 pt of the bottom, so the search stops just
-    // short of the lowest baseline. The bottom goes onto it (plus the inset): the frame then fits
-    // its text exactly and still does when it is scaled up.
-    let lowest = compose(rect).frame(id).and_then(|ft| ft.lines.iter().map(|l| l.baseline).reduce(f64::max));
-    if let Some(b) = lowest.map(|b| b + inset_bottom).filter(|b| b.is_finite() && *b > rect.y1 && *b - rect.y1 <= 0.02) {
-        rect.y1 = b;
+    // short of the lowest baseline. Growing height along `anchor_y` by that residual keeps the
+    // pinned edge in place while making the frame fit exactly, even when scaled up.
+    let cs = compose(cur);
+    let lowest = cs.frame(id).and_then(|ft| ft.lines.iter().map(|l| l.baseline).reduce(f64::max));
+    if let Some(extra) = lowest.map(|b| b + inset_bottom - cur.y1).filter(|e| e.is_finite() && *e > 0.0 && *e <= 0.02) {
+        cur = rect_with_height(rect, high + extra, anchor_y);
     }
-    Ok(rect)
+    Ok(cur)
 }
 
 pub(crate) trait RemoveKeep {
@@ -4834,6 +4987,39 @@ mod fitting_tests {
         s.execute("transform.resize", &json!({"ids": [id], "from": [100, 100, 200, 100], "to": [100, 100, 300, 100]})).unwrap();
         let r = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
         assert!((r.x0 - 100.0).abs() < 1e-9 && (r.x1 - 300.0).abs() < 1e-9 && (r.y0 - 100.0).abs() < 1e-9 && r.height().abs() < 1e-9, "{r:?}");
+    }
+
+    #[test]
+    fn transform_resize_pins_unchanged_edge_across_clamp_and_flip() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 400, 300], "content": "text", "text": "Bottom anchored"})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [id], "verticalJustification": "bottom"})).unwrap();
+        let baselines = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let sid = d.item(ItemId(id)).unwrap().text_frame().unwrap().story;
+            s.cache.get(d, sid, None).frame(ItemId(id)).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
+        };
+        let before_y = baselines(&s);
+        // Dragging the top edge down while keeping room for the text leaves text and y1 fixed.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [100, 100, 400, 300], "to": [100, 200, 400, 300]})).unwrap();
+        let mid = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((mid.y0 - 200.0).abs() < 1e-9 && (mid.y1 - 300.0).abs() < 1e-9, "{mid:?}");
+        assert!((baselines(&s)[0] - before_y[0]).abs() < 1e-9);
+        // Dragging near the bottom edge hits the 1e-3 clamp: y1 must stay pinned instead of drifting.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [100, 200, 400, 300], "to": [100, 299.99, 400, 300]})).unwrap();
+        let tiny = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((tiny.y1 - 300.0).abs() < 1e-9, "bottom edge drifted under clamp: {tiny:?}");
+        // Flipping the top edge past the bottom keeps the fixed bottom edge at y = 300.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [tiny.x0, tiny.y0, tiny.x1, tiny.y1], "to": [100, 340, 400, 300]})).unwrap();
+        let flipped = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((flipped.y0 - 300.0).abs() < 1e-9 && (flipped.y1 - 340.0).abs() < 1e-9, "{flipped:?}");
+        // Non-finite or overflowing target bounds are refused without changing the frame.
+        assert!(s.execute("transform.resize", &json!({"ids": [id], "from": [100, 300, 400, 340], "to": [100, 1e308, 400, 340]})).is_err());
+        assert!(s.execute("transform.resize", &json!({"ids": [id], "from": [100, 300, 400, 340], "to": [100, null, 400, 340]})).is_err());
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds(), flipped);
     }
 
     #[test]
@@ -6554,6 +6740,352 @@ mod fit_text_frame_tests {
         let before = [bounds(&s, a), bounds(&s, b)];
         assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ids": [a.0, b.0]})).is_err());
         assert_eq!([bounds(&s, a), bounds(&s, b)], before);
+    }
+
+    #[test]
+    fn bottom_aligned_fit_keeps_bottom_edge_and_text_in_place() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Line one\nLine two");
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+        let baselines = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let sid = d.item(id).unwrap().text_frame().unwrap().story;
+            let cs = s.cache.get(d, sid, None);
+            (!cs.is_overset(), cs.frame(id).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>())
+        };
+        let (ok0, lines0) = baselines(&s);
+        assert!(ok0 && lines0.len() == 2);
+
+        // Top-edge double click sends ref = 7 (bottom-center fixed): top edge drops onto the text.
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [id.0]})).unwrap();
+        let b1 = bounds(&s, id);
+        let (ok1, lines1) = baselines(&s);
+        assert!(ok1 && (b1.y1 - 300.0).abs() < 1e-9 && b1.y0 > 200.0 && b1.x0 == 100.0 && b1.x1 == 500.0, "{b1:?}");
+        assert!((lines1[0] - lines0[0]).abs() < 1e-6 && (lines1[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines1:?}");
+
+        // Without an explicit ref (menu Fit Frame to Content), bottom-aligned frames also keep their bottom edge.
+        s.execute("transform.resize", &json!({"ids": [id.0], "from": [b1.x0, b1.y0, b1.x1, b1.y1], "to": [100.0, 100.0, 500.0, 300.0]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [id.0]})).unwrap();
+        let b2 = bounds(&s, id);
+        let (ok2, lines2) = baselines(&s);
+        assert!(ok2 && (b2.y1 - 300.0).abs() < 1e-9 && (b2.y0 - b1.y0).abs() < 1e-6, "{b2:?} vs {b1:?}");
+        assert!((lines2[0] - lines0[0]).abs() < 1e-6 && (lines2[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines2:?}");
+
+        // Invalid `ref` is rejected without touching the frame.
+        for bad_ref in [json!(9), json!(-1), json!("bottom")] {
+            assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ref": bad_ref, "ids": [id.0]})).is_err(), "{bad_ref}");
+        }
+        assert_eq!(bounds(&s, id), b2);
+    }
+
+    #[test]
+    fn fit_frame_keeps_anchor_for_overset_corners_center_and_rotation() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // Overset bottom-aligned frame grows upward while bottom edge stays put.
+        let id = frame(&mut s, [100.0, 265.0, 500.0, 300.0], "one\ntwo\nthree\nfour");
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(id).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&d, sid, None).is_overset() && (b.y1 - 300.0).abs() < 1e-9 && b.y0 < 200.0, "{b:?}");
+
+        // Top-left corner double-click (ref = 8) on bottom-aligned text keeps bottom-right fixed.
+        let corner = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("object.textFrameOptions", &json!({"ids": [corner.0], "verticalJustification": "bottom", "inset": [4, 6, 8, 10]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [corner.0]})).unwrap();
+        let cb = bounds(&s, corner);
+        assert!((cb.x1 - 500.0).abs() < 1e-9 && (cb.y1 - 300.0).abs() < 1e-9, "bottom-right pinned: {cb:?}");
+        assert!(cb.width() < 200.0 && cb.height() < 60.0, "shrunk flush around short line: {cb:?}");
+        let d = s.doc().unwrap().doc.clone();
+        let it = d.item(corner).unwrap();
+        let sid = it.text_frame().unwrap().story;
+        let cs = s.cache.get(&d, sid, None);
+        assert!(!cs.is_overset());
+        assert!((cs.frame(corner).unwrap().lines[0].baseline - it.text_area().y1).abs() < 1e-6);
+
+        // Center-justified without ref keeps vertical center and text baselines in place.
+        let ctr = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Centered");
+        s.execute("object.textFrameOptions", &json!({"ids": [ctr.0], "verticalJustification": "center"})).unwrap();
+        let ctr_sid = s.doc().unwrap().doc.item(ctr).unwrap().text_frame().unwrap().story;
+        let ctr_y0 = s.cache.get(&s.doc().unwrap().doc, ctr_sid, None).frame(ctr).unwrap().lines[0].baseline;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [ctr.0]})).unwrap();
+        let ctr_b = bounds(&s, ctr);
+        let ctr_cs = s.cache.get(&s.doc().unwrap().doc, ctr_sid, None);
+        assert!(!ctr_cs.is_overset() && (ctr_b.center().y - 200.0).abs() < 1e-6 && ctr_b.height() < 50.0, "{ctr_b:?}");
+        let ctr_y1 = ctr_cs.frame(ctr).unwrap().lines[0].baseline;
+        assert!((ctr_y1 - ctr_y0).abs() < 1e-3, "center-VJ baseline shifted: {ctr_y0} -> {ctr_y1}");
+
+        // Top and Justify without ref stay anchored to the top edge.
+        for vj in ["top", "justify"] {
+            let f = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Anchored top\nLine two");
+            s.execute("object.textFrameOptions", &json!({"ids": [f.0], "verticalJustification": vj})).unwrap();
+            s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [f.0]})).unwrap();
+            let fb = bounds(&s, f);
+            let f_sid = s.doc().unwrap().doc.item(f).unwrap().text_frame().unwrap().story;
+            assert!(!s.cache.get(&s.doc().unwrap().doc, f_sid, None).is_overset());
+            assert!((fb.y0 - 100.0).abs() < 1e-9 && fb.height() < 100.0, "{vj}: {fb:?}");
+        }
+
+        // Right-aligned text fitted without ref keeps its right edge (does not shift left).
+        let right = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [right.0], "verticalJustification": "bottom"})).unwrap();
+        let right_sid = s.doc().unwrap().doc.item(right).unwrap().text_frame().unwrap().story;
+        let glyph_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ids": [right.0]})).unwrap();
+        let rb = bounds(&s, right);
+        let after_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        assert!((rb.x1 - 500.001).abs() < 1e-6 && (after_x0 - glyph_x0).abs() < 0.002, "right-aligned text moved: {rb:?}, {glyph_x0} -> {after_x0}");
+
+        // Rotated 90° bottom-aligned frame: fitting keeps its local bottom-center pinned in spread space.
+        let rot = frame(&mut s, [200.0, 100.0, 500.0, 300.0], "Rotated bottom");
+        s.execute("object.textFrameOptions", &json!({"ids": [rot.0], "verticalJustification": "bottom"})).unwrap();
+        s.execute("transform.rotate", &json!({"angle": 90, "ids": [rot.0]})).unwrap();
+        let bottom_spread = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(rot).unwrap();
+            let r = it.inner_bounds();
+            it.xf * Point::new(r.center().x, r.y1)
+        };
+        let p0 = bottom_spread(&s);
+        let h0 = s.doc().unwrap().doc.item(rot).unwrap().inner_bounds().height();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [rot.0]})).unwrap();
+        let p1 = bottom_spread(&s);
+        let h1 = s.doc().unwrap().doc.item(rot).unwrap().inner_bounds().height();
+        assert!(h1 < h0 * 0.5 && (p1 - p0).hypot() < 1e-9, "{p0:?} vs {p1:?}, h: {h0} -> {h1}");
+    }
+
+    #[test]
+    fn right_and_center_anchored_width_fit_starts_from_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Right-aligned bottom-aligned frame [100,100,500,300] fitted with ref=8 (bottom-right fixed)
+        // shrinks from the left flush to the text instead of keeping empty space from out.x0.
+        let right = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [right.0], "verticalJustification": "bottom", "inset": [4, 6, 8, 10]})).unwrap();
+        let right_sid = s.doc().unwrap().doc.item(right).unwrap().text_frame().unwrap().story;
+        let glyph_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [right.0]})).unwrap();
+        let rb = bounds(&s, right);
+        let after_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        let cs = s.cache.get(&s.doc().unwrap().doc, right_sid, None);
+        assert!(!cs.is_overset());
+        assert!((rb.x1 - 500.0).abs() < 1e-9 && (rb.y1 - 300.0).abs() < 1e-9, "{rb:?}");
+        assert!(rb.width() < 200.0 && rb.height() < 60.0, "did not shrink flush around right-aligned text: {rb:?}");
+        assert!((after_x0 - glyph_x0).abs() < 0.002, "right-aligned text moved: {glyph_x0} -> {after_x0}");
+        assert!((cs.frame(right).unwrap().lines[0].baseline - s.doc().unwrap().doc.item(right).unwrap().text_area().y1).abs() < 1e-6);
+
+        // Width-only fit with ref=5 (right edge pinned) shrinks from the left without moving height or glyphs.
+        let w_only = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        let w_sid = s.doc().unwrap().doc.item(w_only).unwrap().text_frame().unwrap().story;
+        let w_x0 = s.cache.get(&s.doc().unwrap().doc, w_sid, None).frame(w_only).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [w_only.0]})).unwrap();
+        let wb = bounds(&s, w_only);
+        let w_after = s.cache.get(&s.doc().unwrap().doc, w_sid, None).frame(w_only).unwrap().lines[0].glyphs[0].x;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, w_sid, None).is_overset());
+        assert!((wb.x1 - 500.0).abs() < 1e-9 && (wb.y0 - 100.0).abs() < 1e-9 && (wb.y1 - 300.0).abs() < 1e-9, "{wb:?}");
+        assert!(wb.width() < 200.0 && (w_after - w_x0).abs() < 0.002, "{wb:?}, {w_x0} -> {w_after}");
+
+        // Center-aligned frame fitted around center (ref=4) shrinks symmetrically from both sides.
+        let center = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 4, "ids": [center.0]})).unwrap();
+        let cb = bounds(&s, center);
+        let c_sid = s.doc().unwrap().doc.item(center).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, c_sid, None).is_overset());
+        assert!((cb.center().x - 300.0).abs() < 1e-6 && (cb.center().y - 200.0).abs() < 1e-6 && cb.width() < 200.0, "{cb:?}");
+
+        // Paragraph indents remain accounted for so left-indented text does not wrap when shrunk.
+        let indented = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"leftIndent": 20.0, "rightIndent": 15.0}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [indented.0]})).unwrap();
+        let ib = bounds(&s, indented);
+        let i_sid = s.doc().unwrap().doc.item(indented).unwrap().text_frame().unwrap().story;
+        let i_cs = s.cache.get(&s.doc().unwrap().doc, i_sid, None);
+        assert!(!i_cs.is_overset() && i_cs.frame(indented).unwrap().lines.len() == 1);
+        assert!((ib.x1 - 500.0).abs() < 1e-9 && ib.width() < 250.0, "{ib:?}");
+
+        // Whitespace-only frame (no visible glyphs) falls back cleanly to finite bounds.
+        let blank = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "   ");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [blank.0]})).unwrap();
+        let bb = bounds(&s, blank);
+        let b_sid = s.doc().unwrap().doc.item(blank).unwrap().text_frame().unwrap().story;
+        assert!(bb.is_finite() && (bb.x1 - 500.0).abs() < 1e-9 && !s.cache.get(&s.doc().unwrap().doc, b_sid, None).is_overset(), "{bb:?}");
+    }
+
+    #[test]
+    fn leading_tab_width_fit_keeps_tab_advance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-aligned leading-tab text in a one-line frame with axis="width", ref=5 retains
+        // the tab's 36 pt advance so recomposition keeps one line and stays non-overset.
+        let tabbed = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "\tSHORT");
+        let t_sid = s.doc().unwrap().doc.item(tabbed).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, t_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, t_sid, None).frame(tabbed).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tabbed.0]})).unwrap();
+        let tb = bounds(&s, tabbed);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "leading tab caused overset after width fit: {tb:?}");
+        assert_eq!(t_cs.frame(tabbed).unwrap().lines.len(), 1, "leading tab wrapped after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9 && tb.width() < 250.0, "{tb:?}");
+
+        // Stretchy right-indent tab still allows shrinking down to the visible content width.
+        let rtab_text = format!("{}SHORT", designcraft_doc::story::RIGHT_INDENT_TAB);
+        let rtab = frame(&mut s, [100.0, 100.0, 500.0, 145.0], &rtab_text);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtab.0]})).unwrap();
+        let rb = bounds(&s, rtab);
+        let r_sid = s.doc().unwrap().doc.item(rtab).unwrap().text_frame().unwrap().story;
+        let r_cs = s.cache.get(&s.doc().unwrap().doc, r_sid, None);
+        assert!(!r_cs.is_overset() && r_cs.frame(rtab).unwrap().lines.len() == 1);
+        assert!((rb.x1 - 500.0).abs() < 1e-9 && rb.width() < 200.0, "{rb:?}");
+        assert!(tb.width() > rb.width() + 25.0, "leading tab advance missing: tb={tb:?} vs rb={rb:?}");
+    }
+
+    #[test]
+    fn left_anchored_width_fit_keeps_right_indent() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-anchored width fit (e.g. double-clicking the right handle, ref=3) accounts for
+        // paragraph right indent so a one-line paragraph does not rewrap or overset.
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"rightIndent": 24.0}})).unwrap();
+        let sid = s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, sid, None).frame(id).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!cs.is_overset(), "right indent caused overset after left-anchored width fit: {b:?}");
+        assert_eq!(cs.frame(id).unwrap().lines.len(), 1, "right indent caused rewrap after left-anchored width fit: {b:?}");
+        assert!((b.x0 - 100.0).abs() < 1e-9 && b.width() < 300.0, "{b:?}");
+
+        // Baseline-grid aligned bottom-justified text keeps its bottom edge and grid baselines.
+        let grid = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Grid line one\nGrid line two");
+        s.execute("type.para", &json!({"attrs": {"gridAlign": "allLines"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [grid.0], "verticalJustification": "bottom"})).unwrap();
+        let g_sid = s.doc().unwrap().doc.item(grid).unwrap().text_frame().unwrap().story;
+        let before: Vec<f64> = s.cache.get(&s.doc().unwrap().doc, g_sid, None).frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert_eq!(before.len(), 2);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [grid.0]})).unwrap();
+        let gb = bounds(&s, grid);
+        let g_cs = s.cache.get(&s.doc().unwrap().doc, g_sid, None);
+        let after: Vec<f64> = g_cs.frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert!(!g_cs.is_overset() && (gb.y1 - 300.0).abs() < 1e-9 && gb.height() < 120.0, "{gb:?}");
+        assert_eq!(after.len(), 2);
+        for (a, b) in before.iter().zip(after.iter()) {
+            assert!((a - b).abs() < 1e-6, "baseline-grid line shifted: {before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn rtl_table_width_fit_ignores_first_line_indent_while_text_keeps_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // A 100-pt table in an RTL paragraph with firstLineIndent=24 must not retain 24 pt of
+        // unused width when fitted, because the compositor ignores first_line_indent for tables.
+        let tbl = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let t_sid = s.doc().unwrap().doc.item(tbl).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("text.select", &json!({"story": t_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl.0]})).unwrap();
+        let tb = bounds(&s, tbl);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "table overset after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9, "{tb:?}");
+        assert!((tb.width() - 100.0).abs() < 0.01, "table fit retained unused first-line indent width: {tb:?}");
+        assert!((t_cs.frame(tbl).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Paragraph left/right indents still apply to tables, while firstLineIndent is ignored.
+        let tbl_ind = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let ti_sid = s.doc().unwrap().doc.item(tbl_ind).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "leftIndent": 10.0, "rightIndent": 12.0, "firstLineIndent": 24.0}}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": ti_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl_ind.0]})).unwrap();
+        let tib = bounds(&s, tbl_ind);
+        let ti_cs = s.cache.get(&s.doc().unwrap().doc, ti_sid, None);
+        assert!(!ti_cs.is_overset(), "indented table overset after width fit: {tib:?}");
+        assert!((tib.x1 - 500.0).abs() < 1e-9, "{tib:?}");
+        assert!((tib.width() - 122.0).abs() < 0.01, "table fit should keep left+right indents only: {tib:?}");
+        assert!((ti_cs.frame(tbl_ind).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Actual RTL text lines still keep first_line_indent so a single-line paragraph does not wrap.
+        let plain = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [plain.0]})).unwrap();
+        let pb = bounds(&s, plain);
+
+        let rtl_first = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtl_first.0]})).unwrap();
+        let rfb = bounds(&s, rtl_first);
+        let rf_sid = s.doc().unwrap().doc.item(rtl_first).unwrap().text_frame().unwrap().story;
+        let rf_cs = s.cache.get(&s.doc().unwrap().doc, rf_sid, None);
+        assert!(!rf_cs.is_overset() && rf_cs.frame(rtl_first).unwrap().lines.len() == 1, "RTL text wrapped/overset: {rfb:?}");
+        assert!((rfb.width() - (pb.width() + 24.0)).abs() < 0.5, "RTL text lost first_line_indent: rfb={rfb:?} vs pb={pb:?}");
+    }
+
+    #[test]
+    fn stroked_frame_width_fit_preserves_inside_stroke_allowance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // One-line frame with a 4 pt inside stroke: width fit from the left handle (ref=5) must
+        // keep both sides' inside-stroke allowance so recomposition stays one line and non-overset.
+        let inside_l = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_l.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let il_sid = s.doc().unwrap().doc.item(inside_l).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, il_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, il_sid, None).frame(inside_l).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [inside_l.0]})).unwrap();
+        let il_b = bounds(&s, inside_l);
+        let il_cs = s.cache.get(&s.doc().unwrap().doc, il_sid, None);
+        assert!(!il_cs.is_overset(), "4 pt inside stroke caused overset on ref=5 width fit: {il_b:?}");
+        assert_eq!(il_cs.frame(inside_l).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=5 width fit: {il_b:?}");
+        assert!((il_b.x1 - 500.0).abs() < 1e-9 && il_b.width() < 250.0, "{il_b:?}");
+
+        // Left-anchored width fit (right handle, ref=3) also keeps the inside-stroke allowance.
+        let inside_r = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_r.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let ir_sid = s.doc().unwrap().doc.item(inside_r).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [inside_r.0]})).unwrap();
+        let ir_b = bounds(&s, inside_r);
+        let ir_cs = s.cache.get(&s.doc().unwrap().doc, ir_sid, None);
+        assert!(!ir_cs.is_overset(), "4 pt inside stroke caused overset on ref=3 width fit: {ir_b:?}");
+        assert_eq!(ir_cs.frame(inside_r).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=3 width fit: {ir_b:?}");
+        assert!((ir_b.x0 - 100.0).abs() < 1e-9 && (ir_b.width() - il_b.width()).abs() < 0.01, "ir={ir_b:?} vs il={il_b:?}");
+
+        // Centered 8 pt stroke reaches 4 pt inside (same inner width as 4 pt inside); outside 8 pt
+        // reaches 0 pt inside (~8 pt narrower inner rect).
+        let centered = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [centered.0], "swatch": "[Black]", "weight": 8.0, "align": "center"})).unwrap();
+        let c_sid = s.doc().unwrap().doc.item(centered).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [centered.0]})).unwrap();
+        let c_inner = s.doc().unwrap().doc.item(centered).unwrap().inner_bounds();
+        let c_cs = s.cache.get(&s.doc().unwrap().doc, c_sid, None);
+        assert!(!c_cs.is_overset() && c_cs.frame(centered).unwrap().lines.len() == 1, "{c_inner:?}");
+        assert!((c_inner.width() - il_b.width()).abs() < 0.01, "centered={c_inner:?} vs inside={il_b:?}");
+
+        let outside = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [outside.0], "swatch": "[Black]", "weight": 8.0, "align": "outside"})).unwrap();
+        let o_sid = s.doc().unwrap().doc.item(outside).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [outside.0]})).unwrap();
+        let o_inner = s.doc().unwrap().doc.item(outside).unwrap().inner_bounds();
+        let o_cs = s.cache.get(&s.doc().unwrap().doc, o_sid, None);
+        assert!(!o_cs.is_overset() && o_cs.frame(outside).unwrap().lines.len() == 1, "{o_inner:?}");
+        assert!((il_b.width() - o_inner.width() - 8.0).abs() < 0.01, "inside={il_b:?} vs outside={o_inner:?}");
     }
 }
 

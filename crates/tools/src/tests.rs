@@ -1845,9 +1845,9 @@ fn double_clicking_a_handle_fits_the_frame_to_its_content_along_that_side() {
     let off = l.xf(SpreadRef::Doc(0)).translation();
     let cx = ctx(&d, &s, &c, &l);
     let mut t = create("selection");
-    for ((x, y), axis) in [((300.0, 200.0), "both"), ((200.0, 200.0), "height"), ((300.0, 150.0), "width")] {
+    for ((x, y), axis, rf) in [((300.0, 200.0), "both", 0), ((200.0, 200.0), "height", 1), ((300.0, 150.0), "width", 3)] {
         let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, x + off.x, y + off.y));
-        assert_eq!(a, vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))], "{axis}");
+        assert_eq!(a, vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))], "{axis}");
     }
 }
 
@@ -1864,17 +1864,98 @@ fn fitting_handle_axes_follow_spread_and_frame_rotation() {
             let cx = ctx(&d, &s, &c, &l);
             let b = cx.selection_bounds().unwrap();
             let mut t = create("selection");
-            let swapped = (spread_turn + frame_turn) % 2 == 1;
-            for (index, axis) in [(1, if swapped { "width" } else { "height" }), (3, if swapped { "height" } else { "width" }), (4, "both")] {
+            let total_turn = ((spread_turn + frame_turn) % 4) as usize;
+            let swapped = total_turn % 2 == 1;
+            let expected = [
+                (1, if swapped { "width" } else { "height" }, [7, 5, 1, 3][total_turn]),
+                (3, if swapped { "height" } else { "width" }, [3, 7, 5, 1][total_turn]),
+                (4, "both", [0, 6, 8, 2][total_turn]),
+            ];
+            for (index, axis, rf) in expected {
                 let p = select::handles(b)[index];
                 let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
                 assert_eq!(
                     a,
-                    vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))],
+                    vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
                     "spread={spread_turn}, frame={frame_turn}, handle={index}"
                 );
             }
         }
+    }
+}
+
+#[test]
+fn double_clicking_top_and_rotated_handles_sets_opposite_ref() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    // Handle 1 (top) fixes bottom-center (7); TL (0) fixes BR (8); L (7) fixes right-center (5).
+    for (handle, axis, rf) in [(1, "height", 7), (0, "both", 8), (2, "both", 6), (7, "width", 5)] {
+        let p = select::handles(Rect::new(100.0 + off.x, 100.0 + off.y, 300.0 + off.x, 200.0 + off.y))[handle];
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+        assert_eq!(
+            a,
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "handle={handle}"
+        );
+    }
+    // Rotating the frame 180 deg maps canvas top (1) to local bottom, so local top (1) stays fixed.
+    d.item_mut(id).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::PI);
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    let top = select::handles(b)[1];
+    assert_eq!(
+        t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+        vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height", "ref": 1}))]
+    );
+    // Mixed rotations in one selection omit `ref` so each frame uses its own default.
+    let other = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let s2 = Selection { items: vec![id, other], ..Default::default() };
+    let cx2 = ctx(&d, &s2, &c, &l);
+    let b2 = cx2.selection_bounds().unwrap();
+    let top2 = select::handles(b2)[1];
+    assert_eq!(
+        t.pointer(&cx2, &PointerEvent::new(PointerKind::DoubleClick, top2.x, top2.y)),
+        vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height"}))]
+    );
+}
+
+#[test]
+fn double_clicking_handles_on_sheared_frame_keeps_axis_and_opposite_ref() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let shear = designcraft_geom::Affine::new([1.0, 0.0, 60.0_f64.to_radians().tan(), 1.0, 0.0, 0.0]);
+    d.item_mut(id).unwrap().xf = shear;
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    let mut t = create("selection");
+    // A 60° horizontal shear keeps local X horizontal, so top/bottom still fit height and
+    // left/right still fit width, with each handle pinning its opposite local side.
+    for (handle, axis, rf) in [(1, "height", 7), (5, "height", 1), (7, "width", 5), (3, "width", 3), (0, "both", 8)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "sheared handle={handle}"
+        );
+    }
+    // 90° clockwise rotation combined with 60° horizontal shear maps local X vertically.
+    d.item_mut(id).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2) * shear;
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    for (handle, axis, rf) in [(1, "width", 5), (3, "height", 7)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "rotated+sheared handle={handle}"
+        );
     }
 }
 
