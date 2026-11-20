@@ -51,7 +51,7 @@ pub(crate) struct CatchwordIndex {
 impl CatchwordIndex {
     pub fn build(doc: &Document, cs: &ComposedStory, story: &Story) -> Self {
         let ids: std::collections::BTreeSet<_> = cs.frames.iter().flat_map(|f| &f.notes).map(|n| n.series).collect();
-        Self { main: story_catchwords(doc, cs, story), series: ids.into_iter().map(|id| (id, series_catchwords(doc, cs, id))).collect() }
+        Self { main: story_catchwords(doc, cs, story), series: ids.into_iter().map(|id| (id, series_catchwords(doc, cs, story, id))).collect() }
     }
 }
 
@@ -179,14 +179,27 @@ fn page_words(pages: &BTreeMap<usize, String>, continuation: Option<&str>) -> BT
 
 /// First visible word on the next page showing this series. Source ranges, rather than
 /// generated labels, distinguish a continued note from the next note in the same stream.
-pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64) -> BTreeMap<usize, String> {
+pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, source: &Story, series: u64) -> BTreeMap<usize, String> {
+    let skipped: HashMap<_, Vec<_>> = source
+        .notes
+        .iter()
+        .filter(|note| doc.note_series_id(note.series) == series)
+        .map(|note| (note.id, catchword_skipped_paragraphs(doc, &note.text)))
+        .collect();
     let mut pages: BTreeMap<usize, Vec<_>> = BTreeMap::new();
     for frame in &cs.frames {
         let Some(page) = frame_page(doc, frame.frame) else { continue };
         for note in frame.notes.iter().filter(|n| n.series == series) {
             for part in &note.text.frames {
-                let glyphs = || part.lines.iter().flat_map(|l| &l.glyphs);
-                let Some(start) = glyphs().filter(|g| g.visible && g.len > 0).map(|g| g.byte).min() else { continue };
+                let glyphs = || {
+                    part.lines
+                        .iter()
+                        .filter(|line| !skipped.get(&note.id).and_then(|flags| flags.get(line.para)).copied().unwrap_or(false))
+                        .flat_map(|l| &l.glyphs)
+                };
+                let Some(start) = part.lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible && g.len > 0).map(|g| g.byte).min() else {
+                    continue;
+                };
                 pages.entry(page).or_default().push((note.index, start, visible_source(&note.source, glyphs())));
             }
         }
@@ -198,8 +211,14 @@ pub(crate) fn series_catchwords(doc: &Document, cs: &ComposedStory, series: u64)
     page_words(&text, doc.note_options(series).catchword_continuation.as_deref())
 }
 
+/// Resolve once per source paragraph, including inherited paragraph-style attributes.
+fn catchword_skipped_paragraphs(doc: &Document, story: &Story) -> Vec<bool> {
+    story.paras.iter().map(|para| doc.styles.resolve_para(para).0.catchword_skip).collect()
+}
+
 /// Catchwords for the main source, with its shown-byte count for default-source selection.
 pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -> BTreeMap<usize, (usize, String)> {
+    let skipped = catchword_skipped_paragraphs(doc, st);
     // Routed note frames are appended to the composition but never carry main-story bytes.
     let main =
         |ft: &&crate::FrameText| doc.item(ft.frame).and_then(|i| i.text_frame()).is_some_and(|f| f.story == st.id && f.options.note_stream.is_none());
@@ -214,7 +233,13 @@ pub(crate) fn story_catchwords(doc: &Document, cs: &ComposedStory, st: &Story) -
     let mut glyph_pages: BTreeMap<usize, Vec<_>> = BTreeMap::new();
     for ft in cs.frames.iter().filter(main) {
         if let Some(page) = frame_page(doc, ft.frame) {
-            glyph_pages.entry(page).or_default().extend(ft.lines.iter().flat_map(|l| &l.glyphs).filter(|g| cs.overset_at.is_none_or(|o| g.byte < o)));
+            glyph_pages.entry(page).or_default().extend(
+                ft.lines
+                    .iter()
+                    .filter(|line| !skipped.get(line.para).copied().unwrap_or(false))
+                    .flat_map(|l| &l.glyphs)
+                    .filter(|g| cs.overset_at.is_none_or(|o| g.byte < o)),
+            );
         }
     }
     let mut text = BTreeMap::new();
@@ -410,6 +435,62 @@ pub fn values_shown(doc: &Document, page: Option<usize>, parent: bool, running: 
 #[cfg(test)]
 mod tests {
     use super::first_word;
+
+    #[test]
+    fn catchword_skip_omits_heading_from_page_index() {
+        use super::*;
+        use designcraft_doc::{
+            build::NewDocument,
+            vars::{TextVariable, VarKind},
+        };
+        let mut doc = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let text = format!("Before{}\nHeading\nBodyword follows.\n", designcraft_doc::story::FRAME_BREAK);
+        let mut previous = None;
+        let mut story = None;
+        for page in 0..2 {
+            let (si, pi) = doc.page_loc(page).unwrap();
+            let x = doc.spreads[si].pages[pi].x;
+            let (id, sid) = doc
+                .add_text_frame(
+                    SpreadRef::Doc(si),
+                    designcraft_geom::Rect::new(x + 36.0, 36.0, x + 400.0, 300.0),
+                    doc.default_layer(),
+                    if page == 0 { &text } else { "" },
+                    Default::default(),
+                )
+                .unwrap();
+            if let Some(from) = previous {
+                doc.thread(from, id).unwrap();
+            }
+            previous = Some(id);
+            story.get_or_insert(sid);
+        }
+        let sid = story.unwrap();
+        doc.text_variables.push(TextVariable::new("Catchword", VarKind::NextPageFirstWord { story: Some(sid), series: None }));
+        for (skip, expected) in [(None, "Heading"), (Some(false), "Heading"), (Some(true), "Bodyword")] {
+            doc.story_mut(sid).unwrap().paras[1].para.catchword_skip = skip;
+            let cs = Arc::new(crate::compose_story(&doc, sid, &Default::default()));
+            assert_eq!(CatchwordIndex::build(&doc, &cs, doc.story(sid).unwrap()).main[&0].1, expected);
+            let index = RunningIndex::build(&doc, &|_| cs.clone());
+            assert_eq!(index.catchword(Some(sid), 0), expected);
+        }
+        Arc::make_mut(&mut doc.styles).paragraph.push(designcraft_doc::ParagraphStyle {
+            name: "Skipped heading".into(),
+            based_on: None,
+            next_style: None,
+            para: designcraft_doc::ParaAttrs { catchword_skip: Some(true), ..Default::default() },
+            chars: Default::default(),
+            shortcut: String::new(),
+        });
+        for (local, expected) in [(None, "Bodyword"), (Some(false), "Heading")] {
+            let para = &mut doc.story_mut(sid).unwrap().paras[1];
+            para.style = "Skipped heading".into();
+            para.para.catchword_skip = local;
+            let cs = Arc::new(crate::compose_story(&doc, sid, &Default::default()));
+            let index = RunningIndex::build(&doc, &|_| cs.clone());
+            assert_eq!(index.catchword(Some(sid), 0), expected);
+        }
+    }
 
     #[test]
     fn catchword_visible_text_is_reconstructed_once_per_page() {

@@ -148,6 +148,7 @@ terminal catchword. Each note series has its own optional text, set through
 `footnote.series.create` or `footnote.series.options {series,catchwordContinuation:"Next comment"}`.
 Both accept at most 256 characters without control characters; `null` clears the value.
 Native saves preserve both fields. IDML warns that it loses terminal catchword text.
+Paragraph attributes and paragraph styles accept `catchwordSkip:true` (default `false`). Catchwords and next-page-word variables skip the whole resolved paragraph when selecting the next visible word, in the main stream and in each note series. Set it through `type.para {attrs:{catchwordSkip:true}}` or a paragraph style's `para` options. Native saves retain it; IDML warns that it loses the flag.
 Without continuation text, ended streams show no catchword. Conditional visibility and tracked deletions determine which source words are shown. Generated words leave editable source ranges and caret positions
 unchanged, and are included in native rendering and PDF export.
 

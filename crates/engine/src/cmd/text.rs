@@ -235,7 +235,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), catchwordSkip?: bool (default false; omit this paragraph from catchwords and next-page-word variables), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
             has_text_or_frames,
             |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
         ),
@@ -464,6 +464,50 @@ fn align_paras(s: &mut Session, align: Option<Align>) -> Result<Value> {
         return ok();
     }
     format_paras(s, &json!({ "align": align }))
+}
+
+#[cfg(test)]
+mod catchword_skip_tests {
+    use crate::Session;
+    use designcraft_doc::StoryId;
+    use serde_json::json;
+
+    #[test]
+    fn paragraph_catchword_skip_commands_styles_undo_and_roundtrip() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect":[36,36,300,300],"content":"text","text":"Heading\nBodyword follows."})).unwrap();
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name":"Skipped heading","para":{"catchwordSkip":true}})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name":"Skipped heading","clearOverrides":true})).unwrap();
+        let resolved = |s: &Session| {
+            let doc = &s.doc().unwrap().doc;
+            serde_json::to_value(doc.styles.resolve_para(&doc.story(sid).unwrap().paras[0]).0).unwrap()["catchwordSkip"].clone()
+        };
+        assert_eq!(resolved(&s), true);
+        s.execute("type.para", &json!({"attrs":{"catchwordSkip":false}})).unwrap();
+        assert_eq!(resolved(&s), false);
+        let doc = &s.doc().unwrap().doc;
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.story(sid).unwrap().paras[0].para).unwrap()["catchwordSkip"], false);
+        assert!(serde_json::to_value(&loaded.story(sid).unwrap().paras[1].para).unwrap().get("catchwordSkip").is_none());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(resolved(&s), true);
+        let doc = &s.doc().unwrap().doc;
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded.styles.paragraph.iter().find(|p| p.name == "Skipped heading").unwrap().para).unwrap()["catchwordSkip"],
+            true
+        );
+        assert_eq!(serde_json::to_value(loaded.styles.resolve_para(&loaded.story(sid).unwrap().paras[0]).0).unwrap()["catchwordSkip"], true);
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("catchwordSkip")), "{warnings:?}");
+        s.execute("type.para", &json!({"attrs":{"catchwordSkip":true}})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.story(sid).unwrap().paras[0].para).unwrap()["catchwordSkip"], true);
+    }
 }
 
 #[cfg(test)]

@@ -61,6 +61,8 @@ attr_set! {
         glyph_scale_desired: f64 = 1.0,
         glyph_scale_max: f64 = 1.0,
         auto_leading: f64 = 1.2,
+        /// Omit this paragraph from catchwords and next-visible-word variables.
+        catchword_skip: bool = false,
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,

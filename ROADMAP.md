@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: paragraph and paragraph-style catchwordSkip flags exclude headings from main and note-series catchwords and next-page-word variables; native saves retain flags and IDML warns about their loss (#2869).
+
 - 2026-11-20: routed note frames accept independent start and end followInset bounds, retaining single-rule files and retargeting both dependencies on copy (#2873).
 
 - 2026-11-20: D68 inset routes use physical-page anchors and text-bearing catchword ownership; auto leading follows source paragraphs, refits are bounded, band origins are incremental, and following feet retain catchword baseline rhythm (#2873).

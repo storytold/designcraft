@@ -235,6 +235,51 @@ fn no_reserved_catchword_regions_skip_lookup() {
 }
 
 #[test]
+fn routed_catchword_skips_series_heading_paragraph() {
+    let main = format!("First body{}\nSecond body.", designcraft_doc::story::FRAME_BREAK);
+    let (mut doc, sid) = document(2, &main, "", "");
+    enable_catchwords(&mut doc, sid);
+    for host in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series != Some(2));
+    }
+    let at = doc.story(sid).unwrap().text.find("Second body").unwrap();
+    let heading = doc.story_mut(sid).unwrap().insert_note(at, "Heading\nBodyword follows.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(heading).unwrap().series = 2;
+    let first = doc.story_mut(sid).unwrap().insert_note(0, "Pageone note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
+    // A page with only skipped source still owns a catchword for the next visible page.
+    doc.story_mut(sid).unwrap().note_mut(first).unwrap().text.paras[0].para.catchword_skip = Some(true);
+    let mut routes = Vec::new();
+    for page in 0..2 {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (route, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 736.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true.into(), follow_inset: None });
+        routes.push(route);
+    }
+    Arc::make_mut(&mut doc.styles).paragraph.push(designcraft_doc::ParagraphStyle {
+        name: "Skipped heading".into(),
+        based_on: None,
+        next_style: None,
+        para: designcraft_doc::ParaAttrs { catchword_skip: Some(true), ..Default::default() },
+        chars: Default::default(),
+        shortcut: String::new(),
+    });
+    for (local, expected) in [(Some(false), "Heading"), (None, "Bodyword")] {
+        let para = &mut doc.story_mut(sid).unwrap().note_mut(heading).unwrap().text.paras[0];
+        para.style = "Skipped heading".into();
+        para.para.catchword_skip = local;
+        let cs = compose_story(&doc, sid, &Default::default());
+        assert!(!cs.is_overset(), "{:?}", cs.warnings);
+        assert_eq!(cs.frame(routes[0]).unwrap().catchwords[0].source.as_ref(), expected);
+        assert_eq!(crate::vars::CatchwordIndex::build(&doc, &cs, doc.story(sid).unwrap()).series[&2][&0], expected);
+    }
+}
+
+#[test]
 fn routed_series_catchword_appears_only_in_last_route_on_continuing_page() {
     let (mut doc, sid) = document(2, &"Main.\u{2028}".repeat(65), "", &"Route word.\u{2028}".repeat(30));
     enable_catchwords(&mut doc, sid);

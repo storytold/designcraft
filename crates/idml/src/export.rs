@@ -74,6 +74,14 @@ pub fn export_idml_report(doc: &Document, opts: &ExportOptions) -> (Vec<u8>, Vec
 
 pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limit: usize) -> (Vec<u8>, Vec<String>) {
     let mut ex = Ex::new(doc, opts);
+    if doc.styles.paragraph.iter().any(|style| style.para.catchword_skip == Some(true))
+        || any_story(doc, |story| story.paras.iter().any(|para| para.para.catchword_skip == Some(true)))
+    {
+        ex.warnings.push(
+            "IDML cannot retain paragraph catchwordSkip flags; catchwords and next-page-word variables may include skipped paragraphs after import."
+                .into(),
+        );
+    }
     if std::iter::once(&doc.footnote_options).chain(doc.note_series.iter().map(|s| &s.options)).any(|o| o.catchword_continuation.is_some()) {
         ex.warnings.push("IDML cannot retain note-series catchwordContinuation text; export PDF for terminal series catchwords.".into());
     }
@@ -121,13 +129,18 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
 
 /// Test exported footnotes in roots and embedded cell/note stories without recursive walking.
 fn any_footnote(doc: &Document, mut predicate: impl FnMut(&designcraft_doc::Footnote) -> bool) -> bool {
+    any_story(doc, |story| story.notes.iter().any(|note| predicate(note)))
+}
+
+/// Inspect root and embedded stories without recursive walking.
+fn any_story(doc: &Document, mut predicate: impl FnMut(&Story) -> bool) -> bool {
     let mut pending: Vec<&Story> = doc.stories.values().map(AsRef::as_ref).collect();
     let mut seen = HashSet::new();
     while let Some(story) = pending.pop() {
         if !seen.insert(std::ptr::from_ref(story)) {
             continue;
         }
-        if story.notes.iter().any(|note| predicate(note)) {
+        if predicate(story) {
             return true;
         }
         pending.extend(story.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
