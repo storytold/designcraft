@@ -131,6 +131,7 @@ struct RouteGeometry<'a> {
     core: Option<(designcraft_doc::ItemId, f64)>,
     catchwords: Option<&'a InsetColumns>,
     routes: &'a [FrameSpec],
+    later_ranges: Option<&'a [std::ops::Range<usize>]>,
 }
 
 fn route_catchword_rect(frame: &FrameText, reserved: Rect) -> Option<Rect> {
@@ -229,12 +230,11 @@ fn fit_routes(
                 continue;
             }
             let catchwords = super::catchwords::options(doc, area, Some(series), &options.catchwords);
-            let future = !ranges.is_empty()
-                && story
-                    .notes
-                    .iter()
-                    .zip(&refs)
-                    .any(|(note, at)| doc.note_series_id(note.series) == series && *at >= input.main.end && !note.text.is_empty());
+            let future = story.notes.iter().zip(&refs).any(|(note, at)| {
+                doc.note_series_id(note.series) == series
+                    && !note.text.is_empty()
+                    && geometry.later_ranges.map_or(!ranges.is_empty() && *at >= input.main.end, |later| later.iter().any(|r| r.contains(at)))
+            });
             let shown = result.frames.iter().flat_map(|f| &f.notes).any(|n| n.series == series);
             if shown && (future || result.state.pending_series().any(|id| id == series)) {
                 let height = result
@@ -722,6 +722,7 @@ impl Page<'_> {
                     core: (route_page == page).then_some(core_bottom).flatten().map(|bottom| (self.frame.id, bottom)),
                     catchwords: Some(self.options),
                     routes: self.routes,
+                    later_ranges: None,
                 },
                 StreamPageInput {
                     page: route_page,
@@ -1154,11 +1155,18 @@ fn fit_physical_routes(
             .filter_map(|(f, p)| route_edge(doc, f.id, host.id, p.core_bottom, 0.0))
             .reduce(f64::max);
         let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
+        let later_ranges: Vec<_> =
+            frames.iter().zip(pages.iter()).filter(|(f, _)| f.page.is_some_and(|p| p > page)).map(|(_, p)| p.start..p.cut).collect();
         let force_starts = hosts.first().and_then(|(spec, _)| text.frame(spec.id).and_then(|f| f.lines.first()).map(|line| line.range.clone()));
         let (fit, regions) = fit_routes(
             doc,
             story,
-            RouteGeometry { core: core.map(|b| (host.id, b)), catchwords: host.opts.inset_columns.as_ref(), routes },
+            RouteGeometry {
+                core: core.map(|b| (host.id, b)),
+                catchwords: host.opts.inset_columns.as_ref(),
+                routes,
+                later_ranges: Some(&later_ranges),
+            },
             StreamPageInput { page, main: ranges.first().map_or(0, |r| r.start)..ranges.last().map_or(0, |r| r.end), areas: &areas, force_starts },
             &route_state,
             opts,
@@ -1274,7 +1282,7 @@ fn compose_frames_owned(
         let (fit, regions) = fit_routes(
             doc,
             story,
-            RouteGeometry { core: None, catchwords: frames.last().and_then(|f| f.opts.inset_columns.as_ref()), routes: &routes },
+            RouteGeometry { core: None, catchwords: frames.last().and_then(|f| f.opts.inset_columns.as_ref()), routes: &routes, later_ranges: None },
             StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None },
             &state,
             opts,

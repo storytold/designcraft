@@ -1339,3 +1339,48 @@ fn empty_opted_in_route_does_not_steal_series_catchword() {
     assert_eq!(captions[0].source.as_ref(), "Second");
     assert!(cs.frame(routes[1]).unwrap().catchwords.is_empty());
 }
+
+fn short_revisit_routes(catchwords: bool) -> (Document, StoryId, [ItemId; 3], Vec<ItemId>) {
+    let (mut doc, sid) = document(2, &"Main line.\n".repeat(30), "", "");
+    let hosts = doc.story(sid).unwrap().frames.clone();
+    for id in &hosts {
+        let item = doc.item_mut(*id).unwrap();
+        let b = item.bounds();
+        item.path = designcraft_geom::shapes::rectangle(Rect::new(b.x0, 36.0, b.x1, 120.0));
+        let options = item.text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap();
+        options.streams.retain(|s| s.series.is_none());
+        options.catchwords = catchwords.into();
+    }
+    let (last, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(hosts[1], last).unwrap();
+    doc.item_mut(last).unwrap().text_frame_mut().unwrap().options.inset_columns =
+        doc.item(hosts[0]).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    let mut routes = Vec::new();
+    for page in 0..2 {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 536.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: catchwords.into(), follow_inset: None });
+        routes.push(id);
+    }
+    let first = doc.story_mut(sid).unwrap().insert_note(0, "First note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
+    (doc, sid, [hosts[0], hosts[1], last], routes)
+}
+
+#[test]
+fn revisit_route_catchword_uses_later_physical_page_anchor_membership() {
+    let (mut doc, sid, hosts, routes) = short_revisit_routes(true);
+    let before = compose_story(&doc, sid, &Default::default());
+    let at = before.frame(hosts[1]).unwrap().lines[1].range.start;
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Second note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(hosts[1]).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
+    assert_eq!(cs.frame(routes[1]).unwrap().notes.len(), 1);
+    assert_eq!(cs.frame(routes[0]).unwrap().catchwords.len(), 1, "{:?}", cs.warnings);
+    assert_eq!(cs.frame(routes[0]).unwrap().catchwords[0].source.as_ref(), "Second");
+}
