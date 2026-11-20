@@ -370,29 +370,40 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    match craft_file_formats::detect(name, &[]) {
-        Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
-        Some(craft_file_formats::Format::Csv) if csv_prefers_comma(text) => return Delimiter::Comma,
-        _ => {}
+    let format = craft_file_formats::detect(name, &[]);
+    if format == Some(craft_file_formats::Format::Tsv) {
+        return Delimiter::Tab;
     }
-    match craft_csv::sniff_delimiter(text, '"') {
-        b'\t' => Delimiter::Tab,
-        b';' => Delimiter::Semicolon,
-        _ => Delimiter::Comma,
+    let candidates = [
+        (Delimiter::Tab, scan_delimiter(text, '\t')),
+        (Delimiter::Comma, scan_delimiter(text, ',')),
+        (Delimiter::Semicolon, scan_delimiter(text, ';')),
+    ];
+    if format == Some(craft_file_formats::Format::Csv) && csv_prefers_comma(candidates) {
+        return Delimiter::Comma;
     }
+    let prefer_coherent = candidates.iter().any(|(_, s)| s.min_count > 0 && s.coherent);
+    let mut best = (Delimiter::Comma, 0usize, 0usize);
+    for (delimiter, s) in candidates {
+        if s.min_count > 0 && (!prefer_coherent || s.coherent) && (s.min_count, s.total) > (best.1, best.2) {
+            best = (delimiter, s.min_count, s.total);
+        }
+    }
+    best.0
 }
 
 #[derive(Clone, Copy)]
 struct DelimStats {
     seen: bool,
     header_splits: bool,
-    all_records_split: bool,
+    min_count: usize,
+    total: usize,
     coherent: bool,
 }
 
 impl DelimStats {
     fn separates_coherently(self) -> bool {
-        self.seen && self.coherent && self.all_records_split
+        self.seen && self.coherent && self.min_count > 0
     }
 }
 
@@ -400,19 +411,19 @@ impl DelimStats {
 /// header splits coherently on `,` and neither `\t` nor `;` coherently separates all sampled
 /// records (so padded short rows in a comma CSV don't fall back to an incoherent `;`/`\t` parse,
 /// while tab/semicolon CSVs whose header happens to contain a comma still sniff cleanly).
-fn csv_prefers_comma(text: &str) -> bool {
-    let comma = scan_delimiter(text, ',');
+fn csv_prefers_comma([(.., tab), (.., comma), (.., semi)]: [(Delimiter, DelimStats); 3]) -> bool {
     if !comma.seen || !comma.coherent {
         return false;
     }
-    if comma.all_records_split {
+    if comma.min_count > 0 {
         return true;
     }
-    comma.header_splits && !scan_delimiter(text, '\t').separates_coherently() && !scan_delimiter(text, ';').separates_coherently()
+    comma.header_splits && !tab.separates_coherently() && !semi.separates_coherently()
 }
 
-/// Scan up to 20 non-blank records within the first 64 KiB (matching `craft_csv::sniff_delimiter`)
-/// for separator consistency and quote-boundary coherence.
+/// Scan up to 20 non-blank records within the first 64 KiB for separator counts and quote-boundary
+/// coherence. An empty quoted record (`""`) without a candidate separator is skipped as blank, matching
+/// [`parse_delimited`], while an empty quoted cell beside a separator (`"";""`) still counts.
 fn scan_delimiter(text: &str, delim: char) -> DelimStats {
     const SAMPLE_BYTES: usize = 64 * 1024;
     const SAMPLE_RECORDS: usize = 20;
@@ -425,7 +436,8 @@ fn scan_delimiter(text: &str, delim: char) -> DelimStats {
 
     let mut seen = 0usize;
     let mut header_splits = false;
-    let mut all_records_split = true;
+    let mut min_count = usize::MAX;
+    let mut total = 0usize;
     let mut coherent = true;
     let mut count = 0usize;
     let mut quoted = false;
@@ -454,11 +466,12 @@ fn scan_delimiter(text: &str, delim: char) -> DelimStats {
             if ch == '\r' && chars.peek() == Some(&'\n') {
                 chars.next();
             }
-            if record_has_content {
+            if record_has_content || count > 0 {
                 if seen == 0 {
                     header_splits = count > 0;
                 }
-                all_records_split &= count > 0;
+                min_count = min_count.min(count);
+                total = total.saturating_add(count);
                 coherent &= record_coherent;
                 seen = seen.saturating_add(1);
                 if seen >= SAMPLE_RECORDS {
@@ -489,16 +502,17 @@ fn scan_delimiter(text: &str, delim: char) -> DelimStats {
     if !reached_record_limit && !truncated {
         if quoted {
             coherent = false;
-        } else if record_has_content {
+        } else if record_has_content || count > 0 {
             if seen == 0 {
                 header_splits = count > 0;
             }
-            all_records_split &= count > 0;
+            min_count = min_count.min(count);
+            total = total.saturating_add(count);
             coherent &= record_coherent;
             seen = seen.saturating_add(1);
         }
     }
-    DelimStats { seen: seen > 0, header_splits, all_records_split, coherent }
+    DelimStats { seen: seen > 0, header_splits, min_count: if seen > 0 { min_count } else { 0 }, total, coherent }
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
