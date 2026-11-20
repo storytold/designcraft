@@ -307,32 +307,43 @@ fn presentation_ligatures(
     let Some(font) = face.skrifa() else { return };
     let cmap = font.charmap();
     let metrics = font.glyph_metrics(Size::unscaled(), face.location());
+    let advance = |g: u32| Some(metrics.advance_width(skrifa::GlyphId::new(g))?.round() as i32);
     merge_presentation_ligatures(
         text,
         glyphs,
         |c| cmap.map(c).map(|g| g.to_u32()).filter(|&g| g != 0),
-        |g| Some(metrics.advance_width(skrifa::GlyphId::new(g))?.round() as i32),
+        advance,
+        // What the shaper's kerning of two characters adds to the first one's advance.
+        |pair| match shape_dir(face, pair, features, &|c| c, false, script, ShapeContext::default()).as_slice() {
+            [first, _] => Some(first.x_advance - advance(first.gid)?),
+            _ => None,
+        },
     );
 }
 
 /// Replace each run of glyphs for the letters of a [`PRESENTATION_LIGATURES`] entry, taking the
 /// longest entry whose character the font has (`glyph_of` gives a character's glyph), with that
 /// character's glyph and its `advance`. The ligature takes the first letter's cluster, as the
-/// shaper's own ligatures do. The glyph before it goes back to its own advance: the shaper kerned
-/// it against the first letter, but a ligature is substituted before kerning, so what it meets is
-/// the ligature (which the fonts do not kern). A run counts only if it is the letters themselves of
-/// `text`, one glyph each in consecutive clusters: a joiner between them or a stylistic alternate
-/// leaves them as they are. The letters' own kerning (some fonts give it as an offset of the second
-/// letter) goes with them.
+/// shaper's own ligatures do. A ligature is substituted before kerning, so the glyph before it is
+/// kerned against the ligature, and the ligature against the glyph after it, rather than the letters
+/// against theirs (`pair_kern` gives what shaping two characters kerns the first by): the glyph before
+/// trades its kerning against the first letter for its kerning against the ligature, and the ligature
+/// takes the kerning against what follows. The glyph before keeps its other adjustments, such as the
+/// second value of the pair before it. A run counts only if it is the letters themselves of `text`, one glyph each in consecutive
+/// clusters, and nothing else belongs to the run's last cluster (a mark after the last letter would
+/// be left placed for a glyph that is gone): a joiner between them or a stylistic alternate leaves
+/// them as they are. The letters' own kerning (some fonts give it as an offset of the second letter)
+/// goes with them.
 fn merge_presentation_ligatures(
     text: &str,
     glyphs: &mut Vec<ShapedGlyph>,
     glyph_of: impl Fn(char) -> Option<u32>,
     advance: impl Fn(u32) -> Option<i32>,
+    pair_kern: impl Fn(&str) -> Option<i32>,
 ) {
-    let table: Vec<(&str, Vec<u32>, u32)> = PRESENTATION_LIGATURES
+    let table: Vec<(&str, Vec<u32>, u32, char)> = PRESENTATION_LIGATURES
         .iter()
-        .filter_map(|&(letters, lig)| Some((letters, letters.chars().map(&glyph_of).collect::<Option<Vec<_>>>()?, glyph_of(lig)?)))
+        .filter_map(|&(letters, lig)| Some((letters, letters.chars().map(&glyph_of).collect::<Option<Vec<_>>>()?, glyph_of(lig)?, lig)))
         .collect();
     if table.is_empty() {
         return;
@@ -340,23 +351,39 @@ fn merge_presentation_ligatures(
     let mut out: Vec<ShapedGlyph> = Vec::with_capacity(glyphs.len());
     let mut i = 0;
     while i < glyphs.len() {
-        let hit = table.iter().find(|(letters, base, _)| {
+        let hit = table.iter().find(|(letters, base, _, _)| {
             let run = glyphs.get(i..i + base.len());
             run.is_some_and(|run| {
                 let start = run[0].cluster;
                 text.get(start..start + letters.len()) == Some(*letters)
                     && run.iter().zip(base).enumerate().all(|(k, (g, &b))| g.gid == b && g.cluster == start + k)
+                    && glyphs.get(i + base.len()).is_none_or(|next| next.cluster != start + base.len() - 1)
             })
         });
         match hit {
-            Some((_, base, lig)) => {
+            Some((letters, base, lig, lig_char)) => {
                 let first = glyphs[i];
-                if let Some(prev) = out.last_mut()
-                    && let Some(natural) = advance(prev.gid)
-                {
-                    prev.x_advance = natural;
+                let end = first.cluster + letters.len();
+                if let Some(prev) = out.last_mut() {
+                    // The previous glyph, when it is the one character just before the first letter:
+                    // its kerning against f gives way to its kerning against the ligature.
+                    let before = text.get(prev.cluster..).and_then(|t| t.chars().next());
+                    if let Some(c) = before.filter(|c| prev.cluster + c.len_utf8() == first.cluster)
+                        && let Some(with_f) = pair_kern(&format!("{c}f"))
+                    {
+                        let with_lig = pair_kern(&format!("{c}{lig_char}")).unwrap_or(0);
+                        prev.x_advance += with_lig - with_f;
+                    }
                 }
-                out.push(ShapedGlyph { gid: *lig, x_advance: advance(*lig).unwrap_or(first.x_advance), x_offset: 0, y_offset: 0, ..first });
+                // The ligature is kerned against the character after it.
+                let after = text.get(end..).and_then(|t| t.chars().next()).and_then(|c| pair_kern(&format!("{lig_char}{c}"))).unwrap_or(0);
+                out.push(ShapedGlyph {
+                    gid: *lig,
+                    x_advance: advance(*lig).map_or(first.x_advance, |a| a + after),
+                    x_offset: 0,
+                    y_offset: 0,
+                    ..first
+                });
                 i += base.len();
             }
             None => {
@@ -555,9 +582,14 @@ mod tests {
         Some(if gid >= 20 { 500 + gid as i32 } else { 600 })
     }
 
+    /// The fake font kerns nothing.
+    fn fake_kern(_: &str) -> Option<i32> {
+        None
+    }
+
     fn merged(text: &str, has: impl Fn(char) -> bool) -> Vec<(u32, usize, i32)> {
         let mut g = fake_glyphs(text);
-        merge_presentation_ligatures(text, &mut g, |c| fake_glyph(c).filter(|_| has(c) || c.is_ascii()), fake_advance);
+        merge_presentation_ligatures(text, &mut g, |c| fake_glyph(c).filter(|_| has(c) || c.is_ascii()), fake_advance, fake_kern);
         g.iter().map(|g| (g.gid, g.cluster, g.x_advance)).collect()
     }
 
@@ -587,13 +619,93 @@ mod tests {
         let text = "offi";
         let mut g = fake_glyphs(text);
         g[1].x_advance = 560;
-        merge_presentation_ligatures(text, &mut g, |c| fake_glyph(c).filter(|_| c.is_ascii() || matches!(c, '\u{FB01}' | '\u{FB02}')), fake_advance);
+        merge_presentation_ligatures(
+            text,
+            &mut g,
+            |c| fake_glyph(c).filter(|_| c.is_ascii() || matches!(c, '\u{FB01}' | '\u{FB02}')),
+            fake_advance,
+            // The shaper kerned f against the f after it by -40.
+            |pair| (pair == "ff").then_some(-40),
+        );
         assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(1, 600), (10, 600), (21, 521)]);
         // A kerned pair that does not become a ligature keeps its kerning.
         let mut g = fake_glyphs("ft");
         g[0].x_advance = 560;
-        merge_presentation_ligatures("ft", &mut g, fake_glyph, fake_advance);
+        merge_presentation_ligatures("ft", &mut g, fake_glyph, fake_advance, |_| Some(-40));
         assert_eq!(g[0].x_advance, 560);
+    }
+
+    #[test]
+    fn the_glyph_before_a_ligature_keeps_the_adjustments_of_its_own_pair() {
+        // "AVfi": the A/V pair took 30 units off V's advance (the second value of the pair), and V/f
+        // took 20 more. Only the 20 goes with the f that became part of the ligature.
+        let text = "AVfi";
+        let mut g = fake_glyphs(text);
+        g[1].x_advance = 600 - 30 - 20;
+        merge_presentation_ligatures(
+            text,
+            &mut g,
+            |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'),
+            fake_advance,
+            |pair| (pair == "Vf").then_some(-20),
+        );
+        assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(99, 600), (99, 570), (21, 521)]);
+        // A glyph that is not the single character just before the first letter is left alone.
+        let mut g = fake_glyphs("ofi");
+        g[0].x_advance = 580;
+        merge_presentation_ligatures("ofi", &mut g, fake_glyph, fake_advance, |pair| (pair == "of").then_some(-40));
+        assert_eq!(g[0].x_advance, 620, "the character right before the ligature");
+        let text = "of\u{0301}fi";
+        let mut g = fake_glyphs(text);
+        g.remove(2);
+        g[1].x_advance = 580;
+        let before = g[1].x_advance;
+        merge_presentation_ligatures(text, &mut g, fake_glyph, fake_advance, |_| Some(-40));
+        assert_eq!(g[1].x_advance, before, "a mark stands between f and the ligature: not the pair");
+    }
+
+    #[test]
+    fn a_ligature_is_kerned_against_its_neighbours_not_the_letters_against_theirs() {
+        // "Vfi.": V was kerned -20 against f; against the fi glyph the font kerns it -15. The ligature
+        // is kerned -25 against the full stop, which was the i's kerning to it.
+        let text = "Vfi.";
+        let mut g = fake_glyphs(text);
+        g[0].x_advance = 600 - 20;
+        g[2].x_advance = 600 - 25;
+        merge_presentation_ligatures(
+            text,
+            &mut g,
+            |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'),
+            fake_advance,
+            |pair| match pair {
+                "Vf" => Some(-20),
+                "V\u{FB01}" => Some(-15),
+                "\u{FB01}." => Some(-25),
+                _ => None,
+            },
+        );
+        assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(99, 585), (21, 521 - 25), (99, 600)]);
+    }
+
+    #[test]
+    fn a_run_is_not_merged_when_a_mark_still_belongs_to_its_last_cluster() {
+        // "ff" and a combining mark: the shaper gives f@0, f@1 and the mark in the second f's cluster.
+        let text = "ff\u{0331}";
+        let glyphs = || {
+            let mut g = fake_glyphs("ff");
+            g.push(ShapedGlyph { gid: 50, cluster: 1, ..g[1] });
+            g
+        };
+        let mut g = glyphs();
+        merge_presentation_ligatures(text, &mut g, fake_glyph, fake_advance, fake_kern);
+        assert_eq!(g.iter().map(|g| g.gid).collect::<Vec<_>>(), vec![10, 10, 50], "the mark stays with its letter");
+        // Plain "ff" is still a ligature, and so is one followed by a letter of its own cluster.
+        let mut plain = fake_glyphs("ff");
+        merge_presentation_ligatures("ff", &mut plain, fake_glyph, fake_advance, fake_kern);
+        assert_eq!(plain.iter().map(|g| g.gid).collect::<Vec<_>>(), vec![20]);
+        let mut more = fake_glyphs("ffe");
+        merge_presentation_ligatures("ffe", &mut more, fake_glyph, fake_advance, fake_kern);
+        assert_eq!(more.iter().map(|g| g.gid).collect::<Vec<_>>(), vec![20, 3]);
     }
 
     #[test]
@@ -610,18 +722,18 @@ mod tests {
         let text = "f\u{200c}i";
         let mut g = fake_glyphs(text);
         g.remove(1);
-        merge_presentation_ligatures(text, &mut g, fake_glyph, |_| Some(500));
+        merge_presentation_ligatures(text, &mut g, fake_glyph, |_| Some(500), fake_kern);
         assert_eq!(g.len(), 2, "clusters 0 and 4 are not adjacent");
         // A kerning offset on a letter (the second f's, in Times New Roman) goes with the letters.
         let mut g = fake_glyphs("ffi");
         g[1].x_offset = -18;
-        merge_presentation_ligatures("ffi", &mut g, |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'), fake_advance);
+        merge_presentation_ligatures("ffi", &mut g, |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'), fake_advance, fake_kern);
         assert_eq!(g.iter().map(|g| (g.gid, g.x_offset)).collect::<Vec<_>>(), vec![(10, 0), (21, 0)]);
         // Glyphs that are the right ones for other letters (a stylistic alternate of "fi", say).
         let mut g = fake_glyphs("FI");
         g[0].gid = 10;
         g[1].gid = 11;
-        merge_presentation_ligatures("FI", &mut g, fake_glyph, |_| Some(500));
+        merge_presentation_ligatures("FI", &mut g, fake_glyph, |_| Some(500), fake_kern);
         assert_eq!(g.len(), 2, "the text is not the letters f and i");
     }
 
@@ -639,6 +751,7 @@ mod tests {
             &mut again,
             |c| face.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()),
             |_| Some(0),
+            fake_kern,
         );
         assert_eq!(again, on, "letters were already ligated by the font's liga");
     }
