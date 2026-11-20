@@ -2096,4 +2096,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("OpenType font", "Font OpenType"),
     ("Variable font", "Font variabile"),
     ("Color font", "Font a colori"),
+    ("Adjust Layout…", "Regola layout…"),
+    ("Auto-adjust margins to page size changes", "Regola automaticamente i margini al variare delle dimensioni pagina"),
+    ("Adjust font size", "Regola dimensione carattere"),
+    ("Set font size limits", "Imposta limiti dimensione carattere"),
+    ("Max:", "Max:"),
+    ("Adjust locked content", "Regola contenuto bloccato"),
 ];

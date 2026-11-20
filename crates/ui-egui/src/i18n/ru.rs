@@ -1932,6 +1932,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Vertical:", "По вертикали:"),
     ("Working CMYK", "Рабочий CMYK"),
     ("Yellow", "Желтый"),
+    ("Adjust Layout…", "Настроить макет…"),
+    ("Auto-adjust margins to page size changes", "Автоматически подстраивать поля при изменении размера страницы"),
+    ("Adjust font size", "Настроить размер шрифта"),
+    ("Set font size limits", "Задать пределы размера шрифта"),
+    ("Max:", "Макс.:"),
+    ("Adjust locked content", "Настроить заблокированное содержимое"),
 ];
 
 /// Contexts whose Russian noun differs from the shared action/text-layout label.

@@ -2002,6 +2002,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Shape:", "Alakzat:"),
     ("(no attributes)", "(nincsenek attribútumok)"),
     ("Enter a style name.", "Adjon meg egy stílusnevet."),
+    ("Adjust Layout…", "Elrendezés igazítása…"),
+    ("Auto-adjust margins to page size changes", "Margók automatikus igazítása az oldalméret változásához"),
+    ("Adjust font size", "Betűméret igazítása"),
+    ("Set font size limits", "Betűméret-korlátok beállítása"),
+    ("Max:", "Max.:"),
+    ("Adjust locked content", "Zárolt tartalom igazítása"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] =

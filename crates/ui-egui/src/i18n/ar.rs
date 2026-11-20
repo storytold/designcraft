@@ -2229,6 +2229,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("a, b, c, d...", "أ، ب، ج، د..."),
     ("i, ii, iii, iv...", "أ، ب، ج، د..."),
     ("lowercase", "صغير"),
+    ("Adjust Layout…", "ضبط التخطيط…"),
+    ("Auto-adjust margins to page size changes", "ضبط الهوامش تلقائياً مع تغييرات حجم الصفحة"),
+    ("Adjust font size", "ضبط حجم الخط"),
+    ("Set font size limits", "تعيين حدود حجم الخط"),
+    ("Max:", "الحد الأقصى:"),
+    ("Adjust locked content", "ضبط المحتوى المقفل"),
 ];
 
 /// Contexts whose Arabic caption differs from the shared label.

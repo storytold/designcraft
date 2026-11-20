@@ -3000,6 +3000,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Shape:", "Form:"),
     ("(no attributes)", "(inga attribut)"),
     ("Enter a style name.", "Ange ett stilnamn."),
+    ("Adjust Layout…", "Anpassa layout…"),
+    ("Auto-adjust margins to page size changes", "Anpassa marginaler automatiskt vid ändring av sidstorlek"),
+    ("Adjust font size", "Anpassa teckenstorlek"),
+    ("Set font size limits", "Ange gränser för teckenstorlek"),
+    ("Max:", "Max:"),
+    ("Adjust locked content", "Anpassa låst innehåll"),
 ];
 
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[

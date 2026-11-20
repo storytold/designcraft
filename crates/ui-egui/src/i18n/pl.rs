@@ -1944,6 +1944,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("View/Screen Mode", "Widok/Tryb ekranu"),
     ("View/Separations Preview", "Widok/Podgląd separacji"),
     ("View/Structure", "Widok/Struktura"),
+    ("Adjust Layout…", "Dostosuj układ…"),
+    ("Auto-adjust margins to page size changes", "Automatycznie dostosuj marginesy do zmian rozmiaru strony"),
+    ("Adjust font size", "Dostosuj rozmiar czcionki"),
+    ("Set font size limits", "Ustaw limity rozmiaru czcionki"),
+    ("Max:", "Maks.:"),
+    ("Adjust locked content", "Dostosuj zablokowaną zawartość"),
 ];
 
 /// Contexts whose Polish noun differs from the shared action/text-layout label.
