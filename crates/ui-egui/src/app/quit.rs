@@ -55,8 +55,9 @@ impl DesignApp {
         }
         let Some(q) = self.quitting.as_ref() else { return };
         if q.saving.is_some() {
-            // Waiting for the save dialog; cancelled, it answers without saving and Quit stops.
-            if !self.file_dialogs_pending() {
+            // Waiting for the save dialog (or the IDML loss question); cancelled, it answers
+            // without saving and Quit stops.
+            if !self.file_dialogs_pending() && self.lossy_save.is_none() {
                 self.cancel_quit();
             }
             return;
