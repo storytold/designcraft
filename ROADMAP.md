@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: `lastLineMinFill` retries short paragraph endings within justification ranges, keeping the line count when possible. Paragraph overrides and styles retain it in native files; IDML export warns that it is omitted.
+
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)

@@ -13,6 +13,15 @@ against InDesign is **unmeasured**, which is the main gap.
 
 ## Fidelity: how we'd know
 
+`lastLineMinFill` is a DesignCraft paragraph attribute, also available in paragraph styles and
+Justification controls. Its fraction is 0–1, with 0 or an absent override disabling it. A bounded
+retry prefers the existing line count, then the fewest changed lines, and accepts only breaks
+within the spacing capacities and hyphenation constraints. It may absorb a short final line.
+If no candidate fits, the original breaks remain. Native files retain the value; IDML export
+warns that it has no equivalent. The extra pass is capped at 4,000 glyphs, 256 break opportunities,
+128 lines and 200,000 candidate checks. It never adds lines beyond the original line count, so
+the retry cannot consume an extra line in a frame. Tabs and explicit forced breaks keep their original breaks.
+
 There is no oracle yet. What exists: unit tests of break points and invariants in
 `crates/compose/src/tests.rs` (172 tests in the crate), IDML files built by DesignCraft and opened
 in InDesign 2026 by hand, and user reports comparing the two (#179, #180, #181, #282–#295).

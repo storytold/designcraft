@@ -8335,7 +8335,8 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 14] = [
+pub const JUSTIFY_ATTRS: [&str; 15] = [
+    "lastLineMinFill",
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -8376,6 +8377,11 @@ const SINGLE_WORD_CHOICES: [(&str, &str); 4] =
 /// (values left mixed are not compared); an edited Auto Leading within its range, and an edited
 /// Single Word Justification one of its choices.
 fn check_justification(d: &Dialog, prefix: &str, current: &Value) -> Result<(), String> {
+    if let Some(v) = d.fields.get(&format!("{prefix}lastLineMinFill"))
+        && !v.as_f64().is_some_and(|v| (0.0..=1.0).contains(&v))
+    {
+        return Err("Last Line Minimum Fill must be between 0% and 100%".into());
+    }
     if let Some(v) = d.fields.get(&format!("{prefix}autoLeading")) {
         let (lo, hi) = AUTO_LEADING_RANGE;
         let pct = v.as_f64().map(|x| x * 100.0).filter(|x| x.is_finite()).ok_or("Justification: Auto Leading is not a number")?;
@@ -8593,6 +8599,12 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
             }
             ui.end_row();
         }
+        crate::rtl::label(ui, "Last Line Minimum Fill:");
+        let fill = cur(d, "lastLineMinFill").as_f64().map(|x| x * 100.0);
+        if let Some(n) = crate::widgets::number(ui, &format!("ps{prefix}lastLineMinFill"), fill, "%", 60.0, 0) {
+            d.fields.insert(format!("{prefix}lastLineMinFill"), json!(n / 100.0));
+        }
+        ui.end_row();
         crate::rtl::label(ui, crate::i18n::tr(lang, "Auto Leading:"));
         let auto = cur(d, "autoLeading").as_f64().map(|x| x * 100.0);
         if let Some(n) = ui.scope(|ui| crate::widgets::number(ui, &format!("ps{prefix}autoLeading"), auto, "%", 60.0, 0)).inner {

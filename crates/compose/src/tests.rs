@@ -35,6 +35,70 @@ fn long_wrapped_paragraph_rechecks_width_after_estimated_slots_end() {
 const LOREM: &str = "Typography is the art and technique of arranging type to make written language legible, readable and appealing when displayed. \
 The arrangement of type involves selecting typefaces, point sizes, line lengths, line spacing, and letter spacing, and adjusting the space between pairs of letters.";
 
+#[test]
+fn last_line_min_fill_retries_within_ranges_in_both_directions() {
+    for (text, direction, width) in [
+        ("one two three four five six seven eight nine ten", designcraft_doc::TextDirection::LeftToRight, 98.0),
+        ("אחד שתים שלש ארבע חמש שש שבע שמונה תשע עשר", designcraft_doc::TextDirection::RightToLeft, 118.0),
+    ] {
+        let attrs = ParaAttrs {
+            align: Some(Align::LeftJustified),
+            direction: Some(direction),
+            hyphenate: Some(false),
+            word_space_min: Some(0.0),
+            letter_space_min: Some(-0.3),
+            ..Default::default()
+        };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 600.0), attrs);
+        let before = compose_story(&d, sid, &ComposeOptions::default());
+        let before_lines = all_lines(&before);
+        d.story_mut(sid).unwrap().paras[0].para.last_line_min_fill = Some(0.6);
+        let after = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&after);
+        assert!(!after.is_overset());
+        assert_eq!((before_lines.len(), lines.len()), (3, 2), "a short last line must be absorbed for {direction:?}");
+        for l in &lines {
+            assert!(l.glyphs.iter().filter(|g| g.visible).all(|g| g.x + g.adv <= l.x1 + 0.1), "{direction:?} width {width}: {l:?}");
+        }
+    }
+}
+
+#[test]
+fn last_line_min_fill_without_spacing_room_keeps_breaks() {
+    let attrs = ParaAttrs {
+        align: Some(Align::LeftJustified),
+        hyphenate: Some(false),
+        word_space_min: Some(1.0),
+        word_space_max: Some(1.0),
+        ..Default::default()
+    };
+    let (mut d, sid, _) = doc_with("one two three four five six seven eight nine ten", Rect::new(0.0, 0.0, 100.0, 600.0), attrs);
+    let before = compose_story(&d, sid, &ComposeOptions::default());
+    d.story_mut(sid).unwrap().paras[0].para.last_line_min_fill = Some(1.0);
+    let after = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(all_lines(&before).iter().map(|l| &l.range).collect::<Vec<_>>(), all_lines(&after).iter().map(|l| &l.range).collect::<Vec<_>>());
+}
+
+#[test]
+fn last_line_min_fill_keeps_line_count_and_the_unchanged_prefix() {
+    // Synthetic advances make the legal alternatives independent of installed font metrics.
+    let mut glyphs = shape_for_script_test("aa aa aa aa aa aa aa aa aa aa");
+    for g in &mut glyphs {
+        g.adv = if g.is_space() { 5.0 } else { 10.0 };
+        g.space = 5.0;
+    }
+    let spacing = Spacing { justify: true, word_min: 0.0, word_max: 4.0, letter_min: -0.5, ..Default::default() };
+    let original = vec![
+        Break { start: 0, end: 11, next: 12, hyphen: false, forced: false },
+        Break { start: 12, end: 23, next: 24, hyphen: false, forced: false },
+        Break { start: 24, end: 29, next: 29, hyphen: false, forced: true },
+    ];
+    let result = breaker::last_line_fill(&glyphs, &vec![false; glyphs.len()], &spacing, &|_| 100.0, 0.7, false, original.clone());
+    assert_eq!(result.len(), 3, "retain the count even though two lines could hold all the text");
+    assert_eq!(result[0], original[0], "change only the last two lines");
+    assert!(breaker::line_width(&glyphs, result.last().unwrap()) >= 70.0);
+}
+
 fn doc_with(text: &str, rect: Rect, para: ParaAttrs) -> (Document, StoryId, ItemId) {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

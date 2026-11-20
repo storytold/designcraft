@@ -7,6 +7,21 @@ use designcraft_geom::{Rect, shapes};
 
 use super::*;
 
+#[test]
+fn last_line_min_fill_export_warns() {
+    let mut doc = Document::new(&NewDocument::default());
+    doc.add_text_frame(
+        SpreadRef::Doc(0),
+        Rect::new(0.0, 0.0, 200.0, 300.0),
+        doc.default_layer(),
+        "Short paragraph",
+        ParaFormat { para: designcraft_doc::ParaAttrs { last_line_min_fill: Some(0.6), ..Default::default() }, ..Default::default() },
+    )
+    .unwrap();
+    let (_, warnings) = export_idml_report(&doc, &ExportOptions::default());
+    assert_eq!(warnings.iter().filter(|w| w.contains("lastLineMinFill")).count(), 1);
+}
+
 mod assets;
 mod clipping;
 mod decorations;

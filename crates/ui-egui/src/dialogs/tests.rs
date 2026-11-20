@@ -1352,6 +1352,19 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
 }
 
 #[test]
+fn justification_dialog_sets_and_validates_last_line_min_fill() {
+    let (mut app, story) = two_paragraphs();
+    app.run("app.justificationDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("lastLineMinFill".into(), json!(1.1));
+    assert!(confirm(&mut app).is_err());
+    assert_eq!(para_attr(&mut app, &story, 0, "lastLineMinFill"), 0.0);
+    app.ui.dialog.as_mut().unwrap().fields.insert("lastLineMinFill".into(), json!(0.6));
+    confirm(&mut app).unwrap();
+    assert_eq!(para_attr(&mut app, &story, 0, "lastLineMinFill"), 0.6);
+    assert_eq!(para_attr(&mut app, &story, 4, "lastLineMinFill"), 0.0);
+}
+
+#[test]
 fn justification_dialog_leaves_mixed_fields_alone_and_refuses_bad_values() {
     let (mut app, story) = two_paragraphs();
     let ctx = egui::Context::default();

@@ -66,6 +66,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Doc:** [file-format-parity.md](file-format-parity.md)
 
 ### 4. Composition isn't compared with InDesign (T)
+- **Have:** optional `lastLineMinFill` retries short final lines within the paragraph's spacing ranges. It can absorb a runt when the original line count has no valid solution; a bounded search falls back to the original breaks.
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
   frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's

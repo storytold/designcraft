@@ -1726,6 +1726,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             } else {
                 breaker::knuth_plass(&gl, &hy, &spacing, &width)
             };
+            let breaks = breaker::last_line_fill(&gl, &hy, &spacing, &width, pp.last_line_min_fill, pp.align == Align::FullyJustified, breaks);
             // Byte where line `k` starts (the paragraph end past the last line).
             let byte_at =
                 |k: usize| if k == 0 { prange.start } else { breaks.get(k - 1).and_then(|b| gl.get(b.next)).map_or(prange.end, |g| g.byte) };
@@ -2033,7 +2034,7 @@ fn choose_paragraph_breaks(input: BreakInput<'_>) -> Vec<Break> {
             };
         (x1 - x0 - indent).max(1.0)
     };
-    if pp.composer.single_line() || has_tabs || glyphs.len() > 4000 {
+    let breaks = if pp.composer.single_line() || has_tabs || glyphs.len() > 4000 {
         let tab = |j: usize, x: f64, i: usize| {
             let x0 = slots.get(j).map_or(col.x0, |s| s.0);
             let indent = pp.left_indent
@@ -2055,7 +2056,8 @@ fn choose_paragraph_breaks(input: BreakInput<'_>) -> Vec<Break> {
         breaker::balanced(glyphs, hyphens, spacing, &width)
     } else {
         breaker::knuth_plass(glyphs, hyphens, spacing, &width)
-    }
+    };
+    breaker::last_line_fill(glyphs, hyphens, spacing, &width, pp.last_line_min_fill, pp.align == Align::FullyJustified, breaks)
 }
 
 struct LineFitInput<'a> {
@@ -5289,7 +5291,7 @@ fn layout_line(
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
+    } else if (justify_this || squeeze_last) && spaces.is_empty() && line.len() > seg + 1 && extra < 0.0 {
         // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
