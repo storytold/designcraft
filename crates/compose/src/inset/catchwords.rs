@@ -17,7 +17,7 @@ pub(super) fn options(
 }
 
 fn attributes(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> CharAttrs {
-    let base = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p).1).unwrap_or_default();
+    let (para, base) = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p)).unwrap_or_default();
     let chars = doc.styles.resolve_char(&base, source.char_format_at(at));
     let mut attrs = CharAttrs {
         font_family: Some(chars.font_family),
@@ -32,6 +32,9 @@ fn attributes(doc: &Document, source: &Story, at: usize, options: &designcraft_d
         attrs.size = Some(chars.size);
         attrs.leading = Some(chars.leading);
         attrs.merge(&doc.styles.char_style_attrs(style));
+        if attrs.leading == Some(Leading::Auto) {
+            attrs.leading = Some(Leading::Points(attrs.size.unwrap_or(chars.size) * para.auto_leading));
+        }
     }
     attrs
 }

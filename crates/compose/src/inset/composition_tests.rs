@@ -1272,3 +1272,40 @@ fn widening_clears_series_styled_catchword() {
 fn widening_clears_inherited_catchword_metrics() {
     widening_clears_finished_catchword_with_style(false, Some(true), 5);
 }
+
+#[test]
+fn inherited_auto_catchword_uses_source_paragraph_percentage() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(90), "", "");
+    Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Inherited auto".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: Default::default(),
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Inherited auto".into() };
+    }
+    let story = doc.story_mut(sid).unwrap();
+    story.format_chars(0..story.len(), |f| {
+        f.over.size = Some(15.0);
+        f.over.leading = Some(designcraft_doc::Leading::Auto);
+    });
+    story.format_paras(0..story.len(), |p| p.para.auto_leading = Some(1.5));
+    let cs = compose_story(&doc, sid, &Default::default());
+    let frame = &cs.frames[0];
+    let caption = &frame.catchwords[0];
+    let line = &caption.text.frames[0].lines[0];
+    assert!((line.leading - 22.5).abs() < 0.01, "caption leading {}", line.leading);
+    assert!((caption.origin.y + line.baseline * caption.scale - frame.lines.last().unwrap().baseline - 22.5).abs() < 0.01);
+    assert!(
+        (super::catchwords::row_height(
+            &doc,
+            doc.story(sid).unwrap(),
+            frame.range.end,
+            &frame_specs(&doc, sid)[0].opts.inset_columns.as_ref().unwrap().catchwords
+        ) - 22.5)
+            .abs()
+            < 0.01
+    );
+}
