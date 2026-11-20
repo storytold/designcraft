@@ -1481,6 +1481,60 @@ fn optical_kerning_leaves_dash_pairs_alone() {
     }
 }
 
+/// "A different thing" in the bundled serif, which sets "ff" as one glyph, in a frame `width` wide.
+fn different_thing(width: f64, hyphenate: bool) -> ComposedStory {
+    let para = ParaAttrs { hyphenate: Some(hyphenate), ..Default::default() };
+    let (d, sid, _) = doc_with("A different thing", Rect::new(0.0, 0.0, width, 400.0), para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+#[test]
+fn a_ligature_with_a_hyphenation_point_inside_is_set_as_without_one_when_the_line_keeps_it() {
+    let shown = |cs: &ComposedStory| -> Vec<(u32, usize, usize, f64)> {
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).map(|g| (g.gid, g.byte, g.len, g.x)).collect()
+    };
+    let (with, without) = (different_thing(400.0, true), different_thing(400.0, false));
+    assert_eq!(with.frames[0].lines.len(), 1);
+    // The ff ligature is one glyph over both letters, at the same place and as wide as before.
+    let lig = shown(&without).into_iter().find(|g| g.2 == 2).expect("the bundled serif sets ff as a ligature");
+    assert_eq!((lig.1, lig.2), (4, 2));
+    assert_eq!(shown(&with), shown(&without));
+    // The second glyph of the pair is there, takes no room and is not drawn.
+    let hidden: Vec<_> = with.frames[0].lines[0].glyphs.iter().filter(|g| !g.visible && g.byte == 6).collect();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].len, 0);
+    let next = with.frames[0].lines[0].glyphs.iter().find(|g| g.visible && g.byte == 6).unwrap();
+    assert!((hidden[0].x - next.x).abs() < 1e-9, "the placeholder takes no room: it sits where the next letter starts");
+}
+
+#[test]
+fn a_word_is_broken_inside_a_ligature_into_its_pieces() {
+    // "dif-" and "ferent": the ff ligature is broken, each f set alone, and the hyphen follows the first.
+    let mut found = None;
+    for width in (20..70).map(f64::from) {
+        let cs = different_thing(width, true);
+        let lines = &cs.frames[0].lines;
+        if let Some(k) = lines.iter().position(|l| l.hyphenated && l.range.end == 5) {
+            found = Some((width, cs.clone(), k));
+            break;
+        }
+    }
+    let (width, cs, k) = found.expect("some width breaks the word inside the ligature");
+    let (first, next) = (&cs.frames[0].lines[k], &cs.frames[0].lines[k + 1]);
+    let f = first.glyphs[0].face.get().glyph_for('f');
+    let last_text = first.glyphs.iter().rev().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((last_text.gid, last_text.byte, last_text.len), (f, 4, 1), "width {width}: the first f alone");
+    let first_of_next = next.glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((first_of_next.gid, first_of_next.byte, first_of_next.len), (f, 5, 1), "width {width}: the second f alone");
+    assert_eq!(next.range.start, 5);
+    // Each piece has its own advance, not the share of the ligature's the breaker measured with.
+    for g in [last_text, first_of_next] {
+        assert!((g.adv - g.face.get().advance(f) * g.sx).abs() < 1e-6, "width {width}: the advance of a lone f");
+    }
+    // No ligature is left in either line.
+    assert!(cs.frames[0].lines[k..=k + 1].iter().all(|l| l.glyphs.iter().filter(|g| g.visible).all(|g| g.len <= 1 || g.byte > 5)));
+}
+
 #[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");

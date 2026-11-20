@@ -79,6 +79,71 @@ pub struct Glyph {
     /// Part of the bullet or number the paragraph's list adds: not the line's own text, so it
     /// doesn't raise the Ascent first baseline.
     pub list_label: bool,
+    /// One of the two glyphs a ligature with a hyphenation point inside it is set as while the
+    /// breaker chooses (see [`LigPair`]).
+    pub lig: Option<LigPart>,
+}
+
+/// What one glyph of a [`LigPair`] looks like in a form: the glyph and the text it stands for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LigForm {
+    pub gid: u32,
+    pub adv: f64,
+    pub byte: usize,
+    pub len: usize,
+    pub ch: char,
+}
+
+/// A ligature with a hyphenation point inside it ("dif-ferent" in an ff ligature). InDesign keeps
+/// the ligature unless the word is broken inside it, then sets the pieces. While the breaker
+/// chooses, the ligature is two glyphs whose advances add up to the ligature's, so a line that
+/// keeps it measures as it will; once the breaks are known [`LigPair::settle`] gives the pair its
+/// form: the ligature and an empty placeholder after it, or the two pieces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LigPair {
+    /// The ligature in the first glyph, with all of its text.
+    pub whole: LigForm,
+    /// The pieces, each with its own text and advance.
+    pub first: LigForm,
+    pub second: LigForm,
+}
+
+/// A glyph of a [`LigPair`]: the first or the second.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LigPart {
+    pub pair: std::sync::Arc<LigPair>,
+    pub second: bool,
+}
+
+impl Glyph {
+    /// Take the form a ligature's glyph has when the line is (`split`) or is not broken between
+    /// its two glyphs. A glyph that is not part of a pair is left as it is.
+    pub fn settle(&mut self, split: bool) {
+        let Some(part) = self.lig.clone() else { return };
+        let pair = &part.pair;
+        let form = match (split, part.second) {
+            (true, false) => &pair.first,
+            (true, true) => &pair.second,
+            (false, false) => &pair.whole,
+            (false, true) => {
+                // The ligature has all the text and the advance: this glyph holds a place.
+                self.ch = HIDDEN;
+                self.display_char = HIDDEN;
+                self.rendered_char = HIDDEN;
+                self.adv = 0.0;
+                self.len = 0;
+                self.byte = pair.whole.byte + pair.whole.len;
+                return;
+            }
+        };
+        self.gid = form.gid;
+        self.adv = form.adv;
+        self.byte = form.byte;
+        self.len = form.len;
+        self.ch = form.ch;
+        self.display_char = form.ch;
+        self.rendered_char = form.ch;
+    }
 }
 
 impl Glyph {
@@ -1148,6 +1213,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         lang: designcraft_doc::language_tag(&p.language),
         upright: false,
         list_label: false,
+        lig: None,
     }
 }
 
@@ -1322,6 +1388,7 @@ fn shape_segment(
             lang,
             upright: up,
             list_label: false,
+            lig: None,
         });
     }
 }

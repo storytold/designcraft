@@ -34,7 +34,7 @@ mod warichu;
 pub mod wrap;
 pub mod xref;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1713,7 +1713,13 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+            let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+            let mut interior = Vec::new();
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut interior);
+            if !interior.is_empty() {
+                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text);
+                hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
+            }
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2462,6 +2468,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             has_tabs,
             spacing,
         });
+        // A ligature with a hyphenation point inside it takes its form from where the lines end.
+        let settled = settle_ligature_pairs(glyphs, &breaks, g0);
+        let glyphs: &[Glyph] = settled.as_deref().unwrap_or(glyphs);
         let mut moved = false;
         // Set by a line with an Indent to Here character, for the lines broken again after it.
         let mut reindented = None;
@@ -2955,8 +2964,13 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after =
-        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+    let foreign = foreign_ranges(doc, story, prange.clone(), base_chars);
+    let mut interior = Vec::new();
+    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut interior);
+    if !interior.is_empty() {
+        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text);
+        hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
+    }
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -5976,6 +5990,9 @@ fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) ->
     pts
 }
 
+/// The glyphs after which a word may be hyphenated. A hyphenation point that falls inside a glyph's
+/// cluster (a ligature) has no glyph to follow: it is added to `interior` as the glyph's index and
+/// the story byte of the point, for [`pair_ligatures_at_hyphens`].
 fn hyphenation_points(
     text: &str,
     glyphs: &[Glyph],
@@ -5983,6 +6000,7 @@ fn hyphenation_points(
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
     korean: bool,
+    interior: &mut Vec<(usize, usize)>,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
@@ -6072,6 +6090,9 @@ fn hyphenation_points(
                         let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
                         if let Some(&k) = glyph_ending_at.get(&byte) {
                             out[k] = true;
+                        } else if let Some(k) = (i..j).find(|&k| glyphs[k].len > 1 && glyphs[k].byte < byte && byte < glyphs[k].byte + glyphs[k].len)
+                        {
+                            interior.push((k, byte));
                         }
                     }
                 }
@@ -6080,6 +6101,77 @@ fn hyphenation_points(
         i = j.max(i + 1);
     }
     out
+}
+
+/// Give each ligature that has a hyphenation point inside it a pair of glyphs ([`shape::LigPair`]),
+/// as InDesign keeps the ligature unless the word is broken inside it ("af-" and "fl" in
+/// "afflicted"): `interior` is what [`hyphenation_points`] found (glyph index, story byte). The pair
+/// is two glyphs, the first piece and a second one that makes up the ligature's advance, so the
+/// breaker measures a line that keeps the ligature as it is and has a glyph to end a line on at the
+/// point; [`settle_ligature_pairs`] gives the pair its form once the lines are known. Only a
+/// cluster of plain Latin letters with one point, each piece one glyph, left to right.
+fn pair_ligatures_at_hyphens(glyphs: &mut Vec<Glyph>, interior: &[(usize, usize)], text: &str) {
+    let mut cuts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(k, byte) in interior {
+        cuts.entry(k).or_default().push(byte);
+    }
+    // From the end, so the indices of the glyphs still to pair stay valid.
+    for (k, mut points) in cuts.into_iter().rev() {
+        points.sort_unstable();
+        points.dedup();
+        let (Some(g), &[cut]) = (glyphs.get(k).cloned(), points.as_slice()) else { continue };
+        let (start, end) = (g.byte, g.byte + g.len);
+        let Some(cluster) = text.get(start..end) else { continue };
+        if g.lig.is_some() || g.shaping_rtl || !cluster.chars().all(|c| c.is_ascii_alphabetic()) || !(start < cut && cut < end) {
+            continue;
+        }
+        // A piece set alone: one glyph, with its own advance.
+        let piece = |a: usize, b: usize| {
+            let shaped = designcraft_fonts::shape(g.face.get(), &text[a..b], &[], |c| c);
+            match shaped.as_slice() {
+                [one] => Some((one.gid, f64::from(one.x_advance) * g.sx)),
+                _ => None,
+            }
+        };
+        let (Some((gid1, adv1)), Some((gid2, adv2))) = (piece(start, cut), piece(cut, end)) else { continue };
+        let rest = g.adv - adv1;
+        let (Some(ch1), Some(ch2)) = (text[start..].chars().next(), text[cut..].chars().next()) else { continue };
+        if rest.is_nan() || rest <= 0.0 {
+            continue;
+        }
+        let pair = std::sync::Arc::new(shape::LigPair {
+            whole: shape::LigForm { gid: g.gid, adv: g.adv, byte: start, len: end - start, ch: g.ch },
+            first: shape::LigForm { gid: gid1, adv: adv1, byte: start, len: cut - start, ch: ch1 },
+            second: shape::LigForm { gid: gid2, adv: adv2, byte: cut, len: end - cut, ch: ch2 },
+        });
+        let mut a = g.clone();
+        let mut b = g;
+        a.lig = Some(shape::LigPart { pair: pair.clone(), second: false });
+        b.lig = Some(shape::LigPart { pair, second: true });
+        a.settle(true);
+        b.settle(true);
+        // While the breaker chooses, the two advances make up the ligature's.
+        b.adv = rest;
+        glyphs.splice(k..=k, [a, b]);
+    }
+}
+
+/// `glyphs` with each ligature pair ([`pair_ligatures_at_hyphens`]) in the form `breaks` (from glyph
+/// `g0`) leave it: the two pieces when a line ends between them, else the ligature and a placeholder
+/// that takes no room. None when there is no pair.
+fn settle_ligature_pairs(glyphs: &[Glyph], breaks: &[Break], g0: usize) -> Option<Vec<Glyph>> {
+    if !glyphs.iter().any(|g| g.lig.is_some()) {
+        return None;
+    }
+    let mut out = glyphs.to_vec();
+    for i in 0..out.len().saturating_sub(1) {
+        if out[i].lig.as_ref().is_some_and(|l| !l.second) && out[i + 1].lig.as_ref().is_some_and(|l| l.second) {
+            let split = breaks.iter().any(|b| g0 + b.end == i + 1);
+            out[i].settle(split);
+            out[i + 1].settle(split);
+        }
+    }
+    Some(out)
 }
 
 /// A paragraph rule drawn in `rect` (its length and weight) with its Type: the gap colour under
