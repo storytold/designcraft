@@ -1279,23 +1279,23 @@ fn tiff_bytes_with_orientation(x: (u32, u32), y: (u32, u32), unit: u16, orientat
     let n = 4usize;
     t.extend_from_slice(&(n as u16).to_le_bytes());
     let data = 8 + 2 + n * 12 + 4;
-    let mut short_entry = |tag: u16, val: u16| {
+    let short_entry = |t: &mut Vec<u8>, tag: u16, val: u16| {
         t.extend_from_slice(&tag.to_le_bytes());
         t.extend_from_slice(&3u16.to_le_bytes());
         t.extend_from_slice(&1u32.to_le_bytes());
         t.extend_from_slice(&val.to_le_bytes());
         t.extend_from_slice(&[0, 0]);
     };
-    let mut rational_entry = |tag: u16, off: u32| {
+    let rational_entry = |t: &mut Vec<u8>, tag: u16, off: u32| {
         t.extend_from_slice(&tag.to_le_bytes());
         t.extend_from_slice(&5u16.to_le_bytes());
         t.extend_from_slice(&1u32.to_le_bytes());
         t.extend_from_slice(&off.to_le_bytes());
     };
-    short_entry(0x0112, orientation);
-    rational_entry(0x011A, data as u32);
-    rational_entry(0x011B, (data + 8) as u32);
-    short_entry(0x0128, unit);
+    short_entry(&mut t, 0x0112, orientation);
+    rational_entry(&mut t, 0x011A, data as u32);
+    rational_entry(&mut t, 0x011B, (data + 8) as u32);
+    short_entry(&mut t, 0x0128, unit);
     t.extend_from_slice(&[0, 0, 0, 0]);
     assert_eq!(t.len(), data);
     for (num, den) in [x, y] {
