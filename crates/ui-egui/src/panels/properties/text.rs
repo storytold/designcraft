@@ -405,10 +405,11 @@ pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
             }
         }
     });
-    // Paragraph Direction, right after alignment, under Show Right-to-Left Features.
-    if crate::rtl_features(app) {
-        let p = a["para"].clone();
-        let rtl = p["direction"] == "rightToLeft";
+    // Paragraph Direction, right after alignment, under Show Right-to-Left Features or for a
+    // right-to-left paragraph.
+    let p = a["para"].clone();
+    let rtl = p["direction"] == "rightToLeft";
+    if crate::show_rtl_control(app, rtl) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             for (on, dir) in [(!rtl, "leftToRight"), (rtl, "rightToLeft")] {

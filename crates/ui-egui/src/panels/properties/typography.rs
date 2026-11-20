@@ -243,11 +243,11 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     place(ui, sub(b, fw - 20.0, 0.0, 20.0, 21.0), |ui| crate::menus::menu_button(ui, "☰", |ui| paragraph_panel_menu(app, ui, &p)));
     ui.add_space(6.0);
-    // Paragraph Direction, right after alignment, under Show Right-to-Left Features (the panel menu
-    // has it either way).
-    if crate::rtl_features(app) {
+    // Paragraph Direction, right after alignment, under Show Right-to-Left Features or for a
+    // right-to-left paragraph (the panel menu has it either way).
+    let rtl = p["direction"] == "rightToLeft";
+    if crate::show_rtl_control(app, rtl) {
         let b = block(ui, 21.0);
-        let rtl = p["direction"] == "rightToLeft";
         for (i, (on, dir)) in [(!rtl, "leftToRight"), (rtl, "rightToLeft")].into_iter().enumerate() {
             let (icon, tip) = direction_icon(dir);
             if place(ui, sub(b, i as f32 * pitch, 0.0, pitch, 21.0), |ui| widgets::icon_toggle_sized(ui, icon, on, &tr(tip), vec2(pitch, 21.0)))

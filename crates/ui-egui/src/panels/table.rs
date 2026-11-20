@@ -210,9 +210,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     divider(ui);
-    // Column order, under Show Right-to-Left Features: right to left puts the first column on the right.
-    if crate::rtl_features(app) {
-        let rtl = info["options"]["direction"] == "rightToLeft";
+    // Column order, under Show Right-to-Left Features or for a right-to-left table: right to left
+    // puts the first column on the right.
+    let rtl = info["options"]["direction"] == "rightToLeft";
+    if crate::show_rtl_control(app, rtl) {
         ui.horizontal(|ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Direction"));
             for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {

@@ -2492,7 +2492,8 @@ fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, change
 /// then Page Size (preset, width, height, orientation), Margins, Bleed and Slug (each edge, linked or
 /// not), and Adjust Layout. Returns true when Adjust Layout was clicked (apply now, objects follow).
 fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
-    let rtl_features = crate::rtl_features(app);
+    // Binding shows under Show Right-to-Left Features, or when the document is bound right to left.
+    let show_binding = crate::show_rtl_control(app, app.session.active().is_some_and(|s| s.doc.settings.right_to_left_binding));
     let lang = app.ui.language.as_str();
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let rtl = crate::i18n::is_rtl(lang);
@@ -2572,8 +2573,9 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
         setup_row(ui, rtl, |ui| {
             setup_caption(ui, tr("Height:"), 70.0);
             setup_spin(ui, d, "height", 130.0, 1.0);
-            // Binding, under Orientation as two buttons, under Show Right-to-Left Features.
-            if rtl_features {
+            // Binding, under Orientation as two buttons, under Show Right-to-Left Features or for a
+            // right-to-left bound document.
+            if show_binding {
                 ui.add_space(30.0);
                 crate::rtl::label(ui, tr("Binding:"));
                 let right_to_left = d.s("binding") == "rightToLeft";
@@ -6164,9 +6166,10 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         .response
                         .labelled_by(alignment_label.id);
                     ui.end_row();
-                    // Paragraph Direction, under Show Right-to-Left Features: switching also mirrors
-                    // left and right alignment, as the Paragraph panel does (after #1220).
-                    if crate::rtl_features(app) {
+                    // Paragraph Direction, under Show Right-to-Left Features or for a right-to-left
+                    // style: switching also mirrors left and right alignment, as the Paragraph panel
+                    // does (after #1220).
+                    if crate::show_rtl_control(app, pv["direction"].as_str() == Some("rightToLeft")) {
                         let direction_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Paragraph Direction:"));
                         let rtl = cur(d, "p.direction", &pv["direction"]).as_str() == Some("rightToLeft");
                         craft_ui::ComboBox::from_id_salt("psdirection")

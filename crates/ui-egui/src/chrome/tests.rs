@@ -555,6 +555,10 @@ fn the_paragraph_control_panel_has_direction_buttons_under_rtl_features() {
     click(&mut h, "Right-to-Left Paragraph Direction");
     let p = crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"].clone();
     assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().app.run("prefs.set", serde_json::json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Right-to-Left Paragraph Direction"), "shown for a right-to-left paragraph");
 }
 
 /// The course's chapter 21: the ¶ Control panel has InDesign's Bulleted and Numbered List

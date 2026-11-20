@@ -279,10 +279,11 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             orient = Some(());
         }
     });
-    // Binding beside the orientation, under Show Right-to-Left Features.
+    // Binding beside the orientation, under Show Right-to-Left Features or for a right-to-left
+    // bound document.
     let mut binding = None;
-    if crate::rtl_features(app) {
-        let rtl = d.settings.right_to_left_binding;
+    let rtl = d.settings.right_to_left_binding;
+    if crate::show_rtl_control(app, rtl) {
         let x = (full_width(ui) - 52.0).max(186.0);
         place(ui, sub(b, x, 0.0, 52.0, FIELD_H), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;

@@ -361,6 +361,13 @@ pub fn rtl_features(app: &DesignApp) -> bool {
     app.session.prefs.rtl_features.unwrap_or_else(|| i18n::is_rtl(&app.ui.language))
 }
 
+/// Whether a right-to-left control is shown: under [`rtl_features`], or when what it sets is
+/// already right to left (a right-to-left bound document, table or paragraph), so the preference
+/// never hides a setting the document uses.
+pub fn show_rtl_control(app: &DesignApp, already_right_to_left: bool) -> bool {
+    already_right_to_left || rtl_features(app)
+}
+
 #[cfg(test)]
 mod tests;
 

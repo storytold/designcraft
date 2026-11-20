@@ -428,6 +428,10 @@ fn paragraph_panel_direction_buttons_follow_show_right_to_left_features() {
     let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
     assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
     assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
     h.get_by_label("Left-to-Right Paragraph Direction").click();
     h.run_steps(3);
     let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
@@ -957,6 +961,10 @@ fn properties_paragraph_direction_follows_show_right_to_left_features() {
     h.run_steps(3);
     let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
     assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
 }
 
 /// Show Right-to-Left Features adds Binding beside the orientation in Properties › Document.
@@ -972,6 +980,10 @@ fn properties_document_binding_follows_show_right_to_left_features() {
     h.get_by_label("Right to Left").click();
     h.run_steps(3);
     assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
+    // With the preference off in an English interface, a right-to-left bound document still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right to Left").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
 }
 
 #[test]

@@ -384,6 +384,11 @@ fn document_setup_binding_follows_show_right_to_left_features() {
     h.get_by_label("  OK  ").click();
     h.run_steps(3);
     assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
+    // With the preference off in an English interface, a right-to-left bound document still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    crate::menus::activate(h.state_mut(), "layout.documentSetup", &Value::Null);
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right to Left").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
 }
 
 #[test]
@@ -454,6 +459,10 @@ fn table_panel_direction_follows_show_right_to_left_features() {
     h.get_by_label("Right to Left").click();
     h.run_steps(3);
     assert_eq!(h.state_mut().run("table.get", json!({})).unwrap()["options"]["direction"], "rightToLeft");
+    // With the preference off in an English interface, a right-to-left table still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    let _ = h.get_by_label("Right to Left");
 }
 
 #[test]
@@ -1221,6 +1230,11 @@ fn paragraph_style_options_direction_follows_show_right_to_left_features() {
     let para = &app.session.doc().unwrap().doc.styles.para("Hebrew Body").unwrap().para;
     assert_eq!(para.direction, Some(designcraft_doc::TextDirection::RightToLeft));
     assert_eq!(para.align, Some(designcraft_doc::Align::Right));
+    // With the preference off in an English interface, a right-to-left style still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.state_mut().ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Hebrew Body", "section": "indents"})));
+    h.run_steps(3);
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Paragraph Direction:");
 }
 
 #[test]
