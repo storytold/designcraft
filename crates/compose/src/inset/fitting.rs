@@ -853,6 +853,7 @@ pub(crate) struct Trace {
 thread_local! {
     pub(crate) static LAST_ROWS: std::cell::RefCell<Vec<(designcraft_doc::ItemId, Option<u64>)>> = const { std::cell::RefCell::new(Vec::new()) };
     pub(crate) static DEPENDENCY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PAGE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static MAIN_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static ROUTE_AREAS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static REFITTED: std::cell::RefCell<Vec<designcraft_doc::ItemId>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -948,6 +949,15 @@ fn rejoined(old: &Story, trace: &Trace, index: usize, record: &PageRecord, story
         && !trace.pages.iter().skip(index.saturating_add(1)).flat_map(|p| p.notes.iter().chain(p.routes.iter().flat_map(|f| &f.notes))).any(|n| changed.contains(&n.index))
 }
 
+fn has_repeated_pages(mut pages: impl Iterator<Item = Option<usize>>) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    pages.any(|page| {
+        #[cfg(test)]
+        PAGE_VISITS.with(|n| n.set(n.get() + 1));
+        !seen.insert(page)
+    })
+}
+
 pub(crate) fn compose_frames(
     doc: &Document,
     story: &Story,
@@ -959,7 +969,7 @@ pub(crate) fn compose_frames(
     // Only multi-host pages need a second fit: reclaim earlier rows after their stream's
     // last text-bearing host is known, then revalidate the cuts that used that space.
     if !frames.iter().any(|f| f.opts.inset_columns.as_ref().is_some_and(|c| c.catchwords.enabled()))
-        || !frames.iter().enumerate().any(|(i, f)| frames.iter().take(i).any(|p| p.page == f.page))
+        || !has_repeated_pages(frames.iter().map(|f| f.page))
     {
         return result;
     }
@@ -1334,6 +1344,13 @@ fn compose_frames_owned(
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    #[test]
+    fn repeated_page_detection_visits_each_page_once() {
+        PAGE_VISITS.with(|n| n.set(0));
+        assert!(!has_repeated_pages((0..256).map(Some)));
+        assert!(PAGE_VISITS.with(|n| n.get()) <= 256, "visits {}", PAGE_VISITS.with(|n| n.get()));
+        assert!(has_repeated_pages([Some(0), Some(1), Some(0)].into_iter()));
+    }
     #[test]
     fn no_success_spends_remaining_budget_on_larger_unprobed_keys() {
         let mut probes = Vec::new();
