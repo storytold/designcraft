@@ -142,7 +142,9 @@ fn preserve_documents_on_exit(app: &mut DesignApp) -> Result<(), String> {
     }
     // Also discard stale recovery for clean documents (for example, Undo back to the saved
     // state after the last timer tick). Never choose a fallback recovery path here.
-    app.run("file.recovery.save", serde_json::json!({})).map(|_| ())
+    // A forced OS exit can arrive while the PDF modal blocks ordinary UI commands.
+    // Recovery is the final safety write, so dispatch it directly to the engine.
+    app.session.execute("file.recovery.save", &serde_json::json!({})).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// `DESIGNCRAFT_NO_PREFS`: read and write nothing in the settings directory (tests, demos).
@@ -226,7 +228,8 @@ fn save_prefs(app: &DesignApp) {
 fn services() -> Services {
     Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
-        write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
+        write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
+        background_write: Some(std::sync::Arc::new(|p: &str, b: &[u8]| designcraft_engine::io::write_file(p, b))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
         clipboard_image: Some(Box::new(clipboard_image::read)),
         #[cfg(target_os = "macos")]
@@ -596,6 +599,38 @@ mod exit_recovery_tests {
         assert!(current.is_dirty());
         let recovered = designcraft_engine::cmd::from_bytes(&std::fs::read(dir.join(format!("{uid}.designcraft"))).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&recovered).unwrap(), serde_json::to_value(doc.as_ref()).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn exit_recovery_preserves_dirty_documents_during_background_pdf_export() {
+        let (mut app, dir) = dirty_app("pdf-pending");
+        let uid = app.session.active().unwrap().uid;
+        let doc = app.session.active().unwrap().doc.clone();
+        let (started, wait_started) = std::sync::mpsc::sync_channel(1);
+        let (release, wait_release) = std::sync::mpsc::sync_channel(1);
+        let wait_release = std::sync::Mutex::new(wait_release);
+        app.services.background_write = Some(std::sync::Arc::new(move |_, _| {
+            started.send(()).map_err(|e| e.to_string())?;
+            wait_release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).map_err(|e| e.to_string())
+        }));
+        let queued = app.run("app.exportPdf", json!({"path":dir.join("export.pdf").to_string_lossy()})).unwrap();
+        assert_eq!(queued["queued"], true);
+        wait_started.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(app.run("file.recovery.save", json!({})).is_err(), "the modal still blocks ordinary commands");
+        let saved = preserve_documents_on_exit(&mut app);
+        release.send(()).unwrap();
+        saved.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export_active() && std::time::Instant::now() < deadline {
+            app.logic(&egui::Context::default());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export_active(), "worker must finish before directory cleanup");
+        let recovered = designcraft_engine::cmd::from_bytes(&std::fs::read(dir.join(format!("{uid}.designcraft"))).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&recovered).unwrap(), serde_json::to_value(doc.as_ref()).unwrap());
+        assert!(std::sync::Arc::ptr_eq(&app.session.active().unwrap().doc, &doc));
+        assert!(app.session.active().unwrap().is_dirty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

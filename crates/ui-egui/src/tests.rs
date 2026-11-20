@@ -91,6 +91,15 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
         app.ui.dialog.as_mut().unwrap().fields.insert("title".into(), json!("Report"));
         dialogs::confirm(app).unwrap();
         app.settle_dialogs();
+        // Native export completes on a worker; finish it before starting the next dialog.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pdf_export.busy() && std::time::Instant::now() < deadline {
+            if let Some(result) = app.pdf_export.poll(&mut app.services.write) {
+                result.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!app.pdf_export.busy(), "the export must finish before another document is created");
     };
     let save_dialog = |app: &mut DesignApp| {
         app.run("app.saveDialog", json!({})).unwrap();
@@ -988,7 +997,7 @@ fn a_graphic_dropped_on_a_frame_fills_it() {
 
 /// The raw input of a drop without pointer events, with the window's content at `inner`.
 #[cfg(not(target_arch = "wasm32"))]
-fn pointerless_drop(path: &std::path::Path, inner: egui::Rect) -> egui::RawInput {
+pub(super) fn pointerless_drop(path: &std::path::Path, inner: egui::Rect) -> egui::RawInput {
     let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, inner.size())), ..Default::default() };
     raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { inner_rect: Some(inner), ..Default::default() });
     raw.dropped_files.push(dropped_file(path));

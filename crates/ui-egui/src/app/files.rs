@@ -316,8 +316,17 @@ impl DesignApp {
     /// window's coordinates.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
-        let drops = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
-        self.open_dropped_batch(drops);
+        let drops: Vec<_> = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
+        if self.pdf_export.busy() {
+            let generation = self.input_generation();
+            let batch = self.pending_drops.last().map_or(0, |d| d.batch.wrapping_add(1));
+            self.pending_drops.extend(drops.into_iter().map(|(path, pointer)| crate::PendingDrop { path, pointer, system: None, batch, generation }));
+            if let Some(ctx) = &self.egui_ctx {
+                ctx.request_repaint();
+            }
+        } else {
+            self.open_dropped_batch(drops);
+        }
     }
 
     /// Files dropped on the window together, each with the pointer it was dropped at, handled in

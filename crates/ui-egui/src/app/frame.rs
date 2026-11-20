@@ -24,16 +24,31 @@ impl DesignApp {
 
     /// Work whose identity is a consumed queue item, revision or deadline.
     pub(super) fn logic_tick(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.pdf_export.poll(&mut self.services.write) {
+            self.status(match result {
+                Ok(v) => format!("PDF exported: {} ({} pages)", v["path"].as_str().unwrap_or(""), v["pages"]),
+                Err(e) => format!("PDF export failed: {e}"),
+            });
+            if std::mem::take(&mut self.quit_after_export) {
+                self.request_quit();
+            }
+        }
+        if self.pdf_export.cancelled() {
+            self.quit_after_export = false;
+        }
         self.update_screenshot_epoch(ctx);
         self.drain_control(ctx);
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         let _ = self.dialog_wake.set(ctx.clone());
-        if self.fonts_ready && !self.host_order_pending() {
+        if self.fonts_ready && !self.host_order_pending() && !self.pdf_export.busy() {
             #[cfg(not(target_arch = "wasm32"))]
             self.handle_file_dialog_answers();
-            self.drain_inbox();
-            self.open_os_documents();
+            // A save-dialog answer can start export on this tick.
+            if !self.pdf_export.busy() {
+                self.drain_inbox();
+                self.open_os_documents();
+            }
             self.poll_link_checks(ctx);
         }
         if self.host_order_pending() {
@@ -89,7 +104,10 @@ impl DesignApp {
         // on the interface thread the window stopped answering for all of it.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if self.session.recovery_dir.is_some() && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0) {
+            if !self.pdf_export.busy()
+                && self.session.recovery_dir.is_some()
+                && now - self.last_recovery > (self.session.prefs.recovery_minutes * 60.0).max(5.0)
+            {
                 self.last_recovery = now;
                 if self.session.documents().iter().any(|d| d.is_dirty()) {
                     match self.session.execute("file.recovery.save", &json!({"background": true})) {
