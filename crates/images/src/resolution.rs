@@ -232,13 +232,6 @@ fn webp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
 
 /// BITMAPINFOHEADER pixels-per-meter (offset 38/42): meters → dpi.
 fn bmp_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
-    if bytes.len() < 46 || u32::from_le_bytes(bytes.get(14..18)?.try_into().ok()?) < 40 {
-        return None;
-    }
-    let ppm = |i: usize| -> Option<i32> { Some(i32::from_le_bytes(bytes.get(i..i + 4)?.try_into().ok()?)) };
-    let (x, y) = (ppm(38)?, ppm(42)?);
-    if x > 0 && y > 0 {
-        return Some((x as f64 * 0.0254, y as f64 * 0.0254));
-    }
-    None
+    let (x, y) = craft_image_codecs::bmp_probe::pixels_per_meter(bytes)?;
+    Some((f64::from(x) * 0.0254, f64::from(y) * 0.0254))
 }

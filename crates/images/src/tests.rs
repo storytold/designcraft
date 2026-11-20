@@ -40,6 +40,27 @@ fn svg_depth_is_checked_before_recursive_parsing() {
     }
 }
 
+/// An SVG whose `<use>` elements hold one another `links` deep, with no element nested deeper
+/// than four levels (the root counts as one).
+fn use_chain_svg(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("<g id='g{i}'><use xlink:href='#g{}'/></g>", i + 1)).collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs>{chain}<rect id='g{links}' width='10' height='10'/></defs><use xlink:href='#g0'/></svg>"#
+    )
+}
+
+/// Following references counts toward the depth limit: a short `<use>` chain parses, a chain
+/// past `MAX_SVG_DEPTH` levels is rejected by the tree, size and render APIs.
+#[test]
+fn svg_reference_depth_is_checked_before_recursive_parsing() {
+    let short = use_chain_svg(8);
+    assert!(svg_tree(short.as_bytes()).is_some());
+    let long = use_chain_svg(MAX_SVG_DEPTH);
+    assert!(svg_tree(long.as_bytes()).is_none());
+    assert!(natural_size(long.as_bytes()).is_none());
+    assert!(render_svg(long.as_bytes(), 10).is_none());
+}
+
 /// Markup-looking text in comments, CDATA and attributes does not count as XML depth.
 #[test]
 fn svg_depth_ignores_markup_in_comments_cdata_and_attributes() {
@@ -833,6 +854,30 @@ fn bmp_density_sets_natural_size() {
 }
 
 #[test]
+fn bmp_density_preserves_unrounded_axes_and_placement_policy() {
+    let mut bmp = bmp_with_ppm(11811);
+    bmp[42..46].copy_from_slice(&23622i32.to_le_bytes());
+    let (x, y) = raster_resolution(&bmp).unwrap();
+    assert!((x - 299.9994).abs() < 1e-9, "{x}");
+    assert!((y - 599.9988).abs() < 1e-9, "{y}");
+    let (w, h) = natural_size(&bmp).unwrap();
+    assert!((w - 144.000288000576).abs() < 1e-9, "{w}");
+    assert!((h - 108.000216000432).abs() < 1e-9, "{h}");
+    for (x, y) in [(1, 11811), (11811, 1), (i32::MAX, 11811), (11811, i32::MAX)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert!(raster_resolution(&bmp).is_some());
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+    for (x, y) in [(0i32, 11811i32), (-1, 11811), (11811, 0), (11811, -1)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert_eq!(raster_resolution(&bmp), None);
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+}
+
+#[test]
 fn tiff_resolution_tags_set_natural_size() {
     use tiff::encoder::colortype::Gray8;
     // A TIFF the encoder writes carries no density: pixels are points.
@@ -1096,9 +1141,9 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
     assert!(!too_large_to_decode(&large));
     assert!(decode_rgba_reduced(&large, 3).is_none());
-    // One component of the same size stays under the limit.
-    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
-    assert_eq!(gray.dimensions(), (1_280, 1_100));
+    // A 1-component progressive JPEG that stays within the 512 MiB decoder buffer budget succeeds.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 4_400, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
