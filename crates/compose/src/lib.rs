@@ -5465,6 +5465,12 @@ fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], start: 
     }
 }
 
+/// How far past the end of its gap a leader glyph may reach and still be set. InDesign sets the
+/// glyph when it overshoots by up to a tenth of a point (measured on Georgia 10 pt dots, dashes and
+/// stars with the gap end moved in quarter-point steps: every tolerance from 0.05 to 0.1 matches
+/// better than none, and 0.1 matches all 448 gaps).
+const LEADER_FIT_TOLERANCE: f64 = 0.1;
+
 /// Fill a tab's gap with repeats of its leader, on a grid shared by all lines (so dots align).
 fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut Vec<PlacedGlyph>) {
     let glyphs: Vec<(u32, f64)> = leader
@@ -5475,14 +5481,21 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
         })
         .collect();
     let pw: f64 = glyphs.iter().map(|g| g.1).sum();
-    if pw <= 0.01 || w < pw {
+    if pw <= 0.01 {
         return;
     }
-    let mut at = origin + ((x - origin) / pw).ceil() * pw;
+    // The leader's glyphs sit on the grid of whole repeats, and each one is set where it fits the
+    // gap: a repeat cut by either end of the gap keeps the glyphs that are inside it.
+    let mut at = origin + ((x - origin) / pw).floor() * pw;
     let end = x + w;
     let mut n = 0;
-    while at + pw <= end + 0.01 && n < 2000 {
+    while at < end && n < 2000 {
         for &(gid, adv) in &glyphs {
+            let gx = at;
+            at += adv;
+            if gx < x - 0.01 || gx + adv > end + LEADER_FIT_TOLERANCE {
+                continue;
+            }
             out.push(PlacedGlyph {
                 // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
                 // `false` for the tab of a list label made the leader claim to be the
@@ -5493,7 +5506,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
-                x: at,
+                x: gx,
                 y: -tab.shift + tab.dy,
                 adv: 0.0,
                 sx: tab.sx,
@@ -5508,7 +5521,6 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 rtl: false,
                 dx: 0.0,
             });
-            at += adv;
         }
         n += 1;
     }
