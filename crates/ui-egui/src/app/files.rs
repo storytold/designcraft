@@ -565,12 +565,12 @@ pub(crate) fn is_cursor_image(name: &str) -> bool {
 }
 
 /// Files that open as documents (when dropped or picked) rather than being placed: DesignCraft,
-/// IDML, and InDesign documents and templates (converted to IDML on open).
+/// IDML, InDesign documents and templates (converted to IDML on open), and Apple Pages documents.
 pub fn opens_as_document(name: &str) -> bool {
     matches!(
         craft_file_formats::detect(name, &[]),
         Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::Idml | craft_file_formats::Format::Indd)
-    )
+    ) || name.to_ascii_lowercase().ends_with(".pages")
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+[package]
+name = "designcraft-pages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DesignCraft Apple Pages (.pages, iWork 2013 and later) import"
+
+[lints]
+workspace = true
+
+[dependencies]
+designcraft-geom = { workspace = true }
+designcraft-color = { workspace = true }
+designcraft-doc = { workspace = true }
+designcraft-images = { workspace = true }
+thiserror = { workspace = true }
+zip = { workspace = true }
