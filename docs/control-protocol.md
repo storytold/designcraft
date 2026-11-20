@@ -35,31 +35,29 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | Run any engine or UI command (see `engine.commands`). `ui.menu.invoke` without `params` acts like choosing the menu item: a command labelled "…" that takes parameters opens its dialog. A key the command's params description doesn't name is an error (`unknown parameter …`), not ignored |
 | `engine.commands` | — | Every command: id, label, menu path, shortcut, params doc, enabled |
 | `document.inspect` | — | Pages, spreads, items, stories (overset), styles, swatches, selection |
-| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, panel layout (`docking`), perf |
+| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, panel layout (`docking`), perf, Separations Preview (`separations`: plate, ink limit, each separated spread's plates) |
 | `ui.docking` | — | The panel layout in use, the focused panel and the docking hit rects (see Shared panel docking) |
 | `ui.menu.list` / `ui.tool.list` | — | Menu tree / Tools panel groups |
 | `ui.tool.select` | `{tool}` | Select a tool (`selection`, `type`, `rectangleFrame`, …) |
 | `ui.pointer` | `{events:[{kind: down\|drag\|up\|move\|doubleclick, x, y, space?: "screen"\|"canvas", clicks?}], mods?}` | Drive the active tool through the same code path as the mouse; `clicks` on a `down` is the press count (3 = triple click); returns the selection, the tool and its cursor at the last event (e.g. `LoadedText`, `ThreadLink`, `Unthread`) |
 | `ui.key` / `ui.text` | `{key, shift?, alt?, cmd?}` / `{text}` | Synthetic keyboard input (typing into a text frame) |
 | `ui.ime` | `{preedit?, active?: [start, end], commit?}` | Input method events as the system IME sends them: marked text (shown in place, `active` is the clause being converted, in characters) and the committed text (typed as one `text.insert`) |
-| `ui.paste` | `{text}` | What Ctrl/Cmd+V delivers from the system clipboard: text into the text being edited, or SVG markup (vector art copied in Illustrator, VectorCraft or Figma) as editable paths in the middle of the view |
+| `ui.paste` | `{text}` or `{image}` | What Ctrl/Cmd+V delivers from the system clipboard: text into the text being edited, SVG markup (vector art copied in Illustrator, VectorCraft or Figma) as editable paths in the middle of the view, or an image (`image`: an image file as base64) as an embedded image in the selected empty frame or in the middle of the view (`edit.pasteImage`) |
 | `ui.move` / `ui.click` / `ui.drag` | screen points, `button?: left\|right\|middle`, `count?: 1–255` (click/drag, default 1), `steps?: positive integer` (drag, default 8) | Real egui pointer input — reaches every widget, menu and panel |
 | `ui.set` | `{brightness?, panel?, rulers?, guides?, frameEdges?, baselineGrid?, documentGrid?, textThreads?, screenMode?, zoom?, page?, fit?}` | UI state |
 | `ui.dialog.open` | `{id, fields?}` | Open a dialog by id (e.g. `paragraphStyleOptions` or `characterStyleOptions` with `{name, section}`, or `{new: true}` for a new style) |
 | `ui.dialog.set` / `ui.dialog.confirm` / `ui.dialog.cancel` | `{field, value}` | Fill and confirm the open dialog |
 | `ui.resize`, `ui.focus` | | Window control |
 | `ui.screenshot` | `{path?}` | PNG of the whole window |
-| `ui.render` | `{path?, page?, scale?, bleed?}` | Render a page headlessly (PNG; base64 if no path) |
+| `ui.render` | `{path?, page?, scale?, bleed?}` | Render a document page headlessly (PNG; base64 if no path); without a canvas, document mode defaults to page 0; parent editing mode requires an explicit 0-based `page` |
 | `app.open` / `app.save` / `app.export` | | Files |
 | `app.quit` | | Quit without asking about unsaved changes (the `app.quit` command, like ⌘Q, asks) |
 
-For `story.setDirection`, `story.get`, `type.fillWithPlaceholder` and `file.exportText`,
-`story` and `frame` targets must be unsigned integer IDs. Both are checked when supplied,
-even when `story` takes precedence. Missing or null targets use the selection; malformed
-explicit IDs never do. With an active document, explicit targets for `file.exportText`
-and `type.fillWithPlaceholder` do not require a text selection; their menu enablement stays
-selection-based. Placeholder text can still convert a valid non-text frame to text; the other
-three commands require a text frame.
+For `story.setDirection`, `story.get`, `type.fillWithPlaceholder` and `file.exportText`, a `story` or `frame`
+target must be an unsigned integer ID the document has: one it doesn't have is an error naming which, never a
+quiet fall back to the selection. Both are checked when both are given, and `story` wins. A frame that holds no
+text is refused, except by Fill with Placeholder Text, which converts it; a null or absent target uses the
+selection.
 
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
@@ -174,8 +172,9 @@ to icons and `dockExpanded:true` expands the outer column. Activating a floating
 raises its group. These operations change only UI layout.
 
 Clicking an icon in an iconic column opens its group as a flyout beside the column, on the
-canvas side; clicking the icon again closes it. With Auto-Collapse Iconic Panels on (the
-default; a column bar's menu toggles it), Escape or a click outside the flyout closes it too.
+canvas side; clicking the icon again, or another icon, closes it. With Auto-Collapse Iconic
+Panels on (off by default; a column bar's menu toggles it), Escape or a click outside the flyout
+closes it too.
 
 `ui.docking` returns the panel layout in use; `ui.inspect` includes the same object as
 `docking`:
@@ -189,7 +188,7 @@ default; a column bar's menu toggles it), Escape or a click outside the flyout c
      {"groups": [{"panels": ["stroke"], "active": 0}, …], "width": 260.0, "iconic": true,
       "iconic_width": 37.0}]}}}},
   "floating": []},
- "customized": false, "focused": "canvas", "flyout": null, "autoCollapse": true,
+ "customized": false, "focused": "canvas", "flyout": null, "autoCollapse": false,
  "rightToLeft": false, "hidden": [],
  "hitRects": [{"hit": {"Tab": "properties"}, "rect": [983.0, 0.0, 74.0, 27.0]},
               {"hit": {"DragBar": "properties"}, "rect": [1190.0, 0.0, 56.0, 27.0]},

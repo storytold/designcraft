@@ -31,3 +31,5 @@ jobs:
     with:
       app-name: designcraft
       app-dir: DesignCraft
+      install-relative-path: Programs/ArtCraft/DesignCraft
+      install-scope: perUser

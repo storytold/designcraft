@@ -92,38 +92,41 @@ fn apply_list(s: &mut Session, p: &Value, kind: ListType) -> Result<Value> {
         for t in &targets {
             let Some(st) = d.text_story_mut(t.story, t.cell) else { continue };
             let span = para_span(&st.text, &t.range);
-            st.format_paras(span, |pf| {
-                let (now, _) = styles.resolve_para(pf);
-                // Off takes away this list only: a paragraph with the other list keeps it.
-                if !on && now.list_type != kind {
-                    return;
-                }
-                let (style, _) = styles.resolve_para_style(&pf.style);
-                // The hanging indent this button set (and nothing has changed since).
-                let own_hang = pf.para.list_hang == Some(true) && now.left_indent == LIST_HANG && now.first_line_indent == -LIST_HANG;
-                // A value: left to the style when it gives the same, else set here.
-                let mut set = |key: &str, v: Value, same: bool| {
-                    let _ = pf.para.set_json(key, if same { &Value::Null } else { &v });
-                };
-                let list = if on { kind } else { ListType::None };
-                set("listType", serde_json::to_value(list).unwrap_or(Value::Null), style.list_type == list);
-                if on && now.left_indent == 0.0 && now.first_line_indent == 0.0 {
-                    set("leftIndent", json!(LIST_HANG), style.left_indent == LIST_HANG);
-                    set("firstLineIndent", json!(-LIST_HANG), style.first_line_indent == -LIST_HANG);
-                    set("listHang", json!(true), false);
-                } else if !on && now.list_type == kind {
-                    // Only the hanging indent set here: one the paragraph had before, or its style
-                    // gives, stays.
-                    if own_hang {
-                        set("leftIndent", json!(0.0), style.left_indent == 0.0);
-                        set("firstLineIndent", json!(0.0), style.first_line_indent == 0.0);
-                    }
-                    set("listHang", Value::Null, true);
-                }
-            });
+            st.format_paras(span, |pf| set_para_list(pf, &styles, on, kind));
         }
         Ok(json!({"on": on}))
     })
+}
+
+/// One paragraph's share of [`apply_list`]: turns the list on or off, setting only the values the
+/// style does not already give.
+fn set_para_list(pf: &mut designcraft_doc::ParaFormat, styles: &designcraft_doc::Styles, on: bool, kind: ListType) {
+    let (now, _) = styles.resolve_para(pf);
+    // Off takes away this list only: a paragraph with the other list keeps it.
+    if !on && now.list_type != kind {
+        return;
+    }
+    let (style, _) = styles.resolve_para_style(&pf.style);
+    // The hanging indent this button set (and nothing has changed since).
+    let own_hang = pf.para.list_hang == Some(true) && now.left_indent == LIST_HANG && now.first_line_indent == -LIST_HANG;
+    // A value: left to the style when it gives the same, else set here.
+    let mut set = |key: &str, v: Value, same: bool| {
+        let _ = pf.para.set_json(key, if same { &Value::Null } else { &v });
+    };
+    let list = if on { kind } else { ListType::None };
+    set("listType", serde_json::to_value(list).unwrap_or(Value::Null), style.list_type == list);
+    if on && now.left_indent == 0.0 && now.first_line_indent == 0.0 {
+        set("leftIndent", json!(LIST_HANG), style.left_indent == LIST_HANG);
+        set("firstLineIndent", json!(-LIST_HANG), style.first_line_indent == -LIST_HANG);
+        set("listHang", json!(true), false);
+    } else if !on && now.list_type == kind {
+        // Only the hanging indent set here: one the paragraph had before, or its style gives, stays.
+        if own_hang {
+            set("leftIndent", json!(0.0), style.left_indent == 0.0);
+            set("firstLineIndent", json!(0.0), style.first_line_indent == 0.0);
+        }
+        set("listHang", Value::Null, true);
+    }
 }
 
 /// The range whose paragraphs a list applies to: a selection ending where a paragraph starts (after

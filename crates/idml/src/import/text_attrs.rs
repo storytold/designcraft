@@ -1,0 +1,526 @@
+use super::story::MAX_STORY_NESTING;
+use super::values::tint;
+use super::{
+    Arc, CharAttrs, El, GridAlign, HashSet, IdmlError, Importer, Kerning, ListType, ParaAttrs, Result, SpanColumns, Story, Styles, TabStop, names,
+    st, unescape_id,
+};
+
+/// Whether sanitizing a file's tab list dropped, moved or shortened a stop. Sorting, and the `.`
+/// a char stop with no character aligns on, change nothing.
+fn tab_list_repaired(read: &[TabStop], sanitized: &[TabStop]) -> bool {
+    let kept = |t: &TabStop| {
+        sanitized.iter().any(|o| {
+            o.position == t.position
+                && o.leader == t.leader
+                && (o.align_on == t.align_on || (t.align_on.is_empty() && o.align == designcraft_doc::TabAlign::Char))
+        })
+    };
+    read.len() != sanitized.len() || !read.iter().all(kept)
+}
+
+pub(super) fn mojikumi_row(e: &El) -> Result<designcraft_doc::cjk::MojikumiAki> {
+    let model = craft_idml::model::MojikumiRow::from_el(&crate::xml::to_craft(e)).map_err(IdmlError::Invalid)?;
+    Ok(designcraft_doc::cjk::MojikumiAki {
+        target_class: model.target_class,
+        side_class: model.side_class,
+        after: model.after,
+        minimum: model.minimum,
+        desired: model.desired,
+        maximum: model.maximum,
+        priority: model.priority,
+        does_not_float: model.does_not_float,
+    })
+}
+
+impl<'r> Importer<'r> {
+    pub(super) fn char_attrs(&mut self, e: &El) -> CharAttrs {
+        let mut a = CharAttrs::default();
+        let cjk = craft_idml::model::CjkCharacterValues::from_el(&crate::xml::to_craft(e));
+        let values = craft_idml::model::CharacterTypographyValues::from_el(&crate::xml::to_craft(e));
+        if let Some(f) = values.applied_font {
+            // Some writers append the style after a tab. Spaces are part of a family's name
+            // ("Minion Pro " is another font than "Minion Pro"); line breaks around it aren't.
+            let fam = f.split('\t').next().unwrap_or(&f).trim_matches(['\n', '\r']);
+            a.font_family = self.composite_names.get(fam.trim()).cloned().or_else(|| names::font_family_in(fam));
+        }
+        // "Nothing" leaves the style unset: it comes from the paragraph style.
+        a.font_style = values.font_style.filter(|s| !matches!(s.trim(), "Nothing" | "$ID/Nothing"));
+        a.size = values.point_size;
+        a.leading = values.leading.as_deref().and_then(|leading| names::leading_in(leading.trim()));
+        // Automatic kerning may carry an inactive numeric value (including the
+        // 1e11 IDML sentinel). It must not become a multi-million-em advance.
+        a.kerning = values.kerning_method.as_deref().and_then(|k| match k.trim().trim_start_matches("$ID/") {
+            "Optical" => Some(Kerning::Optical),
+            "Metrics" | "Metrics - Roman Only" => Some(Kerning::Metrics),
+            "None" => Some(Kerning::None),
+            _ => None,
+        });
+        if a.kerning.is_none() {
+            a.kerning = values.kerning_value.filter(|v| v.is_finite() && v.abs() < 1e10).map(Kerning::Manual);
+        }
+        a.tracking = values.tracking;
+        a.leading_aki = values.leading_aki.map(|v| (v >= 0.0).then_some(v));
+        a.trailing_aki = values.trailing_aki.map(|v| (v >= 0.0).then_some(v));
+        a.tsume = values.tsume.map(|v| (v / 100.0).clamp(0.0, 1.0));
+        a.jidori = values.jidori.map(|v| v.clamp(0.0, 10000.0) as u32);
+        a.leading_model = values.leading_model.as_deref().and_then(crate::cjk::leading_in);
+        a.character_alignment = values.character_alignment.as_deref().and_then(crate::cjk::alignment_in);
+        a.h_scale = values.horizontal_scale.map(|v| v / 100.0);
+        a.v_scale = values.vertical_scale.map(|v| v / 100.0);
+        a.baseline_shift = values.baseline_shift;
+        a.skew = values.skew;
+        let special = craft_idml::model::CharacterSpecialValues::from_el(&crate::xml::to_craft(e));
+        let appearance = craft_idml::model::CharacterAppearanceValues::from_el(&crate::xml::to_craft(e));
+        if let Some(r) = appearance.fill_color {
+            a.fill = Some(self.swatch_ref(r.trim()));
+        }
+        a.fill_tint = tint(appearance.fill_tint);
+        if let Some(r) = appearance.stroke_color {
+            a.stroke = Some(self.swatch_ref(r.trim()));
+        }
+        a.stroke_tint = tint(appearance.stroke_tint);
+        a.stroke_weight = appearance.stroke_weight;
+        // Text strokes are centred on the outline or lie outside it, behind the fill.
+        a.stroke_behind_fill = appearance.stroke_alignment.as_deref().and_then(|v| match v.trim() {
+            "OutsideAlignment" => Some(true),
+            "CenterAlignment" => Some(false),
+            _ => None,
+        });
+        a.capitalization = special.capitalization.as_deref().and_then(|v| names::caps_in(v.trim()));
+        a.position = special.position.as_deref().and_then(|v| names::position_in(v.trim()));
+        a.underline = appearance.underline;
+        a.strikethrough = appearance.strikethrough;
+        a.ligatures = appearance.ligatures;
+        // Underline / strikethrough options (-9999 = automatic).
+        for (underline, values) in [(true, appearance.underline_options), (false, appearance.strikethrough_options)] {
+            // An explicit Text Color resets an inherited swatch; absence still inherits.
+            // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
+            let color = values.color.map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
+            let tint = tint(values.tint);
+            if underline {
+                a.underline_weight = values.weight.map(Some);
+                a.underline_offset = values.offset.map(Some);
+                a.underline_color = color;
+                a.underline_tint = tint;
+            } else {
+                a.strikethrough_weight = values.weight.map(Some);
+                a.strikethrough_offset = values.offset.map(Some);
+                a.strikethrough_color = color;
+                a.strikethrough_tint = tint;
+            }
+        }
+        read_otf_features(e, &mut a);
+        a.glyph_form = special.glyph_form;
+        a.no_break = special.no_break;
+        a.tate_chu_yoko = special.tate_chu_yoko;
+        a.tate_chu_yoko_x_offset = special.tate_chu_yoko_x_offset;
+        a.tate_chu_yoko_y_offset = special.tate_chu_yoko_y_offset;
+        a.warichu = special.warichu;
+        a.warichu_lines = special.warichu_lines.map(|v| v.max(2.0) as u32);
+        a.warichu_size = special.warichu_size;
+        a.warichu_line_spacing = special.warichu_line_spacing;
+        a.warichu_alignment = special.warichu_alignment.as_deref().and_then(crate::cjk::warichu_align_in);
+        a.warichu_chars_before_break = special.warichu_chars_before_break.map(|v| v.max(0.0) as u32);
+        a.warichu_chars_after_break = special.warichu_chars_after_break.map(|v| v.max(0.0) as u32);
+        let ruby_values = craft_idml::model::RubyValues::from_el(&crate::xml::to_craft(e));
+        if let Some(on) = ruby_values.flag {
+            a.ruby = Some(if on { ruby_values.text.clone().unwrap_or_default() } else { String::new() });
+        }
+        crate::ruby::read_values(&ruby_values, &mut a, |r| self.swatch_ref(r));
+        if let Some(k) = cjk.kenten_kind.as_deref() {
+            a.kenten = Some(k != "None");
+            a.kenten_character = crate::cjk::kenten_character(k).map(str::to_string);
+            if k == "Custom" {
+                a.kenten_character = cjk.kenten_custom_character.clone();
+            }
+        }
+        a.digits = special.digits.as_deref().and_then(|s| names::digits_in(s.trim()));
+        a.character_direction = special.character_direction.as_deref().and_then(crate::arabic::direction_in);
+        a.allow_kashidas = special.allow_kashidas.as_deref().and_then(crate::arabic::kashidas_in);
+        a.diacritic_position = special.diacritic_position.as_deref().and_then(crate::arabic::diacritic_in);
+        a.diacritic_x_offset = special.diacritic_x_offset;
+        a.diacritic_y_offset = special.diacritic_y_offset;
+        a.positional_form = special.positional_form;
+        self.cjk_settings_chars(&cjk, &mut a);
+        if let Some(v) = special.applied_conditions.as_deref().filter(|v| !v.trim().is_empty()) {
+            let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
+            if !names.is_empty() {
+                a.conditions = Some(names);
+            }
+        }
+        a.language = special.applied_language.map(|l| l.trim().trim_start_matches("$ID/").to_string());
+        a
+    }
+
+    pub(super) fn para_attrs(&mut self, e: &El) -> ParaAttrs {
+        let mut a = ParaAttrs::default();
+        let alignment = craft_idml::model::ParagraphAlignmentValues::from_el(&crate::xml::to_craft(e));
+        let flow = craft_idml::model::ParagraphFlowValues::from_el(&crate::xml::to_craft(e));
+        let cjk = craft_idml::model::CjkParagraphValues::from_el(&crate::xml::to_craft(e));
+        let span = craft_idml::model::ParagraphSpanValues::from_el(&crate::xml::to_craft(e));
+        let list = craft_idml::model::ParagraphListValues::from_el(&crate::xml::to_craft(e));
+        a.align = alignment.justification.as_deref().and_then(|v| names::align_in(v.trim()));
+        a.kinsoku_hang = cjk.kinsoku_hang.as_deref().and_then(|v| match v {
+            "None" => Some(designcraft_doc::cjk::KinsokuHang::None),
+            "KinsokuHangRegular" => Some(designcraft_doc::cjk::KinsokuHang::Regular),
+            "KinsokuHangForce" => Some(designcraft_doc::cjk::KinsokuHang::Force),
+            _ => None,
+        });
+        a.mojikumi = cjk.mojikumi.map(|name| self.mojikumi_names.get(&name).cloned().unwrap_or_else(|| unescape_id(&name)));
+        a.kinsoku_type = cjk.kinsoku_type;
+        a.bunri_kinshi = cjk.bunri_kinshi;
+        a.rensuuji = cjk.rensuuji;
+        a.treat_ideographic_space_as_space = cjk.treat_ideographic_space_as_space;
+        a.auto_tcy = cjk.auto_tcy.map(|value| value as u32);
+        a.auto_tcy_include_roman = cjk.auto_tcy_include_roman;
+        a.rotate_roman = cjk.rotate_single_byte_characters;
+        a.roman_word_break = cjk.allow_arbitrary_hyphenation;
+        a.grid_gyoudori = cjk.grid_gyoudori.map(|value| value as u32);
+        a.paragraph_gyoudori = cjk.paragraph_gyoudori;
+        if let Some(k) = cjk.kinsoku_set {
+            if k == "Nothing" || k == "None" {
+                a.kinsoku = Some(Some(Default::default()));
+            } else if let Some(set) = self.kinsoku.get(&k) {
+                a.kinsoku = Some(Some(set.clone()));
+            } else if let Some(set) = designcraft_doc::cjk::Kinsoku::named(&k) {
+                a.kinsoku = Some(Some(set));
+            }
+        }
+        a.direction = alignment.direction.map(|v| {
+            if v.trim() == "RightToLeftDirection" { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight }
+        });
+        a.kashidas = alignment.kashidas.as_deref().and_then(crate::arabic::kashidas_in);
+        a.arabic_justification = alignment.paragraph_justification;
+        a.paragraph_kashida_width = alignment.paragraph_kashida_width.map(Some);
+        a.left_indent = alignment.left_indent;
+        a.right_indent = alignment.right_indent;
+        a.first_line_indent = alignment.first_line_indent;
+        a.last_line_indent = alignment.last_line_indent;
+        a.space_before = alignment.space_before;
+        if let Some(r) = list.applied_list.as_deref() {
+            let r = r.trim().trim_start_matches("NumberingList/");
+            a.list_name = Some(if r.starts_with("$ID/") { String::new() } else { unescape_id(r) });
+        }
+        match list.numbering_continue {
+            Some(false) => a.start_at = Some(list.numbering_start_at.map(|value| value.max(1.0) as u32)),
+            Some(true) => a.start_at = Some(None),
+            _ => {}
+        }
+        self.read_nested_styles(e, &mut a);
+        a.space_after = alignment.space_after;
+        // A number, or an enumeration (Ignore) that turns it off even over a based-on style's value.
+        a.same_para_style_spacing = alignment.same_para_style_spacing;
+        a.drop_cap_lines = alignment.drop_cap_lines.map(|v| v.max(0.0) as u32);
+        a.drop_cap_chars = alignment.drop_cap_chars.map(|v| v.max(0.0) as u32);
+        // DropcapDetail bits: 1 = Align Left Edge, 2 = Scale for Descenders.
+        if let Some(bits) = alignment.dropcap_detail {
+            a.drop_cap_align_left = Some(bits & 1 != 0);
+            a.drop_cap_scale_descenders = Some(bits & 2 != 0);
+        }
+        if let Some(g) = alignment.grid_alignment {
+            a.grid_align = Some(if g.trim() == "None" {
+                GridAlign::None
+            } else if alignment.grid_align_first_line_only == Some(true) {
+                GridAlign::FirstLineOnly
+            } else {
+                GridAlign::AllLines
+            });
+            if g.trim() != "None" {
+                a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
+            }
+        }
+        a.composer = alignment.composer.map(|c| composer_in(&c));
+        a.hyphenate = flow.hyphenate;
+        a.hyph_min_word = flow.hyphenate_min_word.map(|v| v.max(0.0) as u32);
+        a.hyph_after_first = flow.hyphenate_after_first.map(|v| v.max(0.0) as u32);
+        a.hyph_before_last = flow.hyphenate_before_last.map(|v| v.max(0.0) as u32);
+        a.hyph_limit = flow.hyphenate_ladder_limit.map(|v| v.max(0.0) as u32);
+        a.hyph_zone = flow.hyphenation_zone;
+        a.hyph_capitalized = flow.hyphenate_capitalized;
+        a.hyph_last_word = flow.hyphenate_last_word;
+        a.hyph_across_column = flow.hyphenate_across_columns;
+        a.hyph_weight = flow.hyphen_weight.map(|v| v / 10.0);
+        a.word_space_min = flow.word_spacing[0].map(|v| v / 100.0);
+        a.word_space_desired = flow.word_spacing[1].map(|v| v / 100.0);
+        a.word_space_max = flow.word_spacing[2].map(|v| v / 100.0);
+        a.letter_space_min = flow.letter_spacing[0].map(|v| v / 100.0);
+        a.letter_space_desired = flow.letter_spacing[1].map(|v| v / 100.0);
+        a.letter_space_max = flow.letter_spacing[2].map(|v| v / 100.0);
+        a.glyph_scale_min = flow.glyph_scaling[0].map(|v| v / 100.0);
+        a.glyph_scale_desired = flow.glyph_scaling[1].map(|v| v / 100.0);
+        a.glyph_scale_max = flow.glyph_scaling[2].map(|v| v / 100.0);
+        a.auto_leading = flow.auto_leading.map(|v| v / 100.0);
+        a.single_word_justify = flow.single_word_justification.as_deref().and_then(|v| names::align_in(v.trim()));
+        a.keep_with_next = flow.keep_with_next.map(|v| v.max(0.0) as u32);
+        a.keep_lines_together = flow.keep_lines_together;
+        a.ignore_optical_margin = flow.ignore_edge_alignment;
+        a.keep_all_lines = flow.keep_all_lines_together;
+        a.keep_first = flow.keep_first_lines.map(|v| v.max(0.0) as u32);
+        a.keep_last = flow.keep_last_lines.map(|v| v.max(0.0) as u32);
+        a.start_paragraph = flow.start_paragraph.as_deref().and_then(|v| names::start_para_in(v.trim()));
+        if let Some(t) = span.kind {
+            let n = span.split_column_count.unwrap_or(0);
+            a.span_columns = Some(match t.trim() {
+                "SpanColumns" => SpanColumns::Span(n),
+                "SplitColumns" => SpanColumns::Split(n.max(2)),
+                _ => SpanColumns::Single,
+            });
+        }
+        a.split_inside_gutter = span.inside_gutter;
+        a.split_outside_gutter = span.outside_gutter;
+        a.rule_above = self.rule(e, "RuleAbove");
+        a.rule_below = self.rule(e, "RuleBelow");
+        a.tabs = self.read_tabs(e);
+        let list = craft_idml::model::ParagraphListValues::from_el(&crate::xml::to_craft(e));
+        a.list_type = list.list_type.map(|value| match value.trim() {
+            "BulletList" => ListType::Bullets,
+            "NumberedList" => ListType::Numbers,
+            _ => ListType::None,
+        });
+        // A format with no counterpart (CJK, Arabic, Hebrew numbering) is left unset: decimal.
+        a.number_style = list.numbering_format.as_deref().and_then(names::numbering_format_in);
+        a.number_expression = list.expression;
+        a.list_separator = list.separator;
+        // A glyph of a named font (`GlyphWithFont`) has no character to map to.
+        let unicode = matches!(list.bullet_type.as_deref(), Some("UnicodeOnly" | "UnicodeWithFont"));
+        if unicode {
+            a.bullet_char = list
+                .bullet_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .and_then(char::from_u32)
+                .map(|value| value.to_string());
+        }
+        a.balance_ragged = list.balance_ragged.map(|value| value.trim() != "NoBalancing" && value.trim() != "false");
+        let boxes = craft_idml::model::ParagraphBoxValues::from_el(&crate::xml::to_craft(e));
+        a.shading_on = boxes.shading_on;
+        a.shading_color = boxes.shading_color.map(|color| self.swatch_ref(color.trim()));
+        a.shading_tint = tint(boxes.shading_tint);
+        a.shading_overprint = boxes.shading_overprint;
+        a.shading_offsets = boxes.shading_offsets;
+        a.border_on = boxes.border_on;
+        a.border_color = boxes.border_color.map(|color| self.swatch_ref(color.trim()));
+        a.border_tint = tint(boxes.border_tint);
+        a.border_overprint = boxes.border_overprint;
+        a.border_weights = boxes.border_weights;
+        a.border_offsets = boxes.border_offsets;
+        a.border_type = boxes.border_type.as_deref().map(|value| names::stroke_type_in(value.trim()));
+        a.border_cap = boxes.border_cap.as_deref().map(|value| names::cap_in(value.trim()));
+        a.border_join = boxes.border_join.as_deref().map(|value| names::join_in(value.trim()));
+        let map_corners = |values: Option<[(String, f64); 4]>| {
+            values.map(|values| values.map(|(shape, size)| designcraft_geom::corners::Corner { shape: names::corner_in(shape.trim()), size }))
+        };
+        a.border_corners = map_corners(boxes.border_corners);
+        a.border_width = boxes.border_width.as_deref().map(|value| names::box_width_in(value.trim()));
+        a.border_top = boxes.border_top.as_deref().map(|value| names::box_top_in(value.trim()));
+        a.border_bottom = boxes.border_bottom.as_deref().map(|value| names::box_bottom_in(value.trim()));
+        a.border_display_if_splits = boxes.border_display_if_splits;
+        a.border_merge = boxes.border_merge;
+        a.border_gap_color = boxes.border_gap_color.map(|color| self.swatch_ref(color.trim()));
+        a.border_gap_tint = tint(boxes.border_gap_tint);
+        a.border_gap_overprint = boxes.border_gap_overprint;
+        a.shading_corners = map_corners(boxes.shading_corners);
+        a.shading_width = boxes.shading_width.as_deref().map(|value| names::box_width_in(value.trim()));
+        a.shading_top = boxes.shading_top.as_deref().map(|value| names::box_top_in(value.trim()));
+        a.shading_bottom = boxes.shading_bottom.as_deref().map(|value| names::box_bottom_in(value.trim()));
+        a.shading_clip = boxes.shading_clip;
+        a.shading_nonprinting = boxes.shading_nonprinting;
+        a.span_space_before = span.space_before;
+        a.span_space_after = span.space_after;
+        a.list_level = list.level.map(|value| value.round().clamp(1.0, designcraft_doc::LIST_LEVELS as f64) as u32);
+        if let Some(style) = list.bullet_character_style {
+            a.bullet_char_style = Some(self.char_style_ref(style.trim()));
+        }
+        if let Some(style) = list.numbering_character_style {
+            a.number_char_style = Some(self.char_style_ref(style.trim()));
+        }
+        a.bullet_align = list.bullet_alignment.as_deref().map(|value| names::list_align_in(value.trim()));
+        a.number_align = list.numbering_alignment.as_deref().map(|value| names::list_align_in(value.trim()));
+        a.restart_numbers = list.restart_numbers;
+        if let Some(level) = list.restart_after_level {
+            // A specific level restarts after that level; any other policy after any higher one.
+            a.restart_after_level = Some(if list.restart_after_specific_level { level } else { 0 });
+        }
+        if let Some(font) = list.bullet_font {
+            let font = font.trim();
+            a.bullet_font = Some(if font == "$ID/" { String::new() } else { font.split('\t').next().unwrap_or(font).to_string() });
+        }
+        if let Some(style) = list.bullet_font_style {
+            let style = style.trim();
+            a.bullet_font_style =
+                Some(if style == "Nothing" || style == "$ID/" { String::new() } else { style.trim_start_matches("$ID/").to_string() });
+        }
+        a
+    }
+
+    fn read_nested_styles(&self, e: &El, attrs: &mut ParaAttrs) {
+        let lists = craft_idml::model::NestedStyleValues::from_el(&crate::xml::to_craft(e));
+        if let Some(values) = lists.nested {
+            let styles: Vec<designcraft_doc::NestedStyle> = values
+                .into_iter()
+                .map(|value| designcraft_doc::NestedStyle {
+                    style: self.listed_char_style_ref(&value.character_style),
+                    through: value.inclusive,
+                    count: value.repetition,
+                    until: names::nested_until_in(&value.delimiter_type, &value.delimiter),
+                })
+                .collect();
+            // IDML has no drop cap style attribute: the drop cap's character style is the list's
+            // leading "through 1 Dropcap" nested style.
+            attrs.drop_cap_style = styles.first().filter(|style| style.is_drop_cap()).map(|style| style.style.clone());
+            attrs.nested_styles = Some(styles);
+        }
+        if let Some(values) = lists.lines {
+            attrs.nested_line_styles = Some(
+                values
+                    .into_iter()
+                    .map(|value| designcraft_doc::NestedLineStyle {
+                        style: self.listed_char_style_ref(&value.character_style),
+                        lines: value.line_count,
+                    })
+                    .collect(),
+            );
+        }
+        if let Some(values) = lists.grep {
+            attrs.grep_styles = Some(
+                values
+                    .into_iter()
+                    .map(|value| designcraft_doc::GrepStyle { style: self.listed_char_style_ref(&value.character_style), pattern: value.expression })
+                    .collect(),
+            );
+        }
+    }
+
+    fn read_tabs(&mut self, e: &El) -> Option<Vec<TabStop>> {
+        let list = e.prop_el("TabList")?;
+        let model_list = crate::xml::to_craft(list);
+        let tabs: Vec<_> = craft_idml::model::TabStopValues::from_list(&model_list)
+            .into_iter()
+            .map(|tab| TabStop {
+                position: tab.position,
+                align: names::tab_align_in(tab.alignment.trim()),
+                leader: tab.leader,
+                align_on: if tab.alignment_character == "." { String::new() } else { tab.alignment_character },
+            })
+            .collect();
+        let sanitized = TabStop::sanitized_list(tabs.clone());
+        if tab_list_repaired(&tabs, &sanitized) {
+            self.repaired_tab_lists = self.repaired_tab_lists.saturating_add(1);
+        }
+        Some(sanitized)
+    }
+}
+
+pub(super) fn ace_char(v: &str) -> Option<char> {
+    match craft_idml::model::Ace::from_decimal(v)? {
+        craft_idml::model::Ace::PageNumber => Some(st::PAGE_NUMBER),
+        craft_idml::model::Ace::SectionMarker => Some(st::SECTION_MARKER),
+        craft_idml::model::Ace::IndentToHere => Some(st::INDENT_HERE),
+        craft_idml::model::Ace::RightIndentTab => Some(st::RIGHT_INDENT_TAB),
+        craft_idml::model::Ace::FootnoteNumber | craft_idml::model::Ace::Other(_) => None,
+    }
+}
+
+/// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.
+fn composer_in(name: &str) -> designcraft_doc::Composer {
+    use designcraft_doc::Composer as C;
+    let name = name.trim().trim_start_matches("$ID/");
+    match (name.contains("Single"), name.ends_with(" J") || name.contains("Japanese")) {
+        (false, false) => C::Paragraph,
+        (true, false) => C::SingleLine,
+        (false, true) => C::Japanese,
+        (true, true) => C::JapaneseSingleLine,
+    }
+}
+
+/// [`Importer::clear_inherited_drop_cap_styles`] for one story's paragraphs and those of the table
+/// cells, footnotes and endnotes in it.
+pub(super) fn clear_story_drop_cap_styles(styles: &Styles, story: &mut Story, depth: usize) {
+    for p in &mut story.paras {
+        if p.para.drop_cap_style.is_none() && p.para.nested_styles.is_some() && inherits_drop_cap_style(styles, Some(&p.style)) {
+            p.para.drop_cap_style = Some(st::NO_CHAR_STYLE.into());
+        }
+    }
+    if depth >= MAX_STORY_NESTING {
+        return;
+    }
+    for table in story.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            clear_story_drop_cap_styles(styles, &mut cell.text, depth + 1);
+        }
+    }
+    for note in story.notes.iter_mut().chain(story.endnotes.iter_mut()) {
+        clear_story_drop_cap_styles(styles, &mut Arc::make_mut(note).text, depth + 1);
+    }
+}
+
+/// Does paragraph style `name` (and its based-on chain) set a drop cap character style? A style
+/// with a nested style list of its own and no drop cap style has none.
+pub(super) fn inherits_drop_cap_style<'a>(styles: &'a Styles, mut name: Option<&'a str>) -> bool {
+    let mut seen = HashSet::new();
+    while let Some(n) = name {
+        let Some(s) = styles.para(n).filter(|_| seen.insert(n)) else { break };
+        if let Some(c) = s.para.drop_cap_style.as_deref() {
+            return !c.is_empty() && c != st::NO_CHAR_STYLE;
+        }
+        if s.para.nested_styles.is_some() {
+            return false;
+        }
+        name = s.based_on.as_deref();
+    }
+    false
+}
+
+impl Importer<'_> {
+    /// Kenten Settings, Kenten Color and Shatai of a character range or style.
+    fn cjk_settings_chars(&mut self, values: &craft_idml::model::CjkCharacterValues, a: &mut CharAttrs) {
+        if let Some(kind) = values.kenten_kind.as_deref().and_then(crate::cjk::kenten_kind_in) {
+            a.kenten_kind = Some(kind);
+            if a.kenten_character.as_deref().is_none_or(str::is_empty)
+                && let Some(mark) = kind.mark()
+            {
+                a.kenten_character = Some(mark.to_string());
+            }
+        }
+        if let Some(font) = values.kenten_font.as_deref() {
+            let font = font.trim();
+            a.kenten_font = Some(if font == "$ID/" { String::new() } else { font.to_string() });
+        }
+        if let Some(style) = values.kenten_font_style.as_deref() {
+            let style = style.trim();
+            a.kenten_font_style = Some(if style == "Nothing" { String::new() } else { style.to_string() });
+        }
+        a.kenten_size = values.kenten_size.map(|v| (v > 0.0).then_some(v));
+        a.kenten_x_scale = values.kenten_x_scale.map(|v| v / 100.0);
+        a.kenten_y_scale = values.kenten_y_scale.map(|v| v / 100.0);
+        a.kenten_distance = values.kenten_distance;
+        a.kenten_position = values.kenten_position.as_deref().and_then(crate::cjk::kenten_position_in);
+        a.kenten_alignment = values.kenten_alignment.as_deref().and_then(crate::cjk::kenten_alignment_in);
+        a.kenten_character_set = values.kenten_character_set.clone();
+        // "Text Color" is the text's own colour; it resets an inherited swatch.
+        if let Some(color) = values.kenten_fill_color.as_deref() {
+            a.kenten_fill = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
+        }
+        if let Some(color) = values.kenten_stroke_color.as_deref() {
+            a.kenten_stroke = Some(if color.trim() == "Text Color" { String::new() } else { self.swatch_ref(color.trim()) });
+        }
+        // Tints and weight: -1 is the text's.
+        a.kenten_fill_tint = values.kenten_fill_tint.map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_tint = values.kenten_stroke_tint.map(|v| (v >= 0.0).then(|| (v.min(100.0) / 100.0) as f32));
+        a.kenten_stroke_weight = values.kenten_stroke_weight.map(|v| (v >= 0.0).then_some(v));
+        a.kenten_overprint_fill = values.kenten_overprint_fill.as_deref().and_then(crate::cjk::overprint_in);
+        a.kenten_overprint_stroke = values.kenten_overprint_stroke.as_deref().and_then(crate::cjk::overprint_in);
+        a.shatai_magnification = values.shatai_magnification;
+        a.shatai_angle = values.shatai_angle.map(|v| v / crate::cjk::SHATAI_ANGLE_UNITS);
+        a.shatai_adjust_rotation = values.shatai_adjust_rotation;
+        a.shatai_adjust_tsume = values.shatai_adjust_tsume;
+    }
+}
+
+/// OpenType features (only when the element sets any).
+fn read_otf_features(e: &El, a: &mut CharAttrs) {
+    let features = craft_idml::model::OpenTypeFeatureValues::from_el(&crate::xml::to_craft(e));
+    if features.present {
+        a.otf_features = Some(features.features);
+    }
+}

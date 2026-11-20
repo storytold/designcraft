@@ -24,10 +24,7 @@ A script is one command per line (`command.id {json params}`; `#` comments), JSO
 `{command, params}`, in UTF-8 with or without a byte order mark. A parameter string `"$N.path"` becomes that value
 of step N's result: N is the 0-based step index (comments and blank lines are not steps, `$last` is the previous
 step) and the path goes through result fields and array indices (`"$1.story"`, `"$3.ids.0"`); `"${N.path}"`
-interpolates inside longer strings. References preserve JSON types, including null: for commands
-where a null story/frame target means absent, a reference resolving to null also uses the selection.
-If a script requires an explicit target, its earlier result must contain an ID, not null.
-Any other string starting with `$` stays as written (`"$1-$2"`, `"$5 off"`), and
+interpolates inside longer strings. Any other string starting with `$` stays as written (`"$1-$2"`, `"$5 off"`), and
 `$$` writes a literal `$` anywhere (`"$$1"` passes `$1`, a GREP group). In text parameters `\n` starts a new paragraph and `\u2028` is a forced line
 break (`\u000b`, Word's line break, is read as one too). Most commands ignore parameters they don't know instead of rejecting them, so check names with `describe`.
 `designcraft-cli script --help` prints this reference.
@@ -57,6 +54,17 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
 is a PNG of the page; another extension is an error, and nothing runs.
 
+## Table of contents bookmarks
+
+`toc.generate` accepts `createBookmarks: true` to generate page-level PDF bookmarks from the
+included paragraph styles and their levels. `toc.update` refreshes their titles, hierarchy and
+destinations. Refresh keeps the generated outline at its previous position, preserving manual
+bookmarks before and after it; disabling the option removes only the generated
+bookmarks. Without `createBookmarks`, `toc.generate` keeps the document's existing TOC setting,
+which is off when there is no TOC yet, so a script that makes a new TOC gets no bookmarks unless
+it passes `createBookmarks: true`. The Table of Contents dialog differs: its Create PDF Bookmarks
+option is on by default for a new TOC, and for an existing one it shows the saved setting.
+
 ## Color themes
 
 `color.extractTheme {id?}` previews up to five RGB colours from a placed raster image (or the selected image).
@@ -80,8 +88,15 @@ external PDF/X certification.
 
 `data.source.select {path, sheet?}` links a CSV/TSV/`.xlsx` file to the document (`data.source.update` re-reads it,
 `data.source.remove` drops it); `data.fields` lists its fields. `data.placeholder.add {field, role?, story?, at?, end?, item?}`
-marks text or a frame as a field (`role`: text, image, qr, hyperlink); `data.options` sets records, tiling and image
-fitting; `data.preview {record}` / `data.preview.stop` show one record without saving it.
+marks text or a frame as a field (`role`: text, image, qr, hyperlink). An image field (a `@` column) inserted at a text
+insertion point, or typed there as `<<name>>`, merges as an inline image at its natural size, scaled down to fit the
+frame. The merge writes only text into a table cell or a note: an image field inserted there is refused unless `role`
+is `text`, and its `<<name>>` marker, inserted or typed, merges as the path. A QR field (a `#` column) or `role: "qr"`
+at a text insertion point is refused; bind it to a frame with `item` instead. A field inserted at the insertion point
+puts the caret after its marker. An image
+path is absolute or relative to the data file's folder, then the document's; a path that starts with one separator
+(`\Photos\a.jpg`) is tried from the drive's root first. `data.options` sets records, tiling and image fitting;
+`data.preview {record}` / `data.preview.stop` show one record without saving it.
 
 `data.merge` now **creates a new document** and leaves the template unchanged (the old `spread` parameter, which
 appended pages to the template, is an error). It uses the linked source, or inline `csv` / `rows` / `path` / `bytes`:

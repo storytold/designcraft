@@ -85,8 +85,3 @@ pub const SPLIT_IN_TWO_COLUMNS: &[&str] = &["contentCollector"];
 pub fn tool_info(id: &str) -> Option<ToolInfo> {
     TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.id == id).copied()
 }
-
-/// Tool for a single-key shortcut (`"T"`, `"Shift+P"`).
-pub fn tool_for_shortcut(key: &str) -> Option<&'static str> {
-    TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.shortcut == Some(key)).map(|t| t.id)
-}

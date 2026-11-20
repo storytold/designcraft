@@ -92,6 +92,8 @@ enum Drag {
         /// None when that point could not be read. The live document during a drag is the
         /// previous preview, so the snap must not read the anchor from it again.
         at: Option<(SpreadRef, Point)>,
+        /// The other selected anchor points, which move with it: (item, subpath, anchor).
+        others: Vec<(u64, usize, usize)>,
     },
 }
 
@@ -144,21 +146,42 @@ pub fn anchor_at(cx: &ToolContext, p: Point) -> Option<(u64, usize, usize, Optio
     anchor_at_in(cx, &cx.selection.items, p)
 }
 
-/// [`anchor_at`] over the given items.
+/// Whether the Direct Selection tool shows (and lets you drag) a direction handle of anchor `ai`
+/// of a sub-path of `n` anchors, as InDesign: both handles of a selected anchor, and on its
+/// neighbours the handle that shapes the segment to it (`out`: the outgoing handle). With no
+/// anchor selected no handle shows.
+pub fn handle_shown(n: usize, closed: bool, ai: usize, out: bool, chosen: impl Fn(usize) -> bool) -> bool {
+    if chosen(ai) {
+        return true;
+    }
+    let neighbour = if out {
+        if ai + 1 < n { Some(ai + 1) } else { closed.then_some(0) }
+    } else if ai > 0 {
+        Some(ai - 1)
+    } else {
+        closed.then(|| n.saturating_sub(1))
+    };
+    neighbour.is_some_and(chosen)
+}
+
+/// [`anchor_at`] over the given items. Of the direction handles, only those [`handle_shown`]
+/// shows are found.
 pub fn anchor_at_in(cx: &ToolContext, ids: &[designcraft_doc::ItemId], p: Point) -> Option<(u64, usize, usize, Option<&'static str>)> {
     let tol = cx.tol(5.0);
     for id in ids {
         let (Some(it), Some(xf)) = (cx.doc.item(*id), cx.item_canvas_xf(*id)) else { continue };
         let m = xf * it.xf;
         for (si, sp) in it.path.subpaths.iter().enumerate() {
+            let chosen = |a: usize| cx.selection.anchors.contains(&(*id, si, a));
             for (ai, a) in sp.anchors.iter().enumerate() {
                 if ((m * a.p) - p).hypot() <= tol {
                     return Some((id.0, si, ai, None));
                 }
-                if a.has_in() && ((m * a.h_in) - p).hypot() <= tol {
+                let shown = |out: bool| handle_shown(sp.anchors.len(), sp.closed, ai, out, chosen);
+                if a.has_in() && shown(false) && ((m * a.h_in) - p).hypot() <= tol {
                     return Some((id.0, si, ai, Some("in")));
                 }
-                if a.has_out() && ((m * a.h_out) - p).hypot() <= tol {
+                if a.has_out() && shown(true) && ((m * a.h_out) - p).hypot() <= tol {
                     return Some((id.0, si, ai, Some("out")));
                 }
             }
@@ -179,6 +202,37 @@ fn anchor_spread_point(cx: &ToolContext, id: u64, si: usize, ai: usize) -> Optio
 /// Spread-space correction as a canvas delta. Translation cancels, leaving the linear part of `xf`.
 fn spread_delta_to_canvas(xf: Affine, d: Vec2) -> Vec2 {
     (xf * Point::new(d.x, d.y)) - (xf * Point::ORIGIN)
+}
+
+/// The anchor points inside `r` (canvas) of the unlocked, visible paths, groups' members included.
+fn anchors_in(cx: &ToolContext, r: Rect) -> Vec<(ItemId, usize, usize)> {
+    fn walk(cx: &ToolContext, items: &[std::sync::Arc<Item>], r: Rect, out: &mut Vec<(ItemId, usize, usize)>) {
+        for it in items {
+            let locked = it.locked || cx.doc.layer(it.layer).is_some_and(|l| l.locked || !l.visible);
+            if locked || it.hidden {
+                continue;
+            }
+            if let Content::Group { items } = &it.content {
+                walk(cx, items, r, out);
+                continue;
+            }
+            let Some(xf) = cx.item_canvas_xf(it.id) else { continue };
+            let m = xf * it.xf;
+            for (si, ai, a) in it.path.anchors() {
+                let q = m * a.p;
+                if q.x >= r.x0 && q.x <= r.x1 && q.y >= r.y0 && q.y <= r.y1 {
+                    out.push((it.id, si, ai));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for slot in &cx.layout.slots {
+        if let Some(sp) = cx.doc.spread(slot.spread) {
+            walk(cx, &sp.items, r, &mut out);
+        }
+    }
+    out
 }
 
 /// The ruler guides a marquee `r` (canvas) crosses that can be selected, as `guide.select`
@@ -217,6 +271,43 @@ fn guides_crossing(cx: &ToolContext, r: Rect) -> Vec<Value> {
     out
 }
 
+/// `selection.set` params selecting `points`: their paths, and those points.
+/// `keep` (Shift): the objects already selected stay selected; otherwise only the paths of
+/// `points` are.
+fn anchor_selection(cx: &ToolContext, points: &[(ItemId, usize, usize)], keep: bool) -> Value {
+    let mut ids: Vec<u64> = if keep { cx.selection.items.iter().map(|i| i.0).collect() } else { Vec::new() };
+    for (i, _, _) in points {
+        if !ids.contains(&i.0) {
+            ids.push(i.0);
+        }
+    }
+    let anchors: Vec<Value> = points.iter().map(|(i, s, a)| json!([i.0, s, a])).collect();
+    json!({"ids": ids, "anchors": anchors})
+}
+
+/// `path.moveAnchors` points for `points` moved `d` on the canvas: each with its own movement in
+/// its spread (a rotated spread view turns it).
+fn moved_points(cx: &ToolContext, points: impl IntoIterator<Item = (ItemId, usize, usize)>, d: Vec2) -> Vec<Value> {
+    points
+        .into_iter()
+        .map(|(i, s, a)| {
+            let v = cx.doc.find(i).map_or(d, |loc| cx.layout.delta_to_spread(loc.spread, d));
+            json!([i.0, s, a, v.x, v.y])
+        })
+        .collect()
+}
+
+/// `d` held to the nearest multiple of 45°, as Shift does.
+fn constrain_45(d: Vec2) -> Vec2 {
+    if d.hypot() < 1e-9 {
+        return d;
+    }
+    let step = std::f64::consts::FRAC_PI_4;
+    let a = (d.y.atan2(d.x) / step).round() * step;
+    let proj = d.x * a.cos() + d.y * a.sin();
+    Vec2::new(proj * a.cos(), proj * a.sin())
+}
+
 pub struct SelectionTool {
     direct: bool,
     drag: Drag,
@@ -224,6 +315,8 @@ pub struct SelectionTool {
     guides: Vec<Overlay>,
     /// Selected item to toggle if this Shift press never becomes a drag.
     shift_release: Option<u64>,
+    /// Selected anchor point to take away if this Shift press never becomes a drag.
+    anchor_release: Option<(ItemId, usize, usize)>,
     /// One of several selected items to make (or stop being) the key object for Align if this
     /// press never becomes a drag.
     key_release: Option<u64>,
@@ -235,7 +328,17 @@ pub struct SelectionTool {
 
 impl SelectionTool {
     pub fn new(direct: bool) -> Self {
-        Self { direct, drag: Drag::None, hover_handle: None, guides: vec![], shift_release: None, key_release: None, loaded: None, live: None }
+        Self {
+            direct,
+            drag: Drag::None,
+            hover_handle: None,
+            guides: vec![],
+            shift_release: None,
+            key_release: None,
+            anchor_release: None,
+            loaded: None,
+            live: None,
+        }
     }
 
     /// [`bracket_at`] for this tool. With Direct Selection an anchor under the pointer wins: the
@@ -683,6 +786,477 @@ fn positive_pad(v: f64) -> f64 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
+impl SelectionTool {
+    fn pointer_down(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        let p = ev.pos;
+
+        self.shift_release = None;
+        self.key_release = None;
+        self.anchor_release = None;
+        // Type on a path: a bracket moves where the text starts or ends.
+        if !ev.mods.shift
+            && let Some((id, end)) = self.bracket_at(cx, p)
+        {
+            self.drag = Drag::Bracket { id, end };
+            return vec![Action::Begin("Move Bracket".into())];
+        }
+        if self.direct
+            && let Some((id, si, ai, handle)) = anchor_at(cx, p)
+        {
+            let at = anchor_spread_point(cx, id, si, ai);
+            let mut out = vec![];
+            let mut others = vec![];
+            if handle.is_none() {
+                // InDesign's anchor point selection: a click selects the point, Shift+click
+                // adds it or takes it away, and dragging a selected point moves all of them.
+                let me = (ItemId(id), si, ai);
+                let mut points = cx.selection.anchors.clone();
+                let was = points.contains(&me);
+                if ev.mods.shift && was {
+                    // Kept selected so a Shift-drag can constrain it; a click still takes it
+                    // away, on release, as for objects.
+                    self.anchor_release = Some(me);
+                } else if ev.mods.shift {
+                    points.push(me);
+                } else if !was {
+                    points = vec![me];
+                }
+                if points != cx.selection.anchors {
+                    out.push(Action::Exec("selection.set".into(), anchor_selection(cx, &points, ev.mods.shift)));
+                }
+                others = points.iter().filter(|a| **a != me).map(|(i, s, a)| (i.0, *s, *a)).collect();
+            }
+            let label = if handle.is_some() {
+                "Move Direction Handle"
+            } else if others.is_empty() {
+                "Move Anchor"
+            } else {
+                "Move Anchors"
+            };
+            self.drag = Drag::Anchor { id, si, ai, handle, start: p, at, others };
+            out.push(Action::Begin(label.into()));
+            return out;
+        }
+        // As in InDesign, the Direct Selection tool pressed on a corner or anchor of an object
+        // that isn't selected selects it and moves just that point (Chris Nielsen's "The
+        // InDesign Toolbox", 10:10: click outside, then pull a frame's corner).
+        if self.direct
+            && !ev.mods.shift
+            && let Some((_, hit)) = cx.hit(p)
+            && !cx.selection.contains(hit)
+            && let Some((id, si, ai, None)) = anchor_at_in(cx, &[hit], p)
+        {
+            let at = anchor_spread_point(cx, id, si, ai);
+            self.drag = Drag::Anchor { id, si, ai, handle: None, start: p, at, others: vec![] };
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id], "content": false})), Action::Begin("Move Anchor".into())];
+        }
+        // A selected placed graphic's own handles resize it inside its frame (the
+        // frame's anchors, under Direct Selection, come first).
+        if let Some((id, h)) = content_handle_at(cx, p)
+            && let (Some(loc), Some((_, b))) = (cx.doc.find(id), selected_graphic(cx))
+        {
+            let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
+            let handle = (h + 8 - 2 * turns) % 8;
+            let from = cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b);
+            self.drag = Drag::ContentResize { id, handle, from, spread: loc.spread };
+            return vec![Action::Begin("Resize Content".into())];
+        }
+        if let Some((frame, corner)) = self.diamond_at(cx, p) {
+            if ev.mods.alt {
+                self.drag = Drag::None;
+                let opts = frame.cycled(corner, ev.mods.shift);
+                return vec![Action::Exec("object.cornerOptions".into(), corners::params(frame.id, &opts))];
+            }
+            self.drag = Drag::Corner { frame, corner, start: p };
+            return vec![Action::Begin("Corner Options".into())];
+        }
+        if let Some(frame) = self.widget_at(cx, p) {
+            self.live = Some(frame.id);
+            self.drag = Drag::None;
+            return vec![Action::Handled];
+        }
+        if !self.direct
+            && handle_at(cx, p).is_none()
+            && let Some(center) = rotate_zone(cx, p)
+        {
+            self.drag = Drag::Rotate { center, start_angle: (p - center).atan2(), start_rotation: crate::snap::reference_rotation(cx) };
+            return vec![Action::Begin("Rotate".into())];
+        }
+        if let Some(h) = handle_at(cx, p).filter(|_| !self.direct)
+            && let (Some(b), Some(first)) = (cx.selection_bounds(), cx.selection.items.first())
+            && let Some(loc) = cx.doc.find(*first)
+        {
+            // On a turned spread the canvas handle is another one of the spread's.
+            let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
+            let handle = (h + 8 - 2 * turns) % 8;
+            self.drag = Drag::Resize { handle, start: p, from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b), spread: loc.spread };
+            return vec![Action::Begin("Resize".into())];
+        }
+        // The content grabber: select the frame's content; a drag moves it.
+        if !self.direct
+            && !ev.mods.shift
+            && let Some(id) = grabber_at(cx, p)
+        {
+            self.drag = Drag::Pending { start: p, hit: true, content: true };
+            if cx.selection.items == [id] && cx.selection.content {
+                return vec![];
+            }
+            return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": true}))];
+        }
+        // Cmd+Shift-click a parent item on a page: override it there and select the copy.
+        if ev.mods.cmd
+            && ev.mods.shift
+            && cx.hit(p).is_none()
+            && let Some((page, id)) = cx.hit_parent_on_page(p)
+        {
+            self.drag = Drag::Pending { start: p, hit: true, content: false };
+            return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
+        }
+        match cx.hit(p) {
+            Some((sr, id)) => {
+                let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
+                let mut out = vec![];
+                if ev.mods.shift {
+                    if cx.selection.contains(id) {
+                        // Keep it selected so a Shift-drag can constrain. A click still toggles, on release.
+                        self.shift_release = Some(id.0);
+                    } else {
+                        out.push(Action::Exec("selection.toggle".into(), json!({"id": id.0})));
+                    }
+                } else if !cx.selection.contains(id)
+                    || (self.direct && !cx.selection.content && (cx.selection.items.len() > 1 || cx.doc.item(id).is_some_and(holds_content)))
+                {
+                    // Direct Selection on a selected frame selects its content (a graphic or pasted-in items),
+                    // and on one of several selected objects just that object.
+                    out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
+                } else if !self.direct && cx.selection.items.len() > 1 {
+                    // InDesign: a click on one of several selected objects makes it the
+                    // key object, on release so that a drag still moves them all.
+                    self.key_release = Some(id.0);
+                }
+                let content = self.direct || on_selected_content(cx, p);
+                self.drag = Drag::Pending { start: p, hit: true, content };
+                let _ = sr;
+                out
+            }
+            None => {
+                self.live = None;
+                self.drag = Drag::Pending { start: p, hit: false, content: false };
+                if ev.mods.shift { vec![] } else { vec![Action::Exec("selection.set".into(), json!({"ids": []}))] }
+            }
+        }
+    }
+
+    fn pointer_drag_move(&mut self, cx: &ToolContext, ev: &PointerEvent, drag: Drag) -> Vec<Action> {
+        let Drag::Move { start, origin_spread, bounds0, exclude, content } = drag else { return vec![] };
+        let p = ev.pos;
+
+        let mut d: Vec2 = p - start;
+        let mut screen_x_locked = false;
+        let mut screen_y_locked = false;
+        if ev.mods.shift {
+            if d.x.abs() > d.y.abs() {
+                d.y = 0.0;
+                screen_y_locked = true;
+            } else {
+                d.x = 0.0;
+                screen_x_locked = true;
+            }
+        }
+        // Snap on the spread under the pointer. Shift uses that spread's view rotation.
+        // Content stays in its frame, on the frame's spread.
+        let target = if content { origin_spread } else { cx.layout.spread_at(p).map(|(s, _)| s).unwrap_or(origin_spread) };
+        // 180 degrees keeps the screen axis. 90 and 270 swap it into the other spread axis.
+        let odd_turn = cx.layout.slot(target).is_some_and(|slot| slot.rotation % 2 == 1);
+        let spread_x_locked = if odd_turn { screen_y_locked } else { screen_x_locked };
+        let spread_y_locked = if odd_turn { screen_x_locked } else { screen_y_locked };
+        let x_edges = if spread_x_locked { [false; 3] } else { [true; 3] };
+        let y_edges = if spread_y_locked { [false; 3] } else { [true; 3] };
+        self.guides.clear();
+        // The movement in the origin spread's coordinates (its view may be turned).
+        let mut ds = cx.layout.delta_to_spread(origin_spread, d);
+        let b0s = bounds0.map(|b| cx.layout.xf(origin_spread).inverse().transform_rect_bbox(b));
+        let q0 = b0s.map_or(Point::ORIGIN, |b| Point::new(b.x0, b.y0));
+        // Same corner conversion transform.move already uses when the spread changes.
+        let mut landed = cx.layout.to_spread(target, cx.layout.to_canvas(origin_spread, q0 + ds));
+        // Command suspends snapping. A Shift-locked spread axis is not offered.
+        if !ev.mods.cmd
+            && cx.snap.any()
+            && let Some(b0) = b0s
+        {
+            let proposed = if target == origin_spread {
+                b0 + ds
+            } else {
+                let shift = landed - q0;
+                Rect::new(b0.x0 + shift.x, b0.y0 + shift.y, b0.x1 + shift.x, b0.y1 + shift.y)
+            };
+            let hit = crate::snap::snap(
+                cx,
+                SnapRequest {
+                    spread: target,
+                    gesture: Gesture::Move,
+                    rect: proposed,
+                    x_edges,
+                    y_edges,
+                    exclude: &exclude,
+                    exclude_guides: &[],
+                    copying: ev.mods.alt && !content,
+                    lengths: [None, None],
+                    angle: None,
+                    radius: 0.0,
+                    pointer: cx.layout.to_spread(target, p),
+                },
+            );
+            if target == origin_spread {
+                if x_edges != [false, false, false] && hit.delta.x.is_finite() {
+                    ds.x += hit.delta.x;
+                }
+                if y_edges != [false, false, false] && hit.delta.y.is_finite() {
+                    ds.y += hit.delta.y;
+                }
+            } else {
+                if x_edges != [false, false, false] && hit.delta.x.is_finite() {
+                    landed.x += hit.delta.x;
+                }
+                if y_edges != [false, false, false] && hit.delta.y.is_finite() {
+                    landed.y += hit.delta.y;
+                }
+            }
+            self.guides = hit.guides;
+        }
+        // Same spread: dx, dy are the origin spread translation. Crossing: the corner
+        // conversion, so the reparented item lands on the snapped target point.
+        let (dx, dy) = if target == origin_spread {
+            (ds.x, ds.y)
+        } else {
+            let dt = landed - q0;
+            (dt.x, dt.y)
+        };
+        if content {
+            let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
+            return vec![Action::Preview("transform.move".into(), json!({"dx": dx, "dy": dy, "ids": ids, "content": true}))];
+        }
+        let mut params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt});
+        if target != origin_spread {
+            params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt, "toSpread": spread_json(target)});
+        }
+        vec![Action::Preview("transform.move".into(), params)]
+    }
+
+    fn pointer_drag(&mut self, cx: &ToolContext, ev: &PointerEvent) -> Vec<Action> {
+        let p = ev.pos;
+        match self.drag.clone() {
+            Drag::Bracket { id, end } => {
+                let Some((warp, xf, _, _)) = path_type_of(cx, id) else { return vec![] };
+                if xf.determinant().abs() < 1e-12 {
+                    return vec![];
+                }
+                let s = warp.nearest(xf.inverse() * p);
+                vec![Action::Preview("type.pathOptions".into(), json!({"id": id.0, if end { "end" } else { "start" }: s}))]
+            }
+            Drag::Pending { start, hit, content } => {
+                if (p - start).hypot() < cx.tol(3.0) {
+                    return vec![];
+                }
+                self.shift_release = None;
+                self.key_release = None;
+                if hit && !cx.selection.items.is_empty() {
+                    // Direct Selection on items without content moves (or duplicates) them whole.
+                    let content = content && cx.selection.items.iter().any(|i| cx.doc.item(*i).is_some_and(holds_content));
+                    let sr = cx.selection.items.first().and_then(|i| cx.doc.find(*i)).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
+                    let exclude = cx.selection.items.clone();
+                    let bounds0 = if content { content_bounds(cx) } else { cx.selection_visible_bounds() };
+                    self.drag = Drag::Move { start, origin_spread: sr, bounds0, exclude: exclude.clone(), content };
+                    let mut v = vec![];
+                    // Dragging a content selection by its frame moves the frame: select it.
+                    if !content && cx.selection.content {
+                        let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
+                        v.push(Action::Exec("selection.set".into(), json!({"ids": ids})));
+                    }
+                    let label = if content {
+                        "Move Content"
+                    } else if ev.mods.alt {
+                        "Duplicate"
+                    } else {
+                        "Move"
+                    };
+                    v.push(Action::Begin(label.into()));
+                    v.extend(self.pointer(cx, ev));
+                    v
+                } else {
+                    self.drag = Drag::Marquee { start, cur: p };
+                    vec![]
+                }
+            }
+            movement @ Drag::Move { .. } => self.pointer_drag_move(cx, ev, movement),
+            Drag::Resize { handle, start, from, spread } => {
+                let _ = start;
+                let pointer = cx.layout.to_spread(spread, p);
+                let raw = resize_edges_rect(from, handle, pointer);
+                let mut to = resize_rect(from, handle, pointer, ev.mods);
+                // Space while dragging: Live Distribute (several objects keep their size).
+                let distribute = ev.mods.space && cx.selection.items.len() > 1;
+                self.guides.clear();
+                // Command still scales content. It does not skip the snap.
+                if !distribute && cx.snap.any() {
+                    let (mut x_edges, mut y_edges) = resize_edge_flags(handle);
+                    let driver_x = drives_x(handle, from, raw);
+                    if ev.mods.shift {
+                        if driver_x {
+                            y_edges = [false, false, false];
+                        } else {
+                            x_edges = [false, false, false];
+                        }
+                    }
+                    let exclude = cx.selection.items.clone();
+                    let (pad_x, pad_y) = single_stroke_pad(cx);
+                    let proposed = to;
+                    let mut hit = crate::snap::snap(
+                        cx,
+                        SnapRequest {
+                            spread,
+                            gesture: Gesture::Resize,
+                            rect: proposed,
+                            x_edges,
+                            y_edges,
+                            exclude: &exclude,
+                            exclude_guides: &[],
+                            copying: false,
+                            lengths: [axis_length(x_edges, proposed.width(), pad_x), axis_length(y_edges, proposed.height(), pad_y)],
+                            angle: None,
+                            radius: 0.0,
+                            pointer,
+                        },
+                    );
+                    to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, (x_edges, y_edges), &hit);
+                    crate::snap::lay_dimension_guides(&mut hit.guides, cx.layout.xf(spread), proposed, to, x_edges, y_edges, hit.length_delta);
+                    self.guides = hit.guides;
+                }
+                vec![Action::Preview(
+                    "transform.resize".into(),
+                    json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
+                )]
+            }
+            Drag::ContentResize { id, handle, from, spread } => {
+                let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
+                vec![Action::Preview("transform.set".into(), json!({"ids": [id.0], "content": true, "bounds": rect_json(to)}))]
+            }
+            Drag::Marquee { start, .. } => {
+                self.drag = Drag::Marquee { start, cur: p };
+                vec![]
+            }
+            Drag::Place { .. } => vec![],
+            Drag::Corner { frame, corner, start } => {
+                let Some(d) = frame.drag_delta(corner, start, p) else { return vec![] };
+                let opts = frame.dragged(corner, frame.size(corner) + d, ev.mods.shift);
+                vec![Action::Preview("object.cornerOptions".into(), corners::params(frame.id, &opts))]
+            }
+            Drag::Rotate { center, start_angle, start_rotation } => {
+                let mut a = ((p - center).atan2() - start_angle).to_degrees();
+                self.guides.clear();
+                if ev.mods.shift {
+                    // 45 degree steps. The rotation pass does not run while Shift is held.
+                    a = (a / 45.0).round() * 45.0;
+                } else if let Some(start) = start_rotation {
+                    let raw = -a;
+                    if let Some(resulting) = crate::snap::folded_rotation(start + raw) {
+                        let spread = cx.selection.items.first().and_then(|id| cx.doc.find(*id)).map(|loc| loc.spread).unwrap_or(SpreadRef::Doc(0));
+                        let exclude = cx.selection.items.clone();
+                        // The rect is unused by the angle pass. It only has to be finite.
+                        let hit = crate::snap::snap(
+                            cx,
+                            SnapRequest {
+                                spread,
+                                gesture: Gesture::Rotate,
+                                rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                                x_edges: [false, false, false],
+                                y_edges: [false, false, false],
+                                exclude: &exclude,
+                                exclude_guides: &[],
+                                copying: false,
+                                lengths: [None, None],
+                                angle: Some(resulting),
+                                radius: (p - center).hypot(),
+                                pointer: cx.layout.to_spread(spread, p),
+                            },
+                        );
+                        if let Some(snapped) = hit.angle
+                            && let Some(delta) = crate::snap::rotation_command_delta(start, snapped, raw)
+                        {
+                            a = -delta;
+                        }
+                        self.guides = hit.guides;
+                    }
+                }
+                // Screen y points down: a positive screen angle is clockwise.
+                vec![Action::Preview("transform.rotate".into(), json!({"angle": -a}))]
+            }
+            Drag::Anchor { id, si, ai, handle, start, at, others } => {
+                let mut d = p - start;
+                if d.hypot() >= cx.tol(3.0) {
+                    self.anchor_release = None;
+                } else if self.anchor_release.is_some() {
+                    // A Shift-press on a selected point is still a click: nothing moves yet.
+                    return vec![];
+                }
+                // Shift: horizontal, vertical or at 45°.
+                if ev.mods.shift {
+                    d = constrain_45(d);
+                }
+                let mut dx = d.x;
+                let mut dy = d.y;
+                self.guides.clear();
+                // Direction handles do not snap. An anchor excludes the path it is on.
+                if handle.is_none()
+                    && let Some((spread, origin)) = at
+                {
+                    let proposed = origin + cx.layout.delta_to_spread(spread, d);
+                    let exclude = [ItemId(id)];
+                    let hit = crate::snap::snap(
+                        cx,
+                        SnapRequest {
+                            spread,
+                            gesture: Gesture::Point,
+                            rect: Rect::from_points(proposed, proposed),
+                            x_edges: [true, true, true],
+                            y_edges: [true, true, true],
+                            exclude: &exclude,
+                            exclude_guides: &[],
+                            copying: false,
+                            lengths: [None, None],
+                            angle: None,
+                            radius: 0.0,
+                            pointer: proposed,
+                        },
+                    );
+                    // dx and dy stay in canvas space. Snap.delta is spread space.
+                    let mut corr = spread_delta_to_canvas(cx.layout.xf(spread), hit.delta);
+                    corr = Vec2::new(if corr.x.is_finite() { corr.x } else { 0.0 }, if corr.y.is_finite() { corr.y } else { 0.0 });
+                    // Shift: the snap moves the points along the constrained direction only.
+                    if ev.mods.shift && d.hypot() > 1e-9 {
+                        let dir = d / d.hypot();
+                        corr = dir * corr.dot(dir);
+                    }
+                    dx += corr.x;
+                    dy += corr.y;
+                    self.guides = hit.guides;
+                }
+                // The command moves in spread space: each point by the drag in its own spread.
+                let own = at.map_or(Vec2::new(dx, dy), |(spread, _)| cx.layout.delta_to_spread(spread, Vec2::new(dx, dy)));
+                let mut params = json!({"id": id, "anchors": [[si, ai]], "dx": own.x, "dy": own.y});
+                if let Some(h) = handle {
+                    params["handle"] = json!(h);
+                } else if !others.is_empty() {
+                    let points = std::iter::once((id, si, ai)).chain(others).map(|(i, s, a)| (ItemId(i), s, a));
+                    params = json!({"points": moved_points(cx, points, Vec2::new(dx, dy))});
+                }
+                vec![Action::Preview("path.moveAnchors".into(), params)]
+            }
+            Drag::None => vec![],
+        }
+    }
+}
+
 impl Tool for SelectionTool {
     fn id(&self) -> &'static str {
         if self.direct { "directSelection" } else { "selection" }
@@ -736,406 +1310,20 @@ impl Tool for SelectionTool {
                 self.hover_handle = handle_at(cx, p);
                 vec![]
             }
-            PointerKind::Down => {
-                self.shift_release = None;
-                self.key_release = None;
-                // Type on a path: a bracket moves where the text starts or ends.
-                if !ev.mods.shift
-                    && let Some((id, end)) = self.bracket_at(cx, p)
-                {
-                    self.drag = Drag::Bracket { id, end };
-                    return vec![Action::Begin("Move Bracket".into())];
-                }
-                if self.direct
-                    && let Some((id, si, ai, handle)) = anchor_at(cx, p)
-                {
-                    let at = anchor_spread_point(cx, id, si, ai);
-                    self.drag = Drag::Anchor { id, si, ai, handle, start: p, at };
-                    return vec![Action::Begin(if handle.is_some() { "Move Direction Handle".into() } else { "Move Anchor".into() })];
-                }
-                // A selected placed graphic's own handles resize it inside its frame (the
-                // frame's anchors, under Direct Selection, come first).
-                if let Some((id, h)) = content_handle_at(cx, p)
-                    && let (Some(loc), Some((_, b))) = (cx.doc.find(id), selected_graphic(cx))
-                {
-                    let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
-                    let handle = (h + 8 - 2 * turns) % 8;
-                    let from = cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b);
-                    self.drag = Drag::ContentResize { id, handle, from, spread: loc.spread };
-                    return vec![Action::Begin("Resize Content".into())];
-                }
-                if let Some((frame, corner)) = self.diamond_at(cx, p) {
-                    if ev.mods.alt {
-                        self.drag = Drag::None;
-                        let opts = frame.cycled(corner, ev.mods.shift);
-                        return vec![Action::Exec("object.cornerOptions".into(), corners::params(frame.id, &opts))];
-                    }
-                    self.drag = Drag::Corner { frame, corner, start: p };
-                    return vec![Action::Begin("Corner Options".into())];
-                }
-                if let Some(frame) = self.widget_at(cx, p) {
-                    self.live = Some(frame.id);
-                    self.drag = Drag::None;
-                    return vec![Action::Handled];
-                }
-                if !self.direct
-                    && handle_at(cx, p).is_none()
-                    && let Some(center) = rotate_zone(cx, p)
-                {
-                    self.drag = Drag::Rotate { center, start_angle: (p - center).atan2(), start_rotation: crate::snap::reference_rotation(cx) };
-                    return vec![Action::Begin("Rotate".into())];
-                }
-                if let Some(h) = handle_at(cx, p).filter(|_| !self.direct)
-                    && let (Some(b), Some(first)) = (cx.selection_bounds(), cx.selection.items.first())
-                    && let Some(loc) = cx.doc.find(*first)
-                {
-                    // On a turned spread the canvas handle is another one of the spread's.
-                    let turns = cx.layout.slot(loc.spread).map_or(0, |s| s.rotation as usize);
-                    let handle = (h + 8 - 2 * turns) % 8;
-                    self.drag =
-                        Drag::Resize { handle, start: p, from: cx.layout.xf(loc.spread).inverse().transform_rect_bbox(b), spread: loc.spread };
-                    return vec![Action::Begin("Resize".into())];
-                }
-                // The content grabber: select the frame's content; a drag moves it.
-                if !self.direct
-                    && !ev.mods.shift
-                    && let Some(id) = grabber_at(cx, p)
-                {
-                    self.drag = Drag::Pending { start: p, hit: true, content: true };
-                    if cx.selection.items == [id] && cx.selection.content {
-                        return vec![];
-                    }
-                    return vec![Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": true}))];
-                }
-                // Cmd+Shift-click a parent item on a page: override it there and select the copy.
-                if ev.mods.cmd
-                    && ev.mods.shift
-                    && cx.hit(p).is_none()
-                    && let Some((page, id)) = cx.hit_parent_on_page(p)
-                {
-                    self.drag = Drag::Pending { start: p, hit: true, content: false };
-                    return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
-                }
-                match cx.hit(p) {
-                    Some((sr, id)) => {
-                        let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
-                        let mut out = vec![];
-                        if ev.mods.shift {
-                            if cx.selection.contains(id) {
-                                // Keep it selected so a Shift-drag can constrain. A click still toggles, on release.
-                                self.shift_release = Some(id.0);
-                            } else {
-                                out.push(Action::Exec("selection.toggle".into(), json!({"id": id.0})));
-                            }
-                        } else if !cx.selection.contains(id) || (self.direct && !cx.selection.content) {
-                            out.push(Action::Exec("selection.set".into(), json!({"ids": [id.0], "content": self.direct})));
-                        } else if !self.direct && cx.selection.items.len() > 1 {
-                            // InDesign: a click on one of several selected objects makes it the
-                            // key object, on release so that a drag still moves them all.
-                            self.key_release = Some(id.0);
-                        }
-                        let content = self.direct || on_selected_content(cx, p);
-                        self.drag = Drag::Pending { start: p, hit: true, content };
-                        let _ = sr;
-                        out
-                    }
-                    None => {
-                        self.live = None;
-                        self.drag = Drag::Pending { start: p, hit: false, content: false };
-                        if ev.mods.shift { vec![] } else { vec![Action::Exec("selection.set".into(), json!({"ids": []}))] }
-                    }
-                }
-            }
-            PointerKind::Drag => match self.drag.clone() {
-                Drag::Bracket { id, end } => {
-                    let Some((warp, xf, _, _)) = path_type_of(cx, id) else { return vec![] };
-                    if xf.determinant().abs() < 1e-12 {
-                        return vec![];
-                    }
-                    let s = warp.nearest(xf.inverse() * p);
-                    vec![Action::Preview("type.pathOptions".into(), json!({"id": id.0, if end { "end" } else { "start" }: s}))]
-                }
-                Drag::Pending { start, hit, content } => {
-                    if (p - start).hypot() < cx.tol(3.0) {
-                        return vec![];
-                    }
-                    self.shift_release = None;
-                    self.key_release = None;
-                    if hit && !cx.selection.items.is_empty() {
-                        // Direct Selection on items without content moves (or duplicates) them whole.
-                        let content = content && cx.selection.items.iter().any(|i| cx.doc.item(*i).is_some_and(holds_content));
-                        let sr = cx.selection.items.first().and_then(|i| cx.doc.find(*i)).map(|l| l.spread).unwrap_or(SpreadRef::Doc(0));
-                        let exclude = cx.selection.items.clone();
-                        let bounds0 = if content { content_bounds(cx) } else { cx.selection_visible_bounds() };
-                        self.drag = Drag::Move { start, origin_spread: sr, bounds0, exclude: exclude.clone(), content };
-                        let mut v = vec![];
-                        // Dragging a content selection by its frame moves the frame: select it.
-                        if !content && cx.selection.content {
-                            let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
-                            v.push(Action::Exec("selection.set".into(), json!({"ids": ids})));
-                        }
-                        let label = if content {
-                            "Move Content"
-                        } else if ev.mods.alt {
-                            "Duplicate"
-                        } else {
-                            "Move"
-                        };
-                        v.push(Action::Begin(label.into()));
-                        v.extend(self.pointer(cx, ev));
-                        v
-                    } else {
-                        self.drag = Drag::Marquee { start, cur: p };
-                        vec![]
-                    }
-                }
-                Drag::Move { start, origin_spread, bounds0, exclude, content } => {
-                    let mut d: Vec2 = p - start;
-                    let mut screen_x_locked = false;
-                    let mut screen_y_locked = false;
-                    if ev.mods.shift {
-                        if d.x.abs() > d.y.abs() {
-                            d.y = 0.0;
-                            screen_y_locked = true;
-                        } else {
-                            d.x = 0.0;
-                            screen_x_locked = true;
-                        }
-                    }
-                    // Snap on the spread under the pointer. Shift uses that spread's view rotation.
-                    // Content stays in its frame, on the frame's spread.
-                    let target = if content { origin_spread } else { cx.layout.spread_at(p).map(|(s, _)| s).unwrap_or(origin_spread) };
-                    // 180 degrees keeps the screen axis. 90 and 270 swap it into the other spread axis.
-                    let odd_turn = cx.layout.slot(target).is_some_and(|slot| slot.rotation % 2 == 1);
-                    let spread_x_locked = if odd_turn { screen_y_locked } else { screen_x_locked };
-                    let spread_y_locked = if odd_turn { screen_x_locked } else { screen_y_locked };
-                    let x_edges = if spread_x_locked { [false; 3] } else { [true; 3] };
-                    let y_edges = if spread_y_locked { [false; 3] } else { [true; 3] };
-                    self.guides.clear();
-                    // The movement in the origin spread's coordinates (its view may be turned).
-                    let mut ds = cx.layout.delta_to_spread(origin_spread, d);
-                    let b0s = bounds0.map(|b| cx.layout.xf(origin_spread).inverse().transform_rect_bbox(b));
-                    let q0 = b0s.map_or(Point::ORIGIN, |b| Point::new(b.x0, b.y0));
-                    // Same corner conversion transform.move already uses when the spread changes.
-                    let mut landed = cx.layout.to_spread(target, cx.layout.to_canvas(origin_spread, q0 + ds));
-                    // Command suspends snapping. A Shift-locked spread axis is not offered.
-                    if !ev.mods.cmd
-                        && cx.snap.any()
-                        && let Some(b0) = b0s
-                    {
-                        let proposed = if target == origin_spread {
-                            b0 + ds
-                        } else {
-                            let shift = landed - q0;
-                            Rect::new(b0.x0 + shift.x, b0.y0 + shift.y, b0.x1 + shift.x, b0.y1 + shift.y)
-                        };
-                        let hit = crate::snap::snap(
-                            cx,
-                            SnapRequest {
-                                spread: target,
-                                gesture: Gesture::Move,
-                                rect: proposed,
-                                x_edges,
-                                y_edges,
-                                exclude: &exclude,
-                                exclude_guides: &[],
-                                copying: ev.mods.alt && !content,
-                                lengths: [None, None],
-                                angle: None,
-                                radius: 0.0,
-                                pointer: cx.layout.to_spread(target, p),
-                            },
-                        );
-                        if target == origin_spread {
-                            if x_edges != [false, false, false] && hit.delta.x.is_finite() {
-                                ds.x += hit.delta.x;
-                            }
-                            if y_edges != [false, false, false] && hit.delta.y.is_finite() {
-                                ds.y += hit.delta.y;
-                            }
-                        } else {
-                            if x_edges != [false, false, false] && hit.delta.x.is_finite() {
-                                landed.x += hit.delta.x;
-                            }
-                            if y_edges != [false, false, false] && hit.delta.y.is_finite() {
-                                landed.y += hit.delta.y;
-                            }
-                        }
-                        self.guides = hit.guides;
-                    }
-                    // Same spread: dx, dy are the origin spread translation. Crossing: the corner
-                    // conversion, so the reparented item lands on the snapped target point.
-                    let (dx, dy) = if target == origin_spread {
-                        (ds.x, ds.y)
-                    } else {
-                        let dt = landed - q0;
-                        (dt.x, dt.y)
-                    };
-                    if content {
-                        let ids: Vec<u64> = exclude.iter().map(|i| i.0).collect();
-                        return vec![Action::Preview("transform.move".into(), json!({"dx": dx, "dy": dy, "ids": ids, "content": true}))];
-                    }
-                    let mut params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt});
-                    if target != origin_spread {
-                        params = json!({"dx": dx, "dy": dy, "copy": ev.mods.alt, "toSpread": spread_json(target)});
-                    }
-                    vec![Action::Preview("transform.move".into(), params)]
-                }
-                Drag::Resize { handle, start, from, spread } => {
-                    let _ = start;
-                    let pointer = cx.layout.to_spread(spread, p);
-                    let raw = resize_edges_rect(from, handle, pointer);
-                    let mut to = resize_rect(from, handle, pointer, ev.mods);
-                    // Space while dragging: Live Distribute (several objects keep their size).
-                    let distribute = ev.mods.space && cx.selection.items.len() > 1;
-                    self.guides.clear();
-                    // Command still scales content. It does not skip the snap.
-                    if !distribute && cx.snap.any() {
-                        let (mut x_edges, mut y_edges) = resize_edge_flags(handle);
-                        let driver_x = drives_x(handle, from, raw);
-                        if ev.mods.shift {
-                            if driver_x {
-                                y_edges = [false, false, false];
-                            } else {
-                                x_edges = [false, false, false];
-                            }
-                        }
-                        let exclude = cx.selection.items.clone();
-                        let (pad_x, pad_y) = single_stroke_pad(cx);
-                        let proposed = to;
-                        let mut hit = crate::snap::snap(
-                            cx,
-                            SnapRequest {
-                                spread,
-                                gesture: Gesture::Resize,
-                                rect: proposed,
-                                x_edges,
-                                y_edges,
-                                exclude: &exclude,
-                                exclude_guides: &[],
-                                copying: false,
-                                lengths: [axis_length(x_edges, proposed.width(), pad_x), axis_length(y_edges, proposed.height(), pad_y)],
-                                angle: None,
-                                radius: 0.0,
-                                pointer,
-                            },
-                        );
-                        to = finish_snapped_resize(from, handle, proposed, ev.mods, driver_x, (x_edges, y_edges), &hit);
-                        crate::snap::lay_dimension_guides(&mut hit.guides, cx.layout.xf(spread), proposed, to, x_edges, y_edges, hit.length_delta);
-                        self.guides = hit.guides;
-                    }
-                    vec![Action::Preview(
-                        "transform.resize".into(),
-                        json!({"from": rect_json(from), "to": rect_json(to), "content": ev.mods.cmd, "distribute": distribute}),
-                    )]
-                }
-                Drag::ContentResize { id, handle, from, spread } => {
-                    let to = resize_rect(from, handle, cx.layout.to_spread(spread, p), ev.mods);
-                    vec![Action::Preview("transform.set".into(), json!({"ids": [id.0], "content": true, "bounds": rect_json(to)}))]
-                }
-                Drag::Marquee { start, .. } => {
-                    self.drag = Drag::Marquee { start, cur: p };
-                    vec![]
-                }
-                Drag::Place { .. } => vec![],
-                Drag::Corner { frame, corner, start } => {
-                    let Some(d) = frame.drag_delta(corner, start, p) else { return vec![] };
-                    let opts = frame.dragged(corner, frame.size(corner) + d, ev.mods.shift);
-                    vec![Action::Preview("object.cornerOptions".into(), corners::params(frame.id, &opts))]
-                }
-                Drag::Rotate { center, start_angle, start_rotation } => {
-                    let mut a = ((p - center).atan2() - start_angle).to_degrees();
-                    self.guides.clear();
-                    if ev.mods.shift {
-                        // 45 degree steps. The rotation pass does not run while Shift is held.
-                        a = (a / 45.0).round() * 45.0;
-                    } else if let Some(start) = start_rotation {
-                        let raw = -a;
-                        if let Some(resulting) = crate::snap::folded_rotation(start + raw) {
-                            let spread =
-                                cx.selection.items.first().and_then(|id| cx.doc.find(*id)).map(|loc| loc.spread).unwrap_or(SpreadRef::Doc(0));
-                            let exclude = cx.selection.items.clone();
-                            // The rect is unused by the angle pass. It only has to be finite.
-                            let hit = crate::snap::snap(
-                                cx,
-                                SnapRequest {
-                                    spread,
-                                    gesture: Gesture::Rotate,
-                                    rect: Rect::new(0.0, 0.0, 1.0, 1.0),
-                                    x_edges: [false, false, false],
-                                    y_edges: [false, false, false],
-                                    exclude: &exclude,
-                                    exclude_guides: &[],
-                                    copying: false,
-                                    lengths: [None, None],
-                                    angle: Some(resulting),
-                                    radius: (p - center).hypot(),
-                                    pointer: cx.layout.to_spread(spread, p),
-                                },
-                            );
-                            if let Some(snapped) = hit.angle
-                                && let Some(delta) = crate::snap::rotation_command_delta(start, snapped, raw)
-                            {
-                                a = -delta;
-                            }
-                            self.guides = hit.guides;
-                        }
-                    }
-                    // Screen y points down: a positive screen angle is clockwise.
-                    vec![Action::Preview("transform.rotate".into(), json!({"angle": -a}))]
-                }
-                Drag::Anchor { id, si, ai, handle, start, at } => {
-                    let d = p - start;
-                    let mut dx = d.x;
-                    let mut dy = d.y;
-                    self.guides.clear();
-                    // Direction handles do not snap. An anchor excludes the path it is on.
-                    if handle.is_none()
-                        && let Some((spread, origin)) = at
-                    {
-                        let proposed = origin + cx.layout.delta_to_spread(spread, d);
-                        let exclude = [ItemId(id)];
-                        let hit = crate::snap::snap(
-                            cx,
-                            SnapRequest {
-                                spread,
-                                gesture: Gesture::Point,
-                                rect: Rect::from_points(proposed, proposed),
-                                x_edges: [true, true, true],
-                                y_edges: [true, true, true],
-                                exclude: &exclude,
-                                exclude_guides: &[],
-                                copying: false,
-                                lengths: [None, None],
-                                angle: None,
-                                radius: 0.0,
-                                pointer: proposed,
-                            },
-                        );
-                        // dx and dy stay in canvas space. Snap.delta is spread space.
-                        let corr = spread_delta_to_canvas(cx.layout.xf(spread), hit.delta);
-                        if corr.x.is_finite() {
-                            dx += corr.x;
-                        }
-                        if corr.y.is_finite() {
-                            dy += corr.y;
-                        }
-                        self.guides = hit.guides;
-                    }
-                    let mut params = json!({"id": id, "anchors": [[si, ai]], "dx": dx, "dy": dy});
-                    if let Some(h) = handle {
-                        params["handle"] = json!(h);
-                    }
-                    vec![Action::Preview("path.moveAnchors".into(), params)]
-                }
-                Drag::None => vec![],
-            },
+            PointerKind::Down => self.pointer_down(cx, ev),
+            PointerKind::Drag => self.pointer_drag(cx, ev),
             PointerKind::Up => {
                 self.guides.clear();
                 let release = self.shift_release.take();
+                let anchor_release = self.anchor_release.take();
                 let key = self.key_release.take();
                 let d = std::mem::replace(&mut self.drag, Drag::None);
                 match d {
+                    // A Shift-click on a selected point that never became a drag takes it away.
+                    Drag::Anchor { .. } if anchor_release.is_some() => {
+                        let points: Vec<_> = cx.selection.anchors.iter().copied().filter(|a| Some(*a) != anchor_release).collect();
+                        vec![Action::Commit, Action::Exec("selection.set".into(), anchor_selection(cx, &points, true))]
+                    }
                     Drag::Move { .. }
                     | Drag::Resize { .. }
                     | Drag::ContentResize { .. }
@@ -1152,6 +1340,21 @@ impl Tool for SelectionTool {
                     },
                     Drag::Marquee { start, cur } => {
                         let r = Rect::from_points(start, cur);
+                        // Direct Selection: the anchor points inside the marquee, on every path it
+                        // reaches (InDesign's way to select points of several frames at once).
+                        if self.direct {
+                            let mut points = anchors_in(cx, r);
+                            if !points.is_empty() {
+                                if ev.mods.shift {
+                                    for a in &cx.selection.anchors {
+                                        if !points.contains(a) {
+                                            points.push(*a);
+                                        }
+                                    }
+                                }
+                                return vec![Action::Exec("selection.set".into(), anchor_selection(cx, &points, ev.mods.shift))];
+                            }
+                        }
                         // Items whose bounds intersect the marquee.
                         let mut ids: Vec<Value> = Vec::new();
                         for slot in &cx.layout.slots {
@@ -1188,7 +1391,20 @@ impl Tool for SelectionTool {
         if key == ToolKey::Escape && self.live.take().is_some_and(|id| cx.selection.items == [id]) {
             return vec![Action::Handled];
         }
-        let mv = |dx: f64, dy: f64| vec![Action::Exec("transform.move".into(), json!({"dx": dx, "dy": dy, "copy": mods.alt}))];
+        let direct_points = self.direct && !cx.selection.anchors.is_empty();
+        let mv = |dx: f64, dy: f64| {
+            // Direct Selection with anchor points selected: the arrow keys move the points, each
+            // the way the arrow points on screen.
+            if direct_points {
+                let points = moved_points(cx, cx.selection.anchors.iter().copied(), Vec2::new(dx, dy));
+                return vec![Action::Exec("path.moveAnchors".into(), json!({"points": points}))];
+            }
+            vec![Action::Exec("transform.move".into(), json!({"dx": dx, "dy": dy, "copy": mods.alt}))]
+        };
+        // Selected points: Delete and Backspace delete them, not their paths.
+        if direct_points && matches!(key, ToolKey::Delete | ToolKey::Backspace) {
+            return vec![Action::Exec("path.deletePoints".into(), json!({}))];
+        }
         if cx.selection.items.is_empty() {
             // Selected ruler guides: the arrows nudge them, Delete deletes them.
             if cx.selection.guides.is_empty() {
@@ -1332,4 +1548,27 @@ fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
     }
     let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
     Some(vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))])
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::handle_shown;
+
+    /// InDesign's Direct Selection shows a selected anchor's two handles, and on its neighbours
+    /// the handle shaping the segment to it; nothing with no anchor selected.
+    #[test]
+    fn handles_show_around_the_selected_anchors() {
+        let shown = |closed: bool, chosen: &[usize]| {
+            (0..4)
+                .flat_map(|ai| [false, true].map(|out| (ai, out)))
+                .filter(|(ai, out)| handle_shown(4, closed, *ai, *out, |a| chosen.contains(&a)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(true, &[]), vec![], "no anchor selected");
+        assert_eq!(shown(true, &[2]), vec![(1, true), (2, false), (2, true), (3, false)]);
+        // Closed, the first anchor's neighbours wrap round.
+        assert_eq!(shown(true, &[0]), vec![(0, false), (0, true), (1, false), (3, true)]);
+        // Open, the end has no neighbour beyond it.
+        assert_eq!(shown(false, &[0]), vec![(0, false), (0, true), (1, false)]);
+    }
 }
