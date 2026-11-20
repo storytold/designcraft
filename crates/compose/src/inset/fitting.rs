@@ -248,8 +248,10 @@ fn fit_routes(
                                 route_edge(doc, spec.id, id, bottom, follow.gap).map(|edge| (edge, target))
                             })
                         });
-                    let core = geometry.core.and_then(|(host, bottom)| route_edge(doc, host, id, bottom, follow.gap));
-                    if (geometry.core.is_some() && core.is_none()) || ((dependency.is_some() || margin.is_some()) && reference.is_none()) {
+                    // An explicit margin area replaces the core; numeric route dependencies still clear both.
+                    let core_geometry = geometry.core.filter(|_| margin.is_none());
+                    let core = core_geometry.and_then(|(host, bottom)| route_edge(doc, host, id, bottom, follow.gap));
+                    if (core_geometry.is_some() && core.is_none()) || ((dependency.is_some() || margin.is_some()) && reference.is_none()) {
                         warnings.push(format!("followInset ignored on frame {id}: host and route transforms must allow finite translation and positive axis-aligned scaling"));
                         return;
                     }
@@ -257,7 +259,7 @@ fn fit_routes(
                     let target = if let Some((_, target)) = reference.filter(|r| r.0 > edge || (r.0 == edge && r.1.is_some())) {
                         target
                     } else {
-                        geometry.core.and_then(|(host, _)| {
+                        core_geometry.and_then(|(host, _)| {
                             geometry.caption.and_then(|(baseline, leading)| route_edge(doc, host, id, baseline + leading, follow.gap))
                         })
                     };

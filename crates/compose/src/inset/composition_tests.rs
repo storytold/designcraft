@@ -90,6 +90,70 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn margin_follower_uses_own_area_on_translated_spread() {
+    let mut doc = Document::new(&NewDocument { pages: 2, width: 672.0, height: 872.0, ..Default::default() });
+    doc.page_to_spread(1, 0).unwrap();
+    assert_eq!(doc.spreads[0].pages.len(), 2);
+    doc.note_series.push(NoteSeries {
+        id: 1,
+        name: "Margin".into(),
+        options: designcraft_doc::FootnoteOptions {
+            placement: NotePlacement::Margin {
+                side: designcraft_doc::MarginSide::Right,
+                gap: 8.0,
+                width: 72.0,
+                stack: designcraft_doc::MarginStack::Top,
+            },
+            ..Default::default()
+        },
+    });
+    doc.note_series.push(NoteSeries {
+        id: 2,
+        name: "Route".into(),
+        options: designcraft_doc::FootnoteOptions { placement: NotePlacement::Stream, ..Default::default() },
+    });
+    for (page, gap) in [(0, 65.9), (1, 42.5)] {
+        let x = doc.page(page).unwrap().x;
+        let (host, sid) = doc
+            .add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 500.0), doc.default_layer(), &"Main line.\n".repeat(12), Default::default())
+            .unwrap();
+        doc.item_mut(host).unwrap().xf = Affine::translate((x + 120.0, 140.0));
+        doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(InsetColumns {
+            streams: vec![InsetStream { series: None, ratio: 1.0 }],
+            gutter: 12.0,
+            main_start_lines: 0,
+            main_start_baseline: None,
+            main_left_inset: None,
+            main_right_inset: None,
+            catchwords: false.into(),
+        });
+        for (series, text) in [(1, "Margin entry"), (2, "Following heading")] {
+            let story = doc.story_mut(sid).unwrap();
+            let id = story.insert_note(0, text, Default::default()).unwrap();
+            story.note_mut(id).unwrap().series = series;
+        }
+        let (route, _) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 800.0), doc.default_layer(), "", Default::default()).unwrap();
+        doc.item_mut(route).unwrap().xf = Affine::translate((x + 440.0, 15.0));
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream {
+            story: sid,
+            series: 2,
+            catchword: false.into(),
+            follow_inset: Some(designcraft_doc::InsetFollow {
+                edge: designcraft_doc::InsetEdge::Start,
+                gap,
+                after: Some(designcraft_doc::InsetAfter::Margin { frame: host, series: 1 }),
+            }),
+        });
+        let cs = compose_story(&doc, sid, &Default::default());
+        let note = cs.frame(host).unwrap().notes.iter().find(|n| n.series == 1).unwrap();
+        let bottom = (doc.text_xf(doc.item(host).unwrap()) * Point::new(0.0, note.rect.y1)).y;
+        let top = (doc.text_xf(doc.item(route).unwrap()) * Point::new(0.0, cs.frame(route).unwrap().columns[0].y0)).y;
+        assert!((top - bottom - gap).abs() < 0.01, "page {page}: top {top}, bottom {bottom}, gap {gap}, warnings {:?}", cs.warnings);
+    }
+}
+
+#[test]
 fn catchwords_align_to_each_stream_paragraph_line_end() {
     for rtl in [false, true] {
         let (mut doc, sid) = document(3, &"Main word.\u{2028}".repeat(80), &"INNER body.\u{2028}".repeat(90), "");
