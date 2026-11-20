@@ -67,6 +67,8 @@ Both bounds apply to the same frame, each using its own gap and optional depende
 Duplicate edges and arrays longer than two are rejected. Bounds that meet or cross
 produce an empty area with the same continuation and overset behaviour as a single rule.
 
+Top-stacked margin series on an inset host start at the highest first composed line of any inset stream, including commentary above the main text. Both rules in a follow array may use `after: {frame, series}` to reference a top-stacked margin.
+
 The core bottom includes the inset main text, commentary, and reserved catchword rows.
 When a starting routed foot follows a catchword-bearing edge, its first baseline is the
 catchword baseline plus that row's leading and the follow gap. Its column still starts

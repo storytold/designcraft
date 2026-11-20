@@ -90,6 +90,51 @@ fn routed_document(height: f64) -> (Document, StoryId, Vec<ItemId>) {
 }
 
 #[test]
+fn top_margin_starts_at_highest_inset_stream_line() {
+    let (mut doc, sid) = document(1, &"Main line.\n".repeat(12), &"Commentary line.\n".repeat(8), "");
+    let host = doc.story(sid).unwrap().frames[0];
+    let inset = doc.item_mut(host).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap();
+    inset.streams.pop();
+    inset.main_start_lines = 3;
+    doc.note_series[1].options.placement =
+        NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: designcraft_doc::MarginStack::Top };
+    let id = doc.story_mut(sid).unwrap().insert_note(0, "Margin entry", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = 2;
+    doc.note_series.push(NoteSeries {
+        id: 3,
+        name: "Following route".into(),
+        options: designcraft_doc::FootnoteOptions { placement: NotePlacement::Stream, ref_hidden: true, ..Default::default() },
+    });
+    let id = doc.story_mut(sid).unwrap().insert_note(0, "Follower line", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = 3;
+    let (route, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(640.0, 36.0, 670.0, 800.0), doc.default_layer(), "", Default::default()).unwrap();
+    let after = Some(designcraft_doc::InsetAfter::Margin { frame: host, series: 2 });
+    doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream = Some(designcraft_doc::NoteStream {
+        story: sid,
+        series: 3,
+        catchword: false.into(),
+        follow_inset: Some(designcraft_doc::InsetFollows::Edges(vec![
+            designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::End, gap: 80.0, after },
+            designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 3.0, after },
+        ])),
+    });
+
+    let cs = compose_story(&doc, sid, &Default::default());
+    let frame = cs.frame(host).unwrap();
+    let commentary = frame.notes.iter().find(|n| n.series == 1).unwrap();
+    let line = &commentary.text.frames[0].lines[0];
+    let top = commentary.origin.y + line.baseline - line.ascent;
+    let main = &frame.lines[0];
+    assert!(top + 1.0 < main.baseline - main.ascent);
+    let margin = frame.notes.iter().find(|n| n.series == 2).unwrap();
+    assert!((margin.rect.y0 - top).abs() < 0.01, "margin={} commentary={top}", margin.rect.y0);
+    let area = cs.frame(route).unwrap().columns[0];
+    assert!((area.y0 - margin.rect.y1 - 3.0).abs() < 0.01, "{area:?} {:?}", margin.rect);
+    assert!((area.y1 - margin.rect.y1 - 80.0).abs() < 0.01, "{area:?} {:?}", margin.rect);
+}
+
+#[test]
 fn margin_follower_uses_own_area_on_translated_spread() {
     let mut doc = Document::new(&NewDocument { pages: 2, width: 672.0, height: 872.0, ..Default::default() });
     doc.page_to_spread(1, 0).unwrap();

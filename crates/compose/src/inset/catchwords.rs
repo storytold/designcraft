@@ -179,6 +179,7 @@ fn compose(doc: &Document, source: &Story, at: usize, word: &str, spec: &FrameSp
         p.para.hyphenate = Some(false);
     });
     let frame = FrameSpec {
+        inset_top: None,
         area: Rect::new(0.0, 0.0, 1.0e6, 1.0e6),
         opts: TextFrameOptions { first_baseline: FirstBaseline::Ascent, first_baseline_min: attrs.size.unwrap_or(9.0), ..Default::default() },
         exclusions: Vec::new(),

@@ -133,8 +133,16 @@ type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
 
 /// First host line in text space, including frames replayed as several inset bands.
-pub(crate) fn top_margin_origin(story: &ComposedStory, frame: ItemId) -> Option<f64> {
-    story.frames.iter().filter(|f| f.frame == frame).find_map(|f| f.lines.first()).map(|line| line.baseline - line.ascent)
+pub(crate) fn top_margin_origin(story: &ComposedStory, frame: ItemId, inset_top: Option<f64>) -> Option<f64> {
+    story
+        .frames
+        .iter()
+        .filter(|f| f.frame == frame)
+        .find_map(|f| f.lines.first())
+        .map(|line| line.baseline - line.ascent)
+        .into_iter()
+        .chain(inset_top)
+        .reduce(f64::min)
 }
 
 /// Shared by final margin placement and inset trials; no gap precedes the first entry.
@@ -322,6 +330,7 @@ impl SeriesNotes {
             return c.clone();
         }
         let spec = FrameSpec {
+            inset_top: None,
             id: ItemId(0),
             area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
             opts: TextFrameOptions { first_baseline: o.first_baseline, first_baseline_min: o.first_baseline_min, ..Default::default() },
@@ -378,6 +387,7 @@ impl SeriesNotes {
                 };
                 let page = pages.get(i).unwrap_or(&current_page);
                 FrameSpec {
+                    inset_top: None,
                     area: Rect::new(0.0, 0.0, pw.max(1.0), h),
                     exclusions,
                     page_name: page.page_name.clone(),

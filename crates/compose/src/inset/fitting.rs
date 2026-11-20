@@ -238,7 +238,10 @@ fn fit_routes(
                             ));
                             return;
                         };
-                        let top = margin_layout.as_ref().and_then(|layout| crate::notes::top_margin_origin(layout, frame)).unwrap_or(host.area.y0);
+                        let top = margin_layout
+                            .as_ref()
+                            .and_then(|layout| crate::notes::top_margin_origin(layout, frame, host.inset_top))
+                            .unwrap_or(host.area.y0);
                         let mut entries: Vec<_> = margin_layout
                             .iter()
                             .flat_map(|cs| &cs.frames)
@@ -842,10 +845,24 @@ impl Page<'_> {
         route_pages.retain(|p| *p != page || self.last_host_on_page);
         route_pages.retain(|p| !self.deferred_pages.contains(p));
         // Route feasibility uses the candidate's ink bottom, before accepting its main cut.
+        let inset_top = out
+            .parts
+            .iter()
+            .flat_map(|p| &p.placement.notes)
+            .flat_map(|note| {
+                note.text.frames.iter().flat_map(move |frame| frame.lines.first().map(move |line| note.origin.y + line.baseline - line.ascent))
+            })
+            .reduce(f64::min);
+        let mut areas = c.areas.clone();
+        for area in &mut areas {
+            area.inset_top = inset_top;
+        }
         let mut margin_hosts = self.past.to_vec();
-        margin_hosts.extend(c.areas.iter().cloned());
+        margin_hosts.extend(areas.iter().cloned());
         if !margin_hosts.iter().any(|f| f.id == self.frame.id) {
-            margin_hosts.push(band_frame(self.frame, Rect::new(self.frame.area.x0, self.frame.area.y0, self.frame.area.x1, self.frame.area.y0)));
+            let mut host = band_frame(self.frame, Rect::new(self.frame.area.x0, self.frame.area.y0, self.frame.area.x1, self.frame.area.y0));
+            host.inset_top = inset_top;
+            margin_hosts.push(host);
         }
         for route_page in route_pages {
             let mut ranges = self.route_ranges.clone();
@@ -896,7 +913,7 @@ impl Page<'_> {
             core_caption,
             first_line: c.first_line.or(first_line_seen),
             cut: c.cut,
-            areas: c.areas.clone(),
+            areas,
             notes,
             routes,
             state,

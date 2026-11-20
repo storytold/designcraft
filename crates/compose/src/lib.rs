@@ -996,6 +996,8 @@ fn contour_path(doc: &Document, it: &Item, wrap: &designcraft_doc::TextWrap) -> 
 /// One frame of the thread, ready for composition.
 #[derive(Clone, Debug)]
 pub struct FrameSpec {
+    /// Highest composed inset commentary line top, retained when replaying main bands.
+    pub inset_top: Option<f64>,
     pub id: ItemId,
     /// Text area (inner space, after inset).
     pub area: Rect,
@@ -1287,6 +1289,7 @@ fn frame_specs_ids(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)],
             (area, exclusions, grid, page_rect, outline)
         };
         out.push(FrameSpec {
+            inset_top: None,
             id: fid,
             area,
             opts,
@@ -7249,6 +7252,7 @@ mod column_allocation_safety_tests {
 
     fn frame(kind: designcraft_doc::ColumnsKind) -> FrameSpec {
         FrameSpec {
+            inset_top: None,
             id: ItemId(1),
             area: Rect::new(0., 0., 300., 100.),
             opts: TextFrameOptions { columns: 217, columns_kind: kind, column_width: 20., gutter: 12., ..Default::default() },

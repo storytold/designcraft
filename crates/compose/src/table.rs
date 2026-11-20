@@ -139,6 +139,7 @@ impl CellLineExtent {
 /// Compose a cell story at width `w` (content space, top-left at the origin).
 fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
     let mut spec = FrameSpec {
+        inset_top: None,
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
         opts: TextFrameOptions { first_baseline: cell.first_baseline, first_baseline_min: cell.first_baseline_min, ..TextFrameOptions::default() },
