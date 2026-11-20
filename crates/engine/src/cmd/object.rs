@@ -3599,7 +3599,10 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt
             let mut lo = f64::INFINITY;
             let mut hi = f64::NEG_INFINITY;
             for l in &ft.lines {
-                let (ind_l, ind_r) = line_h_indents(d, story, l.para, l.first_in_para);
+                // Tables ignore first_line_indent in composition even when their first fragment is
+                // marked first_in_para; applying it here would inflate RTL table widths.
+                let first_in_para = l.first_in_para && story.para_table(l.para).is_none();
+                let (ind_l, ind_r) = line_h_indents(d, story, l.para, first_in_para);
                 if l.end_x.is_finite() {
                     hi = hi.max(l.end_x + ind_r);
                 }
@@ -6974,6 +6977,57 @@ mod fit_text_frame_tests {
         for (a, b) in before.iter().zip(after.iter()) {
             assert!((a - b).abs() < 1e-6, "baseline-grid line shifted: {before:?} -> {after:?}");
         }
+    }
+
+    #[test]
+    fn rtl_table_width_fit_ignores_first_line_indent_while_text_keeps_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // A 100-pt table in an RTL paragraph with firstLineIndent=24 must not retain 24 pt of
+        // unused width when fitted, because the compositor ignores first_line_indent for tables.
+        let tbl = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let t_sid = s.doc().unwrap().doc.item(tbl).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("text.select", &json!({"story": t_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl.0]})).unwrap();
+        let tb = bounds(&s, tbl);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "table overset after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9, "{tb:?}");
+        assert!((tb.width() - 100.0).abs() < 0.01, "table fit retained unused first-line indent width: {tb:?}");
+        assert!((t_cs.frame(tbl).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Paragraph left/right indents still apply to tables, while firstLineIndent is ignored.
+        let tbl_ind = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let ti_sid = s.doc().unwrap().doc.item(tbl_ind).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "leftIndent": 10.0, "rightIndent": 12.0, "firstLineIndent": 24.0}}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": ti_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl_ind.0]})).unwrap();
+        let tib = bounds(&s, tbl_ind);
+        let ti_cs = s.cache.get(&s.doc().unwrap().doc, ti_sid, None);
+        assert!(!ti_cs.is_overset(), "indented table overset after width fit: {tib:?}");
+        assert!((tib.x1 - 500.0).abs() < 1e-9, "{tib:?}");
+        assert!((tib.width() - 122.0).abs() < 0.01, "table fit should keep left+right indents only: {tib:?}");
+        assert!((ti_cs.frame(tbl_ind).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Actual RTL text lines still keep first_line_indent so a single-line paragraph does not wrap.
+        let plain = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [plain.0]})).unwrap();
+        let pb = bounds(&s, plain);
+
+        let rtl_first = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtl_first.0]})).unwrap();
+        let rfb = bounds(&s, rtl_first);
+        let rf_sid = s.doc().unwrap().doc.item(rtl_first).unwrap().text_frame().unwrap().story;
+        let rf_cs = s.cache.get(&s.doc().unwrap().doc, rf_sid, None);
+        assert!(!rf_cs.is_overset() && rf_cs.frame(rtl_first).unwrap().lines.len() == 1, "RTL text wrapped/overset: {rfb:?}");
+        assert!((rfb.width() - (pb.width() + 24.0)).abs() < 0.5, "RTL text lost first_line_indent: rfb={rfb:?} vs pb={pb:?}");
     }
 }
 
