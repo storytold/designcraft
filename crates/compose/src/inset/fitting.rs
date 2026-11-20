@@ -1197,6 +1197,26 @@ fn fit_physical_routes(
     None
 }
 
+fn revalidate_routes(
+    budget: usize,
+    mut fitted: HostFit,
+    limits: &mut std::collections::HashMap<designcraft_doc::ItemId, usize>,
+    mut probe: impl FnMut(&mut HostFit) -> Option<(designcraft_doc::ItemId, usize)>,
+    mut refit: impl FnMut(&std::collections::HashMap<designcraft_doc::ItemId, usize>) -> HostFit,
+) -> HostFit {
+    for _ in 0..budget {
+        let Some((host, at)) = probe(&mut fitted) else { return fitted };
+        // A retry must reduce a cut; equal or larger feedback cannot improve this fit.
+        if limits.get(&host).is_some_and(|previous| at >= *previous) {
+            break;
+        }
+        limits.insert(host, at);
+        fitted = refit(limits);
+    }
+    fitted.4.push("Inset route cannot start its anchored note after revalidating the host cut".into());
+    fitted
+}
+
 fn compose_frames_owned(
     doc: &Document,
     story: &Story,
@@ -1216,15 +1236,16 @@ fn compose_frames_owned(
     let mut fitted =
         fit_hosts(doc, story, frames, opts, if revisited { None } else { before }, catchword_owners, if revisited { &[] } else { &routes }, &limits);
     if revisited {
-        for _ in 0..story.notes.len().saturating_add(frames.len()).saturating_add(1) {
-            let (pages, _, state, _, warnings) = &mut fitted;
-            let Some((host, at)) = fit_physical_routes(doc, story, frames, &routes, pages, opts, Arc::make_mut(state)) else { break };
-            if limits.insert(host, at) == Some(at) {
-                warnings.push("Inset route cannot start its anchored note after revalidating the host cut".into());
-                break;
-            }
-            fitted = fit_hosts(doc, story, frames, opts, None, catchword_owners, &[], &limits);
-        }
+        fitted = revalidate_routes(
+            story.notes.len().saturating_add(frames.len()).saturating_add(1),
+            fitted,
+            &mut limits,
+            |fitted| {
+                let (pages, _, state, _, _) = fitted;
+                fit_physical_routes(doc, story, frames, &routes, pages, opts, Arc::make_mut(state))
+            },
+            |limits| fit_hosts(doc, story, frames, opts, None, catchword_owners, &[], limits),
+        );
     }
     let (pages, past, state, start, mut warnings) = fitted;
     let refs: Vec<_> = story.text.match_indices(designcraft_doc::FOOTNOTE_REF).map(|(at, _)| at).collect();
@@ -1353,6 +1374,45 @@ fn compose_frames_owned(
 #[cfg(test)]
 mod search_tests {
     use super::*;
+    #[test]
+    fn revisit_refit_steps_back_twice_without_loosening_a_cut() {
+        let mut doc = Document::new(&Default::default());
+        let (host, sid) = doc
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                Rect::new(0.0, 0.0, 400.0, 2000.0),
+                doc.default_layer(),
+                &"Line.\n".repeat(20),
+                Default::default(),
+            )
+            .unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let story = doc.story(sid).unwrap();
+        let opts = ComposeOptions::default();
+        let mut limits = std::collections::HashMap::new();
+        let mut feedback = [80, 60, 90].into_iter();
+        let mut cuts = Vec::new();
+        let mut observed = Vec::new();
+        MAIN_LAYOUTS.with(|n| n.set(0));
+        let initial = fit_hosts(&doc, story, &frames, &opts, None, None, &[], &limits);
+        let result = revalidate_routes(
+            5,
+            initial,
+            &mut limits,
+            |_| feedback.next().map(|at| (host, at)),
+            |limits| {
+                observed.push(limits[&host]);
+                let result = fit_hosts(&doc, story, &frames, &opts, None, None, &[], limits);
+                cuts.push(result.0[0].cut);
+                result
+            },
+        );
+        assert_eq!(observed, vec![80, 60], "limits must only decrease");
+        assert!(cuts.len() == 2 && cuts[1] < cuts[0]);
+        assert!(result.4.iter().any(|w| w.contains("after revalidating the host cut")), "non-decreasing feedback must emit the route warning");
+        assert!(MAIN_LAYOUTS.with(|n| n.get()) <= 20, "main layouts {}", MAIN_LAYOUTS.with(|n| n.get()));
+    }
+
     #[test]
     fn repeated_page_detection_visits_each_page_once() {
         PAGE_VISITS.with(|n| n.set(0));
