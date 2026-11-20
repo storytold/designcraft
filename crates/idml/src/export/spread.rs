@@ -94,16 +94,16 @@ pub(super) fn margin_el(pg: &designcraft_doc::Page) -> El {
     let m = pg.margin_rect();
     // Dragged column guides that still fit the margin box are written as they stand, so they
     // survive the round trip; otherwise the even split, which InDesign writes for unmoved columns.
-    let pos: Vec<String> = pg.columns.edges(m.width()).into_iter().map(num).collect();
-    El::new("MarginPreference")
-        .attr("ColumnCount", pg.columns.count.max(1))
-        .attr("ColumnGutter", num(pg.columns.gutter))
-        .attr("Top", num(pg.margins.top))
-        .attr("Bottom", num(pg.margins.bottom))
-        .attr("Left", num(pg.margins.inside))
-        .attr("Right", num(pg.margins.outside))
-        .attr("ColumnDirection", "Horizontal")
-        .attr("ColumnsPositions", pos.join(" "))
+    let pos = pg.columns.edges(m.width());
+    crate::xml::from_craft(craft_idml::model::MarginPreference::to_el(
+        pg.columns.count.max(1) as usize,
+        pg.columns.gutter,
+        pg.margins.top,
+        pg.margins.bottom,
+        pg.margins.inside,
+        pg.margins.outside,
+        &pos,
+    ))
 }
 
 /// The page's ruler guides, measured from the ruler origin written in the preferences.
@@ -122,18 +122,17 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
     };
     for g in &pg.guides {
         let vertical = g.orientation == designcraft_doc::Orientation::Vertical;
-        let mut ge = El::new("Guide")
-            .attr("Self", format!("{}g{}", uid(pg.id.0), pe.elements().count()))
-            .attr("Orientation", if vertical { "Vertical" } else { "Horizontal" })
-            .attr("Location", num(if vertical { g.position - origin_x } else { g.position }))
-            .attr("FitToPage", bool_s(!g.spread))
-            .attr("ViewThreshold", "5")
-            .attr("Locked", bool_s(g.locked))
-            .attr("PageIndex", page_index.to_string())
-            .attr("GuideType", if g.liquid { "Liquid" } else { "Ruler" });
-        if let Some(l) = g.layer {
-            ge.set("ItemLayer", uid(l.0));
+        let ge = craft_idml::model::GuideValues {
+            self_id: format!("{}g{}", uid(pg.id.0), pe.elements().count()),
+            horizontal: !vertical,
+            location: if vertical { g.position - origin_x } else { g.position },
+            fit_to_page: !g.spread,
+            locked: g.locked,
+            page_index,
+            liquid: g.liquid,
+            item_layer: g.layer.map(|l| uid(l.0)),
         }
-        pe.push(ge);
+        .to_el();
+        pe.push(crate::xml::from_craft(ge));
     }
 }
