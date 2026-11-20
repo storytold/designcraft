@@ -10152,6 +10152,16 @@ fn a_groups_wrap_does_not_push_the_text_of_a_frame_inside_it() {
     // The other frame starts above the group and overlaps it: its first line jumps below the group.
     let other = compose_story(&d, outside, &ComposeOptions::default());
     assert!(other.frames[0].lines[0].baseline > 160.0, "text outside the group still jumps it: {}", other.frames[0].lines[0].baseline);
+    // A frame in an inactive state of a multi-state group is still its group's: the wrap leaves it alone.
+    let (sid_, _) = d.add_text_frame(SpreadRef::Doc(0), rect, lid, "Shown state", ParaFormat::default()).unwrap();
+    let sp = Arc::make_mut(&mut d.spreads[0]);
+    let shown = sp.items.remove(sp.items.iter().position(|it| it.id == sid_).unwrap());
+    let g = Arc::make_mut(sp.items.iter_mut().find(|it| matches!(it.content, designcraft_doc::Content::Group { .. })).unwrap());
+    g.children_mut().unwrap().insert(0, shown);
+    g.states = vec!["Shown".into(), "Hidden".into()];
+    g.active_state = 0;
+    let own = compose_story(&d, inside, &ComposeOptions::default());
+    assert!(!own.is_overset() && own.frames[0].lines.len() == 1, "a frame in an inactive state was pushed out by its own group");
 }
 
 /// A right-to-left paragraph's first-line indent belongs at its start side, the right. Applied on

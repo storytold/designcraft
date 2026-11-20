@@ -1093,9 +1093,11 @@ fn wrap_obstacles(
     }
 }
 
-/// Whether `it` is a group with the item `id` somewhere inside it.
+/// Whether `it` is a group with the item `id` somewhere inside it, in any of its states.
 fn group_holds(it: &Item, id: ItemId, depth: usize) -> bool {
-    matches!(it.content, Content::Group { .. }) && depth <= MAX_WRAP_DEPTH && it.shown_children().any(|c| c.id == id || group_holds(c, id, depth + 1))
+    matches!(it.content, Content::Group { .. })
+        && depth <= MAX_WRAP_DEPTH
+        && it.children().iter().any(|c| c.id == id || group_holds(c, id, depth + 1))
 }
 
 /// Adds to `exclusions` the objects on `sp` that wrap the text of frame `item`. Only objects that
