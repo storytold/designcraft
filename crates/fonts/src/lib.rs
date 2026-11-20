@@ -255,6 +255,9 @@ fn shape_dir(
             });
         }
     });
+    if shaped.is_some() {
+        presentation_ligatures(face, text, features, rtl, script, &mut out);
+    }
     if shaped.is_none()
         && let Some(f) = face.skrifa()
     {
@@ -276,6 +279,93 @@ fn shape_dir(
         }
     }
     out
+}
+
+/// The standard ligatures a font has as presentation-form characters, longest first: the letters
+/// and the character whose glyph is the ligature.
+const PRESENTATION_LIGATURES: [(&str, char); 5] =
+    [("ffi", '\u{FB03}'), ("ffl", '\u{FB04}'), ("ff", '\u{FB00}'), ("fi", '\u{FB01}'), ("fl", '\u{FB02}')];
+
+/// InDesign sets the standard ligatures (ff, fi, fl, ffi, ffl) in Latin text, with Ligatures on,
+/// from the font's presentation-form glyphs (U+FB00 to U+FB04) when the font's own `liga` leaves
+/// them as letters: Georgia and Verdana have no `liga` at all, and the `liga` of Times New Roman
+/// and Arial is not Latin. Where the shaper already ligated, the letters are gone and this finds
+/// nothing. Left-to-right Latin runs only, and not with `liga` off (the same switch turns off the
+/// shaper's own).
+fn presentation_ligatures(
+    face: &FontFace,
+    text: &str,
+    features: &[Feature],
+    rtl: bool,
+    script: unicode_script::Script,
+    glyphs: &mut Vec<ShapedGlyph>,
+) {
+    let liga = Tag::new(b"liga");
+    if rtl || script != unicode_script::Script::Latin || features.iter().any(|f| f.tag == liga && f.value == 0) {
+        return;
+    }
+    let Some(font) = face.skrifa() else { return };
+    let cmap = font.charmap();
+    let metrics = font.glyph_metrics(Size::unscaled(), face.location());
+    merge_presentation_ligatures(
+        text,
+        glyphs,
+        |c| cmap.map(c).map(|g| g.to_u32()).filter(|&g| g != 0),
+        |g| Some(metrics.advance_width(skrifa::GlyphId::new(g))?.round() as i32),
+    );
+}
+
+/// Replace each run of glyphs for the letters of a [`PRESENTATION_LIGATURES`] entry, taking the
+/// longest entry whose character the font has (`glyph_of` gives a character's glyph), with that
+/// character's glyph and its `advance`. The ligature takes the first letter's cluster, as the
+/// shaper's own ligatures do. The glyph before it goes back to its own advance: the shaper kerned
+/// it against the first letter, but a ligature is substituted before kerning, so what it meets is
+/// the ligature (which the fonts do not kern). A run counts only if it is the letters themselves of
+/// `text`, one glyph each in consecutive clusters: a joiner between them or a stylistic alternate
+/// leaves them as they are. The letters' own kerning (some fonts give it as an offset of the second
+/// letter) goes with them.
+fn merge_presentation_ligatures(
+    text: &str,
+    glyphs: &mut Vec<ShapedGlyph>,
+    glyph_of: impl Fn(char) -> Option<u32>,
+    advance: impl Fn(u32) -> Option<i32>,
+) {
+    let table: Vec<(&str, Vec<u32>, u32)> = PRESENTATION_LIGATURES
+        .iter()
+        .filter_map(|&(letters, lig)| Some((letters, letters.chars().map(&glyph_of).collect::<Option<Vec<_>>>()?, glyph_of(lig)?)))
+        .collect();
+    if table.is_empty() {
+        return;
+    }
+    let mut out: Vec<ShapedGlyph> = Vec::with_capacity(glyphs.len());
+    let mut i = 0;
+    while i < glyphs.len() {
+        let hit = table.iter().find(|(letters, base, _)| {
+            let run = glyphs.get(i..i + base.len());
+            run.is_some_and(|run| {
+                let start = run[0].cluster;
+                text.get(start..start + letters.len()) == Some(*letters)
+                    && run.iter().zip(base).enumerate().all(|(k, (g, &b))| g.gid == b && g.cluster == start + k)
+            })
+        });
+        match hit {
+            Some((_, base, lig)) => {
+                let first = glyphs[i];
+                if let Some(prev) = out.last_mut()
+                    && let Some(natural) = advance(prev.gid)
+                {
+                    prev.x_advance = natural;
+                }
+                out.push(ShapedGlyph { gid: *lig, x_advance: advance(*lig).unwrap_or(first.x_advance), x_offset: 0, y_offset: 0, ..first });
+                i += base.len();
+            }
+            None => {
+                out.push(glyphs[i]);
+                i += 1;
+            }
+        }
+    }
+    *glyphs = out;
 }
 
 /// Shape upright text top to bottom (`text`, `features`, `map` and `context` as in
@@ -422,6 +512,135 @@ mod tests {
         let off = shape(&face, "office", &[feature("-liga").unwrap()], |c| c);
         assert!(on.len() <= off.len());
         assert_eq!(off.len(), 6);
+    }
+
+    /// Glyph ids of a fake font: the letters of "office fine flow" and the presentation forms.
+    fn fake_glyph(c: char) -> Option<u32> {
+        Some(match c {
+            'o' => 1,
+            'c' => 2,
+            'e' => 3,
+            'n' => 4,
+            't' => 5,
+            'f' => 10,
+            'i' => 11,
+            'l' => 12,
+            '\u{FB00}' => 20,
+            '\u{FB01}' => 21,
+            '\u{FB02}' => 22,
+            '\u{FB03}' => 23,
+            '\u{FB04}' => 24,
+            _ => return None,
+        })
+    }
+
+    /// The glyphs the shaper leaves for `text` in the fake font: one per letter, 600 units wide.
+    fn fake_glyphs(text: &str) -> Vec<ShapedGlyph> {
+        text.char_indices()
+            .map(|(i, c)| ShapedGlyph {
+                gid: fake_glyph(c).unwrap_or(99),
+                cluster: i,
+                x_advance: 600,
+                y_advance: 0,
+                x_offset: 0,
+                y_offset: 0,
+                safe_tatweel_before: false,
+                rtl: false,
+            })
+            .collect()
+    }
+
+    /// A letter is 600 units wide in the fake font, a ligature 500 plus its glyph id.
+    fn fake_advance(gid: u32) -> Option<i32> {
+        Some(if gid >= 20 { 500 + gid as i32 } else { 600 })
+    }
+
+    fn merged(text: &str, has: impl Fn(char) -> bool) -> Vec<(u32, usize, i32)> {
+        let mut g = fake_glyphs(text);
+        merge_presentation_ligatures(text, &mut g, |c| fake_glyph(c).filter(|_| has(c) || c.is_ascii()), fake_advance);
+        g.iter().map(|g| (g.gid, g.cluster, g.x_advance)).collect()
+    }
+
+    #[test]
+    fn a_font_with_all_five_presentation_forms_sets_them_longest_first() {
+        // "office": o, ffi (one glyph at the first f's cluster), c, e.
+        assert_eq!(merged("office", |_| true), vec![(1, 0, 600), (23, 1, 523), (2, 4, 600), (3, 5, 600)]);
+        assert_eq!(merged("ffl", |_| true), vec![(24, 0, 524)]);
+        assert_eq!(merged("off", |_| true), vec![(1, 0, 600), (20, 1, 520)]);
+        assert_eq!(merged("fine", |_| true), vec![(21, 0, 521), (4, 2, 600), (3, 3, 600)]);
+        assert_eq!(merged("flow", |_| true)[0], (22, 0, 522));
+    }
+
+    #[test]
+    fn a_font_with_only_fi_and_fl_sets_those_and_leaves_ff_as_letters() {
+        // Times New Roman, Arial and Verdana: "office" is o, f, fi, c, e.
+        let only = |c: char| matches!(c, '\u{FB01}' | '\u{FB02}');
+        assert_eq!(merged("office", only), vec![(1, 0, 600), (10, 1, 600), (21, 2, 521), (2, 4, 600), (3, 5, 600)]);
+        assert_eq!(merged("ff", only).len(), 2);
+    }
+
+    #[test]
+    fn the_glyph_before_a_ligature_loses_its_kerning_against_the_first_letter() {
+        // Times-like font: "ffi" is f, fi. The shaper kerned the first f 40 units against the second;
+        // the second is now part of the ligature, which the font does not kern, so the first f is
+        // back at its own advance. A letter before a ligature that was never kerned is unchanged.
+        let text = "offi";
+        let mut g = fake_glyphs(text);
+        g[1].x_advance = 560;
+        merge_presentation_ligatures(text, &mut g, |c| fake_glyph(c).filter(|_| c.is_ascii() || matches!(c, '\u{FB01}' | '\u{FB02}')), fake_advance);
+        assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(1, 600), (10, 600), (21, 521)]);
+        // A kerned pair that does not become a ligature keeps its kerning.
+        let mut g = fake_glyphs("ft");
+        g[0].x_advance = 560;
+        merge_presentation_ligatures("ft", &mut g, fake_glyph, fake_advance);
+        assert_eq!(g[0].x_advance, 560);
+    }
+
+    #[test]
+    fn other_f_pairs_and_other_letters_stay_letters() {
+        // ft and fj are not standard ligatures; a font without any presentation form changes nothing.
+        assert_eq!(merged("ft", |_| true).len(), 2);
+        assert_eq!(merged("fine", |_| false).len(), 4);
+        assert_eq!(merged("fine", |_| false)[0], (10, 0, 600));
+    }
+
+    #[test]
+    fn a_ligature_is_not_set_across_a_joiner_or_for_other_letters() {
+        // A zero width non-joiner between the letters (the shaper keeps it as a glyph or drops it).
+        let text = "f\u{200c}i";
+        let mut g = fake_glyphs(text);
+        g.remove(1);
+        merge_presentation_ligatures(text, &mut g, fake_glyph, |_| Some(500));
+        assert_eq!(g.len(), 2, "clusters 0 and 4 are not adjacent");
+        // A kerning offset on a letter (the second f's, in Times New Roman) goes with the letters.
+        let mut g = fake_glyphs("ffi");
+        g[1].x_offset = -18;
+        merge_presentation_ligatures("ffi", &mut g, |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'), fake_advance);
+        assert_eq!(g.iter().map(|g| (g.gid, g.x_offset)).collect::<Vec<_>>(), vec![(10, 0), (21, 0)]);
+        // Glyphs that are the right ones for other letters (a stylistic alternate of "fi", say).
+        let mut g = fake_glyphs("FI");
+        g[0].gid = 10;
+        g[1].gid = 11;
+        merge_presentation_ligatures("FI", &mut g, fake_glyph, |_| Some(500));
+        assert_eq!(g.len(), 2, "the text is not the letters f and i");
+    }
+
+    #[test]
+    fn fonts_that_ligate_themselves_are_left_alone_and_liga_off_turns_the_fallback_off() {
+        // Source Serif 4's own `liga` makes one glyph of "fi": the fallback finds no letters.
+        let face = FontDb::global().face(DEFAULT_FAMILY, "Regular");
+        let on = shape(&face, "office fine flow", &[], |c| c);
+        let off = shape(&face, "office fine flow", &[feature("-liga").unwrap()], |c| c);
+        assert_eq!(off.len(), 16);
+        assert!(on.len() < off.len());
+        let mut again = on.clone();
+        merge_presentation_ligatures(
+            "office fine flow",
+            &mut again,
+            |c| face.skrifa().and_then(|f| f.charmap().map(c)).map(|g| g.to_u32()),
+            |_| Some(0),
+        );
+        assert_eq!(again, on, "letters were already ligated by the font's liga");
     }
 
     #[test]
