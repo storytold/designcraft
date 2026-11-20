@@ -13,7 +13,7 @@ mod jpeg;
 mod psd;
 mod resolution;
 mod tone;
-pub use craft_eps::is_eps;
+pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 
@@ -306,6 +306,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
+        tree_depth: MAX_SVG_DEPTH,
         refuse_entity_markup: true,
         xml_nodes: MAX_SVG_EVENTS as u32,
         embedded_bytes: 32 * 1024 * 1024,
@@ -343,10 +344,11 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
 /// Unpremultiplied RGBA pixels, rows top to bottom, as a PNG file with no resolution stored.
 /// `None` when `rgba` doesn't hold exactly `width × height` pixels.
 pub fn png_from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
-    let img = image::RgbaImage::from_raw(width, height, rgba)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
-    Some(png)
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let image = craft_image_codecs::Image::from_u8(width, height, craft_image_codecs::ChannelLayout::Rgba, rgba).ok()?;
+    craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }
 
 /// Pixel dimensions of a raster.
@@ -360,11 +362,9 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let header = craft_psd::header::Header::from_bytes(bytes).ok()?;
         return Some((header.width, header.height));
     }
-    craft_image_codecs::inspect_raster(bytes)
+    craft_image_codecs::probe_size(bytes)
         .ok()
-        .flatten()
-        .map(|image| (image.width, image.height))
-        .or_else(|| craft_image_codecs::probe_size(bytes).ok())
+        .or_else(|| craft_image_codecs::inspect_raster(bytes).ok().flatten().map(|image| (image.width, image.height)))
         .or_else(|| {
             let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
             Some(image.dimensions())
@@ -377,7 +377,8 @@ const MAX_RGBA_BYTES: u64 = 1 << 30;
 /// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
 pub fn too_large_to_decode(bytes: &[u8]) -> bool {
     // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
-    pixel_size(bytes).is_some_and(|(w, h)| over_rgba_budget(w, h))
+    let dims = if is_psd(bytes) { pixel_size(bytes) } else { craft_image_codecs::probe_allocation_size(bytes).ok().or_else(|| pixel_size(bytes)) };
+    dims.is_some_and(|(w, h)| over_rgba_budget(w, h))
 }
 
 /// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
@@ -415,9 +416,10 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
 /// copy of its result. A decode holds the samples as decoded beside the 8-bit RGBA (or, for
 /// CMYK, the 8-bit CMYKA copy and its ink and alpha planes) they are converted to, or two copies
 /// of the decoded samples while they are turned upright; float and Lab samples convert through
-/// 32-bit float copies. A progressive JPEG adds its coefficients (two bytes a component). At
-/// least 8: the RGBA result and its premultiplied copy. An EPS counts as its TIFF preview, or 8
-/// for its placeholder or drawn PostScript.
+/// 32-bit float copies. A JPEG adds its worst-case held DCT coefficients
+/// (`craft_image_codecs::jpeg_worst_case_coefficients`, budgeting progressive, arithmetic, lossless,
+/// and 12-bit frames). At least 8: the RGBA result and its premultiplied copy. An EPS counts as its
+/// TIFF preview, or 8 for its placeholder or drawn PostScript.
 pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
     use craft_image_codecs::{Format, RasterColorType as C};
     if is_eps(bytes) {
@@ -471,7 +473,12 @@ pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
     let converted = if direct && !float { out } else { 4 * channels + 4 * out + out };
     // CMYK splits the 8-bit CMYKA copy into ink and alpha planes.
     let split = if cmyk { 5 } else { 0 };
-    let coefficients = jpeg::progressive_coefficient_bytes(bytes);
+    let pixels = u64::from(info.width).saturating_mul(u64::from(info.height));
+    let coefficients = if format == Some(Format::Jpeg) && pixels > 0 {
+        usize::try_from(craft_image_codecs::jpeg_worst_case_coefficients(bytes).div_ceil(pixels)).unwrap_or(usize::MAX)
+    } else {
+        0
+    };
     (stored + converted + split).max(2 * stored).max(coefficients + stored).max(8)
 }
 
