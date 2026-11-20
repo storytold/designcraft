@@ -1379,3 +1379,13 @@ fn png_from_rgba_parity_and_guards() {
     assert_eq!(png_from_rgba(2, 0, vec![]), None);
     assert_eq!(png_from_rgba(2, 2, vec![0; 12]), None);
 }
+
+#[test]
+fn tiff_exif_orientation_and_progressive_jpeg_probes() {
+    let tiff = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+    assert_eq!(raster_resolution(&tiff), Some((150.0, 300.0)));
+
+    let prog = progressive_jpeg(16, 8, 3);
+    assert_eq!(pixel_size(&prog), Some((16, 8)));
+    assert!(decode_bytes_per_pixel(&prog) >= 8);
+}
