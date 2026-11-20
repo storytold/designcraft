@@ -61,6 +61,12 @@ A route can follow the composed inset core on its host's page:
 {"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12}}}
 ```
 
+`followInset` also accepts an array of one or two rules with distinct edges, for example
+`[{"edge":"start","gap":0,"after":45},{"edge":"end","gap":80}]`.
+Both bounds apply to the same frame, each using its own gap and optional dependency.
+Duplicate edges and arrays longer than two are rejected. Bounds that meet or cross
+produce an empty area with the same continuation and overset behaviour as a single rule.
+
 The core bottom includes the inset main text, commentary, and reserved catchword rows.
 When a starting routed foot follows a catchword-bearing edge, its first baseline is the
 catchword baseline plus that row's leading and the follow gap. Its column still starts
