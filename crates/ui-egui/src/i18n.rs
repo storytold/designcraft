@@ -21,6 +21,7 @@ mod pt_br;
 mod ru;
 mod sv;
 mod uk;
+mod tr;
 
 /// Supported interface languages: (code, name in that language).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -40,6 +41,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
+    ("tr", "Turkish"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
