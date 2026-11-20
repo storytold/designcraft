@@ -1452,6 +1452,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-proof"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=cbc79f6a7a144da7b485b5f41f06342869f4664b#cbc79f6a7a144da7b485b5f41f06342869f4664b"
+dependencies = [
+ "log",
+ "miniz_oxide 0.9.1",
+ "toml",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "craft-ps"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
@@ -1854,6 +1865,7 @@ dependencies = [
 name = "designcraft-compose"
 version = "0.21.0"
 dependencies = [
+ "craft-proof",
  "designcraft-color",
  "designcraft-doc",
  "designcraft-fonts",
@@ -1896,6 +1908,7 @@ dependencies = [
  "craft-mime",
  "craft-prepress",
  "craft-print",
+ "craft-proof",
  "craft-svg",
  "craft-xml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b92907f69d6599b91ac76fb8377ac407c8ac956d)",
  "designcraft-color",
@@ -1923,6 +1936,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-normalization",
  "unicode-segmentation",
  "wasm-bindgen-test",
  "zip 3.0.0",

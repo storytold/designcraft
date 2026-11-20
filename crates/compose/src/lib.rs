@@ -154,6 +154,8 @@ pub struct PlacedGlyph {
     pub len: usize,
     /// Text of a generated glyph (see [`shape::Glyph::generated_text`]).
     pub generated_text: Option<Box<str>>,
+    /// Display-only additions for nonstandard hyphenation; never copied as source text.
+    pub hyphen_inserted: bool,
     /// Control characters (tabs, breaks, markers' carriers) are not drawn.
     pub visible: bool,
     /// Stays upright in vertical frames (CJK ideographs, kana, hangul, full-width forms).
@@ -1663,6 +1665,7 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     shaped: &'a mut shape::ShapedPara,
 }
 
+/// Apply nested line styles using the same hyphenation opportunities as final composition.
 fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
     let NestedLineStyleInput {
         db,
@@ -1713,7 +1716,8 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+            let mut hy =
+                hyphenation_points(&story.text, &mut gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2764,6 +2768,7 @@ struct ShapedParagraph {
     para_box: Option<ParaBox>,
 }
 
+/// Shape a paragraph and prepare its break opportunities, generated labels and line metrics.
 fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let ParagraphShapeInput {
         db,
@@ -2956,7 +2961,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after =
-        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+        hyphenation_points(&story.text, &mut glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -5184,6 +5189,7 @@ fn append_kashidas(line: &[Glyph], out: &mut Vec<PlacedGlyph>, kashidas: Vec<(us
             sx: g.sx * k,
             len: 0,
             generated_text: None,
+            hyphen_inserted: false,
             upright: false,
             tcy: None,
             dx: 0.0,
@@ -5236,7 +5242,14 @@ fn layout_line(
         }
     }
     if hyphen && let Some(g) = line.last() {
-        let h = shape::hyphen_after(g);
+        let extra = shape::hyphen_suffix_glyphs(g);
+        let mut h = shape::hyphen_after(g);
+        if g.hyphen_suffix.is_some() {
+            h.byte = g.byte;
+            h.generated_text = Some("".into());
+            h.hyphen_inserted = true;
+        }
+        line.extend(extra);
         line.push(h);
     }
     let measure = x1 - x0;
@@ -5502,6 +5515,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 byte: tab.byte,
                 len: 0,
                 generated_text: None,
+                hyphen_inserted: false,
                 visible: true,
                 upright: false,
                 tcy: None,
@@ -5631,6 +5645,7 @@ fn indent_here(placed: &[PlacedGlyph], pp: &designcraft_doc::ParaProps, x0: f64,
     Some(props)
 }
 
+/// Preserve source addresses and display-only insertion metadata when placing a glyph.
 fn place(g: &Glyph, x: f64) -> PlacedGlyph {
     let visible = !(g.ch == '\t'
         || g.ch == '\n'
@@ -5653,6 +5668,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         byte: g.byte,
         len: g.len,
         generated_text: g.generated_text.clone(),
+        hyphen_inserted: g.hyphen_inserted,
         visible,
         list_label: g.list_label,
         upright: g.upright,
@@ -5945,18 +5961,20 @@ fn suppress_hyphens(hy: &mut [bool], glyphs: &[Glyph], at: &[usize]) {
 /// Hyphenation points of `word`, remembered per set of limits: words repeat a lot. The points of
 /// a word not seen yet are worked out without holding the cache's lock, so a long word in one
 /// paragraph doesn't hold up hyphenation in others.
-fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) -> Arc<[usize]> {
-    type Words = HashMap<(hyphen::Lang, Box<str>), Arc<[usize]>>;
+fn cached_hyphen_opportunities(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) -> Arc<[hyphen::Opportunity]> {
+    type Words = HashMap<(hyphen::Lang, u64, Box<str>), Arc<[hyphen::Opportunity]>>;
     static CACHE: Mutex<Vec<(LimitsKey, Words)>> = Mutex::new(Vec::new());
     let key = (lim.min_word, lim.after_first, lim.before_last, lim.capitalized);
-    let word_key = (lang, Box::<str>::from(word));
+    // Capture the generation before computing a miss so a reload cannot reuse the old result.
+    let generation = if lang == hyphen::Lang::Hungarian { craft_proof::dictionary_generation() } else { 0 };
+    let word_key = (lang, generation, Box::<str>::from(word));
     {
         let guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pts) = guard.iter().find(|e| e.0 == key).and_then(|e| e.1.get(&word_key)) {
             return pts.clone();
         }
     }
-    let pts: Arc<[usize]> = hyphen::hyphen_points_in(word, lim, lang).into();
+    let pts: Arc<[hyphen::Opportunity]> = hyphen::opportunities_in(word, lim, lang).into();
     let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let idx = match guard.iter().position(|e| e.0 == key) {
         Some(i) => i,
@@ -5976,9 +5994,10 @@ fn cached_hyphen_points(lim: &hyphen::Limits, lang: hyphen::Lang, word: &str) ->
     pts
 }
 
+/// Mark eligible glyph breaks and attach replacement suffixes without changing source text.
 fn hyphenation_points(
     text: &str,
-    glyphs: &[Glyph],
+    glyphs: &mut [Glyph],
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
@@ -6024,7 +6043,8 @@ fn hyphenation_points(
         }
         // A discretionary hyphen in a word (or right before it) replaces automatic hyphenation.
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
-        let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
+        let a = glyphs[i].byte;
+        let b = glyphs[i..j].iter().map(|g| g.byte.saturating_add(g.len)).max().unwrap_or(a);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
             // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
@@ -6049,28 +6069,49 @@ fn hyphenation_points(
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
             if !is_last_word && let Some(lang) = lang {
+                let mixed = foreign.iter().any(|(r, l)| r.start < b && r.end > a && *l != Some(lang))
+                    || (lang != hyphen::Lang::English
+                        && foreign.iter().filter(|(_, l)| *l == Some(lang)).map(|(r, _)| r.end.min(b).saturating_sub(r.start.max(a))).sum::<usize>()
+                            < b - a);
+                if mixed {
+                    i = j;
+                    continue;
+                }
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
+                let user_ops: Vec<_> = user.into_iter().flatten().map(|&at| hyphen::Opportunity { at, suffix: "".into() }).collect();
                 let cached;
-                let pts: &[usize] = match user {
-                    // User dictionary exceptions win over the patterns and the built-in list.
-                    Some(v) => v,
-                    None => {
-                        cached = cached_hyphen_points(&lim, lang, word);
-                        &cached
-                    }
+                // User dictionary exceptions win over the patterns and the built-in list.
+                let pts: &[hyphen::Opportunity] = if user.is_some() {
+                    &user_ops
+                } else {
+                    cached = cached_hyphen_opportunities(&lim, lang, word);
+                    &cached
                 };
                 if !pts.is_empty() {
-                    // char index p → byte → the first glyph whose cluster ends at that byte. Both
-                    // indexed once per word: looking each point up by scanning was quadratic in
-                    // a long word's length.
+                    // Index boundaries once per word, keeping breaks after the last glyph of
+                    // their cluster. Repeated scans per point were quadratic for long words.
                     let char_bytes: Vec<usize> = word.char_indices().map(|(bi, _)| bi).collect();
                     let mut glyph_ending_at: HashMap<usize, usize> = HashMap::new();
-                    for k in (i..j).filter(|&k| glyphs[k].len > 0) {
-                        glyph_ending_at.entry(glyphs[k].byte + glyphs[k].len).or_insert(k);
+                    let mut k = i;
+                    while k < j {
+                        let first = k;
+                        while k + 1 < j && glyphs[k + 1].byte == glyphs[k].byte {
+                            k += 1;
+                        }
+                        for g in glyphs[first..=k].iter().filter(|g| g.len > 0) {
+                            glyph_ending_at.entry(g.byte + g.len).or_insert(k);
+                        }
+                        k += 1;
                     }
-                    for &p in pts.iter() {
-                        let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                    for op in pts {
+                        let byte = a + char_bytes.get(op.at).copied().unwrap_or(word.len());
                         if let Some(&k) = glyph_ending_at.get(&byte) {
+                            let g = &mut glyphs[k];
+                            let suffix =
+                                if g.hyphen_all_caps || g.display_char.is_uppercase() { op.suffix.to_uppercase() } else { op.suffix.to_string() };
+                            if !shape::set_hyphen_suffix(g, suffix) {
+                                continue;
+                            }
                             out[k] = true;
                         }
                     }
