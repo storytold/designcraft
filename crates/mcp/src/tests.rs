@@ -821,3 +821,24 @@ fn an_escaped_panic_is_a_tool_error() {
     assert!(text_of(&r).contains("internal error: boom in document.inspect"), "{r}");
     assert_eq!(rpc(&mut s, 2, "ping", json!({}))["result"], json!({}));
 }
+
+#[test]
+fn resource_uri_validation_preserves_parameter_errors() {
+    let mut s = server();
+    for params in [json!({}), json!({"uri": null}), json!({"uri": 17})] {
+        let result = rpc(&mut s, 51, "resources/read", params);
+        assert_eq!(result["error"]["code"], -32602);
+        assert_eq!(result["error"]["message"], "missing `uri`");
+    }
+}
+
+#[test]
+fn serve_accepts_ping_at_legacy_eof_limit() {
+    let mut input = json!({"jsonrpc":"2.0", "id":52, "method":"ping"}).to_string();
+    input.extend(std::iter::repeat_n(' ', (4 << 20) - input.len()));
+    let mut output = Vec::new();
+    server().serve(input.as_bytes(), &mut output).unwrap();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["id"], 52);
+    assert_eq!(response["result"], json!({}));
+}

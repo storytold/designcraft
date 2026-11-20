@@ -74,9 +74,16 @@ impl Rendered {
     }
     /// PNG bytes (empty, with the error logged, if the image can't be encoded).
     pub fn to_png(&self) -> Vec<u8> {
+        if self.width == 0 || self.height == 0 {
+            return Vec::new();
+        }
+        let Some(len) = (self.width as usize).checked_mul(self.height as usize).and_then(|n| n.checked_mul(4)) else {
+            log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
+            return Vec::new();
+        };
         let mut px = self.to_straight();
         // `pixels` is public: a mismatched buffer is padded or cut to the stated size.
-        px.resize(self.width as usize * self.height as usize * 4, 0);
+        px.resize(len, 0);
         let Ok(img) = craft_image_codecs::Image::from_u8(self.width, self.height, craft_image_codecs::ChannelLayout::Rgba, px) else {
             log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
             return Vec::new();
