@@ -21,7 +21,15 @@ enum ThumbOf {
 type ThumbKey = (u64, ThumbOf, u32);
 
 /// The newest thumbnail of each page and parent, with the document revision it shows.
-static THUMBS: Mutex<Option<HashMap<ThumbKey, (u64, egui::TextureHandle)>>> = Mutex::new(None);
+static THUMBS: Mutex<Option<HashMap<ThumbKey, Thumb>>> = Mutex::new(None);
+
+/// A rendered thumbnail: the document revision, and, when it drew images still decoding in the
+/// background, the image generation and time (s) it was rendered at.
+type Thumb = (u64, Option<(u64, f64)>, egui::TextureHandle);
+
+/// How soon (s) a thumbnail drawn with images still decoding is rendered again once more have
+/// finished: a page of photos decoding one after another re-renders a few times, not once each.
+const THUMB_IMAGES_SECS: f64 = 0.25;
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
@@ -81,10 +89,20 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
                 }
         });
     }
-    if let Some((rev, t)) = map.get(&key) {
+    if let Some((rev, pending, t)) = map.get(&key) {
         if *rev == st.revision {
-            ctx.data_mut(|d| d.insert_temp(clock_id, clock));
-            return Some(t.clone());
+            // Images it drew as decoding have finished since: draw it again, in batches.
+            let stale = pending.and_then(|(images, at)| (images != designcraft_render::images::generation()).then_some(at + THUMB_IMAGES_SECS - now));
+            match stale {
+                Some(wait) if wait <= 0.0 && clock.refreshed < THUMB_REFRESHES_PER_FRAME => {}
+                _ => {
+                    if let Some(after) = stale.and_then(|w| std::time::Duration::try_from_secs_f64(w.max(0.0)).ok()) {
+                        ctx.request_repaint_after(after);
+                    }
+                    ctx.data_mut(|d| d.insert_temp(clock_id, clock));
+                    return Some(t.clone());
+                }
+            }
         }
         let wait = THUMB_QUIET_SECS - (now - clock.changed_at);
         if wait > 0.0 || clock.refreshed >= THUMB_REFRESHES_PER_FRAME {
@@ -100,7 +118,9 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     let px = h as f64 * ctx.pixels_per_point() as f64;
     let mut r = designcraft_render::Renderer::new();
     r.threads = 0;
-    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+    // Thumbnails don't wait for decodes: images still decoding are drawn when they finish.
+    let opts = designcraft_render::RenderOptions { printing_only: true, defer_images: true, ..Default::default() };
+    let images = designcraft_render::images::generation();
     let (img, name) = match of {
         ThumbOf::Page(abs) => {
             let page = st.doc.page(abs)?;
@@ -123,7 +143,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    map.insert(key, (st.revision, tex.clone()));
+    map.insert(key, (st.revision, r.images_pending().then_some((images, now)), tex.clone()));
     Some(tex)
 }
 
@@ -273,8 +293,16 @@ const LAYOUT_COL_MIN: f32 = 96.0;
 /// A spread's label under its thumbnails, as InDesign's: one name for a single page, "2–3" for
 /// pages numbered on in one section (an en dash), and the names apart ("2, 1", "8, A") when a section starts
 /// inside the spread.
+/// The names read left to right as the thumbnails are drawn, so a spread bound right to left
+/// lists its second page first.
 pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, first: usize, n: usize) -> String {
-    let names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    let mut order: Vec<usize> = (first..first + n).collect();
+    // In the order the thumbnails are drawn: by each page's x (a right-to-left pair shows its second page on the left).
+    if let Some(sp) = doc.page_loc(first).and_then(|(si, _)| doc.spreads.get(si)) {
+        let x = |abs: usize| sp.pages.get(abs.saturating_sub(first)).map_or(0.0, |p| p.x);
+        order.sort_by(|&a, &b| x(a).total_cmp(&x(b)));
+    }
+    let names: Vec<String> = order.into_iter().map(|abs| app.session.page_label(abs)).collect();
     let starts = |abs: usize| abs == 0 || doc.sections.iter().any(|s| s.start == abs);
     match (names.first(), names.last()) {
         (Some(a), Some(b)) if names.len() > 1 => {
@@ -1287,6 +1315,26 @@ mod spread_label_tests {
         // Absolute numbering: positions, always a range.
         app.session.prefs.absolute_page_numbers = true;
         assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+    }
+
+    /// Bound right to left, a spread's label follows the document's reading order: the left
+    /// page first ("3–2", not "2–3"), and a section inside a spread lists its pages left to
+    /// right. Left-to-right labels are unchanged. A spread of more pages, drawn in document
+    /// order, lists its names in that order, apart while a section still starts inside it.
+    #[test]
+    fn rtl_binding_labels_spreads_in_visual_left_to_right_order() {
+        let mut app = app();
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+        app.run("layout.documentSetup", json!({"binding": "rightToLeft"})).unwrap();
+        assert_eq!(labels(&app), ["1", "3–2", "5–4", "7–6", "9–8"]);
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        let got = labels(&app);
+        assert_eq!(got[1], "1, 2");
+        assert_eq!(got[2], "3–2");
+        app.run("layout.pages.toSpread", json!({"page": 4, "spread": 1})).unwrap();
+        // Three pages, drawn in document order: 2, 3 and 4 are numbered 2, 1 and 2, and the
+        // section that starts on page 3 stays inside the spread, so the names stay apart.
+        assert_eq!(labels(&app)[1], "2, 1, 2");
     }
 
     /// Labels navigate to document spreads, including when parent editing was active.

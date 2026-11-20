@@ -204,7 +204,16 @@ mod image_content_cache_tests {
     }
     fn asset(doc: &mut Document, bytes: Vec<u8>, name: &str) -> AssetId {
         let id = AssetId(doc.alloc());
-        doc.assets.insert(id, Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(bytes), ..Default::default() }));
+        doc.assets.insert(
+            id,
+            Arc::new(Asset {
+                id,
+                name: name.into(),
+                mime: "image/png".into(),
+                data: designcraft_doc::AssetData::embedded(bytes),
+                ..Default::default()
+            }),
+        );
         id
     }
     fn exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions) -> Exporter<'a> {
@@ -218,6 +227,7 @@ mod image_content_cache_tests {
             clip: Rect::ZERO,
             warnings: Vec::new(),
             images: HashMap::new(),
+            outputs: HashMap::new(),
             images_by_content: ImageContentCache::default(),
             image_conversions: 0,
             pdfs: HashMap::new(),
@@ -279,7 +289,7 @@ mod image_content_cache_tests {
         // a, b, and a with its layer hidden (a copy of its own).
         assert_eq!(ex.pdfs.len(), 3);
         let variant = ex.variants.get(&(a, None)).unwrap();
-        assert!(Arc::ptr_eq(&variant.data, &doc.assets[&a].data));
+        assert!(Arc::ptr_eq(&variant.data, doc.assets[&a].data.embedded_bytes().unwrap()));
         surface.finish();
         page.finish();
         assert!(writer.finish().is_ok());
@@ -294,14 +304,14 @@ mod image_content_cache_tests {
         let b1 = asset(&mut d, blue.clone(), "b1");
         let a2 = asset(&mut d, red, "a2");
         let b2 = asset(&mut d, blue, "b2");
-        assert!(!Arc::ptr_eq(&d.assets[&a1].data, &d.assets[&a2].data));
+        assert!(!Arc::ptr_eq(d.assets[&a1].data.embedded_bytes().unwrap(), d.assets[&a2].data.embedded_bytes().unwrap()));
         let cache = Cache::new();
         let opts = PdfOptions::default();
         let mut ex = exporter(&d, &cache, &opts);
         let mut h1 = ex.images_by_content.hasher().build_hasher();
-        h1.write(&d.assets[&a1].data);
+        h1.write(d.assets[&a1].data.embedded_bytes().unwrap());
         let mut h2 = ex.images_by_content.hasher().build_hasher();
-        h2.write(&d.assets[&b1].data);
+        h2.write(d.assets[&b1].data.embedded_bytes().unwrap());
         assert_eq!(h1.finish(), h2.finish());
         assert_ne!(d.assets[&a1].data, d.assets[&b1].data);
         for (id, count, size) in [(a1, 1, (2, 1)), (b1, 2, (1, 2)), (a2, 2, (2, 1)), (a1, 2, (2, 1)), (b2, 2, (1, 2))] {
@@ -310,8 +320,8 @@ mod image_content_cache_tests {
         }
         assert_eq!(ex.images.len(), 4);
         assert_eq!(ex.images_by_content.len(), 2);
-        let first_key = ex.images_by_content.keys().find(|key| key.as_slice() == d.assets[&a1].data.as_slice()).unwrap();
-        assert!(Arc::ptr_eq(first_key, &d.assets[&a1].data), "cache keys share the original encoded payload");
+        let first_key = ex.images_by_content.keys().find(|key| key.as_slice() == d.assets[&a1].data.embedded_bytes().unwrap().as_slice()).unwrap();
+        assert!(Arc::ptr_eq(first_key, d.assets[&a1].data.embedded_bytes().unwrap()), "cache keys share the original encoded payload");
         ex.images_by_content.clear();
         assert_eq!(ex.load_image(a1).unwrap().size(), (2, 1));
         assert_eq!(ex.image_conversions, 2, "the AssetId cache remains the first lookup");
@@ -434,8 +444,8 @@ mod image_content_cache_tests {
         let bytes = png(2, 1, [20, 30, 40, 255]);
         let a = asset(&mut d, bytes.clone(), "a.png");
         let b = asset(&mut d, bytes, "b.png");
-        let payload = Arc::downgrade(&d.assets[&a].data);
-        let duplicate = Arc::downgrade(&d.assets[&b].data);
+        let payload = Arc::downgrade(d.assets[&a].data.embedded_bytes().unwrap());
+        let duplicate = Arc::downgrade(d.assets[&b].data.embedded_bytes().unwrap());
         let cache = Cache::new();
         let opts = PdfOptions::default();
         let mut ex = exporter(&d, &cache, &opts);
@@ -443,7 +453,7 @@ mod image_content_cache_tests {
         assert!(ex.load_image(b).is_some());
         assert_eq!(duplicate.strong_count(), 1, "a content hit must not retain the second encoded allocation");
         let key = ex.images_by_content.keys().next().unwrap();
-        assert!(Arc::ptr_eq(key, &d.assets[&a].data));
+        assert!(Arc::ptr_eq(key, d.assets[&a].data.embedded_bytes().unwrap()));
         drop(ex);
         drop(d);
         assert!(payload.upgrade().is_none(), "no converted image or encoded key outlives this exporter");
@@ -482,7 +492,7 @@ mod eps_tests {
                 name: "cmyk.eps".into(),
                 mime: "application/postscript".into(),
                 link: None,
-                data: Arc::new(eps),
+                data: designcraft_doc::AssetData::embedded(eps),
                 pixels: Some((2, 1)),
                 page: 0,
                 ..Default::default()

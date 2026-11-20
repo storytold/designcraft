@@ -1,12 +1,49 @@
 //! Reduced-size JPEG decoding (1/2, 1/4, 1/8 through the DCT) for screen proxies.
 
-use jpeg_decoder::{CodingProcess, PixelFormat};
-
 /// The largest reduction [`decode_reduced`] reads straight from a JPEG's 8×8 blocks: 1/8.
 pub(crate) const MAX_SHRINK: u8 = 3;
 
 /// The largest decoded image, in bytes (the `image` crate's default allocation limit).
 const MAX_BYTES: usize = 512 << 20;
+
+/// Bytes a pixel a full decode of a progressive JPEG holds for its coefficients until the last
+/// scan: two a component, up to the four components a JPEG decoder takes. 0 for a baseline JPEG
+/// and for anything that isn't a JPEG.
+pub(crate) fn progressive_coefficient_bytes(bytes: &[u8]) -> usize {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return 0;
+    }
+    let mut i = 2usize;
+    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i.saturating_add(4)).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
+        // Start of scan or end of image: no more frame headers.
+        if marker == 0xDA || marker == 0xD9 {
+            return 0;
+        }
+        // SOF2, SOF6, SOF10 and SOF14: progressive frames. The component count follows the
+        // length, precision, height and width.
+        if matches!(marker, 0xC2 | 0xC6 | 0xCA | 0xCE) {
+            let components = bytes.get(i.saturating_add(9)).map_or(4, |&n| usize::from(n).clamp(1, 4));
+            return 2 * components;
+        }
+        i = i.saturating_add(2).saturating_add(usize::from(u16::from_be_bytes([hi, lo])));
+    }
+    0
+}
+
+fn limits() -> craft_jpeg::Limits {
+    let mut limits = craft_jpeg::Limits::default();
+    limits.max_alloc = MAX_BYTES as u64;
+    limits
+}
+
+/// Output size of a JPEG reduction without decoding pixels. `None` when the reduced decoder
+/// cannot handle the JPEG, including its full-size resource limits.
+pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
+        return None;
+    }
+    craft_jpeg::reduced_estimate(bytes, &limits(), shrink).ok()
+}
 
 /// A YCbCr, RGB or grayscale JPEG decoded at 1/2^`shrink` of its size, each side rounded up, for
 /// `shrink` 1 to [`MAX_SHRINK`]: straight RGBA and whether the image has colour. `None` for CMYK,
@@ -18,40 +55,16 @@ pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<(image::RgbaIma
     if !bytes.starts_with(&[0xFF, 0xD8]) || shrink == 0 || shrink > MAX_SHRINK {
         return None;
     }
-    let mut d = jpeg_decoder::Decoder::new(bytes);
-    // This limits the output only, which is the reduced size.
-    d.set_max_decoding_buffer_size(MAX_BYTES);
-    d.read_info().ok()?;
-    let info = d.info()?;
-    if crate::over_rgba_budget(u32::from(info.width), u32::from(info.height)) {
-        return None;
-    }
-    let colour = match info.pixel_format {
-        PixelFormat::RGB24 => true,
-        PixelFormat::L8 => false,
-        PixelFormat::L16 | PixelFormat::CMYK32 => return None,
+    let decoded = craft_jpeg::decode_reduced(bytes, &limits(), None, shrink).ok()?;
+    let colour = match decoded.components {
+        3 => true,
+        1 => false,
+        _ => return None,
     };
-    if info.coding_process == CodingProcess::DctProgressive {
-        // A progressive JPEG holds every coefficient of the full-size image (two bytes each) until
-        // its last scan, whatever the output size. Each component is counted at the full size and
-        // each side is rounded up to the largest MCU (32 pixels): an upper bound.
-        let side = |n: u16| u64::from(n).next_multiple_of(32);
-        let components: u64 = if colour { 3 } else { 1 };
-        if side(info.width) * side(info.height) * components * 2 > MAX_BYTES as u64 {
-            return None;
-        }
-    }
-    let reduced = |n: u16| u16::try_from(u32::from(n).div_ceil(1 << shrink)).ok();
-    let expected = (reduced(info.width)?, reduced(info.height)?);
-    // The decoder takes the smallest scale that meets either requested side, and a short side
-    // rounds up to the same size at several scales, so only the long side is requested.
-    let request = if info.width >= info.height { (expected.0, u16::MAX) } else { (u16::MAX, expected.1) };
-    let (w, h) = d.scale(request.0, request.1).ok()?;
-    if (w, h) != expected {
+    let craft_jpeg::Samples::U8(px) = decoded.samples else {
         return None;
-    }
-    let px = d.decode().ok()?;
-    let pixels = usize::from(w).checked_mul(usize::from(h))?;
+    };
+    let pixels = usize::try_from(decoded.width).ok()?.checked_mul(usize::try_from(decoded.height).ok()?)?;
     let rgba: Vec<u8> = if colour {
         if px.len() != pixels.checked_mul(3)? {
             return None;
@@ -63,5 +76,5 @@ pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<(image::RgbaIma
         }
         px.iter().flat_map(|&v| [v, v, v, 255]).collect()
     };
-    Some((image::RgbaImage::from_raw(u32::from(w), u32::from(h), rgba)?, colour))
+    Some((image::RgbaImage::from_raw(decoded.width, decoded.height, rgba)?, colour))
 }

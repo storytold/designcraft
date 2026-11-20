@@ -9,6 +9,42 @@ use super::{
 /// InDesign's corner size when a corner shape is set without an explicit radius.
 const INDESIGN_CORNER_SIZE: f64 = 12.0;
 
+/// Matches any element name, so `first_start` returns the root's start tag.
+#[derive(Clone, Copy)]
+struct AnyTag;
+
+impl craft_xml::Pat for AnyTag {
+    fn matches(self, _: &str) -> bool {
+        true
+    }
+}
+
+/// The viewBox size of an SVG whose root has a viewBox but no width or height (percentages count
+/// as none): such a file is placed at one viewBox unit to the point. A leading UTF-8 byte order
+/// mark is skipped. Only the root's start tag is read, and a file over 16 MiB gives no size. A
+/// viewBox with a value that is not a number gives no size.
+fn svg_viewbox_size(data: &[u8]) -> Option<(f64, f64)> {
+    let data = data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data);
+    if data.len() > 16 << 20 || data.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'<') {
+        return None;
+    }
+    let root = craft_xml::Options::default().first_start(data, AnyTag)?;
+    if root.local() != "svg" {
+        return None;
+    }
+    let attr = |name: &str| root.attr(name).map(ToString::to_string);
+    let absolute = |name: &str| attr(name).is_some_and(|v| !v.trim().ends_with('%'));
+    if absolute("width") || absolute("height") {
+        return None;
+    }
+    let vb: Vec<f64> =
+        attr("viewBox")?.split(|c: char| c.is_whitespace() || c == ',').filter(|v| !v.is_empty()).map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    match vb[..] {
+        [_, _, w, h] if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 => Some((w, h)),
+        _ => None,
+    }
+}
+
 impl<'r> Importer<'r> {
     pub(super) fn item(&mut self, e: &El, parent: Affine) -> Option<Item> {
         let model_item = craft_idml::model::PageItem::from_el(&crate::xml::to_craft(e))?;
@@ -302,7 +338,7 @@ impl<'r> Importer<'r> {
             // file once.
             let key = (p.clone(), page, pdf_crop);
             if let Some(id) = self.linked_assets.get(&key) {
-                let size = self.assets.get(id).and_then(|a| craft_svg::sniff::viewbox_size(&a.data)).unwrap_or(size);
+                let size = self.assets.get(id).and_then(|a| svg_viewbox_size(a.data.embedded_bytes()?)).unwrap_or(size);
                 return graphic(*id, size);
             }
             if let Some(d) = (self.read_link)(p) {
@@ -312,10 +348,17 @@ impl<'r> Importer<'r> {
         }
         // A linked file that can't be read shows the document's preview of it, if it has one. The
         // preview only stands in for the file: format and pixel size still describe the link.
-        let preview = data.is_empty().then(|| model.self_id().and_then(|s| self.previews.get(s))).flatten();
+        let stored_preview = model.self_id().and_then(|s| self.previews.get(s));
+        let preview = if data.is_empty() { stored_preview } else { None };
+        // A file that was read keeps the document's preview of it as the proxy drawn while the
+        // file can't be read; the engine makes one from the bytes when there is none.
+        let proxy = read_from.as_ref().and(stored_preview).and_then(|p| {
+            let (mime, px) = sniff_image(p);
+            Some(designcraft_doc::Proxy { mime: mime?.to_string(), pixels: px?, data: designcraft_doc::AssetData::embedded(Arc::clone(p)) })
+        });
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
-        let size = craft_svg::sniff::viewbox_size(&data).unwrap_or(size);
+        let size = svg_viewbox_size(&data).unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
         let mime = mime.map(str::to_string).unwrap_or_else(|| model.fallback_mime().to_owned());
         let pixels = px.or_else(|| {
@@ -334,9 +377,10 @@ impl<'r> Importer<'r> {
                 name,
                 mime,
                 link: link_path,
-                data: preview.cloned().unwrap_or_else(|| Arc::new(data)),
+                data: designcraft_doc::AssetData::embedded(preview.cloned().unwrap_or_else(|| Arc::new(data))),
                 pixels,
                 pdf_crop,
+                proxy,
                 ..Default::default()
             },
         );

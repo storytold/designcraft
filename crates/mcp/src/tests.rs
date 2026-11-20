@@ -99,6 +99,47 @@ fn serve_survives_invalid_utf8_line() {
 }
 
 #[test]
+fn serve_rejects_an_over_long_line_and_keeps_serving() {
+    let mut s = server();
+    let mut input = vec![b'x'; 4 << 20];
+    input.push(b'\n');
+    input.extend_from_slice(json!({"jsonrpc":"2.0","id":7,"method":"ping"}).to_string().as_bytes());
+    input.push(b'\n');
+    let mut out = Vec::new();
+    s.serve(input.as_slice(), &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32600);
+    assert_eq!(lines[1]["id"], 7);
+}
+
+#[test]
+fn serve_discards_the_rest_of_an_over_long_line_without_a_newline() {
+    let mut s = server();
+    let mut input = vec![b'x'; (4 << 20) + 10];
+    input.push(b'\n');
+    input.extend_from_slice(json!({"jsonrpc":"2.0","id":8,"method":"ping"}).to_string().as_bytes());
+    input.push(b'\n');
+    let mut out = Vec::new();
+    s.serve(input.as_slice(), &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32600);
+    assert_eq!(lines[1]["id"], 8);
+}
+
+#[test]
+fn serve_stops_at_eof_in_an_over_long_line() {
+    let mut s = server();
+    let input = vec![b'x'; (4 << 20) + 10];
+    let mut out = Vec::new();
+    s.serve(input.as_slice(), &mut out).unwrap();
+    let lines: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32600);
+}
+
+#[test]
 fn protocol_round_trip_over_serve() {
     let mut s = server();
     let input = [
@@ -779,4 +820,25 @@ fn an_escaped_panic_is_a_tool_error() {
     assert_eq!(r["isError"], true, "{r}");
     assert!(text_of(&r).contains("internal error: boom in document.inspect"), "{r}");
     assert_eq!(rpc(&mut s, 2, "ping", json!({}))["result"], json!({}));
+}
+
+#[test]
+fn resource_uri_validation_preserves_parameter_errors() {
+    let mut s = server();
+    for params in [json!({}), json!({"uri": null}), json!({"uri": 17})] {
+        let result = rpc(&mut s, 51, "resources/read", params);
+        assert_eq!(result["error"]["code"], -32602);
+        assert_eq!(result["error"]["message"], "missing `uri`");
+    }
+}
+
+#[test]
+fn serve_accepts_ping_at_legacy_eof_limit() {
+    let mut input = json!({"jsonrpc":"2.0", "id":52, "method":"ping"}).to_string();
+    input.extend(std::iter::repeat_n(' ', (4 << 20) - input.len()));
+    let mut output = Vec::new();
+    server().serve(input.as_bytes(), &mut output).unwrap();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["id"], 52);
+    assert_eq!(response["result"], json!({}));
 }

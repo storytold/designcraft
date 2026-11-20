@@ -2688,6 +2688,25 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// Layer Options › Lock Guides is IDML's `LockGuides`: read, and written back (it was always
+/// written as false).
+#[test]
+fn layer_lock_guides_round_trips() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Grid" LockGuides="true" ShowGuides="true"/>
+      <Layer Self="L2" Name="Art"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s"><Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/></Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let lock = |d: &Document, name: &str| d.layers.iter().find(|l| l.name == name).unwrap().lock_guides;
+    assert!(lock(&d, "Grid") && !lock(&d, "Art"));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert!(lock(&back, "Grid") && !lock(&back, "Art"));
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
@@ -3124,6 +3143,22 @@ fn hostile_table_spans_are_clamped_before_arithmetic() {
     let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
     assert_eq!(table.cell(1, 1).unwrap().row_span, 1);
     assert_eq!(table.cell(1, 1).unwrap().col_span, 2);
+}
+
+/// Spans are read as numbers: a fraction rounds down, a span past the table (even one too large for
+/// 32 bits) reaches its edge, and anything under 1 or not a number spans one cell.
+#[test]
+fn numeric_table_spans_round_down_and_stop_at_the_table_edge() {
+    for (raw, rows, cols) in
+        [("1.5", 1, 1), ("2.5", 2, 2), ("4000000000", 2, 3), ("1e300", 2, 3), ("0", 1, 1), ("-3", 1, 1), ("NaN", 1, 1), ("x", 1, 1)]
+    {
+        let story = CASCADE_STORY.replace("Name=\"0:0\"", &format!("Name=\"0:0\" RowSpan=\"{raw}\" ColumnSpan=\"{raw}\""));
+        let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+        document.check().unwrap();
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(0, 0).unwrap();
+        assert_eq!((cell.row_span, cell.col_span), (rows, cols), "{raw}");
+    }
 }
 
 #[test]
@@ -4478,7 +4513,7 @@ fn missing_linked_graphics_show_their_preview_and_keep_their_link() {
     let d = crate::import_idml_report_with_previews(&fixture(), &|_| None, &previews).unwrap().document;
     let img = d.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
     let a = &d.assets[&img.graphic().unwrap().asset];
-    assert_eq!(a.data.as_slice(), png.as_slice(), "the preview shows");
+    assert_eq!(a.data.load().unwrap().as_slice(), png.as_slice(), "the preview shows");
     assert_eq!(a.mime, "image/jpeg", "the link's format, not the preview's");
     assert_eq!(a.link.as_deref(), Some("/definitely/missing dir/photo.jpg"), "relinking still finds the file");
     // Without a preview it stays empty, as before.
@@ -4522,7 +4557,10 @@ fn a_preview_keeps_the_links_format_and_pixel_size_and_is_shared() {
     // 40 × 30 pt at 300 ppi, from the link, not the preview's 4 × 3.
     assert_eq!((photo.mime.as_str(), photo.pixels), ("image/jpeg", Some((167, 125))));
     assert_eq!(logo.mime, "application/pdf", "a placed PDF stays a PDF, for IDML export");
-    assert!(std::sync::Arc::ptr_eq(&photo.data, &png) && std::sync::Arc::ptr_eq(&logo.data, &png), "the preview's bytes are not copied");
+    assert!(
+        std::sync::Arc::ptr_eq(photo.data.embedded_bytes().unwrap(), &png) && std::sync::Arc::ptr_eq(logo.data.embedded_bytes().unwrap(), &png),
+        "the preview's bytes are not copied"
+    );
 }
 
 #[test]
@@ -5229,7 +5267,7 @@ fn exports_graphic_in_table_cell() {
         id: asset,
         name: "tick.png".into(),
         mime: "image/png".into(),
-        data: std::sync::Arc::new(vec![1, 2, 3]),
+        data: designcraft_doc::AssetData::embedded(vec![1, 2, 3]),
         ..Default::default()
     });
     let mut t = designcraft_doc::Table::new(d.alloc(), 2, 2, 0, 0, 200.0);

@@ -296,6 +296,8 @@ pub fn system_fonts_ready() -> bool {
 pub(crate) struct SystemFont {
     /// The ISO 15924 code of the script it is for ("Jpan", "Kore", "Taml"…).
     script: &'static str,
+    /// Also selected for Arabic, even if this family was first found for another script.
+    arabic: bool,
     family: String,
     /// The face as egui takes it, on the UI face's baseline. Shared: installing the fonts again
     /// (another interface language) doesn't copy the file.
@@ -305,7 +307,7 @@ pub(crate) struct SystemFont {
 impl SystemFont {
     pub(crate) fn new(script: &'static str, family: String, bytes: Vec<u8>, index: u32) -> Self {
         let tweak = baseline_tweak(&bytes, index);
-        SystemFont { script, family, data: Arc::new(FontData { index, tweak, ..FontData::from_owned(bytes) }) }
+        SystemFont { script, arabic: script == "Arab", family, data: Arc::new(FontData { index, tweak, ..FontData::from_owned(bytes) }) }
     }
 }
 
@@ -350,6 +352,8 @@ const SYSTEM_UI_FONTS: &[(&str, char, &[&str])] = &[
     ("Khmr", 'ក', &["Khmer Sangam MN", "Leelawadee UI", "Khmer UI", "Noto Sans Khmer", "Khmer OS"]),
     ("Laoo", 'ກ', &["Lao Sangam MN", "Leelawadee UI", "Lao UI", "Noto Sans Lao", "Phetsarath OT"]),
     ("Mymr", 'က', &["Myanmar Sangam MN", "Myanmar Text", "Noto Sans Myanmar", "Padauk"]),
+    // Arabic UI runs need a real face even when the optional craft-fonts input is absent.
+    ("Arab", '\u{0645}', &["Geeza Pro", "Al Bayan", "Segoe UI", "Tahoma", "Noto Sans Arabic", "Noto Naskh Arabic", "DejaVu Sans"]),
     ("Hebr", 'א', &["Arial Hebrew", "Segoe UI", "Noto Sans Hebrew", "DejaVu Sans"]),
     ("Armn", 'Ա', &["Mshtakan", "Segoe UI", "Sylfaen", "Noto Sans Armenian", "DejaVu Sans"]),
     ("Geor", 'ა', &["Segoe UI", "Sylfaen", "Noto Sans Georgian", "DejaVu Sans"]),
@@ -402,7 +406,11 @@ fn installed_ui_fonts(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts
             .then_some((family, face))
         });
         let Some((family, face)) = found else { continue };
-        if !faces.iter().any(|f| f.family.eq_ignore_ascii_case(family)) {
+        if let Some(existing) = faces.iter_mut().find(|f| f.family.eq_ignore_ascii_case(family)) {
+            // A shared face retains its first script's ordering and its one allocation.
+            // Record Arabic separately so its shaping families can still prefer the face.
+            existing.arabic |= *script == "Arab";
+        } else {
             faces.push(SystemFont::new(script, (*family).to_string(), face.data().to_vec(), face.index()));
         }
     }
@@ -466,6 +474,13 @@ pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[System
         stack.splice(at..at, preferred.iter().cloned());
         let at = mono_fallback(stack);
         stack.splice(at..at, rest.iter().cloned());
+        if arabic {
+            // Keep Arabic letters and spaces in one face for shaping, as the craft stack does.
+            // Discovery omits scripts supplied by craft-fonts, so their precedence is unchanged.
+            let arabic_faces: Vec<_> = system.iter().filter(|f| f.arabic).map(name).collect();
+            stack.retain(|n| !arabic_faces.contains(n));
+            stack.splice(0..0, arabic_faces);
+        }
     }
 }
 
@@ -846,6 +861,87 @@ mod japanese_font_tests {
                 assert!(fonts.has_glyph(&font, ch), "missing {ch}");
             }
         });
+    }
+
+    /// Discover Arabic from a controlled font directory, reject a named face without its
+    /// glyphs, and keep letters and spaces together in the Arabic-specific families.
+    #[test]
+    fn installed_arabic_fonts_cover_every_ui_family_without_craft_fonts() {
+        let dir = std::env::temp_dir().join(format!("dc-ui-arabic-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let chars = [' ', '\u{0627}', '\u{062e}', '\u{0645}'];
+        for (i, (family, glyphs)) in [("Geeza Pro", &['a'][..]), ("Noto Sans Arabic", &chars[..])].iter().enumerate() {
+            std::fs::write(dir.join(format!("font{i}.ttf")), designcraft_fonts::testing::font_with(family, glyphs).unwrap()).unwrap();
+        }
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let system = super::installed_ui_fonts(&db, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(system.len(), 1);
+        assert_eq!((system[0].script, system[0].family.as_str()), ("Arab", "Noto Sans Arabic"));
+        for lang in ["ar", "en"] {
+            let mut defs = super::font_definitions(&[], lang);
+            super::add_system_fallbacks(&mut defs, &system, lang);
+            for family in ["arabic", "arabic-semibold"] {
+                assert_eq!(defs.families[&egui::FontFamily::Name(family.into())][0], "system-Noto Sans Arabic");
+            }
+            assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui");
+            assert_eq!(defs.families[&egui::FontFamily::Name("semibold".into())][0], "ui-semibold");
+            let ctx = egui::Context::default();
+            ctx.set_fonts(defs);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+            ctx.fonts_mut(|fonts| {
+                for family in
+                    families().into_iter().chain([egui::FontFamily::Name("arabic".into()), egui::FontFamily::Name("arabic-semibold".into())])
+                {
+                    let font = egui::FontId::new(13.0, family);
+                    for ch in chars {
+                        assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                    }
+                    let galley = fonts.layout_no_wrap("\u{0627}\u{062e} \u{0645}".into(), font, egui::Color32::WHITE);
+                    assert!(galley.size().x > 0.0);
+                }
+            });
+        }
+    }
+
+    /// One family can serve an earlier script and Arabic: its bytes stay shared, but Arabic
+    /// still needs that face before Latin spaces in its dedicated shaping families.
+    #[test]
+    fn shared_system_face_keeps_arabic_shaping_priority() {
+        let dir = std::env::temp_dir().join(format!("dc-ui-shared-arabic-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = designcraft_fonts::testing::font_with("Tahoma", &[' ', '\u{0e01}', '\u{0645}']).unwrap();
+        std::fs::write(dir.join("shared.ttf"), bytes).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let system = super::installed_ui_fonts(&db, &[]);
+        let craft = Box::leak(
+            vec![designcraft_fonts::CraftFont {
+                family: "Craft Arabic",
+                style: "Regular",
+                scripts: &["Arab"],
+                bytes: Box::leak(designcraft_fonts::testing::font_with("Craft Arabic", &[' ', '\u{0645}']).unwrap().into_boxed_slice()),
+            }]
+            .into_boxed_slice(),
+        );
+        let with_craft = super::installed_ui_fonts(&db, craft);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(system.len(), 1, "one font allocation for both scripts");
+        assert_eq!(system[0].script, "Thai", "the earlier script keeps its ordering");
+        let mut defs = super::font_definitions(&[], "ar");
+        super::add_system_fallbacks(&mut defs, &system, "ar");
+        for family in ["arabic", "arabic-semibold"] {
+            let stack = &defs.families[&egui::FontFamily::Name(family.into())];
+            assert_eq!(stack[0], "system-Tahoma");
+            assert_eq!(stack.iter().filter(|n| *n == "system-Tahoma").count(), 1);
+        }
+        assert!(std::sync::Arc::ptr_eq(&defs.font_data["system-Tahoma"], &system[0].data));
+        assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui");
+        let mut defs = super::font_definitions(craft, "ar");
+        super::add_system_fallbacks(&mut defs, &with_craft, "ar");
+        for family in ["arabic", "arabic-semibold"] {
+            assert_eq!(defs.families[&egui::FontFamily::Name(family.into())][0], "craft-Craft Arabic-Regular");
+        }
     }
 
     #[test]

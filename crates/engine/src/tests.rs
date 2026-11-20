@@ -2388,6 +2388,187 @@ fn every_line_beside_a_wrap_stays_within_its_segment() {
     assert!(beside > 20, "lines on both sides of the object: {beside}");
 }
 
+fn load_test_images(s: &mut Session, count: usize) {
+    let sources: Vec<_> = (0..count)
+        .map(|i| {
+            let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![(i % 255) as u8; 40 * 20 * 4] }.to_png();
+            json!({"base64": cmd::base64_encode(&png), "name": format!("{i}.png")})
+        })
+        .collect();
+    s.execute("place.load", &json!({"files": sources})).unwrap();
+}
+
+#[test]
+fn image_queue_places_in_order_and_retains_remainder() {
+    let mut s = session();
+    load_test_images(&mut s, 5);
+    let first = s.loaded.unwrap().asset;
+    s.execute("place.drop", &json!({"x": 10, "y": 20})).unwrap();
+    assert_eq!(s.tool_id(), "placeGun");
+    let item = s.doc().unwrap().doc.spreads[0].items.last().unwrap();
+    assert!(matches!(&item.content, designcraft_doc::Content::Graphic(g) if g.asset == first));
+    let r = s.execute("place.grid", &json!({"rect": [0, 0, 206, 50], "columns": 2, "rows": 1})).unwrap();
+    assert_eq!(r["remaining"], 2);
+    let id = designcraft_doc::ItemId(r["ids"][1].as_u64().unwrap());
+    let item = s.doc().unwrap().doc.item(id).unwrap();
+    assert_eq!(item.bounds(), designcraft_geom::Rect::new(106.0, 0.0, 206.0, 50.0));
+    if let designcraft_doc::Content::Graphic(g) = &item.content {
+        assert_eq!(s.doc().unwrap().doc.assets[&g.asset].name, "2.png");
+    } else {
+        panic!("expected graphic");
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.doc().unwrap().doc.item(id).is_none(), "the whole grid is one undo step");
+    s.execute("place.cancel", &json!({})).unwrap();
+    assert!(s.loaded.is_none() && s.loaded_queue.is_empty());
+    assert_eq!(s.tool_id(), "selection");
+}
+
+#[test]
+fn image_grid_and_load_fail_atomically() {
+    let mut s = session();
+    load_test_images(&mut s, 3);
+    let before = s.doc().unwrap().doc.clone();
+    let first = s.loaded.unwrap().asset;
+    assert!(s.execute("place.load", &json!({"files": [{"base64": "bad"}]})).is_err());
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+    assert_eq!(s.loaded.unwrap().asset, first);
+    for params in [json!({"columns": 0}), json!({"columns": 101}), json!({"rows": 1.5}), json!({"gutter": -1}), json!({"columns": 3, "gutter": 1000})]
+    {
+        let mut p = params;
+        p["rect"] = json!([0, 0, 100, 100]);
+        assert!(s.execute("place.grid", &p).is_err());
+        assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+        assert_eq!(s.loaded_queue.len(), 2);
+    }
+    assert!(s.execute("place.contactSheet", &json!({"margin": 10000})).is_err());
+    assert!(Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+}
+
+#[test]
+fn contact_sheet_adds_pages_and_undoes_as_one_edit() {
+    let mut s = session();
+    load_test_images(&mut s, 25);
+    let pages = s.doc().unwrap().doc.page_count();
+    let r = s.execute("place.contactSheet", &json!({"columns": 3, "rows": 4})).unwrap();
+    assert_eq!(r["pages"], 3);
+    assert_eq!(r["images"], 25);
+    let doc = &s.doc().unwrap().doc;
+    assert_eq!(doc.page_count(), pages + 3);
+    for page_index in pages..pages + 3 {
+        let (si, pi) = doc.page_loc(page_index).unwrap();
+        let bounds = doc.spreads[si].pages[pi].bounds();
+        let items: Vec<_> = doc.spreads[si].items.iter().filter(|i| bounds.contains(i.bounds().center())).collect();
+        assert_eq!(items.len(), if page_index == pages + 2 { 1 } else { 12 });
+        for item in items {
+            assert!(bounds.contains(item.bounds().origin()));
+        }
+    }
+    assert!(s.loaded.is_none() && s.loaded_queue.is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.page_count(), pages);
+}
+
+#[test]
+fn place_drag_arrows_make_three_by_four_grid_and_escape_cancels() {
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
+    let mut s = session();
+    load_test_images(&mut s, 13);
+    let v = ViewInfo::at_zoom(1.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    for key in [ToolKey::Right, ToolKey::Right, ToolKey::Up, ToolKey::Up, ToolKey::Up] {
+        s.tool_key(key, Mods::default(), v).unwrap();
+    }
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 500.0, 600.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, 500.0, 600.0), v).unwrap();
+    assert_eq!(s.doc().unwrap().doc.spreads[0].items.len(), 12);
+    assert!(s.loaded.is_some() && s.loaded_queue.is_empty());
+    s.tool_key(ToolKey::Escape, Mods::default(), v).unwrap();
+    assert!(s.loaded.is_none());
+}
+
+/// With several images loaded, a release under the drag threshold is still a click: arrows set
+/// no grid then, and the next queued image lands at actual size where the press was.
+#[test]
+fn a_place_click_with_a_queue_places_the_next_image_without_a_grid() {
+    use designcraft_tools::{Cursor, Mods, Overlay, PointerEvent, PointerKind, ToolKey};
+    let mut s = session();
+    load_test_images(&mut s, 3);
+    let v = ViewInfo::at_zoom(1.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 500.0), v).unwrap();
+    s.tool_key(ToolKey::Right, Mods::default(), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 101.0, 501.0), v).unwrap();
+    assert!(s.overlays(v).is_empty(), "no frame or grid under the threshold");
+    assert_eq!(s.cursor(designcraft_geom::Point::new(101.0, 501.0), Mods::default(), v), Cursor::LoadedGraphic);
+    s.pointer(&PointerEvent::new(PointerKind::Up, 101.0, 501.0), v).unwrap();
+    let items = &s.doc().unwrap().doc.spreads[0].items;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].bounds(), designcraft_geom::Rect::new(100.0, 500.0, 140.0, 520.0), "actual size at the press");
+    assert_eq!(s.loaded_queue.len(), 1, "the next image is loaded");
+    // Past the threshold the arrows' grid shows, one cell per column.
+    s.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    s.tool_key(ToolKey::Right, Mods::default(), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, 306.0, 150.0), v).unwrap();
+    assert_eq!(s.overlays(v).iter().filter(|o| matches!(o, Overlay::Marquee(_))).count(), 2);
+    assert_eq!(s.cursor(designcraft_geom::Point::new(306.0, 150.0), Mods::default(), v), Cursor::Crosshair);
+}
+
+#[test]
+fn undoing_loaded_assets_cancels_every_placement_cursor() {
+    for command in ["place.drop", "place.grid", "place.contactSheet"] {
+        let mut s = session();
+        load_test_images(&mut s, 3);
+        s.execute("edit.undo", &json!({})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let params = if command == "place.contactSheet" { json!({}) } else { json!({"rect": [0, 0, 200, 200]}) };
+        assert!(s.execute(command, &params).is_err(), "{command}");
+        assert!(s.loaded.is_none(), "{command}");
+        assert!(s.loaded_queue.is_empty(), "{command}");
+        assert_eq!(s.tool_id(), "selection");
+        assert!(std::sync::Arc::ptr_eq(&before, &s.doc().unwrap().doc));
+        load_test_images(&mut s, 2);
+        assert!(s.execute("place.drop", &json!({"x": 0, "y": 0})).is_ok());
+    }
+}
+
+/// Switching, opening or closing a document empties the place cursor and leaves its tool: a click
+/// on the canvas then selects, instead of failing with nothing loaded. Another tool stays.
+#[test]
+fn changing_documents_unloads_the_place_cursor_and_its_tool() {
+    let changes: [fn(&mut Session); 3] = [
+        |s| s.set_active(0),
+        |s| {
+            s.execute("file.new", &json!({})).unwrap();
+        },
+        |s| s.close_document(1),
+    ];
+    for (n, change) in changes.into_iter().enumerate() {
+        let mut s = session();
+        s.execute("file.new", &json!({})).unwrap();
+        load_test_images(&mut s, 3);
+        assert_eq!(s.tool_id(), "placeGun");
+        change(&mut s);
+        assert!(s.loaded.is_none() && s.loaded_queue.is_empty(), "change {n}");
+        assert_eq!(s.tool_id(), "selection", "change {n}");
+        // Holding another tool, the change keeps it.
+        s.execute("file.new", &json!({})).unwrap();
+        s.set_tool("rectangle");
+        s.set_active(0);
+        assert_eq!(s.tool_id(), "rectangle", "change {n}");
+    }
+}
+
+/// Closing a background document leaves the active document's place cursor loaded.
+#[test]
+fn closing_a_background_document_keeps_the_place_cursor() {
+    let mut s = session();
+    s.execute("file.new", &json!({})).unwrap();
+    load_test_images(&mut s, 2);
+    s.close_document(0);
+    assert!(s.loaded.is_some() && s.loaded_queue.len() == 1);
+    assert_eq!(s.tool_id(), "placeGun");
+}
+
 /// Issue #1637: with several objects selected, a click on one of them (no drag) makes it the key
 /// object, and Align to Key Object leaves it in place. A second click on it drops the key.
 #[test]
