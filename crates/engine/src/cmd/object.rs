@@ -341,13 +341,18 @@ pub fn specs() -> Vec<CommandSpec> {
                     {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
-                    let tint_only = p.as_object().is_some_and(|o| o.contains_key("tint") && o.keys().all(|k| k == "tint"));
+                    let activates_stroke = weight != Some(0.0)
+                        && (weight.is_some()
+                            || kind.is_some()
+                            || align.is_some()
+                            || cap.is_some()
+                            || join.is_some()
+                            || miter_limit.is_some()
+                            || start.is_some()
+                            || end.is_some());
                     return set_new_object(s, |c| {
                         let mut st = c.to_stroke();
-                        if tint_only && st.is_none() {
-                            return;
-                        }
-                        if st.swatch == designcraft_color::swatch::NONE && sw.is_none() && weight != Some(0.0) {
+                        if st.swatch == designcraft_color::swatch::NONE && sw.is_none() && activates_stroke {
                             let def = Stroke::default();
                             st.swatch = def.swatch;
                             st.tint = def.tint;
@@ -359,7 +364,9 @@ pub fn specs() -> Vec<CommandSpec> {
                             st.swatch = sw.clone();
                             st.tint = 1.0;
                         }
-                        st.tint = tint.unwrap_or(st.tint);
+                        if st.swatch != designcraft_color::swatch::NONE {
+                            st.tint = tint.unwrap_or(st.tint);
+                        }
                         st.weight = weight.unwrap_or(st.weight);
                         st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
                         if let Some(gap_sw) = &gap_sw {
@@ -4512,6 +4519,55 @@ mod step_repeat_tests {
         assert_eq!(st.weight, 6.0);
         assert_eq!(st.cap, designcraft_doc::Cap::Round);
         assert_eq!(st.kind, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+    }
+
+    #[test]
+    fn gap_only_default_stroke_edits_keep_disabled_stroke_none() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute("object.stroke", &json!({"swatch": "[None]"})).unwrap();
+        s.execute("object.stroke", &json!({"gapSwatch": "[Paper]"})).unwrap();
+        s.execute("object.stroke", &json!({"gapTint": 0.5})).unwrap();
+        s.execute("object.stroke", &json!({"gapOverprint": true})).unwrap();
+
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[None]");
+        assert_eq!(c.gap_swatch, "[Paper]");
+        assert_eq!(c.gap_tint, 0.5);
+        assert!(c.gap_overprint);
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[None]");
+        assert!(st.is_none());
+        assert_eq!(st.gap_swatch, "[Paper]");
+        assert_eq!(st.gap_tint, 0.5);
+        assert!(st.gap_overprint);
+    }
+
+    #[test]
+    fn tint_edit_at_zero_default_stroke_weight_applies_when_weight_restored() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.stroke", &json!({"tint": 0.25})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[Black]");
+        assert_eq!(c.stroke_tint, 0.25);
+        assert_eq!(c.stroke_weight, 0.0);
+
+        s.execute("object.stroke", &json!({"weight": 6})).unwrap();
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[Black]");
+        assert_eq!(st.tint, 0.25);
+        assert_eq!(st.weight, 6.0);
     }
 
     #[test]
