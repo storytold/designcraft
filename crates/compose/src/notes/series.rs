@@ -3,7 +3,7 @@ use super::{
     Arc, ComposeOptions, ComposedStory, Document, FrameSpec, Glyph, HashMap, HashSet, NoteColumn, PlacedNote, Point, Range, Rect, SeriesNotes,
     SeriesSnapshot, Story, SubstCtx, stack_height,
 };
-use designcraft_doc::{MarginSide, NotePlacement};
+use designcraft_doc::{MarginSide, MarginStack, NotePlacement};
 
 pub(crate) type NoteSnapshot = Vec<SeriesSnapshot>;
 pub(crate) struct SplitPlan(Vec<(usize, super::SplitPlan)>);
@@ -234,7 +234,14 @@ impl Notes {
                 }
             }
         }
-        refs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5)));
+        // Top stacks keep source order even when a later column has an earlier baseline.
+        let top_order = |si: usize, k: usize| {
+            matches!(doc.note_options(self.series[si].series).placement, NotePlacement::Margin { stack: MarginStack::Top, .. }).then_some((si, k))
+        };
+        refs.sort_by(|a, b| {
+            let (at, bt) = (top_order(a.4, a.5), top_order(b.4, b.5));
+            a.0.cmp(&b.0).then(at.is_none().cmp(&bt.is_none())).then(at.cmp(&bt)).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5))
+        });
         let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
         let mut seen = HashSet::new();
         for (page_index, _, fi, li, si, k) in refs {
@@ -245,7 +252,7 @@ impl Notes {
             let o = doc.note_options(s.series);
             let f = &frames[fi];
             let baseline = out.frames[fi].lines[li].baseline;
-            if let NotePlacement::Margin { side, gap, width } = o.placement {
+            if let NotePlacement::Margin { side, gap, width, stack } = o.placement {
                 let Some((page, margin)) = f.page_rect else { continue };
                 if !width.is_finite() || width <= 0.0 || !gap.is_finite() || gap < 0.0 {
                     continue;
@@ -257,7 +264,7 @@ impl Notes {
                     MarginSide::Outside => f.left_page,
                 };
                 let (text, m) = s.compose(doc, k, width, f, opts);
-                let requested = baseline - m.first;
+                let requested = if stack == MarginStack::Top { margin.y0 } else { baseline - m.first };
                 let y = bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between));
                 let bottom = y + m.last + m.descent;
                 bottoms.insert((page_index, left), bottom - page.y0);

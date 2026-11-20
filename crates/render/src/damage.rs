@@ -345,7 +345,8 @@ mod tests {
         let lid = d.default_layer();
         let (_, a) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "Anchor", Default::default()).unwrap();
         let (_, b) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(300.0, 400.0, 500.0, 600.0), lid, "Wrapped", Default::default()).unwrap();
-        d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+        d.footnote_options.placement =
+            designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
         d.story_mut(b).unwrap().insert_note(4, "Source", Default::default());
         let mut object = designcraft_doc::Item::new(
             ItemId(d.alloc()),

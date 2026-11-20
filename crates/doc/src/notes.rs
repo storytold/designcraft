@@ -61,6 +61,16 @@ pub enum MarginSide {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarginStack {
+    /// Align to reference baselines, moving down only to avoid earlier notes.
+    #[default]
+    BesideAnchor,
+    /// Stack in anchor order from the page margin top, ignoring reference baselines.
+    Top,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum NotePlacement {
@@ -71,6 +81,8 @@ pub enum NotePlacement {
         side: MarginSide,
         gap: f64,
         width: f64,
+        #[serde(default)]
+        stack: MarginStack,
     },
 }
 
@@ -453,6 +465,18 @@ impl crate::Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn margin_stack_defaults_and_json_roundtrip() {
+        let legacy = serde_json::json!({"kind":"margin","gap":8,"width":72});
+        let placement: NotePlacement = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(placement, NotePlacement::Margin { stack: MarginStack::BesideAnchor, .. }));
+        let mut top = legacy;
+        top["stack"] = serde_json::json!("top");
+        let placement: NotePlacement = serde_json::from_value(top.clone()).unwrap();
+        assert!(matches!(placement, NotePlacement::Margin { stack: MarginStack::Top, .. }));
+        assert_eq!(serde_json::to_value(placement).unwrap()["stack"], top["stack"]);
+    }
 
     fn st(t: &str) -> Story {
         Story::with_text(StoryId(1), t, ParaFormat::default())

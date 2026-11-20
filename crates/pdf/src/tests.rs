@@ -1185,7 +1185,8 @@ fn external_margin_note_exports_on_the_adjacent_page_when_its_host_is_culled() {
         let mut d = Document::new(&NewDocument { pages: 3, width: 600.0, facing_pages: true, ..Default::default() });
         let lid = d.default_layer();
         let (fid, sid) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(120.0, 72.0, 420.0, 300.0), lid, "Host", Default::default()).unwrap();
-        d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 200.0, width: 72.0 };
+        d.footnote_options.placement =
+            designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 200.0, width: 72.0, stack: Default::default() };
         d.footnote_options.separator = " ".into();
         d.story_mut(sid).unwrap().insert_note(4, "Unique", Default::default());
         if grouped {

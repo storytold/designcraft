@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -32,7 +32,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, …options} → options; placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, …options} → options; placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -541,9 +541,15 @@ mod margin_default_tests {
         s.execute("file.new", &json!({})).unwrap();
         let o = s.execute("footnote.options", &json!({"placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
         assert_eq!(o["placement"]["side"], "right");
+        assert_eq!(o["placement"]["stack"], "besideAnchor");
         s.execute("footnote.series.create", &json!({"name":"Sources","placement":{"kind":"margin","gap":8,"width":72}})).unwrap();
         let all = s.execute("footnote.series.list", &json!({})).unwrap();
         assert_eq!(all[1]["placement"]["side"], "right");
+        let id = all[1]["id"].as_u64().unwrap();
+        let top = s.execute("footnote.series.options", &json!({"series":id,"placement":{"stack":"top"}})).unwrap();
+        assert_eq!(top["placement"]["stack"], "top");
+        assert_eq!(top["placement"]["width"], 72.0);
+        assert!(s.execute("footnote.series.options", &json!({"series":id,"placement":{"stack":"invalid"}})).is_err());
     }
 }
 

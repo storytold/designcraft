@@ -10834,9 +10834,72 @@ fn note_series_number_independently_and_stack_at_column_foot() {
 }
 
 #[test]
-fn margin_series_align_to_reference_without_reserving_body_space() {
+fn margin_top_stack_ignores_distant_anchors_and_reports_overflow() {
     let (mut d, sid, _) =
-        note_series_doc(designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Outside, gap: 8.0, width: 72.0 });
+        doc_with("First.\nSecond.\nThird.", Rect::new(120.0, 180.0, 420.0, 700.0), ParaAttrs { space_after: Some(100.0), ..Default::default() });
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin {
+        side: designcraft_doc::MarginSide::Right,
+        gap: 8.0,
+        width: 72.0,
+        stack: designcraft_doc::MarginStack::Top,
+    };
+    d.footnote_options.space_between = 7.0;
+    let story = d.story_mut(sid).unwrap();
+    for at in [20, 13, 6] {
+        story.insert_note(at, "Source", Default::default()).unwrap();
+    }
+    let cs = compose_story(&d, sid, &Default::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.len(), 3);
+    assert!((notes[0].rect.y0 - d.page(0).unwrap().margin_rect().y0).abs() < 0.01);
+    for pair in notes.windows(2) {
+        assert!(pair[0].index < pair[1].index);
+        assert!((pair[1].rect.y0 - pair[0].rect.y1 - 7.0).abs() < 0.01);
+        assert!(pair[1].reference_baseline - pair[0].reference_baseline > 100.0);
+    }
+    let mut frames = frame_specs(&d, sid);
+    frames[0].page_rect.as_mut().unwrap().1.y1 = notes[0].rect.y1 + 1.0;
+    let small = compose(&d, d.story(sid).unwrap(), &frames, &Default::default());
+    assert_eq!(small.frames[0].notes.len(), 3);
+    assert!(!small.frames[0].notes[0].overflow);
+    assert!(small.frames[0].notes[1..].iter().all(|n| n.overflow));
+    assert_eq!(small.warnings.iter().filter(|w| w.starts_with("Margin note ")).count(), 2);
+    assert_eq!(small.overset_at, None);
+}
+
+#[test]
+fn margin_top_stack_keeps_anchor_order_across_columns() {
+    let (mut d, sid, fid) =
+        doc_with("First.\nSecond.\nThird.", Rect::new(120.0, 180.0, 420.0, 410.0), ParaAttrs { space_after: Some(100.0), ..Default::default() });
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin {
+        side: designcraft_doc::MarginSide::Right,
+        gap: 8.0,
+        width: 72.0,
+        stack: designcraft_doc::MarginStack::Top,
+    };
+    let story = d.story_mut(sid).unwrap();
+    for at in [20, 13, 6] {
+        story.insert_note(at, "Source", Default::default()).unwrap();
+    }
+    let cs = compose_story(&d, sid, &Default::default());
+    let notes = &cs.frames[0].notes;
+    assert_eq!(notes.len(), 3);
+    assert!(notes[2].reference_baseline < notes[1].reference_baseline);
+    for pair in notes.windows(2) {
+        assert!(pair[0].index < pair[1].index);
+        assert!((pair[1].rect.y0 - pair[0].rect.y1).abs() < 0.01);
+    }
+}
+
+#[test]
+fn margin_series_align_to_reference_without_reserving_body_space() {
+    let (mut d, sid, _) = note_series_doc(designcraft_doc::NotePlacement::Margin {
+        side: designcraft_doc::MarginSide::Outside,
+        gap: 8.0,
+        width: 72.0,
+        stack: Default::default(),
+    });
     let cs = compose_story(&d, sid, &Default::default());
     let ft = &cs.frames[0];
     assert_eq!(ft.notes.iter().filter(|n| n.series == 1).count(), 2);
@@ -10887,7 +10950,7 @@ fn margin_series_mirror_on_left_right_and_single_pages() {
         for (side, left) in
             [(MarginSide::Inside, inside_left), (MarginSide::Outside, !inside_left), (MarginSide::Left, true), (MarginSide::Right, false)]
         {
-            let (d, sid, _) = note_series_doc(NotePlacement::Margin { side, gap: 8.0, width: 72.0 });
+            let (d, sid, _) = note_series_doc(NotePlacement::Margin { side, gap: 8.0, width: 72.0, stack: Default::default() });
             let mut frames = frame_specs(&d, sid);
             frames[0].left_page = page_side == PageSide::Left;
             frames[0].right_page = page_side == PageSide::Right;
@@ -10901,8 +10964,8 @@ fn margin_series_mirror_on_left_right_and_single_pages() {
 #[test]
 fn margin_series_stack_across_series_and_report_overflow_without_body_overset() {
     use designcraft_doc::{MarginSide, NotePlacement};
-    let (mut d, sid, _) = note_series_doc(NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 });
-    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    let (mut d, sid, _) = note_series_doc(NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() });
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.space_between = 3.0;
     d.note_series[0].options.space_between = 7.0;
     for n in &mut d.story_mut(sid).unwrap().notes {
@@ -10983,7 +11046,7 @@ fn review_margin_stacks_share_a_page_across_stories_and_invalidate_cache() {
     let second_layer = layer.id;
     d.layers.push(layer);
     d.item_mut(bframe).unwrap().layer = second_layer;
-    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.space_between = 7.0;
     d.footnote_options.separator = " ".into();
     let id = d.story_mut(a).unwrap().insert_note(5, "First\nSecond\nThird", Default::default()).unwrap();
@@ -11015,7 +11078,7 @@ fn margin_stacks_compare_scaled_hosts_in_physical_page_space() {
     d.item_mut(af).unwrap().xf = Affine::scale(2.0);
     let (bf, b) =
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 110.0, 420.0, 600.0), d.default_layer(), "Second body", Default::default()).unwrap();
-    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.space_between = 7.0;
     d.footnote_options.separator = " ".into();
     d.story_mut(a).unwrap().insert_note(5, "First\nSecond\nThird", Default::default());
@@ -11031,7 +11094,7 @@ fn margin_stacks_compare_scaled_hosts_in_physical_page_space() {
 fn placed_anchored_margin_notes_share_the_regular_page_stack() {
     use designcraft_doc::{MarginSide, NotePlacement};
     let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
-    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.space_between = 7.0;
     let (mut item, anchored) = anchored_text_frame(&mut d, "Anchored", 200.0, 120.0);
     item.xf = Affine::scale(1.5);
@@ -11082,7 +11145,7 @@ fn placed_anchored_margin_notes_share_the_regular_page_stack() {
 fn margin_neighbours_use_the_displayed_cross_reference_index() {
     use designcraft_doc::{CrossRef, MarginSide, NotePlacement};
     let mut d = Document::new(&NewDocument { start_page: 99999, ..Default::default() });
-    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.separator = " ".into();
     d.footnote_options.space_between = 7.0;
     let lid = d.default_layer();
@@ -11140,7 +11203,7 @@ fn cross_reference_anchor_pages_follow_note_placement_changes() {
         let anchor = st.insert_anchor(st.text.find("Anchor").unwrap(), "Anchor");
         let cache = Cache::new();
         assert_eq!(cache.xref_index(&d).page_index(anchor), Some(1));
-        let placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0 };
+        let placement = NotePlacement::Margin { side: MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
         if series == 0 {
             d.footnote_options.placement = placement;
         } else {
@@ -11173,7 +11236,8 @@ fn cached_table_cell_notes_follow_default_spacing_changes() {
 
 fn margin_xref_index_cycle_fixture(anchored_host: bool) -> (Document, u64, StoryId) {
     let (mut d, target, _) = doc_with("Target", Rect::new(36.0, 36.0, 200.0, 200.0), ParaAttrs::default());
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     let anchor = d.story_mut(target).unwrap().insert_anchor(0, "Target");
     let host = if anchored_host {
         let (item, embedded) = anchored_text_frame(&mut d, "Embedded destination", 100.0, 80.0);
@@ -11234,7 +11298,8 @@ fn margin_running_definition(d: &mut Document) -> char {
 fn margin_neighbours_use_the_displayed_running_index_and_rebuild_after_edits() {
     let mut d = Document::new(&NewDocument::default());
     let var = margin_running_definition(&mut d);
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.footnote_options.separator = " ".into();
     d.footnote_options.space_between = 7.0;
     let lid = d.default_layer();
@@ -11311,7 +11376,8 @@ fn running_index_tracks_condition_changes_that_move_its_source_page() {
 fn margin_running_cycle_fixture(anchored: bool) -> Document {
     let mut d = Document::new(&NewDocument::default());
     let var = margin_running_definition(&mut d);
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     let (_, target) = d
         .add_text_frame(
             SpreadRef::Doc(0),
@@ -11424,7 +11490,8 @@ fn indexed_margin_neighbours_keep_their_anchored_frame_placements() {
     let mut d = Document::new(&NewDocument::default());
     d.settings.baseline_grid.start = 0.0;
     d.settings.baseline_grid.increment = 20.0;
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     let text = "One.\nTwo.\nThree.\nFour.\nFive.\nSix.";
     let (embedded, sid) = anchored_text_frame(&mut d, text, 100.0, 25.0);
     let (host_frame, _) = body_holding(&mut d, embedded);
@@ -11522,7 +11589,8 @@ fn indexed_neighbour_wrap_follows_stacked_margin_note_hosts() {
     let mut d = Document::new(&NewDocument::default());
     d.settings.baseline_grid.start = 0.0;
     d.settings.baseline_grid.increment = 20.0;
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 140.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 140.0, stack: Default::default() };
     let var = margin_running_definition(&mut d);
     let (_, earlier) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 136.0, 300.0), d.default_layer(), "A", Default::default()).unwrap();
     d.story_mut(earlier).unwrap().insert_note(1, &"Earlier\n".repeat(6), Default::default());

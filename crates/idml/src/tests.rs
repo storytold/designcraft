@@ -5610,7 +5610,12 @@ fn idml_warns_for_additional_note_series_inside_a_table_cell() {
 fn idml_warns_when_visible_series_zero_margin_notes_become_ordinary_footnotes() {
     let mut d = Document::new(&NewDocument::default());
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin {
+        side: designcraft_doc::MarginSide::Right,
+        gap: 8.0,
+        width: 72.0,
+        stack: designcraft_doc::MarginStack::Top,
+    };
     d.story_mut(sid).unwrap().insert_note(0, "Margin source", Default::default());
     let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
     assert!(warnings.iter().any(|w| w.contains("margin") && w.contains("ordinary footnotes")), "{warnings:?}");

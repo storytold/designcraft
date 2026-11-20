@@ -2622,7 +2622,8 @@ fn type_tool_hits_a_margin_note_outside_the_host_frame() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.story_mut(sid).unwrap().insert_note(4, "Source", ParaFormat::default());
     let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
     let cs = cache.get(&d, sid, None);
@@ -2641,7 +2642,8 @@ fn review_hidden_margin_note_cannot_receive_a_type_click() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", ParaFormat::default()).unwrap();
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
     let (sel, cache, layout) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
     let cs = cache.get(&d, sid, None);
@@ -2664,7 +2666,8 @@ fn type_tool_respects_foreground_frames_over_margin_notes() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
     let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 72.0, 420.0, 600.0), lid, "Body", Default::default()).unwrap();
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
     let cache = Cache::new();
     let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
@@ -2707,7 +2710,8 @@ fn foreground_margin_note_takes_the_caret_over_a_lower_table_border() {
     let edge = border.x - 8.0 - 36.0;
     let (host, sid) =
         d.add_text_frame(SpreadRef::Doc(0), Rect::new(edge - 120.0, 72.0, edge, 400.0), d.default_layer(), "Host", Default::default()).unwrap();
-    d.footnote_options.placement = designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0 };
+    d.footnote_options.placement =
+        designcraft_doc::NotePlacement::Margin { side: designcraft_doc::MarginSide::Right, gap: 8.0, width: 72.0, stack: Default::default() };
     d.story_mut(sid).unwrap().insert_note(4, "Source", Default::default());
     let note = cache.get(&d, sid, None).frames[0].notes[0].rect;
     let center = d.text_xf(d.item(host).unwrap()) * note.center();

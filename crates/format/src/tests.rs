@@ -946,7 +946,10 @@ fn note_series_native_roundtrip_and_legacy_defaults() {
     d.note_series.push(NoteSeries {
         id: 1,
         name: "Sources".into(),
-        options: FootnoteOptions { placement: NotePlacement::Margin { side: MarginSide::Outside, gap: 8.0, width: 72.0 }, ..Default::default() },
+        options: FootnoteOptions {
+            placement: NotePlacement::Margin { side: MarginSide::Outside, gap: 8.0, width: 72.0, stack: designcraft_doc::MarginStack::Top },
+            ..Default::default()
+        },
     });
     let st = d.story_mut(sid).unwrap();
     let id = st.insert_note(4, "Source", ParaFormat::default()).unwrap();

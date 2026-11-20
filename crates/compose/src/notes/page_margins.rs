@@ -1,7 +1,7 @@
 //! Resolve one physical margin's notes across independently composed stories.
 use std::collections::{HashMap, HashSet};
 
-use designcraft_doc::{Document, MarginSide, NotePlacement, StoryId};
+use designcraft_doc::{Document, MarginSide, MarginStack, NotePlacement, StoryId};
 use designcraft_geom::{Affine, Point};
 
 use crate::{ComposeOptions, ComposedStory, FrameSpec, Placement};
@@ -22,6 +22,7 @@ struct Candidate {
     current_top: f64,
     to_local: Affine,
     bottom_limit: f64,
+    top_order: Option<(u64, u64, usize)>,
 }
 
 fn candidates(
@@ -59,7 +60,7 @@ fn candidates(
         }
         for (ni, n) in ft.notes.iter().enumerate() {
             let o = doc.note_options(n.series);
-            let NotePlacement::Margin { side, .. } = o.placement else { continue };
+            let NotePlacement::Margin { side, stack, .. } = o.placement else { continue };
             let Some(first) = n.text.frames.first().and_then(|f| f.lines.first()) else { continue };
             let left = match side {
                 MarginSide::Left => true,
@@ -77,7 +78,7 @@ fn candidates(
                 page,
                 left,
                 baseline: (xf * Point::new(n.origin.x, n.reference_baseline)).y,
-                requested: requested.y0,
+                requested: if stack == MarginStack::Top { page_spec.margin_rect().y0 } else { requested.y0 },
                 height: physical.height(),
                 gap: o.space_between * vertical_scale,
                 story: cs.story,
@@ -87,6 +88,7 @@ fn candidates(
                 current_top: physical.y0,
                 to_local,
                 bottom_limit: page_spec.margin_rect().y1,
+                top_order: (stack == MarginStack::Top).then_some((n.series, cs.story.0, n.index)),
             });
         }
     }
@@ -125,7 +127,15 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
         let cs = crate::compose_story_unstacked(doc, story.id, &ComposeOptions { placed: placed.clone(), ..neighbour_opts.clone() });
         candidates(doc, &cs, &frames, &placed, &pages, &mut all);
     }
-    all.sort_by(|a, b| a.page.cmp(&b.page).then(a.baseline.total_cmp(&b.baseline)).then(a.story.0.cmp(&b.story.0)).then(a.index.cmp(&b.index)));
+    all.sort_by(|a, b| {
+        a.page
+            .cmp(&b.page)
+            .then(a.top_order.is_none().cmp(&b.top_order.is_none()))
+            .then(a.top_order.cmp(&b.top_order))
+            .then(a.baseline.total_cmp(&b.baseline))
+            .then(a.story.0.cmp(&b.story.0))
+            .then(a.index.cmp(&b.index))
+    });
     let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
     out.warnings.retain(|w| !w.starts_with("Margin note "));
     for c in all {
