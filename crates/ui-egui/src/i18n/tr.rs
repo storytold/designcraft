@@ -70,7 +70,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("[Any Style]","[Herhangi Bir Stil]"),
     ("Specify attributes to change","Değiştirilecek özellikleri belirtin."),
     ("Clear specified attributes","Belirtilen Öznitelikleri Temizle."),
-    ("With a Change Format and nothing in Change to, the found text stays and is only formatted","Biçimi Değiştir seçeneği işaretli değilken Değiştirilecek Yer seçeneği boş bırakıldığında, bulunan metin olduğu gibi kalır ve yalnızca biçimlendirilir."),
+    ("With a Change Format and nothing in Change to, the found text stays and is only formatted","Biçimi Değiştir seçeneği işaretli iken Değiştirilecek Yer seçeneği boş bırakıldığında, bulunan metin olduğu gibi kalır ve yalnızca biçimlendirilir."),
     ("Double Column","Çift Sütun"),
     ("Tools Panel","Araç Paneli"),
     ("Color Theme","Renk Teması"),
