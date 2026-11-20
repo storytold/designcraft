@@ -424,7 +424,6 @@ fn header_splits_on_comma(text: &str) -> bool {
         if ch == '"' && field_start {
             quoted = true;
             field_start = false;
-            record_has_content = true;
         } else if ch == ',' {
             commas = commas.saturating_add(1);
             field_start = true;
