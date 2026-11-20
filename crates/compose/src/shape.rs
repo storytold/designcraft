@@ -738,7 +738,7 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
     }
 }
 
-fn features_for(p: &CharProps) -> Vec<Feature> {
+pub(crate) fn features_for(p: &CharProps) -> Vec<Feature> {
     let mut v = Vec::new();
     // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
     if p.kerning != Kerning::Metrics {

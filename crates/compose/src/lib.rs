@@ -1717,7 +1717,9 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             let mut interior = Vec::new();
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut interior);
             if !interior.is_empty() {
-                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text);
+                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text, &|byte| {
+                    shape::features_for(&doc.styles.resolve_char(base_chars, story.char_format_of(byte)))
+                });
                 hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
             }
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
@@ -2968,7 +2970,9 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut interior = Vec::new();
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut interior);
     if !interior.is_empty() {
-        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text);
+        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text, &|byte| {
+            shape::features_for(&doc.styles.resolve_char(base_chars, story.char_format_of(byte)))
+        });
         hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
     }
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
@@ -5317,7 +5321,7 @@ fn layout_line(
                     .enumerate()
                     .take(line.len() - 1)
                     .skip(seg)
-                    .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
+                    .filter(|(_, g)| g.ch != shape::HIDDEN && !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
                     .map(|(i, _)| i)
                     .collect();
                 if !gaps.is_empty() {
@@ -6110,7 +6114,12 @@ fn hyphenation_points(
 /// breaker measures a line that keeps the ligature as it is and has a glyph to end a line on at the
 /// point; [`settle_ligature_pairs`] gives the pair its form once the lines are known. Only a
 /// cluster of plain Latin letters with one point, each piece one glyph, left to right.
-fn pair_ligatures_at_hyphens(glyphs: &mut Vec<Glyph>, interior: &[(usize, usize)], text: &str) {
+fn pair_ligatures_at_hyphens(
+    glyphs: &mut Vec<Glyph>,
+    interior: &[(usize, usize)],
+    text: &str,
+    features_at: &dyn Fn(usize) -> Vec<designcraft_fonts::Feature>,
+) {
     let mut cuts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(k, byte) in interior {
         cuts.entry(k).or_default().push(byte);
@@ -6125,9 +6134,11 @@ fn pair_ligatures_at_hyphens(glyphs: &mut Vec<Glyph>, interior: &[(usize, usize)
         if g.lig.is_some() || g.shaping_rtl || !cluster.chars().all(|c| c.is_ascii_alphabetic()) || !(start < cut && cut < end) {
             continue;
         }
-        // A piece set alone: one glyph, with its own advance.
+        // A piece set alone, with the features of the run the ligature is in: one glyph, with its own
+        // advance.
+        let features = features_at(start);
         let piece = |a: usize, b: usize| {
-            let shaped = designcraft_fonts::shape(g.face.get(), &text[a..b], &[], |c| c);
+            let shaped = designcraft_fonts::shape(g.face.get(), &text[a..b], &features, |c| c);
             match shaped.as_slice() {
                 [one] => Some((one.gid, f64::from(one.x_advance) * g.sx)),
                 _ => None,
@@ -6166,7 +6177,9 @@ fn settle_ligature_pairs(glyphs: &[Glyph], breaks: &[Break], g0: usize) -> Optio
     let mut out = glyphs.to_vec();
     for i in 0..out.len().saturating_sub(1) {
         if out[i].lig.as_ref().is_some_and(|l| !l.second) && out[i + 1].lig.as_ref().is_some_and(|l| l.second) {
-            let split = breaks.iter().any(|b| g0 + b.end == i + 1);
+            // Split when a line ends between the two, or when one already did: placement starts at
+            // the second piece after a line that ended on the first (the next column or frame).
+            let split = i + 1 == g0 || breaks.iter().any(|b| g0 + b.end == i + 1);
             out[i].settle(split);
             out[i + 1].settle(split);
         }
