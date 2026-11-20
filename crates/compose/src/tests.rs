@@ -186,6 +186,39 @@ fn wrap_pushes_text_aside() {
     assert!(below.x0 < 1.0);
 }
 
+/// The x where the first line starts beside a 120 × 60 bounding box wrap object (offsets 6 on the
+/// right) whose stroke is `weight` wide, aligned `align`; None: no stroke.
+fn first_line_x_beside_stroked_wrap(stroke: Option<(f64, designcraft_doc::StrokeAlign)>) -> f64 {
+    let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 60.0)),
+    );
+    it.wrap.mode = WrapMode::BoundingBox;
+    it.wrap.offsets = [0.0, 0.0, 6.0, 6.0];
+    it.stroke = match stroke {
+        Some((weight, align)) => designcraft_doc::Stroke { swatch: "Black".into(), weight, align, ..Default::default() },
+        None => designcraft_doc::Stroke { swatch: designcraft_color::swatch::NONE.into(), ..Default::default() },
+    };
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].x0
+}
+
+#[test]
+fn wrap_offsets_are_measured_from_the_outer_edge_of_the_stroke() {
+    use designcraft_doc::StrokeAlign::{Center, Inside, Outside};
+    // As measured in InDesign 2026: a centred stroke adds half its weight to the offset, an outside
+    // stroke all of it, an inside stroke or none nothing.
+    assert!(near(first_line_x_beside_stroked_wrap(None), 126.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((4.0, Center))), 128.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((10.0, Center))), 131.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((6.0, Outside))), 132.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((6.0, Inside))), 126.0));
+}
+
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
 /// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
 /// `wrap`.

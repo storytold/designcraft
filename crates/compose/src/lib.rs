@@ -850,7 +850,9 @@ pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_pag
     let group = other.shape == designcraft_doc::Shape::Group;
     let b =
         if group { (xf * other.xf.inverse()).transform_rect_bbox(other.bounds()) } else { other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO) };
-    let e = wrap_exclusion(&other.wrap, b, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page);
+    // The offsets are measured from the outer edge of the stroke (a group has none of its own).
+    let outset = if group { 0.0 } else { other.stroke_outset() };
+    let e = wrap_exclusion(&other.wrap, b, outset, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page);
     nothing_visible_wraps_nothing(doc, other, &other.wrap, e)
 }
 
@@ -859,7 +861,7 @@ pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_pag
 pub fn graphic_exclusion(doc: &Document, it: &Item, xf: Affine, inv: Affine, left_page: bool) -> Option<Exclusion> {
     let g = it.graphic()?;
     let shown = g.shown_bounds(it.inner_bounds())?;
-    let e = wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), || Some(contour_path(doc, it, &g.wrap)), xf, inv, left_page);
+    let e = wrap_exclusion(&g.wrap, xf.transform_rect_bbox(shown), 0.0, || Some(contour_path(doc, it, &g.wrap)), xf, inv, left_page);
     Some(nothing_visible_wraps_nothing(doc, it, &g.wrap, e))
 }
 
@@ -881,18 +883,20 @@ fn nothing_visible_wraps_nothing(doc: &Document, it: &Item, wrap: &designcraft_d
     e
 }
 
-/// The exclusion of `wrap` around an object with spread-space bounds `b`; `outline` gives its
-/// contour in the inner space `xf` maps to the spread (None: around the bounds).
+/// The exclusion of `wrap` around an object with spread-space bounds `b` and a stroke reaching
+/// `outset` outside them; `outline` gives its contour in the inner space `xf` maps to the spread
+/// (None: around the bounds).
 fn wrap_exclusion(
     wrap: &designcraft_doc::TextWrap,
     b: Rect,
+    outset: f64,
     outline: impl FnOnce() -> Option<Outline>,
     xf: Affine,
     inv: Affine,
     left_page: bool,
 ) -> Exclusion {
     let o = wrap.offsets;
-    let r = Rect::new(b.x0 - o[1], b.y0 - o[0], b.x1 + o[3], b.y1 + o[2]);
+    let r = Rect::new(b.x0 - o[1] - outset, b.y0 - o[0] - outset, b.x1 + o[3] + outset, b.y1 + o[2] + outset);
     let side = match wrap.side {
         WrapSide::TowardsSpine if left_page => WrapSide::RightSide,
         WrapSide::TowardsSpine => WrapSide::LeftSide,
@@ -907,7 +911,7 @@ fn wrap_exclusion(
         return Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None };
     }
     let contour = if wrap.mode == WrapMode::Contour { outline() } else { None }.and_then(|src| {
-        let mut c = Contour::of(&src.path, inv * xf, o[0])?;
+        let mut c = Contour::of(&src.path, inv * xf, o[0] + outset)?;
         if let Some(frame) = &src.frame {
             c = c.within(frame, inv * xf);
         }
