@@ -440,6 +440,20 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
             vec!["Name;Team;Role", "Email"],
             vec![vec!["Ada;Core;Eng", "ada@example.com"]],
         ),
+        (
+            "people.csv",
+            "Last, First\tEmail\tCity\nAda Lovelace\tada@example.com\tLondon\n",
+            Delimiter::Tab,
+            vec!["Last, First", "Email", "City"],
+            vec![vec!["Ada Lovelace", "ada@example.com", "London"]],
+        ),
+        (
+            "people.csv",
+            "Last, First;Email;City\nAda Lovelace;ada@example.com;London\n",
+            Delimiter::Semicolon,
+            vec!["Last, First", "Email", "City"],
+            vec![vec!["Ada Lovelace", "ada@example.com", "London"]],
+        ),
     ] {
         let parsed = parse::table_from_bytes(body.as_bytes(), name, None).unwrap();
         assert_eq!(parsed.delimiter, expected_delimiter, "{body:?}");
@@ -528,6 +542,47 @@ fn update_resniffs_legacy_single_field_comma_source_and_keeps_deliberate_comma()
     assert_eq!(detected_src.delimiter, Delimiter::Comma);
     assert_eq!(detected_src.delimiter_origin, DelimiterOrigin::Detected);
     assert_eq!(detected_src.rows, vec![vec!["First; item"], vec!["Second; item"]]);
+}
+
+/// #2874: updating an older document without `delimiterOrigin` preserves the saved Comma delimiter
+/// when a placeholder or typed `<<Field>>` marker already binds to that single field.
+#[test]
+fn update_preserves_legacy_comma_source_with_active_field_bindings() {
+    let dir = scratch("update_legacy_bound");
+    let csv_path = dir.join("notes.csv");
+    write(&csv_path, "Notes;Tag\nAlpha;1\n");
+
+    for (label, anchored) in [("anchored", true), ("typed", false)] {
+        let mut s = Session::new();
+        new_doc(&mut s, 1);
+        let frame = text_frame(&mut s, [36.0, 36.0, 300.0, 120.0], if anchored { "" } else { "<<Notes;Tag>>" }, None);
+        let story = frame["story"].as_u64().unwrap();
+        exec(&mut s, "data.source.select", json!({"path": &csv_path, "delimiter": "comma"}));
+        if anchored {
+            exec(&mut s, "data.placeholder.add", json!({"field": "Notes;Tag", "role": "text", "story": story, "at": 0}));
+        }
+        // Simulate a pre-provenance save by resetting `delimiter_origin` to `Legacy` before writing.
+        let mut legacy_doc = s.documents()[0].doc.as_ref().clone();
+        legacy_doc.data_merge.sources[0].delimiter_origin = DelimiterOrigin::Legacy;
+        let doc_file = dir.join(format!("legacy_{label}.designcraft"));
+        std::fs::write(&doc_file, designcraft_format::save(&legacy_doc).unwrap()).unwrap();
+
+        write(&csv_path, "Notes;Tag\nAlpha;1\nBeta;2\n");
+        let mut reopened = Session::new();
+        exec(&mut reopened, "file.open", json!({"path": &doc_file}));
+        assert_eq!(reopened.documents()[0].doc.data_merge.sources[0].delimiter_origin, DelimiterOrigin::Legacy);
+
+        let updated = exec(&mut reopened, "data.source.update", json!({}));
+        assert_eq!(updated["fields"], json!([{"name": "Notes;Tag", "kind": "text"}]), "{label}");
+        let src = &reopened.documents()[0].doc.data_merge.sources[0];
+        assert_eq!(src.delimiter, Delimiter::Comma, "{label}");
+        assert_eq!(src.rows, vec![vec!["Alpha;1"], vec!["Beta;2"]], "{label}");
+
+        let merged = exec(&mut reopened, "data.merge", json!({}));
+        assert_eq!(merged["records"], 2, "{label}");
+        assert_eq!(texts(&reopened), vec!["Alpha;1", "Beta;2"], "{label}");
+        write(&csv_path, "Notes;Tag\nAlpha;1\n");
+    }
 }
 
 #[test]

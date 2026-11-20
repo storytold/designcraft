@@ -113,7 +113,8 @@ fn source_update(s: &mut Session, _p: &Value) -> Result<Value> {
         let resniff = src.delimiter_origin == DelimiterOrigin::Legacy
             && src.delimiter == Delimiter::Comma
             && src.fields.len() == 1
-            && src.fields.first().is_some_and(|f| f.name.contains(['\t', ';']));
+            && src.fields.first().is_some_and(|f| f.name.contains(['\t', ';']))
+            && !fill::doc_references_any_field(&st.doc, &src.fields);
         let delimiter = if resniff { None } else { Some(src.delimiter) };
         (at.to_string_lossy().into_owned(), src.name.clone(), delimiter, resniff, src.sheet.clone())
     };

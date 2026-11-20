@@ -372,7 +372,7 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 fn sniff(name: &str, text: &str) -> Delimiter {
     match craft_file_formats::detect(name, &[]) {
         Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
-        Some(craft_file_formats::Format::Csv) if header_splits_on_comma(text) => return Delimiter::Comma,
+        Some(craft_file_formats::Format::Csv) if comma_separates_records(text) => return Delimiter::Comma,
         _ => {}
     }
     match craft_csv::sniff_delimiter(text, '"') {
@@ -382,17 +382,30 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     }
 }
 
-/// Whether the first non-blank record splits on `,` with coherent quoting (matching
-/// `craft_csv::sniff_delimiter`'s quote-boundary rules so quoted `;`/`\t` headers such as
-/// `"Name";"Last, First"` fall through to delimiter sniffing).
-fn header_splits_on_comma(text: &str) -> bool {
-    let mut commas = 0usize;
+/// Whether every sampled non-blank record (up to 20 records / 64 KiB, matching
+/// `craft_csv::sniff_delimiter`) splits on `,` with coherent quoting. Checking across data rows
+/// avoids misclassifying tab/semicolon `.csv` files that happen to contain a comma in a header
+/// (such as `Last, First\tEmail\tCity`), while still preserving comma `.csv` files whose fields
+/// contain `;` or `\t`.
+fn comma_separates_records(text: &str) -> bool {
+    const SAMPLE_BYTES: usize = 64 * 1024;
+    const SAMPLE_RECORDS: usize = 20;
+    let mut sample_end = text.len().min(SAMPLE_BYTES);
+    while sample_end > 0 && !text.is_char_boundary(sample_end) {
+        sample_end -= 1;
+    }
+    let sample = text.get(..sample_end).unwrap_or("");
+    let truncated = sample_end < text.len();
+
+    let mut seen = 0usize;
+    let mut count = 0usize;
     let mut quoted = false;
     let mut after_quote = false;
     let mut field_start = true;
     let mut record_has_content = false;
     let mut record_coherent = true;
-    let mut chars = text.chars().peekable();
+    let mut reached_record_limit = false;
+    let mut chars = sample.chars().peekable();
     while let Some(ch) = chars.next() {
         if quoted {
             if ch == '"' {
@@ -413,11 +426,19 @@ fn header_splits_on_comma(text: &str) -> bool {
                 chars.next();
             }
             if record_has_content {
-                return commas > 0 && record_coherent;
+                if count == 0 || !record_coherent {
+                    return false;
+                }
+                seen = seen.saturating_add(1);
+                if seen >= SAMPLE_RECORDS {
+                    reached_record_limit = true;
+                    break;
+                }
             }
-            commas = 0;
+            count = 0;
             after_quote = false;
             field_start = true;
+            record_has_content = false;
             record_coherent = true;
             continue;
         }
@@ -425,7 +446,7 @@ fn header_splits_on_comma(text: &str) -> bool {
             quoted = true;
             field_start = false;
         } else if ch == ',' {
-            commas = commas.saturating_add(1);
+            count = count.saturating_add(1);
             field_start = true;
             after_quote = false;
         } else {
@@ -434,7 +455,18 @@ fn header_splits_on_comma(text: &str) -> bool {
             field_start = false;
         }
     }
-    !quoted && record_has_content && commas > 0 && record_coherent
+    if !reached_record_limit && !truncated {
+        if quoted {
+            return false;
+        }
+        if record_has_content {
+            if count == 0 || !record_coherent {
+                return false;
+            }
+            seen = seen.saturating_add(1);
+        }
+    }
+    seen > 0
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
