@@ -1135,7 +1135,7 @@ fn fit_physical_routes(
     let mut route_state = StreamState::default();
     let past: Vec<_> = pages.iter().flat_map(|p| p.areas.iter().cloned()).collect();
     let text = main_layout(doc, story, &past, opts);
-    let mut numbers: Vec<_> = routes.iter().filter_map(|f| f.page).collect();
+    let mut numbers: Vec<_> = routes.iter().chain(frames).filter_map(|f| f.page).collect();
     numbers.sort_unstable();
     numbers.dedup();
     for page in numbers {

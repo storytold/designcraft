@@ -1384,3 +1384,18 @@ fn revisit_route_catchword_uses_later_physical_page_anchor_membership() {
     assert_eq!(cs.frame(routes[0]).unwrap().catchwords.len(), 1, "{:?}", cs.warnings);
     assert_eq!(cs.frame(routes[0]).unwrap().catchwords[0].source.as_ref(), "Second");
 }
+
+#[test]
+fn revisit_host_page_without_route_revalidates_the_main_cut() {
+    let (mut doc, sid, hosts, routes) = short_revisit_routes(false);
+    let before = compose_story(&doc, sid, &Default::default());
+    let at = before.frame(hosts[1]).unwrap().lines[1].range.start;
+    doc.remove_item(routes[1]).unwrap();
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Second note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let anchor = doc.story(sid).unwrap().note_anchor(note).unwrap();
+    assert!(cs.frame(hosts[2]).unwrap().range.contains(&anchor), "note anchor must move into the return host");
+    assert!(cs.frame(routes[0]).unwrap().notes.iter().any(|n| n.id == note));
+}
