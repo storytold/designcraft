@@ -106,11 +106,13 @@ fn open_path(s: &mut Session, p: &Value) -> Result<Value> {
         let (fonts, faces, font_warnings) = load_document_fonts(&mut d, path);
         warnings.extend(font_warnings);
         warnings.extend(crate::cmd::style::grep_style_warnings(&d));
+        let (missing_warning, missing) = crate::cmd::fonts::missing_on_open(&d);
+        warnings.extend(missing_warning);
         let mut st = DocState::new(d, Some(path.to_string()));
         st.fonts = fonts;
         let checks = crate::cmd::native_links::start(&mut st, links);
         let i = s.add_document(st);
-        Ok(json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}))
+        Ok(json!({"index": i, "documentFonts": faces, "missingFonts": missing, "warnings": warnings, "linkChecks": checks}))
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -184,10 +186,12 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
         // Titled as an IDML file opened from bytes is: without its extension.
         d.title = without_native_extension(n).to_string();
     }
+    let (missing_warning, missing) = crate::cmd::fonts::missing_on_open(&d);
+    let warnings: Vec<String> = warnings.into_iter().chain(missing_warning).collect();
     let mut st = DocState::new(d, None);
     let checks = crate::cmd::native_links::start(&mut st, links);
     let i = s.add_document(st);
-    Ok(json!({"index": i, "warnings": warnings, "linkChecks": checks}))
+    Ok(json!({"index": i, "missingFonts": missing, "warnings": warnings, "linkChecks": checks}))
 }
 
 #[cfg(test)]
@@ -284,6 +288,85 @@ mod document_fonts_tests {
         let r = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
         assert_eq!(r["documentFonts"], 1, "{r}");
         assert_eq!(font_entry(&mut s, FAMILY)["missing"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The missing fonts of an open (`warnings` and `missingFonts`), however the file is opened.
+    fn missing_fonts_of(r: &Value) -> Vec<String> {
+        r["missingFonts"].as_array().unwrap().iter().map(|f| format!("{} {}", f["family"].as_str().unwrap(), f["style"].as_str().unwrap())).collect()
+    }
+
+    #[test]
+    fn opening_a_document_reports_its_missing_fonts() {
+        const FAMILY: &str = "Missing On Open Test Family";
+        let dir = temp_dir("missing");
+        for name in ["Brochure.designcraft", "Brochure.idml"] {
+            let path = dir.join(name);
+            write_document(&path, FAMILY);
+            let r = open(&mut Session::new(), &path);
+            assert_eq!(missing_fonts_of(&r), [format!("{FAMILY} Regular")], "{name}: {r}");
+            assert_eq!(r["missingFonts"][0]["matchStatus"], "missing", "{name}: {r}");
+            let warnings: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+            assert!(
+                warnings.iter().any(|w| w.starts_with(&format!("1 font is missing: {FAMILY} Regular."))),
+                "{name} names the font in its warnings: {r}"
+            );
+        }
+        // Opened from bytes, as on the web.
+        let bytes = std::fs::read(dir.join("Brochure.designcraft")).unwrap();
+        let r =
+            Session::new().execute("file.openBytes", &json!({"name": "Brochure.designcraft", "base64": crate::cmd::base64_encode(&bytes)})).unwrap();
+        assert_eq!(missing_fonts_of(&r), [format!("{FAMILY} Regular")], "{r}");
+        assert!(r["warnings"].to_string().contains("1 font is missing"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_document_with_all_its_fonts_opens_without_a_font_warning() {
+        let dir = temp_dir("present");
+        let path = dir.join("Brochure.designcraft");
+        write_document(&path, "Source Sans 3");
+        let r = open(&mut Session::new(), &path);
+        assert_eq!(r["missingFonts"], json!([]), "{r}");
+        assert!(!r["warnings"].to_string().contains("missing"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A font in the `Document Fonts` folder beside the file is not missing: the check runs after
+    /// the folder has loaded.
+    #[test]
+    fn a_font_in_the_document_fonts_folder_is_not_reported_missing() {
+        const FAMILY: &str = "DocFont Missing Check Test";
+        let dir = temp_dir("not-missing");
+        std::fs::write(dir.join(DOCUMENT_FONTS_FOLDER).join("check.ttf"), font_with(FAMILY, &['H', 'e', 'l', 'o']).unwrap()).unwrap();
+        let path = dir.join("Brochure.designcraft");
+        write_document(&path, FAMILY);
+        let r = open(&mut Session::new(), &path);
+        assert_eq!(r["missingFonts"], json!([]), "{r}");
+        // Without the folder the same document has a missing font.
+        std::fs::remove_dir_all(dir.join(DOCUMENT_FONTS_FOLDER)).unwrap();
+        let r = open(&mut Session::new(), &path);
+        assert_eq!(missing_fonts_of(&r), [format!("{FAMILY} Regular")], "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// More than a few missing fonts are named up to a limit, then counted.
+    #[test]
+    fn many_missing_fonts_are_counted_after_the_first_few() {
+        let dir = temp_dir("many");
+        let path = dir.join("Brochure.designcraft");
+        let mut s = Session::new();
+        new_document(&mut s, "Missing Family 0", "Hello");
+        for i in 1..9 {
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Hello"})).unwrap();
+            s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 5})).unwrap();
+            s.execute("type.char", &json!({"fontFamily": format!("Missing Family {i}"), "fontStyle": "Regular"})).unwrap();
+        }
+        s.execute("file.save", &json!({"path": path.to_string_lossy()})).unwrap();
+        let r = open(&mut Session::new(), &path);
+        assert_eq!(r["missingFonts"].as_array().unwrap().len(), 9, "{r}");
+        let warning = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).find(|w| w.contains("fonts are missing")).unwrap();
+        assert!(warning.starts_with("9 fonts are missing: ") && warning.contains(" and 3 more."), "{warning}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -66,7 +66,7 @@ impl DesignApp {
             }
             Ok(_) => {}
         }
-        if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes") {
+        if r.is_ok() && matches!(id, "file.open" | "file.openIdml" | "file.openBytes" | "file.openRecent") {
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findFont") {
                 self.ui.dialog = None;
             }
