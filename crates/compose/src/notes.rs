@@ -129,6 +129,7 @@ type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>);
 pub(super) struct SeriesNotes {
     series: u64,
     band_previous: Option<f64>,
+    band_column: Option<(usize, usize)>,
     band_continued: bool,
     band_span: Option<f64>,
     band_spans: HashMap<(usize, usize), f64>,
@@ -157,6 +158,7 @@ impl SeriesNotes {
         Self {
             series,
             band_previous: None,
+            band_column: None,
             band_continued: false,
             band_span: None,
             band_spans: HashMap::new(),
@@ -240,6 +242,24 @@ impl SeriesNotes {
             }
         }
         v
+    }
+
+    /// New notes keep the preceding baseline; their origin can precede the band's top.
+    /// Wrapping obstacles must use this same origin, including for split-part replay.
+    fn band_note_origin(&self, doc: &Document, f: &FrameSpec, first: f64, lead: f64) -> f64 {
+        let o = doc.note_options(self.series);
+        let mut previous = self.band_previous;
+        let mut at_start = true;
+        for part in self.placed.iter().filter(|p| self.band_column == Some((p.fi, p.col))) {
+            let y = if at_start && part.part > 0 && previous.is_some() {
+                f.area.y0
+            } else {
+                previous.map_or(f.area.y0 + o.space_before, |baseline| baseline + o.space_between + part.m.lead - part.m.first)
+            };
+            previous = Some(y + part.m.last);
+            at_start = false;
+        }
+        previous.map_or(f.area.y0 + o.space_before, |baseline| baseline + o.space_between + lead - first)
     }
 
     fn compose(&mut self, doc: &Document, k: usize, w: f64, f: &FrameSpec, opts: &ComposeOptions) -> Part {
@@ -356,7 +376,26 @@ impl SeriesNotes {
                 }
             })
             .collect();
-        let cs = crate::compose(doc, &note.text, &specs, &nopts);
+        let mut cs = crate::compose(doc, &note.text, &specs, &nopts);
+        if opts.note_bands
+            && part == 0
+            && !f.exclusions.is_empty()
+            && let Some(line) = cs.frames.first().and_then(|f| f.lines.first())
+        {
+            let origin = self.band_note_origin(doc, f, line.baseline, line.leading);
+            let delta = f.area.y0 - origin;
+            if delta.abs() > 0.01 {
+                let mut positioned = specs.clone();
+                if let Some(first) = positioned.first_mut() {
+                    for exclusion in &mut first.exclusions {
+                        exclusion.rect = exclusion.rect + designcraft_geom::Vec2::new(0.0, delta);
+                        exclusion.contour =
+                            exclusion.contour.as_ref().map(|c| c.clone().transformed(designcraft_geom::Affine::translate((0.0, delta))));
+                    }
+                }
+                cs = crate::compose(doc, &note.text, &positioned, &nopts);
+            }
+        }
         let parts = cs
             .frames
             .iter()
@@ -475,6 +514,8 @@ impl SeriesNotes {
             if m.last + m.descent <= h + 0.01 && total <= available + 0.01 {
                 let mut exclusions = self.carry.as_ref().filter(|c| c.k == k).map_or_else(Vec::new, |c| c.exclusions.clone());
                 if opts.note_bands {
+                    let origin =
+                        if part == 0 { self.band_note_origin(doc, column.frame, original.1.first, original.1.lead) } else { column.frame.area.y0 };
                     exclusions.push((
                         part,
                         column
@@ -482,10 +523,11 @@ impl SeriesNotes {
                             .exclusions
                             .iter()
                             .map(|e| crate::Exclusion {
-                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -column.frame.area.y0),
-                                contour: e.contour.as_ref().map(|c| {
-                                    c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -column.frame.area.y0)))
-                                }),
+                                rect: e.rect + designcraft_geom::Vec2::new(-column.frame.area.x0, -origin),
+                                contour: e
+                                    .contour
+                                    .as_ref()
+                                    .map(|c| c.clone().transformed(designcraft_geom::Affine::translate((-column.frame.area.x0, -origin)))),
                                 ..e.clone()
                             })
                             .collect(),

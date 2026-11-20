@@ -377,10 +377,10 @@ fn styled_catchword_baselines_follow_declared_leading_in_main_and_commentary() {
     }
 }
 
-fn widening_clears_finished_catchword(main_widens: bool) {
+fn widening_clears_finished_catchword_with_style(main_widens: bool, per_stream: Option<bool>, short_lines: usize) {
     let main = if main_widens { "Main words continue through the changing column. ".repeat(100) } else { "Short main.\nNext page.".into() };
     let right = if main_widens { String::new() } else { "Long commentary words continue through the changing column. ".repeat(100) };
-    let (mut doc, sid) = document(3, &main, &"Short comment.\u{2028}".repeat(4), &right);
+    let (mut doc, sid) = document(3, &main, &"Short comment.\u{2028}".repeat(short_lines), &right);
     let at = if main_widens {
         doc.story(sid).unwrap().text.rfind("Main words").unwrap()
     } else {
@@ -415,6 +415,48 @@ fn widening_clears_finished_catchword(main_widens: bool) {
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
             designcraft_doc::InsetCatchwords::Styled { style: "Obstacle".into() };
     }
+    if per_stream.is_some() {
+        let options = &mut doc.note_series.iter_mut().find(|s| s.id == 2).unwrap().options;
+        options.first_baseline = designcraft_doc::FirstBaseline::Leading;
+        options.first_baseline_min = 0.0;
+        let story = doc.story_mut(sid).unwrap();
+        let note = story.notes.iter_mut().find(|n| n.series == 2).unwrap();
+        let note = Arc::make_mut(note);
+        note.text.replace(0..note.text.len(), "Long commentary words through changing columns.");
+        for _ in 0..8 {
+            let id = story.insert_note(0, "Long commentary words through changing columns.", Default::default()).unwrap();
+            let n = story.note_mut(id).unwrap();
+            n.series = 2;
+            n.text.format_chars(0..n.text.len(), |f| {
+                f.over.size = Some(18.0);
+                f.over.leading = Some(designcraft_doc::Leading::Points(17.0));
+            });
+        }
+    }
+    if let Some(inherited) = per_stream {
+        Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+            name: "Host small".into(),
+            based_on: None,
+            shortcut: String::new(),
+            chars: designcraft_doc::CharAttrs { size: Some(9.0), leading: Some(designcraft_doc::Leading::Points(12.0)), ..Default::default() },
+        });
+        for id in doc.story(sid).unwrap().frames.clone() {
+            doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+                designcraft_doc::InsetCatchwords::Styled { style: "Host small".into() };
+        }
+        doc.note_series.iter_mut().find(|s| s.id == 1).unwrap().options.catchword_style = Some("Obstacle".into());
+        Arc::make_mut(&mut doc.styles).character.iter_mut().find(|s| s.name == "Obstacle").unwrap().chars =
+            designcraft_doc::CharAttrs { size: Some(30.0), leading: Some(designcraft_doc::Leading::Points(40.0)), ..Default::default() };
+        if inherited {
+            Arc::make_mut(&mut doc.styles).character.iter_mut().find(|s| s.name == "Obstacle").unwrap().chars = Default::default();
+            let note = doc.story_mut(sid).unwrap().notes.iter_mut().find(|n| n.series == 1).unwrap();
+            let text = &mut Arc::make_mut(note).text;
+            text.format_chars(0..text.len(), |f| {
+                f.over.size = Some(30.0);
+                f.over.leading = Some(designcraft_doc::Leading::Points(40.0));
+            });
+        }
+    }
     let cs = compose_story(&doc, sid, &Default::default());
     let frame = &cs.frames[0];
     let caption = frame.catchwords.iter().find(|c| c.series == Some(1)).unwrap();
@@ -446,12 +488,12 @@ fn widening_clears_finished_catchword(main_widens: bool) {
 
 #[test]
 fn commentary_widening_clears_finished_catchword() {
-    widening_clears_finished_catchword(false);
+    widening_clears_finished_catchword_with_style(false, None, 4);
 }
 
 #[test]
 fn main_widening_clears_finished_catchword() {
-    widening_clears_finished_catchword(true);
+    widening_clears_finished_catchword_with_style(true, None, 4);
 }
 
 #[test]
@@ -1220,4 +1262,13 @@ fn route_dependency_chain_validation_visits_each_frame_once() {
         assert_eq!(*dependency, Some(Some(index - 1)));
     }
     assert!(super::fitting::DEPENDENCY_VISITS.with(|n| n.get()) <= areas.len(), "visits: {}", super::fitting::DEPENDENCY_VISITS.with(|n| n.get()));
+}
+
+#[test]
+fn widening_clears_series_styled_catchword() {
+    widening_clears_finished_catchword_with_style(false, Some(false), 4);
+}
+#[test]
+fn widening_clears_inherited_catchword_metrics() {
+    widening_clears_finished_catchword_with_style(false, Some(true), 5);
 }

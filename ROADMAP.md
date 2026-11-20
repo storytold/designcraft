@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).
+
 - 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
 
 - 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
