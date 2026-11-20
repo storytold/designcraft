@@ -12,18 +12,69 @@ pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     if bytes.len() < 8 {
         return None;
     }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+    let dpi = if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
         && let Some(dpi) = png_resolution(bytes)
     {
-        return Some(dpi);
+        Some(dpi)
+    } else if bytes.starts_with(b"BM") {
+        bmp_resolution(bytes)
+    } else if crate::is_psd(bytes) {
+        crate::psd::resolution(bytes)
+    } else {
+        craft_image_codecs::resolution_probe::file_resolution(bytes).map(|(x, y)| (f64::from(x), f64::from(y)))
+    }?;
+    Some(if (5..=8).contains(&orientation(bytes)) { (dpi.1, dpi.0) } else { dpi })
+}
+
+/// The EXIF/TIFF orientation (1–8) of `bytes`, or 1 when absent or unreadable.
+fn orientation(bytes: &[u8]) -> u16 {
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        return jpeg_orientation(bytes);
     }
-    if bytes.starts_with(b"BM") {
-        return bmp_resolution(bytes);
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return craft_image_codecs::png_probe::header(bytes).map_or(1, |(_, _, o)| o);
     }
-    if crate::is_psd(bytes) {
-        return crate::psd::resolution(bytes);
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        return craft_image_codecs::webp_probe::header(bytes).map_or(1, |(_, _, o)| o);
     }
-    craft_image_codecs::resolution_probe::file_resolution(bytes).map(|(x, y)| (f64::from(x), f64::from(y)))
+    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        return craft_image_codecs::tiff_orientation(bytes);
+    }
+    1
+}
+
+/// EXIF orientation from a JPEG's APP1 `"Exif\0\0"` segment before the first scan.
+fn jpeg_orientation(bytes: &[u8]) -> u16 {
+    let mut i = 2usize;
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xFF {
+            break;
+        }
+        let marker = bytes[i + 1];
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
+            i += 2;
+            continue;
+        }
+        if marker == 0xDA || marker == 0xD9 {
+            break;
+        }
+        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+        if len < 2 || i + 2 + len > bytes.len() {
+            break;
+        }
+        let seg = &bytes[i + 4..i + 2 + len];
+        if marker == 0xE1
+            && let Some(exif) = seg.strip_prefix(b"Exif\0\0")
+        {
+            return craft_image_codecs::exif_orientation(exif);
+        }
+        i += 2 + len;
+    }
+    1
 }
 
 /// The pHYs chunk: pixels-per-unit in x and y plus the unit (1 = meter -> dpi, in f64).
@@ -33,7 +84,10 @@ fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
         let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
         let kind = bytes.get(pos + 4..pos + 8)?;
         if kind == b"pHYs" {
-            let data = bytes.get(pos + 8..pos + 8 + 9)?;
+            if len != 9 {
+                return None;
+            }
+            let data = bytes.get(pos + 8..pos + 8 + 13)?;
             let (x, y) = (u32::from_be_bytes(data[0..4].try_into().ok()?), u32::from_be_bytes(data[4..8].try_into().ok()?));
             if data[8] == 1 && x > 0 && y > 0 {
                 return Some((x as f64 * 0.0254, y as f64 * 0.0254));

@@ -112,6 +112,33 @@ fn to_png_survives_a_mismatched_buffer() {
 }
 
 #[test]
+fn to_png_parity_color_alpha_no_icc_no_phys_and_zero_guard() {
+    let rendered = Rendered {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            128, 64, 0, 128, // premultiplied half-alpha -> straight [255, 128, 0, 128]
+            10, 20, 30, 255, // opaque
+            0, 0, 0, 0, // transparent
+            255, 0, 0, 255, // opaque red
+        ],
+    };
+    let png = rendered.to_png();
+    let decoded = craft_image_codecs::decode(&png).expect("valid PNG");
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.layout(), craft_image_codecs::ChannelLayout::Rgba);
+    assert_eq!(decoded.sample_type(), craft_image_codecs::SampleType::U8);
+    assert_eq!(decoded.icc, None);
+    assert_eq!(decoded.meta.dpi, None);
+    assert_eq!(designcraft_images::raster_resolution(&png), None);
+    assert_eq!(decoded.data(), &[255, 128, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0, 255, 0, 0, 255]);
+
+    assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 0, height: 4, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 4, height: 0, pixels: vec![] }.to_png().is_empty());
+}
+
+#[test]
 fn proof_view_simulates_the_target() {
     use designcraft_color::cms::{ProofSetup, ProofTarget};
     let red = |a: u8| Rendered { width: 1, height: 1, pixels: vec![a, 0, 0, a] };

@@ -1243,3 +1243,139 @@ fn gif_pixel_size_keeps_logical_screen_while_admission_checks_frame_extent() {
     assert_eq!(pixel_size(&oversized), Some((10, 10)));
     assert!(too_large_to_decode(&oversized));
 }
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005) from 16.16 fixed-point ppi.
+fn irb_app_fixed(x_fixed: u32, y_fixed: u32) -> Vec<u8> {
+    let mut body = b"Photoshop 3.0\08BIM".to_vec();
+    body.extend_from_slice(&1005u16.to_be_bytes());
+    body.extend_from_slice(&[0, 0]);
+    body.extend_from_slice(&16u32.to_be_bytes());
+    body.extend_from_slice(&x_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    body.extend_from_slice(&y_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    let mut seg = vec![0xFF, 0xED];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005).
+fn irb_app(x_ppi: u16, y_ppi: u16) -> Vec<u8> {
+    irb_app_fixed(u32::from(x_ppi) << 16, u32::from(y_ppi) << 16)
+}
+
+/// XMP APP1 segment with `tiff:XResolution`, `tiff:YResolution`, and `tiff:ResolutionUnit`.
+fn xmp_app(x_res: &str, y_res: &str, unit: u8) -> Vec<u8> {
+    let xml = format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/"><tiff:XResolution>{x_res}</tiff:XResolution><tiff:YResolution>{y_res}</tiff:YResolution><tiff:ResolutionUnit>{unit}</tiff:ResolutionUnit></rdf:Description></rdf:RDF></x:xmpmeta>"#
+    );
+    let mut body = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    body.extend_from_slice(xml.as_bytes());
+    let mut seg = vec![0xFF, 0xE1];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Little-endian TIFF with Orientation, XResolution, YResolution, and ResolutionUnit.
+fn tiff_bytes_with_orientation(x: (u32, u32), y: (u32, u32), unit: u16, orientation: u16) -> Vec<u8> {
+    let mut t = vec![b'I', b'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    let n = 4usize;
+    t.extend_from_slice(&(n as u16).to_le_bytes());
+    let data = 8 + 2 + n * 12 + 4;
+    let short_entry = |t: &mut Vec<u8>, tag: u16, val: u16| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&3u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&val.to_le_bytes());
+        t.extend_from_slice(&[0, 0]);
+    };
+    let rational_entry = |t: &mut Vec<u8>, tag: u16, off: u32| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&5u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&off.to_le_bytes());
+    };
+    short_entry(&mut t, 0x0112, orientation);
+    rational_entry(&mut t, 0x011A, data as u32);
+    rational_entry(&mut t, 0x011B, (data + 8) as u32);
+    short_entry(&mut t, 0x0128, unit);
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(t.len(), data);
+    for (num, den) in [x, y] {
+        t.extend_from_slice(&num.to_le_bytes());
+        t.extend_from_slice(&den.to_le_bytes());
+    }
+    t
+}
+
+#[test]
+fn jpeg_density_precedence_and_invalid_fallbacks() {
+    // IRB beats XMP, EXIF, and JFIF.
+    let mut all = jfif_app(1, 72, 72);
+    all.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    all.extend_from_slice(&xmp_app("200/1", "200/1", 2));
+    all.extend_from_slice(&irb_app(300, 150));
+    assert_eq!(raster_resolution(&jpeg_with(&all)), Some((300.0, 150.0)));
+
+    // XMP beats EXIF and JFIF.
+    let mut xmp_wins = jfif_app(1, 72, 72);
+    xmp_wins.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    xmp_wins.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&xmp_wins)), Some((240.0, 120.0)));
+
+    // Zero or sub-1.0 IRB falls back to XMP.
+    for bad_irb in [0u32, 0x0000_8000u32] {
+        let mut segs = jfif_app(1, 96, 96);
+        segs.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+        segs.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+        segs.extend_from_slice(&irb_app_fixed(bad_irb, bad_irb));
+        assert_eq!(raster_resolution(&jpeg_with(&segs)), Some((240.0, 120.0)), "bad IRB {bad_irb:#x}");
+    }
+
+    // Zero XMP falls back to EXIF.
+    let mut bad_xmp = jfif_app(1, 96, 96);
+    bad_xmp.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    bad_xmp.extend_from_slice(&xmp_app("0/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&bad_xmp)), Some((150.0, 150.0)));
+
+    // Zero IRB + XMP + EXIF falls back to JFIF; zero JFIF yields None.
+    let mut fall_to_jfif = jfif_app(1, 96, 96);
+    fall_to_jfif.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (150, 1), Some(2))));
+    fall_to_jfif.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    fall_to_jfif.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&fall_to_jfif)), Some((96.0, 96.0)));
+
+    let mut all_bad = jfif_app(1, 0, 96);
+    all_bad.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (0, 1), Some(2))));
+    all_bad.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    all_bad.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&all_bad)), None);
+}
+
+#[test]
+fn jpeg_exif_orientation_swaps_pixel_size_and_resolution() {
+    let jpg = jpeg_with(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(pixel_size(&jpg), Some((900, 600)));
+    assert_eq!(decode_rgba(&jpg).unwrap().dimensions(), (900, 600));
+    assert_eq!(raster_resolution(&jpg), Some((150.0, 300.0)));
+    assert_eq!(natural_size(&jpg), Some((900.0 * 72.0 / 150.0, 600.0 * 72.0 / 300.0)));
+}
+
+#[test]
+fn png_from_rgba_parity_and_guards() {
+    let rgba = vec![200, 100, 50, 128, 0, 255, 10, 255];
+    let png = png_from_rgba(2, 1, rgba).expect("encodes");
+    let decoded = decode_rgba(&png).expect("decodes");
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, [200, 100, 50, 128]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 10, 255]);
+    assert_eq!(embedded_icc(&png), None);
+    assert_eq!(raster_resolution(&png), None);
+    assert_eq!(natural_size(&png), Some((2.0, 1.0)));
+
+    assert_eq!(png_from_rgba(0, 2, vec![]), None);
+    assert_eq!(png_from_rgba(2, 0, vec![]), None);
+    assert_eq!(png_from_rgba(2, 2, vec![0; 12]), None);
+}

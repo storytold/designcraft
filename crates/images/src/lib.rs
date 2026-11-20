@@ -362,11 +362,9 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let header = craft_psd::header::Header::from_bytes(bytes).ok()?;
         return Some((header.width, header.height));
     }
-    craft_image_codecs::inspect_raster(bytes)
+    craft_image_codecs::probe_size(bytes)
         .ok()
-        .flatten()
-        .map(|image| (image.width, image.height))
-        .or_else(|| craft_image_codecs::probe_size(bytes).ok())
+        .or_else(|| craft_image_codecs::inspect_raster(bytes).ok().flatten().map(|image| (image.width, image.height)))
         .or_else(|| {
             let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
             Some(image.dimensions())
