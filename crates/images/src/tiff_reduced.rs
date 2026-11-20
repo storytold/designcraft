@@ -55,14 +55,33 @@ pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, us
     let (bands, rw, rh) = open_checked(bytes, shrink)?;
     let group = bands.group_bytes().ok()?;
     let scratch = usize::try_from(bands.decode_scratch_bytes()).ok()?;
-    let src_bpp = bands.layout().channels().saturating_mul(bands.sample_type().bytes()).max(1);
     let is_cmyk = bands.layout().is_cmyk();
-    let conv_bpp = if is_cmyk { 5 } else { 4 };
-    let group_conv = (group / src_bpp).saturating_mul(conv_bpp);
+    let target_layout = if is_cmyk { ChannelLayout::CmykA } else { ChannelLayout::Rgba };
+    let out_ch = target_layout.channels();
+    let src_ch = bands.layout().channels().max(1);
+    let src_bpp = src_ch.saturating_mul(bands.sample_type().bytes()).max(1);
+    let group_px = group / src_bpp;
+    // Turning bands upright (`Orientation != 1`) copies the whole group inside `TiffBands::decode`.
+    let orient_copy = if (2..=8).contains(&bands.orientation()) { group } else { 0 };
+    // Float and Lab bands convert through normalized 32-bit float intermediates before narrowing to U8.
+    let is_lab = matches!(bands.layout(), ChannelLayout::Lab | ChannelLayout::LabA);
+    let is_float = bands.sample_type().is_float();
+    let conv_per_px = if bands.layout() == target_layout && bands.sample_type() == SampleType::U8 {
+        0
+    } else if !is_lab && !is_float {
+        out_ch
+    } else if bands.layout() == target_layout {
+        4 * src_ch + out_ch
+    } else {
+        4 * src_ch + 4 * out_ch + out_ch
+    };
+    let conv_bytes = group_px.saturating_mul(conv_per_px);
+    let group_extra = scratch.max(orient_copy).max(conv_bytes);
+    let band_peak = group.saturating_add(group_extra);
     let out_px = usize::try_from(rw).ok()?.checked_mul(usize::try_from(rh).ok()?)?;
     // Reduced output buffers (CMYK inks + alpha + RGBA display, or RGBA + premultiplied copy).
     let out_bytes = out_px.saturating_mul(if is_cmyk { 9 } else { 8 });
-    let peak = group.saturating_add(scratch).saturating_add(group_conv).saturating_add(out_bytes).max(8);
+    let peak = band_peak.saturating_add(out_bytes).max(8);
     Some((rw, rh, peak))
 }
 
@@ -132,16 +151,30 @@ fn accumulate_group(target: &mut AccumTarget<'_>, gx: u32, gy: u32, gw: u32, gh:
 
             let mut sums = [0u32; 4];
             let mut sum_a = 0u32;
+            let span_px = (ix1 - ix0) as usize;
+            let x_off = (ix0 - gx) as usize;
             for y in iy0..iy1 {
-                let row_base = ((y - gy) as usize).saturating_mul(gw_usize);
-                for x in ix0..ix1 {
-                    let off = (row_base + (x - gx) as usize).saturating_mul(px_stride);
-                    let px = src.get(off..off + px_stride).ok_or_else(|| CodecError::InvalidImage("TIFF band row truncated".into()))?;
-                    let (&a_byte, chs) = px.split_last().ok_or_else(|| CodecError::InvalidImage("empty TIFF pixel".into()))?;
-                    let a = u32::from(a_byte);
-                    sum_a += a;
-                    for (sum, &ch) in sums.iter_mut().zip(chs) {
-                        *sum += u32::from(ch) * a;
+                let row_start = ((y - gy) as usize).saturating_mul(gw_usize).saturating_add(x_off).saturating_mul(px_stride);
+                let span_bytes = span_px.saturating_mul(px_stride);
+                let row = src
+                    .get(row_start..row_start.saturating_add(span_bytes))
+                    .ok_or_else(|| CodecError::InvalidImage("TIFF band row truncated".into()))?;
+                if target.channels == 3 {
+                    for &[r, g, b, a] in row.as_chunks::<4>().0 {
+                        let a = u32::from(a);
+                        sum_a += a;
+                        sums[0] += u32::from(r) * a;
+                        sums[1] += u32::from(g) * a;
+                        sums[2] += u32::from(b) * a;
+                    }
+                } else {
+                    for &[c, m, y_ink, k, a] in row.as_chunks::<5>().0 {
+                        let a = u32::from(a);
+                        sum_a += a;
+                        sums[0] += u32::from(c) * a;
+                        sums[1] += u32::from(m) * a;
+                        sums[2] += u32::from(y_ink) * a;
+                        sums[3] += u32::from(k) * a;
                     }
                 }
             }

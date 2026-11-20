@@ -217,10 +217,11 @@ mod tests {
 
     #[test]
     fn oversized_tiff_builds_proxy_without_full_decode() {
-        let tiff = crate::images::tests::packbits_gray_tiff(16_388, 128, 180);
+        let tiff = crate::images::tests::packbits_gray_tiff_rect(65_536, 64, 16, 180);
+        assert!(crate::decode_pixmap(&tiff).is_none(), "65536px width exceeds full Pixmap limit");
         let p = make_proxy(&tiff, 0).expect("proxy generated via reduced banded TIFF decode");
         assert_eq!(p.mime, "image/jpeg");
-        assert_eq!(p.pixels, (MAX_SIDE_PX, MAX_SIDE_PX));
+        assert_eq!(p.pixels, (MAX_SIDE_PX, 1));
         assert!(p.data.len() <= MAX_BYTES);
     }
 }

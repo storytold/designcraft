@@ -1027,8 +1027,8 @@ fn failed(c: &Cache, k: &(SourceKey, u32), generation: u64) -> bool {
 }
 
 /// What decoding the drawings `wanted` of the asset `key` adds to the cache and holds at its
-/// peak, and whether that is their reduced JPEG estimate (else a full decode's, which keeps only
-/// the levels drawn).
+/// peak, and whether that is their reduced JPEG/TIFF estimate (else a full decode's, which keeps
+/// only the levels drawn).
 fn estimate(key: (SourceKey, u32), wanted: &[Want], levels: &DrawnLevels) -> (usize, usize, bool) {
     fault(key.0);
     if let Some((size, decoding)) = reduced_estimates(wanted) {
@@ -1051,9 +1051,9 @@ fn estimate(key: (SourceKey, u32), wanted: &[Want], levels: &DrawnLevels) -> (us
 /// of everything else cached. An asset some drawing of which finds no level to draw is not held:
 /// it is decoded again, and the cached levels its decode estimate covers count with that
 /// estimate, not with everything else. The estimate of an asset in `reduced` covers the levels
-/// from the one read from the JPEG blocks to each one drawn, as [`reduced_estimates`] counts
-/// them; a full decode's covers the levels drawn. The levels of the assets in `index` become the
-/// most recently used, so later stores evict other images first.
+/// from the one read by the reduced JPEG or TIFF decoder to each one drawn, as [`reduced_estimates`]
+/// counts them; a full decode's covers the levels drawn. The levels of the assets in `index` become
+/// the most recently used, so later stores evict other images first.
 fn held_in_view(
     c: &mut Cache,
     index: &HashMap<(SourceKey, u32), usize>,
@@ -1209,7 +1209,7 @@ fn waited(id: SourceKey) {
 
 /// Level `level` of a JPEG or TIFF for [`mip`], decoded at 1/2, 1/4 or 1/8 of its size without a
 /// full-size decode and halved from there. `None` when the full size is drawn, for other formats,
-/// and for variants only a full decode reads (CMYK JPEGs).
+/// and for variants only a full decode reads (CMYK JPEGs, non-CMYK separated TIFFs).
 ///
 /// `gate`: wait at [`GATE`] for the decode's peak bytes, plus the encoded bytes it holds.
 fn reduced(id: SourceKey, bytes: &[u8], page: u32, level: u8, gate: Option<usize>, colour: u64) -> Option<Arc<Pixmap>> {
@@ -1559,10 +1559,6 @@ pub(crate) mod tests {
         assert!(mip(&bytes, 0, 256.0, 0.1).is_none());
     }
 
-    pub(crate) fn packbits_gray_tiff(side: u32, rows_per_strip: u32, val: u8) -> Vec<u8> {
-        packbits_gray_tiff_rect(side, side, rows_per_strip, val)
-    }
-
     pub(crate) fn packbits_gray_tiff_rect(w: u32, h: u32, rows_per_strip: u32, val: u8) -> Vec<u8> {
         let mut row = Vec::new();
         let mut left = w as usize;
@@ -1650,6 +1646,9 @@ pub(crate) mod tests {
         let pm = mip(&bytes, 0, 1024.0, 0.1).unwrap();
         assert_eq!((pm.width(), pm.height()), (128, 96));
         assert!(lookup((id, 0, 0)).is_none(), "no full-size decode is kept");
+        let small = mip(&bytes, 0, 1024.0, 0.02).unwrap();
+        assert_eq!((small.width(), small.height()), (64, 48));
+        assert!(lookup((id, 0, 0)).is_none(), "coarser mip is halved without decoding full size");
 
         let want = Want { bytes: bytes.clone(), page: 0, width_pt: 1024.0, on_screen: 0.1 };
         let (cached, peak) = reduced_estimates(&[want]).unwrap();
@@ -1664,19 +1663,18 @@ pub(crate) mod tests {
         assert_eq!(finest_level((131_071, 128)), 2);
         assert_eq!(finest_level((32_768, 32_769)), 2);
 
-        let huge = AssetData::embedded(packbits_gray_tiff(16_388, 128, 160));
-        let pm = mip(&huge, 0, 1000.0, 1.0).expect("oversized TIFF decodes via reduced bands");
-        assert!(!is_bad(huge.key(), 0));
-        assert_eq!((pm.width(), pm.height()), (2048, 2048));
-        let p = pm.data()[100 * usize::from(pm.width()) + 100];
-        assert_eq!([p.r, p.g, p.b, p.a], [160, 160, 160, 255]);
-        let thumb = mip(&huge, 0, 1000.0, 0.1).unwrap();
-        assert_eq!((thumb.width(), thumb.height()), (128, 128));
+        let over_1gib = AssetData::embedded(packbits_gray_tiff_rect(65_536, 4_097, 256, 160));
+        assert!(designcraft_images::too_large_to_decode(&over_1gib.load().unwrap()));
+        let want_big = Want { bytes: over_1gib, page: 0, width_pt: 1000.0, on_screen: 0.5 };
+        assert!(reduced_estimates(&[want_big]).is_some());
 
-        let wide = AssetData::embedded(packbits_gray_tiff_rect(131_071, 128, 8, 170));
-        let wide_pm = mip(&wide, 0, 1000.0, 50.0).expect("131071x128 TIFF clamps to level 2 instead of failing");
+        let wide = AssetData::embedded(packbits_gray_tiff_rect(131_071, 32, 8, 170));
+        assert!(crate::decode_pixmap(&wide.load().unwrap()).is_none(), "131071px side exceeds full Pixmap limit");
+        let wide_pm = mip(&wide, 0, 1000.0, 50.0).expect("131071x32 TIFF clamps to level 2 instead of failing");
         assert!(!is_bad(wide.key(), 0));
-        assert_eq!((wide_pm.width(), wide_pm.height()), (32_767, 32));
+        assert_eq!((wide_pm.width(), wide_pm.height()), (32_767, 8));
+        let p = wide_pm.data()[usize::from(wide_pm.width()) + 100];
+        assert_eq!([p.r, p.g, p.b, p.a], [170, 170, 170, 255]);
     }
 
     fn png_sized(w: u32, h: u32) -> AssetData {

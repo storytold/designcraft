@@ -1101,6 +1101,25 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
+/// PackBits-compressed run of `len` identical bytes (`val`).
+fn packbits_repeat(len: usize, val: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity((len / 128 + 1) * 2);
+    let mut left = len;
+    while left >= 128 {
+        out.push(129);
+        out.push(val);
+        left -= 128;
+    }
+    if left > 1 {
+        out.push((1 - left as isize) as u8);
+        out.push(val);
+    } else if left == 1 {
+        out.push(0);
+        out.push(val);
+    }
+    out
+}
+
 /// Minimal little-endian single-IFD TIFF builder supporting multiple strips, arbitrary `RowsPerStrip`,
 /// `Compression`, `InkSet` (tag 332), and `ExtraSamples` (tag 338).
 #[allow(clippy::too_many_arguments)]
@@ -1115,12 +1134,30 @@ fn custom_striped_tiff(
     extra_sample: Option<u16>,
     ink_set: Option<u16>,
 ) -> Vec<u8> {
+    custom_striped_tiff_with(w, h, rows_per_strip, photometric, compression, spp, 8, None, None, strips, extra_sample, ink_set)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff_with(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    bps: u16,
+    sample_format: Option<u16>,
+    orientation: Option<u16>,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
     let n_strips = strips.len();
     assert_eq!(n_strips as u32, h.div_ceil(rows_per_strip));
     let mut entries: Vec<(u16, u16, u32, u32)> = vec![
         (256, 4, 1, w),
         (257, 4, 1, h),
-        (258, 3, u32::from(spp), if spp == 1 { 8 } else { 0 }),
+        (258, 3, u32::from(spp), if spp == 1 { u32::from(bps) } else { 0 }),
         (259, 3, 1, u32::from(compression)),
         (262, 3, 1, u32::from(photometric)),
         (273, 4, n_strips as u32, 0),
@@ -1128,11 +1165,17 @@ fn custom_striped_tiff(
         (278, 4, 1, rows_per_strip),
         (279, 4, n_strips as u32, 0),
     ];
+    if let Some(orient) = orientation {
+        entries.push((274, 3, 1, u32::from(orient)));
+    }
     if let Some(set) = ink_set {
         entries.push((332, 3, 1, u32::from(set)));
     }
     if let Some(es) = extra_sample {
         entries.push((338, 3, 1, u32::from(es)));
+    }
+    if let Some(fmt) = sample_format {
+        entries.push((339, 3, 1, u32::from(fmt)));
     }
     entries.sort_by_key(|e| e.0);
 
@@ -1183,7 +1226,7 @@ fn custom_striped_tiff(
     out.extend(0u32.to_le_bytes());
     if spp > 1 {
         for _ in 0..spp {
-            out.extend(8u16.to_le_bytes());
+            out.extend(bps.to_le_bytes());
         }
     }
     if n_strips > 1 {
@@ -1303,57 +1346,78 @@ fn reduced_tiffs_decode_rgb_cmyk_alpha_and_cross_strip_boundaries() {
 /// cleanly at reduced proxy resolution via banded streaming (`#2381`).
 #[test]
 fn oversized_multi_strip_tiff_decodes_at_reduced_size_while_full_decode_is_refused() {
-    use flate2::Compression;
-    use flate2::write::ZlibEncoder;
-    use std::io::Write;
-    use tiff::encoder::colortype::CMYK8;
-
-    let side = 16_388u32; // 16,388^2 * 4 = ~1.074 GiB RGBA (> MAX_RGBA_BYTES)
-    let rps = 16u32;
-    let full_strip_raw: Vec<u8> = [0u8, 255, 255, 0].repeat((side * rps) as usize);
-    let mut enc = ZlibEncoder::new(Vec::new(), Compression::fast());
-    enc.write_all(&full_strip_raw).unwrap();
-    let full_strip_z = enc.finish().unwrap();
-
-    let rem_rows = side % rps;
-    let rem_raw: Vec<u8> = [0u8, 255, 255, 0].repeat((side * rem_rows) as usize);
-    let mut enc = ZlibEncoder::new(Vec::new(), Compression::fast());
-    enc.write_all(&rem_raw).unwrap();
-    let rem_strip_z = enc.finish().unwrap();
-
-    let full_strips = (side / rps) as usize;
-    let mut strips: Vec<&[u8]> = vec![&full_strip_z; full_strips];
+    // 65,536 × 4,097 RGBA8 PackBits (~1.0002 GiB RGBA > MAX_RGBA_BYTES, ~16 MiB compressed).
+    let (w, h, rps) = (65_536u32, 4_097u32, 64u32);
+    let pb_row = packbits_repeat(w as usize * 4, 200);
+    let full_strip = pb_row.repeat(rps as usize);
+    let rem_rows = (h % rps) as usize;
+    let rem_strip = pb_row.repeat(rem_rows);
+    let full_strips = (h / rps) as usize;
+    let mut strips: Vec<&[u8]> = vec![&full_strip; full_strips];
     if rem_rows > 0 {
-        strips.push(&rem_strip_z);
+        strips.push(&rem_strip);
     }
-    let big_tiff = custom_striped_tiff(side, side, rps, 5, 8, 4, &strips, None, None);
+    let big_tiff = custom_striped_tiff(w, h, rps, 2, 32773, 4, &strips, Some(2), None);
 
-    assert_eq!(pixel_size(&big_tiff), Some((side, side)));
+    assert_eq!(pixel_size(&big_tiff), Some((w, h)));
     assert!(too_large_to_decode(&big_tiff));
     assert!(decode_rgba(&big_tiff).is_none(), "full decode exceeds 1 GiB RGBA limit");
 
     let reduced = decode_rgba_reduced(&big_tiff, 3).expect("reduced 1/8 decode succeeds via TiffBands");
-    assert_eq!(reduced.dimensions(), (2049, 2049));
-    let want =
-        decode_rgba(&tiff_of::<CMYK8>(2, 2, &[0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0], false)).unwrap().get_pixel(0, 0).0;
-    assert_eq!(reduced.get_pixel(0, 0).0, want);
-    assert_eq!(reduced.get_pixel(2048, 2048).0, want);
+    assert_eq!(reduced.dimensions(), (8_192, 513));
+    assert_eq!(reduced.get_pixel(0, 0).0, [200, 200, 200, 200]);
+    assert_eq!(reduced.get_pixel(8_191, 512).0, [200, 200, 200, 200]);
 
-    // A complete zlib-compressed single-strip CMYK TIFF works within the 512 MiB band cap,
-    // and is refused before pixel allocation once its single strip exceeds 512 MiB.
-    let small_single_strip = custom_striped_tiff(side, rps, rps, 5, 8, 4, &[&full_strip_z], None, None);
-    assert!(decode_rgba_reduced(&small_single_strip, 3).is_some());
+    // A complete PackBits single-strip 1-bit monochrome TIFF works within the 512 MiB band cap,
+    // and is refused before pixel allocation once its single strip exceeds 512 MiB (~1 MiB file).
+    let mono_row = packbits_repeat(w as usize / 8, 0);
+    let small_strip = mono_row.repeat(16);
+    let small_single = custom_striped_tiff_with(w, 16, 16, 1, 32773, 1, 1, None, None, &[&small_strip], None, None);
+    let small_out = decode_rgba_reduced(&small_single, 3).expect("16-row 1-bit strip is within 512 MiB cap");
+    assert_eq!(small_out.dimensions(), (8_192, 2));
 
-    let single_strips = 520u32;
-    let single_h = rps * single_strips; // 16,388 * 8,320 * 4 = ~520.1 MiB > 512 MiB band cap
-    let mut over_enc = ZlibEncoder::new(Vec::new(), Compression::fast());
-    for _ in 0..single_strips {
-        over_enc.write_all(&full_strip_raw).unwrap();
-    }
-    let over_band_z = over_enc.finish().unwrap();
-    let single_strip_over_band = custom_striped_tiff(side, single_h, single_h, 5, 8, 4, &[&over_band_z], None, None);
+    let over_h = 8_200u32; // 65,536 × 8,200 = 537.4 MiB > 512 MiB band cap
+    let over_strip = mono_row.repeat(over_h as usize);
+    let single_strip_over_band = custom_striped_tiff_with(w, over_h, over_h, 1, 32773, 1, 1, None, None, &[&over_strip], None, None);
     assert!(reduced_estimate(&single_strip_over_band, 3).is_none());
     assert!(decode_rgba_reduced(&single_strip_over_band, 3).is_none());
+}
+
+#[test]
+fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
+    let (w, h) = (16u32, 12u32);
+    let px_count = (w * h) as usize;
+
+    // Orientation 2..=4 swaps/flips pixels while keeping `bands.dimensions() == pixel_size`,
+    // adding a full group copy alongside the band during `TiffBands::decode`.
+    // Orientations 5..=8 swap stored dimensions relative to `pixel_size` and fall back to full decode.
+    let rgba_raw = vec![120u8; px_count * 4];
+    let upright = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(1), &[&rgba_raw], Some(2), None);
+    let flipped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(3), &[&rgba_raw], Some(2), None);
+    let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_raw], Some(2), None);
+    let est_upright = reduced_estimate(&upright, 1).unwrap();
+    let est_flip = reduced_estimate(&flipped, 1).unwrap();
+    assert_eq!((est_upright.0, est_upright.1), (8, 6));
+    assert_eq!((est_flip.0, est_flip.1), (8, 6));
+    assert_eq!(est_flip.2, est_upright.2 + px_count * 4);
+    assert_eq!(decode_rgba_reduced(&flipped, 1).unwrap().dimensions(), (8, 6));
+    assert!(reduced_estimate(&swapped, 1).is_none());
+    assert!(decode_rgba_reduced(&swapped, 1).is_none());
+
+    // Lab8 and Rgb32F convert through normalized 32-bit float intermediates before U8 output.
+    let rgb_raw = vec![128u8; px_count * 3];
+    let rgb8 = custom_striped_tiff(w, h, h, 2, 1, 3, &[&rgb_raw], None, None);
+    let lab8 = custom_striped_tiff(w, h, h, 8, 1, 3, &[&rgb_raw], None, None);
+    let est_rgb8 = reduced_estimate(&rgb8, 1).unwrap();
+    let est_lab8 = reduced_estimate(&lab8, 1).unwrap();
+    assert_eq!(est_lab8.2 - est_rgb8.2, px_count * (32 - 4));
+    assert!(decode_rgba_reduced(&lab8, 1).is_some());
+
+    let f32_raw: Vec<u8> = [0.5f32, 0.25, 0.75].repeat(px_count).into_iter().flat_map(f32::to_le_bytes).collect();
+    let rgb32f = custom_striped_tiff_with(w, h, h, 2, 1, 3, 32, Some(3), None, &[&f32_raw], None, None);
+    let est_f32 = reduced_estimate(&rgb32f, 1).unwrap();
+    assert_eq!(est_f32.2, px_count * 12 + px_count * 32 + (8 * 6) * 8);
+    assert!(decode_rgba_reduced(&rgb32f, 1).is_some());
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
