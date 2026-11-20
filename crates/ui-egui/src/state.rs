@@ -1,6 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::render_worker;
-use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, theme};
+use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, story_editor, theme};
 
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
@@ -204,6 +204,8 @@ pub struct UiState {
     #[serde(skip)]
     pub flattener_preview: bool,
     /// Tab / Shift+Tab: 1 = every panel hidden, 2 = all but the Tools panel (0 = shown).
+    /// Session-only so panels never stay hidden across restarts.
+    #[serde(skip)]
     pub hidden_panels: u8,
     /// "Don't show again" in the warning before deleting pages that contain objects.
     pub skip_delete_pages_warning: bool,
@@ -231,6 +233,11 @@ pub struct UiState {
     pub story_editor_size: f32,
     /// View › Story Editor › Show/Hide Depth Ruler.
     pub story_editor_depth_ruler: bool,
+    /// View › Story Editor › Show/Hide Style Name Column.
+    pub story_editor_style_column: bool,
+    /// Width of the Story Editor's style name column, in screen points (set by dragging its bar or by
+    /// `view.storyEditorStyleColumn` `width`).
+    pub story_editor_style_width: f32,
     /// The Color Picker's component (its radio button, as `PickComp::key`: `h`, `s`, `b`, `l`,
     /// `la`, `lb`, `r`, `g`, `bl`), kept between openings and sessions, as Photoshop's picker is.
     pub color_picker_component: String,
@@ -409,6 +416,8 @@ impl Default for UiState {
             show_full_menus: false,
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
+            story_editor_style_column: true,
+            story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
             color_picker_component: "r".into(),
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
@@ -538,6 +547,9 @@ pub struct Shown {
     pub origin: Point,
     pub zoom: f64,
     pub size: (f32, f32),
+    /// [`designcraft_render::images::generation`] when rendered: images decoded since are
+    /// drawn by rendering again.
+    pub images: u64,
 }
 
 impl CanvasCache {
@@ -560,6 +572,7 @@ impl CanvasCache {
             patcher: designcraft_render::Renderer::new(),
             patches: 0,
             separations: separations::Preview::default(),
+            images: (0, f64::NEG_INFINITY),
         }
     }
 }
@@ -593,6 +606,9 @@ pub struct CanvasCache {
     pub patches: u64,
     /// View › Separations Preview: the visible spreads' plates.
     pub separations: separations::Preview,
+    /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
+    /// it (ms): finished background decodes are taken up in batches, one render for many.
+    pub images: (u64, f64),
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

@@ -1276,6 +1276,37 @@ fn round_trips_footnotes_and_options() {
     assert_eq!(back.footnote_options, d.footnote_options);
 }
 
+/// IDML has no endnote structure written yet, so each endnote reference keeps its number as
+/// superscript text: the place of the endnote isn't lost (#2753).
+#[test]
+fn exports_endnote_reference_numbers() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "One here, two there.", ParaFormat::default()).unwrap();
+    {
+        let s = d.story_mut(sid).unwrap();
+        s.insert_endnote(8, "First endnote.", ParaFormat::default()).unwrap();
+        let at = s.text.find(" there").unwrap() + " there".len();
+        s.insert_endnote(at, "Second endnote.", ParaFormat::default()).unwrap();
+    }
+    d.endnote_options.start_at = 4;
+    d.endnote_options.prefix = "[".into();
+    d.endnote_options.suffix = "]".into();
+    d.check().unwrap();
+    let bytes = export_idml(&d);
+    let xml = zip_text(&bytes, "Stories/");
+    assert!(xml.contains("<Content>[4]</Content>"), "first reference number: {xml}");
+    assert!(xml.contains("<Content>[5]</Content>"), "second reference number: {xml}");
+    let back = import_idml(&bytes).unwrap();
+    back.check().unwrap();
+    let s = back.stories.values().find(|s| s.text.contains("One here")).unwrap();
+    assert_eq!(s.text, "One here[4], two there[5].");
+    let at = s.text.find("[4]").unwrap();
+    assert_eq!(s.char_format_at(at + 1).over.position, Some(designcraft_doc::Position::Superscript));
+    assert_eq!(s.char_format_at(0).over.position, None);
+}
+
 /// The structure InDesign writes: the footnote in its own superscript range, its text starting
 /// with the number marker and the separator.
 #[test]
@@ -2657,6 +2688,25 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// Layer Options › Lock Guides is IDML's `LockGuides`: read, and written back (it was always
+/// written as false).
+#[test]
+fn layer_lock_guides_round_trips() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Grid" LockGuides="true" ShowGuides="true"/>
+      <Layer Self="L2" Name="Art"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s"><Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/></Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let lock = |d: &Document, name: &str| d.layers.iter().find(|l| l.name == name).unwrap().lock_guides;
+    assert!(lock(&d, "Grid") && !lock(&d, "Art"));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert!(lock(&back, "Grid") && !lock(&back, "Art"));
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
@@ -3095,6 +3145,22 @@ fn hostile_table_spans_are_clamped_before_arithmetic() {
     assert_eq!(table.cell(1, 1).unwrap().col_span, 2);
 }
 
+/// Spans are read as numbers: a fraction rounds down, a span past the table (even one too large for
+/// 32 bits) reaches its edge, and anything under 1 or not a number spans one cell.
+#[test]
+fn numeric_table_spans_round_down_and_stop_at_the_table_edge() {
+    for (raw, rows, cols) in
+        [("1.5", 1, 1), ("2.5", 2, 2), ("4000000000", 2, 3), ("1e300", 2, 3), ("0", 1, 1), ("-3", 1, 1), ("NaN", 1, 1), ("x", 1, 1)]
+    {
+        let story = CASCADE_STORY.replace("Name=\"0:0\"", &format!("Name=\"0:0\" RowSpan=\"{raw}\" ColumnSpan=\"{raw}\""));
+        let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+        document.check().unwrap();
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(0, 0).unwrap();
+        assert_eq!((cell.row_span, cell.col_span), (rows, cols), "{raw}");
+    }
+}
+
 #[test]
 fn signed_idml_edge_priorities_roundtrip_without_clamping() {
     let story = CASCADE_STORY.replace(
@@ -3181,6 +3247,45 @@ fn complete_uniform_native_style_fields_keep_legacy_identity_on_idml_roundtrip()
     let table = back.styles.table.iter().find(|s| s.name == "Uniform").unwrap();
     assert_eq!(table.border.as_ref(), Some(&stroke));
     assert!(table.borders.iter().all(designcraft_doc::CellStrokeAttrs::is_empty));
+}
+
+#[test]
+fn table_style_row_fills_overlay_legacy_alt_rows_on_idml_roundtrip() {
+    let mut document = import_idml(&fixture()).unwrap();
+    document.styles_mut().table.push(designcraft_doc::TableStyle {
+        name: "RowFillsOverlay".into(),
+        alt_rows: Some(designcraft_doc::AltFills {
+            first: 2,
+            first_color: designcraft_color::swatch::PAPER.into(),
+            first_tint: 0.25,
+            next: 3,
+            next_color: designcraft_color::swatch::BLACK.into(),
+            next_tint: 0.5,
+            skip_first: 0,
+            skip_last: 0,
+        }),
+        row_fills: designcraft_doc::AltFillsAttrs {
+            first: Some(0),
+            first_color: Some(designcraft_color::swatch::BLACK.into()),
+            first_tint: Some(0.8),
+            next: Some(1),
+            next_color: Some(designcraft_color::swatch::PAPER.into()),
+            next_tint: Some(0.1),
+            skip_first: Some(1),
+            skip_last: Some(2),
+        },
+        ..Default::default()
+    });
+    let back = import_idml(&export_idml(&document)).unwrap();
+    let table = back.styles.table.iter().find(|s| s.name == "RowFillsOverlay").unwrap();
+    assert_eq!(table.row_fills.first, Some(0));
+    assert_eq!(table.row_fills.first_color.as_deref(), Some(designcraft_color::swatch::BLACK));
+    assert!((table.row_fills.first_tint.unwrap() - 0.8).abs() < 1e-4);
+    assert_eq!(table.row_fills.next, Some(1));
+    assert_eq!(table.row_fills.next_color.as_deref(), Some(designcraft_color::swatch::PAPER));
+    assert!((table.row_fills.next_tint.unwrap() - 0.1).abs() < 1e-4);
+    assert_eq!(table.row_fills.skip_first, Some(1));
+    assert_eq!(table.row_fills.skip_last, Some(2));
 }
 
 #[test]
@@ -4246,6 +4351,8 @@ fn object_style_effects_round_trip() {
     };
     d.styles_mut().object.push(ObjectStyle { name: "Photo".into(), effects: Some(fx.clone()), ..Default::default() });
     d.styles_mut().object.push(ObjectStyle { name: "Plain".into(), fill: Some(Fill::swatch("Black")), ..Default::default() });
+    let rounded = designcraft_geom::corners::CornerOptions::uniform(designcraft_geom::corners::CornerShape::Rounded, 9.0);
+    d.styles_mut().object.push(ObjectStyle { name: "Rounded".into(), corners: Some(rounded), ..Default::default() });
     let lid = d.default_layer();
     let id = designcraft_doc::ItemId(d.alloc());
     let mut it = designcraft_doc::Item::new(id, lid, Shape::Rectangle, shapes::rectangle(Rect::new(40.0, 40.0, 140.0, 140.0)));
@@ -4276,6 +4383,9 @@ fn object_style_effects_round_trip() {
     assert!((ds.distance - 5.0).abs() < 1e-6 && (ds.angle - DropShadow::default().angle).abs() < 1e-6, "{ds:?}");
     assert_eq!(got.feather, 3.0);
     assert!(style("Plain").effects.is_none());
+    // Corner options (Stroke & Corner Options).
+    assert_eq!(style("Rounded").corners, Some(rounded));
+    assert_eq!(style("Plain").corners, None);
     // The frame's effects are the style's, so it follows later edits of the style.
     let frames: Vec<_> = back.spreads[0].items.iter().filter(|i| i.object_style == "Photo").collect();
     assert_eq!(frames[0].effects, got);
@@ -4442,7 +4552,7 @@ fn missing_linked_graphics_show_their_preview_and_keep_their_link() {
     let d = crate::import_idml_report_with_previews(&fixture(), &|_| None, &previews).unwrap().document;
     let img = d.spreads.iter().flat_map(|sp| sp.items.iter()).find(|i| i.graphic().is_some()).unwrap();
     let a = &d.assets[&img.graphic().unwrap().asset];
-    assert_eq!(a.data.as_slice(), png.as_slice(), "the preview shows");
+    assert_eq!(a.data.load().unwrap().as_slice(), png.as_slice(), "the preview shows");
     assert_eq!(a.mime, "image/jpeg", "the link's format, not the preview's");
     assert_eq!(a.link.as_deref(), Some("/definitely/missing dir/photo.jpg"), "relinking still finds the file");
     // Without a preview it stays empty, as before.
@@ -4486,7 +4596,10 @@ fn a_preview_keeps_the_links_format_and_pixel_size_and_is_shared() {
     // 40 × 30 pt at 300 ppi, from the link, not the preview's 4 × 3.
     assert_eq!((photo.mime.as_str(), photo.pixels), ("image/jpeg", Some((167, 125))));
     assert_eq!(logo.mime, "application/pdf", "a placed PDF stays a PDF, for IDML export");
-    assert!(std::sync::Arc::ptr_eq(&photo.data, &png) && std::sync::Arc::ptr_eq(&logo.data, &png), "the preview's bytes are not copied");
+    assert!(
+        std::sync::Arc::ptr_eq(photo.data.embedded_bytes().unwrap(), &png) && std::sync::Arc::ptr_eq(logo.data.embedded_bytes().unwrap(), &png),
+        "the preview's bytes are not copied"
+    );
 }
 
 #[test]
@@ -4655,7 +4768,7 @@ fn oversized_part_is_refused() {
     }
     assert_eq!(patched, 2);
     let Err(err) = import_idml(&bytes) else { panic!("an oversized part imported") };
-    assert!(err.to_string().contains("limit"), "{err}");
+    assert!(err.to_string().contains("IDML part"), "{err}");
 }
 
 /// A package with more entries than any document needs is refused before any is read.
@@ -5193,7 +5306,7 @@ fn exports_graphic_in_table_cell() {
         id: asset,
         name: "tick.png".into(),
         mime: "image/png".into(),
-        data: std::sync::Arc::new(vec![1, 2, 3]),
+        data: designcraft_doc::AssetData::embedded(vec![1, 2, 3]),
         ..Default::default()
     });
     let mut t = designcraft_doc::Table::new(d.alloc(), 2, 2, 0, 0, 200.0);

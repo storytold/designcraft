@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::DesignApp;
 
-#[cfg(all(not(target_arch = "wasm32"), test))]
+#[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::Status;
 #[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Updater};
@@ -84,10 +84,18 @@ pub(crate) fn tick(app: &mut DesignApp, ctx: &egui::Context) {
     let _ = (app, ctx);
 }
 
+/// Whether the check result window shows: for every status but idle (a requested check, and the
+/// first start after an update, which reports that it installed or why it failed), and never over
+/// the startup prompt.
+#[cfg(not(target_arch = "wasm32"))]
+fn result_window_shows(status: &Status, prompt_open: bool) -> bool {
+    !prompt_open && !matches!(status, Status::Idle)
+}
+
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
+        // The updater asks to close only when no document has unsaved changes; the install starts when the app exits.
         let clean = !app.session.documents().iter().any(|d| d.is_dirty());
         match app.updates_rt.updater.show_if(ctx, clean) {
             Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
@@ -95,11 +103,15 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
             Action::None => {}
         }
         // Help ▸ Check for Updates answers in the shared dialog, which follows the updater's status.
-        let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
-        match dialog.show(ctx, app.updates_rt.updater.status()) {
-            CheckResultResponse::None => {}
-            CheckResultResponse::Close => app.updates_rt.updater.dismiss_status(),
-            CheckResultResponse::CheckAgain => app.updates_rt.check_requested = true,
+        if result_window_shows(app.updates_rt.updater.status(), app.updates_rt.updater.prompt_open()) {
+            let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
+            match dialog.show(ctx, app.updates_rt.updater.status()) {
+                CheckResultResponse::None => {}
+                CheckResultResponse::Close => app.updates_rt.updater.dismiss_status(),
+                CheckResultResponse::CheckAgain => app.updates_rt.check_requested = true,
+                // The next `show_if` asks the window to close once no document has unsaved changes.
+                CheckResultResponse::RestartToUpdate => app.updates_rt.updater.restart_to_update(),
+            }
         }
     }
 
@@ -145,6 +157,31 @@ mod tests {
         }
     }
 
+    /// Offers `release` and returns once its prompt is open. The updater reads the installed files
+    /// for an offer on a thread of its own. That thread sends its answer and then asks the context
+    /// the updater keeps for an immediate repaint, and the next tick opens the prompt. The test
+    /// fails when the offer opens no prompt, for example when the launcher manages this copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
+        let ctx = egui::Context::default();
+        let (answered, wait) = std::sync::mpsc::channel();
+        ctx.set_request_repaint_callback(move |info| {
+            if info.delay.is_zero() {
+                let _ = answered.send(());
+            }
+        });
+        // Keeps `ctx` for the offer's thread.
+        updater.tick(&ctx);
+        updater.offer(release);
+        assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
+        // Without its thread, the offer opens the prompt at once.
+        if !updater.prompt_open() {
+            wait.recv().unwrap();
+            updater.tick(&ctx);
+        }
+        assert!(updater.prompt_open(), "the offer opened no prompt (launcher choice: {:?})", updater.managed());
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn startup_prompt_shows_and_closes() {
@@ -157,12 +194,32 @@ mod tests {
             html_url: "https://github.com/storytold/designcraft/releases/tag/v99.0.0".into(),
             ..Default::default()
         };
-        app.updates_rt.updater.offer(release);
+        offer_and_wait(&mut app.updates_rt.updater, release);
 
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             show(&mut app, ui.ctx());
         });
         output.textures_delta.clear();
         assert!(app.updates_rt.updater.prompt_open());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn result_window_shows_every_status_but_idle() {
+        let shown = [
+            Status::Checking,
+            Status::UpToDate,
+            Status::Failed("no network".into()),
+            Status::Installing,
+            Status::Ready,
+            Status::Managed,
+            Status::Updated("0.2.0".into()),
+            Status::InstallFailed("disk full".into()),
+        ];
+        for status in &shown {
+            assert!(result_window_shows(status, false), "{status:?}");
+            assert!(!result_window_shows(status, true), "{status:?} over the prompt");
+        }
+        assert!(!result_window_shows(&Status::Idle, false));
     }
 }
