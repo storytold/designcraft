@@ -343,11 +343,18 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     let tint_only = p.as_object().is_some_and(|o| o.contains_key("tint") && o.keys().all(|k| k == "tint"));
                     return set_new_object(s, |c| {
-                        let cur = c.to_stroke();
-                        if tint_only && cur.is_none() {
+                        let mut st = c.to_stroke();
+                        if tint_only && st.is_none() {
                             return;
                         }
-                        let mut st = if cur.is_none() && sw.is_none() { Stroke::default() } else { cur };
+                        if st.swatch == designcraft_color::swatch::NONE && sw.is_none() && weight != Some(0.0) {
+                            let def = Stroke::default();
+                            st.swatch = def.swatch;
+                            st.tint = def.tint;
+                            if st.weight <= 0.0 {
+                                st.weight = def.weight;
+                            }
+                        }
                         if let Some(sw) = &sw {
                             st.swatch = sw.clone();
                             st.tint = 1.0;
@@ -4468,6 +4475,43 @@ mod step_repeat_tests {
         assert_eq!(c.stroke_weight, 1.0);
         assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
         assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+    }
+
+    #[test]
+    fn restoring_zero_default_stroke_weight_preserves_stroke_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute(
+            "object.stroke",
+            &json!({
+                "swatch": "[Paper]",
+                "tint": 0.5,
+                "weight": 6,
+                "cap": "round",
+                "type": {"kind": "dashed", "pattern": [8.0, 3.0]}
+            }),
+        )
+        .unwrap();
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 6})).unwrap();
+
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[Paper]");
+        assert_eq!(c.stroke_tint, 0.5);
+        assert_eq!(c.stroke_weight, 6.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[Paper]");
+        assert_eq!(st.tint, 0.5);
+        assert_eq!(st.weight, 6.0);
+        assert_eq!(st.cap, designcraft_doc::Cap::Round);
+        assert_eq!(st.kind, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
     }
 
     #[test]
