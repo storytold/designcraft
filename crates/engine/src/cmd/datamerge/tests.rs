@@ -454,6 +454,13 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
             vec!["Last, First", "Email", "City"],
             vec![vec!["Ada Lovelace", "ada@example.com", "London"]],
         ),
+        (
+            "people.csv",
+            "\"Name\",\"Note;Tag\"\nAda;Team\nGrace,Hello;2\n",
+            Delimiter::Comma,
+            vec!["Name", "Note;Tag"],
+            vec![vec!["Ada;Team", ""], vec!["Grace", "Hello;2"]],
+        ),
     ] {
         let parsed = parse::table_from_bytes(body.as_bytes(), name, None).unwrap();
         assert_eq!(parsed.delimiter, expected_delimiter, "{body:?}");

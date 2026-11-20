@@ -372,7 +372,7 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 fn sniff(name: &str, text: &str) -> Delimiter {
     match craft_file_formats::detect(name, &[]) {
         Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
-        Some(craft_file_formats::Format::Csv) if comma_separates_records(text) => return Delimiter::Comma,
+        Some(craft_file_formats::Format::Csv) if csv_prefers_comma(text) => return Delimiter::Comma,
         _ => {}
     }
     match craft_csv::sniff_delimiter(text, '"') {
@@ -382,12 +382,38 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     }
 }
 
-/// Whether every sampled non-blank record (up to 20 records / 64 KiB, matching
-/// `craft_csv::sniff_delimiter`) splits on `,` with coherent quoting. Checking across data rows
-/// avoids misclassifying tab/semicolon `.csv` files that happen to contain a comma in a header
-/// (such as `Last, First\tEmail\tCity`), while still preserving comma `.csv` files whose fields
-/// contain `;` or `\t`.
-fn comma_separates_records(text: &str) -> bool {
+#[derive(Clone, Copy)]
+struct DelimStats {
+    seen: bool,
+    header_splits: bool,
+    all_records_split: bool,
+    coherent: bool,
+}
+
+impl DelimStats {
+    fn separates_coherently(self) -> bool {
+        self.seen && self.coherent && self.all_records_split
+    }
+}
+
+/// For `.csv` files, prefer `Comma` when `,` coherently separates all sampled records, or when the
+/// header splits coherently on `,` and neither `\t` nor `;` coherently separates all sampled
+/// records (so padded short rows in a comma CSV don't fall back to an incoherent `;`/`\t` parse,
+/// while tab/semicolon CSVs whose header happens to contain a comma still sniff cleanly).
+fn csv_prefers_comma(text: &str) -> bool {
+    let comma = scan_delimiter(text, ',');
+    if !comma.seen || !comma.coherent {
+        return false;
+    }
+    if comma.all_records_split {
+        return true;
+    }
+    comma.header_splits && !scan_delimiter(text, '\t').separates_coherently() && !scan_delimiter(text, ';').separates_coherently()
+}
+
+/// Scan up to 20 non-blank records within the first 64 KiB (matching `craft_csv::sniff_delimiter`)
+/// for separator consistency and quote-boundary coherence.
+fn scan_delimiter(text: &str, delim: char) -> DelimStats {
     const SAMPLE_BYTES: usize = 64 * 1024;
     const SAMPLE_RECORDS: usize = 20;
     let mut sample_end = text.len().min(SAMPLE_BYTES);
@@ -398,6 +424,9 @@ fn comma_separates_records(text: &str) -> bool {
     let truncated = sample_end < text.len();
 
     let mut seen = 0usize;
+    let mut header_splits = false;
+    let mut all_records_split = true;
+    let mut coherent = true;
     let mut count = 0usize;
     let mut quoted = false;
     let mut after_quote = false;
@@ -426,9 +455,11 @@ fn comma_separates_records(text: &str) -> bool {
                 chars.next();
             }
             if record_has_content {
-                if count == 0 || !record_coherent {
-                    return false;
+                if seen == 0 {
+                    header_splits = count > 0;
                 }
+                all_records_split &= count > 0;
+                coherent &= record_coherent;
                 seen = seen.saturating_add(1);
                 if seen >= SAMPLE_RECORDS {
                     reached_record_limit = true;
@@ -445,7 +476,7 @@ fn comma_separates_records(text: &str) -> bool {
         if ch == '"' && field_start {
             quoted = true;
             field_start = false;
-        } else if ch == ',' {
+        } else if ch == delim {
             count = count.saturating_add(1);
             field_start = true;
             after_quote = false;
@@ -457,16 +488,17 @@ fn comma_separates_records(text: &str) -> bool {
     }
     if !reached_record_limit && !truncated {
         if quoted {
-            return false;
-        }
-        if record_has_content {
-            if count == 0 || !record_coherent {
-                return false;
+            coherent = false;
+        } else if record_has_content {
+            if seen == 0 {
+                header_splits = count > 0;
             }
+            all_records_split &= count > 0;
+            coherent &= record_coherent;
             seen = seen.saturating_add(1);
         }
     }
-    seen > 0
+    DelimStats { seen: seen > 0, header_splits, all_records_split, coherent }
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
