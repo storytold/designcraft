@@ -6,6 +6,48 @@ use designcraft_doc::geom::Rect;
 use designcraft_doc::{Asset, AssetData, ParaFormat, SpreadRef};
 use serde_json::json;
 
+#[test]
+fn format_one_baselines_survive_resaving_and_require_a_capable_reader() {
+    let mut original = Document::new(&NewDocument::default());
+    let (id, _) = original
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), original.default_layer(), "Legacy", ParaFormat::default())
+        .unwrap();
+    let mut legacy = load(&serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(!legacy.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    legacy.item_mut(id).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = true;
+    assert!(legacy.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let bytes = save(&legacy).unwrap();
+    assert_eq!(required_version(&legacy), 6);
+    let shared = craft_designcraft_format::load::<Document>(&bytes).unwrap();
+    assert!(shared.document.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let reopened = load(&bytes).unwrap();
+    assert!(reopened.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let modern = load(&save(&original).unwrap()).unwrap();
+    assert!(!modern.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    assert_eq!(required_version(&modern), 2);
+}
+
+#[test]
+fn legacy_baselines_keep_linked_assets_and_their_proxies_in_format_six() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), doc.default_layer(), "Legacy", ParaFormat::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = true;
+    let aid = png_asset(&mut doc, b"private original");
+    let asset = Arc::make_mut(doc.assets.get_mut(&aid).unwrap());
+    asset.storage = Storage::Linked;
+    asset.link = Some("missing.png".into());
+    asset.link_fingerprint = Some(designcraft_doc::Fingerprint { size: b"private original".len() as u64, mtime: 0 });
+    asset.proxy = Some(designcraft_doc::Proxy { mime: "image/png".into(), pixels: (1, 1), data: AssetData::embedded(b"proxy".to_vec()) });
+    place(&mut doc, aid, 0.0);
+    let bytes = save(&doc).unwrap();
+    assert_eq!(asset_entries(&bytes), 0);
+    let reopened = load(&bytes).unwrap();
+    assert_eq!(reopened.assets[&aid].storage, Storage::Linked);
+    assert_eq!(reopened.assets[&aid].proxy.as_ref().unwrap().data.load().unwrap().as_slice(), b"proxy");
+    assert!(reopened.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+}
+
 fn png_asset(d: &mut Document, data: &[u8]) -> AssetId {
     let aid = AssetId(d.alloc());
     let a = Asset {
@@ -926,13 +968,29 @@ fn linked_asset_roundtrips_as_record_and_proxy_without_original() {
 }
 
 #[test]
-fn embedded_documents_keep_their_older_version_and_version_5_loads() {
+fn embedded_documents_keep_their_older_version_with_the_capability_six_reader() {
     let mut d = Document::new(&NewDocument::default());
     assert_eq!(zip_version(&save(&d).unwrap()), 2);
     let aid = png_asset(&mut d, &[1, 2, 3]);
     place(&mut d, aid, 0.0);
     assert_eq!(zip_version(&save(&d).unwrap()), 2);
-    assert_eq!(VERSION, 5);
+    assert_eq!(craft_designcraft_format::VERSION, 6);
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
+}
+
+#[test]
+fn duplicate_format_one_frame_ids_are_repaired_without_guessing_their_metrics() {
+    let mut doc = Document::new(&NewDocument::default());
+    for text in ["First", "Second"] {
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), doc.default_layer(), text, ParaFormat::default()).unwrap();
+    }
+    let first = doc.spreads[0].items[0].id;
+    let second_story = doc.spreads[0].items[1].text_frame().unwrap().story;
+    doc.story_mut(second_story).unwrap().frames[0] = first;
+    Arc::make_mut(&mut Arc::make_mut(&mut doc.spreads[0]).items[1]).id = first;
+    let loaded = load(&serde_json::to_vec(&doc).unwrap()).unwrap();
+    let frames = &loaded.spreads[0].items;
+    assert_ne!(frames[0].id, frames[1].id);
+    assert!(frames.iter().all(|item| !item.text_frame().unwrap().options.legacy_first_baseline));
 }

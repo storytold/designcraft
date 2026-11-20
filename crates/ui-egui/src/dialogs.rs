@@ -1247,6 +1247,7 @@ pub(crate) fn text_frame_fields(
         "columns": o.columns, "gutter": fm(o.gutter),
         "columnsKind": kind(serde_json::to_value(o.columns_kind).unwrap_or_default()), "columnWidth": fm(width),
         "balanceColumns": o.balance_columns, "ignoreWrap": o.ignore_wrap,
+        "legacyFirstBaseline": o.legacy_first_baseline,
         "firstBaseline": kind(serde_json::to_value(o.first_baseline).unwrap_or_default()), "firstBaselineMin": fm(o.first_baseline_min),
         "insetTop": fm(o.inset[0]), "insetLeft": fm(o.inset[1]), "insetBottom": fm(o.inset[2]), "insetRight": fm(o.inset[3]),
         "verticalJustification": serde_json::to_value(o.vertical_justification).unwrap_or(Value::Null),
@@ -1310,6 +1311,7 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
         ui.vertical(|ui| match d.s("section").as_str() {
             "baseline" => {
                 crate::rtl::label(ui, egui::RichText::new(tr("First Baseline")).font(semibold(12.0)));
+                check(ui, d, "legacyFirstBaseline", tr("Use legacy first-baseline metrics"));
                 egui::Grid::new("tfo_fb").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
                     let name = crate::rtl::label(ui, tr("Offset:"));
                     translated_combo(
@@ -1750,7 +1752,7 @@ fn text_frame_params(app: &DesignApp, d: &Dialog) -> Result<Map<String, Value>, 
     if edited(d, "firstBaselineMin") {
         p.insert("firstBaselineMin".into(), json!(d.m("firstBaselineMin").ok_or_else(|| bad("the first baseline minimum is not a measure"))?));
     }
-    for key in ["balanceColumns", "ignoreWrap"] {
+    for key in ["balanceColumns", "ignoreWrap", "legacyFirstBaseline"] {
         if edited(d, key) {
             p.insert(key.into(), json!(d.b(key)));
         }

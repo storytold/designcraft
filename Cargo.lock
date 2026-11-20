@@ -1126,10 +1126,10 @@ dependencies = [
 [[package]]
 name = "craft-designcraft-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
+source = "git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178#a688b16be6912257228127cb4bf7c8bd5f0f6178"
 dependencies = [
  "craft-document-bundle",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178)",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1156,9 +1156,9 @@ source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe
 [[package]]
 name = "craft-document-bundle"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
+source = "git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178#a688b16be6912257228127cb4bf7c8bd5f0f6178"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
+ "craft-zip 0.1.0 (git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178)",
  "serde_json",
  "thiserror 2.0.21",
  "zip 9.1.1",
@@ -1201,6 +1201,11 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
 
 [[package]]
+name = "craft-eps"
+version = "0.1.0"
+source = "git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178#a688b16be6912257228127cb4bf7c8bd5f0f6178"
+
+[[package]]
 name = "craft-epub"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
@@ -1215,7 +1220,7 @@ name = "craft-file-formats"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
 dependencies = [
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
  "craft-idml 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
  "craft-svg",
  "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
@@ -1456,7 +1461,7 @@ name = "craft-ps"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
 dependencies = [
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
  "kurbo",
  "miniz_oxide 0.8.9",
  "pdf-writer",
@@ -1636,6 +1641,16 @@ dependencies = [
 name = "craft-zip"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3#3dff4793f1a5bd1f99a4fe3280d48f515158dff3"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip 9.1.1",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/ForestParks/craft-libs?rev=a688b16be6912257228127cb4bf7c8bd5f0f6178#a688b16be6912257228127cb4bf7c8bd5f0f6178"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -1997,7 +2012,7 @@ name = "designcraft-images"
 version = "0.21.0"
 dependencies = [
  "craft-cms",
- "craft-eps",
+ "craft-eps 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3dff4793f1a5bd1f99a4fe3280d48f515158dff3)",
  "craft-file-formats",
  "craft-image-codecs",
  "craft-jpeg",

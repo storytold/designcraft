@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), legacyFirstBaseline?: bool (explicit recovery of pre-metrics first baselines; not inferred from ambiguous native format 1), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -2757,6 +2757,22 @@ fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
     has_selection(s)
 }
 
+fn apply_first_baseline_options(
+    options: &mut designcraft_doc::TextFrameOptions,
+    first_baseline: Option<designcraft_doc::FirstBaseline>,
+    legacy_first_baseline: Option<bool>,
+) {
+    if let Some(value) = first_baseline {
+        if value != options.first_baseline {
+            options.legacy_first_baseline = false;
+        }
+        options.first_baseline = value;
+    }
+    if let Some(value) = legacy_first_baseline {
+        options.legacy_first_baseline = value;
+    }
+}
+
 fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "object.textFrameOptions";
     let st = s.doc()?;
@@ -2818,6 +2834,11 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
     let inset = frame_inset_param(p)?;
     let vertical_justification: Option<designcraft_doc::VerticalJustification> =
         frame_choice_param(p, "verticalJustification", "top|center|bottom|justify")?;
+    let legacy_first_baseline = match p.get("legacyFirstBaseline") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        Some(value) => return Err(bad(ID, format!("legacyFirstBaseline must be a boolean, not {value}"))),
+    };
     let first_baseline: Option<designcraft_doc::FirstBaseline> =
         frame_choice_param(p, "firstBaseline", "ascent|capHeight|leading|xHeight|fixed|emboxHeight")?;
     let auto_size: Option<designcraft_doc::AutoSize> =
@@ -2893,9 +2914,7 @@ fn text_frame_options(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = vertical_justification {
                 o.vertical_justification = v;
             }
-            if let Some(v) = first_baseline {
-                o.first_baseline = v;
-            }
+            apply_first_baseline_options(o, first_baseline, legacy_first_baseline);
             if let Some(v) = auto_size {
                 o.auto_size = v;
             }

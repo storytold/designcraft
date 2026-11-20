@@ -5909,3 +5909,26 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+#[test]
+fn explicit_legacy_baseline_dialog_recovery_roundtrips_and_cancel_keeps_layout() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect":[36,36,336,236],"content":"text","text":"Legacy"})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(!d.b("legacyFirstBaseline"));
+    d.fields.insert("legacyFirstBaseline".into(), json!(true));
+    app.ui.dialog = Some(d);
+    confirm(&mut app).unwrap();
+    assert!(app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.legacy_first_baseline);
+    let before = app.session.doc().unwrap().doc.clone();
+    let mut d = Dialog::new("textFrameOptions", json!({}));
+    seed_text_frame_options(&app, &mut d);
+    assert!(d.b("legacyFirstBaseline"));
+    d.fields.insert("legacyFirstBaseline".into(), json!(false));
+    app.ui.dialog = Some(d);
+    cancel(&mut app);
+    assert_eq!(app.session.doc().unwrap().doc, before);
+}

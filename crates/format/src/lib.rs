@@ -13,8 +13,11 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 pub use craft_designcraft_format::{
-    EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, VERSION, is_designcraft, read_preview, starts_designcraft,
+    EXTENSION, Error as FormatError, MAX_PREVIEW_BYTES, MIME, PREVIEW, is_designcraft, read_preview, starts_designcraft,
 };
+
+/// Native schema capabilities and migrations are owned by the shared codec.
+pub const VERSION: u32 = craft_designcraft_format::VERSION;
 
 #[cfg(test)]
 mod tests;

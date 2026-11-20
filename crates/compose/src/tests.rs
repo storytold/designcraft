@@ -4659,6 +4659,22 @@ fn first_baseline_in_dir(family: &str, vertical: bool, opts: impl Fn(&mut design
 }
 
 #[test]
+fn legacy_native_frames_keep_the_old_first_baseline_metrics() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyBase 07", Some(700)));
+    for (kind, offset) in [(FirstBaseline::Ascent, 20.0), (FirstBaseline::CapHeight, 14.4), (FirstBaseline::XHeight, 10.0)] {
+        let baseline = first_baseline_in("LegacyBase 07", |options| {
+            options.legacy_first_baseline = true;
+            options.first_baseline = kind;
+        });
+        assert!((baseline - (40.0 + offset)).abs() < 0.001, "{kind:?}: {baseline}");
+    }
+    let modern = first_baseline_in("LegacyBase 07", |_| {});
+    assert!((modern - 54.0).abs() < 0.001, "new documents keep modern metrics");
+}
+
+#[test]
 fn ascent_first_baseline_uses_the_typographic_ascender() {
     use designcraft_doc::FirstBaseline;
     let db = designcraft_fonts::FontDb::global();
@@ -10486,6 +10502,310 @@ fn cross_reference_text_breaks_at_its_spaces() {
     for l in &lines {
         for w in l.split(' ').filter(|w| !w.is_empty()) {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
+}
+
+#[test]
+fn vertical_embox_is_an_invariant_shared_by_legacy_and_modern_metrics() {
+    use designcraft_doc::FirstBaseline;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(typo_test_font("LegacyVert 09", Some(700)));
+    let at = |legacy| {
+        first_baseline_in_dir("LegacyVert 09", true, |o| {
+            o.legacy_first_baseline = legacy;
+            o.first_baseline = FirstBaseline::EmboxHeight;
+        })
+    };
+    assert!((at(true) - at(false)).abs() < 0.001);
+}
+
+#[test]
+fn legacy_nested_cell_and_footnote_text_inherits_the_frame_baseline_metrics() {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacyNest 16";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let (mut doc, sid, fid) = doc_with("Body text", Rect::new(0.0, 0.0, 300.0, 500.0), ParaAttrs::default());
+    let mut table = Table::new(777, 1, 1, 0, 0, 180.0);
+    table.cells[0].first_baseline = FirstBaseline::Ascent;
+    table.cells[0].text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+    table.cells[0].text.format_chars(0..4, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.size = Some(20.0);
+    });
+    doc.story_mut(sid).unwrap().insert_table(0, table);
+    let note_at = doc.story(sid).unwrap().text.find("Body").unwrap() + 4;
+    doc.story_mut(sid).unwrap().insert_note(note_at, "Note", ParaFormat::default());
+    let note = std::sync::Arc::make_mut(&mut doc.story_mut(sid).unwrap().notes[0]);
+    note.text.format_chars(0..4, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.size = Some(20.0);
+    });
+    doc.footnote_options.first_baseline = FirstBaseline::Ascent;
+    let at = |doc: &mut Document, legacy| {
+        doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = legacy;
+        let cs = compose_story(doc, sid, &ComposeOptions::default());
+        let frame = cs.frame(fid).unwrap();
+        let cell = &frame.tables[0].cells[0].text.frames[0].lines[0];
+        let note = &frame.notes[0].text.frames[0].lines[0];
+        (cell.baseline, note.baseline)
+    };
+    let modern = at(&mut doc, false);
+    let legacy = at(&mut doc, true);
+    assert!((legacy.0 - modern.0).abs() > 0.1, "cell baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
+    assert!((legacy.1 - modern.1).abs() > 0.1, "note baseline must use the inherited compatibility bit: {legacy:?} vs {modern:?}");
+}
+
+fn legacy_flow_table() -> designcraft_doc::Table {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacyFlow 17";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let mut table = Table::new(778, 6, 1, 1, 1, 180.0);
+    table.options.repeat_header = true;
+    table.options.repeat_footer = true;
+    for cell in &mut table.cells {
+        cell.first_baseline = FirstBaseline::Ascent;
+        cell.text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+        cell.text.insert_note(4, "Note", ParaFormat::default());
+        let note = std::sync::Arc::make_mut(&mut cell.text.notes[0]);
+        note.text.format_chars(0..4, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+        let mut nested = Table::new(779, 1, 1, 0, 0, 140.0);
+        nested.cells[0].first_baseline = FirstBaseline::Ascent;
+        nested.cells[0].text = designcraft_doc::Story::with_text(StoryId(0), "Nested", ParaFormat::default());
+        nested.cells[0].text.format_chars(0..6, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+        let end = cell.text.len();
+        cell.text.insert_table(end, nested);
+        let end = cell.text.len();
+        cell.text.format_chars(0..end, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+    }
+    table
+}
+
+fn legacy_flow_doc(table: &designcraft_doc::Table, heights: &[f64], flags: &[bool], intro: bool) -> (Document, StoryId) {
+    assert_eq!(heights.len(), flags.len());
+    let mut doc = Document::new(&NewDocument::default());
+    doc.footnote_options.first_baseline = designcraft_doc::FirstBaseline::Ascent;
+    let layer = doc.default_layer();
+    let mut ids = Vec::new();
+    let mut story = None;
+    for (i, (&height, &legacy)) in heights.iter().zip(flags).enumerate() {
+        let y = i as f64 * 12000.0;
+        let text = if i == 0 && intro { "Intro" } else { "" };
+        let (id, sid) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, y, 300.0, y + height), layer, text, ParaFormat::default()).unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.legacy_first_baseline = legacy;
+        if let Some(&prior) = ids.last() {
+            doc.thread(prior, id).unwrap();
+        } else {
+            story = Some(sid);
+        }
+        ids.push(id);
+    }
+    let sid = story.unwrap();
+    let text = doc.story_mut(sid).unwrap();
+    let at = text.len();
+    text.insert_table(at, table.clone());
+    doc.check().unwrap();
+    (doc, sid)
+}
+
+fn legacy_cell_signature(cell: &crate::table::PlacedCell) -> Vec<f64> {
+    let mut result = vec![cell.rect.height()];
+    let frame = &cell.text.frames[0];
+    result.extend(frame.lines.iter().map(|line| line.baseline));
+    for nested in &frame.tables {
+        for child in &nested.cells {
+            result.extend(legacy_cell_signature(child));
+        }
+    }
+    for note in &frame.notes {
+        result.extend(note.text.frames[0].lines.iter().map(|line| line.baseline));
+    }
+    result
+}
+
+fn legacy_flow_reference(table: &designcraft_doc::Table, legacy: bool) -> Vec<Vec<f64>> {
+    let (doc, sid) = legacy_flow_doc(table, &[10000.0], &[legacy], false);
+    let composed = compose_story(&doc, sid, &ComposeOptions::default());
+    assert!(!composed.is_overset());
+    composed.frames[0].tables[0].cells.iter().map(legacy_cell_signature).collect()
+}
+
+#[test]
+fn legacy_table_fragments_recompose_cells_for_each_destination_frame() {
+    let table = legacy_flow_table();
+    let reference = [legacy_flow_reference(&table, false), legacy_flow_reference(&table, true)];
+    assert!((reference[0][1][0] - reference[1][1][0]).abs() > 0.1, "fixture must distinguish row heights");
+    for flags in [[false, true, false], [true, false, true]] {
+        let height = |legacy: bool| {
+            let rows = &reference[usize::from(legacy)];
+            rows[0][0] + rows[1][0] + rows.last().unwrap()[0] + 0.1
+        };
+        let (doc, sid) = legacy_flow_doc(&table, &[height(flags[0]), height(flags[1]), 10000.0], &flags, false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        for (index, frame) in composed.frames.iter().enumerate() {
+            assert_eq!(frame.tables.len(), 1, "each destination must receive a fragment");
+            let fragment = &frame.tables[0];
+            for cell in &fragment.cells {
+                let expected = &reference[usize::from(flags[index])][cell.row];
+                let actual = legacy_cell_signature(cell);
+                assert_eq!(actual.len(), expected.len());
+                assert!(
+                    actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6),
+                    "frame {index}, row {}: {actual:?} vs {expected:?}",
+                    cell.row
+                );
+            }
+            if index > 0 {
+                assert!(fragment.cell(0, 0).unwrap().repeated);
+            }
+        }
+        let header = |index: usize| &composed.frames[index].tables[0].cell(0, 0).unwrap().text;
+        assert!(!std::sync::Arc::ptr_eq(header(0), header(1)));
+        assert!(std::sync::Arc::ptr_eq(header(0), header(2)), "returning to the same context should reuse the header layout");
+
+        let mut specs = crate::frame_specs(&doc, sid);
+        specs[2].left_page = !specs[0].left_page;
+        let composed = crate::compose(&doc, doc.story(sid).unwrap(), &specs, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        let header = |index: usize| &composed.frames[index].tables[0].cell(0, 0).unwrap().text;
+        assert!(!std::sync::Arc::ptr_eq(header(0), header(2)), "a different page side needs its own layout");
+    }
+}
+
+#[test]
+fn legacy_table_pushed_to_a_different_frame_recomputes_row_heights() {
+    let table = legacy_flow_table();
+    for legacy in [false, true] {
+        let expected = legacy_flow_reference(&table, legacy);
+        let (doc, sid) = legacy_flow_doc(&table, &[30.0, 10000.0], &[!legacy, legacy], true);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+        assert_eq!(composed.frames[1].tables.len(), 1);
+        for cell in &composed.frames[1].tables[0].cells {
+            let actual = legacy_cell_signature(cell);
+            assert_eq!(actual.len(), expected[cell.row].len());
+            assert!(
+                actual.iter().zip(&expected[cell.row]).all(|(a, b)| (a - b).abs() < 1e-6),
+                "row {}: {actual:?} vs {:?}",
+                cell.row,
+                expected[cell.row]
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_table_skips_an_empty_frame_that_cannot_hold_the_next_row() {
+    use designcraft_doc::{FirstBaseline, Table};
+    let family = "LegacySkip 17";
+    designcraft_fonts::FontDb::global().add_font(typo_test_font(family, Some(700)));
+    let mut table = Table::new(780, 2, 1, 0, 0, 180.0);
+    for cell in &mut table.cells {
+        cell.first_baseline = FirstBaseline::Ascent;
+        cell.insets = [0.0; 4];
+        cell.text = designcraft_doc::Story::with_text(StoryId(0), "Cell", ParaFormat::default());
+        cell.text.format_chars(0..4, |f| {
+            f.over.font_family = Some(family.into());
+            f.over.size = Some(20.0);
+        });
+    }
+    let references = [legacy_flow_reference(&table, false), legacy_flow_reference(&table, true)];
+    let short = usize::from(references[1][0][0] < references[0][0][0]);
+    let tall = 1 - short;
+    let small = references[short][0][0];
+    let large = references[tall][0][0];
+    assert!(large - small > 0.1);
+    let h = (small + large.min(2.0 * small)) / 2.0;
+    let (doc, sid) = legacy_flow_doc(&table, &[h, h, h], &[short == 1, tall == 1, short == 1], false);
+    let composed = compose_story(&doc, sid, &ComposeOptions::default());
+    assert!(!composed.is_overset());
+    assert_eq!(composed.frames[0].tables[0].cells[0].row, 0);
+    assert!(composed.frames[1].tables.is_empty());
+    assert_eq!(composed.frames[2].tables[0].cells[0].row, 1);
+}
+
+#[test]
+fn table_final_body_row_stays_with_its_footer() {
+    use designcraft_doc::{RowHeightMode, Table};
+
+    for repeat_footer in [false, true] {
+        let mut table = Table::new(781, 1, 1, 0, 1, 180.0);
+        table.options.repeat_footer = repeat_footer;
+        for (row, height) in table.rows.iter_mut().zip([60.0, 20.0]) {
+            row.mode = RowHeightMode::Exactly;
+            row.height = height;
+        }
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0, 100.0], &[false, true], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty(), "the final body row must stay with its footer");
+        let fragment = &composed.frames[1].tables[0];
+        assert!(fragment.first && fragment.last);
+        assert_eq!(fragment.cells.len(), 2);
+        assert!((fragment.rect.height() - 80.0).abs() < 1e-6);
+
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0], &[false], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+    }
+}
+
+#[test]
+fn table_continuation_can_defer_only_a_non_repeating_footer() {
+    use designcraft_doc::{RowHeightMode, Table};
+
+    for repeat_footer in [false, true] {
+        let mut table = Table::new(782, 2, 1, 0, 1, 180.0);
+        table.options.repeat_footer = repeat_footer;
+        for (row, height) in table.rows.iter_mut().zip([60.0, 60.0, 20.0]) {
+            row.mode = RowHeightMode::Exactly;
+            row.height = height;
+        }
+        let (doc, sid) = legacy_flow_doc(&table, &[70.0, 100.0, 100.0], &[false, true, false], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        if repeat_footer {
+            assert!(composed.frames[0].tables.is_empty(), "a repeated footer must fit with the body row");
+            let footer = composed.frames[1].tables[0].cell(2, 0).unwrap();
+            assert!(footer.repeated);
+            assert!(!composed.frames[2].tables[0].cell(2, 0).unwrap().repeated);
+        } else {
+            assert!(composed.frames[0].tables[0].cell(0, 0).is_some());
+            assert!(composed.frames[0].tables[0].cell(2, 0).is_none());
+            assert!(composed.frames[1].tables[0].cell(2, 0).is_some());
+        }
+    }
+}
+
+#[test]
+fn legacy_table_skips_frames_without_emitting_or_repeating_a_first_header() {
+    let table = legacy_flow_table();
+    for legacy in [false, true] {
+        let expected = legacy_flow_reference(&table, legacy);
+        let (doc, sid) = legacy_flow_doc(&table, &[1.0, 1.0, 10000.0], &[!legacy, legacy, legacy], false);
+        let composed = compose_story(&doc, sid, &ComposeOptions::default());
+        assert!(!composed.is_overset());
+        assert!(composed.frames[0].tables.is_empty());
+        assert!(composed.frames[1].tables.is_empty());
+        let fragment = &composed.frames[2].tables[0];
+        assert!(!fragment.cell(0, 0).unwrap().repeated);
+        assert!(!fragment.cells.last().unwrap().repeated);
+        for cell in &fragment.cells {
+            let actual = legacy_cell_signature(cell);
+            assert_eq!(actual.len(), expected[cell.row].len());
+            assert!(actual.iter().zip(&expected[cell.row]).all(|(a, b)| (a - b).abs() < 1e-6));
         }
     }
 }
