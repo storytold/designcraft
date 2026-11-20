@@ -396,6 +396,10 @@ pub struct Contour {
     pub graphic_clip: Vec<Vec<Point>>,
     pub graphic_clip_even_odd: bool,
     pub offset: f64,
+    /// How much further text keeps from the outline along x and along y: the reach of the object's
+    /// stroke, which a transform that scales one axis more than the other stretches the same way
+    /// ([`Contour::with_reach`]). Added to the offset on each axis.
+    pub reach: [f64; 2],
 }
 
 /// A filled shape: closed polylines and their fill rule (non-zero, or even-odd).
@@ -433,7 +437,18 @@ impl Contour {
             graphic_clip: Vec::new(),
             graphic_clip_even_odd: false,
             offset: offset.max(0.0),
+            reach: [0.0; 2],
         })
+    }
+
+    /// This outline with text kept `reach` further from it along x and along y.
+    fn with_reach(self, reach: [f64; 2]) -> Contour {
+        Contour { reach: reach.map(|r| if r.is_finite() { r.max(0.0) } else { 0.0 }), ..self }
+    }
+
+    /// The distance text keeps from the outline along x and along y.
+    fn keep_off(&self) -> (f64, f64) {
+        (self.offset + self.reach[0], self.offset + self.reach[1])
     }
 
     /// This outline counted only within `frame` (after `to_inner`); unclipped if the frame is
@@ -463,6 +478,11 @@ impl Contour {
             graphic_clip: map(self.graphic_clip),
             graphic_clip_even_odd: self.graphic_clip_even_odd,
             offset: self.offset,
+            // The box the reach spans, mapped by `a` (the offset has always stayed as it was).
+            reach: {
+                let [xa, xb, xc, xd, ..] = a.as_coeffs();
+                [xa.abs() * self.reach[0] + xc.abs() * self.reach[1], xb.abs() * self.reach[0] + xd.abs() * self.reach[1]]
+            },
         }
     }
 
@@ -480,27 +500,30 @@ impl Contour {
                 r = r.intersect(b);
             }
         }
-        r.inflate(self.offset, self.offset)
+        let (ox, oy) = self.keep_off();
+        r.inflate(ox, oy)
     }
 
     /// Horizontal extent of the outline (offset included) within the band `y0..y1`: the band is
     /// widened by the offset, the outline's x-range there is limited to the clip's x-range there,
     /// then widened by the offset too.
     fn band_extent(&self, y0: f64, y1: f64) -> Option<(f64, f64)> {
-        let (y0, y1) = (y0 - self.offset, y1 + self.offset);
+        let (ox, oy) = self.keep_off();
+        let (y0, y1) = (y0 - oy, y1 + oy);
         let (mut lo, mut hi) = rings_band_extent(&self.rings, y0, y1)?;
         for c in self.clips() {
             let (a, b) = rings_band_extent(c.rings, y0, y1)?;
             (lo, hi) = (lo.max(a), hi.min(b));
         }
-        (lo <= hi).then_some((lo - self.offset, hi + self.offset))
+        (lo <= hi).then_some((lo - ox, hi + ox))
     }
 
     /// Occupied intervals across the whole line band, preserving gaps between parts of a
     /// concave or compound outline. Project boundary edges and the filled middle slice: any
     /// area that starts or ends inside the band is bounded by those projected edges.
     fn band_spans(&self, y0: f64, y1: f64) -> Vec<(f64, f64)> {
-        let (low, high) = (y0 - self.offset, y1 + self.offset);
+        let (ox, oy) = self.keep_off();
+        let (low, high) = (y0 - oy, y1 + oy);
         if !low.is_finite() || !high.is_finite() || high < low {
             return self.band_extent(y0, y1).into_iter().collect();
         }
@@ -520,7 +543,7 @@ impl Contour {
             let exact = if projected.iter().any(|p| p.len() > 128) { None } else { clipped_band_spans(&shapes, low, high) };
             spans = exact.unwrap_or_else(|| projected.iter().fold(spans, |s, p| intersect_spans(&s, p)));
         }
-        merge_spans(spans.into_iter().map(|(a, b)| (a - self.offset, b + self.offset)).collect())
+        merge_spans(spans.into_iter().map(|(a, b)| (a - ox, b + ox)).collect())
     }
 }
 
@@ -916,10 +939,12 @@ fn wrap_exclusion(
         return Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None };
     }
     let contour = if wrap.mode == WrapMode::Contour { outline() } else { None }.and_then(|src| {
-        // The contour is in the frame's inner space: the stroke's reach there is its own reach
-        // scaled by the transform from the stroked object's space to the frame's.
+        // The contour is in the frame's inner space: the stroke's reach there, along x and along y
+        // (a transform may scale one axis more than the other), is its own reach carried through
+        // the transform from the stroked object's space to the frame's.
         let to_frame = inv * xf;
-        let mut c = Contour::of(&src.path, to_frame, o[0] + outset * to_frame.determinant().abs().sqrt())?;
+        let [fa, fb, fc, fd, ..] = to_frame.as_coeffs();
+        let mut c = Contour::of(&src.path, to_frame, o[0])?.with_reach([outset * fa.hypot(fc), outset * fb.hypot(fd)]);
         if let Some(frame) = &src.frame {
             c = c.within(frame, inv * xf);
         }

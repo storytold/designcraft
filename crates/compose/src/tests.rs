@@ -263,6 +263,28 @@ fn contour_and_bounding_box_wraps_clear_a_stroke_the_same_in_a_scaled_frame() {
     assert!(near(contour, bbox), "contour {contour} against bounding box {bbox}");
 }
 
+#[test]
+fn contour_and_bounding_box_wraps_clear_a_stroke_the_same_under_a_scale_of_one_axis() {
+    use designcraft_geom::Affine;
+    let wide = Affine::scale_non_uniform(2.0, 1.0);
+    // (object rectangle, its transform, the frame's transform, where the first line starts in the
+    // frame's units): a 4 pt centred stroke reaches 2 in the object's own units.
+    let cases = [
+        // Scaled along x: the transformed path ends at 120 and the stroke reaches 4 beyond it.
+        (Rect::new(0.0, 0.0, 60.0, 60.0), wide, Affine::IDENTITY, 124.0),
+        // A frame drawn twice as wide: the object's edge and the 2 pt of stroke are halved.
+        (Rect::new(0.0, 0.0, 120.0, 60.0), Affine::IDENTITY, wide, 61.0),
+        // Both: the object's own x scale is cancelled by the frame's, the stroke keeps its 2.
+        (Rect::new(0.0, 0.0, 60.0, 60.0), wide, wide, 62.0),
+    ];
+    for (i, (rect, xf, frame_xf, expected)) in cases.into_iter().enumerate() {
+        let bbox = first_line_x_beside_transformed_wrap(rect, xf, frame_xf, WrapMode::BoundingBox);
+        let contour = first_line_x_beside_transformed_wrap(rect, xf, frame_xf, WrapMode::Contour);
+        assert!(near(bbox, expected), "case {i} bounding box: {bbox}, expected {expected}");
+        assert!(near(contour, expected), "case {i} contour: {contour}, expected {expected}");
+    }
+}
+
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
 /// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
 /// `wrap`.
