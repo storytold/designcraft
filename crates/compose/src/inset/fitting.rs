@@ -92,48 +92,71 @@ fn route_edge(doc: &Document, host: designcraft_doc::ItemId, route: designcraft_
     edge.is_finite().then_some(edge)
 }
 
-pub(super) fn route_dependencies(areas: &[FrameSpec]) -> Vec<Option<Option<usize>>> {
+pub(super) fn route_dependencies(areas: &[FrameSpec]) -> Vec<Vec<Option<Option<usize>>>> {
     let indices: std::collections::HashMap<_, _> = areas.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    let after: Vec<_> = areas
+    let after: Vec<Vec<_>> = areas
         .iter()
         .map(|f| {
-            f.opts.note_stream.as_ref().and_then(|s| s.follow_inset).and_then(|f| match f.after {
-                Some(designcraft_doc::InsetAfter::Route(id)) => Some(id),
-                _ => None,
+            f.opts.note_stream.as_ref().and_then(|s| s.follow_inset.as_ref()).map_or_else(Vec::new, |f| {
+                f.rules()
+                    .iter()
+                    .map(|r| match r.after {
+                        Some(designcraft_doc::InsetAfter::Route(id)) => Some(indices.get(&id).copied()),
+                        _ => None,
+                    })
+                    .collect()
             })
         })
         .collect();
     // 0 = unvisited, 1 = current path, 2 = valid chain, 3 = reaches a cycle.
     let mut status = vec![0_u8; areas.len()];
     for root in 0..areas.len() {
-        let mut path = Vec::new();
-        let mut next = Some(root);
-        let valid = loop {
-            let Some(index) = next else { break true };
-            match status.get(index).copied() {
-                Some(0) => {
-                    #[cfg(test)]
-                    DEPENDENCY_VISITS.with(|n| n.set(n.get() + 1));
-                    if let Some(state) = status.get_mut(index) {
-                        *state = 1;
-                    }
-                    path.push(index);
-                    next = after.get(index).copied().flatten().and_then(|id| indices.get(&id).copied());
+        if status.get(root) != Some(&0) {
+            continue;
+        }
+        let mut stack = vec![(root, 0)];
+        while let Some((index, next)) = stack.last_mut() {
+            let index = *index;
+            if status.get(index) == Some(&0) {
+                #[cfg(test)]
+                DEPENDENCY_VISITS.with(|n| n.set(n.get() + 1));
+                if let Some(state) = status.get_mut(index) {
+                    *state = 1;
                 }
-                Some(2) | None => break true,
-                _ => break false,
             }
-        };
-        for index in path {
-            if let Some(state) = status.get_mut(index) {
-                *state = if valid { 2 } else { 3 };
+            let child = after.get(index).and_then(|rules| rules.get(*next)).copied();
+            *next += 1;
+            match child {
+                Some(Some(Some(child))) => match status.get(child).copied() {
+                    Some(0) => stack.push((child, 0)),
+                    Some(1 | 3) => {
+                        if let Some(state) = status.get_mut(index) {
+                            *state = 3;
+                        }
+                    }
+                    _ => {}
+                },
+                Some(_) => {}
+                None => {
+                    let invalid = status.get(index) == Some(&3)
+                        || after.get(index).is_some_and(|rules| rules.iter().flatten().flatten().any(|child| status.get(*child) == Some(&3)));
+                    if let Some(state) = status.get_mut(index) {
+                        *state = if invalid { 3 } else { 2 };
+                    }
+                    stack.pop();
+                }
             }
         }
     }
     after
         .into_iter()
         .enumerate()
-        .map(|(index, after)| after.map(|id| indices.get(&id).copied().filter(|previous| *previous < index && status.get(index) == Some(&2))))
+        .map(|(index, rules)| {
+            rules
+                .into_iter()
+                .map(|after| after.map(|previous| previous.filter(|previous| *previous < index && status.get(index) == Some(&2))))
+                .collect()
+        })
         .collect()
 }
 
@@ -174,7 +197,11 @@ fn fit_routes(
         .areas
         .iter()
         .any(|f| {
-            matches!(f.opts.note_stream.as_ref().and_then(|s| s.follow_inset).and_then(|f| f.after), Some(designcraft_doc::InsetAfter::Margin { .. }))
+            f.opts
+                .note_stream
+                .as_ref()
+                .and_then(|s| s.follow_inset.as_ref())
+                .is_some_and(|f| f.rules().iter().any(|r| matches!(r.after, Some(designcraft_doc::InsetAfter::Margin { .. }))))
         })
         .then(|| main_layout(doc, story, geometry.hosts, opts));
     let fit = |rows: &std::collections::HashMap<designcraft_doc::ItemId, f64>| {
@@ -189,10 +216,16 @@ fn fit_routes(
             opts,
             (Some(&series), ranges),
             |index, areas, fitted, warnings, frame_opts| {
-                let apply_follow = |areas: &mut [FrameSpec], warnings: &mut Vec<String>, frame_opts: &mut ComposeOptions| {
+                let apply_follow = |areas: &mut [FrameSpec],
+                                    warnings: &mut Vec<String>,
+                                    frame_opts: &mut ComposeOptions,
+                                    rule: usize,
+                                    follow: &designcraft_doc::InsetFollow| {
                     let Some(spec) = areas.get(index) else { return };
                     let id = spec.id;
-                    let Some(follow) = spec.opts.note_stream.as_ref().and_then(|s| s.follow_inset).filter(|f| f.valid()) else { return };
+                    if !follow.valid() {
+                        return;
+                    }
                     let margin = if let Some(designcraft_doc::InsetAfter::Margin { frame, series }) = follow.after {
                         let host = geometry.hosts.iter().find(|f| f.id == frame && f.page == Some(input.page));
                         let options = doc.note_options(series);
@@ -223,7 +256,7 @@ fn fit_routes(
                     } else {
                         None
                     };
-                    let dependency = dependencies.get(index).copied().flatten();
+                    let dependency = dependencies.get(index).and_then(|rules| rules.get(rule)).copied().flatten();
                     if dependency == Some(None) {
                         warnings.push(format!(
                             "followInset ignored on frame {}: after must name an earlier route of the same story and page without a cycle",
@@ -274,7 +307,15 @@ fn fit_routes(
                         }
                     }
                 };
-                apply_follow(areas, warnings, frame_opts);
+                let follows = areas.get(index).and_then(|spec| spec.opts.note_stream.as_ref()).and_then(|stream| stream.follow_inset.clone());
+                if let Some(follows) = follows.filter(|f| f.valid()) {
+                    // Start first makes collapsed areas independent of the JSON rule order.
+                    for edge in [designcraft_doc::InsetEdge::Start, designcraft_doc::InsetEdge::End] {
+                        for (rule, follow) in follows.rules().iter().enumerate().filter(|(_, rule)| rule.edge == edge) {
+                            apply_follow(areas, warnings, frame_opts, rule, follow);
+                        }
+                    }
+                }
                 if let Some(area) = areas.get_mut(index)
                     && let Some(height) = rows.get(&area.id)
                 {

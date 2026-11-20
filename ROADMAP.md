@@ -8,6 +8,8 @@
 
 - **2026-11-20** · Margin note series can stack contiguously from the page margin top with `placement.stack: "top"`; omitted stack retains beside-anchor placement. Native saves retain the mode; IDML warns that margin placement becomes ordinary footnotes (#2871).
 
+- 2026-11-20: routed note frames accept independent start and end followInset bounds, retaining single-rule files and retargeting both dependencies on copy (#2873).
+
 - 2026-11-20: D68 inset routes use physical-page anchors and text-bearing catchword ownership; auto leading follows source paragraphs, refits are bounded, band origins are incremental, and following feet retain catchword baseline rhythm (#2873).
 
 - 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).

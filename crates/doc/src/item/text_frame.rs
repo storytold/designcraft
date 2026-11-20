@@ -77,6 +77,64 @@ impl InsetFollow {
     }
 }
 
+/// One edge, or independent start and end bounds for the same route frame.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum InsetFollows {
+    Single(InsetFollow),
+    Edges(Vec<InsetFollow>),
+}
+
+impl From<InsetFollow> for InsetFollows {
+    fn from(value: InsetFollow) -> Self {
+        Self::Single(value)
+    }
+}
+
+impl InsetFollows {
+    pub fn rules(&self) -> &[InsetFollow] {
+        match self {
+            Self::Single(rule) => std::slice::from_ref(rule),
+            Self::Edges(rules) => rules,
+        }
+    }
+
+    pub fn rules_mut(&mut self) -> &mut [InsetFollow] {
+        match self {
+            Self::Single(rule) => std::slice::from_mut(rule),
+            Self::Edges(rules) => rules,
+        }
+    }
+
+    fn distinct_edges(&self) -> bool {
+        let rules = self.rules();
+        (1..=2).contains(&rules.len()) && (rules.len() == 1 || rules.first().map(|r| r.edge) != rules.last().map(|r| r.edge))
+    }
+
+    pub fn valid(&self) -> bool {
+        self.distinct_edges() && self.rules().iter().all(InsetFollow::valid)
+    }
+}
+
+impl<'de> Deserialize<'de> for InsetFollows {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            Single(InsetFollow),
+            Edges(Vec<InsetFollow>),
+        }
+        let value = match Input::deserialize(deserializer)? {
+            Input::Single(rule) => Self::Single(rule),
+            Input::Edges(rules) => Self::Edges(rules),
+        };
+        if !value.distinct_edges() {
+            return Err(serde::de::Error::custom("followInset requires one or two rules with distinct edges"));
+        }
+        Ok(value)
+    }
+}
+
 /// The host story and note series whose commentary this frame displays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,7 +145,36 @@ pub struct NoteStream {
     #[serde(default, skip_serializing_if = "super::InsetCatchwords::is_disabled")]
     pub catchword: super::InsetCatchwords,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub follow_inset: Option<InsetFollow>,
+    pub follow_inset: Option<InsetFollows>,
+}
+
+#[cfg(test)]
+mod dual_follow_tests {
+    #[test]
+    fn follow_inset_accepts_two_distinct_edges() {
+        let value = serde_json::json!({"story":1,"series":2,"followInset":[{"edge":"start","gap":3.0,"after":9},{"edge":"end","gap":0.0}]});
+        let route: super::NoteStream = serde_json::from_value(value.clone()).expect("both edges must deserialize");
+        assert_eq!(serde_json::to_value(route).unwrap(), value);
+    }
+
+    #[test]
+    fn follow_inset_rejects_duplicate_or_excess_edges() {
+        for rules in [
+            serde_json::json!([]),
+            serde_json::json!([{"edge":"start","gap":0.0},{"edge":"start","gap":2.0}]),
+            serde_json::json!([{"edge":"start","gap":0.0},{"edge":"end","gap":0.0},{"edge":"start","gap":0.0}]),
+        ] {
+            assert!(serde_json::from_value::<super::InsetFollows>(rules).is_err());
+        }
+    }
+
+    #[test]
+    fn follow_inset_keeps_single_object_form() {
+        let value = serde_json::json!({"edge":"start","gap":12.0,"after":9});
+        let rules: super::InsetFollows = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(rules.rules().len(), 1);
+        assert_eq!(serde_json::to_value(rules).unwrap(), value);
+    }
 }
 
 /// Text Frame Options.

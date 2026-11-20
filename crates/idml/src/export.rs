@@ -81,7 +81,7 @@ pub(crate) fn export_with_limit(doc: &Document, opts: &ExportOptions, embed_limi
     if doc.placed_items().iter().any(|item| item.text_frame().and_then(|f| f.options.note_stream.as_ref()).is_some_and(|s| s.follow_inset.is_some()))
     {
         ex.warnings.push(
-            "IDML cannot retain noteStream followInset geometry or its after route or margin-series dependency; export PDF for the composed route layout.".into(),
+            "IDML cannot retain noteStream followInset geometry (single or dual edges) or its after route or margin-series dependencies; export PDF for the composed route layout.".into(),
         );
     }
     if any_footnote(doc, |n| n.series != 0 || matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {

@@ -32,7 +32,8 @@ pub use paint::{
 };
 pub use text_frame::{
     AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, InsetAfter, InsetEdge,
-    InsetFollow, NoteStream, PathAlign, PathType, TextFrame, TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+    InsetFollow, InsetFollows, NoteStream, PathAlign, PathType, TextFrame, TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide,
+    vertical_text_xf,
 };
 
 fn is_zero_usize(v: &usize) -> bool {
