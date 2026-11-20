@@ -224,7 +224,8 @@ fn fit_routes(
         let mut seen = std::collections::HashSet::new();
         for area in input.areas.iter().rev() {
             let Some(series) = area.opts.note_stream.as_ref().filter(|s| s.catchword.enabled()).map(|s| s.series) else { continue };
-            if !seen.insert(series) {
+            let has_line = result.frames.iter().find(|f| f.frame == area.id).is_some_and(|f| super::catchwords::last_line(f, Some(series)).is_some());
+            if !has_line || !seen.insert(series) {
                 continue;
             }
             let catchwords = super::catchwords::options(doc, area, Some(series), &options.catchwords);

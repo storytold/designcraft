@@ -1309,3 +1309,33 @@ fn inherited_auto_catchword_uses_source_paragraph_percentage() {
             < 0.01
     );
 }
+
+#[test]
+fn empty_opted_in_route_does_not_steal_series_catchword() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(65), "", "First route.");
+    enable_catchwords(&mut doc, sid);
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.rfind("Main line.").unwrap();
+    let note = story.insert_note(at, "Second route.", Default::default()).unwrap();
+    story.note_mut(note).unwrap().series = 2;
+    let mut routes = Vec::new();
+    for (page, top) in [(0, 36.0), (0, 200.0), (1, 36.0)] {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, top, x + 636.0, top + 100.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true.into(), follow_inset: None });
+        routes.push(id);
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(routes[1]).unwrap().notes.is_empty());
+    let captions = &cs.frame(routes[0]).unwrap().catchwords;
+    assert_eq!(captions.len(), 1, "{:?}", cs.warnings);
+    assert_eq!(captions[0].source.as_ref(), "Second");
+    assert!(cs.frame(routes[1]).unwrap().catchwords.is_empty());
+}
