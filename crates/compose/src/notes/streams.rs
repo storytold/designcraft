@@ -112,7 +112,7 @@ pub(crate) fn fit_stream_page_ranges(
     ranges: &[Range<usize>],
 ) -> StreamPageFit {
     let selected = only.map(|id| [id]);
-    fit_stream_page_dynamic(doc, story, input, before, opts, (selected.as_ref().map(|ids| ids.as_slice()), ranges), |_, _, _, _| {})
+    fit_stream_page_dynamic(doc, story, input, before, opts, (selected.as_ref().map(|ids| ids.as_slice()), ranges), |_, _, _, _, _| {})
 }
 
 /// Adjust each route using already fitted predecessors, while keeping each series cursor alive.
@@ -123,7 +123,7 @@ pub(crate) fn fit_stream_page_dynamic(
     before: &StreamState,
     opts: &ComposeOptions,
     selection: (Option<&[u64]>, &[Range<usize>]),
-    mut adjust: impl FnMut(usize, &mut [FrameSpec], &[FrameText], &mut Vec<String>),
+    mut adjust: impl FnMut(usize, &mut [FrameSpec], &[FrameText], &mut Vec<String>, &mut ComposeOptions),
 ) -> StreamPageFit {
     let (only, ranges) = selection;
     let mut result = StreamPageFit {
@@ -174,11 +174,14 @@ pub(crate) fn fit_stream_page_dynamic(
     let mut sources = HashMap::new();
     let mut areas = input.areas.to_vec();
     for fi in 0..areas.len() {
-        adjust(fi, &mut areas, &result.frames, &mut result.warnings);
+        let mut adjusted_opts = opts.clone();
+        adjust(fi, &mut areas, &result.frames, &mut result.warnings, &mut adjusted_opts);
+        let opts = &adjusted_opts;
         let Some(frame) = areas.get(fi) else { continue };
         let Some(series) = frame.opts.note_stream.as_ref().map(|s| s.series) else { continue };
         let Some((notes, anchors, next, had_carry, previous)) = contexts.get_mut(&series) else { continue };
         let allow_split = doc.note_options(series).allow_split;
+        notes.route_first_baseline = opts.note_first_baseline;
         if let Some(out) = result.frames.get_mut(fi) {
             out.columns = frame.columns();
         }
@@ -231,7 +234,18 @@ pub(crate) fn fit_stream_page_dynamic(
                     break;
                 }
             }
-            for part in placed_parts(doc, story, notes, &notes.placed[placed_start..], *area, ci, opts.note_bands, previous, &mut sources) {
+            for part in placed_parts(
+                doc,
+                story,
+                notes,
+                &notes.placed[placed_start..],
+                *area,
+                ci,
+                opts.note_bands,
+                opts.note_first_baseline,
+                previous,
+                &mut sources,
+            ) {
                 if let Some(out) = result.frames.get_mut(fi) {
                     out.content_height = out.content_height.max(part.rect.y1 - frame.area.y0);
                     out.notes.push(part);
@@ -275,6 +289,7 @@ fn placed_parts(
     area: Rect,
     column: usize,
     bands: bool,
+    first_baseline: Option<f64>,
     previous: &mut Option<(f64, f64)>,
     sources: &mut HashMap<usize, Arc<str>>,
 ) -> Vec<PlacedNote> {
@@ -285,7 +300,9 @@ fn placed_parts(
         #[cfg(test)]
         PART_VISITS.with(|n| n.set(n.get() + 1));
         let Some(note) = story.notes.get(part.k) else { continue };
-        let y = if bands && first && part.part > 0 && previous.is_some() {
+        let y = if let Some(baseline) = first_baseline.filter(|_| first && !bands) {
+            area.y0 + baseline - part.m.first
+        } else if bands && first && part.part > 0 && previous.is_some() {
             area.y0
         } else {
             previous.map_or(area.y0 + o.space_before, |(baseline, _)| baseline + o.space_between + part.m.lead - part.m.first)

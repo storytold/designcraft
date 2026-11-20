@@ -73,6 +73,26 @@ pub(super) fn row_space(
     (sample.frames.first().and_then(|f| f.lines.first()).map_or(12.0, |l| l.leading) + descent - previous_descent).max(0.0)
 }
 
+/// The baseline rhythm used by a routed foot after a reserved catchword edge.
+pub(super) fn row_baseline(
+    doc: &Document,
+    story: &Story,
+    frame: &crate::FrameText,
+    spec: &FrameSpec,
+    series: Option<u64>,
+    options: &designcraft_doc::InsetCatchwords,
+    row: Rect,
+) -> Option<(f64, f64)> {
+    let part = series
+        .and_then(|id| frame.notes.iter().rev().find(|n| n.series == id))
+        .and_then(|n| story.notes.get(n.index).map(|source| (&source.text, n.text.frames.last().map_or(0, |f| f.range.end))));
+    let (source, at) = part.unwrap_or((story, frame.range.end));
+    let text = compose(doc, source, at, "\u{00a0}", spec, options);
+    let line = text.frames.first()?.lines.first()?;
+    let baseline = if styled(doc, options) { last_line(frame, series)?.0 + line.leading } else { row.y0 + line.baseline };
+    Some((baseline, line.leading))
+}
+
 pub(super) fn row_height(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> f64 {
     if options.style().is_none_or(|style| doc.styles.char_style(style).is_none()) {
         return super::fitting::CATCHWORD_SPACE;

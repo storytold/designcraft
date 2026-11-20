@@ -16,10 +16,12 @@ struct Cursor {
     tail_pending: bool,
     catchword: Option<Rect>,
     main_bottom: f64,
+    last_main: Option<crate::Line>,
     catchword_space: f64,
 }
 struct Trial {
     core_bottom: f64,
+    core_caption: Option<(f64, f64)>,
     first_line: Option<usize>,
     cut: usize,
     areas: Vec<FrameSpec>,
@@ -129,6 +131,7 @@ pub(super) fn route_dependencies(areas: &[FrameSpec]) -> Vec<Option<Option<usize
 
 struct RouteGeometry<'a> {
     core: Option<(designcraft_doc::ItemId, f64)>,
+    caption: Option<(f64, f64)>,
     catchwords: Option<&'a InsetColumns>,
     routes: &'a [FrameSpec],
     later_ranges: Option<&'a [std::ops::Range<usize>]>,
@@ -168,8 +171,8 @@ fn fit_routes(
             before,
             opts,
             (Some(&series), ranges),
-            |index, areas, fitted, warnings| {
-                let apply_follow = |areas: &mut [FrameSpec], warnings: &mut Vec<String>| {
+            |index, areas, fitted, warnings, frame_opts| {
+                let apply_follow = |areas: &mut [FrameSpec], warnings: &mut Vec<String>, frame_opts: &mut ComposeOptions| {
                     let Some(spec) = areas.get(index) else { return };
                     let id = spec.id;
                     let Some(follow) = spec.opts.note_stream.as_ref().and_then(|s| s.follow_inset).filter(|f| f.valid()) else { return };
@@ -181,30 +184,45 @@ fn fit_routes(
                         ));
                         return;
                     }
-                    let Some((host, bottom)) = geometry.core else { return };
+
                     let reference = dependency.flatten().and_then(|previous| {
                         let spec = areas.get(previous)?;
                         let frame = fitted.get(previous)?;
                         let bottom = frame.notes.iter().map(|n| n.rect.y1).fold(spec.area.y0, f64::max);
-                        let bottom =
-                            reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect)).map_or(bottom, |rect| bottom.max(rect.y1));
-                        route_edge(doc, spec.id, id, bottom, follow.gap)
+                        let row = reserved.get(&spec.id).and_then(|rect| route_catchword_rect(frame, *rect));
+                        let target = row.and_then(|row| {
+                            let series = spec.opts.note_stream.as_ref()?.series;
+                            let options = super::catchwords::options(doc, spec, Some(series), &geometry.catchwords?.catchwords);
+                            let (baseline, leading) = super::catchwords::row_baseline(doc, story, frame, spec, Some(series), &options, row)?;
+                            route_edge(doc, spec.id, id, baseline + leading, follow.gap)
+                        });
+                        let bottom = row.map_or(bottom, |row| bottom.max(row.y1));
+                        route_edge(doc, spec.id, id, bottom, follow.gap).map(|edge| (edge, target))
                     });
-                    let Some(edge) = route_edge(doc, host, id, bottom, follow.gap).filter(|_| dependency.is_none() || reference.is_some()) else {
-                        warnings.push(format!(
-                "followInset ignored on frame {}: host and route transforms must allow finite translation and positive axis-aligned scaling",
-                id
-            ));
+                    let core = geometry.core.and_then(|(host, bottom)| route_edge(doc, host, id, bottom, follow.gap));
+                    if (geometry.core.is_some() && core.is_none()) || (dependency.is_some() && reference.is_none()) {
+                        warnings.push(format!("followInset ignored on frame {id}: host and route transforms must allow finite translation and positive axis-aligned scaling"));
                         return;
+                    }
+                    let Some(edge) = core.or_else(|| reference.map(|r| r.0)) else { return };
+                    let target = if let Some((_, target)) = reference.filter(|r| r.0 > edge || (r.0 == edge && r.1.is_some())) {
+                        target
+                    } else {
+                        geometry.core.and_then(|(host, _)| {
+                            geometry.caption.and_then(|(baseline, leading)| route_edge(doc, host, id, baseline + leading, follow.gap))
+                        })
                     };
-                    let edge = reference.map_or(edge, |r| r.max(edge));
+                    let edge = reference.map_or(edge, |r| r.0.max(edge));
                     let Some(area) = areas.get_mut(index) else { return };
                     match follow.edge {
                         designcraft_doc::InsetEdge::End => area.area.y1 = area.area.y1.min(edge).max(area.area.y0),
-                        designcraft_doc::InsetEdge::Start => area.area.y0 = area.area.y0.max(edge).min(area.area.y1),
+                        designcraft_doc::InsetEdge::Start => {
+                            area.area.y0 = area.area.y0.max(edge).min(area.area.y1);
+                            frame_opts.note_first_baseline = target.map(|target| target - area.area.y0);
+                        }
                     }
                 };
-                apply_follow(areas, warnings);
+                apply_follow(areas, warnings, frame_opts);
                 if let Some(area) = areas.get_mut(index)
                     && let Some(height) = rows.get(&area.id)
                 {
@@ -356,6 +374,7 @@ struct Page<'a> {
     deferred_pages: Vec<usize>,
     last_host_on_page: bool,
     prior_core: Option<f64>,
+    prior_caption: Option<(f64, f64)>,
     catchword_owners: Option<&'a CatchwordOwners>,
     max_cut: Option<usize>,
 }
@@ -396,6 +415,7 @@ impl Page<'_> {
                         tail_pending: false,
                         catchword: None,
                         main_bottom: self.frame.area.y0,
+                        last_main: None,
                         catchword_space: space,
                     },
                     ratio: s.ratio,
@@ -617,6 +637,7 @@ impl Page<'_> {
                         tail_pending,
                         catchword,
                         main_bottom: cursor.main_bottom,
+                        last_main: cursor.last_main.clone(),
                         catchword_space,
                     },
                     placement: part,
@@ -667,7 +688,17 @@ impl Page<'_> {
                 Measurement {
                     height: height.min(rect.height()),
                     finished,
-                    cursor: Cursor { areas, cut, first_line, tail_pending, catchword, main_bottom, catchword_space, ..cursor.clone() },
+                    cursor: Cursor {
+                        last_main: part.lines.last().cloned().or_else(|| cursor.last_main.clone()),
+                        areas,
+                        cut,
+                        first_line,
+                        tail_pending,
+                        catchword,
+                        main_bottom,
+                        catchword_space,
+                        ..cursor.clone()
+                    },
                     placement: FrameText::default(),
                 }
             }
@@ -691,6 +722,17 @@ impl Page<'_> {
             }))
             .chain(out.streams.iter().filter_map(|s| s.cursor.catchword.map(|rect| rect.y1)))
             .fold(self.frame.area.y0, f64::max);
+        let core_caption = out.streams.iter().zip(&self.options.streams).find_map(|(stream, config)| {
+            let row = stream.cursor.catchword.filter(|r| r.y1 >= own_bottom - 0.01)?;
+            let frame = FrameText {
+                range: self.start..c.cut,
+                lines: c.last_main.clone().into_iter().collect(),
+                notes: out.parts.iter().flat_map(|p| p.placement.notes.iter().cloned()).collect(),
+                ..Default::default()
+            };
+            let options = super::catchwords::options(self.doc, self.frame, config.series, &self.options.catchwords);
+            super::catchwords::row_baseline(self.doc, self.story, &frame, self.frame, config.series, &options, row)
+        });
         let core_bottom = (follows_core && (self.frame.opts.inset_columns.is_some() || self.prior_core.is_some()))
             .then_some(self.prior_core.map_or(own_bottom, |b| b.max(own_bottom)));
         let mut routes = Vec::new();
@@ -720,6 +762,7 @@ impl Page<'_> {
                 self.story,
                 RouteGeometry {
                     core: (route_page == page).then_some(core_bottom).flatten().map(|bottom| (self.frame.id, bottom)),
+                    caption: if self.prior_core.is_some_and(|b| b > own_bottom) { self.prior_caption } else { core_caption },
                     catchwords: Some(self.options),
                     routes: self.routes,
                     later_ranges: None,
@@ -751,6 +794,7 @@ impl Page<'_> {
             out.streams.iter().zip(&self.options.streams).filter_map(|(s, config)| s.cursor.catchword.map(|area| (config.series, area))).collect();
         Ok(Trial {
             core_bottom: own_bottom,
+            core_caption,
             first_line: c.first_line.or(first_line_seen),
             cut: c.cut,
             areas: c.areas.clone(),
@@ -836,6 +880,7 @@ impl Page<'_> {
 #[derive(Clone, Debug)]
 struct PageRecord {
     core_bottom: f64,
+    core_caption: Option<(f64, f64)>,
     start: usize,
     cut: usize,
     incoming: Arc<StreamState>,
@@ -1047,16 +1092,25 @@ fn fit_hosts(
         let route_ranges =
             pages.iter().enumerate().filter(|(i, _)| frames.get(*i).is_some_and(|f| f.page == frame.page)).map(|(_, p)| p.start..p.cut).collect();
         let deferred_pages = frames.iter().skip(index + 1).filter_map(|f| f.page).collect();
-        let prior_core = pages
+        let prior = pages
             .iter()
             .enumerate()
             .filter(|(i, _)| frames.get(*i).is_some_and(|f| f.page == frame.page))
             .filter_map(|(i, p)| {
                 let host = frames.get(i)?;
                 host.opts.inset_columns.as_ref()?;
-                route_edge(doc, host.id, frame.id, p.core_bottom, 0.0)
+                let bottom = route_edge(doc, host.id, frame.id, p.core_bottom, 0.0)?;
+                let caption = p.core_caption.and_then(|(b, l)| {
+                    Some((
+                        route_edge(doc, host.id, frame.id, b, 0.0)?,
+                        route_edge(doc, host.id, frame.id, b + l, 0.0)? - route_edge(doc, host.id, frame.id, b, 0.0)?,
+                    ))
+                });
+                Some((bottom, caption))
             })
-            .reduce(f64::max);
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let prior_core = prior.map(|p| p.0);
+        let prior_caption = prior.and_then(|p| p.1);
         let last_host_on_page = !frames.iter().skip(index + 1).any(|f| f.page == frame.page);
         let page = Page {
             doc,
@@ -1072,6 +1126,7 @@ fn fit_hosts(
             deferred_pages,
             last_host_on_page,
             prior_core,
+            prior_caption,
             catchword_owners,
             max_cut: limits.get(&frame.id).copied(),
         };
@@ -1082,6 +1137,7 @@ fn fit_hosts(
                 }
                 let record = PageRecord {
                     core_bottom: trial.core_bottom,
+                    core_caption: trial.core_caption,
                     start,
                     cut: trial.cut,
                     incoming: state.clone(),
@@ -1152,8 +1208,17 @@ fn fit_physical_routes(
         let core = hosts
             .iter()
             .filter(|(f, _)| f.opts.inset_columns.is_some())
-            .filter_map(|(f, p)| route_edge(doc, f.id, host.id, p.core_bottom, 0.0))
-            .reduce(f64::max);
+            .filter_map(|(f, p)| {
+                let bottom = route_edge(doc, f.id, host.id, p.core_bottom, 0.0)?;
+                let caption = p.core_caption.and_then(|(b, l)| {
+                    Some((
+                        route_edge(doc, f.id, host.id, b, 0.0)?,
+                        route_edge(doc, f.id, host.id, b + l, 0.0)? - route_edge(doc, f.id, host.id, b, 0.0)?,
+                    ))
+                });
+                Some((bottom, caption))
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0));
         let areas: Vec<_> = routes.iter().filter(|f| f.page == Some(page)).cloned().collect();
         let later_ranges: Vec<_> =
             frames.iter().zip(pages.iter()).filter(|(f, _)| f.page.is_some_and(|p| p > page)).map(|(_, p)| p.start..p.cut).collect();
@@ -1162,7 +1227,8 @@ fn fit_physical_routes(
             doc,
             story,
             RouteGeometry {
-                core: core.map(|b| (host.id, b)),
+                core: core.map(|b| (host.id, b.0)),
+                caption: core.and_then(|b| b.1),
                 catchwords: host.opts.inset_columns.as_ref(),
                 routes,
                 later_ranges: Some(&later_ranges),
@@ -1303,7 +1369,13 @@ fn compose_frames_owned(
         let (fit, regions) = fit_routes(
             doc,
             story,
-            RouteGeometry { core: None, catchwords: frames.last().and_then(|f| f.opts.inset_columns.as_ref()), routes: &routes, later_ranges: None },
+            RouteGeometry {
+                core: None,
+                caption: None,
+                catchwords: frames.last().and_then(|f| f.opts.inset_columns.as_ref()),
+                routes: &routes,
+                later_ranges: None,
+            },
             StreamPageInput { page, main: 0..0, areas: &areas, force_starts: None },
             &state,
             opts,

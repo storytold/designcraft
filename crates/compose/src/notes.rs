@@ -136,6 +136,7 @@ type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>);
 pub(super) struct SeriesNotes {
     series: u64,
     band_previous: Option<f64>,
+    route_first_baseline: Option<f64>,
     band_column: Option<(usize, usize)>,
     band_last: Option<(f64, NoteMetrics)>,
     band_continued: bool,
@@ -166,6 +167,7 @@ impl SeriesNotes {
         Self {
             series,
             band_previous: None,
+            route_first_baseline: None,
             band_column: None,
             band_last: None,
             band_continued: false,
@@ -579,6 +581,7 @@ impl SeriesNotes {
         match (self.band_previous, ms.first()) {
             (Some(_), _) if self.band_continued => 0.0,
             (Some(previous), Some(m)) => previous + o.space_between + m.lead - m.first - column.frame.area.y0,
+            (_, Some(first)) => self.route_first_baseline.map_or(o.space_before, |baseline| baseline - first.first),
             _ => o.space_before,
         }
     }

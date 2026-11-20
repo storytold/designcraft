@@ -62,6 +62,9 @@ A route can follow the composed inset core on its host's page:
 ```
 
 The core bottom includes the inset main text, commentary, and reserved catchword rows.
+When a starting routed foot follows a catchword-bearing edge, its first baseline is the
+catchword baseline plus that row's leading and the follow gap. Its column still starts
+at the followed row's bottom.
 `edge:"end"` caps the route's bottom at core bottom plus gap; `edge:"start"`
 raises its top to at least that position, keeping its bottom. The frame's original area
 limits both adjustments. Set the foot frame's original top high enough to allow it to follow
