@@ -1244,20 +1244,25 @@ fn gif_pixel_size_keeps_logical_screen_while_admission_checks_frame_extent() {
     assert!(too_large_to_decode(&oversized));
 }
 
-/// Photoshop APP13 segment containing ResolutionInfo (resource 1005).
-fn irb_app(x_ppi: u32, y_ppi: u32) -> Vec<u8> {
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005) from 16.16 fixed-point ppi.
+fn irb_app_fixed(x_fixed: u32, y_fixed: u32) -> Vec<u8> {
     let mut body = b"Photoshop 3.0\08BIM".to_vec();
     body.extend_from_slice(&1005u16.to_be_bytes());
     body.extend_from_slice(&[0, 0]);
     body.extend_from_slice(&16u32.to_be_bytes());
-    body.extend_from_slice(&(x_ppi << 16).to_be_bytes());
+    body.extend_from_slice(&x_fixed.to_be_bytes());
     body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
-    body.extend_from_slice(&(y_ppi << 16).to_be_bytes());
+    body.extend_from_slice(&y_fixed.to_be_bytes());
     body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
     let mut seg = vec![0xFF, 0xED];
     seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
     seg.extend_from_slice(&body);
     seg
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005).
+fn irb_app(x_ppi: u16, y_ppi: u16) -> Vec<u8> {
+    irb_app_fixed(u32::from(x_ppi) << 16, u32::from(y_ppi) << 16)
 }
 
 /// XMP APP1 segment with `tiff:XResolution`, `tiff:YResolution`, and `tiff:ResolutionUnit`.
@@ -1320,13 +1325,13 @@ fn jpeg_density_precedence_and_invalid_fallbacks() {
     xmp_wins.extend_from_slice(&xmp_app("240/1", "120/1", 2));
     assert_eq!(raster_resolution(&jpeg_with(&xmp_wins)), Some((240.0, 120.0)));
 
-    // Zero or absurd IRB falls back to XMP.
-    for bad_irb in [0u32, 200_000u32] {
+    // Zero or sub-1.0 IRB falls back to XMP.
+    for bad_irb in [0u32, 0x0000_8000u32] {
         let mut segs = jfif_app(1, 96, 96);
         segs.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
         segs.extend_from_slice(&xmp_app("240/1", "120/1", 2));
-        segs.extend_from_slice(&irb_app(bad_irb, bad_irb));
-        assert_eq!(raster_resolution(&jpeg_with(&segs)), Some((240.0, 120.0)), "bad IRB {bad_irb}");
+        segs.extend_from_slice(&irb_app_fixed(bad_irb, bad_irb));
+        assert_eq!(raster_resolution(&jpeg_with(&segs)), Some((240.0, 120.0)), "bad IRB {bad_irb:#x}");
     }
 
     // Zero XMP falls back to EXIF.
