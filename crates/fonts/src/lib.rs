@@ -349,6 +349,8 @@ fn merge_presentation_ligatures(
         return;
     }
     let mut out: Vec<ShapedGlyph> = Vec::with_capacity(glyphs.len());
+    // The ligature just made, as the story byte it ends at and its character.
+    let mut last_lig: Option<(usize, char)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         let hit = table.iter().find(|(letters, base, _, _)| {
@@ -365,14 +367,22 @@ fn merge_presentation_ligatures(
                 let first = glyphs[i];
                 let end = first.cluster + letters.len();
                 if let Some(prev) = out.last_mut() {
-                    // The previous glyph, when it is the one character just before the first letter:
-                    // its kerning against f gives way to its kerning against the ligature.
-                    let before = text.get(prev.cluster..).and_then(|t| t.chars().next());
-                    if let Some(c) = before.filter(|c| prev.cluster + c.len_utf8() == first.cluster)
-                        && let Some(with_f) = pair_kern(&format!("{c}f"))
-                    {
-                        let with_lig = pair_kern(&format!("{c}{lig_char}")).unwrap_or(0);
+                    if let Some((_, prev_lig)) = last_lig.filter(|&(prev_end, _)| prev_end == first.cluster) {
+                        // The ligature made just before: it was kerned against the first letter of this
+                        // run, and is kerned against this ligature instead.
+                        let with_f = pair_kern(&format!("{prev_lig}f")).unwrap_or(0);
+                        let with_lig = pair_kern(&format!("{prev_lig}{lig_char}")).unwrap_or(0);
                         prev.x_advance += with_lig - with_f;
+                    } else {
+                        // The previous glyph, when it is the one character just before the first letter:
+                        // its kerning against f gives way to its kerning against the ligature.
+                        let before = text.get(prev.cluster..).and_then(|t| t.chars().next());
+                        if let Some(c) = before.filter(|c| prev.cluster + c.len_utf8() == first.cluster)
+                            && let Some(with_f) = pair_kern(&format!("{c}f"))
+                        {
+                            let with_lig = pair_kern(&format!("{c}{lig_char}")).unwrap_or(0);
+                            prev.x_advance += with_lig - with_f;
+                        }
                     }
                 }
                 // The ligature is kerned against the character after it.
@@ -384,10 +394,12 @@ fn merge_presentation_ligatures(
                     y_offset: 0,
                     ..first
                 });
+                last_lig = Some((end, *lig_char));
                 i += base.len();
             }
             None => {
                 out.push(glyphs[i]);
+                last_lig = None;
                 i += 1;
             }
         }
@@ -685,6 +697,27 @@ mod tests {
             },
         );
         assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(99, 585), (21, 521 - 25), (99, 600)]);
+    }
+
+    #[test]
+    fn a_ligature_next_to_a_ligature_is_kerned_against_it_not_against_the_f() {
+        // "fifi": the first fi was kerned -25 against the f after it; against the second fi the
+        // font kerns it -10. The second fi has no kerning against what follows.
+        let text = "fifi";
+        let mut g = fake_glyphs(text);
+        g[1].x_advance = 600 - 25;
+        merge_presentation_ligatures(
+            text,
+            &mut g,
+            |c| fake_glyph(c).filter(|_| c.is_ascii() || c == '\u{FB01}'),
+            fake_advance,
+            |pair| match pair {
+                "\u{FB01}f" => Some(-25),
+                "\u{FB01}\u{FB01}" => Some(-10),
+                _ => None,
+            },
+        );
+        assert_eq!(g.iter().map(|g| (g.gid, g.x_advance)).collect::<Vec<_>>(), vec![(21, 521 - 10), (21, 521)]);
     }
 
     #[test]
