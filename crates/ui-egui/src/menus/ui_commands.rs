@@ -156,6 +156,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{} — Cell Options › Strokes and Fills of the target cells: edge proxy, stroke weight, type, colour, tint, gap colour, gap tint, and cell fill (table.setCell)",
     ),
+    (
+        "app.diagonalLinesDialog",
+        "Diagonal Lines…",
+        None,
+        "{} — Cell Options › Diagonal Lines of the target cells: the line type, its weight, type, color, tint, gap color and gap tint, and Draw (table.setCell {diagonal})",
+    ),
     ("app.footnoteOptionsDialog", "Document Footnote Options…", None, "{} — numbering, formatting and layout of footnotes"),
     ("app.rubyDialog", "Ruby…", None, "{} — the reading set over the selected text"),
     (
@@ -281,6 +287,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
+    (
+        "view.storyEditorStyleColumn",
+        "Show/Hide Style Name Column",
+        None,
+        "{on?: bool, width?: 40–400 (points)} — the Story Editor's column of paragraph style names; toggles without either → {on, width}",
+    ),
     (
         "view.storyEditorDepthRuler",
         "Show/Hide Depth Ruler",
