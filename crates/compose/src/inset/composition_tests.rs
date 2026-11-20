@@ -274,18 +274,32 @@ fn follow_inset_reuses_candidate_main_layout() {
     assert_eq!(super::fitting::MAIN_LAYOUTS.with(|n| n.get()), ordinary);
 }
 
-#[test]
-fn routed_catchword_hugs_last_line_and_its_follower() {
+fn routed_catchword_follower(styled: bool, after_route: bool, leading: f64) {
     let (mut doc, sid) = document(2, "Short main.\nNext page.", "", "");
     let story = doc.story_mut(sid).unwrap();
     let at = story.text.find("Next").unwrap();
     story.format_paras(at..story.len(), |p| p.para.start_paragraph = Some(designcraft_doc::StartParagraph::NextPage));
     enable_catchwords(&mut doc, sid);
+    if styled {
+        Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+            name: "Follower caption".into(),
+            based_on: None,
+            shortcut: String::new(),
+            chars: designcraft_doc::CharAttrs { size: Some(14.0), leading: Some(designcraft_doc::Leading::Points(leading)), ..Default::default() },
+        });
+        for id in doc.story(sid).unwrap().frames.clone() {
+            doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+                designcraft_doc::InsetCatchwords::Styled { style: "Follower caption".into() };
+        }
+    }
+
     for id in doc.story(sid).unwrap().frames.clone() {
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
     }
     let mut follower_series = doc.note_series[1].clone();
     follower_series.id = 3;
+    follower_series.options.first_baseline = designcraft_doc::FirstBaseline::CapHeight;
+    follower_series.options.first_baseline_min = 0.0;
     doc.note_series.push(follower_series);
     for (at, series, text) in [(at, 2, "Following page."), (0, 2, "Route line.\nRoute line.\nRoute line."), (0, 3, "Follower.")] {
         let id = doc.story_mut(sid).unwrap().insert_note(at, text, Default::default()).unwrap();
@@ -298,8 +312,11 @@ fn routed_catchword_hugs_last_line_and_its_follower() {
         let (id, _) = doc
             .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 800.0), doc.default_layer(), "", Default::default())
             .unwrap();
-        let follow_inset =
-            (series == 3).then(|| designcraft_doc::InsetFollow { edge: designcraft_doc::InsetEdge::Start, gap: 0.0, after: routes.first().copied() });
+        let follow_inset = (series == 3).then(|| designcraft_doc::InsetFollow {
+            edge: designcraft_doc::InsetEdge::Start,
+            gap: 0.0,
+            after: after_route.then(|| routes[0]),
+        });
         doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
             Some(designcraft_doc::NoteStream { story: sid, series, catchword: (series == 2).into(), follow_inset });
         routes.push(id);
@@ -317,7 +334,31 @@ fn routed_catchword_hugs_last_line_and_its_follower() {
     assert!((word.rect.y0 - last.0 - last.1).abs() < 0.01, "row {:?}, last line {last:?}", word.rect);
     let baseline = word.origin.y + word.text.frames[0].lines[0].baseline * word.scale;
     assert!(baseline > last.0 && baseline - last.0 <= word.rect.height());
-    assert!((cs.frame(routes[1]).unwrap().columns[0].y0 - word.rect.y1).abs() < 0.01);
+    let edge_word = if after_route {
+        word
+    } else {
+        cs.frame(doc.story(sid).unwrap().frames[0]).unwrap().catchwords.iter().max_by(|a, b| a.rect.y1.total_cmp(&b.rect.y1)).unwrap()
+    };
+    let edge_line = &edge_word.text.frames[0].lines[0];
+    let target = edge_word.origin.y + edge_line.baseline * edge_word.scale + edge_line.leading;
+    let foot = cs.frame(routes[1]).unwrap();
+    assert!((foot.columns[0].y0 - edge_word.rect.y1).abs() < 0.01);
+    let note = &foot.notes[0];
+    let actual = note.origin.y + note.text.frames[0].lines[0].baseline;
+    assert!((actual - target).abs() < 0.01, "follower baseline {actual}, target {target}");
+}
+
+#[test]
+fn routed_catchword_hugs_last_line_and_its_follower() {
+    routed_catchword_follower(false, true, 12.0);
+}
+#[test]
+fn styled_routed_catchword_sets_follower_baseline_pitch() {
+    routed_catchword_follower(true, true, 20.0);
+}
+#[test]
+fn core_catchword_sets_routed_follower_baseline_pitch() {
+    routed_catchword_follower(true, false, 20.0);
 }
 
 #[test]
@@ -1271,4 +1312,180 @@ fn widening_clears_series_styled_catchword() {
 #[test]
 fn widening_clears_inherited_catchword_metrics() {
     widening_clears_finished_catchword_with_style(false, Some(true), 5);
+}
+
+#[test]
+fn inherited_auto_catchword_uses_source_paragraph_percentage() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(90), "", "");
+    Arc::make_mut(&mut doc.styles).character.push(designcraft_doc::styles::CharacterStyle {
+        name: "Inherited auto".into(),
+        based_on: None,
+        shortcut: String::new(),
+        chars: Default::default(),
+    });
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().catchwords =
+            designcraft_doc::InsetCatchwords::Styled { style: "Inherited auto".into() };
+    }
+    let story = doc.story_mut(sid).unwrap();
+    story.format_chars(0..story.len(), |f| {
+        f.over.size = Some(15.0);
+        f.over.leading = Some(designcraft_doc::Leading::Auto);
+    });
+    story.format_paras(0..story.len(), |p| p.para.auto_leading = Some(1.5));
+    let cs = compose_story(&doc, sid, &Default::default());
+    let frame = &cs.frames[0];
+    let caption = &frame.catchwords[0];
+    let line = &caption.text.frames[0].lines[0];
+    assert!((line.leading - 22.5).abs() < 0.01, "caption leading {}", line.leading);
+    assert!((caption.origin.y + line.baseline * caption.scale - frame.lines.last().unwrap().baseline - 22.5).abs() < 0.01);
+    assert!(
+        (super::catchwords::row_height(
+            &doc,
+            doc.story(sid).unwrap(),
+            frame.range.end,
+            &frame_specs(&doc, sid)[0].opts.inset_columns.as_ref().unwrap().catchwords
+        ) - 22.5)
+            .abs()
+            < 0.01
+    );
+}
+
+#[test]
+fn empty_opted_in_route_does_not_steal_series_catchword() {
+    let (mut doc, sid) = document(2, &"Main line.\u{2028}".repeat(65), "", "First route.");
+    enable_catchwords(&mut doc, sid);
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+    let story = doc.story_mut(sid).unwrap();
+    let at = story.text.rfind("Main line.").unwrap();
+    let note = story.insert_note(at, "Second route.", Default::default()).unwrap();
+    story.note_mut(note).unwrap().series = 2;
+    let mut routes = Vec::new();
+    for (page, top) in [(0, 36.0), (0, 200.0), (1, 36.0)] {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, top, x + 636.0, top + 100.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: true.into(), follow_inset: None });
+        routes.push(id);
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(routes[1]).unwrap().notes.is_empty());
+    let captions = &cs.frame(routes[0]).unwrap().catchwords;
+    assert_eq!(captions.len(), 1, "{:?}", cs.warnings);
+    assert_eq!(captions[0].source.as_ref(), "Second");
+    assert!(cs.frame(routes[1]).unwrap().catchwords.is_empty());
+}
+
+fn short_revisit_routes(catchwords: bool) -> (Document, StoryId, [ItemId; 3], Vec<ItemId>) {
+    let (mut doc, sid) = document(2, &"Main line.\n".repeat(30), "", "");
+    let hosts = doc.story(sid).unwrap().frames.clone();
+    for id in &hosts {
+        let item = doc.item_mut(*id).unwrap();
+        let b = item.bounds();
+        item.path = designcraft_geom::shapes::rectangle(Rect::new(b.x0, 36.0, b.x1, 120.0));
+        let options = item.text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap();
+        options.streams.retain(|s| s.series.is_none());
+        options.catchwords = catchwords.into();
+    }
+    let (last, _) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 140.0, 636.0, 830.0), doc.default_layer(), "", Default::default()).unwrap();
+    doc.thread(hosts[1], last).unwrap();
+    doc.item_mut(last).unwrap().text_frame_mut().unwrap().options.inset_columns =
+        doc.item(hosts[0]).unwrap().text_frame().unwrap().options.inset_columns.clone();
+    let mut routes = Vec::new();
+    for page in 0..2 {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 536.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 2, catchword: catchwords.into(), follow_inset: None });
+        routes.push(id);
+    }
+    let first = doc.story_mut(sid).unwrap().insert_note(0, "First note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(first).unwrap().series = 2;
+    (doc, sid, [hosts[0], hosts[1], last], routes)
+}
+
+#[test]
+fn revisit_route_catchword_uses_later_physical_page_anchor_membership() {
+    let (mut doc, sid, hosts, routes) = short_revisit_routes(true);
+    let before = compose_story(&doc, sid, &Default::default());
+    let at = before.frame(hosts[1]).unwrap().lines[1].range.start;
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Second note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(cs.frame(hosts[1]).unwrap().range.contains(&doc.story(sid).unwrap().note_anchor(note).unwrap()));
+    assert_eq!(cs.frame(routes[1]).unwrap().notes.len(), 1);
+    assert_eq!(cs.frame(routes[0]).unwrap().catchwords.len(), 1, "{:?}", cs.warnings);
+    assert_eq!(cs.frame(routes[0]).unwrap().catchwords[0].source.as_ref(), "Second");
+}
+
+#[test]
+fn revisit_host_page_without_route_revalidates_the_main_cut() {
+    let (mut doc, sid, hosts, routes) = short_revisit_routes(false);
+    let before = compose_story(&doc, sid, &Default::default());
+    let at = before.frame(hosts[1]).unwrap().lines[1].range.start;
+    doc.remove_item(routes[1]).unwrap();
+    let note = doc.story_mut(sid).unwrap().insert_note(at, "Second note.", Default::default()).unwrap();
+    doc.story_mut(sid).unwrap().note_mut(note).unwrap().series = 2;
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let anchor = doc.story(sid).unwrap().note_anchor(note).unwrap();
+    assert!(cs.frame(hosts[2]).unwrap().range.contains(&anchor), "note anchor must move into the return host");
+    assert!(cs.frame(routes[0]).unwrap().notes.iter().any(|n| n.id == note));
+}
+
+#[test]
+fn tight_catchword_leading_sets_follower_baseline_before_row_bottom() {
+    routed_catchword_follower(true, true, 2.0);
+}
+
+#[test]
+fn hostless_route_catchword_sets_follower_baseline_pitch() {
+    let (mut doc, sid) = document(3, "Main.", "", "");
+    enable_catchwords(&mut doc, sid);
+    for id in doc.story(sid).unwrap().frames.clone() {
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns.as_mut().unwrap().streams.retain(|s| s.series.is_none());
+    }
+
+    for id in doc.story(sid).unwrap().frames.clone().into_iter().skip(1) {
+        doc.remove_item(id).unwrap();
+    }
+    let mut foot = doc.note_series[1].clone();
+    foot.id = 3;
+    doc.note_series.push(foot);
+    for (series, text) in [(2, "Route line.\u{2028}".repeat(30)), (3, "Foot line.\u{2028}".repeat(30))] {
+        let id = doc.story_mut(sid).unwrap().insert_note(0, &text, Default::default()).unwrap();
+        doc.story_mut(sid).unwrap().note_mut(id).unwrap().series = series;
+    }
+    let mut ids = Vec::new();
+    for (page, series, height) in [(0, 2, 100.0), (0, 3, 100.0), (1, 2, 100.0), (1, 3, 700.0), (2, 2, 700.0)] {
+        let (si, pi) = doc.page_loc(page).unwrap();
+        let x = doc.spreads[si].pages[pi].x;
+        let (id, _) = doc
+            .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 440.0, 36.0, x + 636.0, 36.0 + height), doc.default_layer(), "", Default::default())
+            .unwrap();
+        let follow_inset = (page == 1 && series == 3).then(|| designcraft_doc::InsetFollow {
+            edge: designcraft_doc::InsetEdge::Start,
+            gap: 0.0,
+            after: Some(ids[2]),
+        });
+        doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series, catchword: (series == 2).into(), follow_inset });
+        ids.push(id);
+    }
+    let cs = compose_story(&doc, sid, &Default::default());
+    assert!(!cs.is_overset(), "{:?}", cs.warnings);
+    let caption = &cs.frame(ids[2]).unwrap().catchwords[0];
+    let line = &caption.text.frames[0].lines[0];
+    let target = caption.origin.y + line.baseline * caption.scale + line.leading;
+    let foot = &cs.frame(ids[3]).unwrap().notes[0];
+    let actual = foot.origin.y + foot.text.frames[0].lines[0].baseline;
+    assert!((actual - target).abs() < 0.01, "hostless follower baseline {actual}, expected {target}");
 }

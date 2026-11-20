@@ -17,7 +17,7 @@ pub(super) fn options(
 }
 
 fn attributes(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> CharAttrs {
-    let base = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p).1).unwrap_or_default();
+    let (para, base) = source.paras.get(source.para_at(at)).map(|p| doc.styles.resolve_para(p)).unwrap_or_default();
     let chars = doc.styles.resolve_char(&base, source.char_format_at(at));
     let mut attrs = CharAttrs {
         font_family: Some(chars.font_family),
@@ -32,6 +32,9 @@ fn attributes(doc: &Document, source: &Story, at: usize, options: &designcraft_d
         attrs.size = Some(chars.size);
         attrs.leading = Some(chars.leading);
         attrs.merge(&doc.styles.char_style_attrs(style));
+        if attrs.leading == Some(Leading::Auto) {
+            attrs.leading = Some(Leading::Points(attrs.size.unwrap_or(chars.size) * para.auto_leading));
+        }
     }
     attrs
 }
@@ -68,6 +71,26 @@ pub(super) fn row_space(
     let sample = compose(doc, source, at, "\u{00a0}", spec, options);
     let descent = sample.frames.first().and_then(|f| f.lines.first()).map_or(previous_descent, |l| l.descent);
     (sample.frames.first().and_then(|f| f.lines.first()).map_or(12.0, |l| l.leading) + descent - previous_descent).max(0.0)
+}
+
+/// The baseline rhythm used by a routed foot after a reserved catchword edge.
+pub(super) fn row_baseline(
+    doc: &Document,
+    story: &Story,
+    frame: &crate::FrameText,
+    spec: &FrameSpec,
+    series: Option<u64>,
+    options: &designcraft_doc::InsetCatchwords,
+    row: Rect,
+) -> Option<(f64, f64)> {
+    let part = series
+        .and_then(|id| frame.notes.iter().rev().find(|n| n.series == id))
+        .and_then(|n| story.notes.get(n.index).map(|source| (&source.text, n.text.frames.last().map_or(0, |f| f.range.end))));
+    let (source, at) = part.unwrap_or((story, frame.range.end));
+    let text = compose(doc, source, at, "\u{00a0}", spec, options);
+    let line = text.frames.first()?.lines.first()?;
+    let baseline = if styled(doc, options) { last_line(frame, series)?.0 + line.leading } else { row.y0 + line.baseline };
+    Some((baseline, line.leading))
 }
 
 pub(super) fn row_height(doc: &Document, source: &Story, at: usize, options: &designcraft_doc::InsetCatchwords) -> f64 {
