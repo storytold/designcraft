@@ -49,6 +49,25 @@ fn open_checked(bytes: &[u8], shrink: u8) -> Option<(TiffBands<'_>, u32, u32)> {
     Some((bands, rw, rh))
 }
 
+type PartialCell = ([u32; 4], u32, u16);
+
+/// Maximum incomplete reduced cells that can coexist in `partial` across sequential full-span
+/// [`TiffBands`] callbacks: at most two boundary spans (`2 * max(rw, rh)`, capped at `out_px`).
+fn max_partial_cells(rw: u32, rh: u32, out_px: usize) -> Option<usize> {
+    Some(usize::try_from(rw.max(rh)).ok()?.saturating_mul(2).min(out_px))
+}
+
+/// Worst-case `HashMap` allocation for `cells` live entries (`hashbrown` 7/8 load factor rounded
+/// up to a power-of-two bucket table, plus one control byte per bucket).
+fn partial_map_bytes(cells: usize) -> usize {
+    if cells == 0 {
+        return 0;
+    }
+    let min_buckets = cells.saturating_mul(8).div_ceil(7).max(8);
+    let buckets = min_buckets.checked_next_power_of_two().unwrap_or(min_buckets);
+    buckets.saturating_mul(std::mem::size_of::<((u32, u32), PartialCell)>() + 1)
+}
+
 /// Reduced `(width, height, estimated_peak_bytes)` for a TIFF at `1 / 2^shrink` without decoding
 /// any pixels. `None` when [`decode_reduced`] cannot handle the file.
 pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
@@ -79,9 +98,10 @@ pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, us
     let group_extra = scratch.max(orient_copy).max(conv_bytes);
     let band_peak = group.saturating_add(group_extra);
     let out_px = usize::try_from(rw).ok()?.checked_mul(usize::try_from(rh).ok()?)?;
+    let partial_bytes = partial_map_bytes(max_partial_cells(rw, rh, out_px)?);
     // Reduced output buffers (CMYK inks + alpha + RGBA display, or RGBA + premultiplied copy).
     let out_bytes = out_px.saturating_mul(if is_cmyk { 9 } else { 8 });
-    let peak = band_peak.saturating_add(out_bytes).max(8);
+    let peak = band_peak.saturating_add(partial_bytes).saturating_add(out_bytes).max(8);
     Some((rw, rh, peak))
 }
 
@@ -92,9 +112,10 @@ struct AccumTarget<'a> {
     shrink: u8,
     step: u32,
     channels: usize,
+    max_partial: usize,
     pixels_out: &'a mut [u8],
     alpha_out: &'a mut [u8],
-    partial: &'a mut HashMap<(u32, u32), ([u32; 4], u32, u16)>,
+    partial: &'a mut HashMap<(u32, u32), PartialCell>,
 }
 
 fn write_cell(target: &mut AccumTarget<'_>, rx: u32, ry: u32, expected: u16, sums: [u32; 4], sum_a: u32) -> Result<(), CodecError> {
@@ -183,7 +204,16 @@ fn accumulate_group(target: &mut AccumTarget<'_>, gx: u32, gy: u32, gw: u32, gh:
                 write_cell(target, rx, ry, expected, sums, sum_a)?;
                 continue;
             }
-            let entry = target.partial.entry((rx, ry)).or_insert(([0u32; 4], 0u32, 0u16));
+            let cur_len = target.partial.len();
+            let entry = match target.partial.entry((rx, ry)) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    if cur_len >= target.max_partial {
+                        return Err(CodecError::LimitExceeded("partial reduced cells exceed boundary span".into()));
+                    }
+                    e.insert(([0u32; 4], 0u32, 0u16))
+                }
+            };
             for (dst_s, s) in entry.0.iter_mut().zip(&sums) {
                 *dst_s += *s;
             }
@@ -222,6 +252,7 @@ pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<RgbaImage> {
         alpha_out.resize(out_px, 255);
     }
 
+    let max_partial = max_partial_cells(rw, rh, out_px)?;
     let mut partial = HashMap::new();
     let target_layout = if is_cmyk { ChannelLayout::CmykA } else { ChannelLayout::Rgba };
     let mut target = AccumTarget {
@@ -231,6 +262,7 @@ pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<RgbaImage> {
         shrink,
         step,
         channels: if is_cmyk { 4 } else { 3 },
+        max_partial,
         pixels_out: &mut pixels_out,
         alpha_out: &mut alpha_out,
         partial: &mut partial,

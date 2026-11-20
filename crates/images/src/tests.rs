@@ -1416,8 +1416,27 @@ fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
     let f32_raw: Vec<u8> = [0.5f32, 0.25, 0.75].repeat(px_count).into_iter().flat_map(f32::to_le_bytes).collect();
     let rgb32f = custom_striped_tiff_with(w, h, h, 2, 1, 3, 32, Some(3), None, &[&f32_raw], None, None);
     let est_f32 = reduced_estimate(&rgb32f, 1).unwrap();
-    assert_eq!(est_f32.2, px_count * 12 + px_count * 32 + (8 * 6) * 8);
+    let partial_16x12 = 32 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert_eq!(est_f32.2, px_count * 12 + px_count * 32 + partial_16x12 + (8 * 6) * 8);
     assert!(decode_rgba_reduced(&rgb32f, 1).is_some());
+
+    // Multi-strip with Orientation = 3 crossing shrink boundaries still decodes cleanly.
+    let strip_rows = 3usize;
+    let strip_bytes = w as usize * strip_rows * 4;
+    let rgba_strips: Vec<&[u8]> = (0..4).map(|i| &rgba_raw[i * strip_bytes..(i + 1) * strip_bytes]).collect();
+    let multi_flip = custom_striped_tiff_with(w, h, strip_rows as u32, 2, 1, 4, 8, None, Some(3), &rgba_strips, Some(2), None);
+    assert_eq!(decode_rgba_reduced(&multi_flip, 2).unwrap().dimensions(), (4, 3));
+
+    // Wide 1-row-per-strip grayscale TIFF counts the bounded partial-cell table at shrink = 3.
+    let wide_w = 262_136u32;
+    let wide_row = packbits_repeat(wide_w as usize, 180);
+    let wide_strips = vec![wide_row.as_slice(); 8];
+    let wide_tiff = custom_striped_tiff(wide_w, 8, 1, 1, 32773, 1, &wide_strips, None, None);
+    let est_wide = reduced_estimate(&wide_tiff, 3).unwrap();
+    assert_eq!((est_wide.0, est_wide.1), (32_767, 1));
+    let min_partial = 65_536 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert!(est_wide.2 >= min_partial + wide_w as usize * 8 + 32_767 * 8);
+    assert_eq!(decode_rgba_reduced(&wide_tiff, 3).unwrap().dimensions(), (32_767, 1));
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
