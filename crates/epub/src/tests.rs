@@ -1088,6 +1088,7 @@ fn text_hidden_by_inherited_conditions_or_deletion_is_not_exported() {
         locked: false,
         printable: true,
         show_guides: true,
+        lock_guides: false,
         suppress_wrap_when_hidden: false,
     });
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), hidden_layer, "On a hidden layer", ParaFormat::default()).unwrap();
@@ -1115,4 +1116,13 @@ fn a_threaded_story_is_skipped_only_when_every_frame_is_hidden() {
     assert_eq!(story(&d), 1, "the visible second frame keeps the story");
     d.item_mut(b).unwrap().hidden = true;
     assert_eq!(story(&d), 0);
+}
+
+#[test]
+fn shared_base64_keeps_binary_padding_and_long_data_uris_on_one_line() {
+    assert_eq!(base64(b""), "");
+    assert_eq!(base64(&[0xfb, 0xff, 0xff]), "+///");
+    assert_eq!(base64(&[0xff]), "/w==");
+    assert_eq!(base64(&[0xff, 0xff]), "//8=");
+    assert_eq!(base64(&[0; 60]), "A".repeat(80));
 }

@@ -165,6 +165,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -1000,6 +1004,13 @@ pub struct FrameSpec {
 }
 
 impl FrameSpec {
+    /// The baseline grid when the text area can be counted in its steps: a step so small, or a
+    /// first line so far off, that the count is more than an f64 holds is no grid (as for the lines).
+    fn countable_grid(&self) -> Option<(f64, f64)> {
+        self.grid
+            .filter(|&(g_start, inc)| inc > 0.0 && inc.is_finite() && [self.area.y0, self.area.y1].iter().all(|y| ((y - g_start) / inc).is_finite()))
+    }
+
     pub fn columns(&self) -> Vec<Rect> {
         let a = self.area;
         // Primary frames inherit the document limit (216), beyond the interactive frame editor's 40.
@@ -1636,6 +1647,8 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     range: Range<usize>,
     props: &'a designcraft_doc::ParaProps,
     para_chars: &'a designcraft_doc::CharProps,
+    /// The paragraph has CJK text, so its 禁則 priority applies.
+    cjk: bool,
     drop_end: usize,
     base_leading: f64,
     base_cap: f64,
@@ -1661,6 +1674,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         range: prange,
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -1683,11 +1697,14 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = spacing_for(pp, base_chars.size, story, cjk);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
             let mut gl = sp.glyphs.clone();
+            // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
+            // of the vector, and the drop cap's character still votes (#1688).
+            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
             let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
             let width = |j: usize| {
                 let ind = match &dc {
@@ -1699,7 +1716,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2791,6 +2808,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         },
         &mut table,
     );
+    // The paragraph's script decides whether its 禁則 priority applies. Classify the shaped
+    // glyphs before split_drop_cap removes the drop cap and prepend_label adds the list
+    // label: a CJK drop cap is part of the paragraph, a generated label is not.
+    let cjk = paragraph_is_cjk(&sp.glyphs);
     // An empty paragraph has no glyphs of its own, so its only addressable character is its
     // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
     // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
@@ -2811,7 +2832,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+    let drop_grid = cur_frame.and_then(FrameSpec::countable_grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -2823,6 +2844,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         range: prange.clone(),
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -2845,6 +2867,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // Classified before the drop cap is split off (see the same call in the measuring loop above).
+    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2934,10 +2958,11 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let mut hyph_after =
+        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = spacing_for(pp, base_size, story, cjk);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3938,8 +3963,9 @@ fn optical_for(pp: &ParaProps, story: &Story) -> (bool, Option<f64>) {
     }
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
+/// Breaker parameters from the paragraph's settings; `cjk` says the paragraph has CJK text (so
+/// its 禁則 priority applies).
+fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story, cjk: bool) -> Spacing {
     let (optical, optical_size) = optical_for(pp, story);
     Spacing {
         justify: pp.align.is_justified(),
@@ -3961,13 +3987,49 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
         optical,
         optical_size,
         korean_char_breaks: pp.korean_char_breaks,
+        kinsoku_cjk: cjk,
+        // JIS X 4051 禁則処理: the empty value is InDesign's default and the UI's "Push In First",
+        // and 調整量優先 (adjustment amount) is the breaker's minimum-adjustment mode 0.
         kinsoku_priority: match pp.kinsoku_type.as_str() {
-            "KinsokuPushInFirst" => 1,
+            "" | "KinsokuPushInFirst" => 1,
             "KinsokuPushOutFirst" => 2,
             "KinsokuPushOutOnly" => 3,
+            "KinsokuPrioritizeAdjustmentAmount" => 0,
             _ => 0,
         },
     }
+}
+
+/// Whether the paragraph's own shaped glyphs contain CJK text, the gate for its 禁則 priority.
+/// Called before `split_drop_cap` and `prepend_label`, so a drop cap counts and generated list
+/// and story labels do not. A text variable or page number keeps its marker in [`Glyph::ch`], so
+/// its replacement text is what the paragraph shows; inspect that too.
+fn paragraph_is_cjk(glyphs: &[Glyph]) -> bool {
+    glyphs.iter().any(|g| is_cjk_char(g.ch) || g.generated_text.as_deref().is_some_and(|text| text.chars().any(is_cjk_char)))
+}
+
+/// Is `c` CJK text (the scripts the 禁則 line-start/line-end rules are about): ideographs, kana,
+/// CJK punctuation and full/half-width forms, bopomofo, Hangul.
+fn is_cjk_char(c: char) -> bool {
+    // Hangul comes from the breaker's classification (Jamo including Extended-A/B, syllables),
+    // so the two sets agree. Bopomofo is 0x3100..=0x312F; 0x3130..=0x318F is Hangul.
+    breaker::is_hangul(c)
+        || matches!(
+            c as u32,
+            0x2E80..=0x2FFF
+                | 0x3000..=0x30FF
+                | 0x3100..=0x312F
+                | 0x3190..=0x33FF
+                | 0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xA000..=0xA4CF
+                | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE4F
+                | 0xFF00..=0xFFEF
+                // Extension B and later (U+20000..): the same range as the breaker's Han check,
+                // so the kinsoku settings apply to a paragraph of supplementary-plane text alone.
+                | 0x20000..=0x3FFFF
+        )
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).
@@ -5222,7 +5284,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
-    if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
+    if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
     if (justify_this || squeeze_last) && !spaces.is_empty() {
@@ -5425,6 +5487,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -5589,6 +5657,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         len: g.len,
         generated_text: g.generated_text.clone(),
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,
@@ -5916,9 +5985,21 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
+        return out;
+    }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English. See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
@@ -5927,6 +6008,8 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5947,6 +6030,24 @@ fn hyphenation_points(
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
@@ -6256,7 +6357,7 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
