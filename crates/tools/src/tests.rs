@@ -1925,6 +1925,41 @@ fn double_clicking_top_and_rotated_handles_sets_opposite_ref() {
 }
 
 #[test]
+fn double_clicking_handles_on_sheared_frame_keeps_axis_and_opposite_ref() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let shear = designcraft_geom::Affine::new([1.0, 0.0, 60.0_f64.to_radians().tan(), 1.0, 0.0, 0.0]);
+    d.item_mut(id).unwrap().xf = shear;
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    let mut t = create("selection");
+    // A 60° horizontal shear keeps local X horizontal, so top/bottom still fit height and
+    // left/right still fit width, with each handle pinning its opposite local side.
+    for (handle, axis, rf) in [(1, "height", 7), (5, "height", 1), (7, "width", 5), (3, "width", 3), (0, "both", 8)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "sheared handle={handle}"
+        );
+    }
+    // 90° clockwise rotation combined with 60° horizontal shear maps local X vertically.
+    d.item_mut(id).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2) * shear;
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    for (handle, axis, rf) in [(1, "width", 5), (3, "height", 7)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "rotated+sheared handle={handle}"
+        );
+    }
+}
+
+#[test]
 fn pen_continues_an_open_path_from_either_end_point() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

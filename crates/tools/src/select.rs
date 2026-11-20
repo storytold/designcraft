@@ -564,7 +564,7 @@ fn fitting_params(cx: &ToolContext, handle: usize) -> (&'static str, Option<usiz
     let for_item = |id: ItemId| -> Option<(&'static str, usize)> {
         let it = cx.doc.item(id)?;
         let xf = cx.item_canvas_xf(id)? * it.xf;
-        fitting_item_params(xf, dir, corner, fallback_axis)
+        fitting_item_params(xf, handle, dir)
     };
     let mut results = cx.selection.items.iter().filter_map(|id| for_item(*id));
     let Some((first_axis, first_ref)) = results.next() else {
@@ -574,26 +574,29 @@ fn fitting_params(cx: &ToolContext, handle: usize) -> (&'static str, Option<usiz
     (first_axis, all_match.then_some(first_ref))
 }
 
-fn fitting_item_params(xf: designcraft_geom::Affine, dir: Point, corner: bool, fallback_axis: &'static str) -> Option<(&'static str, usize)> {
+fn fitting_item_params(xf: designcraft_geom::Affine, handle: usize, dir: Point) -> Option<(&'static str, usize)> {
     let [a, b, c, d, _, _] = xf.as_coeffs();
     let det = a * d - b * c;
-    if !(det.is_finite() && det.abs() > 1e-12) {
+    let sx = a.hypot(b);
+    if !(det.is_finite() && det.abs() > 1e-12 && sx.is_finite() && sx > 1e-12) {
         return None;
     }
-    let lx = (d * dir.x - c * dir.y) / det;
-    let ly = (-b * dir.x + a * dir.y) / det;
-    if !(lx.is_finite() && ly.is_finite()) {
-        return None;
-    }
-    let axis = if corner {
+    // Preserve the base side-handle axis rule (local width vs height follows the local X axis
+    // orientation) so horizontal shear does not turn a top/bottom handle into a width fit.
+    let axis = if handle.is_multiple_of(2) {
         "both"
-    } else if (lx.abs() - ly.abs()).abs() <= 1e-9 {
-        fallback_axis
-    } else if lx.abs() > ly.abs() {
-        "width"
     } else {
-        "height"
+        let canvas_height = matches!(handle, 1 | 5);
+        let local_width_is_vertical = b.abs() > a.abs();
+        if canvas_height == local_width_is_vertical { "width" } else { "height" }
     };
+    // Project the handle direction onto the orthonormal local-X / signed-perpendicular basis so
+    // shear and non-uniform scaling keep the opposite local edge/corner anchor intact.
+    let ux = (a * dir.x + b * dir.y) / sx;
+    let uy = ((-b * dir.x + a * dir.y) / sx) * det.signum();
+    if !(ux.is_finite() && uy.is_finite()) {
+        return None;
+    }
     let anchor = |v: f64| {
         if v < -1e-6 {
             2
@@ -604,9 +607,9 @@ fn fitting_item_params(xf: designcraft_geom::Affine, dir: Point, corner: bool, f
         }
     };
     let (rx, ry) = match axis {
-        "width" => (anchor(lx), 1),
-        "height" => (1, anchor(ly)),
-        _ => (anchor(lx), anchor(ly)),
+        "width" => (anchor(ux), 1),
+        "height" => (1, anchor(uy)),
+        _ => (anchor(ux), anchor(uy)),
     };
     Some((axis, ry * 3 + rx))
 }

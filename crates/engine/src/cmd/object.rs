@@ -3567,9 +3567,16 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt
     if !(r.width().is_finite() && r.height().is_finite() && r.width() > 0.0 && r.height() > 0.0) {
         return Err(bad("object.fit", "text frame bounds must be finite and nonempty"));
     }
-    let inset_l = if tf.options.inset[1].is_finite() { tf.options.inset[1] } else { 0.0 };
-    let inset_b = if tf.options.inset[2].is_finite() { tf.options.inset[2] } else { 0.0 };
-    let inset_r = if tf.options.inset[3].is_finite() { tf.options.inset[3] } else { 0.0 };
+    // Composition reserves `stroke_inside()` inside every edge before applying the frame's text
+    // insets (`Item::text_area()`). Include the same allowance so stroked frames do not overset.
+    let stroke_in = it.stroke_inside();
+    let edge_inset = |v: f64| {
+        let total = if v.is_finite() { v + stroke_in } else { stroke_in };
+        if total.is_finite() { total } else { 0.0 }
+    };
+    let inset_l = edge_inset(tf.options.inset[1]);
+    let inset_b = edge_inset(tf.options.inset[2]);
+    let inset_r = edge_inset(tf.options.inset[3]);
     let anchors = fit_text_anchors(tf, ref_pt);
     // Keep trial layouts out of the session cache. Search with the actual columns and frame
     // options: measuring a very tall frame collapses columns and includes vertical alignment's
@@ -7028,6 +7035,57 @@ mod fit_text_frame_tests {
         let rf_cs = s.cache.get(&s.doc().unwrap().doc, rf_sid, None);
         assert!(!rf_cs.is_overset() && rf_cs.frame(rtl_first).unwrap().lines.len() == 1, "RTL text wrapped/overset: {rfb:?}");
         assert!((rfb.width() - (pb.width() + 24.0)).abs() < 0.5, "RTL text lost first_line_indent: rfb={rfb:?} vs pb={pb:?}");
+    }
+
+    #[test]
+    fn stroked_frame_width_fit_preserves_inside_stroke_allowance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // One-line frame with a 4 pt inside stroke: width fit from the left handle (ref=5) must
+        // keep both sides' inside-stroke allowance so recomposition stays one line and non-overset.
+        let inside_l = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_l.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let il_sid = s.doc().unwrap().doc.item(inside_l).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, il_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, il_sid, None).frame(inside_l).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [inside_l.0]})).unwrap();
+        let il_b = bounds(&s, inside_l);
+        let il_cs = s.cache.get(&s.doc().unwrap().doc, il_sid, None);
+        assert!(!il_cs.is_overset(), "4 pt inside stroke caused overset on ref=5 width fit: {il_b:?}");
+        assert_eq!(il_cs.frame(inside_l).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=5 width fit: {il_b:?}");
+        assert!((il_b.x1 - 500.0).abs() < 1e-9 && il_b.width() < 250.0, "{il_b:?}");
+
+        // Left-anchored width fit (right handle, ref=3) also keeps the inside-stroke allowance.
+        let inside_r = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_r.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let ir_sid = s.doc().unwrap().doc.item(inside_r).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [inside_r.0]})).unwrap();
+        let ir_b = bounds(&s, inside_r);
+        let ir_cs = s.cache.get(&s.doc().unwrap().doc, ir_sid, None);
+        assert!(!ir_cs.is_overset(), "4 pt inside stroke caused overset on ref=3 width fit: {ir_b:?}");
+        assert_eq!(ir_cs.frame(inside_r).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=3 width fit: {ir_b:?}");
+        assert!((ir_b.x0 - 100.0).abs() < 1e-9 && (ir_b.width() - il_b.width()).abs() < 0.01, "ir={ir_b:?} vs il={il_b:?}");
+
+        // Centered 8 pt stroke reaches 4 pt inside (same inner width as 4 pt inside); outside 8 pt
+        // reaches 0 pt inside (~8 pt narrower inner rect).
+        let centered = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [centered.0], "swatch": "[Black]", "weight": 8.0, "align": "center"})).unwrap();
+        let c_sid = s.doc().unwrap().doc.item(centered).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [centered.0]})).unwrap();
+        let c_inner = s.doc().unwrap().doc.item(centered).unwrap().inner_bounds();
+        let c_cs = s.cache.get(&s.doc().unwrap().doc, c_sid, None);
+        assert!(!c_cs.is_overset() && c_cs.frame(centered).unwrap().lines.len() == 1, "{c_inner:?}");
+        assert!((c_inner.width() - il_b.width()).abs() < 0.01, "centered={c_inner:?} vs inside={il_b:?}");
+
+        let outside = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [outside.0], "swatch": "[Black]", "weight": 8.0, "align": "outside"})).unwrap();
+        let o_sid = s.doc().unwrap().doc.item(outside).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [outside.0]})).unwrap();
+        let o_inner = s.doc().unwrap().doc.item(outside).unwrap().inner_bounds();
+        let o_cs = s.cache.get(&s.doc().unwrap().doc, o_sid, None);
+        assert!(!o_cs.is_overset() && o_cs.frame(outside).unwrap().lines.len() == 1, "{o_inner:?}");
+        assert!((il_b.width() - o_inner.width() - 8.0).abs() < 0.01, "inside={il_b:?} vs outside={o_inner:?}");
     }
 }
 
