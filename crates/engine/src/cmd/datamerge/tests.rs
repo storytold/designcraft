@@ -397,33 +397,48 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
     assert_eq!(merged["records"], 2);
     assert_eq!(texts(&s), vec!["AdaBerlin", "GraceMunich"]);
 
-    let semi_csv = parse::table_from_bytes(b"Name;City\nAda;London\n", "people.csv", None).unwrap();
-    assert_eq!(semi_csv.delimiter, Delimiter::Semicolon);
-    assert_eq!(semi_csv.rows, vec![vec!["Ada", "London"]]);
-
-    let quoted_comma_tab_csv = parse::table_from_bytes(b"\"Name, First\"\tOrt\nAda\tBerlin\n", "people.csv", None).unwrap();
-    assert_eq!(quoted_comma_tab_csv.delimiter, Delimiter::Tab);
-    assert_eq!(quoted_comma_tab_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name, First", "Ort"]);
-
-    // Comma `.csv` files whose header splits on an unquoted comma keep Comma even when rows contain `;` or `\t`.
-    let semi_in_values = parse::table_from_bytes(b"id,notes; comments\n1,a; b; c\n2,d; e; f\n", "export.csv", None).unwrap();
-    assert_eq!(semi_in_values.delimiter, Delimiter::Comma);
-    assert_eq!(semi_in_values.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["id", "notes; comments"]);
-    assert_eq!(semi_in_values.rows, vec![vec!["1", "a; b; c"], vec!["2", "d; e; f"]]);
-
-    let quoted_semi_header = parse::table_from_bytes(b"Ort,\"Name;Vorname\"\nBerlin,\"a;b;c\"\n", "people.csv", None).unwrap();
-    assert_eq!(quoted_semi_header.delimiter, Delimiter::Comma);
-    assert_eq!(quoted_semi_header.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Ort", "Name;Vorname"]);
-    assert_eq!(quoted_semi_header.rows, vec![vec!["Berlin", "a;b;c"]]);
-
-    let tab_in_values = parse::table_from_bytes(b"Name,Note\tx\nAda,hi\tthere\n", "people.csv", None).unwrap();
-    assert_eq!(tab_in_values.delimiter, Delimiter::Comma);
-    assert_eq!(tab_in_values.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name", "Note\tx"]);
-    assert_eq!(tab_in_values.rows, vec![vec!["Ada", "hi\tthere"]]);
-
-    let comma_csv = parse::table_from_bytes(b"\"Name\tLabel\",City\nAda,London\n", "people.csv", None).unwrap();
-    assert_eq!(comma_csv.delimiter, Delimiter::Comma);
-    assert_eq!(comma_csv.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Name\tLabel", "City"]);
+    // Non-comma `.csv` files (including fully quoted `;`/`\t` headers containing commas) fall
+    // through to sniffing, while headers that split coherently on an unquoted `,` stay Comma.
+    for (name, body, expected_delimiter, expected_fields, expected_rows) in [
+        ("people.csv", "Name;City\nAda;London\n", Delimiter::Semicolon, vec!["Name", "City"], vec![vec!["Ada", "London"]]),
+        ("people.csv", "\"Name, First\"\tOrt\nAda\tBerlin\n", Delimiter::Tab, vec!["Name, First", "Ort"], vec![vec!["Ada", "Berlin"]]),
+        (
+            "people.csv",
+            "\"Name\";\"Last, First\"\n\"Ada\";\"Lovelace, Countess\"\n",
+            Delimiter::Semicolon,
+            vec!["Name", "Last, First"],
+            vec![vec!["Ada", "Lovelace, Countess"]],
+        ),
+        (
+            "people.csv",
+            "\"Name\"\t\"Last, First\"\n\"Ada\"\t\"Lovelace, Countess\"\n",
+            Delimiter::Tab,
+            vec!["Name", "Last, First"],
+            vec![vec!["Ada", "Lovelace, Countess"]],
+        ),
+        (
+            "export.csv",
+            "id,notes; comments\n1,a; b; c\n2,d; e; f\n",
+            Delimiter::Comma,
+            vec!["id", "notes; comments"],
+            vec![vec!["1", "a; b; c"], vec!["2", "d; e; f"]],
+        ),
+        ("people.csv", "Ort,\"Name;Vorname\"\nBerlin,\"a;b;c\"\n", Delimiter::Comma, vec!["Ort", "Name;Vorname"], vec![vec!["Berlin", "a;b;c"]]),
+        (
+            "people.csv",
+            "\"Name\",\"Last; First\"\n\"Ada\",\"Lovelace; Countess\"\n",
+            Delimiter::Comma,
+            vec!["Name", "Last; First"],
+            vec![vec!["Ada", "Lovelace; Countess"]],
+        ),
+        ("people.csv", "Name,Note\tx\nAda,hi\tthere\n", Delimiter::Comma, vec!["Name", "Note\tx"], vec![vec!["Ada", "hi\tthere"]]),
+        ("people.csv", "\"Name\tLabel\",City\nAda,London\n", Delimiter::Comma, vec!["Name\tLabel", "City"], vec![vec!["Ada", "London"]]),
+    ] {
+        let parsed = parse::table_from_bytes(body.as_bytes(), name, None).unwrap();
+        assert_eq!(parsed.delimiter, expected_delimiter, "{body:?}");
+        assert_eq!(parsed.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), expected_fields, "{body:?}");
+        assert_eq!(parsed.rows, expected_rows, "{body:?}");
+    }
 }
 
 /// #2874: updating a legacy saved single-field Comma source re-sniffs it, while deliberate

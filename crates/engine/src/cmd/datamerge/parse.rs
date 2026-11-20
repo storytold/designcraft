@@ -382,16 +382,60 @@ fn sniff(name: &str, text: &str) -> Delimiter {
     }
 }
 
+/// Whether the first non-blank record splits on `,` with coherent quoting (matching
+/// `craft_csv::sniff_delimiter`'s quote-boundary rules so quoted `;`/`\t` headers such as
+/// `"Name";"Last, First"` fall through to delimiter sniffing).
 fn header_splits_on_comma(text: &str) -> bool {
-    let mut split = false;
-    craft_csv::parse_records(text, ',', '"', 2, |cells| {
-        if cells.iter().all(|c| c.trim().is_empty()) {
-            return true;
+    let mut commas = 0usize;
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut field_start = true;
+    let mut record_has_content = false;
+    let mut record_coherent = true;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if quoted {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    record_has_content = true;
+                } else {
+                    quoted = false;
+                    after_quote = true;
+                }
+            } else if !ch.is_whitespace() {
+                record_has_content = true;
+            }
+            continue;
         }
-        split = cells.len() > 1;
-        false
-    });
-    split
+        if ch == '\r' || ch == '\n' {
+            if ch == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            if record_has_content {
+                return commas > 0 && record_coherent;
+            }
+            commas = 0;
+            after_quote = false;
+            field_start = true;
+            record_coherent = true;
+            continue;
+        }
+        if ch == '"' && field_start {
+            quoted = true;
+            field_start = false;
+            record_has_content = true;
+        } else if ch == ',' {
+            commas = commas.saturating_add(1);
+            field_start = true;
+            after_quote = false;
+        } else {
+            record_coherent &= !after_quote || ch.is_whitespace();
+            record_has_content |= !ch.is_whitespace();
+            field_start = false;
+        }
+    }
+    !quoted && record_has_content && commas > 0 && record_coherent
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
