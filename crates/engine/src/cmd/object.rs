@@ -4447,10 +4447,27 @@ mod step_repeat_tests {
         s.execute("object.stroke", &json!({"weight": 4})).unwrap();
         assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[Black]");
         assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 4.0);
-        s.execute("object.stroke", &json!({"cap": "round"})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "[Paper]", "tint": 0.5})).unwrap();
+        s.execute(
+            "object.stroke",
+            &json!({"swatch": "[Paper]", "tint": 0.25, "weight": 6, "cap": "round", "type": {"kind": "dashed", "pattern": [8.0, 3.0]}}),
+        )
+        .unwrap();
         s.execute("object.defaultFillStroke", &json!({})).unwrap();
         let c = &s.doc().unwrap().doc.settings.new_object;
-        assert_eq!((c.fill.as_str(), c.stroke.as_str(), c.stroke_weight, c.stroke_cap), ("[None]", "[Black]", 4.0, designcraft_doc::Cap::Round));
+        assert_eq!((c.fill.as_str(), c.fill_tint, c.stroke.as_str(), c.stroke_tint), ("[None]", 1.0, "[Black]", 1.0));
+        assert_eq!(c.stroke_weight, 6.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+
+        // Visible-weight rule: resetting to a black stroke restores a 0 pt default weight to 1 pt
+        // while keeping the other stroke attributes intact.
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.defaultFillStroke", &json!({})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke_weight, 1.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
     }
 
     #[test]

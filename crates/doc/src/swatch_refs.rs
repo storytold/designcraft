@@ -240,8 +240,8 @@ impl Document {
     /// Point every reference to swatch `from` at `to`: tints based on it, colour groups, inks,
     /// styles, new-object defaults, page items (fills, strokes, gaps, effects, column rules, the
     /// swatch an image is coloured with), text, kenten and ruby colours, rules, shading, borders
-    /// and border gaps, tables (with stroke gaps, diagonal lines and cell images), footnotes, gradient stops,
-    /// endnotes and the footnote rule. The swatch itself is renamed by the caller.
+    /// and border gaps, tables (with stroke gaps, diagonal lines and cell images), footnotes,
+    /// gradient stops, endnotes and the footnote rule. The swatch itself is renamed by the caller.
     pub fn rename_swatch_refs(&mut self, from: &str, to: &str) {
         if from == to {
             return;
