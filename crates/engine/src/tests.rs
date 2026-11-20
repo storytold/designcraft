@@ -217,24 +217,24 @@ fn a_command_that_fails_partway_strands_no_edits() {
     assert_eq!(s.doc().unwrap().history.undo.len(), 1);
 }
 
-/// The same for a command that fails after a command it ran changed the document: that one
-/// leaves the step to it, so it has to record one.
+/// The same for a command that fails after a command it ran changed the document: that one leaves the
+/// step to it, so it has to record one. `test.nestedFailure` is test-only scaffolding (`cmd.rs`): no
+/// shipping command fails after a nested edit, now that Fill with Placeholder Text checks its target
+/// before converting a frame.
 #[test]
 fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
     let mut s = session();
     let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
-    let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
-    s.execute("selection.set", &json!({"ids": [text]})).unwrap();
     let (before, steps) = {
         let st = s.doc().unwrap();
         (st.doc.clone(), st.history.undo.len())
     };
-    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
-    assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
+    // It turns the empty frame into a text frame, then fails.
+    assert!(s.execute("test.nestedFailure", &json!({"ids": [empty]})).is_err());
     let st = s.doc().unwrap();
     assert_ne!(st.doc, before, "the frame was converted");
     assert_eq!(st.history.undo.len(), steps + 1);
-    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
+    assert_eq!(st.history.undo.last().unwrap().label, "Nested Failure");
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.doc().unwrap().doc, before);
 }

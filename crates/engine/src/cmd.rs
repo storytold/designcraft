@@ -243,6 +243,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(datamerge::specs());
         v.extend(interactive::specs());
         v.extend(preflight::specs());
+        #[cfg(test)]
+        v.extend(test_support::specs());
         v
     })
 }
@@ -394,3 +396,29 @@ pub use layout::chapter_numbering;
 pub use paste_image::{IMAGE_EXTENSIONS, MAX_PASTED_PIXELS, PASTED_IMAGE_NAME, check_pasted_base64, check_pasted_size, pasted_pixels, pasted_png};
 pub use paste_svg::is_svg_markup;
 pub(crate) use place_text::autoflow as place_text_autoflow;
+
+/// Test-only commands: scaffolding the engine's own tests need, never in a shipped build or in another
+/// crate's tests (this module is `#[cfg(test)]`, and `cfg(test)` is not set for a dependency build).
+#[cfg(test)]
+mod test_support {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A command that changes the document and then fails, which no shipping command does any more:
+    /// the engine checks what a failed command leaves behind (one undo step with its own label).
+    pub(super) fn specs() -> Vec<CommandSpec> {
+        vec![cmd!(
+            "test.nestedFailure",
+            "Nested Failure",
+            [],
+            None,
+            "{ids} — turns the frames into text frames, then fails",
+            has_selection,
+            |s, p| {
+                s.execute("object.content", &with_param(p, "type", json!("text")))?;
+                Err(bad("test.nestedFailure", "it fails after the command it ran"))
+            }
+        )]
+    }
+}

@@ -17,9 +17,9 @@ mod opentype;
 mod story;
 
 use asian::{auto_tcy_cmd, grid_settings_cmd, kenten_cmd, ruby_cmd, shatai_cmd, warichu_cmd};
-pub(crate) use caret::story_of;
 use caret::{move_caret, para_bounds, place, release, select_around, select_at, sentence_bounds};
 pub use caret::{next_char, next_word, prev_char, prev_word};
+pub(crate) use caret::{story_of, validated_story_of};
 pub(crate) use edit::delete_selection;
 pub use edit::{PLACEHOLDER, quote_marks};
 use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert};
@@ -126,7 +126,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{story?, frame?: a text frame of the story, direction: leftToRight|rightToLeft} — column progression, independent of paragraph direction",
             has_doc,
             |s, p| {
-                let sid = story_of(s, p).ok_or_else(|| bad("story.setDirection", "no story"))?;
+                let sid = validated_story_of(s, p, "story.setDirection")?.ok_or_else(|| bad("story.setDirection", "no story"))?;
                 let direction: designcraft_doc::TextDirection =
                     serde_json::from_value(p.get("direction").cloned().ok_or_else(|| bad("story.setDirection", "missing direction"))?)
                         .map_err(|e| bad("story.setDirection", e.to_string()))?;
@@ -199,7 +199,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(query "story.get", "Get Story", [], None, "{story? | frame?} → text, frames, paragraphs, vertical, lines, overset (the UTF-8 byte offset into `text` where it stops fitting its frames, not a character index, null when it all fits) and oversetChars (how many characters that leaves, as preflight reports them)", has_doc, |s, p| {
             let st = s.doc()?;
-            let sid = story_of(s, p).ok_or_else(|| bad("story.get", "no story"))?;
+            let sid = validated_story_of(s, p, "story.get")?.ok_or_else(|| bad("story.get", "no story"))?;
             let mut v = st.doc.story_summary(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
             let cs = s.cache.get(&st.doc, sid, None);
             // `overset` is where the text stops fitting, not how much is left over: the two were
@@ -608,3 +608,6 @@ mod alignment_shortcut_tests {
         assert_eq!(story_aligns(&s.doc().unwrap().doc, "Spring"), [Align::FullyJustified, Align::Left]);
     }
 }
+
+#[cfg(test)]
+mod target_tests;
