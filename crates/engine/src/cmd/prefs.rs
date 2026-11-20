@@ -22,6 +22,7 @@ const DOC_KEYS: &[&str] = &[
     "advancedType",
     "overprintBlack",
     "glyphFallback",
+    "flexibleWordSpacing",
     "rulerOrigin",
 ];
 
@@ -67,7 +68,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Preferences",
             [],
             None,
-            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), kerningIncrement? (1/1000 em: Alt+Left/Right in text), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box), rulerOrigin?: spread|page|spine (what rulers and X/Y measure from, with the zero point)} → those settings",
+            "{horizontalUnits?, verticalUnits?: points|picas|inches|millimeters|…, keyboardIncrement? (pt), kerningIncrement? (1/1000 em: Alt+Left/Right in text), baselineGrid?: {start, increment, relativeTo, color, viewThreshold}, grid?: {horizontal, vertical, subdivisions, color, inBack}, pasteboard?: [h, v], marginColor?, columnColor?, bleedColor?, slugColor?: [r, g, b], advancedType?: {superscriptSize, superscriptPosition, subscriptSize, subscriptPosition} (%), overprintBlack?, glyphFallback? (draw characters the font lacks from fallback fonts; off: as the font's missing-glyph box), flexibleWordSpacing? (justified lines may squeeze word spaces below the Minimum when the alternative is a much looser line, as InDesign does; off: never below the Minimum), rulerOrigin?: spread|page|spine (what rulers and X/Y measure from, with the zero point)} → those settings",
             has_doc,
             |s, p| {
                 let cur = serde_json::to_value(&s.doc()?.doc.settings).map_err(|e| bad("document.preferences", e.to_string()))?;
@@ -347,6 +348,20 @@ mod glyph_fallback_tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert!(!s.doc().unwrap().doc.settings.glyph_fallback);
         assert_eq!(gid(&s), 0);
+    }
+
+    #[test]
+    fn flexible_word_spacing_is_an_undoable_document_preference_on_for_idml() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert_eq!(s.execute("document.preferences", &json!({})).unwrap()["flexibleWordSpacing"], false, "new documents: strict");
+        assert_eq!(s.execute("document.preferences", &json!({"flexibleWordSpacing": true})).unwrap()["flexibleWordSpacing"], true);
+        assert!(s.doc().unwrap().doc.settings.flexible_word_spacing);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.doc().unwrap().doc.settings.flexible_word_spacing);
+        // Documents from InDesign are laid out the way InDesign spaces lines.
+        let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
+        assert!(back.settings.flexible_word_spacing);
     }
 
     #[test]
