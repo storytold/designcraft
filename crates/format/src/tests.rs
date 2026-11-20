@@ -968,3 +968,42 @@ fn note_series_native_roundtrip_and_legacy_defaults() {
     assert_eq!(legacy.story(sid).unwrap().notes[0].series, 0);
     assert_eq!(legacy.footnote_options, d.footnote_options);
 }
+
+#[test]
+fn commentary_stream_routes_and_hidden_refs_survive_native_roundtrip() {
+    use designcraft_doc::{NotePlacement, NoteStream};
+    let mut doc = Document::new(&NewDocument::default());
+    let layer = doc.default_layer();
+    let (_, host) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), layer, "Body", Default::default()).unwrap();
+    doc.footnote_options.placement = NotePlacement::Stream;
+    doc.footnote_options.ref_hidden = true;
+    doc.story_mut(host).unwrap().insert_note(4, "Comment", Default::default()).unwrap();
+    let (frame, own) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(270.0, 36.0, 500.0, 400.0), layer, "", Default::default()).unwrap();
+    doc.item_mut(frame).unwrap().text_frame_mut().unwrap().options.note_stream =
+        Some(NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None });
+    let reopened = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(reopened.footnote_options, doc.footnote_options);
+    let tf = reopened.item(frame).unwrap().text_frame().unwrap();
+    assert_eq!(tf.story, own);
+    assert_eq!(tf.options.note_stream, Some(NoteStream { story: host, series: 0, catchword: false.into(), follow_inset: None }));
+    reopened.check().unwrap();
+}
+
+#[test]
+fn inset_columns_survive_native_roundtrip() {
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(designcraft_doc::InsetColumns {
+        streams: vec![designcraft_doc::InsetStream { series: None, ratio: 2.0 }],
+        gutter: 12.0,
+        main_start_lines: 10,
+        main_start_baseline: Some(6),
+        main_left_inset: Some(210.0),
+        main_right_inset: Some(162.0),
+        catchwords: true.into(),
+    });
+    let back = load(&save(&doc).unwrap()).unwrap();
+    assert_eq!(back.item(id).unwrap().text_frame().unwrap().options, doc.item(id).unwrap().text_frame().unwrap().options);
+    back.check().unwrap();
+}

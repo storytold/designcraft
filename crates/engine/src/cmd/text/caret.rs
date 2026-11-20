@@ -10,7 +10,7 @@ pub(crate) fn story_of(s: &Session, p: &Value) -> Option<StoryId> {
     }
     let frame = id_param(p, "frame").or_else(|| st.selection.items.first().copied());
     if let Some(f) = frame {
-        return st.doc.item(f).and_then(|i| i.text_frame()).map(|t| t.story);
+        return st.doc.item(f).and_then(|i| i.text_frame()).map(|t| t.composed_story());
     }
     st.selection.text.map(|t| t.story)
 }
@@ -31,7 +31,8 @@ pub(super) fn hit_byte_with(
     let st = s.active()?;
     let loc = st.doc.find(frame)?;
     let it = st.doc.item_at(&loc)?;
-    let sid = it.text_frame()?.story;
+    let tf = it.text_frame()?;
+    let sid = tf.composed_story();
     let xf = st.doc.parent_xf(&loc) * st.doc.text_xf(it);
     let inner = xf.inverse() * pt;
     let cs = s.cache.get(&st.doc, sid, None);
@@ -43,6 +44,9 @@ pub(super) fn hit_byte_with(
     }
     if let Some((id, b)) = compose::hit_note_with(&cs, fi, inner, hit) {
         return Some((sid, b, Some(CellAddr::footnote(id))));
+    }
+    if tf.options.note_stream.is_some() {
+        return None;
     }
     let b = hit(&cs, fi, inner).unwrap_or(0);
     Some((sid, b, None))

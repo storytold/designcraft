@@ -1,17 +1,23 @@
 //! Body-facing note state. Each series retains its own numbering and split continuation.
+use super::streams::StreamComposer;
 use super::{
     Arc, ComposeOptions, ComposedStory, Document, FrameSpec, Glyph, HashMap, HashSet, NoteColumn, PlacedNote, Point, Range, Rect, SeriesNotes,
     SeriesSnapshot, Story, SubstCtx, stack_height,
 };
 use designcraft_doc::{MarginSide, MarginStack, NotePlacement};
 
-pub(crate) type NoteSnapshot = Vec<SeriesSnapshot>;
+#[derive(Clone)]
+pub(crate) struct NoteSnapshot {
+    series: Vec<SeriesSnapshot>,
+    streams: usize,
+}
 pub(crate) struct SplitPlan(Vec<(usize, super::SplitPlan)>);
 
 pub(crate) struct Notes {
     series: Vec<SeriesNotes>,
     nested: bool,
     floor: HashMap<usize, f64>,
+    streams: StreamComposer,
 }
 
 impl Notes {
@@ -22,19 +28,33 @@ impl Notes {
         if !nested {
             ids.extend(doc.note_series.iter().map(|s| s.id).filter(|id| *id != 0));
         }
-        Self { series: ids.into_iter().map(|id| SeriesNotes::new(doc, story, id, nested)).collect(), nested, floor: HashMap::new() }
+        Self {
+            series: ids.into_iter().map(|id| SeriesNotes::new(doc, story, id, nested)).collect(),
+            nested,
+            floor: HashMap::new(),
+            streams: StreamComposer::new(doc, story, frames),
+        }
     }
 
     fn at_foot(&self, doc: &Document, i: usize) -> bool {
-        self.nested || matches!(doc.note_options(self.series[i].series).placement, NotePlacement::ColumnFoot)
+        self.nested
+            || match doc.note_options(self.series[i].series).placement {
+                NotePlacement::ColumnFoot => true,
+                NotePlacement::Stream => !self.streams.has_route(self.series[i].series),
+                NotePlacement::Margin { .. } => false,
+            }
     }
 
     pub fn snapshot(&self) -> NoteSnapshot {
-        self.series.iter().map(|s| (s.num, s.key, s.placed.len(), s.carry.clone())).collect()
+        NoteSnapshot {
+            series: self.series.iter().map(|s| (s.num, s.key, s.placed.len(), s.carry.clone())).collect(),
+            streams: self.streams.snapshot(),
+        }
     }
 
     pub fn restore(&mut self, snapshot: &NoteSnapshot) {
-        for (s, (num, key, placed, carry)) in self.series.iter_mut().zip(snapshot) {
+        self.streams.restore(snapshot.streams);
+        for (s, (num, key, placed, carry)) in self.series.iter_mut().zip(&snapshot.series) {
             (s.num, s.key) = (*num, *key);
             s.placed.truncate(*placed);
             s.carry = carry.clone();
@@ -43,6 +63,16 @@ impl Notes {
 
     pub fn active(&self) -> bool {
         self.series.iter().any(SeriesNotes::active)
+    }
+
+    pub fn streams_fit(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], out: &ComposedStory, opts: &ComposeOptions) -> bool {
+        opts.inset_measure || self.streams.fits(doc, column, extra, out, opts)
+    }
+
+    pub fn finish_streams(&self, doc: &Document, story: &Story, opts: &ComposeOptions, out: &mut ComposedStory) {
+        if !self.nested && !opts.inset_measure {
+            self.streams.finish(doc, story, opts, out);
+        }
     }
 
     pub fn number_refs(&mut self, doc: &Document, range: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
@@ -148,6 +178,10 @@ impl Notes {
     }
 
     pub fn place_line(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], plan: Option<SplitPlan>, opts: &ComposeOptions) -> bool {
+        // Carry-only placement must not accept the staged main line's stream references.
+        if !extra.is_empty() {
+            self.streams.place_line();
+        }
         let mut plans = plan.map_or_else(Vec::new, |p| p.0);
         let mut placed = false;
         for i in 0..self.series.len() {
@@ -308,6 +342,32 @@ impl Notes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_column_foot_placement_does_not_accept_a_stream_anchor() {
+        let mut doc = Document::new(&Default::default());
+        let (_, sid) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 300.0), doc.default_layer(), "Body", Default::default())
+            .unwrap();
+        let (route, _) = doc
+            .add_text_frame(designcraft_doc::SpreadRef::Doc(0), Rect::new(270.0, 36.0, 490.0, 300.0), doc.default_layer(), "", Default::default())
+            .unwrap();
+        doc.footnote_options.placement = NotePlacement::Stream;
+        doc.item_mut(route).unwrap().text_frame_mut().unwrap().options.note_stream =
+            Some(designcraft_doc::NoteStream { story: sid, series: 0, catchword: false.into(), follow_inset: None });
+        doc.story_mut(sid).unwrap().insert_note(0, "Commentary", Default::default()).unwrap();
+        let story = doc.story(sid).unwrap();
+        let frames = crate::frame_specs(&doc, sid);
+        let frame = &frames[0];
+        let column = NoteColumn { frame_index: 0, column_index: 0, width: frame.columns()[0].width(), frame };
+        let opts = ComposeOptions::default();
+        let mut notes = Notes::new(&doc, story, &frames);
+        let mut out = ComposedStory::default();
+        assert!(notes.streams_fit(&doc, column, &[0], &out, &opts));
+        notes.place_line(&doc, column, &[], None, &opts);
+        notes.finish_streams(&doc, story, &opts, &mut out);
+        assert!(out.frames.iter().all(|f| f.notes.is_empty()), "no main reference was accepted");
+    }
 
     #[test]
     fn split_plan_keeps_the_spanning_floor_after_a_rewind() {

@@ -109,7 +109,7 @@ fn placements(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> Vec<(ItemI
 /// Local note composition sets reference baselines and text metrics. Only the document-facing
 /// entry points call this final pass; neighbour layouts never recurse into page stacking.
 pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOptions, out: &mut ComposedStory) {
-    if !out.frames.iter().flat_map(|f| &f.notes).any(|n| !doc.note_options(n.series).placement.is_column_foot()) {
+    if !out.frames.iter().flat_map(|f| &f.notes).any(|n| matches!(doc.note_options(n.series).placement, NotePlacement::Margin { .. })) {
         return;
     }
     let placed = placements(doc, sid, opts);
@@ -118,7 +118,11 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
     let neighbour_opts = ComposeOptions { xrefs: opts.xrefs.clone(), running: opts.running.clone(), ..Default::default() };
     let mut all = Vec::new();
     candidates(doc, out, &frames, &placed, &pages, &mut all);
-    for story in doc.stories.values().filter(|s| s.id != sid && s.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot())) {
+    for story in doc
+        .stories
+        .values()
+        .filter(|s| s.id != sid && s.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, NotePlacement::Margin { .. })))
+    {
         let placed = placements(doc, story.id, &neighbour_opts);
         let frames = crate::frame_specs_placed(doc, story.id, &placed);
         if !frames.iter().any(|f| f.page.is_some_and(|p| pages.contains(&p))) {

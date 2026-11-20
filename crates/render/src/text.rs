@@ -471,9 +471,11 @@ impl Renderer {
             ctx.set_paint(color_of(&designcraft_color::Color::gray(0.35), 0.5));
             ctx.fill_path(&greek);
         }
-        for n in &ft.notes {
-            if let Some(nft) = n.text.frames.first() {
-                self.draw_text(ctx, f, &n.text, nft, xf * Affine::translate(n.origin.to_vec2()));
+        for (text, origin, scale) in
+            ft.notes.iter().map(|n| (&n.text, n.origin, 1.0)).chain(ft.catchwords.iter().map(|c| (&c.text, c.origin, c.scale)))
+        {
+            if let Some(nft) = text.frames.first() {
+                self.draw_text(ctx, f, text, nft, xf * Affine::translate(origin.to_vec2()) * Affine::scale(scale));
             }
         }
     }

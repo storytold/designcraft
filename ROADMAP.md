@@ -2,19 +2,64 @@
 
 - **2026-11-20** · Margin note series can stack contiguously from the page margin top with `placement.stack: "top"`; omitted stack retains beside-anchor placement. Native saves retain the mode; IDML warns that margin placement becomes ordinary footnotes (#2871).
 
+- 2026-11-20: D68 inset routes use physical-page anchors and text-bearing catchword ownership; auto leading follows source paragraphs, refits are bounded, band origins are incremental, and following feet retain catchword baseline rhythm (#2873).
+
+- 2026-11-20: newly starting commentary notes translate wrap obstacles from their placed baseline origin, keeping widened lines clear of per-stream catchword rows (#2873).
+
+- 2026-11-20: catchword styles in hosts, routes, series and object styles follow character-style rename and replacement in one undo step (#2873).
+
+- 2026-11-20: inset route dependencies use one frame-ID index and memoized chain validation, with a linear visit regression (#2873).
+
+- 2026-11-20: commentary routes emit newly fitted parts once, carrying baseline metrics and sharing note source text (#2873).
+
+- 2026-11-20: revisited-page routes fit in physical page order after host ranges are known; failed starts revalidate their host cuts (#2873).
+
+- 2026-11-20: each stream reserves one catchword row at its last text-bearing host on a physical page (#2873).
+
+- 2026-11-20: unsized catchword styles inherit each stream's metrics; note series and routes can override the host catchword style (#2873).
+
+- 2026-11-20: regression guards keep widened main and commentary lines below finished streams' full catchword rows (#2873).
+
+- 2026-11-20: styled catchwords use their declared leading as the baseline distance from the preceding line, reserving only the span between the two descents; boolean placement is unchanged (#2873).
+
+- 2026-11-20: routed catchwords require `noteStream.catchword:true` on the route frame; the flag defaults to false, survives native saves and warns on IDML loss (#2873).
+
+- 2026-11-20: styled catchword rows use the character style's leading exactly; boolean catchwords retain the 9/12 pt type and 18 pt row defaults (#2873).
+
+- 2026-11-20: catchword glyphs keep their requested size when leading is small; only width fitting can shrink them (#2873).
+
+- 2026-11-20: routed catchwords follow their last composed line, and chained followers clear that row rather than the route frame's unused height (#2873).
+
+- 2026-11-19: routed series generate catchwords in their last route frame on a continuing page. Inset followers clear every stream's catchword row; page revisits and copied follower chains preserve routed output (#2873).
+
+- 2026-11-19: inset catchwords accept a character style and reserve rows proportional to its leading, with native persistence and an IDML loss warning (#2873).
+
+- 2026-11-19: inset routes include catchword clearance, share one fit across same-page hosts, and can follow an earlier route's composed bottom with `followInset.after` (#2873). Cut verification uses its remaining budget; catchword lookup and core measurement avoid redundant work.
+
+- **2026-11-19** · Commentary routes can end a column at the composed inset core or start a foot below it with `noteStream.followInset`; geometry participates in page fitting and follows text edits (#2873).
+
+- **2026-11-19** · Inset cut search verifies unproved larger keys within its trial budget and warns when verification cannot finish (#2873).
+
+- **2026-11-19** · Inset fitting preserves replay overset when a column-footnote continuation remains unplaced (#2873).
+
+- **2026-11-19** · Inset page fitting probes the full page first, preserving a successful fit across nonmonotone feasibility.
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-15 · **Change:** minor (obsolete CI gap removed; tracked-change selection mapping; Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-16 · **Change:** minor (obsolete CI gap removed; tracked-change selection mapping; Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
 - CJK1: IDML composite fonts now retain character mappings and metrics; explicit aki, tsume, jidori, em alignment/leading, named/custom kinsoku boundaries, hanging punctuation, tate-chu-yoko offsets and kenten symbols flow through composition and IDML export. Automatic kerning no longer imports inactive numeric values as enormous manual spacing. Composite definitions are editable through commands with undo/cache invalidation. Mojikumi definitions are retained and unsupported spacing-table / push-in-push-out policies are reported by preflight. Full InDesign CJK composition parity, frame-grid layout and detailed ruby remain unfinished. Warichu sets the selected run in smaller lines inside the line after the line is broken.
 
+- **2026-11-16** · Inset-column frames place main text and commentary above/beside a positioned main block, widen adjacent streams as text ends, and mirror on facing pages (#2873). Whole-line page fitting retains continuous baselines and source ranges; incremental edits re-fit from the affected page. Optional per-stream catchwords follow each stream’s last rectangle; see [inset-columns.md](docs/inset-columns.md). No readiness percentage change.
+
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-16** · Anchored commentary streams use their own page-ordered frames, keep each first part on its anchor page, and continue before newly anchored comments. Route overflow is a warning separate from body overset; hidden references retain zero-width anchors. Stream frames render, export to PDF, and edit the host notes (#2872). No readiness percentage change.
 - **2026-11-17** · A pending split note advances before deferring the next reference, using its own series' splitting and spacing options. Deleting a series resets memberships inside table cells and note bodies before its numeric ID can be reused; undo restores them (#2871, #1941). No readiness percentage change.
 - **2026-11-16** · Independent footnote series retain their own numbering and styles, with series 0 preserving existing documents and commands. Margin series follow their reference baselines, mirror inside/outside on facing pages, and stack across series without shortening body text; overflowing notes remain placed and report warnings. Margin-note clicks respect foreground frames and table borders; anchored hosts share the page stack, indexed wrap neighbours retain stacked-note host placements and displayed variable/reference text, and PDF exports retain notes beyond the host page. Cached layouts follow resolved cross-references, running headers and table-cell note spacing changes. Running-header source pages also use resolved references (#2871). No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.
@@ -400,6 +445,12 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 ## Progress log
 
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
+
+- **2026-11-19** · Standalone anchored commentary routes beside inset frames now compose in route order, participate in page fitting and report unplaced tails as story overset (#2873). No readiness percentage change.
+
+- **2026-11-18** · Inset commentary retains notes starting partway down a band, widens to the ended main column's centre axis, and reports final commentary overset. `mainStartBaseline` aligns the first main baseline with a neighbouring commentary baseline (#2873).
+
+- **2026-11-16** · Catchword text variable (`nextPageFirstWord`) follows each story across pages, including multi-stream pages. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
 - **2026-11-15** · Format follow-ups to the craft-libs cutover (craft-libs#778; ported from #2734 by Dylan M. Taylor): IDML export keeps CDATA image contents and table spans such as `inf` reach the table edge; DOCX plain-text import leaves out deleted tracked changes and expands inline objects; an XLSX number cell that isn't a number shows as written; unmarked CMYK JPEGs keep the shared decoder's ink polarity; PPTX export writes exact opacity; PDF export repins craft-pdf and craft-prepress to craft-libs main. No readiness percentage change.

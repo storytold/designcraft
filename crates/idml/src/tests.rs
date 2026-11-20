@@ -5587,6 +5587,40 @@ fn idml_note_series_export_keeps_all_notes_and_warns() {
 }
 
 #[test]
+fn idml_warns_before_flattening_streams_and_hidden_references_even_in_series_zero() {
+    use designcraft_doc::{Document, NotePlacement, SpreadRef, build::NewDocument, geom::Rect};
+    let mut doc = Document::new(&NewDocument::default());
+    let (_, host) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 250.0, 400.0), doc.default_layer(), "Body", Default::default()).unwrap();
+    doc.story_mut(host).unwrap().insert_note(4, "Commentary", Default::default()).unwrap();
+    doc.footnote_options.placement = NotePlacement::Stream;
+    doc.footnote_options.ref_hidden = true;
+    let (bytes, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("commentary stream routes or hidden note references")));
+    let reopened = import_idml(&bytes).unwrap();
+    assert!(reopened.stories.values().flat_map(|s| &s.notes).any(|note| note.text.text == "Commentary"));
+}
+
+#[test]
+fn idml_warns_before_dropping_inset_geometry() {
+    use designcraft_doc::{Document, InsetColumns, InsetStream, SpreadRef, build::NewDocument, geom::Rect};
+    let mut doc = Document::new(&NewDocument::default());
+    let (id, _) =
+        doc.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 500.0, 700.0), doc.default_layer(), "Main", Default::default()).unwrap();
+    doc.item_mut(id).unwrap().text_frame_mut().unwrap().options.inset_columns = Some(InsetColumns {
+        streams: vec![InsetStream { series: None, ratio: 1.0 }],
+        gutter: 12.0,
+        main_start_lines: 0,
+        main_start_baseline: None,
+        main_left_inset: None,
+        main_right_inset: None,
+        catchwords: false.into(),
+    });
+    let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|w| w.contains("inset-column geometry")));
+}
+
+#[test]
 fn idml_warns_for_additional_note_series_inside_a_table_cell() {
     let mut d = Document::new(&NewDocument::default());
     let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
@@ -5622,4 +5656,31 @@ fn idml_warns_when_visible_series_zero_margin_notes_become_ordinary_footnotes() 
     let back = import_idml(&bytes).unwrap();
     assert!(back.footnote_options.placement.is_column_foot());
     assert!(back.stories.values().flat_map(|s| &s.notes).any(|n| n.text.text == "Margin source"));
+}
+
+#[test]
+fn idml_warns_for_hidden_references_inside_cells_and_note_bodies() {
+    for nested in [false, true] {
+        let mut d = Document::new(&NewDocument::default());
+        let (_, sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 400.0, 600.0), d.default_layer(), "Body", Default::default()).unwrap();
+        d.note_series.push(designcraft_doc::NoteSeries {
+            id: 1,
+            name: "Hidden".into(),
+            options: designcraft_doc::FootnoteOptions { ref_hidden: true, ..Default::default() },
+        });
+        let tid = d.alloc();
+        let st = d.story_mut(sid).unwrap();
+        let text = if nested {
+            let id = st.insert_note(0, "Outer", Default::default()).unwrap();
+            &mut st.note_mut(id).unwrap().text
+        } else {
+            st.insert_table(0, designcraft_doc::Table::new(tid, 1, 1, 0, 0, 240.0));
+            &mut std::sync::Arc::make_mut(st.tables.get_mut(&tid).unwrap()).cells[0].text
+        };
+        let id = text.insert_note(0, "Hidden embedded source", Default::default()).unwrap();
+        text.note_mut(id).unwrap().series = 1;
+        let (_, warnings) = crate::export_idml_report(&d, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("hidden note references")), "nested={nested}: {warnings:?}");
+    }
 }

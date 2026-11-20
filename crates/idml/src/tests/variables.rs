@@ -127,3 +127,21 @@ fn predefined_variables_round_trip() {
     let back = import_idml(&export_idml(&d)).unwrap();
     assert_eq!(back.text_variables, d.text_variables);
 }
+
+#[test]
+fn catchword_exports_as_empty_custom_text() {
+    let mut d = Document::new(&NewDocument::default());
+    d.text_variables.push(designcraft_doc::vars::TextVariable::new("Catchword", VarKind::NextPageFirstWord { story: None, series: None }));
+    let (bytes, warnings) = crate::export_idml_report(&d, &Default::default());
+    assert!(warnings.iter().any(|s| s.contains("cannot retain catchwords")));
+    let back = import_idml(&bytes).unwrap();
+    assert_eq!(back.text_variables.last().unwrap().kind, VarKind::Custom { text: String::new() });
+}
+
+#[test]
+fn series_catchword_loss_has_an_export_warning() {
+    let mut doc = Document::new(&NewDocument::default());
+    doc.text_variables.push(designcraft_doc::vars::TextVariable::new("Note catchword", VarKind::NextPageFirstWord { story: None, series: Some(0) }));
+    let (_, warnings) = crate::export_idml_report(&doc, &Default::default());
+    assert!(warnings.iter().any(|s| s.contains("cannot retain catchwords")));
+}

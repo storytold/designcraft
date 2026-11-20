@@ -30,6 +30,8 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.settings != new.settings
         || old.sections != new.sections
         || old.text_variables != new.text_variables
+        // Visibility can reflow body text and catchwords outside the changed story.
+        || old.conditions != new.conditions
         || old.footnote_options != new.footnote_options
         || old.note_series != new.note_series
         || old.xref_formats != new.xref_formats
@@ -86,14 +88,14 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
     }
     // Stories.
     let ids: std::collections::BTreeSet<StoryId> = old.stories.keys().chain(new.stories.keys()).copied().collect();
-    let mut changed_text = false;
+    let mut changed_text_or_layout = false;
     for sid in ids {
         let (a, b) = (old.stories.get(&sid), new.stories.get(&sid));
         let edited = !matches!((a, b), (Some(a), Some(b)) if Arc::ptr_eq(a, b));
         if !edited && !stories.contains(&sid) {
             continue;
         }
-        changed_text |= edited;
+        changed_text_or_layout = true;
         // Margin notes can move beyond both the old and new host frame's painted bounds.
         let margins = [old, new].iter().any(|d| margin_reflow(d, sid));
         // Footnote numbers continue across stories.
@@ -131,8 +133,8 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             }
         }
     }
-    // Other stories can show this text (cross-references, running headers) or its pages.
-    if changed_text && new.stories.values().any(|s| shows_other_text(new, s)) {
+    // Other stories can show this text or its pages; resizing a source also changes catchwords.
+    if changed_text_or_layout && new.stories.values().any(|s| shows_other_text(new, s)) {
         return None;
     }
     // Parent-page frames aren't in `out` (parents are compared above); anything on a parent
@@ -148,7 +150,7 @@ fn text_stories(it: &Item) -> Vec<StoryId> {
     let mut v = Vec::new();
     it.walk(&mut |i| {
         if let Some(t) = i.text_frame() {
-            v.push(t.story);
+            v.push(t.composed_story());
         }
     });
     v
@@ -232,6 +234,41 @@ mod tests {
     use super::*;
     use designcraft_doc::ParaFormat;
     use designcraft_doc::build::NewDocument;
+
+    #[test]
+    fn condition_visibility_and_undo_repaint_the_canvas() {
+        let mut d = Document::new(&NewDocument { pages: 2, ..Default::default() });
+        d.conditions.push(designcraft_doc::Condition { name: "Draft".into(), color: [79, 153, 255], visible: true });
+        let shown = d.clone();
+        d.conditions[0].visible = false;
+        assert!(damage(&shown, &d).is_none());
+        assert!(damage(&d, &shown).is_none());
+    }
+
+    #[test]
+    fn resizing_a_catchword_source_repaints_its_dependent_frame() {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let lid = d.default_layer();
+        let text = (0..20).map(|n| format!("Line{n}")).collect::<Vec<_>>().join("\u{2028}");
+        let (first, source) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 222.0), lid, &text, ParaFormat::default()).unwrap();
+        let (second, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(72.0, 72.0, 300.0, 500.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(first, second).unwrap();
+        let index = d.text_variables.len();
+        d.text_variables.push(designcraft_doc::vars::TextVariable::new(
+            "Catchword",
+            designcraft_doc::vars::VarKind::NextPageFirstWord { story: Some(source), series: None },
+        ));
+        let marker = designcraft_doc::vars::var_char(index).unwrap().to_string();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(350.0, 600.0, 500.0, 650.0), lid, &marker, ParaFormat::default()).unwrap();
+        let cache = designcraft_compose::Cache::new();
+        let old = d.clone();
+        let before = cache.running_index(&old).catchword(Some(source), 0).to_string();
+        d.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(72.0, 72.0, 300.0, 147.0));
+        assert!(Arc::ptr_eq(&old.stories[&source], &d.stories[&source]), "only the frame geometry changed");
+        assert_ne!(before, cache.running_index(&d).catchword(Some(source), 0));
+        assert!(damage(&old, &d).is_none(), "the dependent catchword frame must repaint");
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
+    }
 
     #[test]
     fn typing_damages_only_the_frame() {

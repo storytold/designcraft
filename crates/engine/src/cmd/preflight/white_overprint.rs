@@ -129,7 +129,7 @@ pub(super) fn printed(cache: &Cache, d: &Document) -> (Vec<Issue>, BTreeMap<Item
             let children: Vec<_> = drawn_children(it).map(|c| (Node::Item(c.clone()), inside, composed)).collect();
             if let Content::Text(tf) = &it.content {
                 frames.entry(it.id).or_insert(page);
-                let cs = cache.get(d, tf.story, composed);
+                let cs = cache.get(d, tf.composed_story(), composed);
                 // The frame's anchored objects, and those in its footnotes and table cells.
                 let mut pending: Vec<_> = cs.frame(it.id).into_iter().collect();
                 while let Some(frame) = pending.pop() {

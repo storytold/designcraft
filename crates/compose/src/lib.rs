@@ -16,6 +16,7 @@ mod cache;
 pub mod grep;
 mod grid;
 pub mod hyphen;
+pub mod inset;
 pub mod kenten;
 mod mojikumi;
 mod notes;
@@ -49,6 +50,7 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, NoteSnapshot, Notes, SeriesSplitPlan as SplitPlan};
+pub use crate::notes::{StreamPageFit, StreamPageInput, StreamState, fit_stream_page};
 pub use crate::notes::{find_note, find_note_part, hit_note, hit_note_with, note_caret, note_text};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
@@ -294,6 +296,8 @@ pub struct FrameText {
     pub tables: Vec<TableFrag>,
     /// Footnotes placed at the bottom of this frame's columns.
     pub notes: Vec<PlacedNote>,
+    /// Generated inset catchwords, separate from editable source lines and note identities.
+    pub catchwords: Vec<PlacedCatchword>,
     /// Anchored objects placed in this frame's lines.
     pub objects: Vec<PlacedObject>,
 }
@@ -312,6 +316,17 @@ pub struct PlacedObject {
     pub line: usize,
     x: f64,
     text_ascent: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlacedCatchword {
+    pub series: Option<u64>,
+    pub origin: Point,
+    pub rect: Rect,
+    /// Uniformly shrink a long word to its stream's width without changing its spelling.
+    pub scale: f64,
+    pub text: Arc<ComposedStory>,
+    pub source: Arc<str>,
 }
 
 /// A footnote composed at the bottom of a column.
@@ -1042,6 +1057,14 @@ pub fn section_marker(doc: &Document, abs: usize) -> String {
 /// Composition inputs that are not in the story itself.
 #[derive(Clone, Debug, Default)]
 pub struct ComposeOptions {
+    /// Synthetic same-page frame transitions, with the translation of the previous baseline.
+    pub continuations: Vec<(usize, f64)>,
+    /// Band trials place stream notes separately from their host's main text.
+    pub inset_measure: bool,
+    /// Replay note parts as bands of one page rather than separate routed frames.
+    pub note_bands: bool,
+    /// Local baseline of a routed foot following a catchword row.
+    pub note_first_baseline: Option<f64>,
     /// Page name for page-number markers when the story is composed for a specific page (parent items).
     pub page_name: Option<String>,
     /// Section marker text when the story is composed for a specific page (parent items).
@@ -1152,8 +1175,32 @@ pub fn frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
 /// [`frame_specs`] with anchored frames where their host story placed them (`placed`).
 pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)]) -> Vec<FrameSpec> {
     let Some(st) = doc.story(sid) else { return vec![] };
-    let mut out = Vec::with_capacity(st.frames.len());
-    for &fid in &st.frames {
+    let ids: Vec<_> =
+        st.frames.iter().copied().filter(|id| doc.item(*id).and_then(Item::text_frame).is_none_or(|tf| tf.options.note_stream.is_none())).collect();
+    frame_specs_ids(doc, sid, placed, &ids)
+}
+
+/// The host's commentary frames in page order, including pages outside its body thread.
+pub fn stream_frame_specs(doc: &Document, sid: StoryId) -> Vec<FrameSpec> {
+    let mut ids = Vec::new();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == sid) {
+                    ids.push(it.id);
+                }
+            });
+        }
+    }
+    let mut specs = frame_specs_ids(doc, sid, &[], &ids);
+    specs.sort_by_key(|frame| frame.page);
+    specs
+}
+
+fn frame_specs_ids(doc: &Document, sid: StoryId, placed: &[(ItemId, Placement)], ids: &[ItemId]) -> Vec<FrameSpec> {
+    let Some(st) = doc.story(sid) else { return vec![] };
+    let mut out = Vec::with_capacity(ids.len());
+    for &fid in ids {
         let loc = doc.find(fid);
         let Some(item) = loc.as_ref().and_then(|l| doc.item_at(l)).or_else(|| doc.anchored_item(fid)) else { continue };
         let Some(tf) = item.text_frame() else { continue };
@@ -1625,7 +1672,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         cursor.start_at_top(start, frames, doc);
     }
     let at_top = cursor.last_baseline.is_none();
-    let start_at = (cursor.fi, cursor.col);
+    let start_at = cursor.keep_column();
     if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
         if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
             *balance_runs += 1;
@@ -1638,7 +1685,7 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     info.push(ParaInfo {
         start: start_at,
         at_top,
-        end: (cursor.fi, cursor.col),
+        end: cursor.keep_column(),
         lines: 1,
         lines_in_end_col: 1,
         keep_with_next: 0,
@@ -2117,7 +2164,7 @@ enum LineFit {
     Ready(Vec<usize>, Option<SplitPlan>),
     Restart(usize),
     NextSub,
-    NextColumn,
+    NextColumn { keep_break: bool },
 }
 
 fn fit_line(input: LineFitInput<'_>) -> LineFit {
@@ -2163,10 +2210,12 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
     let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
+    let streams_fit = notes.streams_fit(doc, note_column, &line_notes, out, opts);
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     // A note that doesn't fit whole splits, keeping its first part with this line. Without a
     // split, a column's first line is set even when its own notes don't fit (as before).
     if !capped
+        && streams_fit
         && baseline + desc > col.y1 - reserve + 0.01
         && let Some(plan) = notes.split_plan(doc, note_column, &line_notes, col.y1 - (baseline + desc), opts)
     {
@@ -2179,10 +2228,11 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         } else {
             0.0
         };
-    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
+    let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped && streams_fit;
     if !fits
         && !pp.hyph_across_column
         && line_no > col_first_line
+        && !cur.next_is_continuation(cols)
         && let Some(at) = hyphen_at
         && *hyph_relays < story.text.len().saturating_add(64).saturating_mul(restores.saturating_add(1))
     {
@@ -2214,7 +2264,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             return LineFit::Restart(j);
         }
     }
-    if !capped && cur.split.is_none_or(|s| s.part_lines == 0) {
+    if !capped && !cur.next_is_continuation(cols) && cur.split.is_none_or(|s| s.part_lines == 0) {
         let ctx = KeepCtx {
             pi,
             line_no,
@@ -2222,7 +2272,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
             started_here: col_first_line == 0,
             at_top,
             remaining: remaining_lines,
-            here: (cur.fi, cur.col),
+            here: cur.keep_column(),
         };
         if *restores < (4 * paragraph_count + 64) * (balance_runs + 1)
             && let Some(action) = keep_violation(&ctx, pp, info, force_col, line_cap)
@@ -2262,7 +2312,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
         }
     }
     carry.clear();
-    LineFit::NextColumn
+    LineFit::NextColumn { keep_break: capped }
 }
 
 struct PlacementOverflow<'a> {
@@ -2325,6 +2375,24 @@ fn advance_placement_column(cursor: &mut Cursor, spanning: bool, columns: &[Vec<
     } else {
         cursor.next_column(columns);
     }
+}
+
+fn advance_keep_column(cursor: &mut Cursor, frames: usize, mut next: impl FnMut(&mut Cursor)) {
+    let previous = cursor.keep_column();
+    next(cursor);
+    while cursor.fi < frames && cursor.keep_column() == previous {
+        next(cursor);
+    }
+}
+
+fn advance_line_column(cursor: &mut Cursor, spanning: bool, columns: &[Vec<Rect>], keep_break: bool) -> bool {
+    let previous = cursor.keep_column();
+    if keep_break {
+        advance_keep_column(cursor, columns.len(), |c| advance_placement_column(c, spanning, columns));
+    } else {
+        advance_placement_column(cursor, spanning, columns);
+    }
+    cursor.keep_column() != previous
 }
 
 fn start_placement(cursor: &mut Cursor, start: StartParagraph, spanning: bool, frames: &[FrameSpec], columns: &[Vec<Rect>], doc: &Document) {
@@ -2612,10 +2680,11 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     moved = true;
                     break;
                 }
-                LineFit::NextColumn => {
+                LineFit::NextColumn { keep_break } => {
                     g0 = s;
-                    advance_placement_column(cur, spanning, cols);
-                    col_first_line = line_no;
+                    if advance_line_column(cur, spanning, cols, keep_break) {
+                        col_first_line = line_no;
+                    }
                     moved = true;
                     break;
                 }
@@ -2677,7 +2746,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             kenten::annotate(db, styles_tab, &mut placed, doc.settings.glyph_fallback);
             let here_props = indent_here(&placed, pp, x0, x1, rtl);
             let range_end = if last { prange.end } else { glyphs.get(g0 + b.next).map(|g| g.byte).unwrap_or(prange.end) };
-            let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(prange.start).min(range_end);
+            // A final forced break may leave an empty line after all paragraph glyphs.
+            // That caret is at the end, rather than owning the whole paragraph again.
+            let range_start = glyphs.get(s).map(|g| g.byte).unwrap_or(range_end).min(range_end);
             let range_start = if line_no == 0 { prange.start } else { range_start };
             let ft = &mut out.frames[cur.fi];
             if line_no == 0 {
@@ -3112,7 +3183,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     info.push(ParaInfo {
         start: start_at,
         at_top,
-        end: (cur.fi, cur.col),
+        end: cur.keep_column(),
         lines: line_no,
         lines_in_end_col: line_no - col_first_line,
         keep_with_next: pp.keep_with_next,
@@ -3213,6 +3284,9 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
 }
 
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {
+    if !opts.inset_measure && frames.iter().any(|f| f.opts.inset_columns.is_some()) {
+        return inset::compose_frames(doc, story, frames, opts, None).0;
+    }
     compose_run(doc, story, frames, opts, db, None, false).map(|(out, _)| out).unwrap_or_default()
 }
 
@@ -3226,6 +3300,9 @@ pub(crate) fn compose_traced(
     opts: &ComposeOptions,
     before: Option<reuse::Reuse<'_>>,
 ) -> (ComposedStory, Option<reuse::Trace>) {
+    if !opts.inset_measure && frames.iter().any(|f| f.opts.inset_columns.is_some()) {
+        return inset::compose_frames(doc, story, frames, opts, before);
+    }
     let db = FontDb::global();
     if before.is_some()
         && let Some(done) = compose_run(doc, story, frames, opts, db, before.as_ref(), true)
@@ -3254,6 +3331,7 @@ fn compose_run(
     let (cols, frame_text) = frame_columns_and_text(frames, story.direction);
     out.frames = frame_text;
     let mut cur = Cursor {
+        continuations: Arc::new(opts.continuations.clone()),
         fi: 0,
         col: 0,
         last_baseline: None,
@@ -3528,7 +3606,7 @@ fn compose_run(
             }
         }
         if force_col[pi] {
-            next_column(&mut cur);
+            advance_keep_column(&mut cur, frames.len(), next_column);
         }
         if cur.last_baseline.is_some() {
             go(&mut cur, pp.start_paragraph);
@@ -3606,7 +3684,7 @@ fn compose_run(
             cur.split_part();
         }
         let at_top = cur.last_baseline.is_none();
-        let start_at = (cur.fi, cur.col);
+        let start_at = cur.keep_column();
         // Rule above / shading track the paragraph's first line.
         let placement = place_paragraph_lines(
             PlacementShared {
@@ -3854,8 +3932,9 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         }
     }
     notes.finish_margins(doc, story, frames, opts, out);
+    notes.finish_streams(doc, story, opts, out);
     out.styles = styles_tab;
-    mark_keep_violations(doc, story, out);
+    mark_keep_violations(doc, story, out, &opts.continuations);
     std::mem::take(out)
 }
 
@@ -3870,15 +3949,16 @@ fn span_rect(cols: &[Rect], col: Rect, span: SpanColumns) -> Rect {
 /// Flag the lines of paragraphs whose Keep Options the layout couldn't honour: lines kept
 /// together that split, too few lines at the bottom (orphans) or top (widows) of a column, or a
 /// keep-with-next paragraph separated from the next one.
-fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory) {
+fn mark_keep_violations(doc: &Document, story: &Story, out: &mut ComposedStory, continuations: &[(usize, f64)]) {
     // Per paragraph, the columns its lines sit in: ((frame, column), line count) in order.
     let mut cols: HashMap<usize, Vec<((usize, u32), usize)>> = HashMap::new();
     for (fi, ft) in out.frames.iter().enumerate() {
         for l in &ft.lines {
+            let column = logical_column(fi, l.column as usize, continuations);
             let v = cols.entry(l.para).or_default();
             match v.last_mut() {
-                Some((c, n)) if *c == (fi, l.column) => *n += 1,
-                _ => v.push(((fi, l.column), 1)),
+                Some((c, n)) if *c == (column.0, column.1 as u32) => *n += 1,
+                _ => v.push(((column.0, column.1 as u32), 1)),
             }
         }
     }
@@ -4344,6 +4424,7 @@ fn ft_prev_end(overset: &Option<usize>, len: usize) -> usize {
 
 #[derive(Clone)]
 struct Cursor {
+    continuations: Arc<Vec<(usize, f64)>>,
     fi: usize,
     col: usize,
     last_baseline: Option<f64>,
@@ -4578,7 +4659,23 @@ fn limit_of<K: TrialKey>(limits: &[(K, f64)], key: K) -> Option<f64> {
     limits.iter().find(|(k, _)| *k == key).map(|&(_, b)| b)
 }
 
+/// Same-page continuation bands share keep constraints; real frame/column breaks still split them.
+fn logical_column(mut fi: usize, col: usize, continuations: &[(usize, f64)]) -> (usize, usize) {
+    while fi > 0 && col == 0 && continuations.iter().any(|(index, _)| *index == fi) {
+        fi -= 1;
+    }
+    (fi, col)
+}
+
 impl Cursor {
+    fn keep_column(&self) -> (usize, usize) {
+        logical_column(self.fi, self.col, &self.continuations)
+    }
+
+    fn next_is_continuation(&self, cols: &[Vec<Rect>]) -> bool {
+        cols.get(self.fi).is_some_and(|c| self.col.saturating_add(1) >= c.len())
+            && self.continuations.iter().any(|(index, _)| *index == self.fi.saturating_add(1))
+    }
     fn next_column(&mut self, cols: &[Vec<Rect>]) {
         self.col += 1;
         if self.fi < cols.len() && self.col >= cols[self.fi].len() {
@@ -4592,7 +4689,12 @@ impl Cursor {
         self.fi += 1;
         self.col = 0;
         self.band = Band { para: self.pi, ..Band::default() };
-        self.resume();
+        if let Some((_, dy)) = self.continuations.iter().find(|(index, _)| *index == self.fi) {
+            self.last_baseline = self.last_baseline.map(|b| b + dy);
+            self.grid_next = self.grid_next.map(|(b, y)| (b + dy, y + dy));
+        } else {
+            self.resume();
+        }
         self.split_part();
     }
     fn state(&self) -> Resume {
@@ -4691,8 +4793,14 @@ impl Cursor {
         while frames.get(fi).is_some_and(skip) {
             fi += 1;
         }
-        self.next_frame();
         self.fi = fi;
+        self.col = 0;
+        self.band = Band { para: self.pi, ..Band::default() };
+        // A page jump may skip same-page continuation frames, whose baseline is not
+        // the destination page's first baseline.
+        self.resume();
+        self.grid_next = None;
+        self.split_part();
     }
     fn band_key(&self) -> BandKey {
         (self.fi, self.band.para)
@@ -5682,9 +5790,11 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         || g.ch == story::RIGHT_INDENT_TAB
         || g.ch == story::TABLE_ANCHOR
         || g.ch == shape::SOFT_HYPHEN
+        || g.ch == designcraft_doc::FOOTNOTE_REF && g.generated_text.as_deref() == Some("")
         || g.ch == shape::HIDDEN);
     PlacedGlyph {
-        rendered_char: g.rendered_char,
+        // Hidden controls must stay distinct from active, undrawn tabs and breaks.
+        rendered_char: if g.ch == shape::HIDDEN { shape::HIDDEN } else { g.rendered_char },
         face: g.face,
         gid: g.gid,
         x: x + g.dx,
@@ -7028,6 +7138,8 @@ pub fn adjacent_row(l: &Line, x: f64, caret_y: f64, up: bool) -> Option<f64> {
     if up { candidates.map(|r| r.0).max_by(f64::total_cmp) } else { candidates.map(|r| r.0).min_by(f64::total_cmp) }
 }
 
+#[cfg(test)]
+mod stream_frame_tests;
 #[cfg(test)]
 mod tests;
 

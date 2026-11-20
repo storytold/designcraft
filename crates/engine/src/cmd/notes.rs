@@ -22,17 +22,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, catchwordStyle?: character style name|null (overrides host catchword style for this series), paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
-        cmd!("footnote.series.create", "Create Note Series", [], None, "{name, …options} → {id}", has_doc, series_create),
+        cmd!(
+            "footnote.series.create",
+            "Create Note Series",
+            [],
+            None,
+            "{name, placement?: stream|{kind: columnFoot|margin|stream, …}, refHidden?: bool, …options} → {id}",
+            has_doc,
+            series_create
+        ),
         cmd!(
             "footnote.series.options",
             "Note Series Options",
             [],
             None,
-            "{series, …options} → options; placement?: {kind: columnFoot|margin, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, catchwordStyle?: character style name|null, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),
@@ -124,8 +132,9 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut v = serde_json::to_value(&cur).unwrap_or_default();
     merge(&mut v, p);
-    let next: FootnoteOptions = serde_json::from_value(v).map_err(|e| bad("footnote.options", e.to_string()))?;
+    let next = read_options(v, "footnote.options")?;
     validate_options(&next, "footnote.options")?;
+    validate_inset_placement(&s.doc()?.doc, 0, &next, "footnote.options")?;
     let out = serde_json::to_value(&next).unwrap_or_default();
     if next != cur {
         s.edit(|d, _| {
@@ -152,6 +161,80 @@ fn validate_options(o: &FootnoteOptions, cmd: &str) -> Result<()> {
     o.check().map_err(|e| bad(cmd, e))
 }
 
+fn validate_inset_placement(doc: &designcraft_doc::Document, id: u64, options: &FootnoteOptions, cmd: &str) -> Result<()> {
+    if options.placement != doc.note_options(id).placement
+        && !matches!(options.placement, designcraft_doc::NotePlacement::Stream)
+        && doc.placed_items().iter().any(|item| {
+            item.text_frame().and_then(|f| f.options.inset_columns.as_ref()).is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
+        })
+    {
+        return Err(bad(cmd, "clear this series from inset frames before changing its placement"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod inset_placement_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_inset_selector_does_not_block_unchanged_placement() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+        // Legacy series 0 inherits destination options when an inset frame is copied.
+        s.edit(|doc, _| {
+            doc.item_mut(designcraft_doc::ItemId(frame["id"].as_u64().unwrap())).unwrap().text_frame_mut().unwrap().options.inset_columns =
+                Some(serde_json::from_value(json!({"streams": [{}, {"series": 0}]})).unwrap());
+            Ok(Value::Null)
+        })
+        .unwrap();
+        s.execute("footnote.series.options", &json!({"series": 0})).unwrap();
+        s.execute("footnote.options", &json!({"separator": " / "})).unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn inset_selected_series_cannot_change_placement_until_cleared() {
+        for default in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let frame = s.execute("frame.create", &json!({"rect": [36,36,500,700], "content": "text", "text": "Body"})).unwrap();
+            let series = if default {
+                s.execute("footnote.options", &json!({"placement": "stream"})).unwrap();
+                json!(0)
+            } else {
+                s.execute("footnote.series.create", &json!({"name": "Commentary", "placement": "stream"})).unwrap()["id"].clone()
+            };
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": {"streams": [{}, {"series": series}]}})).unwrap();
+            for placement in [json!("columnFoot"), json!({"kind": "margin", "width": 72, "gap": 8})] {
+                assert!(s.execute("footnote.series.options", &json!({"series": series, "placement": placement})).is_err());
+                if default {
+                    assert!(s.execute("footnote.options", &json!({"placement": placement})).is_err());
+                }
+            }
+            assert!(matches!(s.doc().unwrap().doc.note_options(series.as_u64().unwrap()).placement, designcraft_doc::NotePlacement::Stream));
+            s.execute("textFrame.options", &json!({"ids": [frame["id"]], "insetColumns": null})).unwrap();
+            s.execute("footnote.series.options", &json!({"series": series, "placement": "columnFoot"})).unwrap();
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
+}
+
+fn read_options(mut value: Value, cmd: &str) -> Result<FootnoteOptions> {
+    if let Some(slot) = value.get_mut("placement")
+        && let Some(kind) = slot.as_str().map(str::to_owned)
+    {
+        *slot = json!({"kind": kind});
+    }
+    // Native files preserve the pre-setting no-split behavior; new API options keep the
+    // documented split-enabled default. Serialized current options already contain the flag.
+    if let Some(options) = value.as_object_mut() {
+        options.entry("allowSplit").or_insert(json!(true));
+    }
+    serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))
+}
+
 fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p
         .get("name")
@@ -162,7 +245,7 @@ fn series_create(s: &mut Session, p: &Value) -> Result<Value> {
     // New command objects use API defaults; native files may default a missing allowSplit to false.
     let mut value = serde_json::to_value(FootnoteOptions::default()).map_err(|e| bad("footnote.series.create", e.to_string()))?;
     merge(&mut value, p);
-    let options: FootnoteOptions = serde_json::from_value(value).map_err(|e| bad("footnote.series.create", e.to_string()))?;
+    let options = read_options(value, "footnote.series.create")?;
     validate_options(&options, "footnote.series.create")?;
     s.edit(|d, _| {
         let id = d
@@ -184,8 +267,9 @@ fn series_options(s: &mut Session, p: &Value) -> Result<Value> {
     let cur = s.doc()?.doc.note_options(id).clone();
     let mut value = serde_json::to_value(&cur).map_err(|e| bad("footnote.series.options", e.to_string()))?;
     merge(&mut value, p);
-    let next: FootnoteOptions = serde_json::from_value(value).map_err(|e| bad("footnote.series.options", e.to_string()))?;
+    let next = read_options(value, "footnote.series.options")?;
     validate_options(&next, "footnote.series.options")?;
+    validate_inset_placement(&s.doc()?.doc, id, &next, "footnote.series.options")?;
     let out = serde_json::to_value(&next).map_err(|e| bad("footnote.series.options", e.to_string()))?;
     if next == cur {
         return Ok(out);
@@ -265,7 +349,32 @@ fn series_delete(s: &mut Session, p: &Value) -> Result<Value> {
             drop(pending);
             root.rev = revision.wrapping_add(1);
         }
+        d.update_placed_items(
+            |it| {
+                it.text_frame().is_some_and(|tf| {
+                    tf.options.note_stream.as_ref().is_some_and(|stream| stream.series == id)
+                        || tf.options.inset_columns.as_ref().is_some_and(|c| c.streams.iter().any(|s| s.series == Some(id)))
+                })
+            },
+            |it| {
+                if let Some(tf) = it.text_frame_mut() {
+                    if tf.options.note_stream.as_ref().is_some_and(|stream| stream.series == id) {
+                        tf.options.note_stream = None;
+                    }
+                    if let Some(inset) = &mut tf.options.inset_columns {
+                        inset.streams.retain(|s| s.series != Some(id));
+                    }
+                }
+            },
+        );
         d.note_series.retain(|s| s.id != id);
+        for variable in &mut d.text_variables {
+            if let designcraft_doc::vars::VarKind::NextPageFirstWord { series: Some(series), .. } = &mut variable.kind
+                && *series == id
+            {
+                *series = 0;
+            }
+        }
         Ok(Value::Null)
     })
 }
@@ -550,6 +659,18 @@ mod margin_default_tests {
         assert_eq!(top["placement"]["stack"], "top");
         assert_eq!(top["placement"]["width"], 72.0);
         assert!(s.execute("footnote.series.options", &json!({"series":id,"placement":{"stack":"invalid"}})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod api_split_default_tests {
+    use super::*;
+
+    #[test]
+    fn new_api_options_default_to_split_and_honor_explicit_false() {
+        assert!(read_options(json!({}), "test").unwrap().allow_split);
+        assert!(read_options(json!({"allowSplit": true}), "test").unwrap().allow_split);
+        assert!(!read_options(json!({"allowSplit": false}), "test").unwrap().allow_split);
     }
 }
 

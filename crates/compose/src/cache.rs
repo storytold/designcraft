@@ -337,7 +337,7 @@ impl Cache {
             // Footnote numbers continue from earlier stories.
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            if story.notes.iter().any(|n| !doc.note_options(n.series).placement.is_column_foot()) {
+            if story.notes.iter().any(|n| matches!(doc.note_options(n.series).placement, designcraft_doc::NotePlacement::Margin { .. })) {
                 // Another story's margin note can push ours down on their shared page.
                 doc_signature(doc).hash(&mut h);
                 for layer in &doc.layers {
@@ -417,7 +417,16 @@ impl Cache {
         let (mut out, trace) = crate::wrap::compose_among_traced(
             doc,
             sid,
-            &ComposeOptions { page_name, section_marker, page, running: running.clone(), label: None, xrefs: xrefs.clone(), placed: placed.clone() },
+            &ComposeOptions {
+                page_name,
+                section_marker,
+                page,
+                running: running.clone(),
+                label: None,
+                xrefs: xrefs.clone(),
+                placed: placed.clone(),
+                ..Default::default()
+            },
             &others.iter().map(|o| &**o).collect::<Vec<_>>(),
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
@@ -487,6 +496,8 @@ impl Cache {
                     && fb.tables.is_empty()
                     && fa.notes.is_empty()
                     && fb.notes.is_empty()
+                    && fa.catchwords.is_empty()
+                    && fb.catchwords.is_empty()
                     && fa.objects.is_empty()
                     && fb.objects.is_empty()
             }) && a.styles == b.styles;
@@ -603,7 +614,20 @@ fn signature(doc: &Document, story: &Arc<Story>) -> (Vec<usize>, Vec<Arc<Item>>)
     sig.extend([g.start, g.increment].into_iter().flat_map(bits));
     let mut keep = Vec::new();
     let mut spreads = Vec::new();
-    for f in &story.frames {
+    // Stream geometry changes the host's page cuts, including routes beyond its own frames.
+    let mut frames = story.frames.clone();
+    for spread in &doc.spreads {
+        for item in &spread.items {
+            item.walk(&mut |it| {
+                if it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == story.id)
+                    && !frames.contains(&it.id)
+                {
+                    frames.push(it.id);
+                }
+            });
+        }
+    }
+    for f in &frames {
         let Some(loc) = doc.find(*f) else {
             // Embedded frames live in another story (possibly in a note/cell),
             // so changing their geometry does not change this story's pointer.

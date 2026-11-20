@@ -752,10 +752,31 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
             rename_char_refs(&mut s.para, from, to);
         }
         rename(&mut st.default_character);
-        rename(&mut d.footnote_options.ref_char_style);
-        for series in &mut d.note_series {
-            rename(&mut series.options.ref_char_style);
+        for style in &mut st.object {
+            if let Some(options) = &mut style.text_frame {
+                redirect_catchword_refs(options, from, to);
+            }
         }
+        rename(&mut d.footnote_options.ref_char_style);
+        for options in std::iter::once(&mut d.footnote_options).chain(d.note_series.iter_mut().map(|s| &mut s.options)) {
+            rename(&mut options.ref_char_style);
+            if let Some(style) = &mut options.catchword_style {
+                rename(style);
+            }
+        }
+        d.update_placed_items(
+            |item| {
+                item.text_frame().is_some_and(|f| {
+                    f.options.inset_columns.as_ref().is_some_and(|c| c.catchwords.style() == Some(from))
+                        || f.options.note_stream.as_ref().is_some_and(|r| r.catchword.style() == Some(from))
+                })
+            },
+            |item| {
+                if let Some(frame) = item.text_frame_mut() {
+                    redirect_catchword_refs(&mut frame.options, from, to);
+                }
+            },
+        );
     }
     // The table of contents' character styles ([None] is stored as no style).
     if !para && let Some(toc) = d.toc.as_mut() {
@@ -784,6 +805,19 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
             }
             st.rev = st.rev.wrapping_add(1);
         });
+    }
+}
+
+/// Frame catchwords hold character-style names independently of the frame's text story.
+fn redirect_catchword_refs(options: &mut designcraft_doc::TextFrameOptions, from: &str, to: &str) {
+    let host = options.inset_columns.as_mut().map(|c| &mut c.catchwords);
+    let route = options.note_stream.as_mut().map(|r| &mut r.catchword);
+    for reference in host.into_iter().chain(route) {
+        if let designcraft_doc::InsetCatchwords::Styled { style } = reference
+            && style == from
+        {
+            *style = to.into();
+        }
     }
 }
 
@@ -1373,5 +1407,101 @@ mod grep_style_tests {
         assert!(warnings.contains("Broken") && warnings.contains("[a-") && warnings.contains("bad GREP"), "{warnings}");
         let st = s.doc().unwrap().doc.styles.para("Broken").unwrap().clone();
         assert_eq!(st.para.grep_styles.unwrap()[0].pattern, "[a-", "the style opens with its pattern");
+    }
+}
+
+#[cfg(test)]
+mod catchword_reference_tests {
+    use super::*;
+    use designcraft_doc::{ItemId, StoryId};
+
+    #[test]
+    fn catchword_style_rename_replacement_and_undo_preserve_composed_rows() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages":2,"facingPages":false})).unwrap();
+        let chars = json!({"size":15,"leading":{"kind":"points","value":20}});
+        for name in ["Caption", "Replacement"] {
+            s.execute("style.character.create", &json!({"name":name,"chars":chars})).unwrap();
+        }
+        let first = s.execute("frame.create", &json!({"rect":[36,36,400,736],"content":"text","text":"Main line.\u{2028}".repeat(80)})).unwrap();
+        let next = s.execute("frame.create", &json!({"spread":1,"rect":[36,36,400,736],"content":"text"})).unwrap();
+        let sid = StoryId(first["story"].as_u64().unwrap());
+        std::sync::Arc::make_mut(&mut s.doc_mut().unwrap().doc)
+            .thread(ItemId(first["id"].as_u64().unwrap()), ItemId(next["id"].as_u64().unwrap()))
+            .unwrap();
+        let series = s
+            .execute("footnote.series.create", &json!({"name":"Inner","placement":"stream","refHidden":true,"catchwordStyle":"Caption"}))
+            .unwrap()["id"]
+            .clone();
+        s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        s.execute("footnote.insert", &json!({"series":series,"text":"Inner line.\u{2028}".repeat(90)})).unwrap();
+        s.execute(
+            "textFrame.options",
+            &json!({"ids":[first["id"],next["id"]],"insetColumns":{"streams":[{}, {"series":series}],"catchwords":{"style":"Caption"}}}),
+        )
+        .unwrap();
+        let route_series =
+            s.execute("footnote.series.create", &json!({"name":"Routed","placement":"stream","catchwordStyle":"Caption"})).unwrap()["id"].clone();
+        let route = s.execute("frame.create", &json!({"rect":[410,36,500,736],"content":"text"})).unwrap()["id"].clone();
+        s.execute("textFrame.options", &json!({"ids":[route],"noteStream":{"story":sid.0,"series":route_series,"catchword":{"style":"Caption"}}}))
+            .unwrap();
+        s.execute("footnote.options", &json!({"catchwordStyle":"Caption"})).unwrap();
+        s.edit(|doc, _| {
+            let options = doc.item(ItemId(first["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().options.clone();
+            doc.styles_mut().object[0].text_frame = Some(options);
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let signature = |s: &Session| {
+            let doc = &s.doc().unwrap().doc;
+            let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+            let rows: Vec<_> = cs
+                .frames
+                .iter()
+                .flat_map(|f| {
+                    f.catchwords.iter().map(move |c| {
+                        (
+                            f.frame,
+                            c.series,
+                            c.rect,
+                            c.origin,
+                            c.scale,
+                            c.text.styles.iter().map(|s| s.size).collect::<Vec<_>>(),
+                            c.text.frames.iter().flat_map(|f| f.lines.iter().map(|l| l.leading)).collect::<Vec<_>>(),
+                        )
+                    })
+                })
+                .collect();
+            assert!(!rows.is_empty());
+            rows
+        };
+        let refs = |s: &Session, expected: &str| {
+            let doc = &s.doc().unwrap().doc;
+            for id in [first["id"].as_u64().unwrap(), next["id"].as_u64().unwrap()] {
+                assert_eq!(
+                    doc.item(ItemId(id)).unwrap().text_frame().unwrap().options.inset_columns.as_ref().unwrap().catchwords.style(),
+                    Some(expected)
+                );
+            }
+            assert_eq!(
+                doc.item(ItemId(route.as_u64().unwrap())).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().catchword.style(),
+                Some(expected)
+            );
+            assert!(doc.note_series.iter().all(|s| s.options.catchword_style.as_deref() == Some(expected)));
+            assert_eq!(doc.footnote_options.catchword_style.as_deref(), Some(expected));
+            assert_eq!(doc.styles.object[0].text_frame.as_ref().unwrap().inset_columns.as_ref().unwrap().catchwords.style(), Some(expected));
+        };
+        let before = signature(&s);
+        for (command, params, expected) in [
+            ("style.character.edit", json!({"name":"Caption","rename":"Renamed"}), "Renamed"),
+            ("style.character.delete", json!({"name":"Caption","replaceWith":"Replacement"}), "Replacement"),
+        ] {
+            s.execute(command, &params).unwrap();
+            refs(&s, expected);
+            assert_eq!(signature(&s), before);
+            s.execute("edit.undo", &json!({})).unwrap();
+            refs(&s, "Caption");
+            assert_eq!(signature(&s), before);
+        }
     }
 }

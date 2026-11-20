@@ -76,6 +76,7 @@ pub enum MarginStack {
 pub enum NotePlacement {
     #[default]
     ColumnFoot,
+    Stream,
     Margin {
         #[serde(default)]
         side: MarginSide,
@@ -149,7 +150,13 @@ pub struct FootnoteOptions {
     pub affix_in: AffixIn,
     /// Footnote reference number in text.
     pub ref_position: Position,
+    /// Keep the anchor addressable without printing a reference or taking line width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ref_hidden: bool,
     pub ref_char_style: String,
+    /// Overrides the host inset catchword character style for this series.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catchword_style: Option<String>,
     /// Footnote text formatting.
     pub para_style: String,
     /// Between the number and the footnote text.
@@ -181,7 +188,9 @@ impl Default for FootnoteOptions {
             suffix: String::new(),
             affix_in: AffixIn::None,
             ref_position: Position::Superscript,
+            ref_hidden: false,
             ref_char_style: NO_CHAR_STYLE.into(),
+            catchword_style: None,
             para_style: BASIC_PARAGRAPH.into(),
             separator: "\t".into(),
             space_before: 0.0,
@@ -483,6 +492,22 @@ mod tests {
     }
 
     #[test]
+    fn legacy_footnote_options_keep_unsplit_layouts() {
+        let doc = crate::Document::new(&crate::build::NewDocument::default());
+        assert!(doc.footnote_options.allow_split);
+        assert!(FootnoteOptions::default().allow_split);
+        let mut legacy = serde_json::to_value(&doc).unwrap();
+        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
+        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
+        assert!(!loaded.footnote_options.allow_split);
+        for allow in [false, true] {
+            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
+            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
+            assert_eq!(roundtrip.allow_split, allow);
+        }
+    }
+
+    #[test]
     fn references_own_notes_in_order() {
         let mut s = st("alpha beta gamma");
         let b = s.insert_note(10, "second", ParaFormat::default()).unwrap();
@@ -509,22 +534,6 @@ mod tests {
         s.delete(0..n);
         s.check().unwrap();
         assert!(s.notes.is_empty());
-    }
-
-    #[test]
-    fn legacy_footnote_options_keep_unsplit_layouts() {
-        let doc = crate::Document::new(&crate::build::NewDocument::default());
-        assert!(doc.footnote_options.allow_split);
-        assert!(FootnoteOptions::default().allow_split);
-        let mut legacy = serde_json::to_value(&doc).unwrap();
-        legacy["footnoteOptions"].as_object_mut().unwrap().remove("allowSplit");
-        let loaded: crate::Document = serde_json::from_value(legacy).unwrap();
-        assert!(!loaded.footnote_options.allow_split);
-        for allow in [false, true] {
-            let options = FootnoteOptions { allow_split: allow, ..Default::default() };
-            let roundtrip: FootnoteOptions = serde_json::from_value(serde_json::to_value(options).unwrap()).unwrap();
-            assert_eq!(roundtrip.allow_split, allow);
-        }
     }
 
     #[test]

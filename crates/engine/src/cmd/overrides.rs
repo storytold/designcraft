@@ -96,14 +96,10 @@ fn override_items(s: &mut Session, p: &Value) -> Result<Value> {
         let ids: Vec<ItemId> = picked.iter().map(|(i, _)| *i).collect();
         let src = d.clone();
         // Copies on the document spread (stories and images come along), base parents' first.
-        let mut new = Vec::new();
-        for (id, off) in &picked {
-            let copy = super::object::duplicate_from(d, &src, &[*id], SpreadRef::Doc(si), *off)?;
-            if let Some(nid) = copy.first() {
-                if let Some(it) = d.item_mut(*nid) {
-                    it.overrides = Some(*id);
-                }
-                new.push(*nid);
+        let new = super::object::duplicate_placements(d, &src, picked.iter().map(|(id, off)| (*id, SpreadRef::Doc(si), *off)))?;
+        for ((id, _), nid) in picked.iter().zip(&new) {
+            if let Some(it) = d.item_mut(*nid) {
+                it.overrides = Some(*id);
             }
         }
         let pg = &mut std::sync::Arc::make_mut(&mut d.spreads[si]).pages[pi];

@@ -274,6 +274,14 @@ impl Document {
             };
             if empty {
                 self.stories.remove(&sid);
+                self.update_placed_items(
+                    |it| it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == sid),
+                    |it| {
+                        if let Some(tf) = it.text_frame_mut() {
+                            tf.options.note_stream = None;
+                        }
+                    },
+                );
             }
         }
         Ok(removed)
@@ -406,6 +414,14 @@ impl Document {
     /// Linked children follow the surviving whole story, including for an empty removed parent;
     /// their copied content stays unchanged until an explicit Update Link.
     fn remap_thread_story_refs(&mut self, from: StoryId, to: StoryId, offset: usize) {
+        self.update_placed_items(
+            |it| it.text_frame().and_then(|tf| tf.options.note_stream.as_ref()).is_some_and(|stream| stream.story == from),
+            |it| {
+                if let Some(stream) = it.text_frame_mut().and_then(|tf| tf.options.note_stream.as_mut()) {
+                    stream.story = to;
+                }
+            },
+        );
         // The child's old snapshot is not a snapshot of the newly merged parent. Force it
         // out of date even when the old and surviving revision numbers happen to coincide.
         let stale_rev = self.story(to).map_or(0, |st| st.rev.wrapping_sub(1));
@@ -440,6 +456,10 @@ impl Document {
     /// A linked child is replaced wholesale on update. Only empty, unlinked frame
     /// extensions can join it without losing a link or newly appended body text.
     fn check_thread_links(&self, from: ItemId, to: ItemId, keep_to: bool) -> Result<()> {
+        // Stream frames display the host's notes; threading body text into them would hide it.
+        if [from, to].iter().any(|id| self.item(*id).and_then(Item::text_frame).is_some_and(|tf| tf.options.note_stream.is_some())) {
+            return Err(DocError::Invalid("remove the note stream assignment before threading this frame".into()));
+        }
         let fs = self.frame_story(from)?;
         let ts = self.frame_story(to)?;
         let first = fs.and_then(|id| self.story(id));
