@@ -2595,9 +2595,11 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let lx0 = x0 + ind_l;
             let lx1 = x1 - ind_r;
             let last = k + 1 == breaks.len();
-            // The break character that ends this line, if any (it is the line's last glyph).
+            // The break character that ends this line, if any: the line's last glyph, or the first
+            // one after the spaces trimmed in front of it.
+            let tail = (g0 + b.next).min(glyphs.len()).max(e);
             let brk =
-                if b.forced && e > s { e.checked_sub(1).and_then(|i| glyphs.get(i)).map(|g| g.ch).filter(|&c| breaker::is_forced(c)) } else { None };
+                if b.forced && e > s { glyphs.get(e - 1..tail).and_then(|t| t.iter().map(|g| g.ch).find(|&c| breaker::is_forced(c))) } else { None };
             // A column, frame or page break ends the line as a paragraph's last line (last-line
             // alignment); a justified line ended by a forced line break stays justified.
             let ends_para = last || brk.is_some_and(story::is_break_char);
@@ -2608,11 +2610,12 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             // Warichu runs before ruby so a reading is placed over the stacked note, and before
             // the trimmed spaces and the drop cap join the line, so neither is stacked.
             let end_x = end_x + warichu::place(styles_tab, &mut placed);
-            // The spaces the break trimmed off the end follow the line undrawn, so the caret
-            // and the selection reach them; alignment and justification ignore them.
+            // The spaces the break trimmed off the end, and a forced break after them, follow the
+            // line undrawn, so the caret and the selection reach them; alignment and justification
+            // ignore them.
             if pp.direction != designcraft_doc::TextDirection::RightToLeft && !placed.iter().any(|g| g.rtl) {
                 let mut x = end_x;
-                for g in glyphs.get(e..(g0 + b.next).min(glyphs.len())).unwrap_or(&[]).iter().filter(|g| g.is_space()) {
+                for g in glyphs.get(e..(g0 + b.next).min(glyphs.len())).unwrap_or(&[]).iter().filter(|g| g.is_space() || breaker::is_forced(g.ch)) {
                     placed.push(PlacedGlyph { visible: false, ..place(g, x) });
                     x += g.adv;
                 }
