@@ -1630,18 +1630,23 @@ fn korean_text_and_addresses_are_not_hyphenated() {
     }
 }
 
-/// Where each glyph of `text` sits when the whole string is shaped at once, in points.
-fn whole_string_positions(g: &PlacedGlyph, text: &str) -> Vec<f64> {
-    let shaped = designcraft_fonts::shape(g.face.get(), text, &[], |c| c);
+/// Where each glyph of `text` sits when the whole string is shaped at once with `features`, in points:
+/// the pen position and the glyph's own offset.
+fn whole_string_positions_with(g: &PlacedGlyph, text: &str, features: &[designcraft_fonts::Feature]) -> Vec<f64> {
+    let shaped = designcraft_fonts::shape(g.face.get(), text, features, |c| c);
     let mut x = 0.0;
     shaped
         .iter()
         .map(|s| {
-            let at = x;
+            let at = x + f64::from(s.x_offset) * g.sx;
             x += f64::from(s.x_advance) * g.sx;
             at
         })
         .collect()
+}
+
+fn whole_string_positions(g: &PlacedGlyph, text: &str) -> Vec<f64> {
+    whole_string_positions_with(g, text, &[])
 }
 
 #[test]
@@ -1658,6 +1663,27 @@ fn a_word_is_kerned_against_the_space_before_it() {
         for (g, e) in glyphs.iter().zip(&expected) {
             assert!((g.x - e).abs() < 1e-6, "{text:?}: glyph at byte {} is at {} where the whole string puts it at {e}", g.byte, g.x);
         }
+    }
+}
+
+#[test]
+fn space_kerning_does_not_count_a_features_own_advance_change_twice() {
+    // Inter's `cpsp` (capital spacing) widens a capital by 32 units and moves it by 16 without
+    // changing its glyph: the word shaped alone and the space and capital shaped as a pair both
+    // carry that, and the pair's kerning is what the pair adds to the glyphs shaped alone.
+    let text = "ab Tx Ay";
+    let cpsp = designcraft_fonts::feature("cpsp").unwrap();
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("Inter".into());
+        f.over.otf_features = Some(vec!["cpsp".into()]);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let glyphs: Vec<&PlacedGlyph> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.len > 0).collect();
+    let expected = whole_string_positions_with(glyphs[0], text, &[cpsp]);
+    assert_eq!(glyphs.len(), expected.len());
+    for (g, e) in glyphs.iter().zip(&expected) {
+        assert!((g.x - e).abs() < 1e-6, "glyph at byte {} is at {} where the whole string puts it at {e}", g.byte, g.x);
     }
 }
 
