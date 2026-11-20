@@ -302,7 +302,8 @@ impl Notes {
                 let (y, bottom) = if stack == MarginStack::Top {
                     let height = text.frames.iter().flat_map(|f| &f.lines).map(|l| l.baseline + l.descent).fold(m.last + m.descent, f64::max);
                     let key = (f.id, s.series);
-                    let placed = super::top_margin_entry(margin.y0, top_bottoms.get(&key).copied(), height, o.space_between);
+                    let top = super::top_margin_origin(out, f.id).unwrap_or(f.area.y0);
+                    let placed = super::top_margin_entry(top, top_bottoms.get(&key).copied(), height, o.space_between);
                     top_bottoms.insert(key, placed.1);
                     placed
                 } else {

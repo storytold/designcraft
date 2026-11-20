@@ -67,7 +67,7 @@ pub enum MarginStack {
     /// Align to reference baselines, moving down only to avoid earlier notes.
     #[default]
     BesideAnchor,
-    /// Stack in anchor order from the page margin top, ignoring reference baselines.
+    /// Stack in anchor order from the host's first composed line top, ignoring reference baselines.
     Top,
 }
 

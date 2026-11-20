@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, catchwordStyle?: character style name|null (overrides host catchword style for this series), paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the first host line top), gap: pt, width: pt (gap and width required when first selecting margin)}, style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refHidden?: bool (zero-width unprinted anchor), refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, catchwordStyle?: character style name|null (overrides host catchword style for this series), paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, allowSplit? (default true), rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -40,7 +40,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Note Series Options",
             [],
             None,
-            "{series, catchwordStyle?: character style name|null, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the margin top), gap: pt, width: pt (gap and width required when first selecting margin)}",
+            "{series, catchwordStyle?: character style name|null, …options} → options; placement?: {kind: columnFoot|margin|stream, side?: inside|outside|left|right (default right), stack?: besideAnchor|top (default besideAnchor; top stacks from the first host line top), gap: pt, width: pt (gap and width required when first selecting margin)}",
             has_doc,
             series_options
         ),

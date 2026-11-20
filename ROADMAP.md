@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- **2026-11-20** · Top-stacked margins begin at the host's first composed text line rather than the page margin. Ordinary frames and replayed inset bands share the same origin during placement and follower fitting (#2871, D75).
+
 - **2026-11-20** · Explicit margin-area inset followers use that area's bottom rather than being pushed below the entire inset core. Translated hosts and followers on both pages of one spread have exact bottom-plus-gap regression coverage (#2871).
 
 - **2026-11-20** · Inset routes can follow a host frame's top-stacked margin series using `followInset.after: {frame, series}`. Fitting and placement share stack geometry; the page collision pass preserves top stacks. Native saves and copies retain both reference forms; IDML warns about their loss (#2871).

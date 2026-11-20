@@ -199,12 +199,13 @@ fn fit_routes(
                         let valid = doc.note_series_id(series) == series
                             && matches!(options.placement, designcraft_doc::NotePlacement::Margin { stack: designcraft_doc::MarginStack::Top, .. })
                             && doc.item(frame).and_then(|i| i.text_frame()).is_some_and(|f| f.story == story.id && f.options.note_stream.is_none());
-                        let Some((host, top)) = host.and_then(|h| h.page_rect.map(|(_, margin)| (h, margin.y0))).filter(|_| valid) else {
+                        let Some(host) = host.filter(|h| h.page_rect.is_some() && valid) else {
                             warnings.push(format!(
                                 "followInset ignored on frame {id}: after must name a same-host same-page margin series with stack top"
                             ));
                             return;
                         };
+                        let top = margin_layout.as_ref().and_then(|layout| crate::notes::top_margin_origin(layout, frame)).unwrap_or(host.area.y0);
                         let mut entries: Vec<_> = margin_layout
                             .iter()
                             .flat_map(|cs| &cs.frames)

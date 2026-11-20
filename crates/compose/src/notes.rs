@@ -132,6 +132,11 @@ pub(crate) struct SplitPlan {
 type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
 
+/// First host line in text space, including frames replayed as several inset bands.
+pub(crate) fn top_margin_origin(story: &ComposedStory, frame: ItemId) -> Option<f64> {
+    story.frames.iter().filter(|f| f.frame == frame).find_map(|f| f.lines.first()).map(|line| line.baseline - line.ascent)
+}
+
 /// Shared by final margin placement and inset trials; no gap precedes the first entry.
 pub(crate) fn top_margin_entry(top: f64, previous: Option<f64>, height: f64, spacing: f64) -> (f64, f64) {
     let y = previous.map_or(top, |bottom| bottom + spacing);

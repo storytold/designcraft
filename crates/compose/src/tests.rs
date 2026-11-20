@@ -10834,6 +10834,39 @@ fn note_series_number_independently_and_stack_at_column_foot() {
 }
 
 #[test]
+fn margin_top_starts_at_first_host_line_below_frame_top() {
+    for inset in [false, true] {
+        let (mut doc, sid, fid) = doc_with("Body text.", Rect::new(120.0, 140.0, 420.0, 600.0), Default::default());
+        let options = &mut doc.item_mut(fid).unwrap().text_frame_mut().unwrap().options;
+        options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        options.first_baseline_min = 80.0;
+        if inset {
+            options.inset_columns = Some(designcraft_doc::InsetColumns {
+                streams: vec![designcraft_doc::InsetStream { series: None, ratio: 1.0 }],
+                gutter: 12.0,
+                main_start_lines: 0,
+                main_start_baseline: None,
+                main_left_inset: None,
+                main_right_inset: None,
+                catchwords: false.into(),
+            });
+        }
+        doc.footnote_options.placement = designcraft_doc::NotePlacement::Margin {
+            side: designcraft_doc::MarginSide::Right,
+            gap: 8.0,
+            width: 72.0,
+            stack: designcraft_doc::MarginStack::Top,
+        };
+        doc.story_mut(sid).unwrap().insert_note(3, "Source", Default::default()).unwrap();
+        let cs = compose_story(&doc, sid, &Default::default());
+        let line = &cs.frames[0].lines[0];
+        let top = line.baseline - line.ascent;
+        assert!(top > frame_specs(&doc, sid)[0].area.y0);
+        assert!((cs.frames[0].notes[0].rect.y0 - top).abs() < 0.01, "inset {inset}: stack {}, first line {top}", cs.frames[0].notes[0].rect.y0);
+    }
+}
+
+#[test]
 fn margin_top_collision_pass_preserves_fixed_entries() {
     let (mut doc, a, _) = doc_with("First body.", Rect::new(120.0, 72.0, 420.0, 600.0), Default::default());
     let (_, b) = doc
@@ -10870,7 +10903,8 @@ fn margin_top_stack_ignores_distant_anchors_and_reports_overflow() {
     let cs = compose_story(&d, sid, &Default::default());
     let notes = &cs.frames[0].notes;
     assert_eq!(notes.len(), 3);
-    assert!((notes[0].rect.y0 - d.page(0).unwrap().margin_rect().y0).abs() < 0.01);
+    let first_line = &cs.frames[0].lines[0];
+    assert!((notes[0].rect.y0 - (first_line.baseline - first_line.ascent)).abs() < 0.01);
     for pair in notes.windows(2) {
         assert!(pair[0].index < pair[1].index);
         assert!((pair[1].rect.y0 - pair[0].rect.y1 - 7.0).abs() < 0.01);

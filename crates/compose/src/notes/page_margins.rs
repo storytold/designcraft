@@ -78,7 +78,7 @@ fn candidates(
                 page,
                 left,
                 baseline: (xf * Point::new(n.origin.x, n.reference_baseline)).y,
-                requested: if stack == MarginStack::Top { page_spec.margin_rect().y0 } else { requested.y0 },
+                requested: if stack == MarginStack::Top { physical.y0 } else { requested.y0 },
                 height: physical.height(),
                 gap: o.space_between * vertical_scale,
                 story: cs.story,

@@ -107,6 +107,8 @@ The frame must belong to the same host story and page; the series must use margi
 with `stack: "top"`. This explicit area replaces the inset-core constraint; numeric route
 references still clear the greater of the core and referenced route. The reference bottom is the area top plus accepted entry heights and
 inter-entry spacing, or the area top when empty. Fitting and placement share this calculation.
+The area starts at the host's first composed line top, including the first replayed inset band.
+A host with no composed line uses its text-frame area top.
 Each frame/series top stack remains fixed during the final page-margin collision pass.
 Other margin modes, missing frames or series, and other stories or pages make the entire
 follow adjustment a no-op with a composition warning. Native saves and commands preserve both

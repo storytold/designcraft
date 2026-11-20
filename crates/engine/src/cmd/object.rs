@@ -7278,7 +7278,8 @@ mod frame_baseline_grid_tests {
         .unwrap();
         let empty = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
         assert!(!empty.warnings.iter().any(|w| w.contains("after must")), "{:?}", empty.warnings);
-        assert!((empty.frame(foot).unwrap().columns[0].y0 - s.doc().unwrap().doc.page(0).unwrap().margin_rect().y0 - 12.0).abs() < 0.01);
+        let first = &empty.frame(host).unwrap().lines[0];
+        assert!((empty.frame(foot).unwrap().columns[0].y0 - (first.baseline - first.ascent) - 12.0).abs() < 0.01);
         s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
         s.execute("footnote.insert", &json!({"series":series,"text":"Margin line.\n".repeat(25)})).unwrap();
         let check = |doc: &Document| {
