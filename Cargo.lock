@@ -1988,6 +1988,7 @@ dependencies = [
  "designcraft-geom",
  "designcraft-images",
  "log",
+ "serde_json",
  "thiserror 2.0.21",
  "zip 3.0.0",
 ]

@@ -79,7 +79,15 @@ pub fn from_bytes(b: &[u8]) -> Result<Document> {
 /// open, with a warning for each repair.
 pub(super) fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
     let mut d = designcraft_format::load(b).map_err(|e| EngineError::Other(e.to_string()))?;
-    let warnings = d.fix_parent_bases();
+    let mut warnings = d.fix_parent_bases();
+    // Footnotes nest at most MAX_NOTE_DEPTH deep: a file's deeper notes are written into the
+    // deepest note's text, as IDML export writes them.
+    let folded = d.fold_deep_notes();
+    if folded > 0 {
+        warnings.push(designcraft_doc::notes::deep_notes_warning(folded));
+    }
+    // Nested footnotes are found by id alone: a hand-edited file may repeat one.
+    d.fix_note_ids();
     Ok((d, warnings))
 }
 
