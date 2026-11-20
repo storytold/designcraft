@@ -186,6 +186,105 @@ fn wrap_pushes_text_aside() {
     assert!(below.x0 < 1.0);
 }
 
+/// The x where the first line starts beside a 120 × 60 bounding box wrap object (offsets 6 on the
+/// right) whose stroke is `weight` wide, aligned `align`; None: no stroke.
+fn first_line_x_beside_stroked_wrap(stroke: Option<(f64, designcraft_doc::StrokeAlign)>) -> f64 {
+    let (mut d, sid, _) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(
+        ItemId(d.alloc()),
+        lid,
+        designcraft_doc::Shape::Rectangle,
+        designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 120.0, 60.0)),
+    );
+    it.wrap.mode = WrapMode::BoundingBox;
+    it.wrap.offsets = [0.0, 0.0, 6.0, 6.0];
+    it.stroke = match stroke {
+        Some((weight, align)) => designcraft_doc::Stroke { swatch: "Black".into(), weight, align, ..Default::default() },
+        None => designcraft_doc::Stroke { swatch: designcraft_color::swatch::NONE.into(), ..Default::default() },
+    };
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].x0
+}
+
+#[test]
+fn wrap_offsets_are_measured_from_the_outer_edge_of_the_stroke() {
+    use designcraft_doc::StrokeAlign::{Center, Inside, Outside};
+    // As measured in InDesign 2026: a centred stroke adds half its weight to the offset, an outside
+    // stroke all of it, an inside stroke or none nothing.
+    assert!(near(first_line_x_beside_stroked_wrap(None), 126.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((4.0, Center))), 128.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((10.0, Center))), 131.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((6.0, Outside))), 132.0));
+    assert!(near(first_line_x_beside_stroked_wrap(Some((6.0, Inside))), 126.0));
+}
+
+/// Where the first line starts beside a wrap object (rectangle `path`, drawn through `xf`, with a
+/// 4 pt centred stroke and no offsets) in a text frame drawn through `frame_xf`, in the frame's own
+/// units.
+fn first_line_x_beside_transformed_wrap(path: Rect, xf: designcraft_geom::Affine, frame_xf: designcraft_geom::Affine, mode: WrapMode) -> f64 {
+    let (mut d, sid, fid) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().xf = frame_xf;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(path));
+    it.xf = xf;
+    it.wrap.mode = mode;
+    it.wrap.offsets = [0.0; 4];
+    it.stroke = designcraft_doc::Stroke { swatch: "Black".into(), weight: 4.0, align: designcraft_doc::StrokeAlign::Center, ..Default::default() };
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].x0
+}
+
+#[test]
+fn a_stroke_drawn_through_a_scaled_transform_reaches_as_far_as_it_is_drawn() {
+    use designcraft_geom::Affine;
+    let at = |path, xf| first_line_x_beside_transformed_wrap(path, xf, Affine::IDENTITY, WrapMode::BoundingBox);
+    // As in InDesign 2026: a rectangle whose own transform scales it by 2 strokes a 4 pt weight
+    // 8 pt wide (the PDF says `8 w`) and the text starts at the edge of that stroke.
+    assert!(near(at(Rect::new(0.0, 0.0, 120.0, 60.0), Affine::IDENTITY), 122.0));
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 30.0), Affine::scale(2.0)), 124.0));
+    assert!(near(at(Rect::new(0.0, 0.0, 40.0, 20.0), Affine::scale(3.0)), 126.0));
+    // Scaled along x only: the stroke is as wide again on the sides that face x.
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 60.0), Affine::scale_non_uniform(2.0, 1.0)), 124.0));
+    // Turned a quarter turn about the spread's origin and scaled by 2: the rectangle's right edge is
+    // then at 0 and the stroke reaches 4 beyond it, along x as along y.
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 30.0), Affine::scale(2.0) * Affine::rotate(std::f64::consts::FRAC_PI_2)), 4.0));
+}
+
+#[test]
+fn contour_and_bounding_box_wraps_clear_a_stroke_the_same_in_a_scaled_frame() {
+    use designcraft_geom::Affine;
+    // The text frame is drawn at twice its size, so its own units are half the spread's: a 4 pt
+    // centred stroke reaches 2 pt on the spread and 1 in the frame, and both wraps must agree.
+    let rect = Rect::new(0.0, 0.0, 120.0, 60.0);
+    let bbox = first_line_x_beside_transformed_wrap(rect, Affine::IDENTITY, Affine::scale(2.0), WrapMode::BoundingBox);
+    let contour = first_line_x_beside_transformed_wrap(rect, Affine::IDENTITY, Affine::scale(2.0), WrapMode::Contour);
+    assert!(near(bbox, 61.0), "bounding box: {bbox}");
+    assert!(near(contour, bbox), "contour {contour} against bounding box {bbox}");
+}
+
+#[test]
+fn contour_and_bounding_box_wraps_clear_a_stroke_the_same_under_a_scale_of_one_axis() {
+    use designcraft_geom::Affine;
+    let wide = Affine::scale_non_uniform(2.0, 1.0);
+    // (object rectangle, its transform, the frame's transform, where the first line starts in the
+    // frame's units): a 4 pt centred stroke reaches 2 in the object's own units.
+    let cases = [
+        // Scaled along x: the transformed path ends at 120 and the stroke reaches 4 beyond it.
+        (Rect::new(0.0, 0.0, 60.0, 60.0), wide, Affine::IDENTITY, 124.0),
+        // A frame drawn twice as wide: the object's edge and the 2 pt of stroke are halved.
+        (Rect::new(0.0, 0.0, 120.0, 60.0), Affine::IDENTITY, wide, 61.0),
+        // Both: the object's own x scale is cancelled by the frame's, the stroke keeps its 2.
+        (Rect::new(0.0, 0.0, 60.0, 60.0), wide, wide, 62.0),
+    ];
+    for (i, (rect, xf, frame_xf, expected)) in cases.into_iter().enumerate() {
+        let bbox = first_line_x_beside_transformed_wrap(rect, xf, frame_xf, WrapMode::BoundingBox);
+        let contour = first_line_x_beside_transformed_wrap(rect, xf, frame_xf, WrapMode::Contour);
+        assert!(near(bbox, expected), "case {i} bounding box: {bbox}, expected {expected}");
+        assert!(near(contour, expected), "case {i} contour: {contour}, expected {expected}");
+    }
+}
+
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
 /// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
 /// `wrap`.

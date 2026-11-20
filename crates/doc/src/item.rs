@@ -311,18 +311,22 @@ impl Item {
 
     /// Visible bounds including stroke weight (approximate for inside/outside alignment).
     pub fn visible_bounds(&self) -> Rect {
-        let b = self.bounds();
+        let w = self.stroke_outset();
+        self.bounds().inflate(w, w)
+    }
+
+    /// How far a visible stroke reaches outside the path: half its weight centred, all of it
+    /// outside, none inside or when the stroke is none. Arrowheads on an open path count too.
+    pub fn stroke_outset(&self) -> f64 {
         if self.stroke.is_none() {
-            return b;
+            return 0.0;
         }
         let w = match self.stroke.align {
             StrokeAlign::Center => self.stroke.weight / 2.0,
             StrokeAlign::Inside => 0.0,
             StrokeAlign::Outside => self.stroke.weight,
         };
-        // Arrowheads on open paths.
-        let w = if self.path.is_closed() { w } else { w.max(self.stroke.extent() - self.stroke.weight) };
-        b.inflate(w, w)
+        if self.path.is_closed() { w } else { w.max(self.stroke.extent() - self.stroke.weight) }
     }
 
     /// The text frame's text area (inner space): inside the part of a visible stroke that lies
