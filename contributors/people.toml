@@ -92,6 +92,9 @@ display_name = "Jonathan Cardoso"
 real_name = "Adithya Shankaran"
 sync_github_name = true
 
+[people.AlPaka1234]
+real_name = "Christian Holtbrügger"
+
 [people.alejo-c]
 sync_github_name = true
 
