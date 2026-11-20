@@ -9,6 +9,7 @@ description = "DesignCraft MCP server: JSON-RPC 2.0 over stdio, driving a runnin
 workspace = true
 
 [dependencies]
+craft-mcp-server = { workspace = true }
 designcraft-engine = { workspace = true }
 designcraft-render = { workspace = true }
 designcraft-tools = { workspace = true }
