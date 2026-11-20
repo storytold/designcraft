@@ -6,30 +6,6 @@ pub(crate) const MAX_SHRINK: u8 = 3;
 /// The largest decoded image, in bytes (the `image` crate's default allocation limit).
 const MAX_BYTES: usize = 512 << 20;
 
-/// Bytes a pixel a full decode of a progressive JPEG holds for its coefficients until the last
-/// scan: two a component, up to the four components a JPEG decoder takes. 0 for a baseline JPEG
-/// and for anything that isn't a JPEG.
-pub(crate) fn progressive_coefficient_bytes(bytes: &[u8]) -> usize {
-    if !bytes.starts_with(&[0xFF, 0xD8]) {
-        return 0;
-    }
-    let mut i = 2usize;
-    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i.saturating_add(4)).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
-        // Start of scan or end of image: no more frame headers.
-        if marker == 0xDA || marker == 0xD9 {
-            return 0;
-        }
-        // SOF2, SOF6, SOF10 and SOF14: progressive frames. The component count follows the
-        // length, precision, height and width.
-        if matches!(marker, 0xC2 | 0xC6 | 0xCA | 0xCE) {
-            let components = bytes.get(i.saturating_add(9)).map_or(4, |&n| usize::from(n).clamp(1, 4));
-            return 2 * components;
-        }
-        i = i.saturating_add(2).saturating_add(usize::from(u16::from_be_bytes([hi, lo])));
-    }
-    0
-}
-
 fn limits() -> craft_jpeg::Limits {
     let mut limits = craft_jpeg::Limits::default();
     limits.max_alloc = MAX_BYTES as u64;
