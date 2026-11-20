@@ -5077,8 +5077,11 @@ fn a_hangul_drop_cap_is_sized_by_its_ink() {
     assert_eq!((dc.byte, dc.len), (0, '가'.len_utf8()));
     let (top, bottom) = ink_of(dc, lines[0].baseline);
     let body = lines[0].glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap();
-    // Its ink runs from the ink top of the text on line 1 down to line 3's baseline, not past it.
-    assert!((bottom - lines[2].baseline).abs() < 0.01, "ink bottom {bottom}, line 3 {}", lines[2].baseline);
+    // Its ink runs from the ink top of the text on line 1 down to the ink bottom of the text on
+    // line 3 (its 가s, drawn as g), not past it into line 4.
+    let text_bottom = lines[2].glyphs.iter().map(|g| ink_of(g, lines[2].baseline)).filter(|(t, b)| b > t).map(|(_, b)| b).fold(f64::MIN, f64::max);
+    assert!(text_bottom > lines[2].baseline + 1.0, "line 3's text is inked below its baseline");
+    assert!((bottom - text_bottom).abs() < 0.01, "ink bottom {bottom}, line 3's text {text_bottom}");
     assert!((top - ink_of(body, lines[0].baseline).0).abs() < 0.01, "ink top {top}");
     // A one-line drop cap keeps its size and its baseline.
     let (mut d, sid, _) = drop_doc(&text, drop_cap(1, 1));
@@ -5092,16 +5095,51 @@ fn a_hangul_drop_cap_is_sized_by_its_ink() {
 /// A three-line drop cap of 가 drawn as `glyph` (font `family`), the text after it (no 가) as H,
 /// after `edit` (given the story and its text's length).
 fn hangul_drop_cap(family: &str, glyph: char, edit: impl FnOnce(&mut designcraft_doc::Story, usize)) -> ComposedStory {
+    hangul_drop_cap_of(family, glyph, 'H', "가", edit)
+}
+
+/// A three-line drop cap of `cap` (its 가 drawn as `glyph`), the text after it drawn as `body`.
+fn hangul_drop_cap_of(family: &str, glyph: char, body: char, cap: &str, edit: impl FnOnce(&mut designcraft_doc::Story, usize)) -> ComposedStory {
     let mut map = vec![('가', glyph), (' ', ' ')];
-    map.extend("나다라마바사".chars().map(|c| (c, 'H')));
+    map.extend("나다라마바사".chars().map(|c| (c, body)));
     let font = designcraft_fonts::testing::font_mapping(family, &map).unwrap();
     designcraft_fonts::FontDb::global().add_font(font);
-    let text = format!("가{}", ["나다라 마바사"; 30].join(" "));
-    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    let text = format!("{cap}{}", ["나다라 마바사"; 30].join(" "));
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, cap.chars().count() as u32));
     let story = d.story_mut(sid).unwrap();
     story.format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
     edit(story, text.len());
     compose_story(&d, sid, &ComposeOptions::default())
+}
+
+/// CJK text is inked below its baseline too: a CJK drop cap is fitted ink to ink, its ink bottom
+/// on the text's ink bottom on its last line, not on the baseline above it.
+#[test]
+fn a_cjk_drop_cap_ends_at_the_ink_bottom_of_the_text_beside_it() {
+    // The text after the drop cap is drawn as p (ink below the baseline).
+    let cs = hangul_drop_cap_of("DC Test Drop Hangul Inked Text", 'g', 'p', "가", |_, _| {});
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    let (top, bottom) = ink_of(dc, lines[0].baseline);
+    let body = |l: usize| {
+        let line = lines[l];
+        // The first inked glyph of the text (spaces have no ink).
+        let inked = line.glyphs.iter().filter(|g| g.byte > 0).map(|g| ink_of(g, line.baseline)).find(|(t, b)| b > t);
+        inked.unwrap()
+    };
+    assert!(body(2).1 > lines[2].baseline + 1.0, "the text is inked below its baseline");
+    assert!((bottom - body(2).1).abs() < 0.01, "ink bottom {bottom}, the text's on line 3 {}", body(2).1);
+    assert!((top - body(0).0).abs() < 0.01, "ink top {top}, the text's on line 1 {}", body(0).0);
+}
+
+/// A space among a CJK drop cap's characters (가 and a space, two characters) keeps it CJK.
+#[test]
+fn a_space_in_a_cjk_drop_cap_keeps_it_sized_by_its_ink() {
+    let cs = hangul_drop_cap_of("DC Test Drop Hangul Space", 'g', 'H', "가 ", |_, _| {});
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    let (_, bottom) = ink_of(dc, lines[0].baseline);
+    assert!((bottom - lines[2].baseline).abs() < 0.01, "ink bottom {bottom}, line 3 {}", lines[2].baseline);
 }
 
 /// Many CJK letters have no ink below the baseline (二, へ, ハ, and 으 in some Hangul fonts): a

@@ -5746,22 +5746,25 @@ fn split_drop_cap(
         _ => 1.0,
     };
     // A CJK drop cap (Hangul, Han, kana) has no cap height: its ink runs above the cap line and
-    // below the baseline. It's sized by its ink instead, from the ink top of the CJK text after it
-    // down to line `lines`' baseline, and raised (or, inked only above the baseline, lowered) so
-    // its ink bottom sits on that baseline.
-    let cjk = dc.iter().all(|g| g.len == 0 || upright_in_vertical(g.ch));
+    // below the baseline. It's sized by its ink instead, ink to ink as a Latin cap is (the body's
+    // capitals are inked from the cap line down to the baseline): from the ink top of the CJK text
+    // after it down to that text's ink bottom on line `lines`, and raised (or, inked only above
+    // it, lowered) so its ink bottom sits there. Spaces among its characters don't count; a Latin
+    // letter or a digit makes it a mixed cap, sized by the cap height.
+    let cjk = dc.iter().any(|g| upright_in_vertical(g.ch)) && dc.iter().all(|g| g.len == 0 || g.is_space() || upright_in_vertical(g.ch));
     let (ink_top, ink_bottom) = if cjk { ink_extent(db, &dc) } else { (0.0, 0.0) };
-    let body_top = if cjk { ink_extent(db, glyphs.iter().filter(|g| g.len > 0 && upright_in_vertical(g.ch)).take(16)).0 } else { 0.0 };
+    let (body_top, body_bottom) =
+        if cjk { ink_extent(db, glyphs.iter().filter(|g| g.len > 0 && upright_in_vertical(g.ch)).take(16)) } else { (0.0, 0.0) };
     // A one-line drop cap isn't enlarged (see below), so it stays on its baseline. A flat cap
     // (一, ー, 〜: ink under a third of an em tall) is a stroke, not a letter-sized shape: sized by
     // its ink it would be blown up to fill the drop, so it keeps the cap height.
     let tall = ink_top + ink_bottom > 0.0 && ink_top + ink_bottom >= own_size / 3.0;
     let by_ink = cjk && lines > 1 && tall && body_top > 0.0;
-    let (own, target) = if by_ink { (ink_top + ink_bottom, drop + body_top) } else { (own, drop + cap) };
+    let (own, target) = if by_ink { (ink_top + ink_bottom, drop + body_top + body_bottom) } else { (own, drop + cap) };
     let k = if own > 0.0 { target / own * ratio } else { 1.0 };
     let k = if lines == 1 { k.min(1.0) } else { k };
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
-    let raise = if by_ink { ink_bottom * k } else { 0.0 };
+    let raise = if by_ink { ink_bottom * k - body_bottom } else { 0.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
         g.adv *= k;
         g.dx *= k;
@@ -5804,7 +5807,7 @@ fn split_drop_cap(
     let width = dc.iter().map(|g| g.adv).sum();
     dc.append(&mut after);
     // A CJK cap sized by its ink reaches its ink top above the baseline.
-    let cap = if by_ink { own * k } else { dc.iter().map(|g| g.cap).fold(0.0, f64::max) };
+    let cap = if by_ink { own * k - body_bottom } else { dc.iter().map(|g| g.cap).fold(0.0, f64::max) };
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
 }
 
