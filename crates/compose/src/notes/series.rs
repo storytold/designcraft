@@ -277,6 +277,7 @@ impl Notes {
             a.0.cmp(&b.0).then(at.is_none().cmp(&bt.is_none())).then(at.cmp(&bt)).then(a.1.total_cmp(&b.1)).then(a.5.cmp(&b.5))
         });
         let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
+        let mut top_bottoms = HashMap::new();
         let mut seen = HashSet::new();
         for (page_index, _, fi, li, si, k) in refs {
             if !seen.insert((si, k)) {
@@ -298,9 +299,17 @@ impl Notes {
                     MarginSide::Outside => f.left_page,
                 };
                 let (text, m) = s.compose(doc, k, width, f, opts);
-                let requested = if stack == MarginStack::Top { margin.y0 } else { baseline - m.first };
-                let y = bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between));
-                let bottom = y + m.last + m.descent;
+                let (y, bottom) = if stack == MarginStack::Top {
+                    let height = text.frames.iter().flat_map(|f| &f.lines).map(|l| l.baseline + l.descent).fold(m.last + m.descent, f64::max);
+                    let key = (f.id, s.series);
+                    let placed = super::top_margin_entry(margin.y0, top_bottoms.get(&key).copied(), height, o.space_between);
+                    top_bottoms.insert(key, placed.1);
+                    placed
+                } else {
+                    let requested = baseline - m.first;
+                    let y = bottoms.get(&(page_index, left)).map_or(requested, |bottom| requested.max(bottom + page.y0 + o.space_between));
+                    (y, y + m.last + m.descent)
+                };
                 bottoms.insert((page_index, left), bottom - page.y0);
                 let edge = doc.item(f.id).and_then(|item| item.path.bounds()).unwrap_or(f.area);
                 let x = if left { edge.x0 - gap - width } else { edge.x1 + gap };

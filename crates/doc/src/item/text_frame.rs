@@ -52,15 +52,23 @@ pub enum InsetEdge {
     Start,
 }
 
+/// A route frame, or one host frame's margin-series area on the same page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InsetAfter {
+    Route(crate::ItemId),
+    Margin { frame: crate::ItemId, series: u64 },
+}
+
 /// Align a route edge to the ink bottom of its host's inset core on the same page.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InsetFollow {
     pub edge: InsetEdge,
     pub gap: f64,
-    /// Earlier same-page route whose composed bottom also constrains this edge.
+    /// Earlier same-page route or this host's top-stacked margin area constraining this edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<crate::ItemId>,
+    pub after: Option<InsetAfter>,
 }
 
 impl InsetFollow {
@@ -484,9 +492,11 @@ mod stream_tests {
 
     #[test]
     fn follow_inset_after_json_roundtrip() {
-        let json = serde_json::json!({"story":8,"series":2,"followInset":{"edge":"start","gap":12.0,"after":42}});
-        let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(serde_json::to_value(route).unwrap(), json);
+        for after in [serde_json::json!(42), serde_json::json!({"frame":42,"series":3})] {
+            let json = serde_json::json!({"story":8,"series":2,"followInset":{"edge":"start","gap":12.0,"after":after}});
+            let route: NoteStream = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(route).unwrap(), json);
+        }
     }
 
     #[test]

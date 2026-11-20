@@ -16,6 +16,11 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 
 Note series (#2871) now provide independent numbering/styles and column-foot or margin placement. Margin notes align with their references by default; `placement.stack: "top"` stacks entries contiguously from the margin top. Both modes stack by page side across ordinary and anchored hosts, and report overflow. Stacking uses the displayed cross-reference and running-header context. Running-header source pages use resolved references. Option changes invalidate table-cell note layouts. Hidden containers release their stack space. Indexed wrap neighbours retain placements from stacked margin notes and displayed running-header/xref text, and follow host, stack or text-source edits. PDF exports retain notes outside the host frame's page. Native files retain the series; deletion resets embedded memberships before ID reuse. Pending continuations advance using their own series options before a later reference moves on. IDML writes all notes using its one footnote setup with a warning for additional series or margin placement, including notes in table cells. Anchored commentary streams (#2872) fit first parts on their anchor pages, route continuations independently of the body thread, and report stream overflow separately from body overset. Inset columns and optional per-stream catchwords now share dynamic regions (#2873). Continued-note parts replay their original page context; page-number markers within a paragraph spanning pages still use the paragraph-start page (#2886).
 
+Top-stacked margin series now remain fixed per host frame/series area. Inset routes can follow
+that area's accepted bottom with `followInset.after: {frame, series}`; other margin modes and
+invalid references remain warned no-ops. Copying remaps both ids; native saves retain either
+reference form, and IDML warns about their loss (#2871).
+
 ### 0. Primary Text Frame autoflow adds pages users can't delete (F) · **ALPHA BLOCKER**
 - **Missing:** fixes to Smart Text Reflow on the Primary Text Frame, which users report adding
   pages they can't delete (#165). Threading by hand works (ports, loaded text cursor, `text.thread` / `text.unthread` /

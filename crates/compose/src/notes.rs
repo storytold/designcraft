@@ -131,6 +131,12 @@ pub(crate) struct SplitPlan {
 
 type SeriesSnapshot = (u32, Option<usize>, usize, Option<Carry>);
 type Part = (Arc<ComposedStory>, NoteMetrics);
+
+/// Shared by final margin placement and inset trials; no gap precedes the first entry.
+pub(crate) fn top_margin_entry(top: f64, previous: Option<f64>, height: f64, spacing: f64) -> (f64, f64) {
+    let y = previous.map_or(top, |bottom| bottom + spacing);
+    (y, y + height)
+}
 type CacheKey = (usize, String, u64, PartPage, Vec<(u64, u64, PartPage)>);
 
 pub(super) struct SeriesNotes {

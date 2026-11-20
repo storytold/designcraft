@@ -619,7 +619,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options…",
             ["Object"],
             Some("Cmd+B"),
-            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?: bool|{style: character style name} (baseline pitch = style leading; true keeps the 18 pt row; unknown styles warn and use 9/12 pt defaults),gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
+            "{insetColumns?: {streams:[{series?,ratio?}],catchwords?: bool|{style: character style name} (baseline pitch = style leading; true keeps the 18 pt row; unknown styles warn and use 9/12 pt defaults),gutter?,mainStartLines?,mainStartBaseline? (commentary baseline, overrides mainStartLines),mainLeftInset?,mainRightInset?}|null, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route) or {frame: host frame id, series: top-stacked margin series id} (same host and page; invalid references are a warned no-op)}}|null (commentary route; empty standalone frame), columns? (1..40), gutter? (pt, 0..15552), inset?: number|[t,l,b,r] (pt, each 0..15552; a list has four sides, null keeps that side), verticalJustification?: top|center|bottom|justify, paragraphSpacingLimit? (pt: Justify adds at most this between paragraphs, the rest between lines), columnsKind?: fixedNumber|fixedWidth|flexibleWidth, columnWidth? (pt, Fixed Width), firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin? (pt), autoSize?: off|heightOnly|widthOnly|heightAndWidth|heightAndWidthProportionally, autoSizeReference?: topLeft|topCenter|topRight|leftCenter|center|rightCenter|bottomLeft|bottomCenter|bottomRight (the point that stays put), useMinimumHeight?: bool, minimumHeight? (pt), useMinimumWidth?: bool, minimumWidth? (pt), noLineBreaks?: bool, ignoreWrap?, balanceColumns?, columnRule?: bool, columnRuleWeight? (pt), columnRuleColor? (swatch name), columnRuleTint? (0..1), columnRuleOffset? (pt, horizontal), columnRuleTopInset? (pt), columnRuleBottomInset? (pt), baselineGrid?: {start? (pt), increment? (pt), relativeTo?: page|margin|frame|inset} (the frame's custom baseline grid; fields not given keep the frame's, or come from the document grid; null turns it off), vertical?: bool (sets the story direction of the frames' stories, as Type ▸ Story Direction), ids? (without ids or selected objects: the frame showing the text caret, or every frame holding part of the selected text)}",
             has_selection_or_text,
             text_frame_options
         ),
@@ -628,7 +628,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Text Frame Options",
             [],
             None,
-            "{ids?, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route; invalid references are a warned no-op)}} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
+            "{ids?, noteStream?: {story, series, catchword?: bool|{style: character style name} (default false; route style overrides series catchwordStyle and host style), followInset?: {edge: end|start, gap: number (pt, finite 0..15552), after?: frame id (earlier same-story same-page route) or {frame: host frame id, series: top-stacked margin series id} (same host and page; invalid references are a warned no-op)}} | null, …options as object.textFrameOptions} sets text frame options; same options as object.textFrameOptions. A stream frame is empty and outside the host's thread. null removes its stream assignment.",
             has_selection_or_text,
             text_frame_options
         ),
@@ -1297,7 +1297,15 @@ pub(crate) fn retarget_copied_note_streams(
                             route.story = *host;
                             route.series = series.get(&src.note_series_id(route.series)).copied().unwrap_or(0);
                             if let Some(follow) = &mut route.follow_inset {
-                                follow.after = follow.after.map(|id| frames.get(&id).copied().unwrap_or(id));
+                                follow.after = follow.after.map(|after| match after {
+                                    designcraft_doc::InsetAfter::Route(id) => {
+                                        designcraft_doc::InsetAfter::Route(frames.get(&id).copied().unwrap_or(id))
+                                    }
+                                    designcraft_doc::InsetAfter::Margin { frame, series: source_series } => designcraft_doc::InsetAfter::Margin {
+                                        frame: frames.get(&frame).copied().unwrap_or(frame),
+                                        series: series.get(&source_series).copied().unwrap_or(source_series),
+                                    },
+                                });
                             }
                             route
                         })
@@ -7251,6 +7259,103 @@ mod frame_baseline_grid_tests {
     }
 
     #[test]
+    fn follow_inset_after_margin_stack_moves_and_roundtrips() {
+        let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
+        s.execute("textFrame.options", &json!({"ids":[column.0],"noteStream":null})).unwrap();
+        let series = s
+            .execute(
+                "footnote.series.create",
+                &json!({"name":"Margin", "placement":{"kind":"margin","gap":8,"width":80,"stack":"top"},"separator":" ","spaceBetween":7}),
+            )
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let after = json!({"frame":host.0,"series":series});
+        s.execute(
+            "textFrame.options",
+            &json!({"ids":[foot.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":12,"after":after}}}),
+        )
+        .unwrap();
+        let empty = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+        assert!(!empty.warnings.iter().any(|w| w.contains("after must")), "{:?}", empty.warnings);
+        assert!((empty.frame(foot).unwrap().columns[0].y0 - inset_ink_bottom(&empty, host) - 12.0).abs() < 0.01);
+        s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        s.execute("footnote.insert", &json!({"series":series,"text":"Margin line.\n".repeat(25)})).unwrap();
+        let check = |doc: &Document| {
+            let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
+            let bottom = cs.frame(host).unwrap().notes.iter().filter(|n| n.series == series).map(|n| n.rect.y1).reduce(f64::max).unwrap();
+            let top = cs.frame(foot).unwrap().columns[0].y0;
+            assert!((top - bottom - 12.0).abs() < 0.01, "top {top}, bottom {bottom}, warnings {:?}", cs.warnings);
+            top
+        };
+        let before = check(&s.doc().unwrap().doc);
+        s.execute("text.select", &json!({"story":sid.0,"anchor":0,"focus":0})).unwrap();
+        s.execute("footnote.insert", &json!({"series":series,"text":"Added entry"})).unwrap();
+        assert!(check(&s.doc().unwrap().doc) > before);
+        let doc = &s.doc().unwrap().doc;
+        let loaded = designcraft_format::load(&designcraft_format::save(doc).unwrap()).unwrap();
+        let value = serde_json::to_value(loaded.item(foot).unwrap().text_frame().unwrap().options.note_stream.as_ref()).unwrap();
+        assert_eq!(value["followInset"]["after"], after);
+        let (_, warnings) = designcraft_idml::export_idml_report(&loaded, &Default::default());
+        assert!(warnings.iter().any(|w| w.contains("followInset") && w.contains("after")));
+        let source = (**doc).clone();
+        let mut dst = Document::new(&Default::default());
+        dst.note_series.push(designcraft_doc::NoteSeries { id: series, name: "Unrelated".into(), options: Default::default() });
+        let copies =
+            duplicate_from(&mut dst, &source, &[host, foot], designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Vec2::new(10.0, 10.0)).unwrap();
+        let copied_sid = dst.item(copies[0]).unwrap().text_frame().unwrap().story;
+        let copied_series = dst.note_series.iter().find(|s| s.name == "Margin").unwrap().id;
+        assert_ne!(copied_series, series);
+        assert!(dst.story(copied_sid).unwrap().notes.iter().any(|n| n.series == copied_series));
+        assert_eq!(
+            dst.item(copies[1]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap().follow_inset.unwrap().after,
+            Some(designcraft_doc::InsetAfter::Margin { frame: copies[0], series: copied_series })
+        );
+    }
+
+    #[test]
+    fn follow_inset_after_margin_invalid_is_noop_with_warning() {
+        for mode in 0..5 {
+            let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
+            let series = s
+                .execute(
+                    "footnote.series.create",
+                    &json!({"name":"Margin","placement":{"kind":"margin","gap":8,"width":80,"stack":if mode==0 {"besideAnchor"} else {"top"}}}),
+                )
+                .unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            let mut reference_frame = if mode == 1 {
+                u64::MAX
+            } else if mode == 2 {
+                column.0
+            } else {
+                host.0
+            };
+            if mode == 4 {
+                let doc = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+                doc.insert_pages(Some(0), 1, None).unwrap();
+                let (si, pi) = doc.page_loc(1).unwrap();
+                let x = doc.spreads[si].pages[pi].x;
+                let (other, _) = doc
+                    .add_text_frame(SpreadRef::Doc(si), Rect::new(x + 36.0, 36.0, x + 200.0, 300.0), doc.default_layer(), "", Default::default())
+                    .unwrap();
+                doc.thread(host, other).unwrap();
+                reference_frame = other.0;
+            }
+            let reference = json!({"frame":reference_frame,"series":if mode==3 {u64::MAX} else {series}});
+            s.execute(
+                "textFrame.options",
+                &json!({"ids":[foot.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":12,"after":reference}}}),
+            )
+            .unwrap();
+            let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+            assert_eq!(cs.frame(foot).unwrap().columns[0].y0, 36.0, "mode {mode}");
+            assert!(cs.warnings.iter().any(|w| w.contains("followInset") && w.contains("stack top")), "{:?}", cs.warnings);
+        }
+    }
+
+    #[test]
     fn follow_inset_after_chains_and_shorter_route_moves_it_up() {
         let (mut s, sid, host, column, foot) = follow_inset_fixture(36.0, 12.0);
         s.execute("textFrame.options", &json!({"ids":[column.0],"noteStream":{"story":sid.0,"series":2,"followInset":{"edge":"start","gap":0}}}))
@@ -7290,7 +7395,7 @@ mod frame_baseline_grid_tests {
         let copied_host = dst.item(copies[0]).unwrap().text_frame().unwrap().story;
         let route = dst.item(copies[2]).unwrap().text_frame().unwrap().options.note_stream.as_ref().unwrap();
         assert_eq!(route.story, copied_host);
-        assert_eq!(route.follow_inset.unwrap().after, Some(copies[1]));
+        assert_eq!(route.follow_inset.unwrap().after, Some(designcraft_doc::InsetAfter::Route(copies[1])));
     }
 
     #[test]
@@ -7317,7 +7422,7 @@ mod frame_baseline_grid_tests {
             let mut after = column;
             if mode == 0 {
                 doc.item_mut(column).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset.as_mut().unwrap().after =
-                    Some(foot);
+                    Some(designcraft_doc::InsetAfter::Route(foot));
             } else if mode == 1 {
                 doc.insert_pages(Some(0), 1, None).unwrap();
                 let (si, pi) = doc.page_loc(1).unwrap();
@@ -7339,7 +7444,7 @@ mod frame_baseline_grid_tests {
                 doc.item_mut(column).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().story = other_story;
             }
             doc.item_mut(foot).unwrap().text_frame_mut().unwrap().options.note_stream.as_mut().unwrap().follow_inset.as_mut().unwrap().after =
-                Some(after);
+                Some(designcraft_doc::InsetAfter::Route(after));
             let cs = designcraft_compose::compose_story(doc, sid, &Default::default());
             assert_eq!(cs.frame(foot).unwrap().columns[0].y0, 36.0, "mode {mode}");
             assert!(cs.warnings.iter().any(|w| w.contains("followInset") && w.contains("after")), "{:?}", cs.warnings);

@@ -97,6 +97,20 @@ Each physical page's routes are fitted once using all host ranges on that page, 
 a thread that returns to an earlier page. Chained followers use already fitted route bottoms.
 Copying the host and its route chain retargets `after` to the copied frames.
 
+`after` also accepts a host frame and margin series area:
+
+```json
+{"noteStream":{"story":23,"series":2,"followInset":{"edge":"start","gap":12,"after":{"frame":40,"series":3}}}}
+```
+
+The frame must belong to the same host story and page; the series must use margin placement
+with `stack: "top"`. The reference bottom is the area top plus accepted entry heights and
+inter-entry spacing, or the area top when empty. Fitting and placement share this calculation.
+Each frame/series top stack remains fixed during the final page-margin collision pass.
+Other margin modes, missing frames or series, and other stories or pages make the entire
+follow adjustment a no-op with a composition warning. Native saves and commands preserve both
+forms. Copying remaps both frame and series ids; IDML warns that either dependency is lost.
+
 The page fitter uses full-width main line ends as search keys. Each isolated trial lays out
 fixed page slices and rounds its cut to a whole main line from that layout. It retains the
 longest cut actually measured feasible, with that exact geometry, rather than assuming

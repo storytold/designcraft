@@ -10834,6 +10834,25 @@ fn note_series_number_independently_and_stack_at_column_foot() {
 }
 
 #[test]
+fn margin_top_collision_pass_preserves_fixed_entries() {
+    let (mut doc, a, _) = doc_with("First body.", Rect::new(120.0, 72.0, 420.0, 600.0), Default::default());
+    let (_, b) = doc
+        .add_text_frame(SpreadRef::Doc(0), Rect::new(120.0, 300.0, 420.0, 700.0), doc.default_layer(), "Second body.", Default::default())
+        .unwrap();
+    doc.footnote_options.placement = designcraft_doc::NotePlacement::Margin {
+        side: designcraft_doc::MarginSide::Right,
+        gap: 8.0,
+        width: 72.0,
+        stack: designcraft_doc::MarginStack::Top,
+    };
+    doc.story_mut(a).unwrap().insert_note(0, "Long\nmargin\nentry", Default::default()).unwrap();
+    doc.story_mut(b).unwrap().insert_note(0, "Fixed", Default::default()).unwrap();
+    let before = compose_story_unstacked(&doc, b, &Default::default());
+    let after = compose_story(&doc, b, &Default::default());
+    assert_eq!(after.frames[0].notes[0].rect, before.frames[0].notes[0].rect);
+}
+
+#[test]
 fn margin_top_stack_ignores_distant_anchors_and_reports_overflow() {
     let (mut d, sid, _) =
         doc_with("First.\nSecond.\nThird.", Rect::new(120.0, 180.0, 420.0, 700.0), ParaAttrs { space_after: Some(100.0), ..Default::default() });

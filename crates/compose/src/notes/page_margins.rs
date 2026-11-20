@@ -143,9 +143,14 @@ pub(crate) fn stack_page_margins(doc: &Document, sid: StoryId, opts: &ComposeOpt
     let mut bottoms: HashMap<(usize, bool), f64> = HashMap::new();
     out.warnings.retain(|w| !w.starts_with("Margin note "));
     for c in all {
-        let top = bottoms.get(&(c.page, c.left)).map_or(c.requested, |bottom| c.requested.max(bottom + c.gap));
+        // Top stacks are measured during inset fitting and must remain fixed afterward.
+        let top = if c.top_order.is_some() {
+            c.current_top
+        } else {
+            bottoms.get(&(c.page, c.left)).map_or(c.requested, |bottom| c.requested.max(bottom + c.gap))
+        };
         let bottom = top + c.height;
-        bottoms.insert((c.page, c.left), bottom);
+        bottoms.entry((c.page, c.left)).and_modify(|b| *b = b.max(bottom)).or_insert(bottom);
         if c.story != sid {
             continue;
         }
