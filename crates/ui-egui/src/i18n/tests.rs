@@ -647,12 +647,19 @@ fn adjust_layout_translations_cover_dialog_options_and_match_min_max_style() {
     assert_eq!((tr("de", "Min:"), tr("de", "Max:")), ("Min.:", "Max.:"));
     assert_eq!((tr("ja", "Min:"), tr("ja", "Max:")), ("最小:", "最大:"));
     assert_eq!((tr("es", "Adjust Layout"), tr("es", "Adjust Layout…")), ("Ajustar maquetación", "Ajustar maquetación…"));
-    for lang in ["de", "fr", "es", "ja", "zh", "sv"] {
+    for (lang, name) in LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
         for key in ["Adjust Layout…", "Auto-adjust margins to page size changes", "Adjust font size", "Set font size limits", "Adjust locked content"]
         {
             let text = tr(lang, key);
-            assert!(text != key && !text.trim().is_empty(), "{lang}: {key:?}");
+            assert!(text != key && !text.trim().is_empty(), "{name}: {key:?}");
+        }
+        if matches!(*lang, "sv" | "it") {
+            assert_eq!(tr(lang, "Max:"), "Max:", "{name}");
+        } else {
+            let max = tr(lang, "Max:");
+            assert!(max != "Max:" && !max.trim().is_empty(), "{name}: Max:");
         }
     }
     assert!(sv::TABLE.iter().any(|(key, text)| *key == "Max:" && !text.trim().is_empty()));
+    assert!(it::TABLE.iter().any(|(key, text)| *key == "Max:" && !text.trim().is_empty()));
 }

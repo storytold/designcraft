@@ -513,6 +513,62 @@ fn adjust_layout_dialog_preserves_valid_asymmetric_margins_across_auto_adjust_to
 }
 
 #[test]
+fn adjust_layout_dialog_bleed_only_change_on_a4_preserves_custom_page_width_and_text_style() {
+    let a4_w = 595.2755905511812_f64;
+    let a4_h = 841.8897637795276_f64;
+    for units in ["picas", "inches"] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 2, "facingPages": false, "width": a4_w, "height": a4_h, "margins": 36.0})).unwrap();
+        app.run("document.preferences", json!({"horizontalUnits": units, "verticalUnits": units})).unwrap();
+        app.run("layout.pageSize", json!({"pages": [1], "width": 1000.0})).unwrap();
+        let tf = app.run("frame.create", json!({"rect": [36, 36, 400, 300], "content": "text", "text": "Style-driven"})).unwrap();
+        let sid = designcraft_doc::StoryId(tf["story"].as_u64().unwrap());
+
+        open_adjust_layout(&mut app);
+        setup_fields(&mut app, json!({"bleedTop": "9 pt", "adjustFontSize": true}));
+        confirm(&mut app).unwrap();
+
+        let doc = &app.session.active().unwrap().doc;
+        assert!((doc.settings.bleed[0] - 9.0).abs() < 1e-6, "{units}: bleed updated");
+        assert!((doc.settings.page_width - a4_w).abs() < 1e-9, "{units}: exact A4 width kept");
+        assert!((doc.page(0).unwrap().width - 1000.0).abs() < 1e-6, "{units}: custom page 1 width kept");
+        assert_eq!(doc.story(sid).unwrap().char_format_of(0).over.size, None, "{units}: style-driven text stays clean");
+    }
+}
+
+#[test]
+fn adjust_layout_dialog_auto_adjust_on_then_off_restores_margins_and_preserves_per_page_margins() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false, "width": 612.0, "height": 792.0, "margins": 36.0})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).unwrap();
+    app.run("layout.marginsAndColumns", json!({"pages": [1], "margins": 90.0})).unwrap();
+
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"width": "1224 pt"}));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+    let mut labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for _ in 0..2 {
+        labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(app.ui.dialog.as_ref().unwrap().b("autoAdjustMargins"));
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("marginInside"), "72 pt");
+
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!app.ui.dialog.as_ref().unwrap().b("autoAdjustMargins"));
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("marginInside"), "36 pt", "toggling auto-adjust off restores original margins");
+
+    confirm(&mut app).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    assert!((doc.page(0).unwrap().margins.inside - 36.0).abs() < 1e-6);
+    assert!((doc.page(1).unwrap().margins.inside - 90.0).abs() < 1e-6, "per-page margins stay independent");
+}
+
+#[test]
 fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

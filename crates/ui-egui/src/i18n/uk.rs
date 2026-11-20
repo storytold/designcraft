@@ -2018,6 +2018,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Print Layer", "Друкувати шар"),
     ("Suppress Text Wrap When Layer is Hidden", "Вимикати обтікання текстом, коли шар приховано"),
     ("Justification…", "Вирівнювання за шириною…"),
+    ("Adjust Layout…", "Адаптувати макет…"),
+    ("Auto-adjust margins to page size changes", "Автоматично адаптувати поля до змін розміру сторінки"),
+    ("Adjust font size", "Адаптувати розмір шрифту"),
+    ("Set font size limits", "Задати межі розміру шрифту"),
+    ("Max:", "Макс.:"),
+    ("Adjust locked content", "Адаптувати заблокований вміст"),
 ];
 
 /// Contexts whose Ukrainian noun differs from the shared action/text-layout label.

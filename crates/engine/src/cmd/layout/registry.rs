@@ -516,10 +516,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.edit(|d, _| {
                     let before = margin_boxes(d);
                     let assigned = assign_items(d, &before, adjust_locked_content);
+                    const PAGE_DIM_TOLERANCE: f64 = 1e-4;
                     let (old_w, old_h) = (d.settings.page_width, d.settings.page_height);
                     let new_w = w.unwrap_or(old_w);
                     let new_h = h.unwrap_or(old_h);
-                    let size_changed = new_w != old_w || new_h != old_h;
+                    let width_changed = w.is_some() && (new_w - old_w).abs() > PAGE_DIM_TOLERANCE;
+                    let height_changed = h.is_some() && (new_h - old_h).abs() > PAGE_DIM_TOLERANCE;
+                    let size_changed = width_changed || height_changed;
                     let scale_margins = auto_margins && margins.is_none();
                     // Scale each page's margins by its own resize ratio and preserve valid
                     // asymmetric margins (overall fit is validated below).
@@ -535,7 +538,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     };
                     // Validate every affected page's resulting margin box before mutating the document.
                     for pg in d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| &sp.pages) {
-                        let (pw, ph) = if size_changed { (new_w, new_h) } else { (pg.width, pg.height) };
+                        let pw = if width_changed { new_w } else { pg.width };
+                        let ph = if height_changed { new_h } else { pg.height };
                         let m = if let Some(m) = margins {
                             m
                         } else if scale_margins {
@@ -556,23 +560,28 @@ pub fn specs() -> Vec<CommandSpec> {
                     if let Some(b) = bleed {
                         d.settings.bleed = b;
                     }
-                    if size_changed {
+                    if width_changed {
                         d.settings.page_width = new_w;
+                    }
+                    if height_changed {
                         d.settings.page_height = new_h;
                     }
                     if size_changed || scale_margins || margins.is_some() {
                         for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
                             let sp = std::sync::Arc::make_mut(sp);
                             for pg in &mut sp.pages {
-                                let (pw, ph) = if size_changed { (new_w, new_h) } else { (pg.width, pg.height) };
+                                let pw = if width_changed { new_w } else { pg.width };
+                                let ph = if height_changed { new_h } else { pg.height };
                                 let width_before = pg.margin_rect().width();
                                 if let Some(m) = margins {
                                     pg.margins = m;
                                 } else if scale_margins {
                                     pg.margins = scaled_margins(pg.margins, pg.width, pg.height, pw, ph);
                                 }
-                                if size_changed {
+                                if width_changed {
                                     pg.width = new_w;
+                                }
+                                if height_changed {
                                     pg.height = new_h;
                                 }
                                 scale_columns(pg, width_before);

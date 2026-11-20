@@ -2774,6 +2774,9 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
         f[format!("{k}Linked")] = json!(values.iter().all(|v| (v - first).abs() < 1e-6));
     }
     f["marginsShown"] = json!(SETUP_EDGES.map(|e| f[format!("margin{e}")].clone()));
+    f["widthShown"] = f["width"].clone();
+    f["heightShown"] = f["height"].clone();
+    f["bleedShown"] = json!(SETUP_EDGES.map(|e| f[format!("bleed{e}")].clone()));
     let mut d = Dialog::new("adjustLayout", f);
     d.unit = units;
     app.ui.dialog = Some(d);
@@ -2828,12 +2831,32 @@ fn adjust_layout_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             if ui.checkbox(&mut auto, crate::rtl::widget(ui, tr("Auto-adjust margins to page size changes"))).changed() {
                 d.fields.insert("autoAdjustMargins".into(), Value::Bool(auto));
                 if auto {
+                    d.fields.insert(
+                        "marginsBeforeAuto".into(),
+                        json!(SETUP_EDGES.map(|e| d.fields.get(&format!("margin{e}")).cloned().unwrap_or_default())),
+                    );
+                    d.fields.insert("marginLinkedBeforeAuto".into(), Value::Bool(d.b("marginLinked")));
                     sync_adjust_margins(d);
+                } else {
+                    if let Some(prev) = d.fields.get("marginsBeforeAuto").and_then(Value::as_array).cloned()
+                        && prev.len() == SETUP_EDGES.len()
+                    {
+                        for (e, v) in SETUP_EDGES.iter().zip(prev) {
+                            d.fields.insert(format!("margin{e}"), v);
+                        }
+                    }
+                    if let Some(linked) = d.fields.get("marginLinkedBeforeAuto").and_then(Value::as_bool) {
+                        d.fields.insert("marginLinked".into(), Value::Bool(linked));
+                    }
+                    d.fields.remove("marginsBeforeAuto");
+                    d.fields.remove("marginLinkedBeforeAuto");
                 }
             }
         });
         if setup_two_column_edges(ui, lang, d, "margin", side_labels) {
             d.fields.insert("autoAdjustMargins".into(), Value::Bool(false));
+            d.fields.remove("marginsBeforeAuto");
+            d.fields.remove("marginLinkedBeforeAuto");
         }
     });
     ui.add_space(4.0);
@@ -2941,25 +2964,37 @@ fn confirm_adjust_layout(app: &mut DesignApp, d: &Dialog) -> Result<Value, Strin
     if margins.iter().any(|v| !(0.0..=10000.0).contains(v)) {
         return Err("margins out of range".into());
     }
+    let width_edited = d.fields.get("widthShown") != d.fields.get("width");
+    let height_edited = d.fields.get("heightShown") != d.fields.get("height");
+    let eff_w = if width_edited { w } else { d.n("origWidth").unwrap_or(w) };
+    let eff_h = if height_edited { h } else { d.n("origHeight").unwrap_or(h) };
     let auto_margins = d.b("autoAdjustMargins");
-    if !auto_margins && (margins[0] + margins[1] >= h || margins[2] + margins[3] >= w) {
+    if !auto_margins && (margins[0] + margins[1] >= eff_h || margins[2] + margins[3] >= eff_w) {
         return Err("margins must fit within the page size".into());
     }
     let bleed: Vec<f64> = SETUP_EDGES.iter().map(|e| measure(&format!("bleed{e}"))).collect::<Result<_, _>>()?;
     if bleed.iter().any(|v| !(0.0..=720.0).contains(v)) {
         return Err("bleed out of range".into());
     }
+    let bleed_shown = d.fields.get("bleedShown").and_then(Value::as_array);
+    let bleed_edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| bleed_shown.and_then(|s| s.get(i)) != d.fields.get(&format!("bleed{e}")));
     let adjust_font_size = d.b("adjustFontSize");
     let font_limits = adjust_font_size && d.b("fontSizeLimits");
     let mut p = json!({
-        "width": w,
-        "height": h,
         "autoAdjustMargins": auto_margins,
-        "bleed": bleed,
         "adjustFontSize": adjust_font_size,
         "fontSizeLimits": font_limits,
         "adjustLockedContent": d.b("adjustLockedContent"),
     });
+    if width_edited {
+        p["width"] = json!(w);
+    }
+    if height_edited {
+        p["height"] = json!(h);
+    }
+    if bleed_edited {
+        p["bleed"] = json!(bleed);
+    }
     if !auto_margins {
         let shown = d.fields.get("marginsShown").and_then(Value::as_array);
         let edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));

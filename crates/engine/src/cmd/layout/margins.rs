@@ -1,11 +1,22 @@
 use super::parents::parent_spread_index;
 use super::{Margins, Result, Session, Value, bad, has_doc, json};
 
-/// Each page's margin box, by spread and page id.
-pub(super) fn margin_boxes(d: &designcraft_doc::Document) -> Vec<(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)> {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PageBox {
+    pub spread: designcraft_doc::SpreadRef,
+    pub id: designcraft_doc::PageId,
+    pub margin: designcraft_geom::Rect,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Each page's margin box and page dimensions, by spread and page id.
+pub(super) fn margin_boxes(d: &designcraft_doc::Document) -> Vec<PageBox> {
     d.spread_refs()
         .filter_map(|r| d.spread(r).map(|sp| (r, sp)))
-        .flat_map(|(r, sp)| sp.pages.iter().map(move |pg| (r, pg.id, pg.margin_rect())))
+        .flat_map(|(r, sp)| {
+            sp.pages.iter().map(move |pg| PageBox { spread: r, id: pg.id, margin: pg.margin_rect(), width: pg.width, height: pg.height })
+        })
         .collect()
 }
 
@@ -19,10 +30,7 @@ pub(super) struct AdjustOptions {
 
 /// Layout Adjustment: objects on each page move and resize from its old margin box to its new
 /// one (content keeps its size; frames that auto-fit refit).
-pub(super) fn adjust_layout(
-    d: &mut designcraft_doc::Document,
-    before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
-) {
+pub(super) fn adjust_layout(d: &mut designcraft_doc::Document, before: &[PageBox]) {
     adjust_layout_with(d, before, AdjustOptions::default());
 }
 
@@ -30,14 +38,15 @@ pub(super) fn adjust_layout(
 /// page geometry or spread layout changes.
 pub(super) fn assign_items(
     d: &designcraft_doc::Document,
-    before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
+    before: &[PageBox],
     adjust_locked_content: bool,
 ) -> Vec<(designcraft_doc::PageId, designcraft_doc::ItemId)> {
     let locked_layers: Vec<designcraft_doc::LayerId> =
         if adjust_locked_content { Vec::new() } else { d.layers.iter().filter(|l| l.locked).map(|l| l.id).collect() };
     let mut seen_spreads = Vec::new();
     let mut assigned = Vec::new();
-    for (r, _, _) in before {
+    for pb in before {
+        let r = &pb.spread;
         if seen_spreads.contains(r) {
             continue;
         }
@@ -49,8 +58,8 @@ pub(super) fn assign_items(
             }
             let c = it.bounds().center();
             // Pages share a spread side by side: the margin box's page is the one under the centre's x.
-            if let Some((_, pid, _)) = before.iter().filter(|(r2, _, _)| r2 == r).min_by(|a, b| dist(a.2, c.x).total_cmp(&dist(b.2, c.x))) {
-                assigned.push((*pid, it.id));
+            if let Some(target) = before.iter().filter(|b| b.spread == *r).min_by(|a, b| dist(a.margin, c.x).total_cmp(&dist(b.margin, c.x))) {
+                assigned.push((target.id, it.id));
             }
         }
     }
@@ -58,11 +67,7 @@ pub(super) fn assign_items(
 }
 
 /// Layout Adjustment with explicit options, deriving page assignments from `before`.
-pub(super) fn adjust_layout_with(
-    d: &mut designcraft_doc::Document,
-    before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
-    opts: AdjustOptions,
-) {
+pub(super) fn adjust_layout_with(d: &mut designcraft_doc::Document, before: &[PageBox], opts: AdjustOptions) {
     let assigned = assign_items(d, before, opts.adjust_locked_content);
     adjust_layout_assigned(d, before, &assigned, opts);
 }
@@ -71,7 +76,7 @@ pub(super) fn adjust_layout_with(
 /// cannot reassign items to another page.
 pub(super) fn adjust_layout_assigned(
     d: &mut designcraft_doc::Document,
-    before: &[(designcraft_doc::SpreadRef, designcraft_doc::PageId, designcraft_geom::Rect)],
+    before: &[PageBox],
     assigned: &[(designcraft_doc::PageId, designcraft_doc::ItemId)],
     opts: AdjustOptions,
 ) {
@@ -79,22 +84,34 @@ pub(super) fn adjust_layout_assigned(
     let after = margin_boxes(d);
     let locked_layers: Vec<designcraft_doc::LayerId> =
         if opts.adjust_locked_content { Vec::new() } else { d.layers.iter().filter(|l| l.locked).map(|l| l.id).collect() };
+    adjust_guides(d, before, &after, opts.adjust_locked_content, &locked_layers);
     let mut story_scales: std::collections::BTreeMap<designcraft_doc::StoryId, f64> = std::collections::BTreeMap::new();
-    for (_, pid, old) in before {
-        let Some((_, _, new)) = after.iter().find(|(_, p2, _)| p2 == pid) else { continue };
-        if old == new || old.width() < 1e-6 || old.height() < 1e-6 || new.width() < 1e-6 || new.height() < 1e-6 {
+    let story_filter = if opts.adjust_locked_content { StoryFilter::All } else { StoryFilter::UnlockedOnly };
+    for old in before {
+        let Some(new) = after.iter().find(|n| n.id == old.id) else { continue };
+        let (om, nm) = (old.margin, new.margin);
+        let margin_changed = om != nm && om.width() >= 1e-6 && om.height() >= 1e-6 && nm.width() >= 1e-6 && nm.height() >= 1e-6;
+        let page_sx = if old.width >= 1e-6 && new.width >= 1e-6 { new.width / old.width } else { 1.0 };
+        let page_sy = if old.height >= 1e-6 && new.height >= 1e-6 { new.height / old.height } else { 1.0 };
+        let font_scale = (page_sx * page_sy).sqrt();
+        let font_changed = opts.adjust_font_size && font_scale.is_finite() && (font_scale - 1.0).abs() >= 1e-6;
+        if !margin_changed && !font_changed {
             continue;
         }
-        let sx = new.width() / old.width();
-        let sy = new.height() / old.height();
-        let font_scale = (sx * sy).sqrt();
-        let m = Affine::translate((new.x0, new.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-old.x0, -old.y0));
-        let ids: Vec<designcraft_doc::ItemId> = assigned.iter().filter(|(p2, _)| p2 == pid).map(|(_, id)| *id).collect();
-        let story_filter = if opts.adjust_locked_content { StoryFilter::All } else { StoryFilter::UnlockedOnly };
+        let m = if margin_changed {
+            let sx = nm.width() / om.width();
+            let sy = nm.height() / om.height();
+            Affine::translate((nm.x0, nm.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-om.x0, -om.y0))
+        } else {
+            Affine::IDENTITY
+        };
+        let ids: Vec<designcraft_doc::ItemId> = assigned.iter().filter(|(p2, _)| *p2 == old.id).map(|(_, id)| *id).collect();
         for id in ids {
             let Some(it) = d.item_mut(id) else { continue };
-            adjust_item(it, m, opts.adjust_locked_content, &locked_layers, 0);
-            if opts.adjust_font_size {
+            if margin_changed {
+                adjust_item(it, m, opts.adjust_locked_content, &locked_layers, 0);
+            }
+            if font_changed {
                 let mut sids = Vec::new();
                 collect_stories(it, story_filter, false, &locked_layers, 0, &mut sids);
                 for sid in sids {
@@ -103,24 +120,115 @@ pub(super) fn adjust_layout_assigned(
             }
         }
     }
-    if opts.adjust_font_size && !opts.adjust_locked_content && !story_scales.is_empty() {
-        // A story threaded into any locked frame (or locked layer/ancestor) keeps its text size.
-        let mut locked_stories = Vec::new();
-        for r in d.spread_refs() {
-            let Some(sp) = d.spread(r) else { continue };
-            for it in &sp.items {
-                collect_stories(it, StoryFilter::LockedOnly, false, &locked_layers, 0, &mut locked_stories);
+    if opts.adjust_font_size && !story_scales.is_empty() {
+        let locked_stories = if opts.adjust_locked_content { std::collections::BTreeSet::new() } else { collect_locked_stories(d, &locked_layers) };
+        if !locked_stories.is_empty() {
+            story_scales.retain(|sid, _| !locked_stories.contains(sid));
+        }
+        expand_anchored_stories(d, story_filter, &locked_layers, &locked_stories, &mut story_scales);
+        if !story_scales.is_empty() {
+            let styles = d.styles.clone();
+            for (sid, scale) in story_scales {
+                if let Some(story) = d.story_mut(sid) {
+                    scale_story_fonts(story, &styles, scale, opts.font_limits, 0);
+                }
             }
         }
-        for sid in locked_stories {
-            story_scales.remove(&sid);
+    }
+}
+
+/// Repositions eligible ruler guides proportionally between `before` and `after` margin boxes.
+fn adjust_guides(
+    d: &mut designcraft_doc::Document,
+    before: &[PageBox],
+    after: &[PageBox],
+    locked_ok: bool,
+    locked_layers: &[designcraft_doc::LayerId],
+) {
+    let valid_pair = |pid: designcraft_doc::PageId| -> Option<(designcraft_geom::Rect, designcraft_geom::Rect)> {
+        let old = before.iter().find(|b| b.id == pid)?;
+        let new = after.iter().find(|a| a.id == pid)?;
+        let (om, nm) = (old.margin, new.margin);
+        if om == nm || om.width() < 1e-6 || om.height() < 1e-6 || nm.width() < 1e-6 || nm.height() < 1e-6 {
+            return None;
+        }
+        Some((om, nm))
+    };
+    let mut seen_spreads = Vec::new();
+    for pb in before {
+        if seen_spreads.contains(&pb.spread) {
+            continue;
+        }
+        seen_spreads.push(pb.spread);
+        let Some(sp) = d.spread_mut(pb.spread) else { continue };
+        for pg in &mut sp.pages {
+            let pg_pair = valid_pair(pg.id);
+            for g in &mut pg.guides {
+                if !g.position.is_finite() {
+                    continue;
+                }
+                if !locked_ok && (g.locked || g.layer.is_some_and(|l| locked_layers.contains(&l))) {
+                    continue;
+                }
+                let pair = if g.spread && g.orientation == designcraft_doc::Orientation::Vertical {
+                    before
+                        .iter()
+                        .filter(|b| b.spread == pb.spread)
+                        .min_by(|a, b| dist(a.margin, g.position).total_cmp(&dist(b.margin, g.position)))
+                        .and_then(|target| valid_pair(target.id))
+                } else {
+                    pg_pair
+                };
+                let Some((om, nm)) = pair else { continue };
+                let next = match g.orientation {
+                    designcraft_doc::Orientation::Vertical => nm.x0 + (nm.width() / om.width()) * (g.position - om.x0),
+                    designcraft_doc::Orientation::Horizontal => nm.y0 + (nm.height() / om.height()) * (g.position - om.y0),
+                };
+                if next.is_finite() {
+                    g.position = next;
+                }
+            }
         }
     }
-    if opts.adjust_font_size && !story_scales.is_empty() {
-        let styles = d.styles.clone();
-        for (sid, scale) in story_scales {
-            if let Some(story) = d.story_mut(sid) {
-                scale_story_fonts(story, &styles, scale, opts.font_limits, 0);
+}
+
+fn collect_locked_stories(
+    d: &designcraft_doc::Document,
+    locked_layers: &[designcraft_doc::LayerId],
+) -> std::collections::BTreeSet<designcraft_doc::StoryId> {
+    let mut out = Vec::new();
+    for r in d.spread_refs() {
+        let Some(sp) = d.spread(r) else { continue };
+        for it in &sp.items {
+            collect_stories(it, StoryFilter::LockedOnly, false, locked_layers, 0, &mut out);
+        }
+    }
+    for st in d.stories.values() {
+        collect_story_anchored_stories(st, StoryFilter::LockedOnly, false, locked_layers, 0, &mut out);
+    }
+    out.into_iter().collect()
+}
+
+fn expand_anchored_stories(
+    d: &designcraft_doc::Document,
+    filter: StoryFilter,
+    locked_layers: &[designcraft_doc::LayerId],
+    locked_stories: &std::collections::BTreeSet<designcraft_doc::StoryId>,
+    story_scales: &mut std::collections::BTreeMap<designcraft_doc::StoryId, f64>,
+) {
+    let mut queue: Vec<(designcraft_doc::StoryId, f64)> = story_scales.iter().map(|(&k, &v)| (k, v)).collect();
+    let mut i = 0;
+    while queue.len() <= d.stories.len()
+        && let Some(&(sid, scale)) = queue.get(i)
+    {
+        i += 1;
+        let Some(st) = d.story(sid) else { continue };
+        let mut nested = Vec::new();
+        collect_story_anchored_stories(st, filter, false, locked_layers, 0, &mut nested);
+        for child_sid in nested {
+            if !locked_stories.contains(&child_sid) && !story_scales.contains_key(&child_sid) {
+                story_scales.insert(child_sid, scale);
+                queue.push((child_sid, scale));
             }
         }
     }
@@ -205,6 +313,31 @@ fn collect_stories(
             }
         }
         designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_) => {}
+    }
+}
+
+/// Collects story IDs referenced by anchored objects inside `st`, its footnotes, endnotes, and table cells.
+fn collect_story_anchored_stories(
+    st: &designcraft_doc::Story,
+    filter: StoryFilter,
+    parent_locked: bool,
+    locked_layers: &[designcraft_doc::LayerId],
+    depth: usize,
+    out: &mut Vec<designcraft_doc::StoryId>,
+) {
+    if depth >= 32 {
+        return;
+    }
+    for obj in &st.objects {
+        collect_stories(&obj.item, filter, parent_locked, locked_layers, 0, out);
+    }
+    for n in st.notes.iter().chain(&st.endnotes) {
+        collect_story_anchored_stories(&n.text, filter, parent_locked, locked_layers, depth + 1, out);
+    }
+    for t in st.tables.values() {
+        for c in &t.cells {
+            collect_story_anchored_stories(&c.text, filter, parent_locked, locked_layers, depth + 1, out);
+        }
     }
 }
 
@@ -761,8 +894,7 @@ mod adjust_tests {
 
         let d = &s.doc().unwrap().doc;
         let sx: f64 = 1152.0 / 540.0;
-        let sy: f64 = 1512.0 / 720.0;
-        let font_scale = (sx * sy).sqrt();
+        let font_scale: f64 = ((1224.0_f64 / 612.0) * (1584.0_f64 / 792.0)).sqrt();
         let ub = d.item(u_id).unwrap().bounds();
         assert!((ub.x0 - 36.0).abs() < 1e-6 && (ub.x1 - (36.0 + sx * 264.0)).abs() < 1e-6, "unlocked child moves: {ub:?}");
         assert!((d.story(u_sid).unwrap().char_format_of(0).over.size.unwrap() - 20.0 * font_scale).abs() < 1e-6);
@@ -873,5 +1005,165 @@ mod adjust_tests {
         let m1 = d.page(1).unwrap().margins;
         assert_eq!((m0.top, m0.bottom, m0.inside, m0.outside), (72.0, 72.0, 72.0, 72.0));
         assert_eq!((m1.top, m1.bottom, m1.inside, m1.outside), (36.0, 36.0, 72.0, 72.0));
+    }
+
+    #[test]
+    fn adjust_layout_moves_ruler_guides_on_facing_spread_and_respects_guide_locks() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true, "width": 612, "height": 792, "margins": 36})).unwrap();
+
+        s.execute("guide.add", &json!({"spread": 1, "page": 1, "orientation": "vertical", "position": 912})).unwrap();
+        s.execute("guide.add", &json!({"spread": 1, "page": 1, "orientation": "horizontal", "position": 400})).unwrap();
+        s.execute("guide.add", &json!({"spread": 1, "page": 1, "orientation": "vertical", "position": 800})).unwrap();
+        s.execute("guide.add", &json!({"spread": 1, "orientation": "vertical", "position": 912, "spreadGuide": true})).unwrap();
+        s.execute("guide.add", &json!({"spread": {"kind": "parent", "index": 0}, "page": 1, "orientation": "vertical", "position": 700})).unwrap();
+        s.edit(|d, _| {
+            std::sync::Arc::make_mut(&mut d.spreads[1]).pages[1].guides[2].locked = true;
+            Ok(())
+        })
+        .unwrap();
+
+        s.execute("layout.adjust", &json!({"width": 1224, "height": 1584, "autoAdjustMargins": true, "adjustLockedContent": false})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let right = &d.spreads[1].pages[1];
+        assert!((right.guides[0].position - 1824.0).abs() < 1e-6, "right vertical guide moves: {:?}", right.guides[0]);
+        assert!((right.guides[1].position - 800.0).abs() < 1e-6, "right horizontal guide moves: {:?}", right.guides[1]);
+        assert!((right.guides[2].position - 800.0).abs() < 1e-6, "locked guide stays put: {:?}", right.guides[2]);
+        assert!(
+            (d.spreads[1].pages[0].guides[0].position - 1824.0).abs() < 1e-6,
+            "spread vertical guide tracks its page across facing spread: {:?}",
+            d.spreads[1].pages[0].guides[0]
+        );
+        assert!(
+            (d.parents[0].pages[1].guides[0].position - 1400.0).abs() < 1e-6,
+            "parent guide moves with parent page: {:?}",
+            d.parents[0].pages[1].guides[0]
+        );
+
+        s.execute("layout.adjust", &json!({"width": 612, "height": 792, "autoAdjustMargins": true, "adjustLockedContent": true})).unwrap();
+        let right2 = &s.doc().unwrap().doc.spreads[1].pages[1];
+        assert!((right2.guides[0].position - 912.0).abs() < 1e-6);
+        assert!((right2.guides[2].position - 400.0).abs() < 1e-6, "locked guide scales when adjustLockedContent is true: {:?}", right2.guides[2]);
+    }
+
+    #[test]
+    fn adjust_layout_scales_fonts_by_page_size_not_margin_only_changes() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false, "width": 612, "height": 792, "margins": 36})).unwrap();
+
+        let styled = s.execute("frame.create", &json!({"rect": [36, 36, 576, 300], "content": "text", "text": "Styled"})).unwrap();
+        let styled_id = designcraft_doc::ItemId(styled["id"].as_u64().unwrap());
+        let styled_sid = designcraft_doc::StoryId(styled["story"].as_u64().unwrap());
+
+        let explicit = s.execute("frame.create", &json!({"rect": [36, 360, 576, 756], "content": "text", "text": "Explicit"})).unwrap();
+        let explicit_sid = designcraft_doc::StoryId(explicit["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": explicit_sid.0, "anchor": 0, "focus": 8})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 12.0}})).unwrap();
+
+        // Margin-only edit: frames move/resize, fonts remain unchanged and style-driven text stays clean.
+        s.execute("layout.adjust", &json!({"margins": 144, "adjustFontSize": true})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let sb = d.item(styled_id).unwrap().bounds();
+        assert!((sb.x0 - 144.0).abs() < 1e-6 && (sb.x1 - 468.0).abs() < 1e-6, "frame follows new margins: {sb:?}");
+        assert_eq!(d.story(styled_sid).unwrap().char_format_of(0).over.size, None, "style-driven text stays clean");
+        assert_eq!(d.story(explicit_sid).unwrap().char_format_of(0).over.size, Some(12.0), "margin-only edit leaves type size unchanged");
+
+        // Page-size doubling without auto-adjust margins scales fonts by exact 2.0, not the margin-box ratio.
+        s.execute("layout.adjust", &json!({"width": 1224, "height": 1584, "margins": 36, "adjustFontSize": true})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(styled_sid).unwrap().char_format_of(0).over.size, Some(24.0));
+        assert_eq!(d.story(explicit_sid).unwrap().char_format_of(0).over.size, Some(24.0));
+    }
+
+    #[test]
+    fn adjust_layout_scales_anchored_text_frame_stories() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false, "width": 612, "height": 792, "margins": 36})).unwrap();
+        let host_res = s.execute("frame.create", &json!({"rect": [36, 36, 500, 500], "content": "text", "text": "Host  end"})).unwrap();
+        let host = designcraft_doc::StoryId(host_res["story"].as_u64().unwrap());
+
+        let (unlocked_sid, locked_sid) = s
+            .edit(|d, _| {
+                let layer = d.default_layer();
+                let mut add_anchored = |pos: usize, txt: &str, locked: bool| -> designcraft_doc::Result<designcraft_doc::StoryId> {
+                    let (fid, sid) = d.add_text_frame(
+                        designcraft_doc::SpreadRef::Doc(0),
+                        designcraft_geom::Rect::new(0.0, 0.0, 120.0, 30.0),
+                        layer,
+                        txt,
+                        designcraft_doc::ParaFormat::default(),
+                    )?;
+                    let mut item = d.item(fid).ok_or(designcraft_doc::DocError::NoItem(fid))?.clone();
+                    item.locked = locked;
+                    d.spread_mut(designcraft_doc::SpreadRef::Doc(0)).ok_or(designcraft_doc::DocError::NoItem(fid))?.items.retain(|i| i.id != fid);
+                    if let Some(st) = d.story_mut(sid) {
+                        st.format_chars(0..txt.len(), |fmt| fmt.over.size = Some(14.0));
+                    }
+                    d.story_mut(host)
+                        .ok_or(designcraft_doc::DocError::NoStory(host))?
+                        .insert_object(pos, designcraft_doc::AnchoredObject::new(item, designcraft_doc::AnchorPosition::default()));
+                    Ok(sid)
+                };
+                let l_sid = add_anchored(5, "Locked", true)?;
+                let u_sid = add_anchored(5, "Free", false)?;
+                Ok((u_sid, l_sid))
+            })
+            .unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+
+        s.execute("layout.adjust", &json!({"width": 1224, "height": 1584, "margins": 36, "adjustFontSize": true, "adjustLockedContent": false}))
+            .unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        d.check().unwrap();
+        assert_eq!(d.story(unlocked_sid).unwrap().char_format_of(0).over.size, Some(28.0), "anchored story scales by 2x");
+        assert_eq!(d.story(locked_sid).unwrap().char_format_of(0).over.size, Some(14.0), "locked anchored frame keeps font size");
+    }
+
+    #[test]
+    fn adjust_layout_ignores_sub_tolerance_dimension_noise_and_axis_isolation() {
+        let mut s = Session::new();
+        let a4_w = 595.2755905511812_f64;
+        let a4_h = 841.8897637795276_f64;
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": a4_w, "height": a4_h, "margins": 36})).unwrap();
+        s.execute("layout.pageSize", &json!({"pages": [1], "width": 1000.0})).unwrap();
+
+        // Rounded back from picas display ("49p7.276"): within 1e-4 pt does not resize custom page 1.
+        s.execute("layout.adjust", &json!({"width": 595.2756, "height": 841.8898, "bleed": 9})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.settings.bleed, [9.0; 4]);
+        assert!((d.page(0).unwrap().width - 1000.0).abs() < 1e-6, "custom page 1 width stays 1000");
+        assert!((d.page(1).unwrap().width - a4_w).abs() < 1e-9, "sub-tolerance width preserves exact A4");
+
+        // Height-only adjustment leaves width-custom page 1 at width 1000 while updating height.
+        s.execute("layout.adjust", &json!({"height": 900.0})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert!((d.page(0).unwrap().width - 1000.0).abs() < 1e-6, "height-only edit keeps custom page width");
+        assert!((d.page(0).unwrap().height - 900.0).abs() < 1e-6);
+        assert!((d.page(1).unwrap().height - 900.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn margins_and_columns_adjust_layout_skips_locked_items_and_moves_guides() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1, "facingPages": false, "width": 612, "height": 792, "margins": 36})).unwrap();
+        let free_id = designcraft_doc::ItemId(s.execute("frame.create", &json!({"rect": [36, 36, 306, 396]})).unwrap()["id"].as_u64().unwrap());
+        let locked_id = designcraft_doc::ItemId(s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("object.lock", &json!({"ids": [locked_id.0]})).unwrap();
+        s.execute("guide.add", &json!({"spread": 0, "page": 0, "orientation": "vertical", "position": 306})).unwrap();
+        s.execute("guide.add", &json!({"spread": 0, "page": 0, "orientation": "horizontal", "position": 400})).unwrap();
+
+        s.execute("layout.marginsAndColumns", &json!({"margins": {"top": 72, "bottom": 36, "inside": 72, "outside": 36}, "adjustLayout": true}))
+            .unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let fb = d.item(free_id).unwrap().bounds();
+        assert!((fb.x0 - 72.0).abs() < 1e-6 && (fb.y0 - 72.0).abs() < 1e-6, "unlocked item moves: {fb:?}");
+        let lb = d.item(locked_id).unwrap().bounds();
+        assert!((lb.x0 - 100.0).abs() < 1e-6 && (lb.x1 - 200.0).abs() < 1e-6, "locked item stays put: {lb:?}");
+        let guides = &d.spreads[0].pages[0].guides;
+        assert!((guides[0].position - 324.0).abs() < 1e-6, "vertical guide tracks margin box: {:?}", guides[0]);
+        assert!((guides[1].position - 417.8).abs() < 1e-6, "horizontal guide tracks margin box: {:?}", guides[1]);
     }
 }

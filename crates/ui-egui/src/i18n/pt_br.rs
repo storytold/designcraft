@@ -3057,4 +3057,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("−Bin", "−Bin"),
     ("−LOC", "−LOC"),
     ("⚠ {chord} is used by {label}", "⚠ {chord} é usado por {label}"),
+    ("Adjust Layout…", "Ajustar layout…"),
+    ("Auto-adjust margins to page size changes", "Ajustar margens automaticamente às alterações de tamanho da página"),
+    ("Adjust font size", "Ajustar tamanho da fonte"),
+    ("Set font size limits", "Definir limites de tamanho da fonte"),
+    ("Max:", "Máx.:"),
+    ("Adjust locked content", "Ajustar conteúdo bloqueado"),
 ];

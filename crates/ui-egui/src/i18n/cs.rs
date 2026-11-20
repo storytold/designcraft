@@ -2102,6 +2102,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ),
     ("{name}: {count} step(s) done", "{name}: hotovo kroků: {count}"),
     ("“{}” has changes that are not saved. Save them before closing?", "„{}“ obsahuje neuložené změny. Uložit je před zavřením?"),
+    ("Adjust Layout…", "Upravit rozvržení…"),
+    ("Auto-adjust margins to page size changes", "Automaticky upravit okraje při změně velikosti stránky"),
+    ("Adjust font size", "Upravit velikost písma"),
+    ("Set font size limits", "Nastavit meze velikosti písma"),
+    ("Max:", "Max.:"),
+    ("Adjust locked content", "Upravit zamčený obsah"),
 ];
 
 /// Czech count captions: English noun → [one (1), few (2–4), other (0, 5 and more)].

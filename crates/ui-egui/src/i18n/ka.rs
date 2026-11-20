@@ -3005,4 +3005,10 @@ pub(super) const TABLE: &[(&str, &str)] = &[
         "This story was edited in the layout: you'll be asked before those edits are replaced",
         "ეს ტექსტური ნაკადი განლაგებაში რედაქტირებულია: ამ ცვლილებების ჩანაცვლებამდე დაგეკითხებით",
     ),
+    ("Adjust Layout…", "განლაგების მისადაგება…"),
+    ("Auto-adjust margins to page size changes", "მინდვრების ავტომატური მისადაგება გვერდის ზომის ცვლილებასთან"),
+    ("Adjust font size", "შრიფტის ზომის მისადაგება"),
+    ("Set font size limits", "შრიფტის ზომის ზღვრების დაყენება"),
+    ("Max:", "მაქს.:"),
+    ("Adjust locked content", "დაბლოკილი შიგთავსის მისადაგება"),
 ];
