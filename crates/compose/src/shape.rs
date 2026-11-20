@@ -1064,11 +1064,50 @@ fn shape_cached(
         }
         w.extend(fresh);
     }
-    let mut out = Vec::with_capacity(src.len());
+    // Shaping does not cross the space, so a word's first letter is not kerned against the space
+    // before it, a pair many fonts kern (space and T, V, W, Y) and InDesign does: it comes from the
+    // two characters shaped alone, through the same cache. Horizontal text only: an upright run
+    // advances down the line and is kerned by `vkrn`.
+    let mut after_space: Vec<Option<[ShapedGlyph; 2]>> = vec![None; pieces.len()];
+    for k in (1..pieces.len()).filter(|_| !vertical) {
+        let Some(c) = pieces[k].chars().next().filter(|&c| c != ' ' && pieces[k - 1].ends_with(' ')) else { continue };
+        let key = format!(" {c}");
+        let cached = words.read().unwrap_or_else(|e| e.into_inner()).get(key.as_str()).cloned();
+        let pair = cached.unwrap_or_else(|| {
+            let g: Arc<[ShapedGlyph]> = shape(&key, ShapeContext { language: lang, ..Default::default() }).into();
+            words.write().unwrap_or_else(|e| e.into_inner()).insert(key.into(), g.clone());
+            g
+        });
+        if let [space, letter] = &*pair {
+            after_space[k] = Some([*space, *letter]);
+        }
+    }
+    let mut out: Vec<ShapedGlyph> = Vec::with_capacity(src.len());
     let mut start = 0;
-    for (piece, glyphs) in pieces.iter().zip(found) {
+    for (k, (piece, glyphs)) in pieces.iter().zip(found).enumerate() {
         let glyphs = glyphs.unwrap_or_else(|| Arc::from(Vec::new()));
-        out.extend(glyphs.iter().map(|g| ShapedGlyph { cluster: g.cluster + start, ..*g }));
+        // The space that ended the word before is kerned against this word's first letter. What
+        // the pair shaped alone does to each of the two glyphs, advance and offset, is done to
+        // them here: a `kern` table's value is shared between the two (the first's advance takes
+        // half, the second's advance and offset the rest), a GPOS pair gives it all to the first.
+        let mut letter_kern = None;
+        if let (Some([space_pair, letter_pair]), Some(space), Some(letter)) = (after_space[k], out.last_mut(), glyphs.first())
+            && space.gid == space_pair.gid
+            && space.cluster + 1 == start
+            && letter.gid == letter_pair.gid
+        {
+            space.x_advance += space_pair.x_advance - face.advance(space_pair.gid).round() as i32;
+            letter_kern = Some((letter_pair.x_advance - face.advance(letter_pair.gid).round() as i32, letter_pair.x_offset, letter_pair.y_offset));
+        }
+        out.extend(glyphs.iter().enumerate().map(|(n, g)| {
+            let mut g = ShapedGlyph { cluster: g.cluster + start, ..*g };
+            if let (0, Some((advance, x, y))) = (n, letter_kern) {
+                g.x_advance += advance;
+                g.x_offset += x;
+                g.y_offset += y;
+            }
+            g
+        }));
         start += piece.len();
     }
     out

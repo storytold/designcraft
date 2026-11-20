@@ -1630,6 +1630,37 @@ fn korean_text_and_addresses_are_not_hyphenated() {
     }
 }
 
+/// Where each glyph of `text` sits when the whole string is shaped at once, in points.
+fn whole_string_positions(g: &PlacedGlyph, text: &str) -> Vec<f64> {
+    let shaped = designcraft_fonts::shape(g.face.get(), text, &[], |c| c);
+    let mut x = 0.0;
+    shaped
+        .iter()
+        .map(|s| {
+            let at = x;
+            x += f64::from(s.x_advance) * g.sx;
+            at
+        })
+        .collect()
+}
+
+#[test]
+fn a_word_is_kerned_against_the_space_before_it() {
+    // The bundled serif kerns a space against T, V, W and Y (-20, -30, -30, -30 units): shaping
+    // word by word left out the pair of the space and the letter after it.
+    for text in ["ab T", "ab V", "ab W", "ab Y", "a Tab Vow Yes"] {
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = &cs.frames[0].lines[0];
+        let glyphs: Vec<&PlacedGlyph> = line.glyphs.iter().filter(|g| g.len > 0).collect();
+        let expected = whole_string_positions(glyphs[0], text);
+        assert_eq!(glyphs.len(), expected.len(), "{text:?}");
+        for (g, e) in glyphs.iter().zip(&expected) {
+            assert!((g.x - e).abs() < 1e-6, "{text:?}: glyph at byte {} is at {} where the whole string puts it at {e}", g.byte, g.x);
+        }
+    }
+}
+
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");
