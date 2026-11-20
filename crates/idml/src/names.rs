@@ -137,6 +137,21 @@ pub fn font_family_in(v: &str) -> Option<String> {
 }
 
 /// Built-in style names: (ours, IDML `Name`).
+/// The document label (a designmap `KeyValuePair`) that keeps custom footnote marks, which
+/// InDesign has no setting for: it keeps the label and shows its Symbols style instead. Its value
+/// is the marks' JSON with [`FOOTNOTE_MARKS_STYLE`] added.
+pub const FOOTNOTE_MARKS_LABEL: &str = "designcraft.footnoteMarks";
+/// The field of [`FOOTNOTE_MARKS_LABEL`]'s value that keeps the numbering style under the marks
+/// (the style the footnotes take again when the marks are cleared).
+pub const FOOTNOTE_MARKS_STYLE: &str = "style";
+/// [`FOOTNOTE_MARKS_LABEL`]'s value is read only up to this size, and a larger one isn't parsed
+/// at all. It is the largest label export can write: every mark ([`designcraft_doc::MAX_CUSTOM_MARKS`])
+/// with its text and style name at their longest ([`designcraft_doc::MAX_MARK_CHARS`],
+/// [`designcraft_doc::MAX_MARK_STYLE_CHARS`]), each character at most 6 bytes of JSON (`\u001f`),
+/// with room for the field names and the rest of the value.
+pub const MAX_FOOTNOTE_MARKS_LABEL: usize =
+    1024 + designcraft_doc::MAX_CUSTOM_MARKS * (64 + 6 * (designcraft_doc::MAX_MARK_CHARS + designcraft_doc::MAX_MARK_STYLE_CHARS));
+
 pub const PARA_BUILTINS: &[(&str, &str)] = &[("[No Paragraph Style]", "$ID/[No paragraph style]"), ("[Basic Paragraph]", "$ID/NormalParagraphStyle")];
 pub const CHAR_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[No character style]")];
 pub const CELL_BUILTINS: &[(&str, &str)] = &[("[None]", "$ID/[None]")];

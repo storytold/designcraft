@@ -459,7 +459,9 @@ impl<'r> Importer<'r> {
         Ok(())
     }
 
-    fn run(&mut self, _root: &craft_idml::model::Values, top: &[TopLevelNode]) -> Result<()> {
+    /// Read the package's parts into the document: preferences, graphics and styles, the footnote
+    /// options (with the custom marks a document label keeps), layers, then spreads and stories.
+    fn run(&mut self, root: &craft_idml::model::Values, top: &[TopLevelNode]) -> Result<()> {
         self.read_preferences(top);
         self.read_composite_fonts(top);
         self.read_cjk_tables(top)?;
@@ -468,6 +470,7 @@ impl<'r> Importer<'r> {
         if let Some(e) = top_els_of(top, TopKind::FootnoteOption).next() {
             self.footnote_option(&e);
         }
+        self.footnote_marks_label(root);
         if let Some(e) = top_els_of(top, TopKind::EpubExportPreference).next() {
             self.epub_split(&e);
         }
