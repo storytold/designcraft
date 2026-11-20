@@ -221,6 +221,26 @@ fn shape_dir(
     script: unicode_script::Script,
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
+    let (mut out, shaped) = shape_plain(face, text, features, map, rtl, script, context);
+    if shaped {
+        presentation_ligatures(face, text, &script_features(features, script), map, rtl, script, &mut out);
+    }
+    out
+}
+
+/// What the shaper gives for `text`, without the presentation-form ligatures of
+/// [`presentation_ligatures`] (the probes that measure kerning shape this way, so their letters stay
+/// letters), and whether the shaper could run; where it could not, the glyphs are the font's own,
+/// one per character.
+fn shape_plain(
+    face: &FontFace,
+    text: &str,
+    features: &[Feature],
+    map: &impl Fn(char) -> char,
+    rtl: bool,
+    script: unicode_script::Script,
+    context: ShapeContext<'_>,
+) -> (Vec<ShapedGlyph>, bool) {
     let mut out = Vec::with_capacity(text.len());
     let features = script_features(features, script);
     let features = &features[..];
@@ -255,9 +275,6 @@ fn shape_dir(
             });
         }
     });
-    if shaped.is_some() {
-        presentation_ligatures(face, text, features, map, rtl, script, &mut out);
-    }
     if shaped.is_none()
         && let Some(f) = face.skrifa()
     {
@@ -278,7 +295,7 @@ fn shape_dir(
             });
         }
     }
-    out
+    (out, shaped.is_some())
 }
 
 /// The standard ligatures a font has as presentation-form characters, longest first: the letters
@@ -315,8 +332,10 @@ fn presentation_ligatures(
         map,
         |c| cmap.map(c).map(|g| g.to_u32()).filter(|&g| g != 0),
         advance,
-        // What the shaper's kerning of two characters adds to the first one's advance.
-        |pair| match shape_dir(face, pair, features, &|c| c, false, script, ShapeContext::default()).as_slice() {
+        // What the shaper's kerning of two characters adds to the first one's advance. The probe is
+        // shaped without this pass: a neighbour that maps to an `f` would otherwise make "ff" a
+        // ligature here and the probe would find no pair.
+        |pair| match shape_plain(face, pair, features, &|c| c, false, script, ShapeContext::default()).0.as_slice() {
             [first, _] => Some(first.x_advance - advance(first.gid)?),
             _ => None,
         },
