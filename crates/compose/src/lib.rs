@@ -1717,9 +1717,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             let mut interior = Vec::new();
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut interior);
             if !interior.is_empty() {
-                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text, &|byte| {
-                    shape::features_for(&doc.styles.resolve_char(base_chars, story.char_format_of(byte)))
-                });
+                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text, &|byte| run_shaping_settings(doc, story, base_chars, byte));
                 hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
             }
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
@@ -2970,9 +2968,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut interior = Vec::new();
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut interior);
     if !interior.is_empty() {
-        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text, &|byte| {
-            shape::features_for(&doc.styles.resolve_char(base_chars, story.char_format_of(byte)))
-        });
+        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text, &|byte| run_shaping_settings(doc, story, base_chars, byte));
         hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
     }
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
@@ -5316,10 +5312,13 @@ fn layout_line(
         // Single word: Single Word Justification.
         match pp.single_word_justify {
             Align::FullyJustified => {
+                // The gaps between the glyphs, not after the last one drawn: an unbroken ligature at the
+                // word's end is followed by its placeholder.
+                let last_visible = line.iter().rposition(|g| g.ch != shape::HIDDEN).unwrap_or(line.len().saturating_sub(1));
                 let gaps: Vec<_> = line
                     .iter()
                     .enumerate()
-                    .take(line.len() - 1)
+                    .take(last_visible)
                     .skip(seg)
                     .filter(|(_, g)| g.ch != shape::HIDDEN && !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
                     .map(|(i, _)| i)
@@ -6107,6 +6106,19 @@ fn hyphenation_points(
     out
 }
 
+/// The shaping settings of the character at story byte `byte` that a piece of a ligature has to share
+/// with the ligature: its OpenType features, and its manual kerning in points (taken by each cluster).
+fn run_shaping_settings(
+    doc: &Document,
+    story: &Story,
+    base_chars: &designcraft_doc::CharProps,
+    byte: usize,
+) -> (Vec<designcraft_fonts::Feature>, f64) {
+    let props = doc.styles.resolve_char(base_chars, story.char_format_of(byte));
+    let manual = if let designcraft_doc::Kerning::Manual(v) = props.kerning { v / 1000.0 * props.size } else { 0.0 };
+    (shape::features_for(&props), manual)
+}
+
 /// Give each ligature that has a hyphenation point inside it a pair of glyphs ([`shape::LigPair`]),
 /// as InDesign keeps the ligature unless the word is broken inside it ("af-" and "fl" in
 /// "afflicted"): `interior` is what [`hyphenation_points`] found (glyph index, story byte). The pair
@@ -6118,7 +6130,7 @@ fn pair_ligatures_at_hyphens(
     glyphs: &mut Vec<Glyph>,
     interior: &[(usize, usize)],
     text: &str,
-    features_at: &dyn Fn(usize) -> Vec<designcraft_fonts::Feature>,
+    settings_at: &dyn Fn(usize) -> (Vec<designcraft_fonts::Feature>, f64),
 ) {
     let mut cuts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &(k, byte) in interior {
@@ -6134,13 +6146,13 @@ fn pair_ligatures_at_hyphens(
         if g.lig.is_some() || g.shaping_rtl || !cluster.chars().all(|c| c.is_ascii_alphabetic()) || !(start < cut && cut < end) {
             continue;
         }
-        // A piece set alone, with the features of the run the ligature is in: one glyph, with its own
-        // advance.
-        let features = features_at(start);
+        // A piece set alone, with the features of the run the ligature is in, and its manual kerning,
+        // which every cluster takes (the ligature took it once): one glyph, with its own advance.
+        let (features, manual) = settings_at(start);
         let piece = |a: usize, b: usize| {
             let shaped = designcraft_fonts::shape(g.face.get(), &text[a..b], &features, |c| c);
             match shaped.as_slice() {
-                [one] => Some((one.gid, f64::from(one.x_advance) * g.sx)),
+                [one] => Some((one.gid, f64::from(one.x_advance) * g.sx + manual)),
                 _ => None,
             }
         };
