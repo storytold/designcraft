@@ -193,6 +193,7 @@ pub(crate) fn fit_stream_page_dynamic(
             }
             notes.band_previous = previous.map(|(baseline, _)| baseline);
             notes.band_column = opts.note_bands.then_some((fi.saturating_add(1), ci));
+            notes.band_last = None;
             let placed_start = notes.placed.len();
             notes.band_span = opts.note_bands.then_some(area.height());
             notes.band_continued = opts.note_bands && notes.band_previous.is_some() && notes.carry.is_some();
