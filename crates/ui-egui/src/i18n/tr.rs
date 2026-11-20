@@ -20,11 +20,11 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Open...","Aç..."),
     ("Close","Kapat"),
     ("Dismiss","Yoksay"),
-    ("Save","Kaydet")
-    ("Save As","Farklı Kaydet")
-    ("Save a Copy","Kopyasını Kaydet")
-    ("Revert","Geri Dön")
-    ("Place...","Yerleştir")
+    ("Save","Kaydet"),
+    ("Save As","Farklı Kaydet"),
+    ("Save a Copy","Kopyasını Kaydet"),
+    ("Revert","Geri Dön"),
+    ("Place...","Yerleştir"),
     ("Place Contact Sheet...", "Katalog Sayfa Yerleştir…"),
     ("Place Contact Sheet", "Katalog Sayfa Yerleştir"),
     ("Place loaded images on new pages, in file order.", "Yüklenen görselleri, dosya sırasına göre yeni sayfalara yerleştirin"),
