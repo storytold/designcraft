@@ -7,6 +7,9 @@ use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// File names wanted, lower case (Relink to Folder: the missing graphics' names), so the host
+    /// reads only those from a chosen folder. Empty: any.
+    pub wanted: Vec<String>,
 }
 
 pub struct ImportedFile {
