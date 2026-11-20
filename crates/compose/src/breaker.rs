@@ -377,7 +377,17 @@ fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
             u
         }
     };
-    units * g.sx
+    units * g.sx + pre_break_extra(g)
+}
+
+/// What a line that ends on `g` is wider by than the glyph's advance says, when `g` is the first of a
+/// ligature broken inside ([`crate::shape::LigPair`]): its advance is the rest of the ligature's after
+/// the second piece, its own is the first piece's.
+fn pre_break_extra(g: &Glyph) -> f64 {
+    match &g.lig {
+        Some(part) if !part.second => part.pair.first.adv - g.adv,
+        _ => 0.0,
+    }
 }
 
 /// Push a break inside a word. Ragged text gets the line-end stretch around it

@@ -6157,7 +6157,10 @@ fn pair_ligatures_at_hyphens(
             }
         };
         let (Some((gid1, adv1)), Some((gid2, adv2))) = (piece(start, cut), piece(cut, end)) else { continue };
-        let rest = g.adv - adv1;
+        // While the breaker chooses, the second glyph has the advance it will have if a line starts with
+        // it, and the first the rest of the ligature's, so a line that keeps the ligature measures as it
+        // will; the hyphen after the first glyph makes up what it lacks (`breaker::hyphen_width`).
+        let rest = g.adv - adv2;
         let (Some(ch1), Some(ch2)) = (text[start..].chars().next(), text[cut..].chars().next()) else { continue };
         if rest.is_nan() || rest <= 0.0 {
             continue;
@@ -6173,8 +6176,7 @@ fn pair_ligatures_at_hyphens(
         b.lig = Some(shape::LigPart { pair, second: true });
         a.settle(true);
         b.settle(true);
-        // While the breaker chooses, the two advances make up the ligature's.
-        b.adv = rest;
+        a.adv = rest;
         glyphs.splice(k..=k, [a, b]);
     }
 }

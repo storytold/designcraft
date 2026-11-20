@@ -1661,6 +1661,29 @@ fn a_kept_ligature_at_the_end_of_a_word_gets_no_gap_after_it_in_single_word_just
 }
 
 #[test]
+fn a_split_ligature_measures_as_it_will_on_both_sides_of_a_break_while_the_breaker_chooses() {
+    let glyphs = shape_for_script_test("different");
+    let k = glyphs.iter().position(|g| g.len == 2).expect("the bundled serif sets ff as one glyph");
+    let whole = glyphs[k].adv;
+    let mut paired = glyphs.clone();
+    pair_ligatures_at_hyphens(&mut paired, &[(k, 3)], "different", &|_| (Vec::new(), 0.0));
+    let (a, b) = (&paired[k], &paired[k + 1]);
+    let pair = &a.lig.as_ref().expect("paired").pair;
+    // A line that keeps the ligature measures as it will.
+    assert!((a.adv + b.adv - whole).abs() < 1e-9, "the two glyphs make up the ligature's advance");
+    // A line that starts with the second piece measures with the advance that piece will have.
+    assert!((b.adv - pair.second.adv).abs() < 1e-9, "the second piece's own advance");
+    // A line that ends on the first piece: the word up to it, and the hyphen, as wide as they will be.
+    let mut hyphen_after = vec![false; paired.len()];
+    hyphen_after[k] = true;
+    let justified = breaker::Spacing { justify: true, ..Default::default() };
+    let width = breaker::first_word_width(&paired, &hyphen_after, &justified);
+    let hyphen = a.face.advance(designcraft_fonts::first_glyph(&a.face, &['-', '\u{2010}'])) * a.sx;
+    let expected = paired[..k].iter().map(|g| g.adv).sum::<f64>() + pair.first.adv + hyphen;
+    assert!((width - expected).abs() < 1e-9, "the word up to the first piece and the hyphen: {width} against {expected}");
+}
+
+#[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");
     for limit in [1u32, 2] {
