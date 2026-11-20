@@ -20,6 +20,7 @@ mod frames;
 mod guides;
 mod ime;
 mod input;
+pub(crate) mod link_badges;
 mod page_decor;
 mod place_cursor;
 mod render;
@@ -300,6 +301,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             draw_guide_drag(app, &painter, &xf, &g, p, rect, &t);
         }
         draw_frames(app, &painter, &xf, &doc, &layout);
+        link_badges::draw(app, &painter, &xf, screen, &t);
         if app.ui.hidden_characters {
             draw_hidden_characters(app, &painter, &xf, &doc, &layout);
         }
@@ -340,8 +342,15 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);
     }
-    // Cursor.
-    if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p) && !elsewhere) {
+    // Cursor. Over a link badge: a pointing hand and what a click does.
+    let badge = resp
+        .hover_pos()
+        .filter(|p| screen.contains(*p) && !elsewhere && !ui.input(|i| i.pointer.any_down()) && !context_menu_open(ui.ctx()))
+        .and_then(|p| link_badges::badge_at(app, &xf, screen, p));
+    if let Some(b) = badge {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        resp.clone().on_hover_text_at_pointer(crate::i18n::tr(&app.ui.language, link_badges::tip(b.state)));
+    } else if let Some(p) = resp.hover_pos().filter(|p| screen.contains(*p) && !elsewhere) {
         let c = pointer_cursor(app, ui, &xf, p);
         let icon = crate::cursors::show(ui.ctx(), &mut app.cursors, c, p);
         ui.ctx().set_cursor_icon(icon);

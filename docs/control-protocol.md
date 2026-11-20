@@ -35,7 +35,7 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | Run any engine or UI command (see `engine.commands`). `ui.menu.invoke` without `params` acts like choosing the menu item: a command labelled "…" that takes parameters opens its dialog. A key the command's params description doesn't name is an error (`unknown parameter …`), not ignored |
 | `engine.commands` | — | Every command: id, label, menu path, shortcut, params doc, enabled |
 | `document.inspect` | — | Pages, spreads, items, stories (overset), styles, swatches, selection |
-| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, panel layout (`docking`), perf, Separations Preview (`separations`: plate, ink limit, each separated spread's plates) |
+| `ui.inspect` | — | Tool, UI state, view (zoom/origin), canvas rect, panel layout (`docking`), perf, Separations Preview (`separations`: plate, ink limit, each separated spread's plates), the canvas's link badges (`linkBadges`: `{asset, status: modified\|missing, rect: [x, y, w, h]}` in window points) |
 | `ui.docking` | — | The panel layout in use, the focused panel and the docking hit rects (see Shared panel docking) |
 | `ui.menu.list` / `ui.tool.list` | — | Menu tree / Tools panel groups |
 | `ui.tool.select` | `{tool}` | Select a tool (`selection`, `type`, `rectangleFrame`, …) |

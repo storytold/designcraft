@@ -202,6 +202,9 @@ pub(super) fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item],
                     if sub == OPEN_RECENT {
                         recent_menu_items(app, ui);
                     }
+                    if sub == crate::edit_original::EDIT_WITH_MENU {
+                        crate::edit_original::edit_with_menu_items(app, ui, &Value::Null);
+                    }
                     hidden += menu_items(app, ui, children, &sub);
                 });
             }

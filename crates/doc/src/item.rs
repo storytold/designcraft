@@ -21,8 +21,8 @@ pub use effects::{
     OuterGlow, Satin,
 };
 pub use graphic::{
-    ButtonAction, ClippingKind, ClippingPath, ExportOptions, FieldKind, Fitting, FormField, GRAPHIC_LAYER_RENDERING_WARNING, Graphic,
-    GraphicLayerOptions, LiveCaption, MAX_CLIP_ANCHORS, MediaOptions, ObjectLiquid, media_kind, media_mime,
+    ButtonAction, ClippingKind, ClippingPath, ExportOptions, FieldKind, Fitting, FormField, GRAPHIC_EXTENSIONS, GRAPHIC_LAYER_RENDERING_WARNING,
+    Graphic, GraphicLayerOptions, LiveCaption, MAX_CLIP_ANCHORS, MediaOptions, ObjectLiquid, media_kind, media_mime, placeable_graphic_name,
 };
 pub use paint::{
     Arrowhead, Cap, Fill, Join, MAX_DASH, MAX_DASH_ENTRIES, MAX_DASH_PERIODS, MIN_DASH, Stroke, StrokeAlign, StrokeStyleDef, StrokeType,

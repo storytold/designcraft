@@ -48,7 +48,7 @@ pub(super) const CONTEXT_OBJECT: &[&str] = &[
 ];
 
 /// Added to the object menu when a graphic frame is selected.
-pub(super) const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting"];
+pub(super) const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting", "-", "ui:links.editOriginal", "menu:Edit/Edit With", "ui:links.reveal"];
 
 pub(super) const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
 
