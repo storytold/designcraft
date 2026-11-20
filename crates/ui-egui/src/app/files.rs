@@ -12,7 +12,7 @@ impl DesignApp {
     #[track_caller]
     pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
         if let Some(open) = self.services.open_async.as_mut() {
-            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) };
+            let request = ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid), ..Default::default() };
             open(request);
             return Ok(Value::Null);
         }
@@ -110,7 +110,7 @@ impl DesignApp {
         designcraft_engine::cmd::has_doc(&self.session)?;
         if let Some(open) = self.services.open_async.as_mut() {
             let purpose = if kind.is_empty() { "styles".to_string() } else { format!("styles:{kind}") };
-            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid) });
+            open(ImportRequest { purpose, target: self.session.active().map(|d| d.uid), ..Default::default() });
             return Ok(Value::Null);
         }
         let kind = kind.to_string();
@@ -126,17 +126,95 @@ impl DesignApp {
     }
 
     pub fn import_request(&self, purpose: &str) -> ImportRequest {
-        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid) }
+        ImportRequest { purpose: purpose.into(), target: self.session.active().map(|d| d.uid), ..Default::default() }
+    }
+
+    /// Ask the host for a folder for `purpose` (`package`, `documentFonts`; see
+    /// [`crate::Services::pick_folder`]): its files arrive later through the inbox, all with the
+    /// purpose `folder:<purpose>` and the request's own batch. A host delivers a dropped folder
+    /// the same way, as `folder:drop` with a batch of its own ([`crate::next_import_batch`]).
+    pub(crate) fn pick_folder(&mut self, purpose: &str) -> Result<Value, String> {
+        let request = ImportRequest { batch: crate::next_import_batch(), ..self.import_request(&format!("folder:{purpose}")) };
+        let pick = self.services.pick_folder.as_mut().ok_or("no folder picker here: the desktop app reads the folder beside the file")?;
+        pick(request);
+        Ok(Value::Null)
+    }
+
+    /// Take the folders handed over out of `inbox` and import each (see [`Self::import_folder`]):
+    /// a folder's files arrive with a `folder:` purpose and its batch, named by their paths in it.
+    /// Two folders handed over at once stay two.
+    fn import_folders(&mut self, inbox: &crate::Inbox) {
+        let folders: Vec<ImportedFile> = {
+            let mut files = inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (folders, rest) = std::mem::take(&mut *files).into_iter().partition(|f| f.request.purpose.starts_with("folder:"));
+            *files = rest;
+            folders
+        };
+        let mut folders = folders;
+        while let Some((purpose, batch)) = folders.first().map(|f| (f.request.purpose.clone(), f.request.batch)) {
+            let (folder, rest): (Vec<ImportedFile>, Vec<ImportedFile>) =
+                folders.into_iter().partition(|f| f.request.purpose == purpose && f.request.batch == batch);
+            folders = rest;
+            let Some(first) = folder.first() else { continue };
+            let request = ImportRequest { purpose: purpose.trim_start_matches("folder:").to_string(), ..first.request.clone() };
+            if self.ui.dialog.as_ref().is_some_and(|d| d.id != "findFont") {
+                self.status(crate::i18n::tr(&self.ui.language, "Folder cancelled while a dialog is open; choose it again"));
+                continue;
+            }
+            if let Err(e) = self.import_folder(&request, folder) {
+                self.status(e);
+            }
+        }
+    }
+
+    /// A folder handed over (picked or dropped), each file named by its path in it: `package`
+    /// opens its document with the `Document Fonts` beside it; `documentFonts` gives its fonts to
+    /// the document that asked; `drop` does the first when the folder holds a document, else the
+    /// second for the active document.
+    fn import_folder(&mut self, request: &ImportRequest, files: Vec<ImportedFile>) -> Result<Value, String> {
+        let list: Vec<Value> = files.iter().map(|f| json!({"path": f.name, "base64": designcraft_engine::cmd::base64_encode(&f.bytes)})).collect();
+        let has_document =
+            files.iter().any(|f| opens_as_document(&f.name) && !f.name.rsplit(['/', '\\']).next().is_some_and(|n| n.starts_with("._")));
+        let folder = files.first().and_then(|f| f.name.split(['/', '\\']).next()).unwrap_or_default().to_string();
+        if request.purpose == "package" || (request.purpose == "drop" && has_document) {
+            return self.open_named_file("file.openPackage", json!({"files": list}), folder);
+        }
+        // The document that asked, which needn't be the active one any more; a dropped folder of
+        // fonts is for the active one.
+        let index = if request.purpose == "documentFonts" {
+            self.import_target_index(request)?
+        } else {
+            self.session.active_index().ok_or_else(|| crate::i18n::tr(&self.ui.language, "The folder holds no document to open").to_string())?
+        };
+        let r = self.run("font.loadDocumentFonts", json!({"files": list, "index": index}))?;
+        let faces = r.get("documentFonts").and_then(Value::as_u64).unwrap_or(0);
+        let title = self.session.documents().get(index).map(|d| d.title()).unwrap_or_default();
+        self.status(
+            crate::i18n::tr(&self.ui.language, "{count} document fonts loaded for “{title}”")
+                .replace("{count}", &faces.to_string())
+                .replace("{title}", &title),
+        );
+        // Find Font, if open, lists the fonts again: the missing ones may be found now.
+        if let Some(d) = self.ui.dialog.as_mut().filter(|d| d.id == "findFont") {
+            d.fields.remove("_fonts");
+        }
+        Ok(r)
     }
 
     pub(crate) fn activate_import_target(&mut self, request: &ImportRequest) -> Result<(), String> {
+        let index = self.import_target_index(request)?;
+        self.run("file.activate", json!({"index": index}))?;
+        Ok(())
+    }
+
+    /// The index of the document `request` was made for; a message when it has closed.
+    pub(crate) fn import_target_index(&mut self, request: &ImportRequest) -> Result<usize, String> {
         let Some(index) = request.target.and_then(|uid| self.session.documents().iter().position(|d| d.uid == uid)) else {
             let message = "Import cancelled: the originating document has closed";
             self.status(crate::i18n::tr(&self.ui.language, message));
             return Err(message.into());
         };
-        self.run("file.activate", json!({"index": index}))?;
-        Ok(())
+        Ok(index)
     }
 
     pub(crate) fn cancel_pdf_import(&mut self) {
@@ -182,6 +260,7 @@ impl DesignApp {
             }
         }
         let Some(inbox) = self.services.inbox.clone() else { return };
+        self.import_folders(&inbox);
         let files = std::mem::take(&mut *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         // A browser delivers one Place's files together. Several go to the place cursor, even a
         // PDF first with a frame selected, as a native batch's do.
@@ -271,11 +350,13 @@ impl DesignApp {
             }
             return self.run("style.load", params);
         }
+        // A zipped package (a document with its Document Fonts) opens like the document.
         let layout = opens_as_document(&file.name)
             || matches!(
                 format,
                 Some(craft_file_formats::Format::DesignCraft | craft_file_formats::Format::DesignCraftJson | craft_file_formats::Format::Idml)
-            );
+            )
+            || designcraft_engine::cmd::is_zipped_package(&file.bytes);
         let place = file.request.purpose == "place"
             || (matches!(file.request.purpose.as_str(), "drop" | "open") && !layout && format != Some(craft_file_formats::Format::Ase));
         if place || format == Some(craft_file_formats::Format::Ase) || file.request.purpose == "swatches" {
@@ -1598,5 +1679,166 @@ mod load_styles_tests {
         assert_eq!(app.session.active_index(), Some(0));
         assert_eq!(names(&app), (vec![], vec!["Lead".to_string()]));
         assert!(app.session.documents()[1].doc.styles.char_style("Lead").is_none());
+    }
+}
+
+/// Package folders handed over in a browser (`Services::pick_folder`, a dropped folder), which
+/// can't look beside a file: the package's document opens with its Document Fonts, and a folder
+/// gives its fonts to a document already open.
+#[cfg(test)]
+mod folder_tests {
+    use std::sync::{Arc, Mutex};
+
+    use designcraft_fonts::testing::font_with;
+    use serde_json::json;
+
+    use super::{DesignApp, ImportRequest, ImportedFile};
+    use crate::{Inbox, Services};
+
+    /// A `.designcraft` file whose text ("Hello") is set in `family`.
+    fn document_bytes(family: &str) -> Vec<u8> {
+        let mut s = designcraft_engine::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Hello"})).unwrap();
+        s.execute("text.select", &json!({"story": r["story"], "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
+        designcraft_engine::cmd::to_bytes(&s.doc().unwrap().doc).unwrap()
+    }
+
+    fn font(family: &str) -> Vec<u8> {
+        font_with(family, &['H', 'e', 'l', 'o']).unwrap()
+    }
+
+    /// An app whose folder picker hands over `folder` ((path, bytes)) each time it is asked.
+    fn app_with_folder(folder: Vec<(String, Vec<u8>)>) -> (DesignApp, Arc<Mutex<Vec<String>>>) {
+        let inbox: Inbox = Arc::default();
+        let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (sink, seen) = (inbox.clone(), asked.clone());
+        let services = Services {
+            inbox: Some(inbox),
+            pick_folder: Some(Box::new(move |request: ImportRequest| {
+                seen.lock().unwrap().push(request.purpose.clone());
+                sink.lock().unwrap().extend(folder.iter().map(|(name, bytes)| ImportedFile {
+                    request: request.clone(),
+                    name: name.clone(),
+                    bytes: bytes.clone(),
+                }));
+            })),
+            ..Default::default()
+        };
+        (DesignApp::new(designcraft_engine::Session::new(), services), asked)
+    }
+
+    fn missing(app: &mut DesignApp, family: &str) -> bool {
+        let l = app.session.execute("font.list", &json!({})).unwrap();
+        l.as_array().unwrap().iter().find(|f| f["family"] == family).unwrap_or_else(|| panic!("{family} in {l}"))["missing"] == true
+    }
+
+    /// File › Open Package Folder… (a browser only) opens the package's document with its fonts.
+    #[test]
+    fn a_package_folder_opens_with_its_fonts() {
+        const FAMILY: &str = "UI Package Folder Family";
+        let desktop = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+        assert!(!crate::menus::shown(&desktop, "app.openPackageFolder"), "the desktop looks beside the file itself");
+        let (mut app, asked) =
+            app_with_folder(vec![("Issue/Issue.designcraft".into(), document_bytes(FAMILY)), ("Issue/Document Fonts/f.ttf".into(), font(FAMILY))]);
+        assert!(crate::menus::shown(&app, "app.openPackageFolder"));
+        app.run("app.openPackageFolder", json!({})).unwrap();
+        assert_eq!(*asked.lock().unwrap(), ["folder:package"]);
+        app.drain_inbox();
+        assert_eq!(app.session.documents().len(), 1, "{:?}", app.ui.dialog.as_ref().map(|d| &d.fields));
+        assert!(!missing(&mut app, FAMILY));
+    }
+
+    /// Find Font's Choose the Document's Folder… gives a document opened by itself the fonts of
+    /// its folder, and lists the fonts again.
+    #[test]
+    fn find_font_loads_the_document_folder_fonts() {
+        const FAMILY: &str = "UI Package Later Family";
+        let (mut app, asked) =
+            app_with_folder(vec![("Issue/Document Fonts/f.ttf".into(), font(FAMILY)), ("Issue/Links/a.png".into(), b"png".to_vec())]);
+        let b64 = designcraft_engine::cmd::base64_encode(&document_bytes(FAMILY));
+        app.run("file.openBytes", json!({"name": "Issue.designcraft", "base64": b64})).unwrap();
+        assert!(missing(&mut app, FAMILY));
+        app.ui.dialog = Some(crate::dialogs::Dialog::new("findFont", json!({"onOpen": true, "_fonts": []})));
+        app.pick_folder("documentFonts").unwrap();
+        assert_eq!(*asked.lock().unwrap(), ["folder:documentFonts"]);
+        app.drain_inbox();
+        assert!(!missing(&mut app, FAMILY), "{}", app.ui.status);
+        assert!(app.ui.status.contains("1 document fonts loaded"), "{}", app.ui.status);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert!(d.id == "findFont" && !d.fields.contains_key("_fonts"), "Find Font stays open and lists the fonts again");
+        assert!(!app.session.active().unwrap().is_dirty());
+    }
+
+    /// A dropped folder: a package opens; a folder of fonts goes to the open document; with no
+    /// document open, nothing happens but a message. A zipped package dropped opens too.
+    #[test]
+    fn dropped_folders_and_zips() {
+        const FAMILY: &str = "UI Package Drop Family";
+        let (mut app, _) = app_with_folder(Vec::new());
+        let inbox = app.services.inbox.clone().unwrap();
+        let drop = |inbox: &Inbox, files: Vec<(&str, Vec<u8>)>| {
+            inbox.lock().unwrap().extend(files.into_iter().map(|(name, bytes)| ImportedFile {
+                request: ImportRequest { purpose: "folder:drop".into(), ..Default::default() },
+                name: name.into(),
+                bytes,
+            }));
+        };
+        drop(&inbox, vec![("Document Fonts/f.ttf", font(FAMILY))]);
+        app.drain_inbox();
+        assert!(app.session.documents().is_empty());
+        assert!(app.ui.status.contains("no document"), "{}", app.ui.status);
+
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, data) in [("Issue/Issue.designcraft", document_bytes(FAMILY)), ("Issue/Document Fonts/f.ttf", font(FAMILY))] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, &data).unwrap();
+        }
+        let zipped = zip.finish().unwrap().into_inner();
+        inbox.lock().unwrap().push(ImportedFile {
+            request: ImportRequest { purpose: "drop".into(), ..Default::default() },
+            name: "Issue.zip".into(),
+            bytes: zipped,
+        });
+        app.drain_inbox();
+        assert_eq!(app.session.documents().len(), 1, "the zipped package opens");
+        assert!(!missing(&mut app, FAMILY));
+
+        drop(&inbox, vec![("Issue/Issue.designcraft", document_bytes(FAMILY)), ("Issue/Document Fonts/f.ttf", font(FAMILY))]);
+        app.drain_inbox();
+        assert_eq!(app.session.documents().len(), 2, "the dropped package folder opens");
+        assert!(!missing(&mut app, FAMILY));
+    }
+
+    /// Two folders handed over before the inbox is read stay two folders: each package opens.
+    #[test]
+    fn two_folders_handed_over_at_once_stay_two() {
+        const FAMILY: &str = "UI Package Twice Family";
+        let (mut app, _) =
+            app_with_folder(vec![("Issue/Issue.designcraft".into(), document_bytes(FAMILY)), ("Issue/Document Fonts/f.ttf".into(), font(FAMILY))]);
+        app.run("app.openPackageFolder", json!({})).unwrap();
+        app.run("app.openPackageFolder", json!({})).unwrap();
+        app.drain_inbox();
+        assert_eq!(app.session.documents().len(), 2, "{}", app.ui.status);
+    }
+
+    /// Fonts from Find Font's folder go to the document that asked, and the document active when
+    /// they arrive stays active.
+    #[test]
+    fn find_font_folder_fonts_go_to_the_document_that_asked() {
+        const FAMILY: &str = "UI Package Asked Family";
+        let (mut app, _) = app_with_folder(vec![("Issue/Document Fonts/f.ttf".into(), font(FAMILY))]);
+        let b64 = designcraft_engine::cmd::base64_encode(&document_bytes(FAMILY));
+        app.run("file.openBytes", json!({"name": "A.designcraft", "base64": b64})).unwrap();
+        app.pick_folder("documentFonts").unwrap();
+        // Another document is opened while the folder is still being read.
+        app.run("file.openBytes", json!({"name": "B.designcraft", "base64": b64})).unwrap();
+        app.drain_inbox();
+        assert_eq!(app.session.active_index(), Some(1), "B stays active");
+        assert!(missing(&mut app, FAMILY), "B has no fonts");
+        assert!(app.ui.status.contains("“A”"), "{}", app.ui.status);
+        app.run("file.activate", json!({"index": 0})).unwrap();
+        assert!(!missing(&mut app, FAMILY), "A has them");
     }
 }

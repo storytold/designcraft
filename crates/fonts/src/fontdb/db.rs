@@ -17,8 +17,8 @@ use super::{Arc, AtomicU32, BezPath, FontDb, HashMap, Mutex, PoisonError, RwLock
 
 pub(super) static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
-/// Scopes are never reused: a closed document's scope finds no fonts ever after.
-#[cfg(not(target_arch = "wasm32"))]
+/// Scopes are never reused: a closed document's scope finds no fonts ever after. The web build
+/// numbers them too: its documents' fonts come as file contents (`load_document_font_files`).
 pub(super) static NEXT_SCOPE: AtomicU32 = AtomicU32::new(1);
 
 const OUTLINE_CACHE_MAX: usize = 50_000;

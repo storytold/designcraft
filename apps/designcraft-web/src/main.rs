@@ -14,6 +14,11 @@
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
 //! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values
 //! are ignored and repeated keys have the same presence semantics (`?sample=false` enables it).
+//!
+//! Document fonts: a browser can't look beside a file it opens, so a package's `Document Fonts`
+//! come with the package: File › Open Package Folder… or a dropped folder
+//! (`Services::pick_folder`, delivered as `folder:…` files), a zipped package through Open…, or
+//! Find Font's Choose the Document's Folder… for a document opened by itself.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(any(target_arch = "wasm32", test))]

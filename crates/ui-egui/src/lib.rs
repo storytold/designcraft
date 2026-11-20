@@ -81,7 +81,10 @@ pub use services::{
     WriteFn,
 };
 pub(crate) use state::second_window_viewport;
-pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
+pub use state::{
+    CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View,
+    next_import_batch,
+};
 
 /// The bounded admission policy for `ui.screenshot` captures.
 pub(crate) const SCREENSHOT_MAX_REQUESTS: usize = 4;

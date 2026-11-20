@@ -19,7 +19,7 @@ impl FontSource {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             FontSource::Installed(p) | FontSource::Document(p) => Some(p),
-            FontSource::Bundled | FontSource::Memory => None,
+            FontSource::Bundled | FontSource::Memory | FontSource::DocumentContents(_) => None,
         }
     }
 }
@@ -118,6 +118,7 @@ pub struct FontDb {
 use crate::mac_fonts::available_font_files as platform_font_files;
 
 mod db;
+mod document;
 mod face;
 mod fallback;
 mod names;
@@ -125,6 +126,7 @@ mod outline;
 mod scoped;
 mod system;
 
+pub use document::is_document_font_name;
 #[cfg(test)]
 pub(crate) use face::last_resort_face;
 pub use face::{

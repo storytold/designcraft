@@ -7,6 +7,22 @@ pub(crate) fn has_query_flag(query: &str, flag: &str) -> bool {
     form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == flag)
 }
 
+/// The extensions a package's document may have.
+pub(crate) const PACKAGE_DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
+
+/// Whether `path` names a package's document (not a `._` resource fork).
+fn is_package_document_path(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    !name.starts_with("._") && name.rsplit_once('.').is_some_and(|(_, ext)| PACKAGE_DOC_EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+}
+
+/// Whether the files read from a dropped folder (`paths`) go to the app. A folder without a
+/// document gives its fonts to the open document, so a drop cut short by the folder limits
+/// (`partial`), which may have left its document unread, goes only when it holds one.
+pub(crate) fn deliver_dropped_folder<'a>(mut paths: impl Iterator<Item = &'a str>, partial: bool) -> bool {
+    !partial || paths.any(is_package_document_path)
+}
+
 pub(crate) fn mime_for(name: &str) -> &'static str {
     match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
         Some("png") => "image/png",
@@ -20,7 +36,16 @@ pub(crate) fn mime_for(name: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_query_flag, mime_for};
+    use super::{deliver_dropped_folder, has_query_flag, mime_for};
+
+    #[test]
+    fn a_dropped_folder_cut_short_goes_only_with_its_document() {
+        let fonts = ["Issue/Document Fonts/a.ttf", "Issue/Document Fonts/b.otf"];
+        assert!(deliver_dropped_folder(fonts.into_iter(), false), "a whole folder of fonts goes");
+        assert!(!deliver_dropped_folder(fonts.into_iter(), true), "a cut-short one may have left its document");
+        assert!(!deliver_dropped_folder(["Issue/._Issue.idml", "Issue/Document Fonts/a.ttf"].into_iter(), true), "a resource fork isn't a document");
+        assert!(deliver_dropped_folder(["Issue/Issue.IDML", "Issue/Document Fonts/a.ttf"].into_iter(), true));
+    }
 
     #[test]
     fn startup_flags_match_complete_decoded_keys() {

@@ -8,6 +8,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Open Recent",
             "cmd:file.clearRecent",
             "<",
+            "ui:app.openPackageFolder",
             "-",
             "cmd:file.close",
             "ui:app.save",
