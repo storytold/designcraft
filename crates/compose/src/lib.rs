@@ -850,7 +850,8 @@ pub fn exclusion(doc: &Document, other: &Item, xf: Affine, inv: Affine, left_pag
     let group = other.shape == designcraft_doc::Shape::Group;
     let b =
         if group { (xf * other.xf.inverse()).transform_rect_bbox(other.bounds()) } else { other.path.transformed(xf).bounds().unwrap_or(Rect::ZERO) };
-    // The offsets are measured from the outer edge of the stroke (a group has none of its own).
+    // The offsets are measured from the outer edge of the stroke (a group has none of its own). The
+    // stroke reaches `outset` in the object's own units and is drawn through `xf`.
     let outset = if group { 0.0 } else { other.stroke_outset() };
     let e = wrap_exclusion(&other.wrap, b, outset, || (!group).then(|| contour_path(doc, other, &other.wrap)), xf, inv, left_page);
     nothing_visible_wraps_nothing(doc, other, &other.wrap, e)
@@ -884,8 +885,8 @@ fn nothing_visible_wraps_nothing(doc: &Document, it: &Item, wrap: &designcraft_d
 }
 
 /// The exclusion of `wrap` around an object with spread-space bounds `b` and a stroke reaching
-/// `outset` outside them; `outline` gives its contour in the inner space `xf` maps to the spread
-/// (None: around the bounds).
+/// `outset` (in the object's own units, so drawn `xf` times as far) outside them; `outline` gives
+/// its contour in the inner space `xf` maps to the spread (None: around the bounds).
 fn wrap_exclusion(
     wrap: &designcraft_doc::TextWrap,
     b: Rect,
@@ -896,7 +897,11 @@ fn wrap_exclusion(
     left_page: bool,
 ) -> Exclusion {
     let o = wrap.offsets;
-    let r = Rect::new(b.x0 - o[1] - outset, b.y0 - o[0] - outset, b.x1 + o[3] + outset, b.y1 + o[2] + outset);
+    // How far the stroke reaches on the spread along x and along y: the extent of the transformed
+    // disk the stroke's round reach sweeps.
+    let [xa, xb, xc, xd, ..] = xf.as_coeffs();
+    let (reach_x, reach_y) = (outset * xa.hypot(xc), outset * xb.hypot(xd));
+    let r = Rect::new(b.x0 - o[1] - reach_x, b.y0 - o[0] - reach_y, b.x1 + o[3] + reach_x, b.y1 + o[2] + reach_y);
     let side = match wrap.side {
         WrapSide::TowardsSpine if left_page => WrapSide::RightSide,
         WrapSide::TowardsSpine => WrapSide::LeftSide,
@@ -911,7 +916,10 @@ fn wrap_exclusion(
         return Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None };
     }
     let contour = if wrap.mode == WrapMode::Contour { outline() } else { None }.and_then(|src| {
-        let mut c = Contour::of(&src.path, inv * xf, o[0] + outset)?;
+        // The contour is in the frame's inner space: the stroke's reach there is its own reach
+        // scaled by the transform from the stroked object's space to the frame's.
+        let to_frame = inv * xf;
+        let mut c = Contour::of(&src.path, to_frame, o[0] + outset * to_frame.determinant().abs().sqrt())?;
         if let Some(frame) = &src.frame {
             c = c.within(frame, inv * xf);
         }

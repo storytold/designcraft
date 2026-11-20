@@ -219,6 +219,50 @@ fn wrap_offsets_are_measured_from_the_outer_edge_of_the_stroke() {
     assert!(near(first_line_x_beside_stroked_wrap(Some((6.0, Inside))), 126.0));
 }
 
+/// Where the first line starts beside a wrap object (rectangle `path`, drawn through `xf`, with a
+/// 4 pt centred stroke and no offsets) in a text frame drawn through `frame_xf`, in the frame's own
+/// units.
+fn first_line_x_beside_transformed_wrap(path: Rect, xf: designcraft_geom::Affine, frame_xf: designcraft_geom::Affine, mode: WrapMode) -> f64 {
+    let (mut d, sid, fid) = doc_with(&[LOREM; 2].join(" "), Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().xf = frame_xf;
+    let lid = d.default_layer();
+    let mut it = designcraft_doc::Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(path));
+    it.xf = xf;
+    it.wrap.mode = mode;
+    it.wrap.offsets = [0.0; 4];
+    it.stroke = designcraft_doc::Stroke { swatch: "Black".into(), weight: 4.0, align: designcraft_doc::StrokeAlign::Center, ..Default::default() };
+    d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+    compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].x0
+}
+
+#[test]
+fn a_stroke_drawn_through_a_scaled_transform_reaches_as_far_as_it_is_drawn() {
+    use designcraft_geom::Affine;
+    let at = |path, xf| first_line_x_beside_transformed_wrap(path, xf, Affine::IDENTITY, WrapMode::BoundingBox);
+    // As in InDesign 2026: a rectangle whose own transform scales it by 2 strokes a 4 pt weight
+    // 8 pt wide (the PDF says `8 w`) and the text starts at the edge of that stroke.
+    assert!(near(at(Rect::new(0.0, 0.0, 120.0, 60.0), Affine::IDENTITY), 122.0));
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 30.0), Affine::scale(2.0)), 124.0));
+    assert!(near(at(Rect::new(0.0, 0.0, 40.0, 20.0), Affine::scale(3.0)), 126.0));
+    // Scaled along x only: the stroke is as wide again on the sides that face x.
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 60.0), Affine::scale_non_uniform(2.0, 1.0)), 124.0));
+    // Turned a quarter turn about the spread's origin and scaled by 2: the rectangle's right edge is
+    // then at 0 and the stroke reaches 4 beyond it, along x as along y.
+    assert!(near(at(Rect::new(0.0, 0.0, 60.0, 30.0), Affine::scale(2.0) * Affine::rotate(std::f64::consts::FRAC_PI_2)), 4.0));
+}
+
+#[test]
+fn contour_and_bounding_box_wraps_clear_a_stroke_the_same_in_a_scaled_frame() {
+    use designcraft_geom::Affine;
+    // The text frame is drawn at twice its size, so its own units are half the spread's: a 4 pt
+    // centred stroke reaches 2 pt on the spread and 1 in the frame, and both wraps must agree.
+    let rect = Rect::new(0.0, 0.0, 120.0, 60.0);
+    let bbox = first_line_x_beside_transformed_wrap(rect, Affine::IDENTITY, Affine::scale(2.0), WrapMode::BoundingBox);
+    let contour = first_line_x_beside_transformed_wrap(rect, Affine::IDENTITY, Affine::scale(2.0), WrapMode::Contour);
+    assert!(near(bbox, 61.0), "bounding box: {bbox}");
+    assert!(near(contour, bbox), "contour {contour} against bounding box {bbox}");
+}
+
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
 /// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
 /// `wrap`.
