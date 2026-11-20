@@ -702,6 +702,17 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Korean",
     "Arabic",
     "Hebrew",
+    "Hindi",
+    "Marathi",
+    "Bengali",
+    "Assamese",
+    "Gujarati",
+    "Punjabi",
+    "Odia",
+    "Tamil",
+    "Telugu",
+    "Kannada",
+    "Malayalam",
     "Esperanto",
 ];
 

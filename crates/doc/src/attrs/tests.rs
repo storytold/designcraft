@@ -94,6 +94,32 @@ fn language_names_map_to_bcp47_tags() {
     assert_eq!(language_tag(""), None);
 }
 
+/// Indian languages by the names the Language menu and IDML use, so their text gets the font's
+/// localized forms (Marathi ल and श) and hyphenates with its own patterns.
+#[test]
+fn indian_language_names_map_to_their_tags() {
+    for (name, tag) in [
+        ("Hindi", "hi"),
+        ("Marathi", "mr"),
+        ("Bengali", "bn"),
+        ("Bangla", "bn"),
+        ("Assamese", "as"),
+        ("Gujarati", "gu"),
+        ("Punjabi", "pa"),
+        ("Panjabi", "pa"),
+        ("Odia", "or"),
+        ("Oriya", "or"),
+        ("Tamil", "ta"),
+        ("Telugu", "te"),
+        ("Kannada", "kn"),
+        ("Malayalam", "ml"),
+        ("$ID/Malayalam", "ml"),
+    ] {
+        assert_eq!(language_tag(name), Some(tag), "{name}");
+    }
+    assert_eq!(language_tag("hi_IN"), Some("hi-IN"));
+}
+
 #[test]
 fn chinese_japanese_and_korean_names_map_in_their_common_spellings() {
     for (name, tag) in [
