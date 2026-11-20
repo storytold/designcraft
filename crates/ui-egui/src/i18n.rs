@@ -41,7 +41,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
-    ("tr", "Turkish"),
+    ("tr", "Türkçe"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
