@@ -40,6 +40,27 @@ fn svg_depth_is_checked_before_recursive_parsing() {
     }
 }
 
+/// An SVG whose `<use>` elements hold one another `links` deep, with no element nested deeper
+/// than four levels (the root counts as one).
+fn use_chain_svg(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("<g id='g{i}'><use xlink:href='#g{}'/></g>", i + 1)).collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs>{chain}<rect id='g{links}' width='10' height='10'/></defs><use xlink:href='#g0'/></svg>"#
+    )
+}
+
+/// Following references counts toward the depth limit: a short `<use>` chain parses, a chain
+/// past `MAX_SVG_DEPTH` levels is rejected by the tree, size and render APIs.
+#[test]
+fn svg_reference_depth_is_checked_before_recursive_parsing() {
+    let short = use_chain_svg(8);
+    assert!(svg_tree(short.as_bytes()).is_some());
+    let long = use_chain_svg(MAX_SVG_DEPTH);
+    assert!(svg_tree(long.as_bytes()).is_none());
+    assert!(natural_size(long.as_bytes()).is_none());
+    assert!(render_svg(long.as_bytes(), 10).is_none());
+}
+
 /// Markup-looking text in comments, CDATA and attributes does not count as XML depth.
 #[test]
 fn svg_depth_ignores_markup_in_comments_cdata_and_attributes() {
@@ -307,6 +328,53 @@ fn tiny_psd() -> Vec<u8> {
     b.extend(0u16.to_be_bytes()); // raw
     b.extend([255, 0, 0, 255, 0, 0]); // R, G, B planes: a red pixel, then a green one
     b
+}
+
+/// `tiny_psd` with a ResolutionInfo resource of `ppi` horizontally and vertically.
+fn tiny_psd_at(ppi: u32) -> Vec<u8> {
+    tiny_psd_with_resolution(ppi, 16)
+}
+
+/// `tiny_psd` with a ResolutionInfo resource of `ppi`, its data cut to `len` bytes (16 in full).
+fn tiny_psd_with_resolution(ppi: u32, len: usize) -> Vec<u8> {
+    let mut b = tiny_psd();
+    let mut data = Vec::new();
+    for v in [ppi << 16, 0x0001_0002, ppi << 16, 0x0001_0002] {
+        data.extend(v.to_be_bytes());
+    }
+    data.truncate(len);
+    let mut res = Vec::new();
+    res.extend(b"8BIM");
+    res.extend(1005u16.to_be_bytes());
+    res.extend([0, 0]); // empty name, padded
+    res.extend((data.len() as u32).to_be_bytes());
+    res.extend(data);
+    let at = 26 + 4; // header and empty colour mode data; then the image resources length
+    b.splice(at..at + 4, (res.len() as u32).to_be_bytes());
+    b.splice(at + 4..at + 4, res);
+    b
+}
+
+/// A 300 ppi PSD places at its resolution (2 px = 0.48 pt), as in the reference app; without
+/// ResolutionInfo, or with a nonsense or incomplete one, at 72 ppi.
+#[test]
+fn psd_natural_size_follows_its_resolution() {
+    assert_eq!(natural_size(&tiny_psd()), Some((2.0, 1.0)));
+    let b = tiny_psd_at(300);
+    let (w, h) = natural_size(&b).unwrap();
+    assert!((w - 0.48).abs() < 1e-9 && (h - 0.24).abs() < 1e-9, "{w} {h}");
+    assert_eq!(raster_resolution(&b), Some((300.0, 300.0)));
+    assert_eq!(pixel_size(&b), Some((2, 1)));
+    assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
+    assert_eq!(natural_size(&tiny_psd_at(0)), Some((2.0, 1.0)));
+    assert_eq!(natural_size(&tiny_psd_at(20_000)), Some((2.0, 1.0)));
+    // ResolutionInfo is 16 bytes; a shorter one holding both resolutions is still not trusted.
+    assert!(psd::resolution(&tiny_psd_with_resolution(300, 16)).is_some());
+    assert_eq!(natural_size(&tiny_psd_with_resolution(300, 12)), Some((2.0, 1.0)));
+    // A resource length past the end of the file is ignored, not trusted.
+    let mut cut = tiny_psd_at(300);
+    cut.truncate(40);
+    assert!(psd::resolution(&cut).is_none());
 }
 
 #[test]
@@ -786,6 +854,30 @@ fn bmp_density_sets_natural_size() {
 }
 
 #[test]
+fn bmp_density_preserves_unrounded_axes_and_placement_policy() {
+    let mut bmp = bmp_with_ppm(11811);
+    bmp[42..46].copy_from_slice(&23622i32.to_le_bytes());
+    let (x, y) = raster_resolution(&bmp).unwrap();
+    assert!((x - 299.9994).abs() < 1e-9, "{x}");
+    assert!((y - 599.9988).abs() < 1e-9, "{y}");
+    let (w, h) = natural_size(&bmp).unwrap();
+    assert!((w - 144.000288000576).abs() < 1e-9, "{w}");
+    assert!((h - 108.000216000432).abs() < 1e-9, "{h}");
+    for (x, y) in [(1, 11811), (11811, 1), (i32::MAX, 11811), (11811, i32::MAX)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert!(raster_resolution(&bmp).is_some());
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+    for (x, y) in [(0i32, 11811i32), (-1, 11811), (11811, 0), (11811, -1)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert_eq!(raster_resolution(&bmp), None);
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+}
+
+#[test]
 fn tiff_resolution_tags_set_natural_size() {
     use tiff::encoder::colortype::Gray8;
     // A TIFF the encoder writes carries no density: pixels are points.
@@ -1049,9 +1141,9 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
     assert!(!too_large_to_decode(&large));
     assert!(decode_rgba_reduced(&large, 3).is_none());
-    // One component of the same size stays under the limit.
-    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 8_800, 1), 3).unwrap();
-    assert_eq!(gray.dimensions(), (1_280, 1_100));
+    // A 1-component progressive JPEG that stays within the 512 MiB decoder buffer budget succeeds.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 4_400, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
@@ -1103,4 +1195,197 @@ fn planar_and_premultiplied_cmyk_tiffs_keep_their_inks() {
     assert_eq!(&r.cmyk[..4], &[0, 0, 0, 255]);
     let straight = &r.cmyk[4..];
     assert!(straight[0] <= 1 && straight[1] >= 254 && straight[2] >= 254 && straight[3] <= 1, "made straight: {straight:?}");
+}
+
+#[test]
+fn psd_resolution_preserves_axes_display_units_and_section_bounds() {
+    let mut bytes = tiny_psd_at(300);
+    // Resource payload begins after header, two section lengths and the resource framing.
+    let payload = 46;
+    bytes[payload + 8..payload + 12].copy_from_slice(&(150u32 << 16).to_be_bytes());
+    bytes[payload + 4..payload + 6].copy_from_slice(&2u16.to_be_bytes());
+    bytes[payload + 12..payload + 14].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    assert_eq!(natural_size(&bytes), Some((0.48, 0.48)));
+    // The same resource framing is used in PSB; display units do not rescale the values.
+    bytes[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    // Bytes beyond the declared resource section must never complete a short payload.
+    bytes[30..34].copy_from_slice(&24u32.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), None);
+}
+
+#[test]
+fn gif_pixel_size_keeps_logical_screen_while_admission_checks_frame_extent() {
+    let mut gif = Vec::new();
+    gif.extend_from_slice(b"GIF89a");
+    gif.extend_from_slice(&10u16.to_le_bytes());
+    gif.extend_from_slice(&10u16.to_le_bytes());
+    gif.extend_from_slice(&[0x80, 0, 0]);
+    gif.extend_from_slice(&[0, 0, 0, 255, 255, 255]);
+    gif.push(0x2C);
+    gif.extend_from_slice(&15u16.to_le_bytes());
+    gif.extend_from_slice(&0u16.to_le_bytes());
+    gif.extend_from_slice(&5u16.to_le_bytes());
+    gif.extend_from_slice(&5u16.to_le_bytes());
+    gif.push(0);
+    gif.extend_from_slice(&[2, 2, 0x4C, 0x01, 0, 0x3B]);
+
+    assert_eq!(pixel_size(&gif), Some((10, 10)));
+    assert_eq!(craft_image_codecs::probe_allocation_size(&gif).ok(), Some((20, 10)));
+    assert!(!too_large_to_decode(&gif));
+
+    // A frame whose extent exceeds the RGBA decode budget is still rejected by admission
+    // even though the logical screen stays 10x10.
+    let mut oversized = gif;
+    oversized[19 + 5..19 + 7].copy_from_slice(&20_000u16.to_le_bytes());
+    oversized[19 + 7..19 + 9].copy_from_slice(&20_000u16.to_le_bytes());
+    assert_eq!(pixel_size(&oversized), Some((10, 10)));
+    assert!(too_large_to_decode(&oversized));
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005) from 16.16 fixed-point ppi.
+fn irb_app_fixed(x_fixed: u32, y_fixed: u32) -> Vec<u8> {
+    let mut body = b"Photoshop 3.0\08BIM".to_vec();
+    body.extend_from_slice(&1005u16.to_be_bytes());
+    body.extend_from_slice(&[0, 0]);
+    body.extend_from_slice(&16u32.to_be_bytes());
+    body.extend_from_slice(&x_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    body.extend_from_slice(&y_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    let mut seg = vec![0xFF, 0xED];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005).
+fn irb_app(x_ppi: u16, y_ppi: u16) -> Vec<u8> {
+    irb_app_fixed(u32::from(x_ppi) << 16, u32::from(y_ppi) << 16)
+}
+
+/// XMP APP1 segment with `tiff:XResolution`, `tiff:YResolution`, and `tiff:ResolutionUnit`.
+fn xmp_app(x_res: &str, y_res: &str, unit: u8) -> Vec<u8> {
+    let xml = format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/"><tiff:XResolution>{x_res}</tiff:XResolution><tiff:YResolution>{y_res}</tiff:YResolution><tiff:ResolutionUnit>{unit}</tiff:ResolutionUnit></rdf:Description></rdf:RDF></x:xmpmeta>"#
+    );
+    let mut body = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    body.extend_from_slice(xml.as_bytes());
+    let mut seg = vec![0xFF, 0xE1];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Little-endian TIFF with Orientation, XResolution, YResolution, and ResolutionUnit.
+fn tiff_bytes_with_orientation(x: (u32, u32), y: (u32, u32), unit: u16, orientation: u16) -> Vec<u8> {
+    let mut t = vec![b'I', b'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    let n = 4usize;
+    t.extend_from_slice(&(n as u16).to_le_bytes());
+    let data = 8 + 2 + n * 12 + 4;
+    let short_entry = |t: &mut Vec<u8>, tag: u16, val: u16| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&3u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&val.to_le_bytes());
+        t.extend_from_slice(&[0, 0]);
+    };
+    let rational_entry = |t: &mut Vec<u8>, tag: u16, off: u32| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&5u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&off.to_le_bytes());
+    };
+    short_entry(&mut t, 0x0112, orientation);
+    rational_entry(&mut t, 0x011A, data as u32);
+    rational_entry(&mut t, 0x011B, (data + 8) as u32);
+    short_entry(&mut t, 0x0128, unit);
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(t.len(), data);
+    for (num, den) in [x, y] {
+        t.extend_from_slice(&num.to_le_bytes());
+        t.extend_from_slice(&den.to_le_bytes());
+    }
+    t
+}
+
+#[test]
+fn jpeg_density_precedence_and_invalid_fallbacks() {
+    // IRB beats XMP, EXIF, and JFIF.
+    let mut all = jfif_app(1, 72, 72);
+    all.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    all.extend_from_slice(&xmp_app("200/1", "200/1", 2));
+    all.extend_from_slice(&irb_app(300, 150));
+    assert_eq!(raster_resolution(&jpeg_with(&all)), Some((300.0, 150.0)));
+
+    // XMP beats EXIF and JFIF.
+    let mut xmp_wins = jfif_app(1, 72, 72);
+    xmp_wins.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    xmp_wins.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&xmp_wins)), Some((240.0, 120.0)));
+
+    // Zero or sub-1.0 IRB falls back to XMP.
+    for bad_irb in [0u32, 0x0000_8000u32] {
+        let mut segs = jfif_app(1, 96, 96);
+        segs.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+        segs.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+        segs.extend_from_slice(&irb_app_fixed(bad_irb, bad_irb));
+        assert_eq!(raster_resolution(&jpeg_with(&segs)), Some((240.0, 120.0)), "bad IRB {bad_irb:#x}");
+    }
+
+    // Zero XMP falls back to EXIF.
+    let mut bad_xmp = jfif_app(1, 96, 96);
+    bad_xmp.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    bad_xmp.extend_from_slice(&xmp_app("0/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&bad_xmp)), Some((150.0, 150.0)));
+
+    // Zero IRB + XMP + EXIF falls back to JFIF; zero JFIF yields None.
+    let mut fall_to_jfif = jfif_app(1, 96, 96);
+    fall_to_jfif.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (150, 1), Some(2))));
+    fall_to_jfif.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    fall_to_jfif.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&fall_to_jfif)), Some((96.0, 96.0)));
+
+    let mut all_bad = jfif_app(1, 0, 96);
+    all_bad.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (0, 1), Some(2))));
+    all_bad.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    all_bad.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&all_bad)), None);
+}
+
+#[test]
+fn jpeg_exif_orientation_swaps_pixel_size_and_resolution() {
+    let jpg = jpeg_with(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(pixel_size(&jpg), Some((900, 600)));
+    assert_eq!(decode_rgba(&jpg).unwrap().dimensions(), (900, 600));
+    assert_eq!(raster_resolution(&jpg), Some((150.0, 300.0)));
+    assert_eq!(natural_size(&jpg), Some((900.0 * 72.0 / 150.0, 600.0 * 72.0 / 300.0)));
+}
+
+#[test]
+fn png_from_rgba_parity_and_guards() {
+    let rgba = vec![200, 100, 50, 128, 0, 255, 10, 255];
+    let png = png_from_rgba(2, 1, rgba).expect("encodes");
+    let decoded = decode_rgba(&png).expect("decodes");
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, [200, 100, 50, 128]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 10, 255]);
+    assert_eq!(embedded_icc(&png), None);
+    assert_eq!(raster_resolution(&png), None);
+    assert_eq!(natural_size(&png), Some((2.0, 1.0)));
+
+    assert_eq!(png_from_rgba(0, 2, vec![]), None);
+    assert_eq!(png_from_rgba(2, 0, vec![]), None);
+    assert_eq!(png_from_rgba(2, 2, vec![0; 12]), None);
+}
+
+#[test]
+fn tiff_exif_orientation_and_progressive_jpeg_probes() {
+    let tiff = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+    assert_eq!(raster_resolution(&tiff), Some((150.0, 300.0)));
+
+    let prog = progressive_jpeg(16, 8, 3);
+    assert_eq!(pixel_size(&prog), Some((16, 8)));
+    assert!(decode_bytes_per_pixel(&prog) >= 8);
 }
