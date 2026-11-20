@@ -72,11 +72,24 @@ impl Rendered {
         }
         out
     }
-    /// PNG bytes (empty, with the error logged, if the image can't be encoded).
-    pub fn to_png(&self) -> Vec<u8> {
+    fn straight_rgba_padded(&self, label: &str) -> Option<Vec<u8>> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        let Some(len) = (self.width as usize).checked_mul(self.height as usize).and_then(|n| n.checked_mul(4)) else {
+            log::error!("{label}: {}×{} image is too large", self.width, self.height);
+            return None;
+        };
         let mut px = self.to_straight();
         // `pixels` is public: a mismatched buffer is padded or cut to the stated size.
-        px.resize(self.width as usize * self.height as usize * 4, 0);
+        px.resize(len, 0);
+        Some(px)
+    }
+    /// PNG bytes (empty, with the error logged, if the image can't be encoded).
+    pub fn to_png(&self) -> Vec<u8> {
+        let Some(px) = self.straight_rgba_padded("PNG encode") else {
+            return Vec::new();
+        };
         let Ok(img) = craft_image_codecs::Image::from_u8(self.width, self.height, craft_image_codecs::ChannelLayout::Rgba, px) else {
             log::error!("PNG encode: {}×{} image is too large", self.width, self.height);
             return Vec::new();
@@ -90,7 +103,9 @@ impl Rendered {
         }
     }
     pub fn to_jpeg(&self, quality: u8) -> Vec<u8> {
-        let rgba = self.to_straight();
+        let Some(rgba) = self.straight_rgba_padded("JPEG encode") else {
+            return Vec::new();
+        };
         let rgb: Vec<u8> = rgba
             .as_chunks::<4>()
             .0

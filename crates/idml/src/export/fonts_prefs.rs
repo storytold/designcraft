@@ -1,6 +1,6 @@
-use super::common::{bool_s, pkg_root};
+use super::common::pkg_root;
 use super::spread::margin_el;
-use super::{El, Ex, PARA_BUILTINS, document, escape_id, names, num, pt, st};
+use super::{El, Ex, PARA_BUILTINS, document, escape_id, names, num, st};
 use craft_idml::model::{CompositeFontDefinition, CompositeFontEntryDefinition, FontDefinition, FontFamilyDefinition, FontsPart};
 
 impl<'a> Ex<'a> {
@@ -92,21 +92,20 @@ impl<'a> Ex<'a> {
         if let Some(pg) = page {
             root.push(margin_el(pg));
         }
-        root.push(
-            El::new("ViewPreference")
-                .attr("HorizontalMeasurementUnits", names::unit_out(s.horizontal_units))
-                .attr("VerticalMeasurementUnits", names::unit_out(s.vertical_units))
-                .attr(
-                    "RulerOrigin",
-                    match s.ruler_origin {
-                        designcraft_doc::RulerOrigin::Spread => "SpreadOrigin",
-                        designcraft_doc::RulerOrigin::Page => "PageOrigin",
-                        designcraft_doc::RulerOrigin::Spine => "SpineOrigin",
-                    },
-                )
-                .attr("CursorKeyIncrement", num(s.keyboard_increment))
-                .attr("PointsPerInch", "72"),
-        );
+        root.push(crate::xml::from_craft(
+            craft_idml::model::ViewPreferenceValues {
+                horizontal_units: names::unit_out(s.horizontal_units).into(),
+                vertical_units: names::unit_out(s.vertical_units).into(),
+                ruler_origin: match s.ruler_origin {
+                    designcraft_doc::RulerOrigin::Spread => "SpreadOrigin",
+                    designcraft_doc::RulerOrigin::Page => "PageOrigin",
+                    designcraft_doc::RulerOrigin::Spine => "SpineOrigin",
+                }
+                .into(),
+                cursor_key_increment: s.keyboard_increment,
+            }
+            .to_el(),
+        ));
         let bg = &s.baseline_grid;
         let grid_preferences = craft_idml::model::GridPreferences {
             horizontal_division: Some(s.grid.horizontal),
@@ -130,15 +129,12 @@ impl<'a> Ex<'a> {
             grid_preference.set(&key, value);
         }
         root.push(grid_preference);
-        root.push(El::new("PasteboardPreference").attr("PasteboardMargins", pt(s.pasteboard.0, s.pasteboard.1)));
+        root.push(crate::xml::from_craft(craft_idml::model::pasteboard_preference_el(s.pasteboard.0, s.pasteboard.1)));
         root.push(self.footnote_option_el());
-        root.push(El::new("TransparencyPreference").attr(
-            "BlendingSpace",
-            match s.blend_space {
-                designcraft_doc::BlendSpace::Cmyk => "CMYK",
-                designcraft_doc::BlendSpace::Rgb => "RGB",
-            },
-        ));
+        root.push(crate::xml::from_craft(craft_idml::model::transparency_preference_el(match s.blend_space {
+            designcraft_doc::BlendSpace::Cmyk => "CMYK",
+            designcraft_doc::BlendSpace::Rgb => "RGB",
+        })));
         // Split Document: the style is a reference, a built-in one by its `$ID/` name; an empty
         // one splits on the styles' export tags.
         let (break_doc, split_style) = match &s.epub_split {
@@ -147,25 +143,25 @@ impl<'a> Ex<'a> {
             designcraft_doc::EpubSplit::Style(n) if PARA_BUILTINS.iter().any(|(o, _)| o == n) => (true, names::style_name_out(PARA_BUILTINS, n)),
             designcraft_doc::EpubSplit::Style(n) => (true, names::style_self("ParagraphStyle", PARA_BUILTINS, n)),
         };
-        root.push(El::new("EPubExportPreference").attr("BreakDocument", bool_s(break_doc)).attr("ParagraphStyleName", split_style));
+        root.push(crate::xml::from_craft(
+            craft_idml::model::EpubSplitValues { break_document: break_doc, paragraph_style: Some(split_style) }.to_el(),
+        ));
         let a = &s.advanced_type;
-        root.push(
-            El::new("TextPreference")
-                .attr("SuperscriptSize", num(a.superscript_size))
-                .attr("SuperscriptPosition", num(a.superscript_position))
-                .attr("SubscriptSize", num(a.subscript_size))
-                .attr("SubscriptPosition", num(a.subscript_position)),
-        );
+        root.push(crate::xml::from_craft(
+            craft_idml::model::TextPreferenceValues {
+                superscript_size: a.superscript_size,
+                superscript_position: a.superscript_position,
+                subscript_size: a.subscript_size,
+                subscript_position: a.subscript_position,
+            }
+            .to_el(),
+        ));
         // InDesign always writes the document's default story preference; readers such as Okapi's IDML
         // filter take the spread reading order from it and fail without it.
-        root.push(
-            El::new("StoryPreference")
-                .attr("OpticalMarginAlignment", "false")
-                .attr("OpticalMarginSize", "12")
-                .attr("FrameType", "TextFrameType")
-                .attr("StoryOrientation", "Horizontal")
-                .attr("StoryDirection", "LeftToRightDirection"),
-        );
+        root.push(crate::xml::from_craft(
+            craft_idml::model::StoryPreference { optical_margin_alignment: false, optical_margin_size: 12.0, vertical: false, right_to_left: false }
+                .to_el(),
+        ));
         document(&root)
     }
 }
