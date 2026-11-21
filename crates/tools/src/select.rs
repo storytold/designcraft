@@ -912,7 +912,10 @@ impl SelectionTool {
             self.drag = Drag::Pending { start: p, hit: true, content: false };
             return vec![Action::Exec("layout.overrideParentItems".into(), json!({"page": page, "ids": [id.0]}))];
         }
-        match cx.hit(p) {
+        // Direct Selection picks the item under the pointer inside groups too; one in a locked
+        // group stays out of reach (an item's own lock is as for the Selection tool).
+        let hit = if self.direct { cx.hit_leaf(p).filter(|(_, leaf)| !cx.doc.ancestor_locked(*leaf)) } else { cx.hit(p) };
+        match hit {
             Some((sr, id)) => {
                 let id = if self.direct { id } else { cx.doc.top_level_of(id).unwrap_or(id) };
                 let mut out = vec![];
@@ -1360,10 +1363,17 @@ impl Tool for SelectionTool {
                         for slot in &cx.layout.slots {
                             let Some(sp) = cx.doc.spread(slot.spread) else { continue };
                             for it in &sp.items {
-                                let b = slot.xf.transform_rect_bbox(it.bounds());
                                 let locked = it.locked || cx.doc.layer(it.layer).is_some_and(|l| l.locked || !l.visible);
-                                if !locked && !it.hidden && b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
-                                    ids.push(Value::from(it.id.0));
+                                if locked || it.hidden {
+                                    continue;
+                                }
+                                if self.direct && it.is_group() {
+                                    collect_direct_marquee_ids(cx, it, &r, &mut ids);
+                                } else {
+                                    let b = slot.xf.transform_rect_bbox(it.bounds());
+                                    if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
+                                        ids.push(Value::from(it.id.0));
+                                    }
                                 }
                             }
                         }
@@ -1481,7 +1491,7 @@ impl Tool for SelectionTool {
         if self.direct {
             let over_content = matches!(self.drag, Drag::None)
                 && anchor_at(cx, p).is_none()
-                && cx.hit(p).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
+                && (if self.direct { cx.hit_leaf(p) } else { cx.hit(p) }).is_some_and(|(_, id)| cx.doc.item(id).is_some_and(holds_content));
             return if over_content { Cursor::Hand } else { Cursor::ArrowHollow };
         }
         if let Some(l) = self.loaded.and_then(|l| l.resolve(cx.doc)) {
@@ -1548,6 +1558,25 @@ fn edit_text_at(cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
     }
     let (_, sp) = cx.layout.spread_at(p).unwrap_or((SpreadRef::Doc(0), p));
     Some(vec![Action::SwitchTool("type".into()), Action::Exec("text.placeCaret".into(), json!({"frame": id.0, "point": [sp.x, sp.y]}))])
+}
+
+/// Add the items inside group `it` that the marquee `r` touches (Direct Selection reaches into
+/// groups): hidden items and groups, and everything in a locked group, are skipped. Only the
+/// children that show count, as for a click.
+fn collect_direct_marquee_ids(cx: &ToolContext, it: &Item, r: &Rect, ids: &mut Vec<Value>) {
+    if it.hidden || it.locked {
+        return;
+    }
+    if it.is_group() {
+        for c in it.shown_children() {
+            collect_direct_marquee_ids(cx, c, r, ids);
+        }
+    } else if let Some(c_xf) = cx.item_canvas_xf(it.id) {
+        let b = c_xf.transform_rect_bbox(it.bounds());
+        if b.x0 < r.x1 && b.x1 > r.x0 && b.y0 < r.y1 && b.y1 > r.y0 {
+            ids.push(Value::from(it.id.0));
+        }
+    }
 }
 
 #[cfg(test)]
