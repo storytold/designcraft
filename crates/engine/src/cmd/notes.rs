@@ -1,6 +1,9 @@
 //! Type › Insert Footnote, Document Footnote Options, footnote inspection and editing.
 
-use designcraft_doc::{CellAddr, FootnoteOptions, ParaFormat, StoryId, TextSel};
+use std::collections::HashMap;
+
+use designcraft_doc::{CellAddr, Document, FootnoteOptions, ParaFormat, SpreadRef, StoryId, TextSel};
+use designcraft_geom::Rect;
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc};
@@ -26,7 +29,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             options
         ),
-        cmd!(query "footnote.list", "Footnotes", [], None, "{story?} → [{story, id, index, anchor, text}] in story order", has_doc, list),
+        cmd!(
+            query "footnote.list",
+            "Footnotes",
+            [],
+            None,
+            "{story?} → [{story, id, index, anchor, text, page, bounds}] in story order. page is the 0-based absolute page the footnote is laid out on and bounds its area [x0, y0, x1, y1] in spread coordinates, as the PDF export draws it; both are null while the footnote isn't laid out (its reference is overset, or its frame is anchored in text), and page is null on a parent page or the pasteboard",
+            has_doc,
+            list
+        ),
         cmd!("footnote.setText", "Set Footnote Text", [], None, "{story, id, text} — replaces the footnote's text", has_doc, set_text),
         cmd!("footnote.delete", "Delete Footnote", [], None, "{story, id} — deletes the reference (and so the footnote)", has_doc, delete),
         cmd!(
@@ -133,11 +144,46 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let only = p.get("story").and_then(Value::as_u64).map(StoryId);
     let mut out = Vec::new();
     for st in d.stories.values().filter(|st| only.is_none_or(|o| o == st.id)) {
+        let placed = if st.notes.is_empty() { HashMap::new() } else { placed_notes(s, d, st.id) };
         for (k, n) in st.notes.iter().enumerate() {
-            out.push(json!({"story": st.id.0, "id": n.id, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text}));
+            let (page, bounds) = placed.get(&n.id).map_or((None, None), |(page, r)| (*page, Some([r.x0, r.y0, r.x1, r.y1])));
+            out.push(json!({
+                "story": st.id.0, "id": n.id, "index": k, "anchor": st.note_anchor(n.id), "text": n.text.text,
+                "page": page, "bounds": bounds,
+            }));
         }
     }
     Ok(Value::Array(out))
+}
+
+/// Footnote id → (the 0-based absolute page under its centre, if any; its area in spread
+/// coordinates) for the footnotes of a story laid out in frames on a spread. Frame inner space maps
+/// to the spread as the PDF writer draws it. A footnote laid out in more than one place keeps the
+/// first.
+fn placed_notes(s: &Session, d: &Document, sid: StoryId) -> HashMap<u64, (Option<usize>, Rect)> {
+    let cs = s.cache.get(d, sid, None);
+    let mut out = HashMap::new();
+    for ft in cs.frames.iter().filter(|ft| !ft.notes.is_empty()) {
+        // A frame anchored in text is on no spread of its own: its footnotes stay unplaced.
+        let Some(loc) = d.find(ft.frame) else { continue };
+        let Some(item) = d.item_at(&loc) else { continue };
+        let xf = d.parent_xf(&loc) * d.text_xf(item);
+        let pages = match (loc.spread, d.spread(loc.spread)) {
+            (SpreadRef::Doc(si), Some(sp)) => Some((d.first_page_of_spread(si), &sp.pages)),
+            _ => None,
+        };
+        for n in &ft.notes {
+            let r = xf.transform_rect_bbox(n.rect);
+            let c = r.center();
+            // Unlike `page_at_x`, a footnote on the pasteboard is on no page.
+            let page = pages.and_then(|(first, pages)| {
+                let i = pages.iter().position(|pg| c.x >= pg.x && c.x < pg.x + pg.width && c.y >= 0.0 && c.y < pg.height)?;
+                Some(first.saturating_add(i))
+            });
+            out.entry(n.id).or_insert((page, r));
+        }
+    }
+    out
 }
 
 fn set_text(s: &mut Session, p: &Value) -> Result<Value> {
@@ -267,6 +313,63 @@ mod tests {
         pending(&mut s);
         s.execute("footnote.delete", &json!({"story": sid.0, "id": id})).unwrap();
         assert!(s.typing_format.is_none(), "footnote.delete");
+    }
+
+    /// footnote.list says where each footnote is laid out: its page, and its area in spread
+    /// coordinates, here on the left and right pages of one spread.
+    #[test]
+    fn list_gives_each_footnote_page_and_bounds() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let mut stories = Vec::new();
+        for page in [1, 2] {
+            let (si, pi) = d.page_loc(page).unwrap();
+            let x = d.spreads[si].pages[pi].x;
+            let r = s
+                .execute("frame.create", &json!({"spread": si, "rect": [x + 72.0, 72, x + 300.0, 400], "content": "text", "text": "Body text."}))
+                .unwrap();
+            s.execute("text.select", &json!({"story": r["story"], "anchor": 4, "focus": 4})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+            stories.push((r["story"].clone(), page, x));
+        }
+        let l = s.execute("footnote.list", &json!({})).unwrap();
+        let l = l.as_array().unwrap();
+        assert_eq!(l.len(), 2, "{l:?}");
+        for (story, page, x) in stories {
+            let n = l.iter().find(|n| n["story"] == story).unwrap();
+            assert_eq!(n["text"], "A note.", "the other fields stay: {n}");
+            assert_eq!(n["index"], 0, "{n}");
+            assert_eq!(n["page"], page, "{n}");
+            let b: Vec<f64> = n["bounds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!(b[0] >= x + 72.0 - 0.01 && b[2] <= x + 300.0 + 0.01 && b[0] < b[2], "inside its frame, in spread coordinates: {n}");
+            assert!((b[3] - 400.0).abs() < 0.01, "stacked against the frame bottom: {n}");
+            assert!(b[1] > 300.0 && b[1] < b[3], "a line or two tall: {n}");
+        }
+    }
+
+    /// A footnote whose reference is overset isn't laid out: it is still listed, with no page or
+    /// bounds.
+    #[test]
+    fn list_gives_no_place_for_an_overset_footnote() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let text = "Words that fit. ".to_string() + &"More words that do not fit in this small frame. ".repeat(20);
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 160], "content": "text", "text": text})).unwrap();
+        let story = r["story"].clone();
+        for at in [4, text.len() - 2] {
+            s.execute("text.select", &json!({"story": story, "anchor": at, "focus": at})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "A note."})).unwrap();
+        }
+        assert!(!s.execute("story.get", &json!({"story": story})).unwrap()["overset"].is_null());
+        let l = s.execute("footnote.list", &json!({"story": story})).unwrap();
+        let l = l.as_array().unwrap();
+        assert_eq!(l.len(), 2, "{l:?}");
+        assert_eq!(l[0]["page"], 0, "the first is laid out: {l:?}");
+        assert!(l[0]["bounds"].is_array(), "{l:?}");
+        assert_eq!(l[1]["text"], "A note.", "the overset one is listed: {l:?}");
+        assert_eq!(l[1]["page"], json!(null), "{l:?}");
+        assert_eq!(l[1]["bounds"], json!(null), "{l:?}");
     }
 
     #[test]
