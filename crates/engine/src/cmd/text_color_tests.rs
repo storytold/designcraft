@@ -210,6 +210,39 @@ fn a_gradient_dragged_across_selected_text_sets_the_texts_vector() {
     assert!(s.execute("type.gradient", &json!({})).is_err());
 }
 
+/// A selection running through two threaded frames: each frame's characters take the drag in
+/// their own frame's text space, so the second frame's text isn't offset by the first's place.
+#[test]
+fn a_gradient_across_threaded_frames_is_in_each_frames_own_space() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let long = "word ".repeat(80);
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 76], "content": "text", "text": long})).unwrap();
+    let sid = a["story"].as_u64().unwrap();
+    let a = a["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 600], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
+    let split = cs.frames.iter().find(|f| f.frame.0 == b).map(|f| f.range.start).expect("text runs on into the second frame");
+    assert!(split > 0);
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": split + 10})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    let vector = |s: &mut Session, at: usize| {
+        s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at + 1})).unwrap();
+        attrs(s)["fillGradient"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<_>>()
+    };
+    let (first, second) = (vector(&mut s, 0), vector(&mut s, split + 2));
+    assert_ne!(first, second, "each frame has its own vector");
+    // Each is the drag in its own frame's text space.
+    let d = &s.doc().unwrap().doc;
+    for (id, v) in [(a, &first), (b, &second)] {
+        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+        let to_text = (d.parent_xf(&d.find(designcraft_doc::ItemId(id)).unwrap()) * d.text_xf(it)).inverse();
+        let p = to_text * designcraft_geom::Point::new(40.0, 50.0);
+        assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{id}: {v:?}");
+    }
+}
+
 /// Switching from the Type tool to the Gradient Swatch tool keeps the text selected (any other
 /// tool selects its frame instead); with the frame selected, `type.gradient` sets the vector on its
 /// whole text.

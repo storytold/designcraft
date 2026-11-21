@@ -296,6 +296,30 @@ pub(super) fn text_gradient(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if let Some(frame) = text_frame {
         let frame = frame.ok_or_else(|| bad(ID, "the text has no frame"))?;
+        // A selection running through threaded frames: each frame's characters take the drag
+        // in their own frame's text space, where they are drawn.
+        if let Some(t) = st.selection.text.filter(|t| st.selection.cells.is_none() && t.anchor != t.focus) {
+            let range = t.anchor.min(t.focus)..t.anchor.max(t.focus);
+            let cs = s.cache.get(d, t.story, None);
+            let parts: Vec<(Target, designcraft_doc::ItemId)> = cs
+                .frames
+                .iter()
+                .map(|ft| (range.start.max(ft.range.start)..range.end.min(ft.range.end), ft.frame))
+                .filter(|(r, _)| !r.is_empty())
+                .map(|(range, frame)| (Target { story: t.story, cell: None, range }, frame))
+                .collect();
+            if parts.len() > 1 {
+                let parts: Vec<(Target, [f64; 4])> =
+                    parts.into_iter().map(|(t, frame)| drag_in_frame(d, frame, from, to).map(|v| (t, v))).collect::<Result<_>>()?;
+                return s.edit(|d, _| {
+                    for (t, v) in &parts {
+                        let a = CharAttrs { fill_gradient: Some(Some(*v)), ..Default::default() };
+                        apply_char_attrs(d, std::slice::from_ref(t), &a, &[]);
+                    }
+                    ok()
+                });
+            }
+        }
         let v = drag_in_frame(d, frame, from, to)?;
         return format_chars(s, &json!({"fillGradient": v}));
     }
