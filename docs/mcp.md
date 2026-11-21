@@ -42,9 +42,11 @@ After installation, register the CLI by name:
 # Headless: an in-process engine, no window
 claude mcp add designcraft -- designcraft-cli mcp
 
-# Drive the running desktop app (install/start the desktop app separately)
+# Drive the running desktop app (install/start the desktop app separately). The app's control
+# channel asks for the token it writes to its profile directory (docs/control-protocol.md):
 designcraft --control 7979
-claude mcp add designcraft-app -- designcraft-cli mcp --connect 7979
+claude mcp add designcraft-app -e DESIGNCRAFT_CONTROL_TOKEN_FILE="$HOME/.config/designcraft/control-token-7979" -- designcraft-cli mcp --connect 7979
+# (macOS: "$HOME/Library/Application Support/DesignCraft/control-token-7979")
 ```
 
 Other MCP clients use the same command line, e.g. in a JSON config:
