@@ -1276,7 +1276,7 @@ fn update_remove_preview_inline_rows_and_old_files() {
     assert_eq!(s.documents()[0].doc.data_merge.sources[0].status, SourceStatus::Modified);
     assert_eq!(s.documents()[0].doc.data_merge.sources[0].fingerprint, fingerprint);
     assert_eq!(s.documents()[0].history.undo.len(), undo);
-    assert_eq!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources[0].status, SourceStatus::Modified);
+    assert!(s.documents()[s.active_index().unwrap()].doc.data_merge.sources.is_empty());
 
     check_missing_merge_source(&dir);
     check_refused_facing_page_merge(&dir);
@@ -1848,4 +1848,44 @@ fn hyperlink_over_marker_does_not_hide_its_field_usage() {
     let fields = exec(&mut s, "data.fields", json!({}));
     assert_eq!(fields[0]["uses"], 1);
     assert_eq!(fields[1]["uses"], 1);
+}
+
+#[test]
+fn merged_file_excludes_linked_source_but_template_can_merge_again() {
+    use std::io::Read;
+
+    let dir = tempfile::tempdir().unwrap();
+    let csv = dir.path().join("source.csv");
+    write(&csv, "Visible,Unused\nFIRST_VISIBLE_3054,FIRST_UNUSED_3054\nSECOND_EXCLUDED_3054,SECOND_UNUSED_3054\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    let frame = text_frame(&mut s, [36.0, 36.0, 300.0, 80.0], "", None);
+    exec(&mut s, "data.source.select", json!({"path": csv}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Visible", "story": frame["story"], "at": 0}));
+    exec(&mut s, "data.options", json!({"perPage": "single", "limit": 1}));
+    let merged = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(merged["records"], 1);
+    assert_eq!(texts(&s), vec!["FIRST_VISIBLE_3054"]);
+    let path = dir.path().join("merged.designcraft");
+    exec(&mut s, "file.save", json!({"path": path}));
+    let bytes = std::fs::read(&path).unwrap();
+    let saved = designcraft_format::load(&bytes).unwrap();
+    assert!(saved.data_merge.sources.is_empty(), "the result must not retain the data source or its link");
+    assert!(saved.stories.values().any(|story| story.text == "FIRST_VISIBLE_3054"));
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let mut contents = Vec::new();
+        entry.read_to_end(&mut contents).unwrap();
+        for excluded in ["FIRST_UNUSED_3054", "SECOND_EXCLUDED_3054", "SECOND_UNUSED_3054", "source.csv"] {
+            assert!(!contents.windows(excluded.len()).any(|part| part == excluded.as_bytes()), "{excluded} remains in {}", entry.name());
+        }
+    }
+    exec(&mut s, "file.activate", json!({"index": 0}));
+    let source = &s.documents()[0].doc.data_merge.sources[0];
+    assert_eq!(source.rows.len(), 2);
+    assert_eq!(source.rows[1][1], "SECOND_UNUSED_3054");
+    assert!(source.path.is_some());
+    assert_eq!(exec(&mut s, "data.merge", json!({}))["records"], 1);
+    assert_eq!(texts(&s), vec!["FIRST_VISIBLE_3054"]);
 }
