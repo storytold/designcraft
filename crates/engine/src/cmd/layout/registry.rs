@@ -601,7 +601,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let n = s.doc()?.doc.page_count();
             let page = match p.get("page") {
                 None | Some(Value::Null) => None,
-                Some(v) => Some(v.as_u64().filter(|v| *v >= 1 && *v as usize <= n).ok_or_else(|| bad("layout.selectPage", format!("`page`: 1–{n}")))? as usize - 1),
+                Some(v) => Some(
+                    v.as_u64()
+                        .and_then(|page| usize::try_from(page).ok())
+                        .filter(|page| (1..=n).contains(page))
+                        .ok_or_else(|| bad("layout.selectPage", format!("`page`: 1–{n}")))?
+                        - 1,
+                ),
             };
             let ids: Vec<designcraft_doc::ItemId> = {
                 let d = &s.doc()?.doc;
@@ -891,6 +897,19 @@ mod page_index_tests {
 
     fn pages_left(s: &crate::Session) -> usize {
         s.doc().unwrap().doc.page_count()
+    }
+
+    #[test]
+    fn oversized_page_numbers_are_rejected_without_changing_the_selection() {
+        let mut s = four_pages();
+        assert_eq!(s.execute("layout.selectPage", &json!({"page": 2})).unwrap()["page"], 2);
+        for page in [1_u64 << 32, (1_u64 << 32) + 1] {
+            let err = s.execute("layout.selectPage", &json!({"page": page})).unwrap_err().to_string();
+            assert!(err.contains("`page`: 1–4"), "{err}");
+            assert_eq!(s.doc().unwrap().selection.page, Some(1));
+        }
+        assert!(s.execute("layout.selectPage", &json!({"page": null})).unwrap()["page"].is_null());
+        assert_eq!(s.doc().unwrap().selection.page, None);
     }
 
     /// An index past the last page is an error that names it, and nothing is removed.
