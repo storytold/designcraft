@@ -476,6 +476,42 @@ fn values_present(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_export_page(value: &str) -> Result<usize, &'static str> {
+    value.parse().map_err(|_| "bad --page")
+}
+
+fn parse_export_scale(value: &str) -> Result<f64, &'static str> {
+    // 0, a negative value and NaN made a 1×1 image; infinity, "no such page".
+    value.parse().ok().filter(|scale: &f64| scale.is_finite() && *scale > 0.0).ok_or("bad --scale: expected a positive number")
+}
+
+fn parse_pdf_options(value: &str) -> Result<Value, String> {
+    // The export adds its path to these options.
+    match serde_json::from_str(value).map_err(|e| format!("--pdf-options: {e}"))? {
+        Value::Null => Ok(json!({})),
+        object @ Value::Object(_) => Ok(object),
+        _ => Err("--pdf-options: expected a JSON object".to_string()),
+    }
+}
+
+fn validate_export_options(args: &[String]) -> Result<(), String> {
+    for pair in args.windows(2) {
+        match pair[0].as_str() {
+            "--page" => {
+                parse_export_page(&pair[1])?;
+            }
+            "--scale" => {
+                parse_export_scale(&pair[1])?;
+            }
+            "--pdf-options" => {
+                parse_pdf_options(&pair[1])?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     // Before the order check and before any export: a value error is about the line as written,
     // and reporting it must not cost a file that was already there.
@@ -491,6 +527,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Export::of(&a[1])?;
         }
     }
+    validate_export_options(args)?;
     let mut s = Session::new();
     let mut page = 0usize;
     let mut scale = 1.0f64;
@@ -528,19 +565,9 @@ fn run(args: &[String]) -> Result<(), String> {
                     outln!("{}", serde_json::to_string(&r).unwrap_or_default());
                 }
             }
-            "--page" => page = val()?.parse().map_err(|_| "bad --page")?,
-            "--scale" => {
-                // 0, a negative value and NaN made a 1×1 image; infinity, "no such page".
-                scale = val()?.parse().ok().filter(|s: &f64| s.is_finite() && *s > 0.0).ok_or("bad --scale: expected a positive number")?;
-            }
-            "--pdf-options" => {
-                // The export adds its path to them.
-                pdf_opts = match serde_json::from_str(&val()?).map_err(|e| format!("--pdf-options: {e}"))? {
-                    Value::Null => json!({}),
-                    o @ Value::Object(_) => o,
-                    _ => return Err("--pdf-options: expected a JSON object".to_string()),
-                };
-            }
+            "--page" => page = parse_export_page(&val()?)?,
+            "--scale" => scale = parse_export_scale(&val()?)?,
+            "--pdf-options" => pdf_opts = parse_pdf_options(&val()?)?,
             "--export" => {
                 let out = val()?;
                 handle_export(&mut s, &out, page, scale, &pdf_opts)?;
