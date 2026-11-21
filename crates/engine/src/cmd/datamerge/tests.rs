@@ -1849,3 +1849,25 @@ fn hyperlink_over_marker_does_not_hide_its_field_usage() {
     assert_eq!(fields[0]["uses"], 1);
     assert_eq!(fields[1]["uses"], 1);
 }
+
+/// The merged document opens on its first spread. Nothing asked for a view, so the new
+/// document's default view decided where the canvas looks, and on a multi-spread result its
+/// centre lands past spread 0 (#3049).
+#[test]
+fn data_merge_opens_the_first_spread() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "<<City>>", None);
+    select_csv(&mut s, "Name,City\nAda,London\nGrace,Paris\n");
+    exec(&mut s, "data.placeholder.add", json!({"field": "City"}));
+    let merged = exec(&mut s, "data.merge", json!({}));
+    assert_eq!(merged["records"], 2);
+    let Some(crate::UiRequest::View { params }) = s.ui_requests.iter().find(|r| matches!(r, crate::UiRequest::View { .. })) else {
+        panic!("the merge asks the canvas for a view on the merged document");
+    };
+    assert_eq!(
+        params["showSpread"],
+        serde_json::to_value(designcraft_doc::SpreadRef::Doc(0)).unwrap(),
+        "the merged document opens on its first spread"
+    );
+}

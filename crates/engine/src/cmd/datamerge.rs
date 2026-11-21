@@ -289,6 +289,10 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();
     s.add_document(DocState::new(merged, None));
+    // The merged document opens on its first spread: left to the fresh default view, the canvas
+    // centres wherever that view puts it, which lands past spread 0 on a multi-spread result
+    // (#3049).
+    s.ui_requests.push(crate::UiRequest::View { params: json!({"showSpread": designcraft_doc::SpreadRef::Doc(0)}) });
     Ok(json!({
         "records": records,
         "pages": pages,
