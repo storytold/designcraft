@@ -1,17 +1,21 @@
 //! Embedded raster resolution: the density a placed graphic was saved with, so placing honors
 //! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide).
 //! Delegates container resolution probes to `craft-image-codecs` (`file_resolution`, which reads
-//! JPEG Photoshop ResolutionInfo -> XMP -> EXIF -> JFIF, PNG pHYs -> eXIf, WebP EXIF, and classic
-//! TIFF; plus `exif_resolution` and `bmp_probe::pixels_per_meter`), JPEG EXIF orientation to
-//! `craft-metadata`, and PSD `ResolutionInfo` to [`crate::psd`]. GIF and files without (usable)
-//! metadata report nothing and keep the pixel-is-a-point size.
+//! JPEG Photoshop ResolutionInfo -> XMP -> EXIF -> JFIF, PNG eXIf, WebP EXIF, and classic TIFF;
+//! plus `exif_resolution`, `png_probe::pixels_per_meter`, and `bmp_probe::pixels_per_meter`),
+//! JPEG EXIF orientation to `craft-metadata`, and PSD `ResolutionInfo` to [`crate::psd`]. GIF and
+//! files without (usable) metadata report nothing and keep the pixel-is-a-point size.
 
 /// Dots per inch in x and y, when the file carries usable resolution metadata.
 pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
     if bytes.len() < 8 {
         return None;
     }
-    let dpi = if bytes.starts_with(b"BM") {
+    let dpi = if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        && let Some(dpi) = png_resolution(bytes)
+    {
+        Some(dpi)
+    } else if bytes.starts_with(b"BM") {
         bmp_resolution(bytes)
     } else if crate::is_psd(bytes) {
         crate::psd::resolution(bytes)
@@ -41,6 +45,13 @@ fn orientation(bytes: &[u8]) -> u16 {
 /// EXIF orientation from a JPEG's first APP1 `"Exif\0\0"` segment before the first scan.
 fn jpeg_orientation(bytes: &[u8]) -> u16 {
     craft_metadata::jpeg_segments(bytes).exif.as_deref().map_or(1, craft_image_codecs::exif_orientation)
+}
+
+/// PNG `pHYs` pixels-per-metre via the shared probe: meters -> dpi in `f64` (preserving exact
+/// placement DPI without `dpi_of_ppm` snapping).
+fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
+    let (x, y) = craft_image_codecs::png_probe::pixels_per_meter(bytes)?;
+    Some((f64::from(x) * 0.0254, f64::from(y) * 0.0254))
 }
 
 /// A parsed density is usable when both axes are finite, positive and below the absurdity cap

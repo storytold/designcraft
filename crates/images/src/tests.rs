@@ -1430,10 +1430,16 @@ fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
         d
     }
 
-    // Independent pHYs axes (144 x 72 ppi) and exact placement size (#1648 parity).
+    // Independent pHYs axes (144 x 72 ppi) and exact placement size (#1648 parity), plus exact unsnapped f64 DPI.
     let asym = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &phys_data(5669, 2835, 1))]);
-    assert_eq!(raster_resolution(&asym), Some((144.0, 72.0)));
-    assert_eq!(natural_size(&asym), Some((72.0, 72.0)));
+    let (ax, ay) = raster_resolution(&asym).unwrap();
+    assert!((ax - 5669.0 * 0.0254).abs() < 1e-12 && (ay - 2835.0 * 0.0254).abs() < 1e-12, "{ax} x {ay}");
+    let (nw, nh) = natural_size(&asym).unwrap();
+    assert!((nw - 144.0 * 72.0 / (5669.0 * 0.0254)).abs() < 1e-9 && (nh - 72.0 * 72.0 / (2835.0 * 0.0254)).abs() < 1e-9, "{nw} x {nh}");
+
+    let exact_330 = png_with_chunks(330, 510, &[png_chunk(b"pHYs", &phys_data(1181, 1181, 1))]);
+    let (ew, eh) = natural_size(&exact_330).unwrap();
+    assert!((ew - 330.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9 && (eh - 510.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9, "{ew} x {eh}");
 
     // Unitless or zero pHYs without eXIf falls back to 1 px = 1 pt.
     for bad in [phys_data(5669, 5669, 0), phys_data(0, 5669, 1)] {
@@ -1449,7 +1455,7 @@ fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
     let unitless_plus_exif = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5669, 5669, 0)), png_chunk(b"eXIf", &exif_300)]);
     assert_eq!(raster_resolution(&unitless_plus_exif), Some((300.0, 300.0)));
     let phys_wins = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5906, 5906, 1)), png_chunk(b"eXIf", &exif_300)]);
-    assert_eq!(raster_resolution(&phys_wins), Some((150.0, 150.0)));
+    assert_eq!(raster_resolution(&phys_wins), Some((5906.0 * 0.0254, 5906.0 * 0.0254)));
 
     // Orientation 6 swaps pHYs axes.
     let rotated = png_with_chunks(
@@ -1457,14 +1463,14 @@ fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
         4,
         &[png_chunk(b"pHYs", &phys_data(11811, 5906, 1)), png_chunk(b"eXIf", &tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6))],
     );
-    assert_eq!(raster_resolution(&rotated), Some((150.0, 300.0)));
+    assert_eq!(raster_resolution(&rotated), Some((5906.0 * 0.0254, 11811.0 * 0.0254)));
 
     // Shared resolution_probe chunk limit (MAX_CHUNKS = 4096, counting IHDR as chunk 0).
     let phys = png_chunk(b"pHYs", &phys_data(11811, 11811, 1));
     let text = png_chunk(b"tEXt", b"k\x00v");
     let mut at_limit = vec![text.clone(); 4094];
     at_limit.push(phys.clone());
-    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &at_limit)), Some((300.0, 300.0)));
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &at_limit)), Some((11811.0 * 0.0254, 11811.0 * 0.0254)));
 
     let mut past_limit = vec![text; 4095];
     past_limit.push(phys);
