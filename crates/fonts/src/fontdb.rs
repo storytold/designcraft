@@ -92,6 +92,11 @@ pub struct FontDb {
     /// when it was read: [`FontDb::reload_fonts`] reads again the files that changed since.
     #[cfg(not(target_arch = "wasm32"))]
     installed_files: Mutex<HashMap<std::path::PathBuf, FileStamp>>,
+    /// The (family, style) pairs, lowercased, looked for in the catalog because the loaded faces
+    /// lack that style: each is looked for once per scan of the font folders (see
+    /// [`FontDb::load_cataloged_style`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    styles_tried: Mutex<std::collections::HashSet<(String, String)>>,
     /// The folders the system font scan reads (the platform's font folders for [`FontDb::global`]).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     font_dirs: Vec<std::path::PathBuf>,

@@ -166,6 +166,27 @@ fn rescanning_finds_fonts_installed_since() {
 }
 
 #[test]
+fn reloading_finds_a_style_installed_since_its_family_was_loaded() {
+    // #2617: the family's Regular is in use; its Bold is installed while the app runs.
+    let dir = font_dir("new-style");
+    let later = dir.join("Later");
+    std::fs::create_dir_all(&later).unwrap();
+    std::fs::copy(dir.join("Sysfont-Regular.ttf"), later.join("Sysfont-Regular.ttf")).unwrap();
+    let db = FontDb::with_font_dirs(vec![later.clone()]);
+    assert_eq!(db.face(FAMILY, "Regular").style, "Regular");
+    assert!(db.is_loaded(FAMILY));
+    assert!(!db.scoped(0).has_style(FAMILY, "Bold"));
+    std::fs::copy(dir.join("Sub/Sysfont-Bold.TTF"), later.join("Sysfont-Bold.ttf")).unwrap();
+    assert_eq!(db.reload_fonts().cataloged, 2);
+    assert_eq!(db.face(FAMILY, "Bold").style, "Bold");
+    assert!(db.scoped(0).has_style(FAMILY, "Bold"));
+    assert_eq!(db.face(FAMILY, "Regular").style, "Regular");
+    // A style still missing is the closest one, as before.
+    assert_eq!(db.face(FAMILY, "Light").style, "Regular");
+    assert!(!db.scoped(0).has_style(FAMILY, "Light"));
+}
+
+#[test]
 fn a_background_scan_serves_the_first_lookup() {
     let dir = font_dir("background");
     let db: &'static FontDb = Box::leak(Box::new(FontDb::with_font_dirs(vec![dir])));
