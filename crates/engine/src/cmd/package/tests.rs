@@ -14,19 +14,26 @@ fn soft_effect_link_rects(bytes: &[u8]) -> Vec<Vec<f32>> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn check_soft_effect_links(packaged: bool) {
-    for (text, grouped) in [(false, false), (true, false), (false, true), (true, true)] {
+    for (text, xref, grouped) in
+        [(false, false, false), (true, false, false), (false, true, false), (false, false, true), (true, false, true), (false, true, true)]
+    {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Session::new();
-        s.execute("file.new", &json!({"title": "LinkedEffects", "width": 144, "height": 144})).unwrap();
+        s.execute("file.new", &json!({"title": "LinkedEffects", "width": 144, "height": 144, "pages": 2, "facingPages": false})).unwrap();
         let frame = s.execute("frame.create", &json!({"rect": [20, 20, 100, 60], "content": "text", "text": "Visit us", "caret": false})).unwrap();
-        if text {
+        if xref {
+            s.execute("frame.create", &json!({"rect": [20, 20, 100, 60], "spread": 1, "content": "text", "text": "Results", "caret": false}))
+                .unwrap();
+            s.execute("text.select", &json!({"story": frame["story"], "anchor": 5, "focus": 5})).unwrap();
+            s.execute("xref.insert", &json!({"paragraph": "Results", "format": "Page Number"})).unwrap();
+        } else if text {
             s.execute("text.select", &json!({"story": frame["story"], "anchor": 0, "focus": 5})).unwrap();
             s.execute("hyperlink.create", &json!({"url": "https://example.com"})).unwrap();
         } else {
             s.execute("hyperlink.create", &json!({"url": "https://example.com", "ids": [frame["id"]]})).unwrap();
         }
         let effect = if grouped {
-            let other = s.execute("frame.create", &json!({"rect": [100, 80, 110, 90]})).unwrap();
+            let other = s.execute("frame.create", &json!({"rect": [100, 80, 110, 90], "spread": 0})).unwrap();
             let group = s.execute("object.group", &json!({"ids": [frame["id"], other["id"]]})).unwrap()["id"].clone();
             s.execute("transform.move", &json!({"ids": [group], "dx": 3, "dy": 4})).unwrap();
             group
@@ -35,8 +42,8 @@ fn check_soft_effect_links(packaged: bool) {
         };
         let before = s.execute("file.exportPdf", &json!({})).unwrap();
         let before = soft_effect_link_rects(&super::super::base64_decode(before["base64"].as_str().unwrap()));
-        assert_eq!(before.len(), 1);
-        if !text {
+        assert_eq!(before.len(), 1, "text={text}, xref={xref}, grouped={grouped}");
+        if !text && !xref {
             assert_eq!(before[0], if grouped { vec![23.0, 80.0, 103.0, 120.0] } else { vec![20.0, 84.0, 100.0, 124.0] });
         }
         s.execute("object.dropShadow", &json!({"on": true, "size": 6, "distance": 5, "ids": [effect]})).unwrap();
@@ -47,7 +54,7 @@ fn check_soft_effect_links(packaged: bool) {
             let result = s.execute("file.exportPdf", &json!({})).unwrap();
             super::super::base64_decode(result["base64"].as_str().unwrap())
         };
-        assert_eq!(soft_effect_link_rects(&bytes), before, "text={text}, grouped={grouped}");
+        assert_eq!(soft_effect_link_rects(&bytes), before, "text={text}, xref={xref}, grouped={grouped}");
         assert_eq!(String::from_utf8_lossy(&bytes).matches("/Subtype/Image").count(), 2, "one image and its soft mask");
     }
 }
