@@ -687,6 +687,7 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Swedish",
     "Norwegian: Bokmål",
     "Finnish",
+    "Estonian",
     "Polish",
     "Czech",
     "Hungarian",
