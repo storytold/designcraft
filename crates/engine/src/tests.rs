@@ -2718,3 +2718,20 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+/// A preview that fails leaves the gesture's starting document with the revision it began at,
+/// so a cache keyed by revision does not show the previous preview's contents.
+#[test]
+fn a_failed_preview_puts_back_the_revision_the_gesture_began_at() {
+    let mut s = session();
+    let id = s.execute("frame.create", &json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
+    let (start, before) = (s.doc().unwrap().doc.clone(), s.doc().unwrap().revision);
+    s.begin_interaction("Move").unwrap();
+    s.preview("transform.move", json!({"ids": [id], "dx": 30, "dy": 0})).unwrap();
+    let moved = s.doc().unwrap().revision;
+    assert_ne!(moved, before);
+    assert!(s.preview("transform.move", json!({"ids": [9999], "dx": 60, "dy": 0})).is_err());
+    let st = s.doc().unwrap();
+    assert!(Arc::ptr_eq(&st.doc, &start), "the document is the one the gesture began with");
+    assert_eq!(st.revision, before, "not {moved}, the revision of the previous preview");
+}
