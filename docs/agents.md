@@ -46,9 +46,12 @@ The result is JSON: `{"completed": n, "results": [...]}`, plus `failedIndex` / `
 fails (the exit status is non-zero; `--keep-going` records errors and continues). `run --cmd ID=JSON` accepts the
 same references, and MCP's `batch` tool takes `commands` or `script` text with them.
 
-`run` works through its arguments in order. `--page`, `--scale` and `--pdf-options` apply to the `--export` /
-`--all-pages` that follow them, so one run can write several sizes
-(`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
+`run` works through its arguments in order. Each export option must precede at least one `--export` or `--all-pages`.
+`--page N` selects the page for a single PNG or JPEG export. Numbering starts at zero, so `--page 0` selects the first page.
+`--all-pages` writes every page as a PNG at the current `--scale`. The same scale applies to single PNG and JPEG exports,
+so one run can write several sizes (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`).
+For PDF exports, pass a JSON object with `--pdf-options`. Its `pages` field uses one-based page numbers,
+for example `{"pages":"2-4"}`.
 
 `--export` writes the file type its extension names: `.png` or `.jpg` (a page), `.pdf`, `.designcraft`, `.idml`,
 `.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
