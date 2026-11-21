@@ -75,6 +75,7 @@ pub(crate) fn options(p: &Value, page_count: usize) -> Result<PdfOptions> {
         author: str_param(p, "author").map(str::to_string),
         tagged: p.get("tagged").and_then(Value::as_bool).unwrap_or(false),
         media: p.get("media").and_then(Value::as_bool).unwrap_or(false),
+        outline_text: p.get("outlineText").and_then(Value::as_bool).unwrap_or(false),
         created,
         ..PdfOptions::default()
     })

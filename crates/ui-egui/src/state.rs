@@ -141,6 +141,8 @@ pub struct PdfExportSettings {
     pub marks_offset: String,
     /// File › Export PDF › Advanced › Tagged PDF.
     pub tagged: bool,
+    /// File › Export PDF › Advanced › Convert text to outlines.
+    pub outline_text: bool,
 }
 
 impl Default for PdfExportSettings {
@@ -158,6 +160,7 @@ impl Default for PdfExportSettings {
             marks_weight: "0.25".into(),
             marks_offset: "6".into(),
             tagged: true,
+            outline_text: false,
         }
     }
 }
