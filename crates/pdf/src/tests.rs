@@ -815,6 +815,119 @@ fn link_annotation_export_refuses_non_web_schemes() {
     assert!(!s.contains("javascript:"), "a javascript URL is not exported: {s}");
 }
 
+/// Each page's annotations: the URI of the link (empty for none) and the rectangle (empty for
+/// none), so an annotation with neither still counts.
+fn page_links(bytes: Vec<u8>) -> Vec<Vec<(String, Vec<f32>)>> {
+    use craft_pdf::syntax::object::{Array, Dict};
+    let pdf = craft_pdf::syntax::Pdf::new(bytes).expect("parse");
+    pdf.pages()
+        .iter()
+        .map(|page| {
+            let Some(annots) = page.raw().get::<Array>(b"Annots") else { return Vec::new() };
+            annots
+                .iter::<Dict>()
+                .map(|a| {
+                    let uri = a.get::<Dict>(b"A").and_then(|a| a.get::<craft_pdf::syntax::object::String>(b"URI"));
+                    let uri = uri.map(|u| String::from_utf8_lossy(u.as_bytes()).into_owned()).unwrap_or_default();
+                    (uri, a.get::<Array>(b"Rect").map(|r| r.iter::<f32>().collect()).unwrap_or_default())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// A multi-state object draws only its active state, so only a link in that state goes into
+/// the PDF: a link in another state would be a clickable area over nothing (#2913 review).
+#[test]
+fn only_the_active_state_of_a_multi_state_object_links() {
+    use designcraft_doc::{Content, Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let state = |d: &mut Document, r: Rect| Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));
+    let (a, b) = (state(&mut d, Rect::new(100.0, 100.0, 200.0, 160.0)), state(&mut d, Rect::new(300.0, 100.0, 400.0, 160.0)));
+    let (aid, bid) = (a.id, b.id);
+    let mut group = Item::new(ItemId(d.alloc()), lid, Shape::Group, designcraft_geom::PathData::default());
+    group.content = Content::Group { items: vec![std::sync::Arc::new(a), std::sync::Arc::new(b)] };
+    group.states = vec!["A".into(), "B".into()];
+    let gid = group.id;
+    d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+    for (id, name, item) in [(1, "a", aid), (2, "b", bid)] {
+        d.hyperlinks.push(Hyperlink {
+            id,
+            name: name.into(),
+            source: HyperlinkSource::Item { id: item },
+            dest: HyperlinkDest::Url(format!("https://example.com/{name}")),
+        });
+    }
+    let links = |d: &Document| page_links(export_pdf(d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+    // Each state links over itself: y 100 to 160 from the top of a 792 pt page.
+    let a = ("https://example.com/a".to_owned(), vec![100.0, 632.0, 200.0, 692.0]);
+    let b = ("https://example.com/b".to_owned(), vec![300.0, 632.0, 400.0, 692.0]);
+    assert_eq!(links(&d), [a], "state A shows");
+    d.item_mut(gid).unwrap().active_state = 1;
+    assert_eq!(links(&d), [b], "state B shows");
+}
+
+/// A hyperlink on a parent page's item or text links on every page that shows it, where it is
+/// drawn there; a page that hides its parent items has no link, nor has a hidden or nonprinting
+/// parent item, which the PDF does not draw (#2910).
+#[test]
+fn links_on_a_parent_page_link_on_its_pages() {
+    use designcraft_doc::story::PAGE_NUMBER;
+    use designcraft_doc::{Hyperlink, HyperlinkDest, HyperlinkSource, Shape};
+    let mut d = Document::new(&NewDocument { pages: 12, facing_pages: false, ..NewDocument::default() });
+    let lid = d.default_layer();
+    let rect = |r: Rect| designcraft_geom::shapes::rectangle(r);
+    let box_id = ItemId(d.alloc());
+    d.insert_item(SpreadRef::Parent(0), Item::new(box_id, lid, Shape::Rectangle, rect(Rect::new(100.0, 100.0, 200.0, 160.0))), None).unwrap();
+    let hidden_id = ItemId(d.alloc());
+    let mut hidden = Item::new(hidden_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 100.0, 400.0, 160.0)));
+    hidden.hidden = true;
+    d.insert_item(SpreadRef::Parent(0), hidden, None).unwrap();
+    let unprinted_id = ItemId(d.alloc());
+    let mut unprinted = Item::new(unprinted_id, lid, Shape::Rectangle, rect(Rect::new(300.0, 200.0, 400.0, 260.0)));
+    unprinted.nonprinting = true;
+    d.insert_item(SpreadRef::Parent(0), unprinted, None).unwrap();
+    let folio = format!("{PAGE_NUMBER} Folio");
+    let (_, sid) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(36.0, 700.0, 300.0, 740.0), lid, &folio, ParaFormat::default()).unwrap();
+    let word = folio.len() - 5;
+    for (id, name, source) in [
+        (1, "box", HyperlinkSource::Item { id: box_id }),
+        (2, "folio", HyperlinkSource::Text { story: sid, start: word, end: folio.len() }),
+        (3, "hidden", HyperlinkSource::Item { id: hidden_id }),
+        (4, "nonprinting", HyperlinkSource::Item { id: unprinted_id }),
+    ] {
+        d.hyperlinks.push(Hyperlink { id, name: name.into(), source, dest: HyperlinkDest::Url(format!("https://example.com/{name}")) });
+    }
+    std::sync::Arc::make_mut(&mut d.spreads[1]).pages[0].show_parent_items = false;
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    let pages = page_links(bytes);
+    assert_eq!(pages.len(), 12);
+    assert!(pages[1].is_empty(), "page 2 hides its parent items: {:?}", pages[1]);
+    let mut starts = Vec::new();
+    for (i, links) in pages.iter().enumerate().filter(|(i, _)| *i != 1) {
+        let uris: Vec<&str> = links.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(
+            uris,
+            ["https://example.com/box", "https://example.com/folio"],
+            "page {}: one of each, none for the hidden or nonprinting box",
+            i + 1
+        );
+        // On a spread of its own, the box links where it is drawn: x 100 to 200, y 100 to 160 from
+        // the top of a 792 pt page.
+        assert_eq!(links[0].1, [100.0, 632.0, 200.0, 692.0], "page {}", i + 1);
+        // The word is on the line at the frame's top (y 700 down), after the page's number.
+        let r = &links[1].1;
+        assert!(r[0] > 36.0 && r[3] <= 92.5 && r[3] > 52.0, "page {}: {r:?}", i + 1);
+        starts.push((i + 1, r[0]));
+    }
+    // Each page's own number: one digit up to page 9, two from page 10, so the word starts
+    // further right on pages 10 to 12.
+    let near = starts.iter().map(|s| s.1).fold(f32::MAX, f32::min);
+    let far: Vec<usize> = starts.iter().filter(|s| s.1 > near + 3.0).map(|s| s.0).collect();
+    assert_eq!(far, [10, 11, 12], "{starts:?}");
+}
+
 /// A clipping path on a placed image becomes a clip in the page content, inside the frame's.
 #[test]
 fn clipping_path_clips_the_image() {
