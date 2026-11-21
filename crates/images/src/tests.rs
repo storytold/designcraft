@@ -1433,21 +1433,23 @@ fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
     let (w, h) = (16u32, 12u32);
     let px_count = (w * h) as usize;
 
-    // Orientation 2..=4 swaps/flips pixels while keeping `bands.dimensions() == pixel_size`,
+    // Orientations 2..=8 keep `bands.dimensions() == pixel_size` after `upright()`,
     // adding a full group copy alongside the band during `TiffBands::decode`.
-    // Orientations 5..=8 swap stored dimensions relative to `pixel_size` and fall back to full decode.
+    // Orientations 5..=8 also swap the reduced output dimensions.
     let rgba_raw = vec![120u8; px_count * 4];
     let upright = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(1), &[&rgba_raw], Some(2), None);
     let flipped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(3), &[&rgba_raw], Some(2), None);
     let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_raw], Some(2), None);
     let est_upright = reduced_estimate(&upright, 1).unwrap();
     let est_flip = reduced_estimate(&flipped, 1).unwrap();
+    let est_swapped = reduced_estimate(&swapped, 1).unwrap();
     assert_eq!((est_upright.0, est_upright.1), (8, 6));
     assert_eq!((est_flip.0, est_flip.1), (8, 6));
     assert_eq!(est_flip.2, est_upright.2 + px_count * 4);
     assert_eq!(decode_rgba_reduced(&flipped, 1).unwrap().dimensions(), (8, 6));
-    assert!(reduced_estimate(&swapped, 1).is_none());
-    assert!(decode_rgba_reduced(&swapped, 1).is_none());
+    assert_eq!((est_swapped.0, est_swapped.1), (6, 8));
+    assert_eq!(est_swapped.2, est_upright.2 + px_count * 4);
+    assert_eq!(decode_rgba_reduced(&swapped, 1).unwrap().dimensions(), (6, 8));
 
     // Lab8 and Rgb32F convert through normalized 32-bit float intermediates before U8 output.
     let rgb_raw = vec![128u8; px_count * 3];
