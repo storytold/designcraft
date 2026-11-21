@@ -71,7 +71,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("states.rename", "State Options", [], None, "{id?, index, name}", has_selection, |s, p| {
             let id = target(s, p)?;
             let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad("states.rename", "`index` required"))? as usize;
-            let name = p.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let name = p.get("name").and_then(Value::as_str).ok_or_else(|| bad("states.rename", "`name` must be a string"))?.to_string();
             s.edit(|d, _| {
                 let it = d.item_mut(id).ok_or_else(|| bad("states.rename", "no such object"))?;
                 let st = it.states.get_mut(i).ok_or_else(|| bad("states.rename", format!("no state {i}")))?;
@@ -121,5 +121,54 @@ mod tests {
         assert!(second[2] > 150 && second[0] < 100, "state 2 (cyan): {second:?}");
         s.execute("states.release", &json!({"id": id})).unwrap();
         assert!(s.execute("states.list", &json!({"id": id})).unwrap()["states"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rename_requires_a_string_without_changing_document_or_history() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        let b = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        let id = s.execute("states.create", &json!({"ids": [a, b]})).unwrap()["id"].clone();
+        s.execute("states.rename", &json!({"id": id, "index": 0, "name": "Renamed"})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        let before = s.doc().unwrap().clone();
+        for params in [
+            json!({"id": id, "index": 0}),
+            json!({"id": id, "index": 0, "name": null}),
+            json!({"id": id, "index": 0, "name": 7}),
+            json!({"id": id, "index": 0, "name": true}),
+            json!({"id": id, "index": 0, "name": []}),
+            json!({"id": id, "index": 0, "name": {}}),
+        ] {
+            let error = s.execute("states.rename", &params).unwrap_err().to_string();
+            assert!(error.contains("`name`"), "{error}");
+            let after = s.doc().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&after.doc, &before.doc), "{params}");
+            assert_eq!(after.history.undo.len(), before.history.undo.len(), "{params}");
+            assert_eq!(after.history.redo.len(), before.history.redo.len(), "{params}");
+        }
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.execute("states.list", &json!({"id": id})).unwrap()["states"], json!(["Renamed", "State 2"]));
+    }
+
+    #[test]
+    fn rename_accepts_strings_including_empty_and_duplicate_names_with_undo() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        let b = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+        let id = s.execute("states.create", &json!({"ids": [a, b]})).unwrap()["id"].clone();
+        for name in ["Renamed", "", "State 2"] {
+            let before = s.doc().unwrap().doc.clone();
+            let undo = s.doc().unwrap().history.undo.len();
+            s.execute("states.rename", &json!({"id": id, "index": 0, "name": name})).unwrap();
+            assert_eq!(s.execute("states.list", &json!({"id": id})).unwrap()["states"], json!([name, "State 2"]));
+            assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(s.doc().unwrap().doc, before);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert_eq!(s.execute("states.list", &json!({"id": id})).unwrap()["states"], json!([name, "State 2"]));
+        }
     }
 }
