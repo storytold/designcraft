@@ -1388,7 +1388,9 @@ mod layer_options_tests {
         s.execute("object.lock", &json!({"ids": [locked]})).unwrap();
         let d = &s.doc().unwrap().doc;
         let p = designcraft_geom::Point::new(50.0, 50.0);
-        assert_eq!(d.hit_item_where(0, p, 1.0, |it| !it.locked).map(|i| i.0), Some(behind), "the unlocked object behind");
+        let open = |it: &designcraft_doc::Item| !it.locked;
+        let hit = d.spreads[0].items.iter().rev().find(|it| open(it) && designcraft_doc::edit_hit_where(it, p, 1.0, &open)).map(|it| it.id.0);
+        assert_eq!(hit, Some(behind), "the unlocked object behind");
         assert_eq!(d.hit_item(0, p, 1.0).map(|i| i.0), Some(group), "without the filter the group is hit");
     }
 }
