@@ -84,6 +84,22 @@ fn width_only_with_no_line_breaks_widens_to_the_longest_line() {
     assert!(!cs.is_overset());
 }
 
+/// The paragraph's indents are part of the width a line needs: a Width Only frame fitted to the
+/// ink alone breaks the line it was fitted to (a headline with a left indent).
+#[test]
+fn width_only_counts_the_paragraph_indents() {
+    let mut s = session();
+    let (id, sid) = frame(&mut s, [36.0, 36.0, 56.0, 120.0], json!({"autoSize": "widthOnly", "autoSizeReference": "topLeft", "noLineBreaks": true}));
+    s.execute("type.para", &json!({"attrs": {"leftIndent": 40, "rightIndent": 10}})).unwrap();
+    s.execute("text.insert", &json!({"text": "Indented headline words"})).unwrap();
+    let cs = designcraft_compose::compose_story(&s.doc().unwrap().doc, sid, &Default::default());
+    assert_eq!(cs.line_count(), 1, "the line it was fitted to stays one line");
+    assert!(!cs.is_overset());
+    let glyphs = &cs.frames[0].lines[0].glyphs;
+    let ink = glyphs.iter().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max) - glyphs.iter().map(|g| g.x).fold(f64::INFINITY, f64::min);
+    assert!(bounds(&s, id).width() >= ink + 50.0 - 1e-6, "{:?} vs ink {ink}", bounds(&s, id));
+}
+
 #[test]
 fn minimum_height_is_respected() {
     let mut s = session();
