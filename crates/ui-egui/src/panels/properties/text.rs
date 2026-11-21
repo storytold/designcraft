@@ -90,7 +90,7 @@ pub(super) fn text_style_section(app: &mut DesignApp, ui: &mut Ui) {
             if icon_toggle(ui, "style-new", false, crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Create new style"))).clicked()
             {
                 let cmd = if tab == 0 { "style.paragraph.create" } else { "style.character.create" };
-                let _ = app.run(cmd, json!({}));
+                let _ = app.run(cmd, json!({"fromSelection": true}));
             }
             if icon_toggle(ui, "style-clear", false, crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Clear overrides")))
                 .clicked()
