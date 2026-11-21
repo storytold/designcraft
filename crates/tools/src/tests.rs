@@ -2306,7 +2306,10 @@ fn pulling_a_corner_of_an_unselected_frame_selects_the_frame_not_its_content() {
     let acts = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y));
     assert_eq!(
         acts,
-        vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [a.0], "content": false})), Action::Begin("Move Anchor".into())]
+        vec![
+            Action::Exec("selection.set".into(), serde_json::json!({"ids": [a.0], "content": false, "anchors": [[a.0, 0, 1]]})),
+            Action::Begin("Move Anchor".into())
+        ]
     );
 }
 
