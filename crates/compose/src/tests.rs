@@ -1481,6 +1481,282 @@ fn optical_kerning_leaves_dash_pairs_alone() {
     }
 }
 
+/// "A different thing" in the bundled serif, which sets "ff" as one glyph, in a frame `width` wide.
+fn different_thing(width: f64, hyphenate: bool) -> ComposedStory {
+    let para = ParaAttrs { hyphenate: Some(hyphenate), ..Default::default() };
+    let (d, sid, _) = doc_with("A different thing", Rect::new(0.0, 0.0, width, 400.0), para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+#[test]
+fn a_ligature_with_a_hyphenation_point_inside_is_set_as_without_one_when_the_line_keeps_it() {
+    let shown = |cs: &ComposedStory| -> Vec<(u32, usize, usize, f64)> {
+        cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).map(|g| (g.gid, g.byte, g.len, g.x)).collect()
+    };
+    let (with, without) = (different_thing(400.0, true), different_thing(400.0, false));
+    assert_eq!(with.frames[0].lines.len(), 1);
+    // The ff ligature is one glyph over both letters, at the same place and as wide as before.
+    let lig = shown(&without).into_iter().find(|g| g.2 == 2).expect("the bundled serif sets ff as a ligature");
+    assert_eq!((lig.1, lig.2), (4, 2));
+    assert_eq!(shown(&with), shown(&without));
+    // The second glyph of the pair is there, takes no room and is not drawn.
+    let hidden: Vec<_> = with.frames[0].lines[0].glyphs.iter().filter(|g| !g.visible && g.byte == 6).collect();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].len, 0);
+    let next = with.frames[0].lines[0].glyphs.iter().find(|g| g.visible && g.byte == 6).unwrap();
+    assert!((hidden[0].x - next.x).abs() < 1e-9, "the placeholder takes no room: it sits where the next letter starts");
+}
+
+#[test]
+fn a_word_is_broken_inside_a_ligature_into_its_pieces() {
+    // "dif-" and "ferent": the ff ligature is broken, each f set alone, and the hyphen follows the first.
+    let mut found = None;
+    for width in (20..70).map(f64::from) {
+        let cs = different_thing(width, true);
+        let lines = &cs.frames[0].lines;
+        if let Some(k) = lines.iter().position(|l| l.hyphenated && l.range.end == 5) {
+            found = Some((width, cs.clone(), k));
+            break;
+        }
+    }
+    let (width, cs, k) = found.expect("some width breaks the word inside the ligature");
+    let (first, next) = (&cs.frames[0].lines[k], &cs.frames[0].lines[k + 1]);
+    let f = first.glyphs[0].face.get().glyph_for('f');
+    let last_text = first.glyphs.iter().rev().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((last_text.gid, last_text.byte, last_text.len), (f, 4, 1), "width {width}: the first f alone");
+    let first_of_next = next.glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((first_of_next.gid, first_of_next.byte, first_of_next.len), (f, 5, 1), "width {width}: the second f alone");
+    assert_eq!(next.range.start, 5);
+    // Each piece has its own advance, not the share of the ligature's the breaker measured with.
+    for g in [last_text, first_of_next] {
+        assert!((g.adv - g.face.get().advance(f) * g.sx).abs() < 1e-6, "width {width}: the advance of a lone f");
+    }
+    // No ligature is left in either line.
+    assert!(cs.frames[0].lines[k..=k + 1].iter().all(|l| l.glyphs.iter().filter(|g| g.visible).all(|g| g.len <= 1 || g.byte > 5)));
+}
+
+#[test]
+fn a_word_broken_inside_a_ligature_at_the_end_of_a_frame_keeps_its_second_piece() {
+    // A one-line frame threaded to a second: a width where the first line ends "dif-" leaves "ferent"
+    // for the second frame, whose placement starts at the second piece of the ligature.
+    let text = "A different thing";
+    let mut found = false;
+    for width in (20..70).map(f64::from) {
+        let para = ParaAttrs { hyphenate: Some(true), ..Default::default() };
+        let (mut d, sid, a) = doc_with(text, Rect::new(0.0, 0.0, width, 17.0), para);
+        let lid = d.default_layer();
+        let (b, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 0.0, 400.0, 100.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(a, b).unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        if !cs.frame(a).unwrap().lines.iter().any(|l| l.hyphenated && l.range.end == 5) {
+            continue;
+        }
+        found = true;
+        let second = cs.frame(b).unwrap();
+        let first_glyph = second.lines[0].glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+        assert_eq!((first_glyph.byte, first_glyph.len), (5, 1), "width {width}: the second f starts the next frame");
+        // Every letter of the text is set somewhere.
+        let mut set = vec![false; text.len()];
+        for g in [a, b].iter().flat_map(|&f| cs.frame(f).unwrap().lines.iter()).flat_map(|l| l.glyphs.iter()).filter(|g| g.visible) {
+            set[g.byte..g.byte + g.len].fill(true);
+        }
+        for (i, c) in text.char_indices().filter(|&(_, c)| c != ' ') {
+            assert!(set[i], "width {width}: {c:?} at byte {i} is not set");
+        }
+        break;
+    }
+    assert!(found, "some width breaks the word inside the ligature at the end of the frame");
+}
+
+#[test]
+fn the_placeholder_of_a_kept_ligature_takes_no_part_in_single_word_justification() {
+    // "different" alone on a justified line is spread over the measure letter by letter. The ligature
+    // keeps the gap after it, and its hidden second glyph, which takes no room, gets none.
+    let mut checked = 0;
+    for width in (54..90).map(f64::from) {
+        let compose = |hyphenate: bool| {
+            // A hyphen costs so much that the word stays whole, with its hyphenation points known.
+            let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(hyphenate), hyph_weight: Some(100.0), ..Default::default() };
+            let (d, sid, _) = doc_with("different thing", Rect::new(0.0, 0.0, width, 400.0), para);
+            compose_story(&d, sid, &ComposeOptions::default())
+        };
+        let (with, without) = (compose(true), compose(false));
+        let (a, b) = (&with.frames[0].lines, &without.frames[0].lines);
+        if a.len() != b.len() || a.iter().zip(b).any(|(x, y)| x.range != y.range) || a[0].range.end != 10 {
+            continue;
+        }
+        let shown = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| (g.byte, g.len, g.x)).collect::<Vec<_>>();
+        assert_eq!(shown(&a[0]), shown(&b[0]), "width {width}: the ligature's placeholder moved a letter");
+        checked += 1;
+    }
+    assert!(checked > 0, "some width sets \"different\" alone on a justified line");
+}
+
+#[test]
+fn the_pieces_of_a_split_ligature_are_shaped_with_the_runs_features() {
+    // "office": the ffi ligature with a point after its first f has pieces "f" and "fi". With ligatures
+    // on, "fi" is one glyph and the ligature is paired; a run whose features stop that shapes it as
+    // two glyphs, which a pair cannot hold, so the ligature is left whole.
+    let glyphs = shape_for_script_test("office");
+    let k = glyphs.iter().position(|g| g.len == 3).expect("the bundled serif sets ffi as one glyph");
+    let mut plain = glyphs.clone();
+    pair_ligatures_at_hyphens(&mut plain, &[(k, 2)], "office", 0.0, &|_| (Vec::new(), 0.0));
+    assert_eq!(plain.len(), glyphs.len() + 1, "paired with the default features");
+    let mut off = glyphs.clone();
+    pair_ligatures_at_hyphens(&mut off, &[(k, 2)], "office", 0.0, &|_| (designcraft_fonts::feature("-liga").into_iter().collect(), 0.0));
+    assert_eq!(off.len(), glyphs.len(), "the run's features reach the pieces");
+}
+
+#[test]
+fn the_pieces_of_a_split_ligature_take_the_runs_manual_kerning_like_any_cluster() {
+    // Manual kerning 100 at 12 pt is 1.2 pt after each cluster: the ligature took it once, and a piece
+    // set alone takes it too, so a break inside the ligature keeps the spacing of the letters after it.
+    let text = "A different thing";
+    let mut checked = 0;
+    for width in (20..70).map(f64::from) {
+        let para = ParaAttrs { hyphenate: Some(true), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.kerning = Some(designcraft_doc::Kerning::Manual(100.0)));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = &cs.frames[0].lines;
+        let Some(k) = lines.iter().position(|l| l.hyphenated && l.range.end == 5) else { continue };
+        let last_text = lines[k].glyphs.iter().rev().find(|g| g.visible && g.len > 0).unwrap();
+        let first_of_next = lines[k + 1].glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+        for g in [last_text, first_of_next] {
+            let expected = g.face.get().advance(g.face.get().glyph_for('f')) * g.sx + 1.2;
+            assert!(
+                (g.adv - expected).abs() < 1e-6,
+                "width {width}: a lone f advances {} where an f after manual kerning advances {expected}",
+                g.adv
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "some width breaks the word inside the ligature");
+}
+
+#[test]
+fn a_kept_ligature_at_the_end_of_a_word_gets_no_gap_after_it_in_single_word_justification() {
+    // "staff" with a hyphenation exception inside its ff, kept whole on a justified line of its own:
+    // its placeholder is the last glyph of the line and the ligature the last one drawn, which gets no
+    // gap, as without the exception.
+    let mut checked = 0;
+    for width in (30..58).map(f64::from) {
+        let compose = |hyphenate: bool| {
+            let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(hyphenate), hyph_weight: Some(100.0), ..Default::default() };
+            let (mut d, sid, _) = doc_with("staff thing", Rect::new(0.0, 0.0, width, 400.0), para);
+            d.hyphenation_exceptions.push("staf~f".into());
+            compose_story(&d, sid, &ComposeOptions::default())
+        };
+        let (with, without) = (compose(true), compose(false));
+        let (a, b) = (&with.frames[0].lines, &without.frames[0].lines);
+        if a.len() != b.len() || a.iter().zip(b).any(|(x, y)| x.range != y.range) || a[0].range.end != 6 {
+            continue;
+        }
+        let shown = |l: &Line| l.glyphs.iter().filter(|g| g.visible).map(|g| (g.byte, g.len, g.x)).collect::<Vec<_>>();
+        assert_eq!(shown(&a[0]), shown(&b[0]), "width {width}: a gap after the ligature moved the letters");
+        checked += 1;
+    }
+    assert!(checked > 0, "some width sets \"staff\" alone on a justified line");
+}
+
+#[test]
+fn a_split_ligature_measures_as_it_will_on_both_sides_of_a_break_while_the_breaker_chooses() {
+    let glyphs = shape_for_script_test("different");
+    let k = glyphs.iter().position(|g| g.len == 2).expect("the bundled serif sets ff as one glyph");
+    let whole = glyphs[k].adv;
+    let mut paired = glyphs.clone();
+    pair_ligatures_at_hyphens(&mut paired, &[(k, 3)], "different", 0.0, &|_| (Vec::new(), 0.0));
+    let (a, b) = (&paired[k], &paired[k + 1]);
+    let pair = &a.lig.as_ref().expect("paired").pair;
+    // A line that keeps the ligature measures as it will.
+    assert!((a.adv + b.adv - whole).abs() < 1e-9, "the two glyphs make up the ligature's advance");
+    // A line that starts with the second piece measures with the advance that piece will have.
+    assert!((b.adv - pair.second.adv).abs() < 1e-9, "the second piece's own advance");
+    // A line that ends on the first piece: the word up to it, and the hyphen, as wide as they will be.
+    let mut hyphen_after = vec![false; paired.len()];
+    hyphen_after[k] = true;
+    let justified = breaker::Spacing { justify: true, ..Default::default() };
+    let width = breaker::first_word_width(&paired, &hyphen_after, &justified);
+    let hyphen = a.face.advance(designcraft_fonts::first_glyph(&a.face, &['-', '\u{2010}'])) * a.sx;
+    let expected = paired[..k].iter().map(|g| g.adv).sum::<f64>() + pair.first.adv + hyphen;
+    assert!((width - expected).abs() < 1e-9, "the word up to the first piece and the hyphen: {width} against {expected}");
+}
+
+#[test]
+fn the_hyphen_after_the_first_piece_of_a_split_ligature_hangs_as_a_hyphen_and_the_piece_does_not() {
+    // With optical margin alignment the hyphen at a line's end hangs part of its width. What the first
+    // piece of a split ligature adds to the line is not hyphen: it stays in the line.
+    let glyphs = shape_for_script_test("different");
+    let k = glyphs.iter().position(|g| g.len == 2).expect("the bundled serif sets ff as one glyph");
+    let mut paired = glyphs.clone();
+    pair_ligatures_at_hyphens(&mut paired, &[(k, 3)], "different", 0.0, &|_| (Vec::new(), 0.0));
+    let (first, plain) = (&paired[k], &paired[0]);
+    let extra = first.lig.as_ref().expect("paired").pair.first.adv - first.adv;
+    assert!(extra.abs() > 0.05, "the first piece differs from the advance it is measured with: {extra}");
+    let optical = breaker::Spacing { justify: true, optical: true, ..Default::default() };
+    let mut cache = Vec::new();
+    let room_plain = breaker::hyphen_room(plain, &optical, &mut cache);
+    let room_first = breaker::hyphen_room(first, &optical, &mut cache);
+    let flat = breaker::hyphen_room(plain, &breaker::Spacing { justify: true, ..Default::default() }, &mut cache);
+    assert!(room_plain < flat - 0.1, "the hyphen hangs with optical margin alignment: {room_plain} against {flat}");
+    assert!((room_first - room_plain - extra).abs() < 1e-9, "only the hyphen hangs: {room_first} against {room_plain} and {extra}");
+}
+
+#[test]
+fn a_line_is_not_ended_between_the_pieces_of_a_split_ligature_where_it_would_be_set_wider_than_the_measure() {
+    // "different" is wider than these frames, so it breaks where it must, with or without its hyphen.
+    // A line that ends between the two f's without a hyphen sets the first piece, which can be wider
+    // than the advance the line was measured with (the single-line composer used to end a line there
+    // 0.78 pt past the frame): it must still end within the frame.
+    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+        for step in 0..1200 {
+            let width = 8.0 + f64::from(step) * 0.05;
+            let para = ParaAttrs { hyphenate: Some(true), composer: Some(composer), ..Default::default() };
+            let (d, sid, _) = doc_with("different", Rect::new(0.0, 0.0, width, 400.0), para);
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            for l in cs.frames[0].lines.iter().filter(|l| l.range.end == 3 && !l.hyphenated) {
+                let right = l.glyphs.iter().filter(|g| g.visible && g.len > 0).map(|g| g.x + g.adv).fold(0.0, f64::max);
+                assert!(right <= width + 0.02, "{composer:?} width {width}: a line ends between the f's at {right}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_pieces_of_a_split_ligature_take_the_letter_spacing_every_glyph_takes() {
+    let text = "A different thing";
+    let compose = |width: f64, spacing: f64| {
+        let para = ParaAttrs {
+            hyphenate: Some(true),
+            letter_space_desired: Some(spacing),
+            letter_space_min: Some(spacing),
+            letter_space_max: Some(spacing),
+            ..Default::default()
+        };
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    // What letter spacing adds to an ordinary letter, from the first glyph of a line wide enough for all.
+    let (loose, tight) = (compose(400.0, 0.1), compose(400.0, 0.0));
+    let added = loose.frames[0].lines[0].glyphs[0].adv - tight.frames[0].lines[0].glyphs[0].adv;
+    assert!(added > 0.1, "letter spacing widens a letter: {added}");
+    let mut checked = 0;
+    for width in (20..90).map(f64::from) {
+        let cs = compose(width, 0.1);
+        let lines = &cs.frames[0].lines;
+        let Some(k) = lines.iter().position(|l| l.hyphenated && l.range.end == 5) else { continue };
+        let last_text = lines[k].glyphs.iter().rev().find(|g| g.visible && g.len > 0).unwrap();
+        let first_of_next = lines[k + 1].glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+        for g in [last_text, first_of_next] {
+            let expected = g.face.get().advance(g.face.get().glyph_for('f')) * g.sx + added;
+            assert!((g.adv - expected).abs() < 1e-6, "width {width}: a lone f advances {} where an f with letter spacing advances {expected}", g.adv);
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "some width breaks the word inside the ligature");
+}
+
 #[test]
 fn hyphen_limit_is_a_hard_constraint() {
     let text = CORPUS.join(" ");
