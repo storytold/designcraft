@@ -758,6 +758,18 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             continue;
         }
         let forced = pp <= -INF;
+        // A forced break ends a ragged line (the paragraph's final line, or one ended by an
+        // explicit break). Only there, InDesign's 1% trailing-word overrun allowance applies:
+        // justified lines keep the fixed epsilon so they never look visibly overfull. Never used
+        // to change advances, only to decide whether an overfull line is accepted.
+        let mut fit_eps = FIT_EPS;
+        if forced && !sp.justify {
+            let end_g = item_glyphs[b].min(glyphs.len());
+            if let Some(space_g) = (0..end_g).rev().find(|&j| glyphs[j].is_space()) {
+                let allowance: f64 = glyphs[space_g..end_g].iter().map(|g| g.adv).sum();
+                fit_eps = fit_eps.max(0.01 * allowance);
+            }
+        }
         best.iter_mut().for_each(|x| *x = None);
         keep.clear();
         let mut last_removed: Option<usize> = None;
@@ -773,9 +785,10 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             }
             y[0] = (y[0] + it.edge_elastic[0]).max(0.0);
             z[0] = (z[0] + it.edge_elastic[1]).max(0.0);
-            // A line that overruns its measure by a rounding error fits exactly.
+            // A line that overruns its measure by a rounding error (or by the allowed 1% of its
+            // trailing word on a ragged line) fits exactly.
             let d = target - l;
-            let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
+            let d = if d < 0.0 && d > -fit_eps { 0.0 } else { d };
             let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
@@ -945,6 +958,9 @@ pub fn greedy(
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    // Tabs (including right-indent tabs) have a breaking advance that differs from where they are
+    // finally placed, so the glyphs before the trailing word cannot be summed for the allowance.
+    let has_tabs = glyphs.iter().any(|g| g.ch == '\t' || g.ch == designcraft_doc::story::RIGHT_INDENT_TAB);
     while start < n {
         let w = width(line).max(1.0);
         let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
@@ -977,6 +993,13 @@ pub fn greedy(
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
             let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only())[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            // InDesign tolerates a ragged line overrunning its measure by 1% of the word being
+            // completed together with the space before it. It is a fit allowance only: advances
+            // stay natural, so a frame fitted to the text in InDesign does not overset here.
+            // Justified lines are stretched to the measure and keep the fixed epsilon, so they do
+            // not end visibly past the edge.
+            let trailing_allowance = if sp.justify || has_tabs { 0.0 } else { last_space.map_or(0.0, |(_, xs)| (x + adv - hang_r - xs).max(0.0)) };
+            let fit_eps = FIT_EPS.max(0.01 * trailing_allowance);
             if sp.kinsoku_cjk
                 && sp.kinsoku_priority == 2
                 && x + adv - hang_r > w + FIT_EPS
@@ -985,7 +1008,7 @@ pub fn greedy(
                 brk = Some((end, hyphen, false));
                 break;
             }
-            if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
+            if x + adv - hang_r > w + available.max(0.0) + fit_eps
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {

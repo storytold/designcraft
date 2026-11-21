@@ -8120,6 +8120,36 @@ fn a_line_that_exactly_fills_the_measure_fits() {
     }
 }
 
+#[test]
+fn trailing_word_overrun_is_tolerated() {
+    use designcraft_doc::Composer;
+    let text = "nu nu nun";
+    // Natural advance of the whole line, from one that cannot break.
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    let natural = one.end_x - one.x0;
+    // Advances of the last word together with the space before it: the basis of the allowance.
+    let last_space = one.glyphs.iter().rposition(|g| g.rendered_char == ' ').unwrap();
+    let trailing: f64 = one.glyphs[last_space..].iter().map(|g| g.adv).sum();
+    let fits_one_line = |w: f64| {
+        let para = ParaAttrs { composer: Some(Composer::SingleLine), align: Some(Align::Left), hyphenate: Some(false), ..Default::default() };
+        tracked_lines(text, w, para, 0.0).len() == 1
+    };
+    // Narrowest frame that still keeps the line whole (lo breaks, hi fits).
+    let (mut lo, mut hi) = (0.0, natural);
+    assert!(fits_one_line(hi), "the natural width must fit on one line");
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if fits_one_line(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let minimal = hi;
+    assert!(minimal < natural - 0.1, "single-line composer needs {minimal}; a 1% allowance fits about {}", natural - 0.01 * trailing);
+    assert!(minimal >= natural - 0.01 * trailing - 0.01, "tolerance too large: {minimal} vs natural {natural}, trailing {trailing}");
+}
+
 // ---------- split columns ----------
 
 /// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
