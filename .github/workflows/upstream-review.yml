@@ -1,0 +1,27 @@
+name: Review upstream updates
+on:
+  schedule:
+    - cron: '37 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/storytold/designcraft.git
+          git fetch --no-tags upstream main
+          count=$(git rev-list --count HEAD..upstream/main)
+          echo "Upstream commits not in fork: $count" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream: https://github.com/storytold/designcraft" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$count" -gt 0 ]; then
+            echo "::notice::$count upstream commits available for review; no changes were applied."
+          fi
