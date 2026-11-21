@@ -1389,3 +1389,84 @@ fn tiff_exif_orientation_and_progressive_jpeg_probes() {
     assert_eq!(pixel_size(&prog), Some((16, 8)));
     assert!(decode_bytes_per_pixel(&prog) >= 8);
 }
+
+#[test]
+fn jpeg_orientation_keeps_first_exif_app1_segment() {
+    let mut first_wins = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6));
+    first_wins.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1)));
+    assert_eq!(raster_resolution(&jpeg_with(&first_wins)), Some((150.0, 300.0)));
+
+    let mut upright_first = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1));
+    upright_first.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(raster_resolution(&jpeg_with(&upright_first)), Some((300.0, 150.0)));
+}
+
+#[test]
+fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
+    fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = kind.to_vec();
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        out
+    }
+    fn png_with_chunks(width: u32, height: u32, extra: &[Vec<u8>]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        let mut base = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut base), image::ImageFormat::Png).unwrap();
+        let mut out = base[..33].to_vec();
+        for c in extra {
+            out.extend_from_slice(c);
+        }
+        out.extend_from_slice(&base[33..]);
+        out
+    }
+    fn phys_data(x: u32, y: u32, unit: u8) -> Vec<u8> {
+        let mut d = x.to_be_bytes().to_vec();
+        d.extend_from_slice(&y.to_be_bytes());
+        d.push(unit);
+        d
+    }
+
+    // Independent pHYs axes (144 x 72 ppi) and exact placement size (#1648 parity).
+    let asym = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &phys_data(5669, 2835, 1))]);
+    assert_eq!(raster_resolution(&asym), Some((144.0, 72.0)));
+    assert_eq!(natural_size(&asym), Some((72.0, 72.0)));
+
+    // Unitless or zero pHYs without eXIf falls back to 1 px = 1 pt.
+    for bad in [phys_data(5669, 5669, 0), phys_data(0, 5669, 1)] {
+        let png = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &bad)]);
+        assert_eq!(raster_resolution(&png), None);
+        assert_eq!(natural_size(&png), Some((144.0, 72.0)));
+    }
+
+    // eXIf fallback when pHYs is absent or unusable; pHYs wins when valid.
+    let exif_300 = tiff_bytes((300, 1), (300, 1), Some(2));
+    let only_exif = png_with_chunks(4, 4, &[png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&only_exif), Some((300.0, 300.0)));
+    let unitless_plus_exif = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5669, 5669, 0)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&unitless_plus_exif), Some((300.0, 300.0)));
+    let phys_wins = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5906, 5906, 1)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&phys_wins), Some((150.0, 150.0)));
+
+    // Orientation 6 swaps pHYs axes.
+    let rotated = png_with_chunks(
+        4,
+        4,
+        &[png_chunk(b"pHYs", &phys_data(11811, 5906, 1)), png_chunk(b"eXIf", &tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6))],
+    );
+    assert_eq!(raster_resolution(&rotated), Some((150.0, 300.0)));
+
+    // Shared resolution_probe chunk limit (MAX_CHUNKS = 4096, counting IHDR as chunk 0).
+    let phys = png_chunk(b"pHYs", &phys_data(11811, 11811, 1));
+    let text = png_chunk(b"tEXt", b"k\x00v");
+    let mut at_limit = vec![text.clone(); 4094];
+    at_limit.push(phys.clone());
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &at_limit)), Some((300.0, 300.0)));
+
+    let mut past_limit = vec![text; 4095];
+    past_limit.push(phys);
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &past_limit)), None);
+}
