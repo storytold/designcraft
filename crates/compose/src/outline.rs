@@ -70,17 +70,25 @@ impl FrameOutline {
         // Both ends of an edge must lie on the same side of the box: an edge with one end on the
         // left side and one on the right is not on the box when it runs through the middle, as the
         // edges of a compound path's inner sub-rectangles do.
-        let on_side = |a: Point, b: Point, eps: f64| {
+        let on_side = |a: Point, b: Point| {
             let near = |v: f64, side: f64| (v - side).abs() < eps;
             (near(a.x, x0) && near(b.x, x0))
                 || (near(a.x, x1) && near(b.x, x1))
                 || (near(a.y, y0) && near(b.y, y0))
                 || (near(a.y, y1) && near(b.y, y1))
         };
-        let rect = edges.iter().all(|&(a, b)| {
+        // How far an edge's ends may differ along its short direction: the frame-wide slack, and
+        // no more than a fraction of the edge's own length. Only this slant is held to the edge's
+        // length: how far the edge lies from the box stays at the frame-wide slack, because a
+        // straight side with an extra anchor is stored as shorter edges, which must classify as the
+        // side does.
+        let slant_limit = |a: Point, b: Point| {
             let length = (a.x - b.x).abs().max((a.y - b.y).abs());
-            let eps = eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length));
-            ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_side(a, b, eps)
+            eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length))
+        };
+        let rect = edges.iter().all(|&(a, b)| {
+            let slant = slant_limit(a, b);
+            ((a.x - b.x).abs() < slant || (a.y - b.y).abs() < slant) && on_side(a, b)
         });
         if rect {
             return None;
@@ -360,5 +368,31 @@ mod tests {
         assert!(FrameOutline::new(&tall(17.0, 600.0, 1.8), 0.0).is_some(), "1.8 pt over 17 pt on a 600 pt frame");
         assert!(FrameOutline::new(&tall(16.74, 239.0, 0.70), 0.0).is_some(), "0.70 pt over 16.74 pt on a 239 pt frame");
         assert!(FrameOutline::new(&tall(16.74, 239.0, 0.54), 0.0).is_none(), "the measured frame: 0.54 pt over 16.74 pt");
+    }
+
+    /// The same frame as [`tall`] with the bottom edge split at `fraction` of its width by an extra
+    /// anchor on the line (stored paths keep such anchors).
+    fn tall_with_anchor(width: f64, height: f64, slant: f64, fraction: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        bp.line_to((width * fraction, height + slant * fraction));
+        bp.line_to((width, height + slant));
+        bp.line_to((width, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// A straight side with an extra anchor on it is the same side: its halves are shorter edges,
+    /// and an edge's length bounds only its slant, not how far it lies from the box. The measured
+    /// frame split at its middle (or anywhere else) is still a rectangle, a steeper slant is still a
+    /// shape however it is split.
+    #[test]
+    fn an_extra_anchor_on_a_side_does_not_change_whether_the_frame_is_a_rectangle() {
+        for fraction in [0.5, 0.25, 0.9] {
+            assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.54, fraction), 0.0).is_none(), "measured frame split at {fraction}");
+            assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.70, fraction), 0.0).is_some(), "0.70 pt slant split at {fraction}");
+            assert!(FrameOutline::new(&tall_with_anchor(17.0, 600.0, 1.8, fraction), 0.0).is_some(), "1.8 pt slant on 600 pt split at {fraction}");
+        }
     }
 }
