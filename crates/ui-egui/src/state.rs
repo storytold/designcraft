@@ -132,6 +132,10 @@ pub struct PdfExportSettings {
     pub compress_images: bool,
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
+    /// Whether `flatten` was explicitly chosen (so `""` keeps live transparency rather than
+    /// falling back to `UiState.flattener`, while older builds still read `flatten = ""` cleanly).
+    #[serde(default)]
+    pub flatten_chosen: bool,
     pub spreads: bool,
     pub bleed: bool,
     pub marks_crop: bool,
@@ -150,6 +154,7 @@ impl Default for PdfExportSettings {
             standard: "none".into(),
             compress_images: false,
             flatten: "".into(),
+            flatten_chosen: false,
             spreads: false,
             bleed: true,
             marks_crop: false,
@@ -159,6 +164,16 @@ impl Default for PdfExportSettings {
             marks_offset: "6".into(),
             tagged: true,
         }
+    }
+}
+
+impl PdfExportSettings {
+    /// The flattener preset to seed the Export PDF dialog and Separations Preview with (`""` =
+    /// live transparency, `"high"`, `"medium"`, or `"low"`). An unchosen empty value (`""` with
+    /// `flatten_chosen == false`) falls back to `global` (`UiState.flattener`); once explicitly
+    /// chosen (or non-empty), the saved `flatten` value is kept.
+    pub fn resolved_flatten<'a>(&'a self, global: &'a str) -> &'a str {
+        if self.flatten_chosen || !self.flatten.is_empty() { &self.flatten } else { global }
     }
 }
 

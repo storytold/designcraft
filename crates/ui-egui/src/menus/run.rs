@@ -233,8 +233,17 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.exportInteractivePdf" => {
             let mut q = if p.is_object() { p.clone() } else { json!({}) };
-            for (k, v) in [("pageLayout", json!("single")), ("view", json!("fitPage")), ("bookmarksPanel", json!(true)), ("media", json!(true))] {
-                q.as_object_mut().map(|o| o.entry(k).or_insert(v));
+            // Interactive PDF keeps transparency live unless a caller explicitly requests flattening.
+            if let Some(o) = q.as_object_mut() {
+                for (k, v) in [
+                    ("pageLayout", json!("single")),
+                    ("view", json!("fitPage")),
+                    ("bookmarksPanel", json!(true)),
+                    ("media", json!(true)),
+                    ("flatten", json!(false)),
+                ] {
+                    o.entry(k).or_insert(v);
+                }
             }
             export_pdf(app, &q)
         }
@@ -325,6 +334,11 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 return Some(Err(format!("unknown preset `{v}`")));
             }
             app.ui.flattener = v.to_string();
+            if app.ui.pdf_export.flatten != v {
+                app.ui.pdf_export.flatten = v.to_string();
+                app.ui.pdf_export.preset = "Custom".into();
+            }
+            app.ui.pdf_export.flatten_chosen = true;
             Ok(json!(v))
         }
         "app.graphicCell" => match p.get("path").and_then(Value::as_str) {
