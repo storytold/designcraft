@@ -718,6 +718,25 @@ mod arabic_tests {
         s.execute("edit.undo", &json!({})).unwrap();
         assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::LeftToRight);
     }
+
+    #[test]
+    fn story_set_direction_updates_all_selected_stories_without_explicit_target() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r1 = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "a"})).unwrap();
+        let r2 = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "text", "text": "b"})).unwrap();
+        let (f1, s1) = (r1["id"].as_u64().unwrap(), StoryId(r1["story"].as_u64().unwrap()));
+        let (f2, s2) = (r2["id"].as_u64().unwrap(), StoryId(r2["story"].as_u64().unwrap()));
+        s.execute("selection.set", &json!({"ids": [f1, f2]})).unwrap();
+        s.execute("story.setDirection", &json!({"direction": "rightToLeft"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(s1).unwrap().direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(s.doc().unwrap().doc.story(s2).unwrap().direction, designcraft_doc::TextDirection::RightToLeft);
+
+        // Explicit story target updates only that story.
+        s.execute("story.setDirection", &json!({"story": s1.0, "direction": "leftToRight"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(s1).unwrap().direction, designcraft_doc::TextDirection::LeftToRight);
+        assert_eq!(s.doc().unwrap().doc.story(s2).unwrap().direction, designcraft_doc::TextDirection::RightToLeft);
+    }
 }
 
 #[cfg(test)]

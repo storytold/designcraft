@@ -279,12 +279,26 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
             orient = Some(());
         }
     });
+    let rtl_binding = d.settings.right_to_left_binding;
+    let mut next_binding = None;
+    place(ui, sub(b, 184.0, 0.0, 52.0, FIELD_H), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if icon_toggle(ui, "binding-ltr", !rtl_binding, crate::i18n::tr(&app.ui.language, "Left-to-Right Binding")).clicked() && rtl_binding {
+            next_binding = Some("leftToRight");
+        }
+        if icon_toggle(ui, "binding-rtl", rtl_binding, crate::i18n::tr(&app.ui.language, "Right-to-Left Binding")).clicked() && !rtl_binding {
+            next_binding = Some("rightToLeft");
+        }
+    });
     if let Some((w, h)) = preset {
         let (w, h) = if landscape { (h, w) } else { (w, h) };
         let _ = app.run("layout.documentSetup", json!({"width": w, "height": h}));
     }
     if orient.is_some() {
         let _ = app.run("layout.documentSetup", json!({"width": ph, "height": pw}));
+    }
+    if let Some(b) = next_binding {
+        let _ = app.run("layout.documentSetup", json!({"binding": b}));
     }
     ui.add_space(3.0);
     // W / H, page count, facing pages.

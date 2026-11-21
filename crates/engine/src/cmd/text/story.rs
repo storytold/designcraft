@@ -3,7 +3,7 @@ use super::format::{Target, effective_char_format, format_targets};
 use super::{ItemId, Result, Session, StoryId, Value, bad, bool_or, json};
 
 /// The stories of the text selection, the selected cells and the selected text frames.
-fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
+pub(super) fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
     let st = s.doc()?;
     let mut stories: Vec<StoryId> = st.selection.text.map(|t| t.story).into_iter().chain(st.selection.cells.map(|c| c.story)).collect();
     stories.dedup();
@@ -15,6 +15,30 @@ fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
         }
     }
     Ok(stories)
+}
+
+/// Target stories for a story-wide command: explicit `story`/`frame` if provided, else the current selection.
+pub(super) fn target_stories(s: &Session, p: &Value, cmd: &str) -> Result<Vec<StoryId>> {
+    let explicit = |key| p.get(key).filter(|v| !v.is_null());
+    if explicit("story").is_some() || explicit("frame").is_some() {
+        let doc = &s.doc()?.doc;
+        for key in ["story", "frame"] {
+            if let Some(value) = explicit(key) {
+                let id = value.as_u64().ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned integer")))?;
+                let sid = if key == "story" {
+                    StoryId(id)
+                } else {
+                    let item = doc.item(ItemId(id)).ok_or_else(|| bad(cmd, format!("no such frame {id}")))?;
+                    item.text_frame().ok_or_else(|| bad(cmd, format!("frame {id} holds no text")))?.story
+                };
+                if doc.story(sid).is_none() {
+                    return Err(bad(cmd, format!("no such story {}", sid.0)));
+                }
+            }
+        }
+        return Ok(vec![story_of(s, p).ok_or_else(|| bad(cmd, "no such story"))?]);
+    }
+    selected_stories(s)
 }
 
 /// Type ▸ Story: the story-wide options (Optical Margin Alignment and its size).
@@ -35,28 +59,7 @@ pub(super) fn story_options(s: &mut Session, p: &Value) -> Result<Value> {
     if on.is_none() && size.is_none() {
         return Err(bad(CMD, "nothing to set: give opticalMargin or opticalMarginSize"));
     }
-    let explicit = |key| p.get(key).filter(|v| !v.is_null());
-    let stories = if explicit("story").is_some() || explicit("frame").is_some() {
-        // Explicit targets must not silently fall back to the current selection.
-        let doc = &s.doc()?.doc;
-        for key in ["story", "frame"] {
-            if let Some(value) = explicit(key) {
-                let id = value.as_u64().ok_or_else(|| bad(CMD, format!("`{key}` must be an unsigned integer")))?;
-                let sid = if key == "story" {
-                    StoryId(id)
-                } else {
-                    let item = doc.item(ItemId(id)).ok_or_else(|| bad(CMD, format!("no such frame {id}")))?;
-                    item.text_frame().ok_or_else(|| bad(CMD, format!("frame {id} holds no text")))?.story
-                };
-                if doc.story(sid).is_none() {
-                    return Err(bad(CMD, format!("no such story {}", sid.0)));
-                }
-            }
-        }
-        vec![story_of(s, p).ok_or_else(|| bad(CMD, "no such story"))?]
-    } else {
-        selected_stories(s)?
-    };
+    let stories = target_stories(s, p, CMD)?;
     if stories.is_empty() {
         return Err(bad(CMD, "no story: select text or a text frame, or give story or frame"));
     }
@@ -148,14 +151,19 @@ pub(super) fn selection_attrs(s: &mut Session, p: &Value) -> Result<Value> {
 /// The story options of `stories`, as story.options names them; a value that differs between
 /// the stories is null.
 fn story_options_of(doc: &designcraft_doc::Document, stories: &[StoryId]) -> Value {
-    let mut values = stories.iter().filter_map(|sid| doc.story(*sid)).map(|st| st.optical_margin);
-    let Some(first) = values.next() else { return json!({"opticalMargin": null, "opticalMarginSize": null}) };
-    let (mut on, mut size) = (Some(first.on), Some(first.size));
-    for om in values {
-        on = on.filter(|v| *v == om.on);
-        size = size.filter(|v| *v == om.size);
+    let mut values = stories.iter().filter_map(|sid| doc.story(*sid));
+    let Some(first) = values.next() else {
+        return json!({"opticalMargin": null, "opticalMarginSize": null, "direction": null, "vertical": null});
+    };
+    let (mut on, mut size, mut dir, mut vert) =
+        (Some(first.optical_margin.on), Some(first.optical_margin.size), Some(first.direction), Some(first.vertical));
+    for st in values {
+        on = on.filter(|v| *v == st.optical_margin.on);
+        size = size.filter(|v| *v == st.optical_margin.size);
+        dir = dir.filter(|v| *v == st.direction);
+        vert = vert.filter(|v| *v == st.vertical);
     }
-    json!({"opticalMargin": on, "opticalMarginSize": size})
+    json!({"opticalMargin": on, "opticalMarginSize": size, "direction": dir, "vertical": vert})
 }
 
 /// The paragraph attributes whose resolved values differ across the paragraphs of `targets`.
@@ -313,13 +321,17 @@ mod story_options_tests {
         let a = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
         let b = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
         let options = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["storyOptions"].clone();
-        assert_eq!(options(&mut s), json!({"opticalMargin": false, "opticalMarginSize": 12.0}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": false, "opticalMarginSize": 12.0, "direction": "leftToRight", "vertical": false}));
         s.execute("story.options", &json!({"story": b["story"], "opticalMargin": true, "opticalMarginSize": 18})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": true, "opticalMarginSize": 18.0}), "the selected frame's story");
+        assert_eq!(
+            options(&mut s),
+            json!({"opticalMargin": true, "opticalMarginSize": 18.0, "direction": "leftToRight", "vertical": false}),
+            "the selected frame's story"
+        );
         s.execute("selection.set", &json!({"ids": [a["id"], b["id"]]})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": null}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": null, "direction": "leftToRight", "vertical": false}));
         s.execute("story.options", &json!({"opticalMarginSize": 18})).unwrap();
-        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": 18.0}));
+        assert_eq!(options(&mut s), json!({"opticalMargin": null, "opticalMarginSize": 18.0, "direction": "leftToRight", "vertical": false}));
     }
 }
 

@@ -500,6 +500,46 @@ fn paint_panels(pen: &mut Pen, name: &str) -> bool {
                 pen.line(&[(x0, y), (x1, y)]);
             }
         }
+        // Paragraph direction (World-Ready): a pilcrow (¶) with a bottom direction arrow.
+        "para-dir-ltr" | "para-dir-rtl" => {
+            let rtl = name == "para-dir-rtl";
+            let (bx, s1, s2, tx) = if rtl { (10.5, 14.0, 16.5, 18.0) } else { (3.0, 6.5, 9.0, 10.5) };
+            // Pilcrow bowl and stems.
+            pen.line(&[(tx, 3.0), (bx + 2.0, 3.0), (bx, 4.2), (bx, 6.8), (bx + 2.0, 8.0), (s1, 8.0)]);
+            pen.line(&[(s1, 3.0), (s1, 12.5)]);
+            pen.line(&[(s2, 3.0), (s2, 12.5)]);
+            // Direction arrow below.
+            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            if rtl {
+                pen.line(&[(6.0, 13.5), (3.0, 16.0), (6.0, 18.5)]);
+            } else {
+                pen.line(&[(14.0, 13.5), (17.0, 16.0), (14.0, 18.5)]);
+            }
+        }
+        // Story direction: two text columns with a bottom arrow showing column progression.
+        "story-dir-ltr" | "story-dir-rtl" => {
+            pen.rect(2.5, 3.0, 8.8, 12.0);
+            pen.rect(11.2, 3.0, 17.5, 12.0);
+            pen.line(&[(3.0, 16.0), (17.0, 16.0)]);
+            if name == "story-dir-rtl" {
+                pen.line(&[(6.0, 13.5), (3.0, 16.0), (6.0, 18.5)]);
+            } else {
+                pen.line(&[(14.0, 13.5), (17.0, 16.0), (14.0, 18.5)]);
+            }
+        }
+        // Page binding (LTR / RTL): a page with a thickened spine edge and reading-order arrow.
+        "binding-ltr" | "binding-rtl" => {
+            pen.rect(3.5, 2.5, 16.5, 17.5);
+            if name == "binding-rtl" {
+                pen.frect(14.3, 2.5, 16.5, 17.5);
+                pen.line(&[(12.5, 10.0), (6.0, 10.0)]);
+                pen.line(&[(8.5, 7.5), (6.0, 10.0), (8.5, 12.5)]);
+            } else {
+                pen.frect(3.5, 2.5, 5.7, 17.5);
+                pen.line(&[(7.5, 10.0), (14.0, 10.0)]);
+                pen.line(&[(11.5, 7.5), (14.0, 10.0), (11.5, 12.5)]);
+            }
+        }
         // Tab stops: a stem standing on a foot that runs the way the text runs from the stop.
         "tab-left" | "tab-center" | "tab-right" | "tab-char" => {
             pen.w = 1.8;

@@ -175,6 +175,11 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
+    if let Some(rtl) = p.get("rightToLeftBinding").and_then(Value::as_bool) {
+        nd.right_to_left_binding = rtl;
+    } else if let Some(b) = str_param(p, "binding") {
+        nd.right_to_left_binding = b == "rightToLeft";
+    }
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
     nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).unwrap_or(nd.gutter).max(0.0);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
