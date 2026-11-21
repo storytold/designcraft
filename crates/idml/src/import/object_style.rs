@@ -120,11 +120,18 @@ impl<'r> Importer<'r> {
     }
 
     pub(super) fn stroke_from(&mut self, e: &El, item: Option<&El>) -> Stroke {
-        let model_elements = if item.is_some() {
-            std::iter::once(e).chain(self.object_style_chain(e).iter()).map(crate::xml::to_craft).collect::<Vec<_>>()
+        if item.is_some() {
+            let chain = self.object_style_chain(e);
+            let levels: Vec<&El> = std::iter::once(e).chain(chain.iter()).collect();
+            self.stroke_in(&levels)
         } else {
-            vec![crate::xml::to_craft(e)]
-        };
+            self.stroke_in(&[e])
+        }
+    }
+
+    /// The stroke that `levels` give, nearest first: each setting from the first level that has it.
+    pub(super) fn stroke_in(&mut self, levels: &[&El]) -> Stroke {
+        let model_elements: Vec<_> = levels.iter().map(|l| crate::xml::to_craft(l)).collect();
         let model_refs: Vec<_> = model_elements.iter().collect();
         let model = craft_idml::model::StrokeValues::from_elements(&model_refs);
         let mut s = Stroke::none();
