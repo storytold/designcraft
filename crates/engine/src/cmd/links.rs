@@ -443,6 +443,11 @@ fn image_status(
     checks: &mut ImageChecks,
     open: Option<&super::native_links::OpenLinks>,
 ) -> (&'static str, Option<Fingerprint>) {
+    // Nothing was read for the image (an import that found no data for it): missing, as in
+    // Preflight, not an embedded copy: there is nothing in the document to show.
+    if a.data.is_empty() {
+        return ("missing", None);
+    }
     if embedded_copy(a) {
         return ("embedded", None);
     }
@@ -455,11 +460,6 @@ fn image_status(
         return linked_status(a, document, checks);
     }
     let Some(link) = &a.link else { return ("embedded", None) };
-    // Nothing was read from the file (a package's link that wasn't followed): missing, as in
-    // Preflight.
-    if a.data.is_empty() {
-        return ("missing", None);
-    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let Ok(path) = crate::io::document_path(link, document) else { return ("missing", None) };
@@ -805,8 +805,8 @@ fn list(
                     }
                     status
                 }
-                None if embedded_copy(a) => "embedded",
                 None if a.data.is_empty() || why.is_some() => "missing",
+                None if embedded_copy(a) => "embedded",
                 None => open.and_then(|o| o.status(a)).map_or("checking", |s| s.as_str()),
             };
             let storage = match a.storage {

@@ -235,7 +235,10 @@ impl Renderer {
     }
 
     fn draw_graphic_unclipped(&mut self, ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
-        let Some(asset) = f.doc.assets.get(&g.asset) else { return };
+        let Some(asset) = f.doc.assets.get(&g.asset) else {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        };
         if designcraft_doc::media_kind(&asset.mime).is_some() {
             // Video / sound: a dark frame with a play mark (the poster, when set, is drawn by the item).
             ctx.set_transform(f.view * xf * g.xf);
@@ -251,13 +254,22 @@ impl Renderer {
             ctx.fill_path(&tri);
             return;
         }
+        if asset.data.is_empty() {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        }
         if f.opts.quality == DisplayQuality::Fast {
             ctx.set_transform(f.view * xf * g.xf);
             ctx.set_paint(screen_color([178, 178, 178], 255));
             ctx.fill_rect(&Rect::new(0.0, 0.0, g.size.0, g.size.1));
             return;
         }
-        let Some((source, page, page_h)) = image_want(f, asset, g, xf) else { return };
+        // Media and Fast display are drawn above: `None` here is a PDF whose hidden layers can't be
+        // applied, which shows the grey box.
+        let Some((source, page, page_h)) = image_want(f, asset, g, xf) else {
+            draw_missing_graphic(ctx, f, g, xf);
+            return;
+        };
         let loading = |ctx: &mut RenderContext| {
             ctx.set_transform(f.view * xf * g.xf);
             ctx.set_paint(screen_color([222, 222, 222], 255));
@@ -286,7 +298,8 @@ impl Renderer {
         let (pm, data) = match pixels(f, &want, proxy) {
             Drawn::Pixels(pm, data) => (pm, data),
             Drawn::Loading => return loading(ctx),
-            Drawn::Nothing => return,
+            // Nothing to decode (the file can't be read or isn't an image): the grey box.
+            Drawn::Nothing => return draw_missing_graphic(ctx, f, g, xf),
         };
         // A coloured image is already in the plate's inks (its colours come from `color_of`).
         let coloured = match colorize::colorized(f.doc, &g.fill, data, &pm, !f.opts.defer_images) {
@@ -300,6 +313,30 @@ impl Renderer {
         };
         paint_pixels(ctx, f, g, xf, page, page_w, page_h, pm);
     }
+}
+
+/// On screen, a graphic that can't be drawn (its data is gone, missing or not decodable) as
+/// InDesign shows one without a preview: a grey box with a cross, hiding what's behind it as the
+/// graphic would. Exports and prints draw nothing there.
+fn draw_missing_graphic(ctx: &mut RenderContext, f: &Frame, g: &designcraft_doc::Graphic, xf: Affine) {
+    if !f.opts.missing_graphics || g.size.0 <= 0.0 || g.size.1 <= 0.0 {
+        return;
+    }
+    let to_screen = f.view * xf * g.xf;
+    ctx.set_transform(to_screen);
+    let r = Rect::new(0.0, 0.0, g.size.0, g.size.1);
+    ctx.set_paint(screen_color([204, 204, 204], 255));
+    ctx.fill_rect(&r);
+    let mut cross = BezPath::new();
+    cross.move_to((r.x0, r.y0));
+    cross.line_to((r.x1, r.y1));
+    cross.move_to((r.x1, r.y0));
+    cross.line_to((r.x0, r.y1));
+    // A hairline at any zoom.
+    let px = 1.0 / to_screen.determinant().abs().sqrt().max(1e-9);
+    ctx.set_paint(screen_color([150, 150, 150], 255));
+    ctx.set_stroke(kurbo::Stroke::new(px));
+    ctx.stroke_path(&cross);
 }
 
 /// Draw `pm`, the pixels of a page `page_w` × `page_h` points at `page` in graphic `g`'s space.
