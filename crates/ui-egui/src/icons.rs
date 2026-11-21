@@ -4,7 +4,8 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
-/// The bowl of the Paragraph Direction icons' pilcrow on the 20×20 grid (a convex outline).
+/// The bowl of the Paragraph Direction icons' pilcrow on the 20×20 grid (a convex outline of the ¶
+/// in the UI's bundled Source Sans 3 Semibold, the glyph the other ¶ icons draw as text).
 const PILCROW_BOWL: [(f32, f32); 39] = [
     (6.24, 11.05),
     (5.91, 11.04),
@@ -1042,7 +1043,8 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
         // its lines run (on its right for left to right, on its left for right to left).
         "pdir-ltr" | "pdir-rtl" => {
             let rtl = name == "pdir-rtl";
-            // The pilcrow (outlined from the UI's Source Sans 3 Semibold), moved right for right to left.
+            // The pilcrow: the same ¶ that the panel-paragraph and pilcrow-menu icons draw from the UI's
+            // bundled Source Sans 3 Semibold, as outlines so it can move; right for right to left.
             // Shifted in fixed-size copies on the stack: painting allocates nothing.
             let dx = if rtl { 8.11 } else { 0.0 };
             let mut stem = [(7.52, 15.14), (7.52, 4.86), (9.14, 4.86), (9.14, 15.14)];
