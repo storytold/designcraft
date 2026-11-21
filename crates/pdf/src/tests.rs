@@ -14,6 +14,28 @@ fn doc_with_text(text: &str) -> Document {
     d
 }
 
+/// A cancel asked for between pages stops the export with `Cancelled`: the first page is reported
+/// and the next one never is, because the check runs before each sheet.
+#[test]
+fn a_cancel_between_pages_stops_the_export() {
+    let d = doc_with_text("Hello");
+    let cache = Cache::new();
+    let first_page_reported = std::cell::Cell::new(false);
+    let mut seen: Vec<ExportProgress> = Vec::new();
+    let mut progress = |p: ExportProgress| {
+        if p.phase == "pages" {
+            first_page_reported.set(true);
+        }
+        seen.push(p);
+    };
+    let should_cancel = || first_page_reported.get();
+    let err = export_pdf_with_report_progress_cancel(&d, &cache, &PdfOptions::default(), &mut progress, &should_cancel).unwrap_err();
+    assert_eq!(err, PdfError::Cancelled);
+    let dones: Vec<usize> = seen.iter().filter(|p| p.phase == "pages").map(|p| p.done).collect();
+    assert_eq!(dones, vec![0], "the first page was reported and the second never was: {seen:?}");
+    assert!(seen.iter().all(|p| p.phase != "finishing"), "the cancel came before finishing: {seen:?}");
+}
+
 fn add_box(d: &mut Document, r: Rect, swatch: &str) {
     let lid = d.default_layer();
     let id = ItemId(d.alloc());

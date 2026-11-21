@@ -193,35 +193,34 @@ fn file_info_dialog_stores_the_fields_and_titles_the_pdf() {
     confirm(&mut app).unwrap();
     assert_eq!(app.session.active().unwrap().doc.file_info.keywords, ["Washington, DC", "atlas"]);
 
-    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = writes.clone();
-    app.services.write = Some(Box::new(move |_: &str, bytes: &[u8]| {
-        sink.lock().unwrap().push(bytes.to_vec());
-        Ok(())
-    }));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("designcraft-file-info.pdf").to_string_lossy().to_string();
     let names: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let asked = names.clone();
+    let answer_path = path.clone();
     app.answer_dialogs(move |request| match request {
         craft_dialogs::Request::File(dialog) => {
             asked.lock().unwrap().push(dialog.file_name.clone().unwrap_or_default());
-            craft_dialogs::Answer::Paths(vec!["/tmp/designcraft-file-info.pdf".into()])
+            craft_dialogs::Answer::Paths(vec![answer_path.clone().into()])
         }
         craft_dialogs::Request::Message(_) => craft_dialogs::Answer::Message(craft_dialogs::MessageResult::Yes),
     });
     open_pdf_export(&mut app);
     confirm(&mut app).unwrap();
     app.settle_dialogs();
+    finish_pdf_export(&mut app);
     assert_eq!(names.lock().unwrap().as_slice(), ["flyer-v3.pdf"]);
-    let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[0]).into_owned();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
     assert!(pdf.contains("/Title(Spring Catalog)") && !pdf.contains("/Title(flyer-v3)"), "the PDF's title is File Info's");
     // A title given to the export is the PDF's title, even when it is the document's name.
     open_pdf_export(&mut app);
     setup_fields(&mut app, json!({"title": "flyer-v3"}));
     confirm(&mut app).unwrap();
     app.settle_dialogs();
+    finish_pdf_export(&mut app);
     let asked = names.lock().unwrap().last().cloned().unwrap_or_default();
     assert_eq!(std::path::Path::new(&asked).file_name().and_then(|n| n.to_str()), Some("flyer-v3.pdf"), "{asked}");
-    let pdf = String::from_utf8_lossy(&writes.lock().unwrap()[1]).into_owned();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
     assert!(pdf.contains("/Title(flyer-v3)") && !pdf.contains("/Title(Spring Catalog)"), "the given title wins");
 }
 
@@ -3911,18 +3910,29 @@ fn pdf_export_preset_custom_changes_nothing() {
     assert_eq!(d.fields, before);
 }
 
+/// Wait for the background PDF export the UI queues to finish. The job writes the file itself, so
+/// the tests read it from disk once the job is no longer busy.
+fn finish_pdf_export(app: &mut crate::DesignApp) {
+    for _ in 0..2000 {
+        if !app.ui.export_jobs.iter().any(|j| j.busy) {
+            return;
+        }
+        app.poll_export();
+        if !app.ui.export_jobs.iter().any(|j| j.busy) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the background PDF export did not finish");
+}
+
 #[test]
 fn confirm_pdf_export_writes_file_and_persists_settings() {
-    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("designcraft-test.pdf").to_string_lossy().to_string();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let writes: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = writes.clone();
-    app.services.write = Some(Box::new(move |path: &str, bytes: &[u8]| {
-        sink.lock().unwrap().push((path.to_string(), bytes.to_vec()));
-        Ok(())
-    }));
-    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/designcraft-test.pdf".into())));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(path.clone())));
 
     app.ui.dialog = Some(Dialog::new("pdfExport", json!({})));
     {
@@ -3935,13 +3945,10 @@ fn confirm_pdf_export_writes_file_and_persists_settings() {
     }
     confirm(&mut app).unwrap();
     app.settle_dialogs();
+    finish_pdf_export(&mut app);
 
-    let got = writes.lock().unwrap();
-    assert_eq!(got.len(), 1, "confirming the dialog writes exactly one file");
-    assert_eq!(got[0].0, "/tmp/designcraft-test.pdf");
-    assert!(got[0].1.starts_with(b"%PDF"), "the written bytes are a PDF");
-    drop(got);
-
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(b"%PDF"), "the written bytes are a PDF");
     assert_eq!(app.ui.pdf_export.standard, "x4");
     assert!(!app.ui.pdf_export.bleed);
     assert!(app.ui.pdf_export.marks_crop);

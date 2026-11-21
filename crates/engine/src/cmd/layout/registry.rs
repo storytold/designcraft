@@ -275,7 +275,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
-            noundo "layout.parents.edit",
+            noundo_mut "layout.parents.edit",
             "Edit Parents",
             [],
             None,

@@ -161,8 +161,9 @@ pub(super) fn separations_view(app: &mut DesignApp, p: &Value) -> Result<Value, 
     Ok(out)
 }
 
-/// File › Export PDF…: ask for a path, export through `file.exportPdf` and write the bytes with the
-/// platform writer (a download on the web).
+/// File › Export PDF…: ask for a path and export through `file.exportPdf`. On the desktop the
+/// export runs on its own thread and the status bar shows its progress; the engine writes the file.
+/// On the web, which has no threads, the bytes are written with the platform writer (a download).
 pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
     let st = app.session.active().ok_or("no document")?;
     let Some(path) = p.get("path").and_then(Value::as_str).map(str::to_string) else {
@@ -178,10 +179,30 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
             o.entry("flatten").or_insert(json!(app.ui.flattener));
         }
     }
-    let r = app.run("file.exportPdf", params)?;
-    let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
-    match app.services.write.as_mut() {
-        Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
-        None => Err("no writer".into()),
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(o) = params.as_object_mut() {
+            o.insert("background".into(), json!(true));
+            o.insert("path".into(), json!(path.clone()));
+        }
+        let r = app.run("file.exportPdf", params)?;
+        let job = r.get("job").and_then(Value::as_u64).ok_or("the export did not start")?;
+        // `DesignApp::run` lists the job for the Exports panel; here only the status line is ours.
+        app.status(crate::i18n::tr(&app.ui.language, "Exporting PDF…"));
+        if let Some(ctx) = &app.egui_ctx {
+            ctx.request_repaint();
+        }
+        Ok(json!({"job": job}))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The engine has no file system on the web: it returns the bytes and the platform writer
+        // downloads them, so `path` stays out of the params (it was removed above).
+        let r = app.run("file.exportPdf", params)?;
+        let bytes = designcraft_engine::cmd::base64_decode(r["base64"].as_str().unwrap_or_default());
+        match app.services.write.as_mut() {
+            Some(w) => w(&path, &bytes).map(|_| json!({"path": path, "bytes": bytes.len(), "pages": r["pages"], "warnings": r["warnings"]})),
+            None => Err("no writer".into()),
+        }
     }
 }

@@ -119,6 +119,69 @@ fn default_zone() -> f64 {
     4.0
 }
 
+/// A background export the status bar and the Exports panel are showing.
+#[derive(Clone, Debug)]
+pub struct ExportJob {
+    /// The id `file.exportPdf {background: true}` returned.
+    pub id: u64,
+    /// The `DocState.uid` that was exported, so the document can be frozen while it runs.
+    pub doc_uid: u64,
+    /// The document's title when the job was queued.
+    pub doc_title: String,
+    /// The format's name: `PDF`.
+    pub format: String,
+    /// Where the job writes (native); empty on the web.
+    pub path: String,
+    pub busy: bool,
+    /// What the export is doing: `preparing`, `flattening`, `rasterizing`, `pages`, `finishing`.
+    pub phase: String,
+    pub done: usize,
+    pub total: usize,
+    /// The sheet being written, as the document names it (`1`, `1–2`).
+    pub page: String,
+    /// The user asked to cancel; the worker stops at the next page.
+    pub cancelling: bool,
+    /// The finished result (`None` while it runs).
+    pub result: Option<ExportResult>,
+}
+
+impl ExportJob {
+    /// The fraction of the pages written, 0.0–1.0 (0.0 until the page phase).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 { 0.0 } else { (self.done as f32 / self.total as f32).clamp(0.0, 1.0) }
+    }
+
+    /// A fresh job for `id`, queued from the document with `doc_uid` and `doc_title`.
+    pub fn queued(id: u64, doc_uid: u64, doc_title: String, format: &str, path: String) -> Self {
+        Self {
+            id,
+            doc_uid,
+            doc_title,
+            format: format.to_string(),
+            path,
+            busy: true,
+            phase: "preparing".into(),
+            done: 0,
+            total: 0,
+            page: String::new(),
+            cancelling: false,
+            result: None,
+        }
+    }
+}
+
+/// What a finished background export did.
+#[derive(Clone, Debug)]
+pub struct ExportResult {
+    pub path: String,
+    pub bytes: u64,
+    pub pages: u64,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+    /// The job was cancelled before it wrote its file.
+    pub cancelled: bool,
+}
+
 /// File › Export PDF… options: the values persisted in `UiState.pdf_export` and used as the
 /// dialog's defaults. Serialised as `pdfExport` with camelCase field names.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -249,6 +312,11 @@ pub struct UiState {
     pub pdf_export: PdfExportSettings,
     /// File › Export Layouts and Versions…: the last job exported (persisted).
     pub export_batch: Option<designcraft_engine::cmd::export_batch::ExportJob>,
+    /// The background exports (`file.exportPdf {background: true}`) and what
+    /// `file.export.progress` last reported about each; the status bar shows the newest busy one
+    /// as a progress bar, and the Exports panel lists them all.
+    #[serde(skip)]
+    pub export_jobs: Vec<ExportJob>,
     /// The Preview checkbox of Paragraph/Character Style Options, remembered between openings.
     pub style_preview: bool,
     /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
@@ -439,6 +507,7 @@ impl Default for UiState {
             flattener: String::new(),
             pdf_export: PdfExportSettings::default(),
             export_batch: None,
+            export_jobs: Vec::new(),
             style_preview: false,
             separations: None,
             display_quality: designcraft_render::DisplayQuality::High,

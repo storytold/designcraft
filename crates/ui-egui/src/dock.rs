@@ -53,8 +53,9 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("dataMerge", "Data Merge", "panel-datamerge"),
 ];
 
-/// Panels that only float, outside the docking layout (they open from a menu).
-pub const FLOATING_PANELS: &[(&str, &str)] = &[("tabs", "Tabs")];
+/// Panels that only float, outside the docking layout: the Tabs panel from Type › Tabs and the
+/// Exports panel from the status bar.
+pub const FLOATING_PANELS: &[(&str, &str)] = &[("tabs", "Tabs"), ("exports", "Exports")];
 
 /// The English name of panel `id`.
 pub fn panel_label(id: &str) -> &'static str {
@@ -101,6 +102,7 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
         "effects" => panels::properties::effects_panel(app, ui),
         "links" => panels::properties::links_panel(app, ui),
         "preflight" => panels::properties::preflight_panel(app, ui),
+        "exports" => panels::exports::show(app, ui),
         "attributes" => panels::properties::attributes_panel(app, ui),
         "conditions" => panels::conditions::show(app, ui),
         "notes" => panels::notes::show(app, ui),
@@ -125,12 +127,12 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
     }
 }
 
-/// Panels that only float, outside the dock and the docking layout (the Tabs panel).
+/// Panels that only float, outside the dock and the docking layout (the Tabs and Exports panels).
 pub(crate) fn float_only(id: &str) -> bool {
     FLOATING_PANELS.iter().any(|p| p.0 == id)
 }
 
-/// The float-only panels' windows (the Tabs panel). The docking layout draws the other
+/// The float-only panels' windows (the Tabs and Exports panels). The docking layout draws the other
 /// floating panels.
 pub fn float_only_windows(app: &mut DesignApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
@@ -144,7 +146,13 @@ pub fn float_only_windows(app: &mut DesignApp, ctx: &egui::Context) {
             .id(egui::Id::unique(("floating_panel", &id)))
             .title_bar(false)
             .default_pos(egui::pos2(at[0], at[1]))
-            .default_width(if id == "tabs" { 560.0 } else { 256.0 })
+            .default_width(if id == "tabs" {
+                560.0
+            } else if id == "exports" {
+                380.0
+            } else {
+                256.0
+            })
             .resizable(true)
             .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel).inner_margin(egui::Margin::same(0)));
         // The Tabs panel moves over the text frame it edits, at the column's width.

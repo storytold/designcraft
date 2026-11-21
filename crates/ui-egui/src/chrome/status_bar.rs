@@ -162,6 +162,27 @@ fn show_preflight(app: &mut DesignApp) {
     }
 }
 
+/// The newest background export's progress, left of the status message. Clicking it opens the
+/// Exports panel, which lists every job with its own progress and a Cancel button. A session owns
+/// its exports, so the indicator shows whether or not a document is open.
+fn export_indicator(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let busy = app.ui.export_jobs.iter().filter(|j| j.busy).count();
+    let Some(job) = app.ui.export_jobs.iter().rev().find(|j| j.busy) else { return };
+    let (fraction, phase) = (job.fraction(), job.phase.clone());
+    let label = if busy > 1 {
+        crate::i18n::tr(&app.ui.language, "{count} exports").replace("{count}", &busy.to_string())
+    } else {
+        let phase = crate::panels::exports::phase_label(&app.ui.language, &phase);
+        crate::i18n::tr(&app.ui.language, "Exporting {phase}").replace("{phase}", &phase)
+    };
+    let response = ui.add(egui::ProgressBar::new(fraction).desired_width(140.0).desired_height(12.0).text(label));
+    let open = ui.interact(response.rect, ui.scope_id().with("exports_open"), egui::Sense::click());
+    if open.clicked() {
+        let _ = app.run("window.floatPanel", serde_json::json!({"panel": "exports"}));
+    }
+    ui.add_space(8.0);
+}
+
 pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let resp = egui::Panel::bottom("status_bar")
@@ -172,6 +193,9 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
             ui.horizontal_centered(|ui| {
                 let small = egui::FontId::proportional(10.5);
                 if app.session.active().is_none() {
+                    // The exports belong to the session, not to a document: they stay visible and
+                    // openable from the bar while every document is closed.
+                    export_indicator(app, ui);
                     ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
                     return;
                 }
@@ -280,6 +304,8 @@ pub fn status_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
                     show_preflight(app);
                 }
                 ui.add_space(12.0);
+                // Background exports' progress, left of the status message.
+                export_indicator(app, ui);
                 ui.label(egui::RichText::new(&app.ui.status).font(small).color(t.text_dim));
             });
         });

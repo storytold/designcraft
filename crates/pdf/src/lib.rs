@@ -51,8 +51,8 @@ mod pdfx1a;
 mod svg_options;
 mod transitions;
 pub use export::{
-    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, item_exported, layer_exported,
-    merge_pdfs, print_color, sheet_spreads, shown_parent_items,
+    BookletKind, BookletOptions, booklet_pairs, drawn_children, export_booklet, export_pdf, export_pdf_with_report, export_pdf_with_report_progress,
+    export_pdf_with_report_progress_cancel, item_exported, layer_exported, merge_pdfs, print_color, sheet_spreads, shown_parent_items,
 };
 pub use pdfx::{check_pdfx4, has_rgb_groups, make_pdfx4, pdfx_version};
 pub use pdfx1a::check_pdfx1a;
@@ -194,6 +194,43 @@ pub struct ExportReport {
     pub warnings: Vec<String>,
 }
 
+/// Where an export is, reported to the callback of [`export_pdf_with_report_progress`].
+///
+/// `phase` is a short name for a status line: `preparing` (parsing placed files and fonts),
+/// `flattening`, `rasterizing` (the engine's own steps, when it reports them), `pages` (writing
+/// the sheets) or `finishing` (serializing the file). `done` of `total` pages is meaningful
+/// during `pages`; the other phases set both to 0. `page` names the sheet being written then
+/// (pages: `1`; a spread: `1–2`), and is empty in the other phases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportProgress {
+    pub phase: &'static str,
+    pub done: usize,
+    pub total: usize,
+    pub page: String,
+}
+
+impl ExportProgress {
+    /// A phase that is not measured in pages.
+    pub fn phase(phase: &'static str) -> Self {
+        Self { phase, done: 0, total: 0, page: String::new() }
+    }
+
+    /// A page of `total` written (`done` pages are already written).
+    pub fn page(done: usize, total: usize) -> Self {
+        Self { phase: "pages", done, total, page: String::new() }
+    }
+
+    /// A page of `total` written, naming the sheet (`page`) as the document does.
+    pub fn page_labeled(done: usize, total: usize, page: &str) -> Self {
+        Self { phase: "pages", done, total, page: page.to_string() }
+    }
+
+    /// The fraction written, 0.0–1.0 (0.0 for a phase that is not measured in pages).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 { 0.0 } else { (self.done as f32 / self.total as f32).clamp(0.0, 1.0) }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum PdfError {
     #[error("nothing to export (no pages selected)")]
@@ -204,6 +241,8 @@ pub enum PdfError {
     BadRange(String),
     #[error("PDF writer error: {0}")]
     Write(String),
+    #[error("export cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, PdfError>;
