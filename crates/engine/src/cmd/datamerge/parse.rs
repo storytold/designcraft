@@ -422,8 +422,8 @@ fn csv_prefers_comma([(.., tab), (.., comma), (.., semi)]: [(Delimiter, DelimSta
 }
 
 /// Scan up to 20 non-blank records within the first 64 KiB for separator counts and quote-boundary
-/// coherence. An empty quoted record (`""`) without a candidate separator is skipped as blank, matching
-/// [`parse_delimited`], while an empty quoted cell beside a separator (`"";""`) still counts.
+/// coherence. Records whose cells are all empty or whitespace (including `""` and whitespace-only
+/// tab lines like `\t \t`) are skipped as blank, matching [`parse_delimited`].
 fn scan_delimiter(text: &str, delim: char) -> DelimStats {
     const SAMPLE_BYTES: usize = 64 * 1024;
     const SAMPLE_RECORDS: usize = 20;
@@ -466,7 +466,7 @@ fn scan_delimiter(text: &str, delim: char) -> DelimStats {
             if ch == '\r' && chars.peek() == Some(&'\n') {
                 chars.next();
             }
-            if record_has_content || count > 0 {
+            if record_has_content {
                 if seen == 0 {
                     header_splits = count > 0;
                 }
@@ -502,7 +502,7 @@ fn scan_delimiter(text: &str, delim: char) -> DelimStats {
     if !reached_record_limit && !truncated {
         if quoted {
             coherent = false;
-        } else if record_has_content || count > 0 {
+        } else if record_has_content {
             if seen == 0 {
                 header_splits = count > 0;
             }

@@ -463,12 +463,18 @@ fn csv_name_sniffs_tab_and_semicolon_separators() {
         ),
         ("people.csv", "\"\"\nName\tCity\nAda\tLondon\n", Delimiter::Tab, vec!["Name", "City"], vec![vec!["Ada", "London"]]),
         ("people.csv", "\"\"\nName;City\nAda;London\n", Delimiter::Semicolon, vec!["Name", "City"], vec![vec!["Ada", "London"]]),
+        ("people.csv", "alpha;beta\r\ngamma\r\n", Delimiter::Comma, vec!["alpha;beta"], vec![vec!["gamma"]]),
+        ("people.csv", "alpha\tbeta\r\ngamma\r\n", Delimiter::Comma, vec!["alpha\tbeta"], vec![vec!["gamma"]]),
     ] {
         let parsed = parse::table_from_bytes(body.as_bytes(), name, None).unwrap();
         assert_eq!(parsed.delimiter, expected_delimiter, "{body:?}");
         assert_eq!(parsed.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), expected_fields, "{body:?}");
         assert_eq!(parsed.rows, expected_rows, "{body:?}");
     }
+    let blank_tab_rows = format!("{}a;b\nc;d\n", "\t \t\n".repeat(25));
+    let after_blanks = parse::table_from_bytes(blank_tab_rows.as_bytes(), "people.csv", None).unwrap();
+    assert_eq!(after_blanks.delimiter, Delimiter::Semicolon);
+    assert_eq!(after_blanks.rows, vec![vec!["c", "d"]]);
 }
 
 /// #2874: updating a legacy saved single-field Comma source re-sniffs it, while deliberate
