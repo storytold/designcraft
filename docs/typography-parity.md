@@ -38,7 +38,7 @@ Fidelity: **unmeasured** unless stated.
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531); Auto Leading (0% to 500%) and Single Word Justification are set there and in Paragraph Style Options › Justification |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Norwegian (hyph-no), Danish (hyph-da), Greek (hyph-el-monoton), German 2006 (hyph-de-1996), French (hyph-fr), Italian (hyph-it) and Dutch (Tutelaers); zone, limits, exceptions in the user dictionary; Hyphenate Across Column off keeps automatic hyphens off the last line of a column or frame; discretionary U+00AD breaks with both composers regardless of automatic hyphenation and replaces pattern points within its word (#1955) | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
 | Spelling | per-language dictionaries | English (Moby) + document/user dictionary | ~ | |
-| Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: pairs pulled towards the font's stem gap, `crates/compose/src/optical.rs`), manual, none | ~ | Optical is an approximation of Adobe's algorithm (#181), not a match: imported display text can still break differently |
+| Kerning | Metrics, Optical, manual, none | Metrics, Optical (outline-based: the white between each pair, cap height to baseline, pulled towards one target per em, fitted to InDesign's Optical values on ten text faces, `crates/compose/src/optical.rs`), manual, none | ~ | Optical approximates Adobe's algorithm (#181): text faces come within about 9/1000 em per pair and 2.5/1000 em on average, so most lines break as in InDesign; display faces and unusual shapes can still differ |
 | Tracking, scale, skew, baseline shift | ✓ | ✓ | ✓ | |
 | Character fill and stroke | fill, stroke, tint, weight, stroke aligned to centre or outside | fill, stroke, tints, weight, stroke behind fill (screen, PNG, PDF, IDML `StrokeAlignment`) | ~ | text strokes have no join or miter limit settings (#619 for stroke behind fill) |
 | OpenType features | ligatures, discretionary, swash, fractions, ordinals, figures, small caps, stylistic sets, positional forms | through harfrust | ✓ | |
@@ -78,7 +78,7 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 | Work | Opus 5.5 h |
 |---|---|
 | Oracle harness (synthetic stories, IDML exchange, comparison metric) | 20–30 |
-| Optical kerning tuning against InDesign (measured pairs per class, once the oracle harness exists) | 5–10 |
+| Optical kerning: more faces (display, script, CJK-adjacent Latin) in the fit | 2–5 |
 | Overset rule (baseline fits) and frame-fit parity | 5–10 |
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
 | Hyphenation patterns for the top 15 InDesign languages (permissive sources) | 20–35 |
