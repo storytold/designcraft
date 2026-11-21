@@ -115,6 +115,9 @@ pub struct RubySpec {
     /// A longer ruby is first narrowed, down to `scaling_min` of its width.
     pub auto_scaling: bool,
     pub scaling_min: f64,
+    /// Ruby Adjusts Leading: the line's leading grows by the room the ruby needs (see
+    /// [`RubySpec::leading_extent`]).
+    pub adjust_leading: bool,
     /// Empty: the text's colour (and its tint when the tint is `None`).
     pub fill: String,
     pub fill_tint: Option<f32>,
@@ -157,6 +160,7 @@ impl RubySpec {
             auto_align: p.ruby_auto_align,
             auto_scaling: p.ruby_auto_scaling,
             scaling_min: finite_or(p.ruby_scaling_min, 0.66).clamp(0.1, 1.0),
+            adjust_leading: p.ruby_adjust_leading,
             fill: p.ruby_fill.clone(),
             fill_tint: tint(p.ruby_fill_tint),
             stroke: p.ruby_stroke.clone(),
@@ -171,6 +175,23 @@ impl RubySpec {
     pub fn size_for(&self, parent_size: f64) -> f64 {
         self.size.unwrap_or(parent_size * 0.5)
     }
+
+    /// How far above and below the parent's baseline the ruby's em box reaches, in points, the
+    /// way the composer places it (its own size and scale, the gap to the parent, and its
+    /// offset). The leading has to cover the side the ruby sits on when it adjusts leading.
+    pub fn leading_extent(&self, parent_size: f64) -> (f64, f64) {
+        let tall = (self.size_for(parent_size) * self.y_scale).max(0.0);
+        match self.position {
+            RubyPosition::AboveRight => {
+                let above = parent_size * 0.88 + tall * 0.2 + self.y_offset + tall;
+                (above.max(0.0), 0.0)
+            }
+            RubyPosition::BelowLeft => {
+                let below = parent_size * 0.12 + tall * 0.96 + self.y_offset + tall;
+                (0.0, below.max(0.0))
+            }
+        }
+    }
 }
 
 /// The readings of a mono ruby, one per parent character, or `None` when their number doesn't
@@ -183,6 +204,26 @@ pub fn mono_readings(text: &str, parents: usize) -> Option<Vec<&str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The extent the leading has to cover is the composer's own ruby placement: half-size ruby
+    /// 12 pt above a 12 pt parent reaches 17.76 pt above its baseline, an offset moves it further.
+    #[test]
+    fn ruby_leading_extent_follows_the_composer_placement() {
+        let p = CharProps::default();
+        let s = RubySpec::of(&p);
+        assert!(!s.adjust_leading);
+        let (above, below) = s.leading_extent(12.0);
+        assert!((above - (12.0 * 0.88 + 6.0 * 0.2 + 6.0)).abs() < 1e-9, "{above}");
+        assert_eq!(below, 0.0);
+        // Below/left ruby reaches below the baseline; a positive offset adds to the gap.
+        let p = CharProps { ruby_position: RubyPosition::BelowLeft, ruby_y_offset: 4.0, ..Default::default() };
+        let s = RubySpec::of(&p);
+        let (above, below) = s.leading_extent(12.0);
+        assert_eq!(above, 0.0);
+        assert!((below - (12.0 * 0.12 + 6.0 * 0.96 + 4.0 + 6.0)).abs() < 1e-9, "{below}");
+        // The flag travels from the character format to the spec.
+        assert!(RubySpec::of(&CharProps { ruby_adjust_leading: true, ..Default::default() }).adjust_leading);
+    }
 
     #[test]
     fn spec_keeps_hostile_numbers_in_range() {

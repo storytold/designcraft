@@ -34,6 +34,7 @@ struct Mark {
     last_descent: f64,
     last_reference: f64,
     aki_below: Option<f64>,
+    ruby_below: Option<(usize, usize, f64)>,
     pending: f64,
     band: Band,
     grid_next: Option<(f64, f64)>,
@@ -45,6 +46,10 @@ struct Mark {
 
 fn bits(v: Option<f64>) -> Option<u64> {
     v.map(f64::to_bits)
+}
+
+fn ruby_below_bits(r: Option<(usize, usize, f64)>) -> Option<(usize, usize, u64)> {
+    r.map(|(fi, col, v)| (fi, col, v.to_bits()))
 }
 
 fn above_bits(a: Option<Above>) -> Option<[Option<u64>; 6]> {
@@ -75,6 +80,7 @@ impl Mark {
             last_descent: c.last_descent,
             last_reference: c.last_reference,
             aki_below: c.aki_below,
+            ruby_below: c.ruby_below,
             pending: c.pending,
             band: c.band,
             grid_next: c.grid_next,
@@ -93,6 +99,7 @@ impl Mark {
             last_descent: self.last_descent,
             last_reference: self.last_reference,
             aki_below: self.aki_below,
+            ruby_below: self.ruby_below,
             pending: self.pending,
             pi,
             band: self.band,
@@ -119,6 +126,7 @@ impl Mark {
             && self.last_descent.to_bits() == other.last_descent.to_bits()
             && self.last_reference.to_bits() == other.last_reference.to_bits()
             && bits(self.aki_below) == bits(other.aki_below)
+            && ruby_below_bits(self.ruby_below) == ruby_below_bits(other.ruby_below)
             && self.pending.to_bits() == other.pending.to_bits()
             && a.para == b.para
             && a.line0 == b.line0

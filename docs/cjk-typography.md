@@ -1,6 +1,6 @@
 # CJK import and composition
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (the JIS X 4051 禁則処理 push-in/push-out priority modes are applied by both composers over CJK text: the empty default and Push In First compose as push-in-first, Push Out First, Push Out Only and adjustment-amount as their names say; Latin paragraphs are not biased; preflight reports only unknown values) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (the JIS X 4051 禁則処理 push-in/push-out priority modes are applied by both composers over CJK text: the empty default and Push In First compose as push-in-first, Push Out First, Push Out Only and adjustment-amount as their names say; Latin paragraphs are not biased; preflight reports only unknown values; Ruby Adjusts Leading row added: the line grows by the room the ruby needs; previously: trivial, status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
 
 Task: CJK1. This is incremental support, not a claim of InDesign composition parity.
 
@@ -34,6 +34,7 @@ invalidation. Font listing, replacement and preflight resolve component fonts.
 | Em alignment / leading | Em top/center/bottom alignment and baseline reference offsets; mixed-size regressions |
 | Kenten / glyph forms | Preserve emphasis character, shape it with font fallback; map supported OpenType forms |
 | Tate-chu-yoko offsets | Carry horizontal/vertical offsets through the existing vertical group placement |
+| Ruby Adjusts Leading | The line grows by the room the ruby needs above or below the parent in horizontal text when the character setting is on; off, ruby never changes leading (a DesignCraft setting; see [cjk.md](cjk.md)) |
 
 ## Unfinished behavior
 
@@ -76,5 +77,6 @@ are not committed as fixtures.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-22 | minor | 禁則処理 priority modes applied: the empty default and Push In First compose as push-in-first (as InDesign's Japanese default), Push Out First, Push Out Only and adjustment-amount (minimum adjustment) as their names say, for CJK text; Latin paragraphs are not biased; preflight reports only unknown values; breaks, line-end fits and the mode mapping regression-tested |
+| 2026-10-22 | minor | Ruby Adjusts Leading row: the line grows by the room the ruby needs (off by default) |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-07 | major | Created: CJK1: IDML CJK import and composition |
