@@ -16,6 +16,9 @@ const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("ru", ru::TABLE),
     ("sv", sv::TABLE),
     ("uk", uk::TABLE),
+    ("zh", zh_hans::TABLE),
+    ("zh-hant", zh_hant::TABLE),
+    ("ko", ko::TABLE),
 ];
 
 /// Every per-language table `tr_context` looks up.
@@ -28,6 +31,8 @@ const CONTEXT_TABLES: &[(&str, &[(&str, &str, &str)])] = &[
     ("ru", ru::CONTEXT),
     ("sv", sv::CONTEXT),
     ("uk", uk::CONTEXT),
+    ("zh-hant", zh_hant::CONTEXT),
+    ("ko", ko::CONTEXT),
 ];
 
 /// The languages of the shared tables' columns, in column order.
@@ -39,6 +44,22 @@ const WHOLE_INTERFACE: [&str; 2] = ["de", "ja"];
 /// What `tr` shows for a row: an empty one is still untranslated.
 fn or_english<'a>(text: &'a str, english: &'a str) -> &'a str {
     if text.trim().is_empty() { english } else { text }
+}
+
+/// Traditional Chinese and Korean read a count, a table's columns and a person's name apart
+/// from the plain caption.
+#[test]
+fn chinese_and_korean_captions_follow_their_context() {
+    assert_eq!(tr("zh-hant", "File"), "檔案");
+    assert_eq!(tr("ko", "File"), "파일");
+    assert!(LANGUAGES.contains(&("zh-hant", "繁體中文")) && LANGUAGES.contains(&("ko", "한국어")));
+    for (lang, count, numeral) in [("zh", "数量：", "编号："), ("zh-hant", "數量：", "編號："), ("ko", "개수:", "번호:")] {
+        assert_eq!((tr_context(lang, "Number:", "count"), tr(lang, "Number:")), (count, numeral), "{lang}");
+    }
+    // Korean table and grid columns are 열; a text frame's stay 단.
+    assert_eq!((tr_context("ko", "Columns", "table"), tr("ko", "Columns")), ("열", "단"));
+    assert_eq!((tr_context("ko", "Columns:", "grid"), tr("ko", "Columns:")), ("열 수:", "단 수:"));
+    assert_eq!((tr_context("zh-hant", "Name", "contributors"), tr("zh-hant", "Name")), ("姓名", "名稱"));
 }
 
 /// Checks cached catalog lookup across language switches, including source-text fallback.
