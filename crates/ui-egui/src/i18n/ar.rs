@@ -1690,6 +1690,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Style Name Column", "إظهار/إخفاء عمود أسماء الأنماط"),
     ("Show/Hide Tagged Frames", "إظهار/إخفاء الإطارات الموسومة"),
     ("Show/Hide Text Threads", "إظهار/إخفاء روابط الإطارات النصية"),
+    ("Show/Hide Link Badge", "إظهار/إخفاء شارة الارتباط"),
     ("Smooth", "تنعيم"),
     ("Sort", "فرز"),
     ("Split Note", "تقسيم الملاحظة"),

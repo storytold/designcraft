@@ -1853,6 +1853,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Style Name Column", "Mostrar/ocultar coluna de nomes de estilo"),
     ("Show/Hide Tagged Frames", "Mostrar/ocultar quadros marcados"),
     ("Show/Hide Text Threads", "Mostrar/ocultar encadeamentos de texto"),
+    ("Show/Hide Link Badge", "Mostrar/ocultar selo de vínculo"),
     ("Sort", "Ordenar"),
     ("Split Note", "Dividir nota"),
     ("Split Path", "Dividir demarcador"),

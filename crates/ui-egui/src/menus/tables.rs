@@ -534,6 +534,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Extras",
             "ui:view.frameEdges",
             "ui:view.textThreads",
+            "ui:view.linkBadge",
             "<",
             ">Grids & Guides",
             "ui:view.guides",

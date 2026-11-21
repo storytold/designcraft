@@ -890,6 +890,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Style Name Column", "სტილების სახელების სვეტის ჩვენება/დამალვა"),
     ("Show/Hide Tagged Frames", "ტეგირებული ჩარჩოების ჩვენება/დამალვა"),
     ("Show/Hide Text Threads", "ტექსტის კავშირების ჩვენება/დამალვა"),
+    ("Show/Hide Link Badge", "ბმულის ნიშნის ჩვენება/დამალვა"),
     ("Smooth", "გლუვი"),
     ("Sort", "სორტირება"),
     ("Split Cell Horizontally", "უჯრის ჰორიზონტალურად გაყოფა"),

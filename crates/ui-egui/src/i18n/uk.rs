@@ -975,6 +975,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Show/Hide Style Name Column", "Показати/приховати стовпець назв стилів"),
     ("Show/Hide Tagged Frames", "Показати/приховати фрейми з тегами"),
     ("Show/Hide Text Threads", "Показати/приховати зв’язки текстових фреймів"),
+    ("Show/Hide Link Badge", "Показати/приховати значок зв’язку"),
     ("Smooth", "Згладити"),
     ("Sort", "Сортувати"),
     ("Split Cell Horizontally", "Розділити клітинку горизонтально"),
