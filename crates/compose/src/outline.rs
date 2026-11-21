@@ -77,19 +77,14 @@ impl FrameOutline {
                 || (near(a.y, y0) && near(b.y, y0))
                 || (near(a.y, y1) && near(b.y, y1))
         };
-        // How far an edge's ends may differ along its short direction: the frame-wide slack, and
-        // no more than a fraction of the edge's own length. Only this slant is held to the edge's
-        // length: how far the edge lies from the box stays at the frame-wide slack, because a
-        // straight side with an extra anchor is stored as shorter edges, which must classify as the
-        // side does.
-        let slant_limit = |a: Point, b: Point| {
-            let length = (a.x - b.x).abs().max((a.y - b.y).abs());
-            eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length))
-        };
-        let rect = edges.iter().all(|&(a, b)| {
-            let slant = slant_limit(a, b);
-            ((a.x - b.x).abs() < slant || (a.y - b.y).abs() < slant) && on_side(a, b)
-        });
+        // How far a side's ends may differ along its short direction: the frame-wide slack, and no
+        // more than a fraction of the side's own length. Only this slant is held to the length: how
+        // far an edge lies from the box stays at the frame-wide slack, because a straight side with
+        // an extra anchor is stored as shorter edges, which must classify as the side does. The
+        // slant is therefore measured over the whole run of edges that lean the same way, so
+        // anchors on a side cannot each take the absolute allowance on their own.
+        let slant_limit = |length: f64| eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length));
+        let rect = edges.iter().all(|&(a, b)| on_side(a, b)) && runs_are_straight(&edges, slant_limit);
         if rect {
             return None;
         }
@@ -213,6 +208,50 @@ fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
         }
     }
     out
+}
+
+/// Whether every run of consecutive edges that lean the same way (each nearer horizontal, or each
+/// nearer vertical) is straight: the run's spread across its direction is under `limit` of the
+/// spread along it. A run is counted whole, including across the start of a closed subpath.
+fn runs_are_straight(edges: &[(Point, Point)], limit: impl Fn(f64) -> f64) -> bool {
+    // An edge with no length leans no way (it closes a path that already ends at its start).
+    let edges: Vec<(Point, Point)> = edges.iter().copied().filter(|(a, b)| a != b).collect();
+    let n = edges.len();
+    if n == 0 {
+        return true;
+    }
+    let horizontal = |&(a, b): &(Point, Point)| (a.x - b.x).abs() >= (a.y - b.y).abs();
+    let joins = |i: usize, j: usize| edges[i].1 == edges[j].0 && horizontal(&edges[i]) == horizontal(&edges[j]);
+    // Begin at an edge that does not continue its predecessor, so no run wraps past the start.
+    let Some(first) = (0..n).find(|&i| !joins((i + n - 1) % n, i)) else {
+        return runs_ok(edges.iter(), &limit);
+    };
+    let mut start = 0;
+    let ordered: Vec<(Point, Point)> = (0..n).map(|k| edges[(first + k) % n]).collect();
+    for k in 1..=n {
+        if k == n || !joins((first + k - 1) % n, (first + k) % n) {
+            if !runs_ok(ordered[start..k].iter(), &limit) {
+                return false;
+            }
+            start = k;
+        }
+    }
+    true
+}
+
+/// Whether one run of edges, taken as a whole, is within its slant limit.
+fn runs_ok<'a>(run: impl Iterator<Item = &'a (Point, Point)>, limit: &impl Fn(f64) -> f64) -> bool {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(a, b) in run {
+        for p in [a, b] {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+    }
+    let (along, across) = ((x1 - x0).max(y1 - y0), (x1 - x0).min(y1 - y0));
+    across < limit(along)
 }
 
 /// The closed subpaths of `bp` as straight edges (each subpath closed back to its start), and
@@ -393,6 +432,47 @@ mod tests {
             assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.54, fraction), 0.0).is_none(), "measured frame split at {fraction}");
             assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.70, fraction), 0.0).is_some(), "0.70 pt slant split at {fraction}");
             assert!(FrameOutline::new(&tall_with_anchor(17.0, 600.0, 1.8, fraction), 0.0).is_some(), "1.8 pt slant on 600 pt split at {fraction}");
+        }
+    }
+
+    /// The same frame as [`tall`] with the bottom edge split into `parts` equal collinear edges, the
+    /// outline starting `skip` anchors along it (a path may begin anywhere on a side).
+    fn tall_split(width: f64, height: f64, slant: f64, parts: usize, skip: usize) -> BezPath {
+        let bottom = |k: usize| {
+            let t = k as f64 / parts as f64;
+            (width * t, height + slant * t)
+        };
+        let mut bp = BezPath::new();
+        bp.move_to(bottom(skip));
+        for k in skip + 1..=parts {
+            bp.line_to(bottom(k));
+        }
+        bp.line_to((width, 0.0));
+        bp.line_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        for k in 1..=skip {
+            bp.line_to(bottom(k));
+        }
+        bp.close_path();
+        bp
+    }
+
+    /// The allowance for a short edge is not granted again to every piece of a side: a bottom edge
+    /// of the 600 pt frame split into 32 collinear edges has 0.056 pt of slant on each, under the
+    /// 0.1 pt floor, yet 1.8 pt over the whole side. It is the same shape as the unsplit frame,
+    /// wherever the path starts on the side, and the measured frame stays a rectangle split as finely.
+    #[test]
+    fn an_edge_split_into_many_pieces_is_judged_whole() {
+        for skip in [0, 7, 31] {
+            assert!(FrameOutline::new(&tall_split(17.0, 600.0, 1.8, 32, skip), 0.0).is_some(), "1.8 pt over 17 pt in 32 pieces, starting at {skip}");
+            assert!(
+                FrameOutline::new(&tall_split(16.74, 239.0, 0.70, 32, skip), 0.0).is_some(),
+                "0.70 pt over 16.74 pt in 32 pieces, starting at {skip}"
+            );
+            assert!(
+                FrameOutline::new(&tall_split(16.74, 239.0, 0.54, 32, skip), 0.0).is_none(),
+                "the measured frame in 32 pieces, starting at {skip}"
+            );
         }
     }
 }
