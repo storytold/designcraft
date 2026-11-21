@@ -158,8 +158,9 @@ fn kashidas_extract_as_no_text() {
     let kashida = |g: &designcraft_compose::PlacedGlyph| g.len == 0 && g.gid == g.face.glyph_for('\u{640}');
     assert!(cs.frames[0].lines.iter().any(|l| l.glyphs.iter().any(kashida)), "justification inserts kashidas");
     let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
-    let words: Vec<String> = extract_text(&bytes)[0].split([' ', '\u{FFFD}']).filter(|w| !w.is_empty()).map(str::to_string).collect();
-    assert!(words.iter().all(|w| w == "بسم" || w == "الله"), "{words:?}");
+    // Lines are extracted end to end, so compare the letters: every one, in order, and no tatweel.
+    let letters = extract_text(&bytes)[0].replace([' ', '\u{FFFD}'], "");
+    assert_eq!(letters, text.replace(' ', ""));
     let spans = actual_texts(&bytes);
     assert!(spans.iter().all(|t| !t.contains('\u{640}') && !t.contains(' ')), "{spans:?}");
 }

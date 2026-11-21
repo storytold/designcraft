@@ -2603,7 +2603,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             let ends_para = last || brk.is_some_and(story::is_break_char);
             let forced_mid = brk == Some(story::FORCED_LINE_BREAK) && !last;
             let (mut placed, end_x, ratio) =
-                layout_line(glyphs, s, e, b.hyphen, lx0, lx1, col.x0, pp, spacing, ends_para, forced_mid, f.left_page, bidi_info);
+                layout_line(glyphs, &story.text, s, e, b.hyphen, lx0, lx1, col.x0, pp, spacing, ends_para, forced_mid, f.left_page, bidi_info);
             let end_x = if line_no == 0 && s == 0 { align_label(&mut placed, label_aligned, label_tab, list_align, end_x) } else { end_x };
             // Warichu runs before ruby so a reading is placed over the stacked note, and before
             // the trimmed spaces and the drop cap join the line, so neither is stacked.
@@ -5145,51 +5145,118 @@ fn page_alignment(align: Align, left_page: bool) -> Align {
     }
 }
 
-/// Allocate justified Arabic elongation before distributing the remaining space.
-fn allocate_kashidas(line: &[Glyph], add: &mut [f64], pp: &ParaProps, seg: usize, extra: &mut f64) -> Vec<(usize, f64)> {
+/// Justified Arabic: lengthen words at a join with the font's tatweels before widening spaces,
+/// taking at most `extra` (which shrinks by what they add). Each word is shaped again with the
+/// tatweels typed in, so the font's own kashida forms, and the letter forms beside them, apply as
+/// if typed: Amiri draws ل and م differently around a kashida, and a run of tatweels as one curved
+/// glyph. One tatweel stretched over a gap distorted its shaped ends and left the joins mismatched.
+fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize, extra: &mut f64) {
     if !(*extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
-        return Vec::new();
+        return;
     }
     let points: Vec<usize> = kashida_points(line).into_iter().filter(|&i| i >= seg).collect();
     if points.is_empty() {
-        return Vec::new();
+        return;
     }
     let total = extra.min(points.iter().map(|&i| line[i].size * 1.5).sum());
     let per = total / points.len() as f64;
-    *extra -= total;
-    let kashidas: Vec<(usize, f64)> = points.into_iter().map(|i| (i, per)).collect();
-    for &(i, length) in &kashidas {
-        add[i] += length;
+    // From the end, so the indices of earlier words stay valid.
+    for &i in points.iter().rev() {
+        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per) {
+            line.splice(range, glyphs);
+            *extra -= added;
+        }
     }
-    kashidas
 }
 
-/// Add stretched tatweel glyphs to the gaps allocated for Arabic elongation.
-fn append_kashidas(line: &[Glyph], out: &mut Vec<PlacedGlyph>, kashidas: Vec<(usize, f64)>) {
-    for (i, l) in kashidas {
-        let first = (0..=i).rev().take_while(|&j| line[j].byte == line[i].byte).last().unwrap_or(i);
-        let (g, at) = (&line[i], out[first].x - line[first].dx - l);
-        let gid = designcraft_fonts::first_glyph(&g.face, &['\u{0640}']);
-        let w = g.face.advance(gid) * g.sx;
-        if gid == 0 || w <= 0.0 {
-            continue;
-        }
-        // One tatweel stretched over the gap (overlapping its neighbours a little).
-        let k = (l + 0.4) / w;
-        out.push(PlacedGlyph {
-            gid,
-            x: at - 0.2,
-            y: -g.shift,
-            adv: 0.0,
-            sx: g.sx * k,
-            len: 0,
-            generated_text: None,
-            upright: false,
-            tcy: None,
-            dx: 0.0,
-            ..place(g, at)
-        });
+/// The word holding the join after `line[i]`, shaped again with as many tatweels at the join as
+/// add at most `room`: (its glyph range on the line, its new glyphs, the length added). `None`
+/// when shaping the word's text again doesn't give the glyphs on the line (substituted or
+/// generated text, features the default shaping doesn't use), so nothing is changed blindly.
+fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
+    let start = (seg..=i).rev().take_while(|&j| !line[j].is_space()).last()?;
+    let end = (i + 1..line.len()).find(|&j| line[j].is_space()).unwrap_or(line.len());
+    let word = line.get(start..end)?;
+    let n = line.get(i + 1)?;
+    let first = word.first()?;
+    if word.iter().any(|g| g.face.id() != first.face.id() || g.generated_text.is_some() || g.list_label) {
+        return None;
     }
+    let b0 = word.iter().map(|g| g.byte).min()?;
+    let b1 = word.iter().map(|g| g.byte + g.len).max()?;
+    let src = text.get(b0..b1)?;
+    let at = n.byte.checked_sub(b0).filter(|&at| src.is_char_boundary(at))?;
+    let face = first.face.get();
+    let shape = |s: &str| {
+        let context = designcraft_fonts::ShapeContext { language: first.lang, ..Default::default() };
+        designcraft_fonts::shape_with_context(face, s, &[], |c| c, context)
+    };
+    let width = |shaped: &[designcraft_fonts::ShapedGlyph]| shaped.iter().map(|s| f64::from(s.x_advance) * first.sx).sum::<f64>();
+    let plain = shape(src);
+    if plain.len() != word.len() || plain.iter().zip(word).any(|(s, g)| s.gid != g.gid) {
+        return None;
+    }
+    let with = |count: usize| {
+        let tatweels = "\u{0640}".repeat(count);
+        let shaped = shape(&format!("{}{tatweels}{}", src.get(..at).unwrap_or(""), src.get(at..).unwrap_or("")));
+        let added = width(&shaped) - width(&plain);
+        (shaped, added, tatweels.len())
+    };
+    let (_, one, _) = with(1);
+    if one <= 0.0 || one.is_nan() || one > room {
+        return None;
+    }
+    // A font's kashida forms need not be one tatweel wide each: try down from the estimate.
+    let estimate = ((room / one).floor() as usize).clamp(1, 200);
+    let (shaped, added, run) = (1..=estimate + 2).rev().map(with).find(|(_, added, _)| *added > 0.0 && *added <= room + 1e-6)?;
+    // Tracking and other extra advance the line gave each cluster, kept on its last glyph.
+    let mut extra_adv: HashMap<usize, f64> = HashMap::new();
+    for (s, g) in plain.iter().zip(word) {
+        *extra_adv.entry(s.cluster).or_default() += g.adv - f64::from(s.x_advance) * g.sx;
+    }
+    let mut letters: Vec<Glyph> = Vec::with_capacity(shaped.len());
+    let mut tatweels: Vec<Glyph> = Vec::new();
+    let mut seen: HashMap<usize, usize> = HashMap::new();
+    for s in &shaped {
+        let in_run = (at..at + run).contains(&s.cluster);
+        let mut g = if in_run {
+            // A tatweel takes the metrics of the letter after the join, and no text.
+            let mut g = n.clone();
+            g.len = 0;
+            g.ch = '\u{0640}';
+            g.rendered_char = '\u{0640}';
+            g.safe_tatweel_before = false;
+            g.space = 0.0;
+            g
+        } else {
+            let cluster = if s.cluster < at { s.cluster } else { s.cluster - run };
+            let nth = seen.entry(cluster).or_default();
+            let mut originals = plain.iter().zip(word).filter(|(p, _)| p.cluster == cluster).map(|(_, g)| g);
+            let mut g = originals.clone().nth(*nth).or_else(|| originals.next())?.clone();
+            if *nth > 0 {
+                g.len = 0;
+            }
+            *nth += 1;
+            g
+        };
+        g.gid = s.gid;
+        g.adv = f64::from(s.x_advance) * g.sx;
+        g.dx = f64::from(s.x_offset) * g.sx;
+        g.dy = -f64::from(s.y_offset) * g.sy;
+        if in_run { tatweels.push(g) } else { letters.push(g) }
+    }
+    // Each cluster's extra advance on its last glyph.
+    for (cluster, adv) in extra_adv {
+        if let Some(g) = letters.iter_mut().rev().find(|g| g.byte == b0 + cluster) {
+            g.adv += adv;
+        }
+    }
+    // The tatweels go with the letter after the join, after its glyphs and in visual order: the
+    // line is put in visual order cluster by cluster, so they land between the two letters.
+    let after = letters.iter().rposition(|g| g.byte == n.byte).map_or(letters.len(), |k| k + 1);
+    tatweels.reverse();
+    letters.splice(after..after, tatweels);
+    Some((start..end, letters, added))
 }
 
 /// Average the actual word-space ratios for H&J highlighting.
@@ -5214,6 +5281,7 @@ fn word_space_ratio(line: &[Glyph], add: &[f64], spaces: &[usize]) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn layout_line(
     glyphs: &[Glyph],
+    text: &str,
     s: usize,
     e: usize,
     hyphen: bool,
@@ -5266,10 +5334,14 @@ fn layout_line(
     // a line whose last tab is a right, centre, character or right-indent tab is not justified.
     let seg = last_tab.map_or(0, |(i, _)| i + 1);
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
-    // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
-    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
+    // Kashidas: in justified Arabic, the joins of words take the extra length first.
+    if justify_this && bidi_info.has_rtl() {
+        insert_kashidas(&mut line, text, pp, seg, &mut extra);
+    }
+    // Spaces inside a jidori run keep the run's fitted width, as in the breaker.
+    let spaces: Vec<usize> = line.iter().enumerate().skip(seg).filter(|(_, g)| g.is_justify_space() && !g.locked_advance).map(|(i, _)| i).collect();
     // A justified paragraph's last line may have been composed with shrunk spaces: shrink it too.
     let squeeze_last = !justify_this
         && seg_justifies
@@ -5279,8 +5351,6 @@ fn layout_line(
     let mut add = vec![0.0; line.len()];
     let mut scale = vec![1.0; line.len()];
     let mut offset = 0.0;
-    // Kashidas: in justified Arabic, the joins of words take the extra length first.
-    let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
     if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
@@ -5358,15 +5428,7 @@ fn layout_line(
             p.adv *= scale[i];
         }
         p.adv += add[i];
-        if let Some((_, l)) = kashidas.iter().find(|k| line[k.0].byte == g.byte) {
-            // Move the whole cluster, including its attached marks, past the elongation.
-            p.x += l;
-        }
         x += p.adv;
-        if let Some((_, l)) = kashidas.iter().find(|k| k.0 == i) {
-            // The glyph keeps its own width; the gap before it is the tatweel's.
-            p.adv -= l;
-        }
         out.push(p);
     }
     if bidi {
@@ -5378,7 +5440,6 @@ fn layout_line(
             tab_leader(g, leader, p.x, p.adv, tab_origin, &mut out);
         }
     }
-    append_kashidas(&line, &mut out, kashidas);
     (out, x, ratio)
 }
 
