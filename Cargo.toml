@@ -32,7 +32,6 @@ craft-wordmodel = { git = "https://github.com/storytold/craft-libs", rev = "c60e
 craft-csv = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
 craft-image-codecs = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
 craft-jpeg = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
-craft-metadata = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
 craft-psd = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
 craft-file-formats = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
 craft-opc = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }

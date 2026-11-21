@@ -2003,7 +2003,6 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-jpeg",
- "craft-metadata",
  "craft-ps",
  "craft-psd",
  "craft-svg",

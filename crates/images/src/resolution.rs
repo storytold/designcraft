@@ -2,9 +2,10 @@
 //! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide).
 //! Delegates container resolution probes to `craft-image-codecs` (`file_resolution`, which reads
 //! JPEG Photoshop ResolutionInfo -> XMP -> EXIF -> JFIF, PNG eXIf, WebP EXIF, and classic TIFF;
-//! plus `exif_resolution`, `png_probe::pixels_per_meter`, and `bmp_probe::pixels_per_meter`),
-//! JPEG EXIF orientation to `craft-metadata`, and PSD `ResolutionInfo` to [`crate::psd`]. GIF and
-//! files without (usable) metadata report nothing and keep the pixel-is-a-point size.
+//! plus `exif_resolution`, `png_probe::pixels_per_meter`, and `bmp_probe::pixels_per_meter`) and
+//! PSD `ResolutionInfo` to [`crate::psd`]. JPEG EXIF orientation keeps the strict local APP1 scan
+//! (`"Exif\0\0"` with complete segment bounds). GIF and files without (usable) metadata report
+//! nothing and keep the pixel-is-a-point size.
 
 /// Dots per inch in x and y, when the file carries usable resolution metadata.
 pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
@@ -44,7 +45,36 @@ fn orientation(bytes: &[u8]) -> u16 {
 
 /// EXIF orientation from a JPEG's first APP1 `"Exif\0\0"` segment before the first scan.
 fn jpeg_orientation(bytes: &[u8]) -> u16 {
-    craft_metadata::jpeg_segments(bytes).exif.as_deref().map_or(1, craft_image_codecs::exif_orientation)
+    let mut i = 2usize;
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xFF {
+            break;
+        }
+        let marker = bytes[i + 1];
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
+            i += 2;
+            continue;
+        }
+        if marker == 0xDA || marker == 0xD9 {
+            break;
+        }
+        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+        if len < 2 || i + 2 + len > bytes.len() {
+            break;
+        }
+        let seg = &bytes[i + 4..i + 2 + len];
+        if marker == 0xE1
+            && let Some(exif) = seg.strip_prefix(b"Exif\0\0")
+        {
+            return craft_image_codecs::exif_orientation(exif);
+        }
+        i += 2 + len;
+    }
+    1
 }
 
 /// PNG `pHYs` pixels-per-metre via the shared probe: meters -> dpi in `f64` (preserving exact

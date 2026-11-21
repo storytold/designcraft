@@ -23,7 +23,6 @@ craft-image-codecs = { workspace = true }
 craft-psd = { workspace = true }
 craft-file-formats = { workspace = true }
 craft-jpeg = { workspace = true }
-craft-metadata = { workspace = true }
 
 [dev-dependencies]
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
