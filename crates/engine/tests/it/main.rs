@@ -9,6 +9,7 @@ mod collection_state_atomicity;
 mod combined_close_glyph;
 mod distribute_locks;
 mod export_page_input;
+mod idml_bitmap_transparency;
 mod insert_pages_bounds;
 mod insert_pages_parent;
 mod param_keys;
