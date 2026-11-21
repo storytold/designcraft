@@ -4888,13 +4888,32 @@ fn list_labels_do_not_raise_the_ascent_first_baseline() {
     for list in [ListType::Bullets, ListType::Numbers] {
         let (lb, lasc, llead) = line("Hxg Hxg", list);
         assert!((lb - b).abs() < 1e-6, "{list:?}: {lb} vs {b}");
-        // The 40 pt label still sets the line's ascent and leading.
-        assert!(lasc > asc + 20.0 && (llead - 48.0).abs() < 1e-6 && (lead - 12.0).abs() < 1e-6, "{list:?}: {lasc} {asc} {llead} {lead}");
+        // The 40 pt label still sets the line's ascent, but the 10 pt text sets its leading:
+        // lines are spaced by the text (12 pt), not by the label (which would be 48 pt).
+        assert!(lasc > asc + 20.0 && (llead - 12.0).abs() < 1e-6 && (lead - 12.0).abs() < 1e-6, "{list:?}: {lasc} {asc} {llead} {lead}");
     }
     // An empty bulleted paragraph sits like an empty paragraph.
     let (eb, _, _) = line("", ListType::None);
     let (ebl, _, _) = line("", ListType::Bullets);
     assert!((ebl - eb).abs() < 1e-6, "{ebl} vs {eb}");
+}
+
+#[test]
+fn bulleted_lines_space_by_the_text_not_the_label() {
+    use designcraft_doc::ListType;
+    // Three bulleted paragraphs whose text is 8 pt (auto leading 8 × 1.2 = 9.6), while each
+    // label is shaped from the paragraph's 12 pt character style (auto leading 14.4). Lines
+    // must be spaced by the text, not by the label.
+    let text = "one\ntwo\nthree";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs { list_type: Some(ListType::Bullets), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(8.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3, "one line per paragraph");
+    for w in lines.windows(2) {
+        let gap = w[1].baseline - w[0].baseline;
+        assert!((gap - 9.6).abs() < 1e-6, "gap {gap}: expected the 8 pt text's leading 9.6, not the 12 pt label's 14.4");
+    }
 }
 
 #[test]
