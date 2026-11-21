@@ -17,8 +17,10 @@ const MAX_VERSIONS: usize = 24;
 /// The most pixels in one exported image (the limit EPUB page images have: an RGBA buffer of
 /// about 320 MB before encoding).
 const MAX_PIXELS: f64 = 8.0e7;
-/// The most characters in a file or folder name.
+/// The most characters in a file or folder base name.
 const MAX_NAME: usize = 120;
+/// Leave room below 255 UTF-8 bytes for a device prefix, duplicate suffix and extension.
+const MAX_NAME_BYTES: usize = 240;
 /// The most bytes an export returns in its reply (no `dir`): past it, export to a folder.
 const MAX_INLINE_BYTES: usize = 512 << 20;
 /// The most saved export presets, and the longest preset name.
@@ -251,14 +253,15 @@ pub(crate) fn layout_pages(cmd: &str, d: &designcraft_doc::Document, names: &[St
 }
 
 /// `s` as a file or folder name: no path separators, reserved or control characters, no leading
-/// dots, no Windows device name (`CON`, `NUL`… get a leading `_`), at most [`MAX_NAME`]
-/// characters; "Untitled" when nothing is left.
+/// dots, no Windows device name (`CON`, `NUL`… get a leading `_`). The base name keeps at most
+/// [`MAX_NAME`] characters and [`MAX_NAME_BYTES`] UTF-8 bytes; "Untitled" when nothing is left.
 pub fn safe_name(s: &str) -> String {
     let cleaned: String = s.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { ' ' } else { c }).collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let joined = words.join(" ");
     let trimmed = joined.trim_start_matches('.').trim();
     let capped: String = trimmed.chars().take(MAX_NAME).collect();
+    let capped = &capped[..capped.floor_char_boundary(MAX_NAME_BYTES)];
     let capped = capped.trim_end_matches(['.', ' ']).to_string();
     if capped.is_empty() {
         "Untitled".into()
@@ -578,6 +581,29 @@ mod tests {
         assert!(p.iter().all(|x| !x.contains("..")), "{p:?}");
         assert!(p.contains(&"PNG/Mag - 1.png".to_string()) && p.contains(&"PNG/Mag - 1 2.png".to_string()), "{p:?}");
         assert!(p.iter().any(|x| x.starts_with("PNG 2/")), "two versions, two folders: {p:?}");
+    }
+
+    #[test]
+    fn unicode_export_names_fit_in_a_filesystem_component() {
+        let accented = "é".repeat(MAX_NAME);
+        assert_eq!(safe_name(&accented), accented, "the existing character limit still applies");
+        assert_eq!(safe_name(&"日".repeat(120)), "日".repeat(80));
+        assert_eq!(safe_name(&"🙂".repeat(120)), "🙂".repeat(60));
+        let mixed = format!("{}日", "é".repeat(119));
+        assert_eq!(safe_name(&mixed), "é".repeat(119), "a multibyte character is kept whole or omitted");
+        let boundary = format!("{}日a", "é".repeat(118));
+        assert_eq!(safe_name(&boundary), boundary, "exactly 240 bytes still fit");
+        for input in ["日".repeat(120), "🙂".repeat(120), format!("CON.{}", "日".repeat(120))] {
+            let base = safe_name(&input);
+            let mut taken = vec![];
+            for ext in ["pdf", "png", "jpg"] {
+                let first = unique(&mut taken, &base, ext);
+                let second = unique(&mut taken, &base, ext);
+                assert_eq!(first, format!("{base}.{ext}"));
+                assert_eq!(second, format!("{base} 2.{ext}"));
+                assert!(first.len() <= 255 && second.len() <= 255, "{second}");
+            }
+        }
     }
 
     #[test]
