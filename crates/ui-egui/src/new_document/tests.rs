@@ -156,6 +156,31 @@ fn double_clicking_a_card_creates_the_document() {
 }
 
 #[test]
+fn the_chosen_print_units_are_remembered_for_the_next_document() {
+    let mut app = app();
+    let ctx = context();
+    app.ui.dialog.as_mut().unwrap().fields.insert("tab".into(), json!("print"));
+    let texts = settle(&mut app, &ctx);
+    click(&mut app, &ctx, card_at(&texts, "Letter"), 1);
+    set_units(app.ui.dialog.as_mut().unwrap(), Unit::Millimeters);
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.settings.horizontal_units, Unit::Millimeters);
+    // Saved with the preferences and read back, as at the next launch.
+    let saved = serde_json::to_vec(&app.ui).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.ui = crate::UiState::from_preferences_json(&saved).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((units(d), d.s("width")), (Unit::Millimeters, "215.9 mm".into()), "the dialog opens in the last units");
+    // A built-in print preset shows in them too.
+    app.ui.dialog.as_mut().unwrap().fields.insert("tab".into(), json!("print"));
+    let texts = settle(&mut app, &ctx);
+    click(&mut app, &ctx, card_at(&texts, "Legal"), 1);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("preset"), units(d), d.s("width")), ("Legal".into(), Unit::Millimeters, "215.9 mm".into()));
+}
+
+#[test]
 fn card_sizes_follow_the_dialog_units() {
     let card = NewDocument::from_preset("Business Card").unwrap();
     assert_eq!(size_text(&card, Unit::Millimeters), "88.9 × 50.8 mm");
