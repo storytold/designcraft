@@ -1,4 +1,5 @@
 use super::{Deserialize, FirstBaseline, ParaFormat, Serialize, Story, StoryId, StrokeType, VerticalJustification};
+use crate::StartParagraph;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,11 +25,21 @@ pub struct Row {
     pub height: f64,
     pub mode: RowHeightMode,
     pub kind: RowKind,
+    /// Keep Options › Start Row: where the row starts (the next column, frame or page).
+    #[serde(skip_serializing_if = "is_anywhere")]
+    pub start: StartParagraph,
+    /// Keep Options › Keep with Next Row: the row breaks to another column only with the next.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keep_with_next: bool,
+}
+
+fn is_anywhere(s: &StartParagraph) -> bool {
+    *s == StartParagraph::Anywhere
 }
 
 impl Default for Row {
     fn default() -> Self {
-        Row { height: 3.0, mode: RowHeightMode::AtLeast, kind: RowKind::Body }
+        Row { height: 3.0, mode: RowHeightMode::AtLeast, kind: RowKind::Body, start: StartParagraph::Anywhere, keep_with_next: false }
     }
 }
 

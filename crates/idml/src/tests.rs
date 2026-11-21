@@ -1163,6 +1163,8 @@ fn round_trips_tables() {
     t.cell_mut(2, 1).unwrap().vj = designcraft_doc::VerticalJustification::Center;
     t.rows[2].mode = designcraft_doc::RowHeightMode::Exactly;
     t.rows[2].height = 30.0;
+    t.rows[1].keep_with_next = true;
+    t.rows[2].start = designcraft_doc::StartParagraph::NextColumn;
     t.columns[0].width = 50.0;
     t.merge(designcraft_doc::CellRange::new(2, 1, 3, 2)).unwrap();
     t.options.alt_rows = Some(designcraft_doc::AltFills { first: 1, first_color: "Brand".into(), first_tint: 0.2, ..Default::default() });
@@ -1181,6 +1183,8 @@ fn round_trips_tables() {
     assert_eq!((bt.cell(2, 1).unwrap().row_span, bt.cell(2, 1).unwrap().col_span), (2, 2));
     assert_eq!(bt.rows[2].mode, designcraft_doc::RowHeightMode::Exactly);
     assert!((bt.rows[2].height - 30.0).abs() < 1e-6);
+    assert!(bt.rows[1].keep_with_next && !bt.rows[2].keep_with_next);
+    assert_eq!((bt.rows[1].start, bt.rows[2].start), (designcraft_doc::StartParagraph::Anywhere, designcraft_doc::StartParagraph::NextColumn));
     assert!((bt.columns[0].width - 50.0).abs() < 1e-6);
     assert_eq!(bt.options.alt_rows.as_ref().map(|a| a.first_color.as_str()), Some("Brand"));
 }

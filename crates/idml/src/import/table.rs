@@ -105,6 +105,9 @@ impl<'r> Importer<'r> {
             let auto = re.auto_grow().unwrap_or(true);
             t.rows[r].mode = if auto { RowHeightMode::AtLeast } else { RowHeightMode::Exactly };
             t.rows[r].height = if auto { re.minimum_height().unwrap_or(3.0) } else { re.single_row_height().unwrap_or(12.0) };
+            // Keep Options: InDesign writes "StartAnywhere" for a row that starts anywhere.
+            t.rows[r].start = re.values.get("StartRow").and_then(names::start_para_in).unwrap_or_default();
+            t.rows[r].keep_with_next = re.values.boolean("KeepWithNextRow").unwrap_or(false);
         }
         for (c, ce) in cols.iter().enumerate() {
             t.columns[c].width = ce.single_column_width().unwrap_or(72.0).max(3.0);
