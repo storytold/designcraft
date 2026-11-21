@@ -256,10 +256,10 @@ fn validate_pdf(args: &[String]) -> Result<(), String> {
         }
     }
     let path = path.ok_or(USAGE)?;
+    let standard = standard.map(|s| designcraft_pdf::Standard::parse(s).filter(|s| s.is_pdfx()).ok_or(USAGE)).transpose()?;
     let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let standard = match standard.map(designcraft_pdf::Standard::parse) {
-        Some(Some(s)) => s,
-        Some(None) => return Err(USAGE.into()),
+    let standard = match standard {
+        Some(s) => s,
         None if designcraft_pdf::pdfx_version(&bytes).is_some_and(|v| v.starts_with("PDF/X-1:")) => designcraft_pdf::Standard::PdfX1a,
         None => designcraft_pdf::Standard::PdfX4,
     };
