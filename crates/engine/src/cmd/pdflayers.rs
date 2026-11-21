@@ -37,11 +37,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             |s, p| {
                 let ids: Vec<_> = targets(s, p)?.into_iter().filter(|id| placed_pdf(s, *id).is_some()).collect();
-                let hidden: Vec<String> = p
-                    .get("hidden")
-                    .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-                    .unwrap_or_default();
+                let hidden: Vec<String> = match p.get("hidden") {
+                    None => Vec::new(),
+                    Some(v) => v
+                        .as_array()
+                        .and_then(|names| names.iter().map(|name| name.as_str().map(str::to_string)).collect())
+                        .ok_or_else(|| bad("object.layerOptions", "hidden must be an array of layer names"))?,
+                };
                 let use_defaults = match p.get("useDefaults") {
                     None => hidden.is_empty(),
                     Some(v) => v.as_bool().ok_or_else(|| bad("object.layerOptions", "useDefaults must be a boolean"))?,
