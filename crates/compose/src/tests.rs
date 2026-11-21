@@ -3702,6 +3702,110 @@ fn right_to_left_runs_are_ordered_visually() {
     assert!(g.windows(2).all(|w| w[0].cluster <= w[1].cluster), "{:?}", g.iter().map(|g| g.cluster).collect::<Vec<_>>());
 }
 
+/// #2884: tracking is space after the character in reading order. Right to left that is at its
+/// left, between it and the character read after it, mirroring left to right.
+#[test]
+fn tracking_in_right_to_left_text_follows_the_character_in_reading_order() {
+    use designcraft_doc::TextDirection;
+    let lines = |text: &str, direction: TextDirection, align: Align, tracked: std::ops::Range<usize>| {
+        let para = ParaAttrs { direction: Some(direction), align: Some(align), ..Default::default() };
+        let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 500.0, 200.0), para);
+        d.story_mut(sid).unwrap().format_chars(tracked, |f| f.over.tracking = Some(1000.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    };
+    let x_of = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).map(|g| g.x).unwrap();
+    let width = |l: &Line| l.glyphs.iter().map(|g| g.adv).sum::<f64>();
+    // Alef, bet, gimel, dalet, he (two bytes each); tracking on bet.
+    let text = "\u{5D0}\u{5D1}\u{5D2}\u{5D3}\u{5D4}";
+    let bytes = [0, 2, 4, 6, 8];
+    for align in [Align::Right, Align::Left] {
+        let plain = lines(text, TextDirection::RightToLeft, align, 0..0);
+        let tracked = lines(text, TextDirection::RightToLeft, align, 2..4);
+        // Tracking 1000 is one em: what it adds to the line.
+        let em = width(&tracked) - width(&plain);
+        assert!(em > 1.0, "{align:?}: the tracking widens the line by {em}");
+        // The space opens between bet and gimel (read after it); every other pair keeps its gap.
+        for w in bytes.windows(2) {
+            let gap = |l: &Line| x_of(l, w[0]) - x_of(l, w[1]);
+            let want = if w[0] == 2 { gap(&plain) + em } else { gap(&plain) };
+            assert!((gap(&tracked) - want).abs() < 0.01, "{align:?}: bytes {w:?} are {} apart, not {want}", gap(&tracked));
+        }
+        // Advances stay end to end on the line, so carets, selections and rules have no gap.
+        let mut drawn: Vec<&PlacedGlyph> = tracked.glyphs.iter().filter(|g| g.len > 0).collect();
+        drawn.sort_by(|a, b| a.x.total_cmp(&b.x));
+        for w in drawn.windows(2) {
+            assert!((w[0].x + w[0].adv - w[1].x).abs() < 0.01, "{align:?}: advances of bytes {} and {} don't meet", w[0].byte, w[1].byte);
+        }
+        // The caret after bet is at bet's left edge, the one before it at its right edge.
+        assert!((crate::caret_x(&tracked, 4) - x_of(&tracked, 2)).abs() < 0.01, "{align:?}: caret after bet");
+        assert!((crate::caret_x(&tracked, 2) - x_of(&tracked, 0)).abs() < 0.01, "{align:?}: caret before bet");
+    }
+    // Left to right, the same: the space opens between b and c.
+    let plain = lines("abcde", TextDirection::LeftToRight, Align::Left, 0..0);
+    let tracked = lines("abcde", TextDirection::LeftToRight, Align::Left, 1..2);
+    let em = width(&tracked) - width(&plain);
+    for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+        let gap = |l: &Line| x_of(l, b) - x_of(l, a);
+        let want = if a == 1 { gap(&plain) + em } else { gap(&plain) };
+        assert!((gap(&tracked) - want).abs() < 0.01, "left to right: bytes {a}, {b}");
+    }
+}
+
+/// #2884 review: a justified line whose glyphs are scaled moves the tracking as scaled, so every
+/// advance keeps the glyph's own share; and a right-to-left drop cap puts a letter's tracking at
+/// its left, as the line does.
+#[test]
+fn right_to_left_tracking_follows_glyph_scaling_and_drop_caps() {
+    use designcraft_doc::TextDirection;
+    let rtl = |align: Align| ParaAttrs { direction: Some(TextDirection::RightToLeft), align: Some(align), ..Default::default() };
+    let text = "\u{5D0}\u{5D1}\u{5D2}\u{5D3}\u{5D4}";
+    // Two words, then a third the measure leaves for the next line.
+    let words = format!("{text} \u{5D5}\u{5D6} {text}");
+    let line = |para: ParaAttrs, width: f64, tracked: std::ops::Range<usize>| {
+        let (mut d, sid, _) = doc_with(&words, Rect::new(0.0, 0.0, width, 200.0), para);
+        d.story_mut(sid).unwrap().format_chars(tracked, |f| f.over.tracking = Some(1000.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    };
+    let glyph = |l: &Line, byte: usize| l.glyphs.iter().find(|g| g.byte == byte && g.len > 0).cloned().unwrap();
+    // The first two words on a line of their own, justified by scaling their glyphs about a third
+    // (the word space is fixed).
+    let plain = line(rtl(Align::Right), 500.0, 2..4);
+    let two: f64 = plain.glyphs.iter().filter(|g| g.byte < 15).map(|g| g.adv).sum();
+    let scaled = ParaAttrs {
+        glyph_scale_min: Some(1.0),
+        glyph_scale_max: Some(2.0),
+        word_space_max: Some(1.0),
+        word_space_min: Some(1.0),
+        ..rtl(Align::RightJustified)
+    };
+    let just = line(scaled, two * 1.3, 2..4);
+    assert!(just.range.end <= 16, "the first two words are a line of their own: {:?}", just.range);
+    for byte in [0, 2, 4, 6, 8, 11, 13] {
+        let (p, j) = (glyph(&plain, byte), glyph(&just, byte));
+        let k = j.sx / p.sx;
+        assert!(k > 1.05, "byte {byte}: the glyph is scaled by {k}");
+        assert!((j.adv - p.adv * k).abs() < 0.01, "byte {byte}: advance {} is not {} scaled by {k}", j.adv, p.adv);
+    }
+    // A two-letter drop cap with tracking on its first letter (alef): the space opens between alef
+    // and bet, read after it, and their advances still meet.
+    let cap = |tracked: std::ops::Range<usize>| {
+        let para = ParaAttrs { drop_cap_lines: Some(2), drop_cap_chars: Some(2), ..rtl(Align::Right) };
+        let (mut d, sid, _) = doc_with(&format!("{text} {}", "\u{5D5}".repeat(200)), Rect::new(0.0, 0.0, 300.0, 400.0), para);
+        d.story_mut(sid).unwrap().format_chars(tracked, |f| f.over.tracking = Some(1000.0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs)[0].clone()
+    };
+    let (untracked, tracked) = (cap(0..0), cap(0..2));
+    let (a0, b0, a1, b1) = (glyph(&untracked, 0), glyph(&untracked, 2), glyph(&tracked, 0), glyph(&tracked, 2));
+    assert!(a1.x > b1.x, "alef is right of bet");
+    let em = (a1.x - b1.x) - (a0.x - b0.x);
+    assert!(em > 1.0, "the tracking opens a space between alef and bet: {em}");
+    assert!((b1.x + b1.adv - a1.x).abs() < 0.01, "bet's advance meets alef: {} vs {}", b1.x + b1.adv, a1.x);
+    assert!((a1.adv - a0.adv).abs() < 0.01, "alef's advance is its own: {} vs {}", a1.adv, a0.adv);
+}
+
 #[test]
 fn bidi_matches_the_reference_order() {
     use unicode_bidi::{BidiInfo, Level};

@@ -4079,6 +4079,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
             g.adv = g.adv * gs + ls * g.space;
+            g.track *= gs;
             g.sx *= gs;
             g.dx *= gs;
         }
@@ -5346,9 +5347,12 @@ fn layout_line(
     let mut x = x0 + offset;
     let bidi = bidi_info.has_rtl();
     let mut pens = Vec::with_capacity(if bidi { line.len() } else { 0 });
+    // The tracking each placed advance carries, scaled with it.
+    let mut tracks = Vec::with_capacity(if bidi { line.len() } else { 0 });
     for (i, g) in line.iter().enumerate() {
         if bidi {
             pens.push(x);
+            tracks.push(g.track * scale[i]);
         }
         let mut p = place(g, x);
         if scale[i] != 1.0 {
@@ -5371,7 +5375,7 @@ fn layout_line(
     }
     if bidi {
         pens.push(x);
-        reorder_visual(&line, &mut out, &pens, x0 + offset, bidi_info);
+        reorder_visual(&line, &mut out, &pens, &tracks, x0 + offset, bidi_info);
     }
     for (i, leader) in &leaders {
         if let Some((g, p)) = line.get(*i).zip(out.get(*i)) {
@@ -5431,9 +5435,9 @@ fn kashida_points(line: &[Glyph]) -> Vec<usize> {
 }
 
 /// Bidi: put a laid-out line (glyphs in text order, `pens` their pen positions and then the end
-/// position) into visual order from `start`, cluster by cluster (Unicode Bidirectional
-/// Algorithm, rule L2).
-fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], start: f64, info: &unicode_bidi::BidiInfo<'_>) {
+/// position, `tracks` the tracking in their placed advances) into visual order from `start`,
+/// cluster by cluster (Unicode Bidirectional Algorithm, rule L2).
+fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], tracks: &[f64], start: f64, info: &unicode_bidi::BidiInfo<'_>) {
     use unicode_bidi::{BidiInfo, Level};
     // Clusters: runs of glyphs from the same source character.
     let mut units: Vec<std::ops::Range<usize>> = Vec::new();
@@ -5452,13 +5456,30 @@ fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], start: 
     let width = |u: &std::ops::Range<usize>| pens[u.end] - pens[u.start];
     let mut cur = start;
     let mut shifts = vec![0.0; line.len()];
+    // The glyph whose advance ends at `cur`: the last one of the cluster drawn there.
+    let mut left: Option<usize> = None;
     for &k in &order {
         let u = &units[k];
+        let rtl = levels[k].is_rtl();
+        // Tracking is space after the character in reading order (#2884): right-to-left, that
+        // is at its left. The space leaves the cluster's advance for the advance of whatever is
+        // drawn left of it (at the start of the line, nothing), so advances stay end to end.
+        let track: f64 = if rtl { u.clone().filter_map(|i| tracks.get(i)).sum() } else { 0.0 };
+        if track != 0.0 {
+            if let Some(o) = left.and_then(|l| out.get_mut(l)) {
+                o.adv += track;
+            }
+            for i in u.clone() {
+                out[i].adv -= tracks.get(i).copied().unwrap_or(0.0);
+            }
+            cur += track;
+        }
         for i in u.clone() {
             shifts[i] = cur - pens[u.start];
-            out[i].rtl = levels[k].is_rtl();
+            out[i].rtl = rtl;
         }
-        cur += width(u);
+        cur += width(u) - track;
+        left = u.end.checked_sub(1);
     }
     for (p, d) in out.iter_mut().zip(shifts) {
         p.x += d;
@@ -5750,6 +5771,7 @@ fn split_drop_cap(
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
         g.adv *= k;
+        g.track *= k;
         g.dx *= k;
         g.dy *= k;
         g.sx *= k;
@@ -5800,10 +5822,22 @@ impl DropCap {
 /// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
 fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
     let mut x = at;
+    // Right to left, the edge the next letter ends at and the tracking of the letter before it in
+    // reading order: that space is at its left (#2884), so in the advance of the letter drawn there.
+    let mut right = at + dc.width;
+    let mut carried = 0.0;
     let mut out = Vec::with_capacity(dc.glyphs.len());
     for g in &dc.glyphs {
-        let pen = if rtl { at + at + dc.width - x - g.adv } else { x };
+        let (pen, adv) = if rtl {
+            let adv = g.adv - g.track + carried;
+            carried = g.track;
+            right -= adv;
+            (right, adv)
+        } else {
+            (x, g.adv)
+        };
         let mut p = place(g, pen);
+        p.adv = adv;
         p.y += dc.drop;
         p.rtl = rtl;
         out.push(p);
