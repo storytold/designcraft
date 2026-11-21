@@ -660,6 +660,102 @@ fn absent_item_and_document_attributes_take_indesign_defaults() {
     }
 }
 
+/// #2615: a text frame whose path is a slightly slanted rectangle (here its top and bottom drop
+/// 2.09 pt across 207.75 pt) is imported as a rectangle with the slant in its transform. Its text
+/// starts at the column edge and a heading that fits stays on one line, instead of the sloped top
+/// edge cutting the first lines as in a shaped frame.
+#[test]
+fn slightly_slanted_text_frame_sets_its_text_in_the_rectangle() {
+    let corners = [(-136.5, -74.69600535168195), (-136.5, 93.6875), (71.24999999999999, 91.6022553516819), (71.24999999999999, -76.78125000000001)];
+    let pts: String =
+        corners.iter().map(|(x, y)| format!(r#"<PathPointType Anchor="{x} {y}" LeftDirection="{x} {y}" RightDirection="{x} {y}"/>"#)).collect();
+    let body = "Body text follows the heading and fills a few more lines of the frame so that the story has more than one paragraph.";
+    let designmap = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0" Self="d">
+<Story Self="s1"><ParagraphStyleRange><CharacterStyleRange><Content>Results at a glance</Content><Br/><Content>{body}</Content></CharacterStyleRange></ParagraphStyleRange></Story>
+<Spread Self="sp1"><Page Self="p1"/>
+<TextFrame Self="tf" ParentStory="s1" ItemTransform="1 0 0 1 300 300" GradientFillLength="100" GradientFillStart="-100 0"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{pts}</PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>
+</Spread>
+</Document>"#
+    );
+    let d = import_idml_with(&zip_files(&[("designmap.xml", &designmap)]), &|_| None).unwrap();
+    let it = &d.spreads[0].items[0];
+    // The frame is where InDesign drew it: its corners on the spread are unchanged.
+    let anchors = &it.path.subpaths[0].anchors;
+    for (a, &(x, y)) in anchors.iter().zip(&corners) {
+        let p = it.xf * a.p;
+        assert!((p.x - (x + 300.0)).abs() < 1e-9 && (p.y - (y + 300.0)).abs() < 1e-9, "{p:?} vs {x} {y}");
+    }
+    // An explicit gradient vector moves with the path: it is still where InDesign put it.
+    let [x0, y0, x1, y1] = it.fill.gradient_vector.expect("gradient vector");
+    for ((x, y), (ex, ey)) in [(x0, y0), (x1, y1)].into_iter().zip([(-100.0, 0.0), (0.0, 0.0)]) {
+        let p = it.xf * designcraft_geom::Point::new(x, y);
+        assert!((p.x - (ex + 300.0)).abs() < 1e-9 && (p.y - (ey + 300.0)).abs() < 1e-9, "{p:?} vs {ex} {ey}");
+    }
+    let sid = it.text_frame().unwrap().story;
+    let cs = designcraft_compose::compose_story(&d, sid, &Default::default());
+    let lines: Vec<_> = cs.frames[0].lines.iter().collect();
+    assert!(lines.len() >= 3, "{} lines", lines.len());
+    let area = it.text_area();
+    assert!((lines[0].x0 - area.x0).abs() < 1e-9 && (lines[0].x1 - area.x1).abs() < 1e-9, "first line {}..{} in {area:?}", lines[0].x0, lines[0].x1);
+    assert_eq!(lines.iter().filter(|l| l.para == 0).count(), 1, "the heading fits on one line");
+    assert!(lines.iter().all(|l| (l.x0 - area.x0).abs() < 1e-9), "every line starts at the column edge");
+}
+
+/// #2615: a linear gradient (fill and stroke) on a slanted text frame keeps the colour it had in
+/// the frame's original space at points off its axis. Mapping only the vector's endpoints back
+/// would tilt the parameter field: here the frame's sides lean 8 pt over its 300 pt height, and
+/// the spread point (300, 300) is half-way along the gradient.
+#[test]
+fn a_slanted_text_frames_gradient_keeps_its_parameter_off_the_axis() {
+    let corners = [(246.0, 0.0), (254.0, 300.0), (354.0, 300.0), (346.0, 0.0)];
+    let pts: String =
+        corners.iter().map(|(x, y)| format!(r#"<PathPointType Anchor="{x} {y}" LeftDirection="{x} {y}" RightDirection="{x} {y}"/>"#)).collect();
+    let graphic = r#"<?xml version="1.0" encoding="UTF-8"?>
+<idPkg:Graphic xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0">
+<Color Self="Color/From" Model="Process" Space="CMYK" ColorValue="0 0 0 0" Name="From"/>
+<Color Self="Color/To" Model="Process" Space="CMYK" ColorValue="0 0 0 100" Name="To"/>
+<Gradient Self="Gradient/Ramp" Type="Linear" Name="Ramp">
+<GradientStop Self="g0" StopColor="Color/From" Location="0"/>
+<GradientStop Self="g1" StopColor="Color/To" Location="100"/>
+</Gradient>
+</idPkg:Graphic>"#;
+    let designmap = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" DOMVersion="16.0" Self="d">
+<idPkg:Graphic src="Resources/Graphic.xml"/>
+<Spread Self="sp1"><Page Self="p1"/>
+<TextFrame Self="tf" ItemTransform="1 0 0 1 0 0" FillColor="Gradient/Ramp" StrokeColor="Gradient/Ramp" StrokeWeight="2" GradientFillStart="250 150" GradientFillLength="100" GradientStrokeStart="250 150" GradientStrokeLength="100"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>{pts}</PathPointArray></GeometryPathType></PathGeometry></Properties></TextFrame>
+</Spread>
+</Document>"#
+    );
+    let d = import_idml_with(&zip_files(&[("designmap.xml", &designmap), ("Resources/Graphic.xml", graphic)]), &|_| None).unwrap();
+    let it = &d.spreads[0].items[0];
+    // The frame is unslanted: its path is the rectangle, the slant is in its transform, and its
+    // corners on the spread are where InDesign drew them.
+    let rect = [(250.0, 0.0), (250.0, 300.0), (350.0, 300.0), (350.0, 0.0)];
+    for (a, (&(x, y), &(ex, ey))) in it.path.subpaths[0].anchors.iter().zip(rect.iter().zip(&corners)) {
+        assert!((a.p.x - x).abs() < 1e-9 && (a.p.y - y).abs() < 1e-9, "path {:?} vs {x} {y}", a.p);
+        let p = it.xf * a.p;
+        assert!((p.x - ex).abs() < 1e-9 && (p.y - ey).abs() < 1e-9, "corner {p:?} vs {ex} {ey}");
+    }
+    // The parameter along each gradient at an off-axis spread point is the one it had before the
+    // frame was unslanted: (250, 150) to (350, 150), so x = 275 is a quarter and x = 300 a half.
+    let param = |v: [f64; 4], p: designcraft_geom::Point| {
+        let d = designcraft_geom::Point::new(v[2], v[3]) - designcraft_geom::Point::new(v[0], v[1]);
+        (p - designcraft_geom::Point::new(v[0], v[1])).dot(d) / d.hypot2()
+    };
+    for (x, want) in [(275.0, 0.25), (300.0, 0.5)] {
+        let p = it.xf.inverse() * designcraft_geom::Point::new(x, 300.0);
+        for (what, v) in [("fill", it.fill.gradient_vector), ("stroke", it.stroke.gradient_vector)] {
+            let v = v.unwrap_or_else(|| panic!("{what} gradient vector"));
+            let got = param(v, p);
+            assert!((got - want).abs() < 1e-9, "{what} at x = {x}: {got} instead of {want}");
+        }
+    }
+}
+
 /// InDesign: a break character ends its paragraph (`<Br/>` with a ParagraphBreakType closes the
 /// range); the text after it is a paragraph with its own style, set on the next page of the
 /// break's parity.
