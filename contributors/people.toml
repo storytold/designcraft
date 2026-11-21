@@ -97,3 +97,7 @@ sync_github_name = true
 
 [people.gmrmad1]
 real_name = "Madhav Agarwal"
+
+[people.mskim]
+display_name = "mskim"
+sync_github_name = false
