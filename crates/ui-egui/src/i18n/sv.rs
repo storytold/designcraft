@@ -87,6 +87,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Reverse Path", "Vänd banans riktning"),
     ("Set Anchor", "Ange ankare"),
     ("Clear", "Rensa"),
+    ("Discard Numeric Drafts", "Kassera numeriska utkast"),
     ("Delete", "Radera"),
     ("Duplicate", "Duplicera"),
     ("Select All", "Markera allt"),

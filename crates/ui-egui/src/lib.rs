@@ -25,6 +25,8 @@ pub mod dialogs;
 pub mod dock;
 pub mod effects_dialog;
 pub mod export_batch_dialog;
+mod file_provider_app;
+pub mod file_providers;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
@@ -169,6 +171,9 @@ pub struct DesignApp {
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
+    /// Optional storage capability, disabled until the web host registers one.
+    pub file_providers: crate::file_providers::Host,
+    pub(crate) provider_after: std::collections::HashMap<String, crate::file_provider_app::PendingAfter>,
     pub views: HashMap<u64, View>,
     /// Layout ▸ Go Back / Go Forward, by view (like `views`).
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,

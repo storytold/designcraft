@@ -73,6 +73,9 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    if let Err(error) = crate::file_providers::install(app.file_providers.clone(), cc.egui_ctx.clone()) {
+                        log::error!("file provider capability could not be installed: {error:?}");
+                    }
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
@@ -357,6 +360,7 @@ impl eframe::App for WebShell {
             self.app.status(error);
         }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        crate::file_providers::publish(&self.app.file_providers, ctx);
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -401,6 +405,7 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
+        crate::file_providers::publish(&self.app.file_providers, ui.ctx());
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
