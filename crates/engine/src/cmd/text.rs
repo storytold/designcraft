@@ -31,7 +31,7 @@ pub(crate) use format::{
 use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
 use opentype::{open_type, open_type_features, set_features};
 pub(crate) use story::set_story_direction;
-use story::{selection_attrs, story_direction, story_options};
+use story::{selection_attrs, story_direction, story_lines, story_options};
 
 /// Build the text command registry: caret/selection movement, insertion/deletion, release, text and paragraph formatting, story queries, ruby and OpenType commands, with their parameters and enabled predicates.
 pub fn specs() -> Vec<CommandSpec> {
@@ -211,6 +211,7 @@ pub fn specs() -> Vec<CommandSpec> {
             v["lines"] = json!(cs.line_count());
             Ok(v)
         }),
+        cmd!(query "story.lines", "Story Lines", [], None, "{story? | frame?} → {story, overset, lines: [{start, end, frame, column, page, paragraph, baseline, left, top, right, bottom}]}: the story's composed lines in thread order. start/end are the line's UTF-8 byte range in the story text (as find.find and story.get report offsets, the paragraph separator excluded); frame is the text frame id, column its 0-based column, page the 0-based absolute page the frame is on (null on a parent page or the pasteboard), paragraph the 0-based paragraph index; baseline is the spread y of the line's baseline at its start, and left/top/right/bottom the line box (slot width, ascent to descent) in spread coordinates. With frame, only that frame's lines. overset is the byte offset where the text stops fitting (null when it all fits), as story.get reports it. Footnote lines are not listed; a table fragment is listed as a line of its own. In a vertical frame, baseline is the spread y where the line starts (its baseline runs down the page).", has_doc, story_lines),
         cmd!("type.fillWithPlaceholder", "Fill with Placeholder Text", ["Type"], None, "{frame?, story?}", has_text_or_frames, fill_placeholder),
         cmd!(
             "type.char",
