@@ -97,7 +97,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Corners:", "角:"),
     ("Sharp", "シャープ"),
     ("Diffused", "拡散"),
-    ("Inches Decimal", "インチ（10 進）"),
+    ("Inches Decimal", "デシマルインチ"),
     ("Back", "戻る"),
     ("Warning", "警告"),
     ("Don't show again", "今後表示しない"),

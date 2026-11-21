@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-04 · **Change:** minor (pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-11 · **Change:** minor (pt-BR catalog filled; Russian listed; Esperanto text language; Hungarian interface catalog, bundled-font coverage and flyout regression checks; Swedish interface) · **Target:** Adobe InDesign 2026 (21.6)
 
 Per-language status of the DesignCraft interface and of document typesetting in each script.
 Script-specific typesetting detail: [cjk.md](cjk.md), [cjk-typography.md](cjk-typography.md),
@@ -53,6 +53,11 @@ Japanese follow-up (2026-10-11): print ranges, imported style handling, the buil
 caption, table row/column movement and row-height distribution now use the existing translation
 catalog. Print, import options and an active table were rendered in Japanese and English with
 craft-fonts. The language totals above retain their dated measurement; this is a targeted fix.
+
+Japanese unit names (2026-11-11): InDesign 2025's Japanese Preferences › Units & Increments lists
+the ruler units as ポイント, パイカ, インチ, デシマルインチ, ミリメートル, センチメートル, シセロ,
+アゲート, ピクセル and 歯, and offers 級 for text size (observed in the app). Inches Decimal now reads
+デシマルインチ (#1363); the other names are in #1507.
 
 Hungarian interface (2026-11-01): `hu.rs` contains **1,906 entries and four context-specific
 captions**, including all 37 tool names. The initial catalog was prepared with AI assistance
@@ -127,6 +132,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-11 | trivial | Japanese unit names as InDesign's Japanese interface shows them; Inches Decimal is デシマルインチ |
 | 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,855) listed, eight languages beyond the twelve |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
