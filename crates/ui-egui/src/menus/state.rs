@@ -52,6 +52,21 @@ pub fn shortcut_of(app: &DesignApp, id: &str) -> Option<String> {
     crate::keys::shortcut(&app.keymap, &craft_keymap::CommandRef::new(id))
 }
 
+/// Whether the macOS menu bar can carry a shortcut ("Cmd+Shift+]") as an item's key equivalent.
+/// It needs Cmd, Ctrl or Option; modifier-less shortcuts stay in the app so typing works. Option
+/// (with or without Shift) on a letter, digit, symbol or Space types a character on macOS, so the
+/// window takes that key before the bar sees it: such a shortcut stays in the app too, or it would
+/// run nowhere (#2710).
+pub fn native_key_equivalent(sc: &str) -> bool {
+    let Ok(binding) = craft_keymap::Binding::parse(sc) else { return false };
+    let chord = binding.trigger.chord;
+    let (mods, key) = (chord.mods, chord.key);
+    if mods.cmd || mods.ctrl {
+        return true;
+    }
+    mods.alt && !(key.is_letter() || key.is_digit() || key.is_symbol() || key == craft_keymap::Key::Space)
+}
+
 /// The shortcut a menu row shows: its own binding (a panel's), else its command's.
 pub fn shortcut_label(app: &DesignApp, id: &str, params: &Value) -> Option<String> {
     let cmd = crate::keys::command_ref(id, params);
@@ -103,6 +118,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.textThreads" => app.ui.text_threads,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
+        "view.storyEditorStyleColumn" => app.ui.story_editor_style_column,
         "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
@@ -110,7 +126,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "list.bullets" | "list.numbers" => {
             app.session.selection_has_list(if id == "list.bullets" { designcraft_doc::ListType::Bullets } else { designcraft_doc::ListType::Numbers })
         }
-        "window.controlBar" => app.ui.control_bar,
+        "window.controlBar" => app.ui.control_bar && app.ui.hidden_panels == 0,
         "window.split" => app.split,
         "window.newWindow" => app.second_window,
         "view.proofColors" => app.ui.proof_colors,
@@ -168,6 +184,9 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     }
     if matches!(id, "app.justificationDialog" | "app.hyphenationDialog") {
         return enabled(app, "type.para");
+    }
+    if matches!(id, "app.cellOptionsDialog" | "app.diagonalLinesDialog") {
+        return enabled(app, "table.setCell");
     }
     if id == "app.graphicCell" {
         return enabled(app, "table.placeGraphic");

@@ -165,6 +165,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -1000,6 +1004,13 @@ pub struct FrameSpec {
 }
 
 impl FrameSpec {
+    /// The baseline grid when the text area can be counted in its steps: a step so small, or a
+    /// first line so far off, that the count is more than an f64 holds is no grid (as for the lines).
+    fn countable_grid(&self) -> Option<(f64, f64)> {
+        self.grid
+            .filter(|&(g_start, inc)| inc > 0.0 && inc.is_finite() && [self.area.y0, self.area.y1].iter().all(|y| ((y - g_start) / inc).is_finite()))
+    }
+
     pub fn columns(&self) -> Vec<Rect> {
         let a = self.area;
         // Primary frames inherit the document limit (216), beyond the interactive frame editor's 40.
@@ -1205,10 +1216,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         // area (all four insets) still bounds the lines.
         let outline = match &tf.options.path {
             Some(_) => None,
-            None => {
-                let bp = if item.corners.is_none() { item.path.to_bezpath() } else { designcraft_geom::corners::apply(&item.path, &item.corners) };
-                FrameOutline::new(&bp, tf.options.inset[0])
-            }
+            None => FrameOutline::of_item(item, tf.options.inset[0]),
         };
         // Vertical type: composed in the turned box; wraps and page rects turned with it.
         let vertical = doc.frame_vertical(item);
@@ -1297,10 +1305,63 @@ struct SubstitutionInput<'a> {
     var_story: bool,
     var_cache: &'a mut HashMap<(Option<usize>, bool), Arc<Vec<String>>>,
     notes: &'a mut Notes,
+    /// The marks in the story before `range`.
+    marks: MarkCounts,
+}
+
+/// Endnote references, anchored-object marks and cross-reference marks in a stretch of story text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MarkCounts {
+    endnotes: usize,
+    objects: usize,
+    xrefs: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of story text [`MarkCounts::of`] has read on this thread.
+    static MARK_BYTES_SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl MarkCounts {
+    /// The marks in `text`.
+    fn of(text: &str) -> Self {
+        #[cfg(test)]
+        MARK_BYTES_SCANNED.with(|n| n.set(n.get() + text.len()));
+        let mut m = Self::default();
+        for c in text.chars() {
+            match c {
+                designcraft_doc::ENDNOTE_REF => m.endnotes += 1,
+                designcraft_doc::OBJECT_MARK => m.objects += 1,
+                designcraft_doc::XREF_MARK => m.xrefs += 1,
+                _ => {}
+            }
+        }
+        m
+    }
+
+    /// The marks before each paragraph of `ranges` (the story's paragraphs, in order), read in
+    /// one pass over the story. Empty when the story holds no endnotes, anchored objects or
+    /// cross-references.
+    fn before_paragraphs(story: &Story, ranges: &[Range<usize>]) -> Vec<Self> {
+        if story.endnotes.is_empty() && story.objects.is_empty() && story.xrefs.is_empty() {
+            return Vec::new();
+        }
+        let mut total = Self::default();
+        ranges
+            .iter()
+            .map(|r| {
+                let before = total;
+                let m = story.text.get(r.clone()).map_or_else(Self::default, Self::of);
+                total = Self { endnotes: total.endnotes + m.endnotes, objects: total.objects + m.objects, xrefs: total.xrefs + m.xrefs };
+                before
+            })
+            .collect()
+    }
 }
 
 fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
-    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes } = input;
+    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, marks } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
         // A parent page itself (not composed for one of the pages it applies to).
@@ -1322,13 +1383,13 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     };
     if !story.endnotes.is_empty() {
         // Endnote reference numbers continue through the document.
-        let first = doc.endnote_start(story.id).saturating_add(story.text[..prange.start].matches(designcraft_doc::ENDNOTE_REF).count() as u32);
+        let first = doc.endnote_start(story.id).saturating_add(u32::try_from(marks.endnotes).unwrap_or(u32::MAX));
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
             sub.notes.insert(prange.start + i, doc.endnote_options.label(first.saturating_add(k as u32)));
         }
     }
     if !story.objects.is_empty() {
-        let before = story.text[..prange.start].matches(designcraft_doc::OBJECT_MARK).count();
+        let before = marks.objects;
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::OBJECT_MARK).enumerate() {
             let Some(o) = story.objects.get(before + k) else { continue };
             let (w, h) = o.size();
@@ -1341,7 +1402,7 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
         }
     }
     if !story.xrefs.is_empty() {
-        sub.xrefs = xref::texts_in(doc, story, prange.clone(), opts.xrefs.as_deref());
+        sub.xrefs = xref::texts_after(doc, story, prange.clone(), marks.xrefs, opts.xrefs.as_deref());
     }
     if notes.active() {
         notes.number_refs(doc, prange.clone(), cur_frame.and_then(|f| f.page), &mut sub);
@@ -1583,6 +1644,8 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     range: Range<usize>,
     props: &'a designcraft_doc::ParaProps,
     para_chars: &'a designcraft_doc::CharProps,
+    /// The paragraph has CJK text, so its 禁則 priority applies.
+    cjk: bool,
     drop_end: usize,
     base_leading: f64,
     base_cap: f64,
@@ -1608,6 +1671,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         range: prange,
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -1630,11 +1694,14 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         let cols_here = &cols[cur.fi];
         let col = span_rect(cols_here, cols_here[cur.col.min(cols_here.len() - 1)], pp.span_columns);
         let col = SplitCfg::of(pp).map_or(col, |c| c.sub_rect(col, 0));
-        let spacing = spacing_for(pp, base_chars.size, story);
+        let spacing = spacing_for(pp, base_chars.size, story, cjk);
         let mut lines: Vec<(std::ops::Range<usize>, String)> = Vec::new();
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
             let mut gl = sp.glyphs.clone();
+            // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
+            // of the vector, and the drop cap's character still votes (#1688).
+            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
             let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
             let width = |j: usize| {
                 let ind = match &dc {
@@ -1646,7 +1713,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2738,6 +2805,10 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         },
         &mut table,
     );
+    // The paragraph's script decides whether its 禁則 priority applies. Classify the shaped
+    // glyphs before split_drop_cap removes the drop cap and prepend_label adds the list
+    // label: a CJK drop cap is part of the paragraph, a generated label is not.
+    let cjk = paragraph_is_cjk(&sp.glyphs);
     // An empty paragraph has no glyphs of its own, so its only addressable character is its
     // hidden paragraph mark (the `\n` just past `prange.end`). A leading/size override applied
     // there (e.g. selecting the pilcrow to adjust line height) still needs to set the line's
@@ -2758,7 +2829,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         let face = db.face(&base_chars.font_family, &base_chars.font_style);
         face.cap_height * base_chars.size / face.upem * base_chars.v_scale
     };
-    let drop_grid = cur_frame.and_then(|f| f.grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
+    let drop_grid = cur_frame.and_then(FrameSpec::countable_grid).filter(|_| pp.grid_align == GridAlign::AllLines).map(|g| g.1);
     // Align Left Edge (left-to-right paragraphs).
     let drop_align = pp.drop_cap_align_left && pp.direction == designcraft_doc::TextDirection::LeftToRight;
     // Tab stops for the drop cap, with the start-side indent (the right one, right to left).
@@ -2770,6 +2841,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         range: prange.clone(),
         props: pp,
         para_chars: base_chars,
+        cjk,
         drop_end,
         base_leading,
         base_cap,
@@ -2792,6 +2864,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // Classified before the drop cap is split off (see the same call in the measuring loop above).
+    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2881,10 +2955,11 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let mut hyph_after =
+        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
-    let spacing = spacing_for(pp, base_size, story);
+    let spacing = spacing_for(pp, base_size, story, cjk);
     // An empty paragraph takes its height from its paragraph mark's character format.
     let mark_chars = if glyphs.is_empty() { doc.styles.resolve_char(base_chars, story.char_format_of(prange.start)) } else { base_chars.clone() };
     let mark_leading = match mark_chars.leading {
@@ -3160,6 +3235,8 @@ fn compose_run(
     let mut list_counter = ListCounter::default();
     // Named lists number independently of layout: one pass up front, for the labels.
     let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    // Endnote, anchored-object and cross-reference marks before each paragraph, for their numbers.
+    let marks_before = MarkCounts::before_paragraphs(story, &para_ranges);
     // Border and shading of each paragraph set, drawn once the lines are in place.
     let mut boxes: Vec<Option<ParaBox>> = vec![None; np];
     // Keep options: paragraphs are re-laid from a snapshot when a keep is violated, either forced
@@ -3319,6 +3396,7 @@ fn compose_run(
             var_story,
             var_cache: &mut var_cache,
             notes: &mut notes,
+            marks: marks_before.get(pi).copied().unwrap_or_default(),
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
@@ -3629,6 +3707,8 @@ struct FinishInput<'a> {
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
     let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
     notes.finish(doc, story, frames, cols, out);
+    // The story byte of each anchored object's mark, found once for every frame that holds one.
+    let mut marks: Option<Vec<usize>> = None;
     // Ranges, content heights and vertical justification.
     for (fi, ft) in out.frames.iter_mut().enumerate() {
         let f = &frames[fi];
@@ -3644,9 +3724,12 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         let before: Vec<f64> = ft.tables.iter().map(|t| ft.lines.get(t.line).map_or(0.0, |l| l.baseline)).collect();
         let spanned = ft.columns.len() > 1 && ft.lines.iter().any(|l| span_paras.get(l.para) == Some(&true))
             || ft.lines.iter().any(|l| split_paras.get(l.para) == Some(&true));
-        let anchors: Vec<usize> =
-            if ft.objects.is_empty() { Vec::new() } else { story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect() };
-        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, &anchors);
+        let anchors: &[usize] = if ft.objects.is_empty() {
+            &[]
+        } else {
+            marks.get_or_insert_with(|| story.text.match_indices(designcraft_doc::OBJECT_MARK).map(|(i, _)| i).collect())
+        };
+        vertical_justify(ft, f, spanned, &doc.footnote_options, grid_paras, anchors);
         for (t, b) in ft.tables.iter_mut().zip(before) {
             let now = ft.lines.get(t.line).map_or(b, |l| l.baseline);
             t.shift(now - b);
@@ -3877,8 +3960,9 @@ fn optical_for(pp: &ParaProps, story: &Story) -> (bool, Option<f64>) {
     }
 }
 
-/// Breaker parameters from the paragraph's settings.
-fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
+/// Breaker parameters from the paragraph's settings; `cjk` says the paragraph has CJK text (so
+/// its 禁則 priority applies).
+fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story, cjk: bool) -> Spacing {
     let (optical, optical_size) = optical_for(pp, story);
     Spacing {
         justify: pp.align.is_justified(),
@@ -3900,13 +3984,49 @@ fn spacing_for(pp: &ParaProps, base_size: f64, story: &Story) -> Spacing {
         optical,
         optical_size,
         korean_char_breaks: pp.korean_char_breaks,
+        kinsoku_cjk: cjk,
+        // JIS X 4051 禁則処理: the empty value is InDesign's default and the UI's "Push In First",
+        // and 調整量優先 (adjustment amount) is the breaker's minimum-adjustment mode 0.
         kinsoku_priority: match pp.kinsoku_type.as_str() {
-            "KinsokuPushInFirst" => 1,
+            "" | "KinsokuPushInFirst" => 1,
             "KinsokuPushOutFirst" => 2,
             "KinsokuPushOutOnly" => 3,
+            "KinsokuPrioritizeAdjustmentAmount" => 0,
             _ => 0,
         },
     }
+}
+
+/// Whether the paragraph's own shaped glyphs contain CJK text, the gate for its 禁則 priority.
+/// Called before `split_drop_cap` and `prepend_label`, so a drop cap counts and generated list
+/// and story labels do not. A text variable or page number keeps its marker in [`Glyph::ch`], so
+/// its replacement text is what the paragraph shows; inspect that too.
+fn paragraph_is_cjk(glyphs: &[Glyph]) -> bool {
+    glyphs.iter().any(|g| is_cjk_char(g.ch) || g.generated_text.as_deref().is_some_and(|text| text.chars().any(is_cjk_char)))
+}
+
+/// Is `c` CJK text (the scripts the 禁則 line-start/line-end rules are about): ideographs, kana,
+/// CJK punctuation and full/half-width forms, bopomofo, Hangul.
+fn is_cjk_char(c: char) -> bool {
+    // Hangul comes from the breaker's classification (Jamo including Extended-A/B, syllables),
+    // so the two sets agree. Bopomofo is 0x3100..=0x312F; 0x3130..=0x318F is Hangul.
+    breaker::is_hangul(c)
+        || matches!(
+            c as u32,
+            0x2E80..=0x2FFF
+                | 0x3000..=0x30FF
+                | 0x3100..=0x312F
+                | 0x3190..=0x33FF
+                | 0x3400..=0x4DBF
+                | 0x4E00..=0x9FFF
+                | 0xA000..=0xA4CF
+                | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE4F
+                | 0xFF00..=0xFFEF
+                // Extension B and later (U+20000..): the same range as the breaker's Han check,
+                // so the kinsoku settings apply to a paragraph of supplementary-plane text alone.
+                | 0x20000..=0x3FFFF
+        )
 }
 
 /// Desired word spacing, letter spacing and glyph scaling apply to every line (any alignment).
@@ -5161,7 +5281,7 @@ fn layout_line(
     let mut offset = 0.0;
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
-    if (justify_this || squeeze_last) && (extra >= 0.0 || sp.kinsoku_priority != 3) {
+    if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
         extra = mojikumi::distribute(line.get_mut(seg..).unwrap_or_default(), extra, add.get_mut(seg..).unwrap_or_default());
     }
     if (justify_this || squeeze_last) && !spaces.is_empty() {
@@ -5364,6 +5484,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -5528,6 +5654,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         len: g.len,
         generated_text: g.generated_text.clone(),
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,
@@ -5855,9 +5982,21 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
+        return out;
+    }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English. See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
@@ -5866,6 +6005,8 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5886,6 +6027,24 @@ fn hyphenation_points(
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
@@ -6066,53 +6225,107 @@ fn vertical_justify(
         };
         // Only the last row's descenders hang below the bottom of the text: an earlier line whose
         // ink reaches below the last baseline (tight leading) isn't moved past the text area.
-        // In a shaped frame each moved line's slot stays inside the outline over its new band, as
-        // when the line was fitted: a frame that narrows towards the bottom holds the text higher.
-        let in_outline = |l: &Line, last: bool, dy: f64| match &f.outline {
+        // In a shaped frame each moved line's slot stays inside the outline from its top down to
+        // its baseline: a frame that narrows towards the bottom holds the text higher. Every moved
+        // line's descenders may cross the outline, as the last line's do below the bottom of the
+        // text; above footnotes, and in vertical frames, they stay inside.
+        let in_outline = |l: &Line, dy: f64| match &f.outline {
             Some(o) => {
                 let b = l.baseline + dy;
-                let desc = if last && !inside { 0.0 } else { l.descent.max(0.0) };
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
                 let tol = 1e-6;
                 o.intervals(l.x0, l.x1, (b - l.ascent).max(f.area.y0).min(b), b + desc).iter().any(|&(a, z)| a <= l.x0 + tol && z >= l.x1 - tol)
             }
             None => true,
         };
         // Each row moves no further than a text wrap under it allows. An object that moves with its
-        // anchor's row (Justify) limits how much further than that row a later row moves.
+        // anchor's row (Justify) lets a later row move its room plus how far the object moves.
         let mut row_of = vec![None; ft.lines.len()];
         for (&i, &k) in idx.iter().zip(&rows) {
             row_of[i] = Some(k);
         }
-        let follow: Vec<(usize, usize, f64)> = follow
+        let follow: Vec<(usize, usize, f64, f64)> = follow
             .iter()
-            .filter_map(|&(i, a, room)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0))))
+            .filter_map(|&(i, a, room, pin)| Some((row_of.get(i).copied().flatten()?, row_of.get(a).copied().flatten()?, room.max(0.0), pin)))
             .collect();
+        // The object moves only once its anchor's row has moved `pin`.
         let clear = |shift: &[f64]| {
             idx.iter().zip(&rows).all(|(&i, &k)| shift[k] <= rooms[i].max(0.0) + 1e-9)
-                && follow.iter().all(|&(k, m, room)| shift[k] - shift[m] <= room + 1e-9)
+                && follow.iter().all(|&(k, m, room, pin)| shift[k] <= room + (shift[m] - pin).max(0.0) + 1e-9)
         };
         // The lowest lines are tested first: they are the ones a narrowing outline stops.
         let fits = |shift: &[f64]| {
             idx.iter().zip(&rows).rev().all(|(&i, &k)| {
                 let l = &ft.lines[i];
-                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, k == n, shift[k]))
+                shift[k] <= 0.0 || ((k == n || l.baseline + l.descent + shift[k] <= limit + 1e-9) && in_outline(l, shift[k]))
             }) && clear(shift)
+        };
+        // The room in 0..=`top` at which a moved line's band (from its top down to its baseline, or
+        // to its descent where `inside`), widened by the outline's inset, reaches one of the
+        // outline's corner heights: between two of these each line's fit changes only along the
+        // outline's straight edges. Empty when there are more than `MAX_BAND_BREAKS`.
+        const MAX_BAND_BREAKS: usize = 256;
+        let band_breaks = |o: &FrameOutline, top: f64| -> Vec<f64> {
+            let corners = o.corner_heights();
+            let d = o.inset();
+            // Each row's shift is linear in the room, apart from Justify's turn where the space
+            // between paragraphs reaches the Paragraph Spacing Limit.
+            let mut knots = vec![0.0, top];
+            let turn = gaps as f64 * para_limit;
+            if f.opts.vertical_justification == VerticalJustification::Justify && turn > 0.0 && turn < top {
+                knots.insert(1, turn);
+            }
+            let at: Vec<Vec<f64>> = knots.iter().map(|&c| shifts(c)).collect();
+            let mut out = Vec::new();
+            for (&i, &k) in idx.iter().zip(&rows) {
+                let l = &ft.lines[i];
+                let desc = if inside { l.descent.max(0.0) } else { 0.0 };
+                for &y in &corners {
+                    for v in [y + d - (l.baseline - l.ascent), y - d - (l.baseline + desc)] {
+                        for (c, s) in knots.windows(2).zip(at.windows(2)) {
+                            let (s0, s1) = (s[0][k], s[1][k]);
+                            if s1 > s0 && v > s0 && v < s1 {
+                                out.push(c[0] + (v - s0) * (c[1] - c[0]) / (s1 - s0));
+                            }
+                        }
+                    }
+                    if out.len() > MAX_BAND_BREAKS {
+                        return Vec::new();
+                    }
+                }
+            }
+            out
         };
         // In a rectangular frame fit decreases monotonically as the shift grows. A shaped
         // frame can narrow and widen again, so scan from the largest shift before refining the
-        // first fitting interval. This also bounds the room used for baseline-grid quantization
-        // and preserves clearance from fixed and anchor-following wraps.
+        // first fitting interval. The scan takes even steps, the band breaks and a room on each
+        // side of every band break, so a band that fits over less room than one step is found
+        // too. This also bounds the room used for baseline-grid quantization and preserves
+        // clearance from fixed and anchor-following wraps.
         let most_room = |top: f64| -> f64 {
             if fits(&shifts(top)) {
                 return top;
             }
-            let (mut lo, mut hi) = if f.outline.is_some() {
+            let (mut lo, mut hi) = if let Some(o) = &f.outline {
                 let steps = top.ceil().clamp(64.0, 512.0) as usize;
+                // Each try is marked when it is a band break; only the gaps next to a break get a
+                // try in their middle.
+                let mut marked: Vec<(f64, bool)> = (0..steps).map(|j| (top * j as f64 / steps as f64, false)).collect();
+                marked.extend(band_breaks(o, top).into_iter().map(|c| (c, true)));
+                marked.push((top, false));
+                marked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                marked.dedup_by(|a, b| {
+                    let same = (a.0 - b.0).abs() < 1e-9;
+                    b.1 |= same && a.1;
+                    same
+                });
+                let mut tries: Vec<f64> = marked.windows(2).filter(|w| w[0].1 || w[1].1).map(|w| (w[0].0 + w[1].0) / 2.0).collect();
+                tries.extend(marked.iter().map(|m| m.0));
+                tries.sort_by(f64::total_cmp);
                 let mut found = (0.0, top);
-                for j in 1..=steps {
-                    let candidate = top * (steps - j) as f64 / steps as f64;
-                    if fits(&shifts(candidate)) {
-                        found = (candidate, top * (steps - j + 1) as f64 / steps as f64);
+                for w in tries.windows(2).rev() {
+                    if fits(&shifts(w[0])) {
+                        found = (w[0], w[1]);
                         break;
                     }
                 }
@@ -6141,7 +6354,7 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.grid.map(|(_, inc)| inc).filter(|inc| *inc > 0.0 && inc.is_finite()).filter(|_| match f.opts.vertical_justification {
+        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
@@ -6207,13 +6420,16 @@ fn vertical_justify(
 /// box. Beside or under a contour, the line moves down only as far as its band stays clear of the
 /// contour on its way down (to 0.01 pt). Only wraps that reach into a line's column (or the
 /// columns it spans) count, as when the lines are set. An anchored object that moves with the
-/// lines being justified (inline, above the line, or positioned from its anchor and not kept
-/// within its column) is skipped, except under Justify, where it moves with the row of its
-/// anchor's line: its wrap is taken where the object sits before the lines move, and its rooms go
-/// in the second list as (line, anchor's line, room), so a line moves down at most that much
-/// further than the anchor's row. Justify keeps the first row in place, so its room stays
-/// infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
-fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64)>) {
+/// lines being justified (inline, above the line, or positioned from its anchor) is skipped,
+/// except under Justify, where it moves with the row of its anchor's line: its wrap is taken where
+/// the object sits before the lines move, and its rooms go in the second list as (line, anchor's
+/// line, room, pin), so a line moves down at most the room plus how far the anchor's row moves
+/// past `pin`. An object positioned from its anchor and kept within its column moves with its
+/// anchor's row until it stops at the column's bottom, so in every mode a line moves down at most
+/// the room under it plus the distance the object can move. Held at the column's top, the object
+/// moves only after its anchor's row has moved `pin` (0 for the other objects), and until then a
+/// line keeps the whole room. Justify keeps the first row in place, so its room stays infinite. `anchors` holds the story byte of each anchored object's mark, by object index.
+fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[usize]) -> (Vec<f64>, Vec<(usize, usize, f64, f64)>) {
     const EPS: f64 = 1e-6;
     // One-sided wraps also block the column on the other side of the object: the x-range wrap
     // `e` keeps text out of in column `col`, from the object's x-range `a..b` there (None when that
@@ -6248,23 +6464,43 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         }
     }
     // An own-story anchored object whose anchor is on one of these lines and whose position
-    // follows its line moves with the text: the index in `ft.lines` of its anchor's line, and how
-    // much lower that line was when the wrap was taken (an earlier pass placed the object after
-    // moving the lines).
-    let moves_with_text = |e: &Exclusion| -> Option<(usize, f64)> {
+    // follows its line moves with the text: the index in `ft.lines` of its anchor's line, how
+    // much lower the object was when the wrap was taken (an earlier pass placed the object after
+    // moving the lines), and, for one kept within its column, how far its line moves before the
+    // object leaves the column's top and how far the object then moves before it stops at the
+    // column's bottom (none and infinite for the others).
+    let moves_with_text = |e: &Exclusion| -> Option<(usize, f64, f64, f64)> {
         let o = *by_anchor.get(&e.after?)?;
-        let follows = match &o.object.position {
-            designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => true,
-            // Kept within the column, it can stop at the column's edge instead of following.
-            designcraft_doc::AnchorPosition::Custom { y_relative, keep_within_column, .. } => {
-                *y_relative == designcraft_doc::anchored::AnchorRelative::Anchor && !keep_within_column
+        let l = ft.lines.get(o.line)?;
+        let now = l.baseline;
+        let dy = e.anchor_baseline.map_or(0.0, |b| b - now);
+        match &o.object.position {
+            designcraft_doc::AnchorPosition::Inline { .. } | designcraft_doc::AnchorPosition::AboveLine { .. } => {
+                Some((o.line, dy, 0.0, f64::INFINITY))
             }
-        };
-        let now = ft.lines.get(o.line).map_or(0.0, |l| l.baseline);
-        follows.then(|| (o.line, e.anchor_baseline.map_or(0.0, |b| b - now)))
+            designcraft_doc::AnchorPosition::Custom { y_relative, keep_within_column, y_offset, object_point, .. }
+                if *y_relative == designcraft_doc::anchored::AnchorRelative::Anchor =>
+            {
+                if !keep_within_column {
+                    return Some((o.line, dy, 0.0, f64::INFINITY));
+                }
+                // Placed as the lines' final positions place it: from its anchor's baseline,
+                // held between the column's top and bottom.
+                let col = ft.columns.get(l.column as usize).copied().unwrap_or(f.area);
+                let h = o.size.1;
+                let ofy = [0.0, 0.5, 1.0][(*object_point / 3).min(2) as usize];
+                let (lo, hi) = (col.y0, (col.y1 - h).max(col.y0));
+                let place = |b: f64| b + y_offset - h * ofy;
+                let raw = place(now);
+                let y = raw.clamp(lo, hi);
+                let then = e.anchor_baseline.map_or(y, |b| place(b).clamp(lo, hi));
+                Some((o.line, then - y, (lo - raw).max(0.0), (hi - y).max(0.0)))
+            }
+            designcraft_doc::AnchorPosition::Custom { .. } => None,
+        }
     };
     // Each wrap's object is looked up once, not for every line.
-    let moving: Vec<Option<(usize, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
+    let moving: Vec<Option<(usize, f64, f64, f64)>> = f.exclusions.iter().map(moves_with_text).collect();
     // Justify keeps the first row (its segments and a table on them) in place, so wraps under it
     // set no limit.
     let first = ft.lines.iter().find(|l| in_col(l.column)).map(|l| l.baseline);
@@ -6291,13 +6527,15 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
         let col = Rect { x0: col.x0.min(x0), x1: col.x1.max(x1), ..col };
         let meets = |(a, b): (f64, f64)| a < x1 - EPS && b > x0 + EPS;
         for (e, &anchor) in f.exclusions.iter().zip(&moving).filter(|(e, _)| e.wraps_line(start)) {
-            if anchor.is_some() && !justify {
+            // Center and Bottom move every row as far: only an object kept within its column, which
+            // can stop at the column's edges, holds the lines back.
+            if anchor.is_some_and(|(_, _, _, slack)| slack == f64::INFINITY) && !justify {
                 continue;
             }
             // The wrap where its object sits before the lines move (moved up by `dy`), and how
             // far it lets this line move down (relative to its anchor's row for an object that
             // moves with the text).
-            let dy = anchor.map_or(0.0, |(_, dy)| dy);
+            let dy = anchor.map_or(0.0, |(_, dy, _, _)| dy);
             let cap = if anchor.is_some() { f64::INFINITY } else { room };
             let mut room_e = f64::INFINITY;
             let r = Rect { y0: e.rect.y0 - dy, y1: e.rect.y1 - dy, ..e.rect };
@@ -6307,9 +6545,10 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
             {
                 // A contour beside or under this line whose box reaches the line's slot (the
                 // contour stays inside its box). Moved down by `d`, the line's band sweeps from its
-                // top to its baseline plus `d`; the contour's extent there only grows with `d`, so
-                // the furthest clear move is found by bisection to 0.01 pt.
-                let hits = |d: f64| contour.band_extent(top + dy, bottom + d + dy).and_then(|x| sided(e, col, x)).is_some_and(meets);
+                // top to its baseline plus `d`; the parts of the contour there only grow with `d`,
+                // so the furthest clear move is found by bisection to 0.01 pt. As when the line is
+                // set, the gaps between parts of the contour stay open.
+                let hits = |d: f64| contour.band_spans(top + dy, bottom + d + dy).into_iter().any(|x| sided(e, col, x).is_some_and(meets));
                 let (mut lo, mut hi) = ((r.y0 - bottom).max(0.0), (r.y1 - top).min(f.area.y1 - bottom).min(cap));
                 if lo < hi && hits(hi) {
                     if hits(lo) {
@@ -6335,7 +6574,18 @@ fn wrap_rooms(ft: &FrameText, f: &FrameSpec, c: u32, spanned: bool, anchors: &[u
                 }
             }
             match anchor {
-                Some((a, _)) if room_e.is_finite() => follow.push((line, a, room_e)),
+                // An object kept within its column moves once its line has moved `pin` (to leave
+                // the column's top) and stops after moving `slack` (at the column's bottom).
+                Some((a, _, pin, slack)) if room_e.is_finite() => {
+                    if room_e >= pin {
+                        if justify {
+                            follow.push((line, a, room_e, pin));
+                        }
+                        room = room.min(room_e + slack);
+                    } else {
+                        room = room.min(room_e);
+                    }
+                }
                 Some(_) => {}
                 None => room = room.min(room_e),
             }

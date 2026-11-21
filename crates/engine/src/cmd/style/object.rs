@@ -243,17 +243,26 @@ fn bool_param(cmd: &str, p: &Value, key: &str) -> Result<Option<bool>> {
     }
 }
 
-/// `p.stroke` merged over `base` (as [`group_param`]), refused when the weight isn't a number ≥ 0
-/// or the tint isn't 0–1.
+/// `p.stroke` merged over `base` (as [`group_param`]), refused when the weight isn't a number ≥ 0,
+/// the tint or gap tint isn't 0–1, or the type has a field its kind doesn't take.
 fn stroke_param(cmd: &str, p: &Value, base: Option<&designcraft_doc::Stroke>) -> Result<Option<Option<designcraft_doc::Stroke>>> {
     let optional = ["gapOverprint", "gradientAngle", "gradientVector"];
-    let st = group_param(cmd, p, "stroke", base.unwrap_or(&designcraft_doc::Stroke::default()), &optional)?;
+    let base = base.cloned().unwrap_or_default();
+    // A type without `kind` keeps the style's kind, so it takes that kind's fields.
+    if let Some(t) = p.get("stroke").and_then(|s| s.get("type")) {
+        let base_kind = serde_json::to_value(&base.kind).ok().and_then(|k| k.get("kind").and_then(Value::as_str).map(str::to_string));
+        crate::cmd::object::check_stroke_type_fields(t, base_kind.as_deref(), cmd)?;
+    }
+    let st = group_param(cmd, p, "stroke", &base, &optional)?;
     if let Some(Some(st)) = &st {
         if !(st.weight.is_finite() && st.weight >= 0.0) {
             return Err(bad(cmd, "stroke weight must be a number ≥ 0"));
         }
         if !(0.0..=1.0).contains(&st.tint) {
             return Err(bad(cmd, "stroke tint must be 0..1"));
+        }
+        if !(0.0..=1.0).contains(&st.gap_tint) {
+            return Err(bad(cmd, "stroke gap tint must be 0..1"));
         }
     }
     Ok(st)
@@ -382,7 +391,7 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
         new.name = r.clone();
     }
     if new == old {
-        return Ok(json!({"name": name, "updated": 0}));
+        return Ok(json!({"name": name, "updated": 0, "restyled": 0}));
     }
     s.edit(|d, _| {
         let Some(os) = d.styles_mut().object.iter_mut().find(|o| o.name == name) else {

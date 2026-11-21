@@ -34,6 +34,7 @@ mod layout;
 pub mod library;
 mod linked;
 mod links;
+pub mod native_links;
 pub use links::{LinkListChecks, list_document_links, preview_document_links, remember_link_files};
 mod liquid;
 mod lists;
@@ -201,6 +202,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(library::specs());
         v.extend(lists::specs());
         v.extend(linked::specs());
+        v.extend(native_links::specs());
         v.extend(mathexpr::specs());
         v.extend(media::specs());
         v.extend(pdflayers::specs());
@@ -253,6 +255,11 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
+}
+
+/// The bytes of `asset`, or why `cmd` can't have them.
+pub(crate) fn asset_bytes(cmd: &str, asset: &designcraft_doc::Asset) -> Result<std::sync::Arc<Vec<u8>>> {
+    asset.data.load().map_err(|e| bad(cmd, format!("{}: {e}", asset.name)))
 }
 /// `p` with `key` set to `v`. Parameters come from callers (control channel, MCP, scripts) and
 /// may not be an object: `p[key] = v` panics on an array or a string, so start from `{}` then.
@@ -383,6 +390,8 @@ pub(crate) use file::load_document_fonts;
 pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use file::{ReadDocument, read_document};
 pub use layout::chapter_numbering;
 pub use paste_image::{IMAGE_EXTENSIONS, MAX_PASTED_PIXELS, PASTED_IMAGE_NAME, check_pasted_base64, check_pasted_size, pasted_pixels, pasted_png};
 pub use paste_svg::is_svg_markup;

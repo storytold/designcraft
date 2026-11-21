@@ -74,6 +74,7 @@ impl Session {
         // Any other tool unloads the place cursor.
         if id != "placeGun" {
             self.loaded = None;
+            self.loaded_queue.clear();
         }
         // Leaving the Type tool keeps the text frame selected.
         if id != "type"
@@ -83,6 +84,16 @@ impl Session {
         {
             st.selection.items = vec![f];
             st.selection.cells = None;
+        }
+    }
+
+    /// Empty the place cursor (its graphic and the ones queued after it). Holding the place
+    /// cursor's tool, go back to the Selection tool: with nothing loaded, a click would only fail.
+    pub(crate) fn unload_place_cursor(&mut self) {
+        self.loaded = None;
+        self.loaded_queue.clear();
+        if self.tool_id() == "placeGun" {
+            self.set_tool("selection");
         }
     }
 
@@ -316,6 +327,18 @@ impl Session {
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.take() else { return Ok(()) };
         if !Arc::ptr_eq(&it.doc, &st.doc) {
+            // Previews skip the live caption refresh, so the committed change brings captions up
+            // to date here, in the same undo step, and auto-sizes the caption frames it changed.
+            if crate::cmd::captions::has_live(&st.doc) {
+                let mut d = (*st.doc).clone();
+                if crate::cmd::captions::refresh_live(&mut d) {
+                    let todo = crate::autosize::candidates(&d, Some(&st.doc));
+                    crate::autosize::fit(&mut d, todo);
+                    crate::cmd::captions::clamp_text_selection(&d, &mut st.selection);
+                    st.doc = Arc::new(d);
+                    st.bump_revision();
+                }
+            }
             record_undo(st, HistoryEntry { label: it.label, doc: it.doc, selection: it.selection });
         }
         if let Some((c, p)) = it.preview {

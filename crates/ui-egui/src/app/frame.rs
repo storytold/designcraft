@@ -34,6 +34,9 @@ impl DesignApp {
             self.handle_file_dialog_answers();
             self.drain_inbox();
             self.open_os_documents();
+            #[cfg(not(target_arch = "wasm32"))]
+            self.poll_opening(ctx);
+            self.poll_link_checks(ctx);
         }
         if self.host_order_pending() {
             ctx.request_repaint();
