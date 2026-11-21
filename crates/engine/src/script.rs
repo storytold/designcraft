@@ -47,6 +47,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
         }
         let step = if l.starts_with('{') {
             serde_json::from_str::<Value>(l).map_err(|e| e.to_string()).and_then(|v| step_of(&v))
+        } else if l.starts_with('=') {
+            Err("missing `command`".into())
         } else {
             // `id {json}`, `id={json}` or `id`.
             let split = l.find([' ', '=', '\t']).unwrap_or(l.len());
@@ -314,6 +316,11 @@ mod tests {
             assert!(e.contains("unknown key `parms`"), "{e}");
         }
         assert!(parse(r#"[{"command": "file.new", "params": {"width": 300}}]"#).is_ok());
+    }
+
+    #[test]
+    fn compact_lines_require_a_command_before_params() {
+        assert_eq!(parse("file.new\n  = {}"), Err("line 2: missing `command`".into()));
     }
 
     #[test]
