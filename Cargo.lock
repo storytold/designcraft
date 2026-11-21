@@ -4063,8 +4063,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 [[package]]
 name = "linesweeper"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a25df1b0c5432893f41bba817150e323703ee5f6d974f3a6808ac7fd7f046d18"
+source = "git+https://github.com/storytold/craft-libs?rev=c60e7a20063313b80a994075adb4f797b24ab4f1#c60e7a20063313b80a994075adb4f797b24ab4f1"
 dependencies = [
  "arrayvec",
  "kurbo",
@@ -7321,8 +7320,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3361bff7f7d82c0c496b92048db83846691f0e844cc28dee92b1c824291b55ee"
+source = "git+https://github.com/storytold/craft-libs?rev=c60e7a20063313b80a994075adb4f797b24ab4f1#c60e7a20063313b80a994075adb4f797b24ab4f1"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -7371,8 +7369,7 @@ dependencies = [
 [[package]]
 name = "vello_cpu"
 version = "0.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d8ded630e8316bb94a55881256506d1f3b9947b5f66db8a7d32ca7ba02decd0"
+source = "git+https://github.com/storytold/craft-libs?rev=c60e7a20063313b80a994075adb4f797b24ab4f1#c60e7a20063313b80a994075adb4f797b24ab4f1"
 dependencies = [
  "bytemuck",
  "glifo 0.1.1",
