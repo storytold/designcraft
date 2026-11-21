@@ -8120,6 +8120,43 @@ fn a_line_that_exactly_fills_the_measure_fits() {
     }
 }
 
+/// The narrowest frame width that still sets `text` on one line, to 0.01 pt.
+fn one_line_width(text: &str, para: &ParaAttrs) -> f64 {
+    let mut hi = 100.0;
+    while tracked_lines(text, hi, para.clone(), 0.0).len() != 1 {
+        hi *= 2.0;
+        assert!(hi < 1e7, "no one-line width found for {text:?}");
+    }
+    let mut lo = if hi > 100.0 { hi / 2.0 } else { 0.0 };
+    while hi - lo > 0.01 {
+        let mid = (lo + hi) / 2.0;
+        if tracked_lines(text, mid, para.clone(), 0.0).len() == 1 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// With optical margin alignment, the paragraph's last glyph hangs into the right margin, and a
+/// line that fits only because of that hang must be accepted: the ragged fill glue and the
+/// paragraph-end break measure the line with the final glyph's hang (#3036).
+#[test]
+fn last_glyph_hangs_at_paragraph_end() {
+    use designcraft_doc::Composer;
+    for (text, align) in [("Harbour light,", Align::Right), ("nu nu nu.", Align::Left)] {
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let on =
+                ParaAttrs { align: Some(align), optical_margin: Some(true), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let off = ParaAttrs { align: Some(align), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let w_on = one_line_width(text, &on);
+            let w_off = one_line_width(text, &off);
+            assert!(w_on < w_off - 0.01, "{text} {composer:?}: optical margin on still needs the full {w_on}, off needs {w_off}");
+        }
+    }
+}
+
 // ---------- split columns ----------
 
 /// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.

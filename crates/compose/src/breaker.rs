@@ -450,7 +450,11 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 ig.push(i);
             } else {
                 // Ragged right (Knuth): glue(0, s, 0) penalty(0) glue(w, -s, 0).
-                it.push(Item::glue(0.0, sp.ragged_stretch, 0.0));
+                // The fill glue is a break point too, so it measures the line with the last
+                // glyph's hang, like the penalty after it does (#3036).
+                let mut fill = Item::glue(0.0, sp.ragged_stretch, 0.0);
+                fill.hang = prev_hang;
+                it.push(fill);
                 ig.push(i);
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
@@ -506,8 +510,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             }
         }
     }
-    // Paragraph end: fill glue + forced break.
-    it.push(Item::glue(0.0, INF, 0.0));
+    // Paragraph end: fill glue + forced break. The fill glue is a break point, so it measures
+    // the line with the final glyph's hang, like the forced break after it (#3036).
+    let end_hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
+    let mut fill = Item::glue(0.0, INF, 0.0);
+    fill.hang = end_hang;
+    it.push(fill);
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
     p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
