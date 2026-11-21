@@ -175,7 +175,7 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
 - Math expressions (Type ▸ Insert Math Expression…, `math.insert`, `math.svg`): a LaTeX subset (fractions, scripts, roots, big operators with limits, Greek, relations and operators with math spacing, `\left…\right`, `\text`) typeset by our own engine into SVG, placed inline at the cursor or as a frame; the LaTeX is kept as alt text and can be edited.
 - Object Layer Options for placed PDFs (`object.pdfLayers`, `object.layerOptions`, Object ▸ Object Layer Options…): the file's optional-content layers listed and shown or hidden per frame on screen; plain and PDF/X-4 exports preserve their visible layers as vectors.
 - Effects: Inner Glow (edge or centre), Bevel and Emboss (inner bevel lit from the light angle), Satin (`object.innerGlow`, `object.bevel`, `object.satin`); PDF export now keeps soft effects: objects with shadows, glows, feathers, bevels or satin go out as 300 ppi transparent images of their appearance (threaded text frames excepted).
-- Directional Feather (`object.directionalFeather {widths: [top, left, bottom, right]}`): each side fades over its own width.
+- Directional Feather (`object.directionalFeather {widths: [top, left, bottom, right]}`): each side fades over its own width, measured from the edges of what the object paints: an image smaller than or offset in its frame fades at its own edge, not in the empty part of the frame, as in InDesign.
 - View ▸ Flattener Preview (`view.flattenerPreview`): objects involving transparency highlighted in red; PDF export writes Knockout Group as a knockout transparency group (`/K true`) and Isolate Blending as `/I true`.
 - Live captions (`object.caption {live: true}`, Object ▸ Captions ▸ Generate Live Caption): the caption text is re-filled from the source object's metadata after every edit (same undo step).
 - Style Export Tagging (`style.exportTag`, Paragraph Style Options ▸ Export Tagging): paragraph and character styles choose their HTML element and class in EPUB/HTML.
@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-17** · A Directional Feather is measured from the edges of what the object paints, as in InDesign, not from the frame's path: an image smaller than or offset in its frame fades at its own edge instead of keeping a hard edge with the fade in the empty part of the frame, on screen and in PDF export (#2916). No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
