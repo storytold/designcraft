@@ -426,3 +426,87 @@ fn a_style_with_legacy_all_corner_attributes_keeps_its_corners() {
     let c = style.corners.expect("the legacy corners").corners;
     assert!(c.iter().all(|c| c.shape == CornerShape::Rounded && c.size == 9.0), "{c:?}");
 }
+
+#[test]
+fn anchored_object_style_settings_survive_idml_round_trip() {
+    let style = r#"<ObjectStyle Self="ObjectStyle/Anchored" Name="Anchored" EnableAnchoredObjectOptions="true">
+      <AnchoredObjectSetting AnchoredPosition="Anchored" AnchorPoint="TopLeftAnchor" HorizontalAlignment="RightAlign"
+        HorizontalReferencePoint="PageMargins" VerticalAlignment="TopAlign" VerticalReferencePoint="PageEdge"
+        AnchorXoffset="12.5" AnchorYoffset="-3" PinPosition="false" SpineRelative="true"/>
+    </ObjectStyle>"#;
+    let mut d = fixture(style, &[]);
+    let anchored = d.styles.object_style("Anchored").and_then(|style| style.anchored_options.as_ref()).expect("anchored options imported");
+    assert_eq!(anchored.enabled, Some(true));
+    assert_eq!(anchored.settings.as_ref().and_then(|settings| settings.get("HorizontalReferencePoint")).map(String::as_str), Some("PageMargins"));
+
+    let style = std::sync::Arc::make_mut(&mut d.styles).object.iter_mut().find(|style| style.name == "Anchored").expect("style exists");
+    let options = style.anchored_options.as_mut().expect("anchored options imported");
+    options.settings.as_mut().expect("setting element imported").insert("AnchorXoffset".into(), "42".into());
+
+    let bytes = export_idml(&d);
+    let exported = zip_text(&bytes, "Resources/Styles.xml");
+
+    assert!(exported.contains(r#"EnableAnchoredObjectOptions="true""#), "{exported}");
+    assert!(exported.contains(r#"<AnchoredObjectSetting"#), "{exported}");
+    assert!(exported.contains(r#"HorizontalReferencePoint="PageMargins""#), "{exported}");
+    assert!(exported.contains(r#"AnchorXoffset="42""#), "{exported}");
+    assert!(exported.contains(r#"AnchorYoffset="-3""#), "{exported}");
+
+    let round = import_idml(&bytes).unwrap();
+    let anchored = round.styles.object_style("Anchored").and_then(|style| style.anchored_options.as_ref()).expect("anchored options re-imported");
+    assert_eq!(anchored.enabled, Some(true));
+    assert_eq!(anchored.settings.as_ref().and_then(|settings| settings.get("AnchorXoffset")).map(String::as_str), Some("42"));
+    assert_eq!(anchored.settings.as_ref().and_then(|settings| settings.get("AnchorYoffset")).map(String::as_str), Some("-3"));
+}
+
+#[test]
+fn disabled_anchored_object_style_settings_survive_idml_round_trip() {
+    let style = r#"<ObjectStyle Self="ObjectStyle/Anchored" Name="Anchored" EnableAnchoredObjectOptions="false">
+      <AnchoredObjectSetting HorizontalReferencePoint="PageMargins" AnchorXoffset="12.5"/>
+    </ObjectStyle>"#;
+    let d = fixture(style, &[]);
+    let options = d.styles.object_style("Anchored").and_then(|style| style.anchored_options.clone()).expect("disabled options imported");
+    assert_eq!(options.enabled, Some(false));
+    assert_eq!(options.settings.as_ref().and_then(|settings| settings.get("HorizontalReferencePoint")).map(String::as_str), Some("PageMargins"));
+
+    let bytes = export_idml(&d);
+    let exported = zip_text(&bytes, "Resources/Styles.xml");
+    assert!(exported.contains(r#"EnableAnchoredObjectOptions="false""#), "{exported}");
+    assert!(exported.contains(r#"<AnchoredObjectSetting"#), "{exported}");
+
+    let round = import_idml(&bytes).unwrap();
+    assert_eq!(round.styles.object_style("Anchored").and_then(|style| style.anchored_options.as_ref()), Some(&options));
+}
+
+#[test]
+fn absent_anchored_object_style_settings_stay_absent() {
+    let d = fixture(r#"<ObjectStyle Self="ObjectStyle/Plain" Name="Plain"/>"#, &[]);
+    assert!(d.styles.object_style("Plain").is_some_and(|style| style.anchored_options.is_none()));
+
+    let bytes = export_idml(&d);
+    let exported = zip_text(&bytes, "Resources/Styles.xml");
+    assert!(!exported.contains("EnableAnchoredObjectOptions"), "{exported}");
+    assert!(!exported.contains("<AnchoredObjectSetting"), "{exported}");
+
+    let round = import_idml(&bytes).unwrap();
+    assert!(round.styles.object_style("Plain").is_some_and(|style| style.anchored_options.is_none()));
+}
+
+#[test]
+fn empty_anchored_object_setting_stays_distinct_from_an_absent_setting() {
+    let style = r#"<ObjectStyle Self="ObjectStyle/Empty" Name="Empty"><AnchoredObjectSetting/></ObjectStyle>"#;
+    let d = fixture(style, &[]);
+    let options = d.styles.object_style("Empty").and_then(|style| style.anchored_options.as_ref()).expect("empty setting imported");
+    assert_eq!(options.enabled, None);
+    assert_eq!(options.settings.as_ref().map(|settings| settings.len()), Some(0));
+
+    let bytes = export_idml(&d);
+    let exported = zip_text(&bytes, "Resources/Styles.xml");
+    assert!(exported.contains("<AnchoredObjectSetting"), "{exported}");
+    assert!(!exported.contains("EnableAnchoredObjectOptions"), "{exported}");
+
+    let round = import_idml(&bytes).unwrap();
+    let options = round.styles.object_style("Empty").and_then(|style| style.anchored_options.as_ref()).expect("empty setting re-imported");
+    assert_eq!(options.enabled, None);
+    assert_eq!(options.settings.as_ref().map(|settings| settings.len()), Some(0));
+}

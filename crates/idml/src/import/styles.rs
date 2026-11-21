@@ -201,10 +201,26 @@ impl<'r> Importer<'r> {
             } else {
                 None
             };
+            let anchored_options = {
+                let enabled = e.get("EnableAnchoredObjectOptions").map(|value| value == "true");
+                let settings = e.find("AnchoredObjectSetting").map(|settings| settings.attrs.iter().cloned().collect());
+                (enabled.is_some() || settings.is_some()).then_some(designcraft_doc::AnchoredObjectStyleOptions { enabled, settings })
+            };
             let effects = self.style_effects(e);
             let corners = style_corners(&levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
+            let s = ObjectStyle {
+                name: name.clone(),
+                based_on,
+                fill,
+                stroke,
+                paragraph_style,
+                apply_next_style,
+                text_frame,
+                anchored_options,
+                effects,
+                corners,
+            };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),
