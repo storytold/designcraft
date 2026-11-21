@@ -1094,6 +1094,23 @@ pub struct TypeEnv {
     pub glyph_fallback: bool,
 }
 
+/// The face and em box height a character `c` with `p` is shaped with: a composite font
+/// resolved to its entry for `c` (font, size and vertical scale), and a superscript or subscript
+/// at its Advanced Type size, as [`shape_para`] shapes it. A shaped glyph's em box is
+/// `units_per_em * sy`, which is this height.
+pub(crate) fn em_face(db: &ScopedFonts<'_>, styles: &Styles, p: &CharProps, c: char, adv: &designcraft_doc::AdvancedType) -> (Arc<FontFace>, f64) {
+    let resolved;
+    let p = match styles.composite_font(&p.font_family) {
+        Some(font) => {
+            resolved = composite_props(db, p, font.entry(c));
+            &resolved
+        }
+        None => p,
+    };
+    let (size, _) = effective_size(p, adv);
+    (db.face(&p.font_family, &p.font_style), size * p.v_scale)
+}
+
 /// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
 fn effective_size(p: &CharProps, adv: &designcraft_doc::AdvancedType) -> (f64, f64) {
     match p.position {
