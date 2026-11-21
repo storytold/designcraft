@@ -18,7 +18,8 @@
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
 //!    by Grady Ward (~160k words), stored compactly in `assets/hyphenation/en-us.dic`; simple
-//!    inflections (`'s`, `-s`, `-es`, `-ed`, `-d`) inherit the breaks of their stem;
+//!    inflections (`'s`, `-s`, `-es`, `-ed`, `-d`, `-ing`) inherit the breaks of their stem, and
+//!    `-ing` and `-ed` after t or d break off it;
 //! 2. **Liang patterns** ([`Patterns::en_us`]) for words not in the dictionary — our own pattern
 //!    set, trained from the same list by [`patgen`] (`examples/hyphgen.rs` regenerates both files);
 //! 3. a small syllable **heuristic** for words outside the pattern alphabet.
@@ -166,14 +167,36 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     if let Some(m) = dict.get(&s) {
         return (from_mask(m, n), Source::Dictionary);
     }
-    // Inflections inherit the stem's breaks (the suffix adds no break of its own).
+    // Inflections inherit the stem's breaks. `-s`, `-es` and `-ed` after a vowel or other
+    // consonant add no syllable, hence no break; `-ed` after t or d does (af-flict-ed, fiel-ded,
+    // and ro-tat-ed from "rotate" + d), and breaks off the stem.
     for suf in ["'s", "s", "es", "ed", "d"] {
         if let Some(stem) = s.strip_suffix(suf)
             && stem.chars().count() >= 2
             && let Some(m) = dict.get(stem)
         {
-            return (from_mask(m, stem.chars().count()), Source::Dictionary);
+            let mut points = from_mask(m, stem.chars().count());
+            let syllabic = match suf {
+                "ed" => stem.ends_with(['t', 'd']),
+                "d" => stem.ends_with("te") || stem.ends_with("de"),
+                _ => false,
+            };
+            if syllabic && !points.contains(&(n - 2)) {
+                points.push(n - 2);
+            }
+            return (points, Source::Dictionary);
         }
+    }
+    // `-ing` is a syllable of its own and breaks off a stem the list has (staff-ing, stiff-ing,
+    // scoff-ing, pull-ing), which the patterns do not find after a doubled f.
+    if let Some(stem) = s.strip_suffix("ing")
+        && stem.chars().count() >= 3
+        && let Some(m) = dict.get(stem)
+    {
+        let stem_len = stem.chars().count();
+        let mut points = from_mask(m, stem_len);
+        points.push(stem_len);
+        return (points, Source::Dictionary);
     }
     let pats = Patterns::en_us();
     if !pats.is_empty()
@@ -570,6 +593,32 @@ mod tests {
         assert!(!h("changed").contains('-'));
         assert_eq!(h("NASA"), "NASA");
         assert_eq!(word_breaks("publication").1, Source::Dictionary);
+    }
+
+    #[test]
+    fn a_suffix_that_is_a_syllable_breaks_off_its_stem() {
+        // Break points of each word measured in InDesign 2026 (English: USA), the word set alone in
+        // a frame: none of these is in the word list, and the patterns find none of the breaks
+        // after the stem.
+        for (word, points) in [
+            ("staffing", vec![5]),
+            ("stiffing", vec![5]),
+            ("scoffing", vec![5]),
+            ("sniffing", vec![5]),
+            ("afflicted", vec![2, 7]),
+            ("rotated", vec![2, 5]),
+            ("fielded", vec![5]),
+            ("threaded", vec![6]),
+            ("targeted", vec![3, 6]),
+            ("conducted", vec![3, 7]),
+        ] {
+            assert_eq!(word_breaks(word).0, points, "{word}");
+        }
+        // The suffix adds a syllable only after t or d: "-ed" after any other letter leaves the
+        // stem's breaks alone.
+        assert_eq!(word_breaks("restrained").0, vec![2]);
+        assert_eq!(h("Staffing"), "Staff-ing");
+        assert_eq!(h("afflicted"), "af-flict-ed");
     }
 
     #[test]

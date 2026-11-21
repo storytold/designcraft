@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-21** · Hyphenation (#3128): `-ing`, and `-ed` after t or d, are syllables of their own and break off the stem, as in InDesign: "staff-ing", "stiff-ing", "scoff-ing", "af-flict-ed", "ro-tat-ed", "fiel-ded". The patterns found none of the `-ing` breaks after a doubled f, and `-ed` only inherited the stem's breaks. Of 1,892 words set alone in InDesign 2026 (English: USA), the break points now agree on 1,551 instead of 1,498, with none changed for the worse. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
