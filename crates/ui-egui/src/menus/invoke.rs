@@ -46,6 +46,11 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         close_document(app, None);
         return;
     }
+    // File › Import XML…: a file picker, and the import's report in the status line.
+    if params.is_null() && id == "file.importXml" {
+        crate::panels::interactive::import_xml(app);
+        return;
+    }
     if params.is_null() && id == "layout.documentSetup" {
         crate::dialogs::open_document_setup(app);
         return;
