@@ -13,9 +13,11 @@ mod jpeg;
 mod psd;
 mod resolution;
 mod tone;
+mod wmf;
 pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
+pub use wmf::{is_wmf, wmf_bitmap};
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
@@ -382,7 +384,7 @@ pub fn too_large_to_decode(bytes: &[u8]) -> bool {
 }
 
 /// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
-fn over_rgba_budget(w: u32, h: u32) -> bool {
+pub(crate) fn over_rgba_budget(w: u32, h: u32) -> bool {
     u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 

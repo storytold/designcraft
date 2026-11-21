@@ -325,6 +325,16 @@ impl<'r> Importer<'r> {
             })
         };
         let mut data = model.contents().unwrap_or_default();
+        // An embedded WMF (a screenshot pasted from the Windows clipboard) is drawn as the bitmap
+        // it holds: nothing else reads WMF.
+        if designcraft_images::is_wmf(&data) {
+            match designcraft_images::wmf_bitmap(&data) {
+                Some(bitmap) => data = bitmap,
+                None => {
+                    self.warnings.push(format!("graphic {}: embedded WMF draws no bitmap that can be shown", model.self_id().unwrap_or("(unnamed)")))
+                }
+            }
+        }
         let pdf_attribute = model.pdf_attribute();
         let page = pdf_attribute.as_ref().map(craft_idml::model::PdfAttribute::page_index).unwrap_or(0);
         // Where the box sits on the page needs the PDF parsed: the engine finds it after import.
