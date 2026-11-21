@@ -1,6 +1,6 @@
 # Arabic import and composition
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-16 · **Change:** minor (opt-in Hebrew letter extension) · **Target:** Adobe InDesign 2026
 
 Task: AR1. These changes repair verified gaps in the existing typesetting pipeline.
 They do not claim full InDesign or vendor-specific Naskh composition parity.
@@ -53,6 +53,27 @@ positions are reversed. Physical left/right insertion commands account for direc
   change neither embeds proprietary fonts nor makes missing-font errors disappear.
 - CJK compatibility boundaries remain documented in `cjk-typography.md`.
 
+## Hebrew letter extension
+
+The opt-in paragraph attribute `hebrewLetterExtension` (Extend Hebrew Letters in
+Justification) widens one eligible letter per word on justified lines before
+stretching spaces. It selects the last eligible letter in logical order, visits
+words from the logical end, and skips an alternate that cannot fit the remaining
+shortfall. The letters א ד ה כ ל ם ר ת use the font's U+FB21–U+FB28 wide forms;
+ordinary mem מ is excluded. Existing shaped substitutions are preserved. Fonts
+without wider forms use the existing spacing behavior. No glyph is scaled by
+this option, and ragged final lines are unchanged.
+
+Marks stay in their cluster and move by half the added width relative to the
+base. Story text and PDF extraction retain the original letters. Local overrides
+and paragraph styles preserve the option in native files. IDML neither reads nor
+writes it because InDesign has no equivalent attribute.
+
+Deferred work includes paragraph-wide reflow scoring of extension,
+distributed/weighted allocation, OpenType `jalt` and variable axes, per-letter caps
+and occurrence limits, locked spacing with underfull warnings, font anchors for
+marks on wide forms, and IDML support if an equivalent becomes available.
+
 ## Verification and sources
 
 Regression tests cover independent IDML XML, round trips, forced line breaks,
@@ -81,5 +102,6 @@ compatibility warnings remain, along with separate font/link/overset findings.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Added opt-in Hebrew letter extension using font wide forms before space justification (#1931) |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-07 | major | Created: AR1: Arabic import and composition |

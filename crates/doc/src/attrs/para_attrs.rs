@@ -64,6 +64,8 @@ attr_set! {
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,
+        /// Extend Hebrew Letters: justified Hebrew lines widen eligible letters (the font's wide forms) before spaces.
+        hebrew_letter_extension: bool = false,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
         paragraph_kashida_width: Option<f64> = None => "deserialize_explicit_value",

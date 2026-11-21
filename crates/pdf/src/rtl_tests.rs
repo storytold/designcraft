@@ -80,6 +80,25 @@ fn hebrew_extracts_in_reading_order_with_points_on_their_letters() {
 }
 
 #[test]
+fn hebrew_letter_extension_extracts_original_letters() {
+    let family = "DC Test PDF Hebrew Wide";
+    let map = [('ד', 'i'), ('\u{FB22}', 'W'), (' ', ' ')];
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_mapping(family, &map).unwrap());
+    let text = "דד דד דד דד דד דד דד דד דד דד";
+    let d = doc(
+        text,
+        family,
+        Rect::new(36.0, 36.0, 186.0, 300.0),
+        ParaAttrs { align: Some(Align::FullyJustified), hebrew_letter_extension: Some(true), ..rtl() },
+    );
+    let sid = *d.stories.keys().next().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(cs.frames[0].lines[0].glyphs.iter().any(|g| g.gid == g.face.glyph_for('\u{FB22}')));
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+    assert_eq!(extract_text(&bytes)[0].replace(' ', ""), text.replace(' ', ""));
+}
+
+#[test]
 fn hebrew_words_in_left_to_right_lines_extract_in_reading_order() {
     hebrew_font();
     let text = "abc דוד & שרה def";
