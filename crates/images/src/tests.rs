@@ -1402,6 +1402,28 @@ fn jpeg_orientation_keeps_first_exif_app1_segment() {
 }
 
 #[test]
+fn jpeg_orientation_requires_exact_exif_prefix_and_complete_app1() {
+    let tiff_rot6 = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+
+    // Looser prefix ("Exif\0\x01" instead of "Exif\0\0") must not be treated as EXIF.
+    let mut looser_payload = b"Exif\0\x01".to_vec();
+    looser_payload.extend_from_slice(&tiff_rot6);
+    let mut looser_seg = vec![0xFF, 0xE1];
+    looser_seg.extend_from_slice(&((looser_payload.len() + 2) as u16).to_be_bytes());
+    looser_seg.extend_from_slice(&looser_payload);
+    let mut with_looser = jfif_app(1, 300, 150);
+    with_looser.extend_from_slice(&looser_seg);
+    assert_eq!(raster_resolution(&jpeg_with(&with_looser)), Some((300.0, 150.0)));
+
+    // Truncated APP1 segment (declared length past end of file) must be ignored.
+    let mut truncated = vec![0xFF, 0xD8];
+    truncated.extend_from_slice(&jfif_app(1, 300, 150));
+    truncated.extend_from_slice(&exif_app(&tiff_rot6));
+    truncated.pop();
+    assert_eq!(raster_resolution(&truncated), Some((300.0, 150.0)));
+}
+
+#[test]
 fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
     fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut out = (data.len() as u32).to_be_bytes().to_vec();
