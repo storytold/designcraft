@@ -10530,3 +10530,41 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// With Digits at Default, a footnote's reference and the number before its text follow the
+/// Arabic text like typed digits do, and agree. The reference is stored as a private-use
+/// character, which counted as Latin text and lost the context, and the number before the note's
+/// text had no text to take one from, so both stayed Western (#3090).
+#[test]
+fn footnote_numbers_follow_arabic_text_with_default_digits() {
+    let rtl = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    // The digits drawn in the body's first line and in the note's first line.
+    let digits = |body: &str, note: &str| {
+        let (mut d, sid, fid) = doc_with(body, Rect::new(36.0, 36.0, 400.0, 400.0), rtl.clone());
+        let at = d.story(sid).unwrap().text.len();
+        d.story_mut(sid).unwrap().insert_note(at, note, ParaFormat { para: rtl.clone(), ..Default::default() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let f = cs.frame(fid).unwrap();
+        let of = |glyphs: &[PlacedGlyph]| {
+            glyphs.iter().map(|g| g.rendered_char).filter(|c| c.is_ascii_digit() || ('\u{660}'..='\u{669}').contains(c)).collect::<String>()
+        };
+        (of(&f.lines[0].glyphs), of(&f.notes[0].text.frames[0].lines[0].glyphs))
+    };
+    // A typed 1 after Arabic text is drawn as ١; the reference after it and the note's number too.
+    assert_eq!(digits("نص 1 كلمة", "حاشية"), ("١١".to_string(), "١".to_string()));
+    // After Latin text, and before a Latin note, they stay Western.
+    assert_eq!(digits("Text 1 word", "Note"), ("11".to_string(), "1".to_string()));
+    // A reference in a composite font is shaped on its own path and follows the Arabic text too.
+    let (mut d, sid, fid) = doc_with("نص", Rect::new(36.0, 36.0, 400.0, 400.0), rtl.clone());
+    d.styles_mut().composite_fonts.push(designcraft_doc::cjk::CompositeFont {
+        name: "Note Composite".into(),
+        entries: vec![designcraft_doc::cjk::CompositeFontEntry { family: "Source Serif 4".into(), ..Default::default() }],
+    });
+    let story = d.story_mut(sid).unwrap();
+    let at = story.text.len();
+    story.insert_note(at, "حاشية", ParaFormat::default());
+    story.format_chars(at..at + 3, |f| f.over.font_family = Some("Note Composite".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let reference: String = cs.frame(fid).unwrap().lines[0].glyphs.iter().filter(|g| g.byte == at).map(|g| g.rendered_char).collect();
+    assert_eq!(reference, "١");
+}

@@ -542,14 +542,9 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         if first.composite_note {
             if let Some(composite) = styles.composite_font(&first.props.font_family) {
                 let at = first.range.start;
-                let strong = |c| match unicode_bidi::bidi_class(c) {
-                    unicode_bidi::BidiClass::AL => Some(true),
-                    unicode_bidi::BidiClass::L | unicode_bidi::BidiClass::R => Some(false),
-                    _ => None,
-                };
                 // The reference's Digits apply as in shape_run_raw (#1510), from the last strong character up to and including the reference.
                 let context =
-                    story.text.get(..first.range.end).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(strong);
+                    story.text.get(..first.range.end).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(digit_context);
                 let mode = digit_mode(&first.props, context);
                 let label: String = sub.notes.get(&at).map_or("#", String::as_str).chars().map(|ch| mode.map(ch, &first.props.language)).collect();
                 let begin = glyphs.len();
@@ -850,12 +845,7 @@ fn shape_run_raw(
             primary.clone()
         }
     };
-    let strong = |c| match unicode_bidi::bidi_class(c) {
-        unicode_bidi::BidiClass::AL => Some(true),
-        unicode_bidi::BidiClass::L | unicode_bidi::BidiClass::R => Some(false),
-        _ => None,
-    };
-    let mut arabic_context = text.get(..range.start).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(strong);
+    let mut arabic_context = text.get(..range.start).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(digit_context);
     // Split into segments: font coverage changes and special characters (markers, tabs, breaks).
     let mut seg_start = range.start;
     let mut seg_face = primary.clone();
@@ -866,7 +856,7 @@ fn shape_run_raw(
     };
     for (i, c) in text[range.clone()].char_indices() {
         let i = range.start + i;
-        if let Some(context) = strong(c) {
+        if let Some(context) = digit_context(c) {
             arabic_context = Some(context);
         }
         // Digits drawn in another script (World-Ready Digits): each is set as its substitute.
@@ -1456,9 +1446,24 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     h
 }
 
+/// Which text a character makes digits with Default Digits follow: Arabic (`Some(true)`), other
+/// strong text (`Some(false)`), or neither. A note reference is neither: it is a private-use
+/// character standing for a number, and as bidi class L it made the reference after Arabic text
+/// take Western digits (#3090).
+pub(crate) fn digit_context(c: char) -> Option<bool> {
+    if matches!(c, designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF) {
+        return None;
+    }
+    match unicode_bidi::bidi_class(c) {
+        unicode_bidi::BidiClass::AL => Some(true),
+        unicode_bidi::BidiClass::L | unicode_bidi::BidiClass::R => Some(false),
+        _ => None,
+    }
+}
+
 /// How figures 0–9 are drawn for text with these properties: the Digits setting, or, when it is
 /// Default, by the preceding strong script (`Some(true)` Arabic-script, `Some(false)` other).
-fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> designcraft_doc::Digits {
+pub(crate) fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> designcraft_doc::Digits {
     use designcraft_doc::Digits;
     if p.digits != Digits::Default {
         return p.digits;
