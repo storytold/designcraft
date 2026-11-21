@@ -141,6 +141,7 @@ pub(super) fn ruler_units_menus(app: &mut DesignApp, resp: &egui::Response, full
     let at = resp.interact_pointer_pos();
     let (h, v) = (doc.settings.horizontal_units, doc.settings.vertical_units);
     let locked = doc.settings.zero_point_locked;
+    let cjk = crate::cjk_features(app);
     // (where, which units it sets, the unit checked)
     let menus = [(top, RulerMenu::Horizontal, Some(h)), (left, RulerMenu::Vertical, Some(v)), (corner, RulerMenu::Both, (h == v).then_some(h))];
     for (area, which, cur) in menus {
@@ -154,7 +155,7 @@ pub(super) fn ruler_units_menus(app: &mut DesignApp, resp: &egui::Response, full
         egui::Popup::context_menu(resp)
             .id(resp.id.with(("ruler_units", which as u8)))
             .open_memory(open)
-            .show(|ui| ruler_units_menu(app, ui, which, cur, locked));
+            .show(|ui| ruler_units_menu(app, ui, which, cur, locked, cjk));
     }
 }
 
@@ -165,17 +166,31 @@ enum RulerMenu {
     Both,
 }
 
-/// The units a ruler's menu offers, in InDesign's order.
-const RULER_UNITS: [designcraft_geom::Unit; 9] = {
+pub(super) const RULER_UNITS: [designcraft_geom::Unit; 9] = {
     use designcraft_geom::Unit::*;
     [Points, Picas, Inches, InchesDecimal, Millimeters, Centimeters, Ciceros, Agates, Pixels]
 };
+
+/// The units a ruler's menu offers, in InDesign's order. Show CJK Features adds Q and H, as the
+/// Japanese edition's rulers list H (#1357); without it the English menus stay as #1074 left them.
+/// A document in a unit the list does not hold keeps that unit at the end.
+pub(crate) fn ruler_units(cjk: bool, current: Option<designcraft_geom::Unit>) -> Vec<designcraft_geom::Unit> {
+    use designcraft_geom::Unit;
+    let mut units: Vec<Unit> = RULER_UNITS.to_vec();
+    if cjk {
+        units.extend([Unit::Q, Unit::Ha]);
+    }
+    if let Some(cur) = current.filter(|u| !units.contains(u)) {
+        units.push(cur);
+    }
+    units
+}
 
 /// A ruler's menu: the units (the current one checked), then Hide Rulers and, on the horizontal
 /// ruler, Delete All Guides on Spread. The corner's menu (`Both`) starts with Lock Zero Point
 /// (`locked` = the zero point is locked). Picking a unit sets `horizontalUnits`,
 /// `verticalUnits` or both through `document.preferences`.
-fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, which: RulerMenu, cur: Option<designcraft_geom::Unit>, locked: bool) {
+fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, which: RulerMenu, cur: Option<designcraft_geom::Unit>, locked: bool, cjk: bool) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     if which == RulerMenu::Both {
@@ -186,9 +201,7 @@ fn ruler_units_menu(app: &mut DesignApp, ui: &mut egui::Ui, which: RulerMenu, cu
         }
         ui.separator();
     }
-    // A document in Q or Ha keeps its unit on the list.
-    let extra = cur.filter(|u| !RULER_UNITS.contains(u));
-    for u in RULER_UNITS.into_iter().chain(extra) {
+    for u in ruler_units(cjk, cur) {
         let label = tr(u.label());
         let text = if Some(u) == cur { format!("✓ {label}") } else { format!("   {label}") };
         if ui.button(crate::rtl::widget(ui, text)).clicked() {

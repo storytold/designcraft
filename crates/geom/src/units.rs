@@ -88,7 +88,7 @@ impl Unit {
             Unit::Agates => "Agates",
             Unit::Pixels => "Pixels",
             Unit::Q => "Q",
-            Unit::Ha => "Ha",
+            Unit::Ha => "H",
         }
     }
 
@@ -413,6 +413,48 @@ mod tests {
                 assert!((back - v).abs() < 1e-3, "{u:?}: {v} -> {s} -> {back}");
             }
         }
+    }
+
+    /// Q (級) and H (歯) are the Japanese DTP units: a quarter millimetre each, distinct in name
+    /// and display though equal in length.
+    #[test]
+    fn japanese_q_and_h_units() {
+        assert_eq!(Unit::Q.points(), 0.25 * PT_PER_MM);
+        assert_eq!(Unit::Ha.points(), 0.25 * PT_PER_MM);
+        assert!(close(Unit::Q.to_pt(4.0), PT_PER_MM), "4 Q = 1 mm");
+        assert!(close(Unit::Ha.to_pt(4.0), PT_PER_MM), "4 H = 1 mm");
+        assert!(close(Unit::Q.to_pt(1.0), 0.708_661_417_322_834_6), "1 Q = 0.7086614 pt");
+        assert!(close(Unit::Q.from_pt(PT_PER_MM), 4.0));
+        assert!(close(Unit::Ha.from_pt(Unit::Q.to_pt(13.0)), 13.0));
+        // Parsing: either case, surrounding spaces, a negative value and the word form "ha".
+        for s in ["12Q", "12q", "12 q", " 12Q ", "12H", "12h", "12ha"] {
+            assert!(close(p(s), Unit::Q.to_pt(12.0)), "{s}");
+        }
+        assert!(close(p("-6Q"), -6.0 * 0.25 * PT_PER_MM));
+        assert!(close(p("13Q+1mm"), 13.0 * PT_PER_MM / 4.0 + PT_PER_MM));
+        for bad in ["12Z", "Q", "12Q2", "12Qx"] {
+            assert!(parse_measure(bad, Unit::Points).is_err(), "{bad}");
+        }
+        // Display: the unit's own symbol after the number, trimmed as before.
+        assert_eq!(format_measure(Unit::Q.to_pt(13.0), Unit::Q), "13 Q");
+        assert_eq!(format_measure(Unit::Ha.to_pt(22.5), Unit::Ha), "22.5 H");
+        assert_eq!(format_measure(Unit::Q.to_pt(12.0), Unit::Millimeters), "3 mm");
+        // Existing units are unchanged.
+        assert_eq!(format_measure(72.0, Unit::Points), "72 pt");
+        assert_eq!(format_measure(72.0, Unit::Millimeters), "25.4 mm");
+    }
+
+    /// The unit list Preferences draws from holds both, with the symbols the Japanese edition shows.
+    #[test]
+    fn every_unit_has_a_label_and_a_symbol() {
+        for u in Unit::ALL {
+            assert!(!u.label().is_empty() && !u.suffix().is_empty(), "{u:?}");
+        }
+        assert!(Unit::ALL.contains(&Unit::Q) && Unit::ALL.contains(&Unit::Ha), "the Preferences list holds Q and H");
+        assert_eq!(Unit::Q.label(), "Q");
+        assert_eq!(Unit::Ha.label(), "H");
+        assert_eq!(Unit::Q.suffix(), " Q");
+        assert_eq!(Unit::Ha.suffix(), " H");
     }
 
     #[test]
