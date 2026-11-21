@@ -1179,7 +1179,9 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // Selected text (or Formatting Affects Text): the gradient of the text's fill or stroke.
     let text = super::colors_affect_text(app);
     let stroke_front = app.ui.stroke_front;
-    let text_paint = if text { super::color_target(app).map(|(fill, _, stroke, _)| if stroke_front { stroke } else { fill }) } else { None };
+    // A mixed paint across the selected text has no one gradient to show: the default ramp, still
+    // for the text (edits go to it), not the frame's paint.
+    let text_paint = text.then(|| super::color_target(app).map(|(fill, _, stroke, _)| if stroke_front { stroke } else { fill }).unwrap_or_default());
     let Some(st) = app.session.active() else { return };
     let item = st.selection.items.first().and_then(|i| st.doc.item(*i));
     let has_item = item.is_some() || text_paint.is_some();
