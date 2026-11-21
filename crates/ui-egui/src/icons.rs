@@ -4,50 +4,6 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, pos2, vec2};
 
-/// The bowl of the Paragraph Direction icons' pilcrow on the 20×20 grid (a convex outline of the ¶
-/// in the UI's bundled Source Sans 3 Semibold, the glyph the other ¶ icons draw as text).
-const PILCROW_BOWL: [(f32, f32); 39] = [
-    (6.24, 11.05),
-    (5.91, 11.04),
-    (5.60, 11.01),
-    (5.29, 10.97),
-    (5.00, 10.90),
-    (4.71, 10.82),
-    (4.43, 10.71),
-    (4.17, 10.59),
-    (3.93, 10.44),
-    (3.70, 10.28),
-    (3.50, 10.10),
-    (3.31, 9.89),
-    (3.15, 9.67),
-    (2.99, 9.43),
-    (2.87, 9.17),
-    (2.78, 8.88),
-    (2.71, 8.58),
-    (2.67, 8.25),
-    (2.66, 7.91),
-    (2.67, 7.54),
-    (2.71, 7.20),
-    (2.77, 6.89),
-    (2.86, 6.60),
-    (2.98, 6.34),
-    (3.12, 6.10),
-    (3.28, 5.89),
-    (3.47, 5.69),
-    (3.67, 5.52),
-    (3.88, 5.37),
-    (4.12, 5.25),
-    (4.37, 5.14),
-    (4.64, 5.05),
-    (4.91, 4.98),
-    (5.20, 4.92),
-    (5.50, 4.88),
-    (5.81, 4.86),
-    (6.13, 4.85),
-    (6.75, 4.85),
-    (6.75, 11.04),
-];
-
 struct Pen<'a> {
     p: &'a Painter,
     r: Rect,
@@ -1043,17 +999,8 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
         // its lines run (on its right for left to right, on its left for right to left).
         "pdir-ltr" | "pdir-rtl" => {
             let rtl = name == "pdir-rtl";
-            // The pilcrow: the same ¶ that the panel-paragraph and pilcrow-menu icons draw from the UI's
-            // bundled Source Sans 3 Semibold, as outlines so it can move; right for right to left.
-            // Shifted in fixed-size copies on the stack: painting allocates nothing.
-            let dx = if rtl { 8.11 } else { 0.0 };
-            let mut stem = [(7.52, 15.14), (7.52, 4.86), (9.14, 4.86), (9.14, 15.14)];
-            let mut bowl = PILCROW_BOWL;
-            for p in stem.iter_mut().chain(bowl.iter_mut()) {
-                p.0 += dx;
-            }
-            pen.fill(&stem);
-            pen.fill(&bowl);
+            // The pilcrow, drawn as text like the other ¶ icons; moved right for right to left.
+            pen.text(if rtl { 14.4 } else { 6.29 }, 9.25, "¶", 14.0);
             pen.w = 1.5;
             let m = |x: f32| if rtl { 20.0 - x } else { x };
             pen.line(&[(m(11.1), 10.0), (m(16.6), 10.0)]);
