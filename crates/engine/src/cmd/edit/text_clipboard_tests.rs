@@ -72,31 +72,48 @@ fn paste_at_a_caret_prefers_other_apps_text_to_copied_objects() {
     assert!(s.execute("edit.pasteWithoutFormatting", &json!({"text": ""})).is_err());
 }
 
-/// Text frames, and groups holding one, can't be anchored: at a caret their copy pastes as text.
+/// Text frames, and groups holding one, paste at a caret as anchored objects. Other apps' text
+/// still wins when the system clipboard holds it instead.
 #[test]
-fn copied_text_frames_paste_at_a_caret_as_their_text() {
+fn copied_text_frames_paste_at_a_caret_as_anchored_objects() {
     let mut s = Session::new();
     s.execute("file.new", &json!({})).unwrap();
     let target = frame(&mut s, "ab");
-    let copy_and_paste = |s: &mut Session, ids: Value, text: Value| {
+    let copy_and_paste = |s: &mut Session, target: designcraft_doc::StoryId, ids: Value, text: Value| {
         s.execute("selection.set", &json!({"ids": ids})).unwrap();
         s.execute("edit.copy", &json!({})).unwrap();
         s.execute("text.select", &json!({"story": target.0, "anchor": 0, "focus": 0})).unwrap();
         s.execute("edit.paste", &json!({"text": text})).unwrap()
     };
     let chapter = s.execute("frame.create", &json!({"rect": [72, 400, 300, 480], "content": "text", "text": "Chapter 1"})).unwrap()["id"].clone();
-    // The same text copied in another app, and the system clipboard read back as absent.
-    let r = copy_and_paste(&mut s, json!([chapter]), json!("Chapter 1"));
+    // Text from another app wins over the copied text frame.
+    let r = copy_and_paste(&mut s, target, json!([chapter]), json!("From elsewhere"));
     assert!(r.get("anchored").is_none(), "{r}");
-    s.execute("edit.paste", &json!({})).unwrap();
-    assert_eq!(s.doc().unwrap().doc.story(target).unwrap().text, "Chapter 1Chapter 1ab");
+    assert_eq!(s.doc().unwrap().doc.story(target).unwrap().text, "From elsewhereab");
+    // What the object copy put on the system clipboard still pastes the anchored frame.
+    let r = s.execute("edit.paste", &json!({})).unwrap();
+    assert_eq!(r["anchored"], 1);
+    let d = s.doc().unwrap().doc.clone();
+    assert_eq!(d.story(target).unwrap().text, format!("From elsewhere{}ab", designcraft_doc::OBJECT_MARK));
+    let anchored = &d.story(target).unwrap().objects[0].item;
+    let inner = anchored.text_frame().unwrap();
+    assert_eq!(d.story(inner.story).unwrap().text, "Chapter 1");
+    assert_eq!(d.story(inner.story).unwrap().frames, [anchored.id]);
+    d.check().unwrap();
+
     // A group with a text frame inside, its own placeholder on the system clipboard.
+    let target2 = frame(&mut s, "xy");
+    let chapter2 = s.execute("frame.create", &json!({"rect": [72, 400, 300, 480], "content": "text", "text": "Chapter 2"})).unwrap()["id"].clone();
     let rect = s.execute("frame.create", &json!({"rect": [72, 500, 200, 560]})).unwrap()["id"].clone();
-    let group = s.execute("object.group", &json!({"ids": [chapter, rect]})).unwrap()["id"].clone();
-    let r = copy_and_paste(&mut s, json!([group]), Value::Null);
-    assert!(r.get("anchored").is_none(), "{r}");
-    assert_eq!(s.doc().unwrap().doc.story(target).unwrap().text, "Chapter 1Chapter 1Chapter 1ab");
-    s.doc().unwrap().doc.check().unwrap();
+    let group = s.execute("object.group", &json!({"ids": [chapter2, rect]})).unwrap()["id"].clone();
+    let r = copy_and_paste(&mut s, target2, json!([group]), Value::Null);
+    assert_eq!(r["anchored"], 1);
+    let d = s.doc().unwrap().doc.clone();
+    assert_eq!(d.story(target2).unwrap().text, format!("{}xy", designcraft_doc::OBJECT_MARK));
+    let group = &d.story(target2).unwrap().objects[0].item;
+    let inner = group.children().iter().find_map(|i| i.text_frame()).unwrap();
+    assert_eq!(d.story(inner.story).unwrap().text, "Chapter 2");
+    d.check().unwrap();
 }
 
 #[test]

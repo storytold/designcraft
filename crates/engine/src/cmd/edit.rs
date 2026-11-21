@@ -120,8 +120,8 @@ fn is_objects_placeholder(s: &Session, text: &str) -> bool {
 /// Paste text at the insertion point: the formatted copy when the system clipboard still holds
 /// what was copied here (or `formatted` is forced), else plain text in the insertion format.
 /// With `formatted`, objects copied last paste as anchored objects when `text` is absent or their
-/// placeholder; other text was copied in another app since. Objects that can't be anchored (text
-/// frames, into a table cell) paste as their placeholder text.
+/// placeholder; other text was copied in another app since. Objects pasted into a table cell
+/// paste as their placeholder text.
 fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<Value> {
     let t = s.doc()?.selection.text.ok_or_else(|| super::bad("edit.paste", "no insertion point"))?;
     let clip = s.text_clipboard.clone();
@@ -131,7 +131,7 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
         && let Some(items) = s.clipboard.clone()
     {
         let list: Vec<designcraft_doc::Item> = items.spreads.first().map(|sp| sp.items.iter().map(|i| (**i).clone()).collect()).unwrap_or_default();
-        if !list.is_empty() && list.iter().all(|i| super::anchored::check_item(i).is_ok()) {
+        if !list.is_empty() {
             return s.edit(|d, sel| {
                 let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
                 let r = t.range();
@@ -140,19 +140,15 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 d.adjust_text_ranges(t.story, del, 0);
                 // Fresh ids, story and asset copies for every paste, as on the page.
                 let mut stories = std::collections::HashMap::new();
-                let fresh: Vec<designcraft_doc::Item> = list
-                    .iter()
-                    .map(|orig| {
-                        let mut i = orig.clone();
-                        if !super::object::renumber(d, &items, &mut i, &mut stories) {
-                            return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups or tables too deeply to copy", orig.id)));
-                        }
-                        if d.layer(i.layer).is_none() {
-                            i.layer = d.default_layer();
-                        }
-                        Ok(i)
-                    })
-                    .collect::<std::result::Result<_, _>>()?;
+                let mut fresh = list.clone();
+                if !super::object::renumber_items(d, &items, &mut fresh, &mut stories) {
+                    return Err(designcraft_doc::DocError::Invalid("items nest too deeply to copy".into()).into());
+                }
+                for item in &mut fresh {
+                    if d.layer(item.layer).is_none() {
+                        item.layer = d.default_layer();
+                    }
+                }
                 super::object::retarget_copied_xrefs(d, &items, &stories);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });

@@ -1116,7 +1116,7 @@ fn object_style_effects_reach_grouped_and_anchored_items() {
 }
 
 /// Unicode text per page, through hayro's interpreter (ToUnicode / ActualText).
-fn pdf_text(bytes: &[u8]) -> Vec<String> {
+pub(crate) fn pdf_text(bytes: &[u8]) -> Vec<String> {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,

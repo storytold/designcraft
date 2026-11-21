@@ -1090,11 +1090,12 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
+    let mut item_ids = HashMap::new();
     for id in ids {
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        if !renumber(dst, src, &mut copy, &mut story_map) {
+        if !renumber_in(dst, src, &mut copy, &mut story_map, 0, true, &mut item_ids) {
             return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
         }
         if dst.layer(copy.layer).is_none() {
@@ -1104,6 +1105,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    reorder_copied_threads(dst, src, &story_map, &item_ids);
     retarget_copied_xrefs(dst, src, &story_map);
     Ok(out)
 }
@@ -1125,14 +1127,48 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 /// that keep their ids, and the copy must not be used.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
-    renumber_in(dst, src, it, stories, 0, true)
+    renumber_in(dst, src, it, stories, 0, true, &mut HashMap::new())
+}
+
+/// Preserve source thread order after all copied frames have received new ids.
+pub(crate) fn reorder_copied_threads(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, ids: &HashMap<ItemId, ItemId>) {
+    for (old, new) in stories {
+        if let (Some(source), Some(copy)) = (src.story(*old), dst.story_mut(*new)) {
+            let frames: Vec<_> = source.frames.iter().filter_map(|id| ids.get(id).copied()).collect();
+            if !frames.is_empty() {
+                copy.frames = frames;
+            }
+        }
+    }
+}
+
+/// Renumber several copied items together so their source thread order can be restored.
+pub(crate) fn renumber_items(dst: &mut Document, src: &Document, items: &mut [Item], stories: &mut HashMap<StoryId, StoryId>) -> bool {
+    let mut ids = HashMap::new();
+    let mut complete = true;
+    for item in items {
+        complete &= renumber_in(dst, src, item, stories, 0, true, &mut ids);
+    }
+    reorder_copied_threads(dst, src, stories, &ids);
+    complete
 }
 
 /// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
 /// has already adopted.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, depth: usize, adopt: bool) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn renumber_in(
+    dst: &mut Document,
+    src: &Document,
+    it: &mut Item,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    adopt: bool,
+    ids: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    let old = it.id;
     it.id = ItemId(dst.alloc());
+    ids.insert(old, it.id);
     let my_id = it.id;
     if adopt
         && let Some(m) = it.media.as_mut()
@@ -1161,7 +1197,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1) && marked;
+                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1, ids) && marked;
                     dst.stories.insert(n, Arc::new(st));
                     n
                 }
@@ -1183,7 +1219,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
             }
             let mut complete = true;
             for c in items.iter_mut() {
-                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt);
+                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt, ids);
             }
             return complete;
         }
@@ -1294,12 +1330,20 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
 /// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
 /// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
-    renumber_anchored_in(dst, src, st, stories, depth, 0)
+fn renumber_anchored(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0, ids)
 }
 
 /// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
+#[allow(clippy::too_many_arguments)]
 fn renumber_anchored_in(
     dst: &mut Document,
     src: &Document,
@@ -1307,10 +1351,11 @@ fn renumber_anchored_in(
     stories: &mut HashMap<StoryId, StoryId>,
     depth: usize,
     level: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
 ) -> bool {
     let mut complete = true;
     for o in &mut st.objects {
-        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false, ids);
     }
     if level >= MAX_COPY_DEPTH {
         let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
@@ -1320,11 +1365,11 @@ fn renumber_anchored_in(
     }
     for t in st.tables.values_mut() {
         for c in &mut Arc::make_mut(t).cells {
-            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1, ids);
         }
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1, ids);
     }
     complete
 }
@@ -6971,6 +7016,75 @@ mod frame_baseline_grid_tests {
 
 #[cfg(test)]
 mod anchored_copy_tests {
+    #[test]
+    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = (*src).clone();
+        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        assert_eq!(copy.len(), 2);
+        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
+        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
+        dst.check().unwrap();
+    }
+
+    #[test]
+    fn pasted_frames_keep_their_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host =
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after and more words."})).unwrap();
+        let host_sid = designcraft_doc::StoryId(host["story"].as_u64().unwrap());
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let story = designcraft_doc::StoryId(first["story"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [300, 400, 500, 600], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        // Anchor them in the opposite order from their thread: second first, then first.
+        s.execute("anchored.insert", &json!({"ids": [second_id.0], "story": host_sid.0, "pos": 0})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [first_id.0], "story": host_sid.0, "pos": 7})).unwrap();
+        let len = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 4);
+        let (second_copy, first_copy) = (&objects[2].item, &objects[3].item);
+        let copied = first_copy.text_frame().unwrap().story;
+        assert_eq!(second_copy.text_frame().unwrap().story, copied);
+        assert_eq!(d.story(copied).unwrap().frames, [first_copy.id, second_copy.id], "source thread order");
+        assert_eq!(d.story(story).unwrap().frames, [first_id, second_id]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_reversed_threaded_objects_into_text_preserves_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host"})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One"})).unwrap();
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [second["id"], first["id"]]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(designcraft_doc::StoryId(host["story"].as_u64().unwrap())).unwrap().objects;
+        let story = objects[0].item.text_frame().unwrap().story;
+        assert_eq!(d.story(story).unwrap().frames, [objects[1].item.id, objects[0].item.id]);
+        d.check().unwrap();
+    }
+
     use super::*;
     use designcraft_doc::AnchoredObject;
 
