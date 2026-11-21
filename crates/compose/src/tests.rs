@@ -1536,6 +1536,34 @@ fn a_word_is_broken_inside_a_ligature_into_its_pieces() {
 }
 
 #[test]
+fn a_three_letter_ligature_breaks_into_a_letter_and_the_ligature_of_the_rest() {
+    // "af-" and "flicted": the ffl ligature of "afflicted" is broken after its first f, which is set
+    // alone, and the second line starts with the fl ligature of the other two letters.
+    let text = "A afflicted thing";
+    let mut found = None;
+    for width in (200..800).map(|i| f64::from(i) / 10.0) {
+        let para = ParaAttrs { hyphenate: Some(true), ..Default::default() };
+        let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 400.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        if let Some(k) = cs.frames[0].lines.iter().position(|l| l.hyphenated && l.range.end == 4) {
+            found = Some((width, cs, k));
+            break;
+        }
+    }
+    let (width, cs, k) = found.expect("some width breaks the word inside the ffl ligature");
+    let (first, next) = (&cs.frames[0].lines[k], &cs.frames[0].lines[k + 1]);
+    let face = first.glyphs[0].face.get();
+    let (f, l) = (face.glyph_for('f'), face.glyph_for('l'));
+    let last_text = first.glyphs.iter().rev().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((last_text.gid, last_text.byte, last_text.len), (f, 3, 1), "width {width}: the first f alone");
+    assert!((last_text.adv - face.advance(f) * last_text.sx).abs() < 1e-6, "width {width}: the advance of a lone f");
+    let first_of_next = next.glyphs.iter().find(|g| g.visible && g.len > 0).unwrap();
+    assert_eq!((first_of_next.byte, first_of_next.len), (4, 2), "width {width}: fl is one glyph over both letters");
+    assert!(first_of_next.gid != f && first_of_next.gid != l, "width {width}: the fl ligature, not a letter");
+    assert_eq!(next.range.start, 4);
+}
+
+#[test]
 fn a_word_broken_inside_a_ligature_at_the_end_of_a_frame_keeps_its_second_piece() {
     // A one-line frame threaded to a second: a width where the first line ends "dif-" leaves "ferent"
     // for the second frame, whose placement starts at the second piece of the ligature.
