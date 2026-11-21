@@ -60,8 +60,14 @@ impl FrameOutline {
         // shape instead set every line's band against the slanted edge, and a one-line frame as
         // tall as its line lost the part of its width the slant cut off.
         let eps = RECT_TOLERANCE.max(RECT_RELATIVE_TOLERANCE * (x1 - x0).abs().max((y1 - y0).abs()));
-        let on_box = |p: Point| (p.x - x0).abs() < eps || (p.x - x1).abs() < eps || (p.y - y0).abs() < eps || (p.y - y1).abs() < eps;
-        let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_box(a) && on_box(b));
+        // Both ends of an edge must lie on the same side of the box: an edge with one end on the
+        // left side and one on the right is not on the box when it runs through the middle, as the
+        // edges of a compound path's inner sub-rectangles do.
+        let on_side = |a: Point, b: Point| {
+            let near = |v: f64, side: f64| (v - side).abs() < eps;
+            (near(a.x, x0) && near(b.x, x0)) || (near(a.x, x1) && near(b.x, x1)) || (near(a.y, y0) && near(b.y, y0)) || (near(a.y, y1) && near(b.y, y1))
+        };
+        let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_side(a, b));
         if rect {
             return None;
         }
@@ -272,6 +278,38 @@ mod tests {
         bp.line_to((16.74, 0.0));
         bp.close_path();
         assert!(FrameOutline::new(&bp, 0.0).is_some());
+    }
+
+    /// Two stacked rectangles in one path (a compound path) are not one rectangle, whatever the
+    /// slack: the edges between them run through the middle of the bounding box, with each end on
+    /// a different side of it.
+    #[test]
+    fn two_stacked_rectangles_in_one_path_are_a_shape() {
+        let stack = |gap_top: f64| {
+            let mut bp = BezPath::new();
+            for (y0, y1) in [(0.0, 20.0), (gap_top, 238.0)] {
+                bp.move_to((0.0, y0));
+                bp.line_to((0.0, y1));
+                bp.line_to((100.0, y1));
+                bp.line_to((100.0, y0));
+                bp.close_path();
+            }
+            bp
+        };
+        assert!(FrameOutline::new(&stack(218.0), 0.0).is_some(), "198 pt apart");
+        // The edge the review named: from (100, 20.54) to (0, 20), within the slack of the box's height.
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 20.0));
+        bp.line_to((0.0, 238.0));
+        bp.line_to((100.0, 238.0));
+        bp.line_to((100.0, 20.54));
+        bp.close_path();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 20.0));
+        bp.line_to((100.0, 20.54));
+        bp.line_to((100.0, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_some(), "an edge through the middle of the box");
     }
 
     /// A slant a person can see still makes a shape.
