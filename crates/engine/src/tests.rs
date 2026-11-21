@@ -2718,3 +2718,94 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+fn text_frame(s: &mut Session, rect: [u32; 4]) -> u64 {
+    s.execute("frame.create", &json!({"rect": rect, "content": "text"})).unwrap()["id"].as_u64().unwrap()
+}
+
+fn double_click(s: &mut Session, x: f64, y: f64) {
+    use designcraft_tools::{PointerEvent, PointerKind};
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, x, y).with_clicks(2), ViewInfo::at_zoom(1.0)).unwrap();
+}
+
+fn escape(s: &mut Session) -> bool {
+    s.tool_key(designcraft_tools::ToolKey::Escape, designcraft_tools::Mods::default(), ViewInfo::at_zoom(1.0)).unwrap()
+}
+
+#[test]
+fn double_click_with_direct_selection_enters_the_type_tool_and_escape_returns_to_it() {
+    let mut s = session();
+    let fid = text_frame(&mut s, [36, 36, 300, 200]);
+    s.execute("text.insert", &json!({"text": "Testing double click and escape"})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.set_tool("directSelection");
+    double_click(&mut s, 37.0, 48.0);
+    assert_eq!(s.tool_id(), "type");
+    assert!(s.wants_text());
+    let sel = s.doc().unwrap().selection.text.expect("the caret is placed on double-click");
+    assert_eq!(sel.frame, Some(designcraft_doc::ItemId(fid)));
+    assert!(sel.is_caret());
+    // Escape leaves the text, keeps the frame selected and returns to Direct Selection; the next
+    // Escape deselects.
+    assert!(escape(&mut s));
+    assert_eq!((s.tool_id(), s.wants_text()), ("directSelection", false));
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(fid)]);
+    assert!(escape(&mut s));
+    assert!(s.doc().unwrap().selection.items.is_empty());
+}
+
+#[test]
+fn double_clicks_drill_into_a_group_and_escape_climbs_back_out() {
+    let mut s = session();
+    let f2 = text_frame(&mut s, [350, 36, 500, 200]);
+    let f3 = text_frame(&mut s, [350, 220, 500, 300]);
+    s.execute("selection.set", &json!({"ids": [f2, f3]})).unwrap();
+    let group = s.execute("object.group", &json!({})).unwrap()["id"].as_u64().unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.set_tool("selection");
+    double_click(&mut s, 400.0, 100.0);
+    assert_eq!(s.tool_id(), "selection", "the first double click drills down");
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(f2)]);
+    double_click(&mut s, 400.0, 100.0);
+    assert_eq!(s.tool_id(), "type", "the second edits the selected frame");
+    assert!(s.wants_text());
+    assert_eq!(s.doc().unwrap().selection.text.and_then(|t| t.frame), Some(designcraft_doc::ItemId(f2)));
+    assert!(escape(&mut s));
+    assert_eq!((s.tool_id(), s.wants_text()), ("selection", false));
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(f2)]);
+    assert!(escape(&mut s));
+    assert_eq!(s.doc().unwrap().selection.items, vec![designcraft_doc::ItemId(group)]);
+    assert!(escape(&mut s));
+    assert!(s.doc().unwrap().selection.items.is_empty());
+    assert!(!escape(&mut s), "Escape with nothing selected does nothing");
+}
+
+#[test]
+fn double_clicking_a_text_frame_in_a_locked_group_or_a_non_text_frame_does_not_edit() {
+    let mut s = session();
+    let t1 = text_frame(&mut s, [220, 250, 320, 350]);
+    let t2 = text_frame(&mut s, [220, 360, 320, 450]);
+    s.execute("selection.set", &json!({"ids": [t1, t2]})).unwrap();
+    let grp = s.execute("object.group", &json!({})).unwrap()["id"].as_u64().unwrap();
+    s.execute("object.lock", &json!({"ids": [grp]})).unwrap();
+    s.execute("frame.create", &json!({"rect": [36, 400, 200, 500], "content": "unassigned"})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    for tool in ["selection", "directSelection"] {
+        for (x, y) in [(240.0, 280.0), (50.0, 420.0)] {
+            s.set_tool(tool);
+            double_click(&mut s, x, y);
+            assert_eq!((s.tool_id(), s.wants_text()), (tool, false), "{tool} at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn double_clicking_a_locked_text_frame_on_its_own_still_edits_it() {
+    let mut s = session();
+    let f = text_frame(&mut s, [36, 250, 200, 350]);
+    s.execute("object.lock", &json!({"ids": [f]})).unwrap();
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    s.set_tool("selection");
+    double_click(&mut s, 50.0, 280.0);
+    assert_eq!(s.tool_id(), "type", "locked text frames take the caret, as with the Type tool");
+}

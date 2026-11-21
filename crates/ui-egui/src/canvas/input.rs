@@ -6,8 +6,8 @@ use super::rulers::zero_point_drag;
 use super::scroll::{mods, navigation_space, pan, spring_zoom_input, spring_zoom_mode, wheel_alt};
 use super::view::zoom_at;
 use super::{
-    CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Item, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, SpreadRef, Stroke,
-    StrokeKind, Tokens, ToolKey, Xf, json, pos2, vec2,
+    CanvasLayout, Clicks, Cursor, DVec2, DesignApp, Mods, Point, PointerEvent, PointerKind, Pos2, Rect, ScreenMode, SpreadRef, Stroke, StrokeKind,
+    Tokens, ToolKey, Xf, json, pos2, vec2,
 };
 
 /// Whether the pointer this canvas's window last saw is in another of the app's windows: a
@@ -135,7 +135,12 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
     use crate::menus::ContextMenu;
     let hit = item_at(app, p, zoom);
     if app.session.wants_text() {
-        let text_frame = hit.filter(|(id, _)| app.session.active().and_then(|st| st.doc.item(*id)).is_some_and(Item::is_text_frame));
+        // A text frame inside a group counts too, as it does for a click with the Type tool.
+        let text_frame = hit.and_then(|(id, sp)| {
+            let st = app.session.active()?;
+            let leaf = designcraft_doc::hit_descendant(st.doc.item(id)?, sp, 4.0 / zoom.max(1e-6), &|c| c.is_text_frame())?;
+            Some((leaf, sp)).filter(|(leaf, _)| !st.doc.ancestor_locked(*leaf))
+        });
         if let Some((id, sp)) = text_frame {
             // A press in the selected text keeps it for dragging; end that press without a move.
             if app.run("text.placeCaret", json!({"frame": id.0, "point": [sp.x, sp.y]})).is_ok_and(|r| r["dragging"] == json!(true)) {
@@ -144,11 +149,22 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
         }
         return ContextMenu::Text;
     }
-    let Some((id, _)) = hit else { return ContextMenu::Canvas };
+    let Some((id, sp)) = hit else { return ContextMenu::Canvas };
     let direct = app.session.tool_id() == "directSelection";
-    let Some((target, selected)) = app.session.active().map(|st| {
-        let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
-        (target, st.selection.contains(target))
+    let Some((target, selected)) = app.session.active().and_then(|st| {
+        let target = if direct {
+            // As a Direct Selection click picks it: the item inside the group, not the group.
+            st.doc
+                .item(id)
+                .and_then(|it| designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group()))
+                .filter(|leaf| !st.doc.ancestor_locked(*leaf))
+        } else {
+            // As a Selection-tool click picks it: a selected item inside a group stays the
+            // target, otherwise the top-level item.
+            let leaf = st.doc.item(id).and_then(|it| designcraft_doc::hit_descendant(it, sp, 4.0 / zoom.max(1e-6), &|c| !c.is_group()));
+            Some(st.doc.selection_target(leaf.unwrap_or(id), |i| st.selection.contains(i)))
+        };
+        target.map(|t| (t, st.selection.contains(t)))
     }) else {
         return ContextMenu::Canvas;
     };

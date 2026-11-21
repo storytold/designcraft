@@ -263,6 +263,19 @@ impl ToolContext<'_> {
         designcraft_doc::hit_descendant(it, sp, self.tol(4.0), &|c| c.is_text_frame()).map(|f| (sr, f))
     }
 
+    /// The frontmost leaf item (anything but a group) under `p`, looking inside groups. A frame
+    /// that holds pasted-in items is a leaf, as for [`Item::is_group`].
+    pub fn hit_leaf(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
+        let (sr, id) = self.hit(p)?;
+        let it = self.doc.item(id)?;
+        if !it.is_group() {
+            return Some((sr, id));
+        }
+        let (_, sp) = self.layout.spread_at(p)?;
+        let leaf = designcraft_doc::hit_descendant(it, sp, self.tol(4.0), &|c| !c.is_group()).unwrap_or(id);
+        Some((sr, leaf))
+    }
+
     /// The parent item showing (not yet overridden) on the document page under `p`:
     /// (absolute page, parent item).
     pub fn hit_parent_on_page(&self, p: Point) -> Option<(usize, ItemId)> {
@@ -540,6 +553,8 @@ pub trait Tool: Send {
     fn ime_caret(&self, _cx: &ToolContext) -> Option<(Point, Point)> {
         None
     }
+    /// Set a tool option or restore state (e.g. `prevTool`).
+    fn set_option(&mut self, _key: &str, _value: &Value) {}
 }
 
 pub fn create(id: &str) -> Box<dyn Tool> {

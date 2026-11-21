@@ -27,6 +27,9 @@ struct Preedit {
 
 #[derive(Default)]
 pub struct TypeTool {
+    /// The tool this one was switched to from (`selection` or `directSelection`): Escape goes
+    /// back to it.
+    prev_tool: Option<String>,
     /// Vertical Type Tool: frames it draws set text vertically.
     pub vertical: bool,
     start: Option<Point>,
@@ -65,9 +68,9 @@ struct BorderDrag {
 
 /// The row or column border of a table near canvas point `pos`, in an unlocked text frame.
 fn border_at(cx: &ToolContext, pos: Point) -> Option<BorderDrag> {
-    let (_, id) = cx.hit(pos)?;
+    let (_, id) = cx.hit_leaf(pos)?;
     let it = cx.doc.item(id)?;
-    if it.locked {
+    if it.locked || cx.doc.ancestor_locked(id) {
         return None;
     }
     let sid = it.text_frame()?.story;
@@ -238,12 +241,14 @@ impl TypeTool {
             self.border = Some(b);
             return vec![];
         }
-        // Text frames take the caret (locked ones too, as in InDesign); an empty frame
-        // becomes one, unless it's locked: then the press draws a new text frame over it.
-        if let Some((_, id)) = cx.hit(ev.pos)
+        // Text frames take the caret (locked ones too, as in InDesign, but not one inside a
+        // locked group), also inside groups; an empty frame becomes one, unless it's locked: then
+        // the press draws a new text frame over it.
+        if let Some((_, id)) = cx.hit_leaf(ev.pos)
             && let Some(it) = cx.doc.item(id)
             && !matches!(it.content, designcraft_doc::Content::Graphic(_) | designcraft_doc::Content::Group { .. })
             && (it.is_text_frame() || !it.locked)
+            && !cx.doc.ancestor_locked(id)
         {
             let sp = cx.layout.spread_at(ev.pos).map(|(_, p)| p).unwrap_or(ev.pos);
             let clicks = ev.click_count();
@@ -409,7 +414,10 @@ impl Tool for TypeTool {
             ToolKey::Tab => vec![Action::Exec("text.insert".into(), json!({"text": "\t"}))],
             // In a table Esc toggles between the cell's text and the cell, as InDesign.
             ToolKey::Escape if in_cell => vec![Action::Exec("table.toggleSelection".into(), json!({}))],
-            ToolKey::Escape => vec![Action::SwitchTool("selection".into()), Action::Exec("text.exitToFrame".into(), json!({}))],
+            ToolKey::Escape => {
+                let back = self.prev_tool.as_deref().filter(|t| matches!(*t, "selection" | "directSelection")).unwrap_or("selection");
+                vec![Action::SwitchTool(back.into()), Action::Exec("text.exitToFrame".into(), json!({}))]
+            }
             _ => vec![],
         }
     }
@@ -513,6 +521,12 @@ impl Tool for TypeTool {
             let r = it.inner_bounds();
             Some((m * Point::new(r.x1, r.y1 - 12.0), m * Point::new(r.x1, r.y1)))
         })
+    }
+
+    fn set_option(&mut self, key: &str, value: &serde_json::Value) {
+        if key == "prevTool" {
+            self.prev_tool = value.as_str().map(String::from);
+        }
     }
 }
 
