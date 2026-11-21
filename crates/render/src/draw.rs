@@ -30,42 +30,25 @@ fn draw_body_fill(ctx: &mut RenderContext, f: &Frame, it: &Item, bp: &BezPath, x
 /// each layer parent items first), with its transform to the spread and where it shows.
 fn each_top_item(doc: &Document, sr: SpreadRef, opts: &RenderOptions, mut visit: impl FnMut(&Item, Affine, ShownOn)) {
     let Some(sp) = doc.spread(sr) else { return };
+    // Document pages show their parent and its bases; a parent spread shows its bases.
+    let shown: Vec<_> = (0..sp.pages.len()).map(|pi| doc.shown_parent_items(sr, pi)).collect();
+    let first = match sr {
+        SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
+        SpreadRef::Parent(_) => None,
+    };
+    // Base items compose for where they show: the document page, or this parent spread.
+    let shown_on = |pi: usize| match (sr, first) {
+        (SpreadRef::Parent(p), _) => ShownOn::Parent(p),
+        (_, Some(a)) => ShownOn::Page(a + pi),
+        (_, None) => ShownOn::Own,
+    };
     for layer in doc.layers.iter().rev() {
         if !layer.visible || opts.printing_only && !layer.printable {
             continue;
         }
-        // Document pages show their parent and its bases; a parent spread shows its bases.
-        let first = match sr {
-            SpreadRef::Doc(si) => Some(doc.first_page_of_spread(si)),
-            SpreadRef::Parent(_) => None,
-        };
-        // Base items compose for where they show: the document page, or this parent spread.
-        let shown_on = |pi: usize| match (sr, first) {
-            (SpreadRef::Parent(p), _) => ShownOn::Parent(p),
-            (_, Some(a)) => ShownOn::Page(a + pi),
-            (_, None) => ShownOn::Own,
-        };
-        for (pi, page) in sp.pages.iter().enumerate() {
-            if !page.show_parent_items {
-                continue;
-            }
-            let chain = doc.shown_parent_pages(sr, pi);
-            // This page's overrides and those of every parent page behind it (#1469).
-            let overridden = doc.overridden_parent_items(sr, pi);
-            for (ppi, ppage) in chain {
-                let Some(parent) = doc.parents.get(ppi) else { continue };
-                let Some(ppg) = parent.pages.get(ppage) else { continue };
-                let dx = page.x - ppg.x;
-                for it in &parent.items {
-                    if it.layer != layer.id || overridden.contains(&it.id) {
-                        continue;
-                    }
-                    // Parent items belong to the parent page they sit on.
-                    if parent.page_at_x(it.bounds().center().x) != Some(ppage) && parent.pages.len() > 1 {
-                        continue;
-                    }
-                    visit(it, Affine::translate((dx, 0.0)), shown_on(pi));
-                }
+        for (pi, items) in shown.iter().enumerate() {
+            for s in items.iter().filter(|s| s.item.layer == layer.id) {
+                visit(s.item, Affine::translate((s.dx, 0.0)), shown_on(pi));
             }
         }
         for it in &sp.items {
@@ -128,6 +111,7 @@ fn wanted_in(f: &Frame, it: &Item, parent: Affine, depth: usize, out: &mut Vec<i
 }
 
 impl Renderer {
+    /// Spread `sr`: paper, then layer by layer the parent items its pages show and its own items.
     pub(crate) fn draw_spread(&mut self, ctx: &mut RenderContext, f: &Frame, sr: SpreadRef) {
         let doc = f.doc;
         let Some(sp) = doc.spread(sr) else { return };

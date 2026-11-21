@@ -299,3 +299,35 @@ fn fonts_whose_licence_forbids_outline_embedding_are_not_embedded() {
         }
     }
 }
+
+/// Parent B based on A, used by the page: the slide holds A's item and B's, and leaves A's out
+/// once B's page overrides it or hides its parent's items. Only the page's first parent showed,
+/// without B's page's overrides.
+#[test]
+fn based_on_parent_items_follow_the_whole_chain() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..NewDocument::default() });
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let lid = d.default_layer();
+    let mut ids = Vec::new();
+    for (pi, r) in [(0, Rect::new(36.0, 36.0, 136.0, 136.0)), (1, Rect::new(200.0, 36.0, 300.0, 136.0))] {
+        let mut it = Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(r));
+        it.fill = Fill::swatch("[Black]");
+        ids.push(it.id);
+        d.insert_item(SpreadRef::Parent(pi), it, None).unwrap();
+    }
+    // (A's item at 36 pt, B's at 200 pt) on the slide.
+    let shown = |d: &Document| {
+        let s = part(&mut export(d, &PptxOptions::default()), "ppt/slides/slide1.xml");
+        (s.contains("<a:off x=\"457200\" y=\"457200\"/>"), s.contains("<a:off x=\"2540000\" y=\"457200\"/>"))
+    };
+    assert_eq!(shown(&d), (true, true), "B and the A it is based on");
+    Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(ids[0]);
+    assert_eq!(shown(&d), (false, true), "B's page overrides A's item");
+    let page = &mut Arc::make_mut(&mut d.parents[1]).pages[0];
+    page.overridden.clear();
+    page.show_parent_items = false;
+    assert_eq!(shown(&d), (false, true), "B's page hides its parent's items");
+}
