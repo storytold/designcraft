@@ -2808,7 +2808,7 @@ fn a_leader_pattern_cut_by_the_gap_keeps_the_glyphs_that_fit() {
             let n = adv.len();
             assert!(!set.is_empty(), "{leader:?} at step {step}");
             for &(k, x) in &set {
-                assert!(x >= start - 0.01 && x + adv[k] <= end + 0.1 + 1e-6, "{leader:?} step {step}: glyph {k} at {x} outside {start}..{end}");
+                assert!(x >= start - 0.01 && x + adv[k] <= end + LEADER_FIT_TOLERANCE + 1e-6, "{leader:?} step {step}: glyph {k} at {x} outside {start}..{end}");
             }
             for w in set.windows(2) {
                 assert_eq!(w[1].0, (w[0].0 + 1) % n, "{leader:?} step {step}: pattern order");
@@ -2817,11 +2817,29 @@ fn a_leader_pattern_cut_by_the_gap_keeps_the_glyphs_that_fit() {
             // Nothing more fits at either end.
             let &(k, x) = set.last().unwrap();
             let next = (k + 1) % n;
-            assert!(x + adv[k] + adv[next] > end + 0.1 - 1e-6, "{leader:?} step {step}: a glyph still fits at the end");
+            assert!(x + adv[k] + adv[next] > end + LEADER_FIT_TOLERANCE - 1e-6, "{leader:?} step {step}: a glyph still fits at the end");
             let &(k, x) = set.first().unwrap();
             let before = (k + n - 1) % n;
             assert!(x - adv[before] < start - 0.01 + 1e-6, "{leader:?} step {step}: a glyph still fits at the start");
         }
+    }
+}
+
+#[test]
+fn a_one_glyph_leader_is_set_when_it_overshoots_the_gap_end_by_up_to_the_tolerance() {
+    // InDesign sets a single dot, dash or underscore that reaches 0.1 pt past the gap end as well
+    // (its leader frames matched with that tolerance, not with a hundredth of a point). The glyph
+    // that exactly fits stays; one a few hundredths over stays; one well over goes.
+    for leader in [".", "-", "_"] {
+        let (set, adv, _, end) = leader_run(leader, 200.0);
+        let &(k, x) = set.last().unwrap();
+        // Move the gap end to just touch the last glyph's end: the glyph that fits exactly.
+        let over = x + adv[k] - end;
+        let at = |overshoot: f64| leader_run(leader, 200.0 + over - overshoot).0.len();
+        let exact = at(0.0);
+        assert_eq!(exact, set.len(), "{leader:?}: a glyph that fits exactly is set");
+        assert_eq!(at(0.05), exact, "{leader:?}: a glyph 0.05 pt past the end is set");
+        assert_eq!(at(0.15), exact - 1, "{leader:?}: a glyph 0.15 pt past the end is not");
     }
 }
 

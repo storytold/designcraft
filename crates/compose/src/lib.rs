@@ -5468,7 +5468,8 @@ fn reorder_visual(line: &[Glyph], out: &mut [PlacedGlyph], pens: &[f64], start: 
 /// How far past the end of its gap a leader glyph may reach and still be set. InDesign sets the
 /// glyph when it overshoots by up to a tenth of a point (measured on Georgia 10 pt dots, dashes and
 /// stars with the gap end moved in quarter-point steps: every tolerance from 0.05 to 0.1 matches
-/// better than none, and 0.1 matches all 448 gaps).
+/// better than none, and 0.1 matches all 448 gaps; with a hundredth of a point 8 of them differ,
+/// 3 of those single dots, so one-glyph leaders take the same tolerance). Measured at 10 pt only.
 const LEADER_FIT_TOLERANCE: f64 = 0.1;
 
 /// Fill a tab's gap with repeats of its leader, on a grid shared by all lines (so dots align).
