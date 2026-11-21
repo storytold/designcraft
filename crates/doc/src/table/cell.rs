@@ -233,7 +233,7 @@ pub struct Cell {
     pub first_baseline: FirstBaseline,
     #[serde(default, skip_serializing_if = "is_zero_min")]
     pub first_baseline_min: f64,
-    /// Text rotation in degrees (only 0 is composed for now).
+    /// Text rotation in degrees (0, 90, 180 or 270; 270 reads upwards).
     #[serde(default)]
     pub rotation: f64,
     /// Edge strokes: top, left, bottom, right.

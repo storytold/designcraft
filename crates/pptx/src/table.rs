@@ -3,7 +3,7 @@
 
 use designcraft_compose::{FrameText, PlacedCell, StrokeSeg, TableFrag};
 use designcraft_doc::StrokeType;
-use designcraft_geom::{Affine, Rect};
+use designcraft_geom::Affine;
 
 use crate::slide::{Exporter, box_of};
 
@@ -116,8 +116,7 @@ fn model_cell_text(ex: &mut Exporter, c: &PlacedCell, k: f64, opacity: f32) -> (
         }
         return (text, [0.0; 4]);
     }
-    let bounds = crate::text::seg_rect(&all);
-    let bounds = Rect::new(bounds.x0 + c.origin.x, bounds.y0 + c.origin.y, bounds.x1 + c.origin.x, bounds.y1 + c.origin.y);
+    let bounds = c.text_xf().transform_rect_bbox(crate::text::seg_rect(&all));
     let margins =
         [(bounds.x0 - c.rect.x0).max(0.0), (bounds.y0 - c.rect.y0).max(0.0), (c.rect.x1 - bounds.x1).max(0.0), (c.rect.y1 - bounds.y1).max(0.0)];
     let mut body = crate::text::model_body(ex, &all, k, opacity, [0.0; 4]);
@@ -208,6 +207,16 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
             let (text, [left, top, right, bottom]) = model_cell_text(ex, placed, k, opacity);
             cell.text = text;
             cell.margins = Some([left * k, right * k, top * k, bottom * k]);
+            // Turned cell text: 90° reads downwards, 270° upwards (the slide format has no 180° cell text).
+            cell.vertical = match placed.rotation {
+                r if (r - 90.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical),
+                r if (r - 270.0).abs() < 0.5 => Some(craft_pptx::text::TextDir::Vertical270),
+                r if (r - 180.0).abs() < 0.5 => {
+                    ex.warn("table cell text turned 180° is exported horizontally");
+                    None
+                }
+                _ => None,
+            };
             cell.fill = Some(
                 placed
                     .fill

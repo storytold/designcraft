@@ -1017,3 +1017,39 @@ fn images_in_view_are_decoded_together_before_drawing() {
     assert!(decoded_on(&hidden).is_empty(), "a hidden image is not decoded");
     assert!(decoded_on(&outside).is_empty(), "an image out of view is not decoded");
 }
+
+#[test]
+fn rotated_cell_text_draws_turned() {
+    // Cell Options › Text › Rotation 270°: the label runs up a narrow column instead of wrapping
+    // into a stack of word pieces, so its ink is tall and thin.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(5, 1, 2, 0, 0, 120.0);
+    t.columns[0].width = 30.0;
+    t.columns[1].width = 90.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.rows[0].height = 150.0;
+    let cell = t.cell_mut(0, 0).unwrap();
+    cell.text.insert(0, "WWWWWWWW");
+    cell.rotation = 270.0;
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let cache = Cache::new();
+    let cs = cache.get(&d, sid, None);
+    let rect = cs.frames[0].tables[0].cell(0, 0).unwrap().rect;
+    let mut r = Renderer::new();
+    r.threads = 0;
+    let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for x in (rect.x0 + 2.0) as u32..(rect.x1 - 2.0) as u32 {
+        for y in (rect.y0 + 2.0) as u32..(rect.y1 - 2.0) as u32 {
+            if img.pixel(x, y)[0] < 100 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    assert!(x1 > x0 && y1 > y0, "no cell text in {rect:?}");
+    assert!(y1 - y0 > 4 * (x1 - x0), "turned text is tall and thin: {x0},{y0} – {x1},{y1}");
+    // It starts at the bottom of the cell.
+    assert!(f64::from(y1) > rect.y1 - 12.0, "{y1} in {rect:?}");
+}

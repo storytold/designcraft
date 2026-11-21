@@ -1178,3 +1178,39 @@ fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
     std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
     assert!(!has_box(&d), "removed on B, so the page using B exports no box");
 }
+
+#[test]
+fn rotated_cell_text_exports_turned() {
+    let mut d = Document::new(&NewDocument::default());
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), d.default_layer(), "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 120.0);
+    t.columns[0].width = 30.0;
+    t.columns[1].width = 90.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.rows[0].height = 150.0;
+    let cell = t.cell_mut(0, 0).unwrap();
+    cell.text.insert(0, "Torhöhe ab OFF");
+    cell.rotation = 270.0;
+    let [top, left, bottom, right] = cell.insets;
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    // One line of real text, drawn through a quarter turn: in PDF space (y up) reading upwards
+    // maps the text's x to the page's y, its y (down) to the page's x.
+    let text = extract_text(&export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap()).concat();
+    assert!(text.contains("Torhöhe ab OFF"), "{text:?}");
+    let pdf = uncompressed(&d, PdfOptions::default());
+    let cms: Vec<&str> = pdf.match_indices(" cm").map(|(i, _)| pdf[..i].rsplit('q').next().unwrap_or("")).collect();
+    let turned: Vec<f64> = cms
+        .iter()
+        .find(|m| m.trim_start().starts_with("0 1 1 0 "))
+        .unwrap_or_else(|| panic!("no quarter turn in {cms:?}"))
+        .split_whitespace()
+        .map(|n| n.parse().unwrap())
+        .collect();
+    // The label's origin, in PDF space: inside the cell's insets (column 36 to 66 pt across, row
+    // 36 to 186 pt down on a 792 pt page), starting at the bottom inset and reading upwards.
+    let page_h = d.spreads[0].pages[0].height;
+    let (x, y) = (turned[4], turned[5]);
+    assert!(x > 36.0 + left && x < 66.0 - right, "across the column: {turned:?}");
+    assert!((y - (page_h - 186.0 + bottom)).abs() < 0.01, "at the bottom inset: {turned:?}");
+    assert!(y < page_h - 36.0 - top);
+}
