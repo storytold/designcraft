@@ -51,63 +51,80 @@ pub(crate) fn bracketed(s: &str) -> Option<&str> {
     s.get(open + 1..close)
 }
 
-/// Byte range of object `id`'s body (between `obj` and `endobj`).
-pub(crate) fn object(pdf: &[u8], id: usize) -> Option<std::ops::Range<usize>> {
-    // The latest copy (incremental updates re-state objects further on).
-    let head = format!("\n{id} 0 obj");
-    let start = rfind(pdf, head.as_bytes())? + head.len();
-    let end = find(pdf, b"endobj", start)?;
-    Some(start..end)
+/// Cross-reference sections followed at most (`/Prev`): the file krilla writes, then the updates
+/// this crate appends.
+const MAX_XREF_SECTIONS: usize = 64;
+
+/// Where the objects of `pdf` start, as its classic cross-reference sections say (the newest
+/// first, following `/Prev`; the first entry seen for an object wins, a free entry included).
+/// This is where a reader finds an object, so bytes inside a stream or a string that look like an
+/// object header (an attached file, a form value) can't be taken for one.
+pub(crate) struct Xref(HashMap<usize, Option<usize>>);
+
+impl Xref {
+    /// `None` when the file has no classic table at `startxref` (`xref`, entries, `trailer`).
+    pub(crate) fn read(pdf: &[u8]) -> Option<Self> {
+        let sx = rfind(pdf, b"startxref")?;
+        let mut next = int_after(&String::from_utf8_lossy(pdf.get(sx..)?), "startxref");
+        let mut offsets: HashMap<usize, Option<usize>> = HashMap::new();
+        for _ in 0..MAX_XREF_SECTIONS {
+            let Some(at) = next else { return Some(Self(offsets)) };
+            let section = pdf.get(at..)?;
+            let t = find(section, b"trailer", 0)?;
+            let mut tokens = std::str::from_utf8(section.get(..t)?).ok()?.split_whitespace();
+            if tokens.next()? != "xref" {
+                return None;
+            }
+            while let Some(first) = tokens.next() {
+                let first: usize = first.parse().ok()?;
+                let count: usize = tokens.next()?.parse().ok()?;
+                for i in 0..count {
+                    let (offset, _generation, kind) = (tokens.next()?, tokens.next()?, tokens.next()?);
+                    let n = first.checked_add(i)?;
+                    let offset = match kind {
+                        "n" => Some(offset.parse().ok()?),
+                        "f" => None,
+                        _ => return None,
+                    };
+                    offsets.entry(n).or_insert(offset);
+                }
+            }
+            let end = find(section, b"startxref", t)?;
+            next = int_after(&String::from_utf8_lossy(section.get(t..end)?), "/Prev");
+        }
+        None
+    }
 }
 
-// Bound optional indexing metadata. Larger requests retain the original lookup path.
-const MAX_INDEXED_PAGE_OBJECTS: usize = 4096;
+/// Byte range of object `id`'s body (between `obj` and `endobj`) where `xref` places it; `None`
+/// when the object is free, unknown, or its header isn't there.
+pub(crate) fn object(pdf: &[u8], xref: &Xref, id: usize) -> Option<std::ops::Range<usize>> {
+    let start = (*xref.0.get(&id)?)?;
+    let head = format!("{id} 0 obj");
+    let body = start.checked_add(head.len())?;
+    if pdf.get(start..body)? != head.as_bytes() {
+        return None;
+    }
+    let end = find(pdf, b"endobj", body)?;
+    Some(body..end)
+}
 
-/// Latest literal object headers for the requested IDs, found in a single reverse pass.
-/// Match `object` exactly, including embedded headers and the lack of a boundary after `obj`.
-/// Only requested IDs are retained; neither PDF size nor the largest ID sizes this map.
-/// If the metadata limit or an allocation failure prevents indexing, use `object` instead.
-fn object_starts(pdf: &[u8], ids: impl Iterator<Item = usize>) -> Option<HashMap<usize, Option<usize>>> {
-    let mut starts = HashMap::new();
-    for id in ids {
-        if starts.contains_key(&id) {
-            continue;
-        }
-        if starts.len() == MAX_INDEXED_PAGE_OBJECTS || starts.try_reserve(1).is_err() {
-            return None;
-        }
-        starts.insert(id, None);
-    }
-    let mut missing = starts.len();
-    if missing == 0 {
-        return Some(starts);
-    }
-    let mut end = pdf.len();
-    while let Some(at) = pdf.get(..end).and_then(|bytes| bytes.iter().rposition(|b| *b == b'\n')) {
-        let Some(start) = at.checked_add(1) else { break };
-        let Some(line) = pdf.get(start..end) else { break };
-        end = at;
-        let digits = line.iter().position(|b| !b.is_ascii_digit()).unwrap_or(line.len());
-        let Some(number) = line.get(..digits) else { continue };
-        if number.is_empty() || (number.len() > 1 && number.first() == Some(&b'0')) {
-            continue;
-        }
-        if !line.get(digits..).is_some_and(|tail| tail.starts_with(b" 0 obj")) {
-            continue;
-        }
-        let Some(id) = number.iter().try_fold(0usize, |n, b| n.checked_mul(10)?.checked_add(usize::from(*b - b'0'))) else { continue };
-        let Some(slot) = starts.get_mut(&id) else { continue };
-        if slot.is_some() {
-            continue;
-        }
-        let Some(body) = start.checked_add(digits).and_then(|n| n.checked_add(6)) else { continue };
-        *slot = Some(body);
-        missing -= 1;
-        if missing == 0 {
-            break;
-        }
-    }
-    Some(starts)
+/// The page objects of `pdf` in order (a flat page tree under the catalog `root`).
+pub(crate) fn page_kids(pdf: &[u8], xref: &Xref, root: usize) -> Option<Vec<usize>> {
+    let cat = String::from_utf8_lossy(pdf.get(object(pdf, xref, root)?)?).to_string();
+    let pages_id = int_after(&cat, "/Pages")?;
+    let pages = String::from_utf8_lossy(pdf.get(object(pdf, xref, pages_id)?)?).to_string();
+    let kids_str = pages.get(pages.find("/Kids")? + 5..)?;
+    let kids_str = bracketed(kids_str)?;
+    let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    Some(nums.chunks(2).map(|c| c[0]).collect())
+}
+
+/// The object number of the first page of `pdf` (the first `/Kids` entry of its page tree).
+pub fn first_page_ref(pdf: &[u8]) -> Option<usize> {
+    let xref = Xref::read(pdf)?;
+    let trailer = String::from_utf8_lossy(pdf.get(rfind(pdf, b"trailer")?..)?).to_string();
+    page_kids(pdf, &xref, int_after(&trailer, "/Root")?)?.first().copied()
 }
 
 /// Add transitions to the pages of `pdf` (index = PDF page). `None` when the file's structure
@@ -135,29 +152,21 @@ pub fn add_page_entries(pdf: &[u8], extra: &[Option<String>]) -> Option<Vec<u8>>
     let prev = int_after(&trailer, "startxref")?;
     let info = int_after(&trailer, "/Info");
     let id = trailer.find("/ID").and_then(|i| trailer[i..].find(']').map(|j| trailer[i..i + j + 1].to_string()));
-    let cat = String::from_utf8_lossy(&pdf[object(pdf, root)?]).to_string();
-    let pages_id = int_after(&cat, "/Pages")?;
-    let pages = String::from_utf8_lossy(&pdf[object(pdf, pages_id)?]).to_string();
-    let kids_at = pages.find("/Kids")?;
-    let kids_str = &pages[kids_at + 5..];
-    let kids_str = bracketed(kids_str)?;
-    let nums: Vec<usize> = kids_str.split_whitespace().filter_map(|t| t.parse().ok()).collect();
-    let kids: Vec<usize> = nums.chunks(2).map(|c| c[0]).collect();
-    let starts = object_starts(pdf, extra.iter().zip(&kids).filter_map(|(t, &kid)| t.as_ref().map(|_| kid)));
+    let xref = Xref::read(pdf)?;
+    let kids = page_kids(pdf, &xref, root)?;
     let mut out = pdf.to_vec();
     if !out.ends_with(b"\n") {
         out.push(b'\n');
     }
     let mut entries: Vec<(usize, usize)> = Vec::new();
+    // A page listed twice is re-stated once: a second copy would only grow the file.
+    let mut done = std::collections::HashSet::new();
     for (i, t) in extra.iter().enumerate() {
         let (Some(t), Some(&kid)) = (t, kids.get(i)) else { continue };
-        let range = if let Some(starts) = &starts {
-            let start = starts.get(&kid).copied().flatten()?;
-            start..find(pdf, b"endobj", start)?
-        } else {
-            object(pdf, kid)?
-        };
-        let body = String::from_utf8_lossy(&pdf[range]).to_string();
+        if !done.insert(kid) {
+            continue;
+        }
+        let body = String::from_utf8_lossy(&pdf[object(pdf, &xref, kid)?]).to_string();
         if !body.contains("/Type/Page") && !body.contains("/Type /Page") {
             return None;
         }
@@ -191,7 +200,8 @@ pub fn add_catalog_entries(pdf: &[u8], entries: &str) -> Option<Vec<u8>> {
     let prev = int_after(&trailer, "startxref")?;
     let info = int_after(&trailer, "/Info").map(|i| format!("/Info {i} 0 R")).unwrap_or_default();
     let id = trailer.find("/ID").and_then(|i| trailer[i..].find(']').map(|j| trailer[i..i + j + 1].to_string())).unwrap_or_default();
-    let cat = String::from_utf8_lossy(&pdf[object(pdf, root)?]).to_string();
+    let xref = Xref::read(pdf)?;
+    let cat = String::from_utf8_lossy(&pdf[object(pdf, &xref, root)?]).to_string();
     let close = cat.rfind(">>")?;
     let mut out = pdf.to_vec();
     if !out.ends_with(b"\n") {
@@ -229,21 +239,5 @@ mod bracket_tests {
         }
         out.extend_from_slice(b"trailer\n<</Size 3/Root 1 0 R>>\nstartxref\n0\n%%EOF\n");
         assert!(add_page_entries(&out, &[Some("/Rotate 0".to_string())]).is_none());
-    }
-}
-
-#[cfg(test)]
-mod object_index_tests {
-    use super::{MAX_INDEXED_PAGE_OBJECTS, object_starts};
-
-    #[test]
-    fn metadata_limit_disables_only_the_optional_index() {
-        let at_limit = object_starts(b"", 0..MAX_INDEXED_PAGE_OBJECTS).unwrap();
-        assert_eq!(at_limit.len(), MAX_INDEXED_PAGE_OBJECTS);
-        assert!(object_starts(b"", 0..=MAX_INDEXED_PAGE_OBJECTS).is_none());
-        // Duplicate requests do not consume the unique-ID budget.
-        let starts = object_starts(b"\n0 0 objendobj", std::iter::repeat_n(0, MAX_INDEXED_PAGE_OBJECTS + 1)).unwrap();
-        assert_eq!(starts.len(), 1);
-        assert_eq!(starts.get(&0), Some(&Some(8)));
     }
 }
