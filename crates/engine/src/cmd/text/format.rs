@@ -123,6 +123,7 @@ pub(super) fn para_toggle(s: &mut Session, p: &Value, cmd: &str, attr: &str, get
 /// A character fill must name a swatch of the document.
 pub(crate) fn validate_char_fill(document: &designcraft_doc::Document, attrs: &CharAttrs, command_id: &str) -> Result<()> {
     validate_char_size(attrs, command_id)?;
+    validate_char_stroke_weight(attrs, command_id)?;
     match &attrs.fill {
         Some(fill) => crate::cmd::object::known_swatch(document, fill, command_id, "fill"),
         None => Ok(()),
@@ -140,6 +141,20 @@ pub(crate) fn validate_char_size(attrs: &CharAttrs, command_id: &str) -> Result<
         _ => Ok(()),
     }
 }
+
+/// Character stroke weight is 0 to 800 pt, the range of the character style's Weight field and of
+/// `type.ruby`'s stroke weight.
+pub(crate) fn validate_char_stroke_weight(attrs: &CharAttrs, command_id: &str) -> Result<()> {
+    match attrs.stroke_weight {
+        Some(weight) if !(0.0..=MAX_CHAR_STROKE_WEIGHT).contains(&weight) => {
+            Err(bad(command_id, format!("strokeWeight {weight}: 0 to {MAX_CHAR_STROKE_WEIGHT} pt")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The largest character stroke weight, in points.
+pub(crate) const MAX_CHAR_STROKE_WEIGHT: f64 = 800.0;
 
 /// Type size limits (InDesign's, and the ones `type.ruby` already uses).
 pub(crate) const MIN_TYPE_SIZE: f64 = 0.1;
@@ -1270,6 +1285,39 @@ mod size_bounds_tests {
         ] {
             let e = s.execute(command, &params).expect_err("refused").to_string();
             assert!(e.contains("0.1 to 1296 pt"), "{command}: {e}");
+        }
+    }
+
+    /// `type.char` set any number as the character stroke weight: -5 or 2000 pt went into the
+    /// text. Values outside 0 to 800 pt are refused, nothing changes, and the ends still apply.
+    #[test]
+    fn a_character_stroke_weight_outside_the_range_is_refused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [20, 20, 400, 300], "content": "text", "text": "Hello world"})).unwrap();
+        let select = |s: &mut Session| {
+            s.execute("text.select", &json!({"story": f["story"].clone(), "anchor": 0, "focus": 5})).unwrap();
+        };
+        let weight = |s: &mut Session| s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["strokeWeight"].as_f64();
+        select(&mut s);
+        let before = weight(&mut s);
+        for value in [-5.0, -0.01, 800.5, 2000.0, 1e9] {
+            select(&mut s);
+            let e = s.execute("type.char", &json!({"attrs": {"strokeWeight": value}})).expect_err("refused").to_string();
+            assert!(e.contains("0 to 800 pt"), "{value}: {e}");
+            assert_eq!(weight(&mut s), before, "{value}");
+        }
+        for value in [0.0, 12.0, 800.0] {
+            select(&mut s);
+            s.execute("type.char", &json!({"attrs": {"strokeWeight": value}})).unwrap_or_else(|e| panic!("{value}: {e}"));
+            assert_eq!(weight(&mut s), Some(value));
+        }
+        for (command, params) in [
+            ("style.character.create", json!({"name": "Heavy", "chars": {"strokeWeight": 900}})),
+            ("style.paragraph.create", json!({"name": "Negative", "chars": {"strokeWeight": -1}})),
+        ] {
+            let e = s.execute(command, &params).expect_err("refused").to_string();
+            assert!(e.contains("0 to 800 pt"), "{command}: {e}");
         }
     }
 
