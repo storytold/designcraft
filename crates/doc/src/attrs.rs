@@ -137,7 +137,7 @@ mod char_attrs;
 mod para_attrs;
 
 pub use char_attrs::{CharAttrs, CharProps};
-pub use para_attrs::{ParaAttrs, ParaProps};
+pub use para_attrs::{MAX_KASHIDA_WIDTH, ParaAttrs, ParaProps};
 
 fn attr_key(snake: &'static str) -> &'static str {
     snake

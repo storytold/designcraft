@@ -10493,6 +10493,52 @@ fn cross_reference_text_breaks_at_its_spaces() {
     }
 }
 
+/// Kashida Width caps how many tatweels a kashida takes at one join (#3096): 0 none, and a larger
+/// width lets the same justified line take longer kashidas, the spaces taking what is left.
+#[test]
+fn kashida_width_caps_the_tatweels_at_each_join() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Width", &glyphs).unwrap());
+    let text = "بسم بسم بسم";
+    // The longest run of tatweels at one join, and the line's right edge.
+    let longest = |width: Option<f64>| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 400.0, 100.0),
+            ParaAttrs {
+                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                align: Some(Align::FullyJustified),
+                paragraph_kashida_width: width.map(Some),
+                ..Default::default()
+            },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Kashida Width".into());
+            f.over.size = Some(24.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let line = &cs.frame(fid).unwrap().lines[0];
+        let tatweel = line.glyphs.iter().find(|g| g.len > 0).unwrap().face.glyph_for('\u{0640}');
+        let mut runs: HashMap<usize, usize> = HashMap::new();
+        for g in line.glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel) {
+            *runs.entry(g.byte).or_default() += 1;
+        }
+        let right = line.glyphs.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+        (runs.values().copied().max().unwrap_or(0), right)
+    };
+    let (none, none_right) = longest(Some(0.0));
+    let (one, _) = longest(Some(1.0));
+    let (four, four_right) = longest(Some(4.0));
+    assert_eq!(none, 0, "width 0 inserts no kashida");
+    assert_eq!(one, 1, "width 1 takes one tatweel at a join");
+    assert!(four > one && four <= 4, "width 4 takes longer kashidas, at most four tatweels: {four}");
+    // Either way the line is justified to the same edge: the spaces take what the kashidas don't.
+    assert!((none_right - four_right).abs() < 0.5, "{none_right} and {four_right}");
+}
+
 /// A kashida is drawn with the font's tatweels at their natural size, as many as the gap takes, so
 /// their shaped ends and the font's own kashida forms stay as designed. One tatweel was stretched
 /// over the gap, and its shaped ends stretched with it: a bend at each join in Lotus Linotype and

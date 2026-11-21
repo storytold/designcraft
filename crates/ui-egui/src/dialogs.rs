@@ -8335,7 +8335,7 @@ fn shown_rule(d: &Dialog, prefix: &str, which: &str, current: &Value) -> Value {
 }
 
 /// The paragraph attributes of the Justification controls.
-pub const JUSTIFY_ATTRS: [&str; 14] = [
+pub const JUSTIFY_ATTRS: [&str; 15] = [
     "wordSpaceMin",
     "wordSpaceDesired",
     "wordSpaceMax",
@@ -8349,6 +8349,7 @@ pub const JUSTIFY_ATTRS: [&str; 14] = [
     "singleWordJustify",
     "composer",
     "kashidas",
+    "paragraphKashidaWidth",
     "koreanCharBreaks",
 ];
 
@@ -8649,11 +8650,33 @@ fn justification(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, cu
                 d.fields.insert(format!("{prefix}{key}"), json!(on));
             }
         });
+        if key == "kashidas" {
+            kashida_width(lang, ui, d, prefix, &cur(d, "paragraphKashidaWidth"));
+        }
     }
     if let Some(e) = d.fields.get("justifyError").and_then(Value::as_str) {
         ui.add_space(6.0);
         crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));
     }
+}
+
+/// Kashida Width: the most tatweels a kashida takes at one join. Empty is Auto (up to 1.5 em), and
+/// emptying the field goes back to it.
+fn kashida_width(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, prefix: &str, current: &Value) {
+    let auto = crate::i18n::tr(lang, "Auto");
+    ui.horizontal(|ui| {
+        let label = crate::rtl::label(ui, crate::i18n::tr(lang, "Kashida Width:"));
+        let field = crate::widgets::NumField::number("psKashidaWidth", current.as_f64(), "", 0)
+            .labelled_by(label.id)
+            .empty_text(auto)
+            .range(0.0, designcraft_doc::MAX_KASHIDA_WIDTH)
+            .spinner()
+            .width(72.0);
+        if let Some(v) = field.show_or_clear(ui) {
+            d.fields.insert(format!("{prefix}paragraphKashidaWidth"), v.map_or(Value::Null, |v| json!(v.round())));
+        }
+        crate::rtl::label(ui, crate::i18n::tr(lang, "tatweels at a join"));
+    });
 }
 
 /// The rule fields edited in the dialog, as `type.para` attrs: `{ruleAbove?: {…}, ruleBelow?: {…}}`.

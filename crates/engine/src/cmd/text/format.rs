@@ -168,7 +168,8 @@ fn percent(v: f64) -> String {
 /// Space Before, Space After and same-style spacing 0 to [`MAX_PARA_SPACE`] pt, first and last
 /// line indents -[`MAX_PARA_SPACE`] to [`MAX_PARA_SPACE`] pt; word spacing 0% to 1000%, letter spacing
 /// -100% to 500% and glyph scaling 50% to 200%; Auto Leading 0% to 500%; Single Word
-/// Justification left, center, right or fullyJustified. [`validate_justification_order`] checks
+/// Justification left, center, right or fullyJustified; Kashida Width a whole number of tatweels,
+/// 0 to [`designcraft_doc::MAX_KASHIDA_WIDTH`]. [`validate_justification_order`] checks
 /// the order of each row once the values are applied.
 pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
     use designcraft_doc::Align;
@@ -206,6 +207,11 @@ pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Resul
         && !(0.0..=MAX_AUTO_LEADING).contains(&v)
     {
         return Err(bad(command_id, format!("autoLeading {}%: 0% to {}%", percent(v), percent(MAX_AUTO_LEADING))));
+    }
+    if let Some(Some(v)) = attrs.paragraph_kashida_width
+        && !((0.0..=designcraft_doc::MAX_KASHIDA_WIDTH).contains(&v) && v.fract() == 0.0)
+    {
+        return Err(bad(command_id, format!("paragraphKashidaWidth {v}: a whole number of tatweels, 0 to {}", designcraft_doc::MAX_KASHIDA_WIDTH)));
     }
     if let Some(a) = attrs.single_word_justify
         && !matches!(a, Align::Left | Align::Center | Align::Right | Align::FullyJustified)
@@ -1306,6 +1312,9 @@ mod size_bounds_tests {
             (json!({"autoLeading": 6}), "autoLeading 600%: 0% to 500%"),
             (json!({"autoLeading": -0.1}), "autoLeading -10%: 0% to 500%"),
             (json!({"singleWordJustify": "leftJustified"}), "singleWordJustify \"leftJustified\": left, center, right or fullyJustified"),
+            (json!({"paragraphKashidaWidth": -1}), "paragraphKashidaWidth -1: a whole number of tatweels, 0 to 20"),
+            (json!({"paragraphKashidaWidth": 21}), "paragraphKashidaWidth 21: a whole number of tatweels, 0 to 20"),
+            (json!({"paragraphKashidaWidth": 2.5}), "paragraphKashidaWidth 2.5: a whole number of tatweels, 0 to 20"),
             // Desired word spacing is 100%, so a Minimum of 120% alone is out of order.
             (json!({"wordSpaceMin": 1.2}), "word spacing needs Minimum ≤ Desired ≤ Maximum, not 120%, 100%, 133%"),
             (
@@ -1328,6 +1337,8 @@ mod size_bounds_tests {
             json!({"glyphScaleMin": 0.5, "glyphScaleDesired": 1, "glyphScaleMax": 2}),
             json!({"autoLeading": 5}),
             json!({"autoLeading": 0, "singleWordJustify": "center"}),
+            json!({"paragraphKashidaWidth": 0}),
+            json!({"paragraphKashidaWidth": 20}),
         ] {
             select_all(&mut s);
             s.execute("type.para", &json!({"attrs": attrs})).unwrap_or_else(|e| panic!("{attrs}: {e}"));

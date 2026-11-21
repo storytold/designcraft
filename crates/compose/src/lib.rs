@@ -5154,26 +5154,36 @@ fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize
     if !(*extra > 0.0 && pp.kashidas && pp.arabic_justification != "DefaultJustification") {
         return;
     }
+    // Kashida Width: at most this many tatweels at a join, each join taking up to their width.
+    // Unset, a join takes up to 1.5 em.
+    let most = pp.paragraph_kashida_width.map(|w| w.clamp(0.0, designcraft_doc::MAX_KASHIDA_WIDTH).floor() as usize);
+    if most == Some(0) {
+        return;
+    }
     let points: Vec<usize> = kashida_points(line).into_iter().filter(|&i| i >= seg).collect();
     if points.is_empty() {
         return;
     }
-    let total = extra.min(points.iter().map(|&i| line[i].size * 1.5).sum());
+    let cap = |g: &Glyph| match most {
+        Some(n) => n as f64 * g.face.advance(designcraft_fonts::first_glyph(&g.face, &['\u{0640}'])) * g.sx,
+        None => g.size * 1.5,
+    };
+    let total = extra.min(points.iter().map(|&i| cap(&line[i])).sum());
     let per = total / points.len() as f64;
     // From the end, so the indices of earlier words stay valid.
     for &i in points.iter().rev() {
-        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per) {
+        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per, most.unwrap_or(200)) {
             line.splice(range, glyphs);
             *extra -= added;
         }
     }
 }
 
-/// The word holding the join after `line[i]`, shaped again with as many tatweels at the join as
-/// add at most `room`: (its glyph range on the line, its new glyphs, the length added). `None`
+/// The word holding the join after `line[i]`, shaped again with as many tatweels at the join (at
+/// most `most`) as add at most `room`: (its glyph range on the line, its new glyphs, the length added). `None`
 /// when shaping the word's text again doesn't give the glyphs on the line (substituted or
 /// generated text, features the default shaping doesn't use), so nothing is changed blindly.
-fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
+fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, most: usize) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
     let start = (seg..=i).rev().take_while(|&j| !line[j].is_space()).last()?;
     let end = (i + 1..line.len()).find(|&j| line[j].is_space()).unwrap_or(line.len());
     let word = line.get(start..end)?;
@@ -5209,7 +5219,7 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) ->
     }
     // A font's kashida forms need not be one tatweel wide each: try down from the estimate.
     let estimate = ((room / one).floor() as usize).clamp(1, 200);
-    let (shaped, added, run) = (1..=estimate + 2).rev().map(with).find(|(_, added, _)| *added > 0.0 && *added <= room + 1e-6)?;
+    let (shaped, added, run) = (1..=(estimate + 2).min(most)).rev().map(with).find(|(_, added, _)| *added > 0.0 && *added <= room + 1e-6)?;
     // Tracking and other extra advance the line gave each cluster, kept on its last glyph.
     let mut extra_adv: HashMap<usize, f64> = HashMap::new();
     for (s, g) in plain.iter().zip(word) {

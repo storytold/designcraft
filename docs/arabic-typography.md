@@ -32,17 +32,18 @@ positions are reversed. Physical left/right insertion commands account for direc
 | Digits | European, Arabic-Indic and Persian conversion in both directions, contextual defaults, language-sensitive native digits, original UTF-8 source ranges retained |
 | Diacritics | Font GDEF classification and OpenType mark anchors; explicit X/Y offsets affect marks only, in thousandths of an em |
 | Positional forms | Explicit isolated/initial/medial/final OpenType feature selection; automatic forms remain the default |
-| Kashidas | Paragraph and character switches, actual font coverage, shaper-approved insertion boundaries, nonjoiner protection, whole-cluster movement to keep marks attached |
+| Kashidas | Paragraph and character switches, actual font coverage, shaper-approved insertion boundaries, nonjoiner protection, whole-cluster movement to keep marks attached; Kashida Width caps each join at a number of the font's tatweels (DesignCraft's own definition: 0 = none, 1–20; unset, up to 1.5 em) |
 | Story direction | Independent right-to-left column flow, including span-column bounds |
 | Table direction | Right-to-left cell placement, merged spans, physical edge styles/borders, hit testing and left/right column insertion |
 | Serialization | Character controls, paragraph policy/width values, story/table directions survive native data and IDML round trips |
 
 ## Remaining limitations
 
-- Vendor-specific Arabic/Naskh justification policies and Paragraph Kashida Width
-  presets are preserved but not reproduced. Preflight reports their use.
-  Automatic elongation still uses bounded, scaled tatweel insertion rather than
-  full line reshaping or a vendor allocation algorithm.
+- Vendor-specific Arabic/Naskh justification policies are preserved but not
+  reproduced. Preflight reports their use. Paragraph Kashida Width is laid out as
+  DesignCraft defines it (tatweels per join); the target app does not document
+  its own meaning for the value, so an imported width may elongate differently
+  there.
 - Loose/Medium/Tight/OpenType-from-baseline diacritic presets are preserved and
   reported. Composition uses font anchors and explicit offsets instead.
 - Script-specific stretched alternates, contextual swash policies, complete RTL

@@ -331,17 +331,11 @@ pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::
             let (para, base) = d.styles.resolve_para(pf);
             let Some(range) = ranges.get(pi) else { continue };
             let has_rtl = story.text.get(range.clone()).is_some_and(|text| text.chars().any(designcraft_fonts::is_rtl));
-            if has_rtl {
-                if !matches!(para.arabic_justification.as_str(), "" | "DefaultJustification") {
-                    unsupported_typography.insert(format!(
-                        "Arabic justification policy `{}` is preserved; vendor-specific Naskh/Arabic algorithms are not implemented",
-                        para.arabic_justification
-                    ));
-                }
-                if para.paragraph_kashida_width.is_some() && para.arabic_justification != "DefaultJustification" {
-                    unsupported_typography
-                        .insert("Paragraph Kashida width preset is preserved; automatic elongation uses the engine's bounded allocation".into());
-                }
+            if has_rtl && !matches!(para.arabic_justification.as_str(), "" | "DefaultJustification") {
+                unsupported_typography.insert(format!(
+                    "Arabic justification policy `{}` is preserved; vendor-specific Naskh/Arabic algorithms are not implemented",
+                    para.arabic_justification
+                ));
             }
             match designcraft_doc::mojikumi::Rules::resolve(&d.styles, &para.mojikumi) {
                 Err(reason) => {
@@ -605,7 +599,8 @@ mod arabic_tests {
         s.execute("type.char", &json!({"attrs": {"diacriticPosition": "tight"}})).unwrap();
         let issues = check(&mut s, 150.0);
         let typography: Vec<_> = issues.iter().filter(|i| i.kind == "unsupportedTypography").collect();
-        assert_eq!(typography.len(), 3, "{typography:?}");
+        // The kashida width is laid out (#3096), so only the policy and the diacritic preset remain.
+        assert_eq!(typography.len(), 2, "{typography:?}");
         assert!(typography.iter().all(|i| i.severity == "warning"));
     }
 }
