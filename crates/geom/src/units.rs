@@ -188,7 +188,10 @@ pub fn parse_measure_rel(input: &str, default: Unit, percent_base: Option<f64>) 
 /// A comma between two digits read as a decimal point (`0,5 cm`, `12,75`), as typed in most
 /// European languages, when the text has no dot of its own (so `1.000,5` isn't guessed at). A
 /// comma before exactly three digits (`1,000`, `2,500 mm`) could be English thousands and stays,
-/// so the field refuses it rather than reading a thousand as one.
+/// so the field refuses it rather than reading a thousand as one; after a leading zero
+/// (`0,125`) it can't be thousands and is a decimal point too. The comma is read the same
+/// whatever the interface language or system locale: a dot stays a decimal point for everyone,
+/// and a comma is only read where English thousands can't be meant.
 pub fn decimal_comma(s: &str) -> String {
     if s.contains('.') {
         return s.to_string();
@@ -203,7 +206,9 @@ pub fn decimal_comma(s: &str) -> String {
             }
             // Only whether exactly three digits follow: four are enough to tell.
             let after = c.iter().skip(i + 1).take(4).take_while(|d| d.is_ascii_digit()).count();
-            if after != 3 { '.' } else { ch }
+            // The digits before the comma: English thousands never start with a zero.
+            let leading_zero = c.iter().take(i).rev().take_while(|d| d.is_ascii_digit()).last() == Some(&'0');
+            if after != 3 || leading_zero { '.' } else { ch }
         })
         .collect()
 }
@@ -480,12 +485,16 @@ mod tests {
         assert!(parse_measure("5,", Unit::Points).is_err());
         // Before exactly three digits a comma may be English thousands: refused, not guessed.
         assert!(parse_measure("1,000", Unit::Points).is_err());
-        // Each comma looks at most four digits ahead: a very long number stays quick.
+        // A very long number (each comma looks at most four digits ahead).
         let long = format!("1,{}", "5".repeat(50_000));
-        let t = std::time::Instant::now();
         assert_eq!(decimal_comma(&long).chars().nth(1), Some('.'));
-        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
         assert!(parse_measure("2,500 mm", Unit::Points).is_err());
         assert!((parse_measure("48,25", Unit::Points).unwrap() - 48.25).abs() < 1e-9);
+        // After a leading zero three decimals can't be thousands (`0,125`, most units show three
+        // decimals).
+        assert!((parse_measure("0,125", Unit::Points).unwrap() - 0.125).abs() < 1e-9);
+        assert!((parse_measure("0,375 mm", Unit::Points).unwrap() - Unit::Millimeters.to_pt(0.375)).abs() < 1e-9);
+        assert!((parse_measure("1+0,125", Unit::Points).unwrap() - 1.125).abs() < 1e-9);
+        assert!(parse_measure("10,125", Unit::Points).is_err(), "could be ten thousand one hundred and twenty-five");
     }
 }

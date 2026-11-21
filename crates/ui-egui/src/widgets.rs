@@ -776,7 +776,9 @@ mod tests {
         assert_eq!(deg.parse("48.5"), Some(48.5));
         let cm = NumKind::Measure(Unit::Centimeters);
         assert_eq!(cm.parse("0,1"), Some(Unit::Centimeters.to_pt(0.1)));
-        // A comma that can't be read refuses the input instead of vanishing.
+        assert_eq!(deg.parse("0,125"), Some(0.125));
+        // A comma that can't be read refuses the input instead of vanishing. `1,000` read as 1000
+        // before; it may as well be a German 1.000, so it is refused too.
         for typed in ["1.000,5", ",5", "5,", "1,000"] {
             assert_eq!(deg.parse(typed), None, "{typed}");
         }
