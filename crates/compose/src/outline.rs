@@ -10,6 +10,10 @@ const RECT_TOLERANCE: f64 = TOLERANCE;
 /// The same as a fraction of the outline's larger side: a tall frame is a little further off square
 /// before anyone could see it (a chart's axis-label frame 239 pt tall is 0.54 pt off).
 const RECT_RELATIVE_TOLERANCE: f64 = 0.003;
+/// The most an edge may be off, as a fraction of its own length, however large the frame: the
+/// frame-wide fraction above would let a 600 pt tall frame 17 pt wide take a 1.8 pt slant (6
+/// degrees) on its bottom edge. The one measured frame has 0.54 pt over 16.74 pt (3.2%).
+const RECT_EDGE_SLOPE: f64 = 0.04;
 /// Most edges a flattened outline may have; a larger one is flattened coarser.
 const MAX_EDGES: usize = 4096;
 /// Scanlines sampled across each inset cap above and below a band.
@@ -58,19 +62,26 @@ impl FrameOutline {
         // tolerance (or 0.3% of its size): frames made by scripts and plug-ins are often a hundredth of a point off
         // square, and InDesign composes into such a frame as into its rectangle. Treating it as a
         // shape instead set every line's band against the slanted edge, and a one-line frame as
-        // tall as its line lost the part of its width the slant cut off.
+        // tall as its line lost the part of its width the slant cut off. The limits come from two
+        // frames measured against InDesign (0.022 pt off on a 44 pt frame, 0.54 pt off on a 239 pt
+        // one), not from a measured changeover: the 4% of an edge's own length only admits the
+        // second and keeps a steeper slant on a narrow, tall frame a shape.
         let eps = RECT_TOLERANCE.max(RECT_RELATIVE_TOLERANCE * (x1 - x0).abs().max((y1 - y0).abs()));
         // Both ends of an edge must lie on the same side of the box: an edge with one end on the
         // left side and one on the right is not on the box when it runs through the middle, as the
         // edges of a compound path's inner sub-rectangles do.
-        let on_side = |a: Point, b: Point| {
+        let on_side = |a: Point, b: Point, eps: f64| {
             let near = |v: f64, side: f64| (v - side).abs() < eps;
             (near(a.x, x0) && near(b.x, x0))
                 || (near(a.x, x1) && near(b.x, x1))
                 || (near(a.y, y0) && near(b.y, y0))
                 || (near(a.y, y1) && near(b.y, y1))
         };
-        let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_side(a, b));
+        let rect = edges.iter().all(|&(a, b)| {
+            let length = (a.x - b.x).abs().max((a.y - b.y).abs());
+            let eps = eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length));
+            ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_side(a, b, eps)
+        });
         if rect {
             return None;
         }
@@ -320,5 +331,34 @@ mod tests {
     fn a_slanted_frame_is_a_shape() {
         assert!(FrameOutline::new(&quad(9.0, 10.0), 0.0).is_some(), "1 pt over 44 pt");
         assert!(FrameOutline::new(&quad(9.0, 9.5), 0.0).is_some(), "0.5 pt over 44 pt");
+    }
+
+    /// A frame `width` wide and `height` tall whose bottom edge runs `slant` lower on its right.
+    fn tall(width: f64, height: f64, slant: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        bp.line_to((width, height + slant));
+        bp.line_to((width, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// The frame-wide slack is 0.3% of the larger side: a slant just under it on a wide, tall frame
+    /// is square, one just over it is a shape.
+    #[test]
+    fn the_frame_wide_slack_is_a_third_of_a_percent_of_the_larger_side() {
+        assert!(FrameOutline::new(&tall(100.0, 239.0, 0.70), 0.0).is_none(), "0.70 pt, under 0.3% of 239 pt");
+        assert!(FrameOutline::new(&tall(100.0, 239.0, 0.75), 0.0).is_some(), "0.75 pt, over 0.3% of 239 pt");
+    }
+
+    /// An edge is also held to a fraction of its own length, so a tall frame does not take a visible
+    /// slant on its short edge: 1.8 pt over 17 pt is 6 degrees, and 0.70 pt over 16.74 pt is within
+    /// the frame-wide slack of a 239 pt frame but steeper than the measured frame's 0.54 pt.
+    #[test]
+    fn a_tall_narrow_frame_does_not_take_a_visible_slant_on_its_short_edge() {
+        assert!(FrameOutline::new(&tall(17.0, 600.0, 1.8), 0.0).is_some(), "1.8 pt over 17 pt on a 600 pt frame");
+        assert!(FrameOutline::new(&tall(16.74, 239.0, 0.70), 0.0).is_some(), "0.70 pt over 16.74 pt on a 239 pt frame");
+        assert!(FrameOutline::new(&tall(16.74, 239.0, 0.54), 0.0).is_none(), "the measured frame: 0.54 pt over 16.74 pt");
     }
 }
