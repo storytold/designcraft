@@ -20,6 +20,7 @@ mod pl;
 mod pt_br;
 mod ru;
 mod sv;
+mod tr;
 mod uk;
 
 /// Supported interface languages: (code, name in that language).
@@ -40,6 +41,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
+    ("tr", "Türkçe"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
@@ -101,6 +103,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
         return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     static SWEDISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static TURKISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -137,6 +140,9 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "sv" {
         return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
+    if lang == "tr" {
+        return TURKISH.get_or_init(|| tr::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -167,6 +173,7 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
         "sv" => sv::CONTEXT,
+        "tr" => tr::CONTEXT,
         _ => &[],
     };
     let written = |text: &&str| !text.trim().is_empty();
