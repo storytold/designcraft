@@ -3409,6 +3409,105 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
     }
 }
 
+/// Capture the text shapes emitted by the hidden-character painter for the supplied canvas.
+fn painted_hidden_character_marks(app: &DesignApp, doc: &Document, layout: &CanvasLayout) -> Vec<String> {
+    let ctx = egui::Context::default();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        draw_hidden_characters(app, ui.painter(), &xf, doc, layout);
+    });
+    out.textures_delta.clear();
+    out.shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #1994: hiding a frame or its layer must also hide the separately painted marks.
+#[test]
+fn hidden_characters_follow_frame_layer_and_group_visibility() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 336, 136], "content": "text", "text": "a b\tc\nd"})).unwrap();
+    let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    let layer = doc.item(id).unwrap().layer;
+    let marks = |app: &DesignApp, doc: &Document| painted_hidden_character_marks(app, doc, &CanvasLayout::new(doc, false));
+    let expected = marks(&app, &doc);
+    for mark in ["·", "»", "¶", "#"] {
+        assert!(expected.iter().any(|m| m == mark), "visible text draws {mark}: {expected:?}");
+    }
+    doc.layer_mut(layer).unwrap().visible = false;
+    assert!(marks(&app, &doc).is_empty(), "hidden layers draw no marks");
+    doc.layer_mut(layer).unwrap().visible = true;
+    assert_eq!(marks(&app, &doc), expected, "showing the layer restores its marks");
+    doc.item_mut(id).unwrap().hidden = true;
+    assert!(marks(&app, &doc).is_empty(), "hidden frames draw no marks");
+    doc.item_mut(id).unwrap().hidden = false;
+    doc.layer_mut(layer).unwrap().locked = true;
+    assert_eq!(marks(&app, &doc), expected, "locked but visible layers still show marks");
+
+    // A child stays individually visible when its containing group is hidden.
+    let sibling = app.run("frame.create", json!({"rect": [400, 36, 450, 86]})).unwrap();
+    app.run("selection.set", json!({"ids": [id.0, sibling["id"]]})).unwrap();
+    let group = app.run("object.group", json!({})).unwrap();
+    let group_id = designcraft_doc::ItemId(group["id"].as_u64().unwrap());
+    let mut grouped = (*app.session.active().unwrap().doc).clone();
+    assert_eq!(marks(&app, &grouped), expected);
+    grouped.item_mut(group_id).unwrap().hidden = true;
+    assert!(marks(&app, &grouped).is_empty(), "hidden groups draw no child marks");
+}
+
+/// Parent editing and viewport culling must not paint marks for a spread absent from the layout.
+#[test]
+fn hidden_characters_only_paint_laid_out_spreads() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+    let layer = doc.default_layer();
+    let rect = DRect::new(36.0, 36.0, 336.0, 136.0);
+    doc.add_text_frame(SpreadRef::Doc(0), rect, layer, "a b", Default::default()).unwrap();
+    let document_layout = CanvasLayout::new(&doc, false);
+    let parent_layout = CanvasLayout::new(&doc, true);
+    assert!(!painted_hidden_character_marks(&app, &doc, &document_layout).is_empty());
+    assert!(painted_hidden_character_marks(&app, &doc, &parent_layout).is_empty(), "document marks stay off the parent canvas");
+    doc.add_text_frame(SpreadRef::Parent(0), rect, layer, "a\tb", Default::default()).unwrap();
+    let document_marks = painted_hidden_character_marks(&app, &doc, &document_layout);
+    let parent_marks = painted_hidden_character_marks(&app, &doc, &parent_layout);
+    assert_eq!(document_marks, ["·", "#"], "parent marks stay off the document canvas");
+    assert_eq!(parent_marks, ["»", "#"], "only the parent frame is painted while editing parents");
+    let mut culled = document_layout;
+    culled.slots.clear();
+    assert!(painted_hidden_character_marks(&app, &doc, &culled).is_empty(), "culled spreads have no marks");
+}
+
+/// Table-cell marks use the same frame and layer visibility checks as ordinary story marks.
+#[test]
+fn hidden_characters_in_table_cells_follow_frame_visibility() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+    let layer = doc.default_layer();
+    let (frame, story) = doc.add_text_frame(SpreadRef::Doc(0), DRect::new(36.0, 36.0, 336.0, 336.0), layer, "", Default::default()).unwrap();
+    let data = vec![vec!["a b\tc\nd".to_owned(), String::new()]];
+    let table = designcraft_doc::Table::from_strings(doc.alloc(), &data, 200.0, &Default::default(), &Default::default());
+    doc.story_mut(story).unwrap().insert_table(0, table);
+    let layout = CanvasLayout::new(&doc, false);
+    let expected = painted_hidden_character_marks(&app, &doc, &layout);
+    for mark in ["·", "»", "¶", "#"] {
+        assert!(expected.iter().any(|m| m == mark), "visible table cells draw {mark}: {expected:?}");
+    }
+    assert!(expected.iter().filter(|m| *m == "#").count() >= 2, "including the empty cell's end mark");
+    doc.item_mut(frame).unwrap().hidden = true;
+    assert!(painted_hidden_character_marks(&app, &doc, &layout).is_empty(), "hidden frames hide cell marks too");
+    doc.item_mut(frame).unwrap().hidden = false;
+    doc.layer_mut(layer).unwrap().visible = false;
+    assert!(painted_hidden_character_marks(&app, &doc, &layout).is_empty(), "hidden layers hide cell marks too");
+    doc.layer_mut(layer).unwrap().visible = true;
+    assert_eq!(painted_hidden_character_marks(&app, &doc, &layout), expected, "showing the layer restores every cell mark");
+}
+
 /// As InDesign: an end-of-story # in every cell (after its text), a ¶ where a cell paragraph
 /// ends, and the table paragraph's ¶ just after the table's bottom right corner.
 #[test]
