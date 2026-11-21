@@ -5179,7 +5179,8 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) ->
     let word = line.get(start..end)?;
     let n = line.get(i + 1)?;
     let first = word.first()?;
-    if word.iter().any(|g| g.face.id() != first.face.id() || g.generated_text.is_some() || g.list_label) {
+    // One face at one horizontal scale, so the word is measured as it is drawn.
+    if word.iter().any(|g| g.face.id() != first.face.id() || g.sx != first.sx || g.generated_text.is_some() || g.list_label) {
         return None;
     }
     let b0 = word.iter().map(|g| g.byte).min()?;
@@ -5245,17 +5246,18 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) ->
         g.dy = -f64::from(s.y_offset) * g.sy;
         if in_run { tatweels.push(g) } else { letters.push(g) }
     }
-    // Each cluster's extra advance on its last glyph.
-    for (cluster, adv) in extra_adv {
-        if let Some(g) = letters.iter_mut().rev().find(|g| g.byte == b0 + cluster) {
-            g.adv += adv;
-        }
-    }
     // The tatweels go with the letter after the join, after its glyphs and in visual order: the
     // line is put in visual order cluster by cluster, so they land between the two letters.
     let after = letters.iter().rposition(|g| g.byte == n.byte).map_or(letters.len(), |k| k + 1);
     tatweels.reverse();
     letters.splice(after..after, tatweels);
+    // Each cluster's extra advance (tracking) on its last glyph, the tatweels included, so they
+    // stay joined to their letter.
+    for (cluster, adv) in extra_adv {
+        if let Some(g) = letters.iter_mut().rev().find(|g| g.byte == b0 + cluster) {
+            g.adv += adv;
+        }
+    }
     Some((start..end, letters, added))
 }
 

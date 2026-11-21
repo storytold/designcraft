@@ -10508,30 +10508,41 @@ fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
     db.set_system_fallback(false);
     db.add_font(font_mapping("DC Test Tatweel Run", &glyphs).unwrap());
     let text = "بسم بسم";
-    let (mut d, sid, fid) = doc_with(
-        text,
-        Rect::new(0.0, 0.0, 300.0, 100.0),
-        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
-    );
-    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
-        f.over.font_family = Some("DC Test Tatweel Run".into());
-        f.over.size = Some(24.0);
-    });
-    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
-    let glyphs = &cs.frame(fid).unwrap().lines[0].glyphs;
-    let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
-    let tatweel = letter.face.glyph_for('\u{0640}');
-    let tatweels: Vec<_> = glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel).collect();
-    assert!(tatweels.len() > 2, "a long kashida takes several tatweels: {}", tatweels.len());
-    let width = letter.face.advance(tatweel) * letter.sx;
-    for t in &tatweels {
-        assert!((t.sx - letter.sx).abs() < 1e-9, "drawn at its natural size, not stretched: {} for {}", t.sx, letter.sx);
-    }
-    // In runs side by side, each run ending where the letter on its right starts.
-    let starts: Vec<f64> = glyphs.iter().filter(|g| g.len > 0 && g.adv > 0.0).map(|g| g.x - g.dx).collect();
-    for t in &tatweels {
-        let end = t.x + width;
-        let joined = tatweels.iter().any(|o| (o.x - end).abs() < 1e-6) || starts.iter().any(|&x| (x - end).abs() < 1e-6);
-        assert!(joined, "the tatweel at {} ends at {end}, at no tatweel or letter", t.x);
+    // Tracking opens every join; the kashida still starts where the letter after the join ends.
+    for tracking in [0.0, 200.0] {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 300.0, 100.0),
+            ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Tatweel Run".into());
+            f.over.size = Some(24.0);
+            f.over.tracking = Some(tracking);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let glyphs = &cs.frame(fid).unwrap().lines[0].glyphs;
+        let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
+        let tatweel = letter.face.glyph_for('\u{0640}');
+        let tatweels: Vec<_> = glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel).collect();
+        assert!(tatweels.len() > 2, "a long kashida takes several tatweels: {}", tatweels.len());
+        let width = letter.face.advance(tatweel) * letter.sx;
+        for t in &tatweels {
+            assert!((t.sx - letter.sx).abs() < 1e-9, "drawn at its natural size, not stretched: {} for {}", t.sx, letter.sx);
+        }
+        // In runs side by side, each run starting where the letter on its left ends and, without
+        // tracking, ending where the letter on its right starts.
+        let letters: Vec<_> = glyphs.iter().filter(|g| g.len > 0 && g.adv > 0.0).collect();
+        let starts: Vec<f64> = letters.iter().map(|g| g.x - g.dx).collect();
+        let ends: Vec<f64> = letters.iter().map(|g| g.x - g.dx + g.face.advance(g.gid) * g.sx).collect();
+        for t in &tatweels {
+            let end = t.x + width;
+            let left = tatweels.iter().any(|o| (o.x + width - t.x).abs() < 1e-6) || ends.iter().any(|&x| (x - t.x).abs() < 1e-6);
+            assert!(left, "tracking {tracking}: the tatweel at {} starts at no tatweel or letter", t.x);
+            if tracking == 0.0 {
+                let right = tatweels.iter().any(|o| (o.x - end).abs() < 1e-6) || starts.iter().any(|&x| (x - end).abs() < 1e-6);
+                assert!(right, "the tatweel at {} ends at {end}, at no tatweel or letter", t.x);
+            }
+        }
     }
 }
