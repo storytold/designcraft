@@ -1717,7 +1717,9 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             let mut interior = Vec::new();
             let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut interior);
             if !interior.is_empty() {
-                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text, &|byte| run_shaping_settings(doc, story, base_chars, byte));
+                pair_ligatures_at_hyphens(&mut gl, &interior, &story.text, pp.letter_space_desired, &|byte| {
+                    run_shaping_settings(doc, story, base_chars, byte)
+                });
                 hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
             }
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
@@ -2968,7 +2970,9 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut interior = Vec::new();
     let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut interior);
     if !interior.is_empty() {
-        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text, &|byte| run_shaping_settings(doc, story, base_chars, byte));
+        pair_ligatures_at_hyphens(&mut glyphs, &interior, &story.text, pp.letter_space_desired, &|byte| {
+            run_shaping_settings(doc, story, base_chars, byte)
+        });
         hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign, korean, &mut Vec::new());
     }
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
@@ -6130,6 +6134,7 @@ fn pair_ligatures_at_hyphens(
     glyphs: &mut Vec<Glyph>,
     interior: &[(usize, usize)],
     text: &str,
+    letter_space: f64,
     settings_at: &dyn Fn(usize) -> (Vec<designcraft_fonts::Feature>, f64),
 ) {
     let mut cuts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -6152,7 +6157,8 @@ fn pair_ligatures_at_hyphens(
         let piece = |a: usize, b: usize| {
             let shaped = designcraft_fonts::shape(g.face.get(), &text[a..b], &features, |c| c);
             match shaped.as_slice() {
-                [one] => Some((one.gid, f64::from(one.x_advance) * g.sx + manual)),
+                // Letter spacing is added to every glyph ([`apply_desired_spacing`]), so each piece has it.
+                [one] => Some((one.gid, f64::from(one.x_advance) * g.sx + manual + if g.locked_advance { 0.0 } else { letter_space * g.space })),
                 _ => None,
             }
         };

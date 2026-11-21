@@ -366,7 +366,7 @@ fn hyphen_hang(g: &Glyph, hw: f64, sp: &Spacing) -> f64 {
 }
 
 /// Advance of the hyphen glyph that would follow `g` (cached per face).
-fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
+fn hyphen_glyph_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
     let id = g.face.id();
     let units = match cache.iter().find(|c| c.0 == id) {
         Some(c) => c.1,
@@ -377,7 +377,21 @@ fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
             u
         }
     };
-    units * g.sx + pre_break_extra(g)
+    units * g.sx
+}
+
+/// What a line that ends with a hyphen after `g` is wider by than the word up to `g` and the hyphen
+/// glyph: the first piece of a ligature broken inside is wider than the advance it is measured with
+/// while the breaker chooses.
+fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
+    hyphen_glyph_width(g, cache) + pre_break_extra(g)
+}
+
+/// The room a hyphen after `g` takes at the end of a line: its width with what the first piece of a
+/// split ligature adds, less the part of the hyphen glyph that hangs. Optical margin alignment hangs
+/// the hyphen, not the piece.
+pub(crate) fn hyphen_room(g: &Glyph, sp: &Spacing, cache: &mut Vec<(u32, f64)>) -> f64 {
+    (hyphen_width(g, cache) - hyphen_hang(g, hyphen_glyph_width(g, cache), sp)).max(0.0)
 }
 
 /// What a line that ends on `g` is wider by than the glyph's advance says, when `g` is the first of a
@@ -476,11 +490,12 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             continue;
         }
         if g.ch == SOFT_HYPHEN {
-            let hw = last_plain.map_or(g.size * 0.33, |p| hyphen_width(p, &mut hy_cache));
+            let glyph = last_plain.map_or(g.size * 0.33, |p| hyphen_glyph_width(p, &mut hy_cache));
+            let hw = glyph + last_plain.map_or(0.0, pre_break_extra);
             let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
             p.auto = true;
             p.zone_from = last_space;
-            p.hang = hyphen_hang(g, hw, sp);
+            p.hang = hyphen_hang(g, glyph, sp);
             push_inword(&mut it, &mut ig, p, i + 1, sp);
             continue;
         }
@@ -507,10 +522,11 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
                 p.auto = true;
                 p.zone_from = last_space;
-                p.hang = hyphen_hang(g, hw, sp);
+                p.hang = hyphen_hang(g, hyphen_glyph_width(g, &mut hy_cache), sp);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if emergency_after.get(i) == Some(&true) {
-                let mut p = Item::penalty(0.0, EMERGENCY_PENALTY, false);
+                // A line that ends on the first piece of a split ligature is as wide as that piece is.
+                let mut p = Item::penalty(pre_break_extra(g), EMERGENCY_PENALTY, false);
                 p.emergency = true;
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             }
@@ -930,7 +946,9 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
 /// split: before `i`, or earlier where kinsoku forbids that (no line starts with closing
 /// punctuation).
 fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
-    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if kinsoku_allows(a.ch, b.ch));
+    // Not between the pieces of a split ligature when the first is wider than the advance the line
+    // was measured with: the line would be set wider than the measure.
+    let allowed = |j: usize| matches!((glyphs.get(j.wrapping_sub(1)), glyphs.get(j)), (Some(a), Some(b)) if kinsoku_allows(a.ch, b.ch) && pre_break_extra(a) <= FIT_EPS);
     (start + 1..=i).rev().find(|&j| allowed(j)).unwrap_or(i)
 }
 
@@ -1015,8 +1033,7 @@ pub fn greedy(
             if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
                 if g.ch == SOFT_HYPHEN {
                     if may_hyphenate(hyphens) {
-                        let hw = hyphen_width(g, &mut hy_cache);
-                        let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                        let hy = hyphen_room(g, sp, &mut hy_cache);
                         if x + hy <= w + shrink + FIT_EPS {
                             last_ok = Some((i + 1, true));
                         }
@@ -1029,8 +1046,7 @@ pub fn greedy(
                         last_natural = last_ok;
                     }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hw = hyphen_width(g, &mut hy_cache);
-                    let hy = (hw - hyphen_hang(g, hw, sp)).max(0.0);
+                    let hy = hyphen_room(g, sp, &mut hy_cache);
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
                     }
