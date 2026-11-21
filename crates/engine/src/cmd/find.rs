@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(query "find.find", "Find", ["Edit", "Find/Change"], None,
-            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells; start/end then index the cell's text)",
+            "{find, grep?: bool, caseSensitive?: bool, wholeWord?: bool, scope?: document|story|selection, story?, findFormat?: {charStyle?, paraStyle?, chars?: resolved character attributes} (Find Format: only text with it all through; with an empty find, each stretch of text with it), change?|first?|found?|attrs?|charStyle?|paraStyle?: ignored (find.change takes them; one request serves all three Find/Change commands)} → matches [{story, start, end, text, cell?: {table, row, col}}] (document scope also searches table cells and footnotes; start/end then index the cell's or footnote's text; a footnote match has cell {table: 18446744073709551615, row: footnote id, col: 0})",
             has_doc, find),
         cmd!(
             "find.change",
@@ -442,7 +442,7 @@ impl FindContext {
         self.last_match_end = None;
         self.order = (0..self.targets.len()).collect();
         let caret = st.selection.text.filter(|_| st.selection.cells.is_none());
-        // A caret in a searched cell starts there; one in a footnote starts at its story.
+        // A caret in a searched cell or footnote starts there.
         let start = st.selection.text.and_then(|t| {
             let at = |want: Option<CellAddr>| self.targets.iter().position(|(sid, cell, _)| *sid == t.story && *cell == want);
             at(t.cell).or_else(|| at(None))
@@ -519,7 +519,7 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
             target_text(d, t.story, None, &r)?;
             vec![(t.story, None, r)]
         }
-        // Table cells hold their own text outside `stories`; search them right after the story that anchors the table.
+        // Table cells and footnotes hold their own text outside `stories`; search them right after the story that anchors them.
         Domain::Document => d
             .stories
             .values()
@@ -528,7 +528,8 @@ fn scope(s: &Session, p: &Value) -> Result<FindContext> {
                     let cols = t.ncols().max(1);
                     t.cells.iter().enumerate().map(move |(i, c)| (x.id, Some(CellAddr { table: *id, row: i / cols, col: i % cols }), 0..c.text.len()))
                 });
-                std::iter::once((x.id, None, 0..x.len())).chain(cells)
+                let notes = x.notes.iter().map(move |n| (x.id, Some(CellAddr::footnote(n.id)), 0..n.text.len()));
+                std::iter::once((x.id, None, 0..x.len())).chain(cells).chain(notes)
             })
             .collect(),
     };
