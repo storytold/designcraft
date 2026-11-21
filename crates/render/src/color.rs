@@ -61,6 +61,10 @@ pub(crate) fn effect_reach(doc: &Document) -> f64 {
     for it in doc.spreads.iter().flat_map(|sp| &sp.items).chain(doc.parents.iter().flat_map(|p| &p.items)) {
         it.walk(&mut add);
     }
+    // Anchored objects live in their stories, not on a spread.
+    for o in doc.stories.values().flat_map(|s| &s.objects) {
+        o.item.walk(&mut add);
+    }
     reach
 }
 
