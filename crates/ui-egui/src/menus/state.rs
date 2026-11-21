@@ -191,8 +191,24 @@ pub fn menu_enabled(app: &DesignApp, id: &str) -> bool {
     if id == "app.graphicCell" {
         return enabled(app, "table.placeGraphic");
     }
-    if id.starts_with("fit.") {
-        return enabled(app, "object.fit");
+    if id == "app.fittingOptions" {
+        // The dialog reads the first selected item. The other graphic commands look at the whole selection.
+        return app
+            .session
+            .active()
+            .is_some_and(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)).is_some_and(|it| it.graphic().is_some()));
+    }
+    if id.starts_with("fit.") || id == "object.clearFittingOptions" {
+        let command = if id == "object.clearFittingOptions" { id } else { "object.fit" };
+        return enabled(app, command)
+            && (id == "fit.frameToContent"
+                || app.session.active().is_some_and(|st| {
+                    st.selection
+                        .items
+                        .iter()
+                        .filter_map(|id| st.doc.item(*id))
+                        .any(|it| it.graphic().is_some() && !it.locked && st.doc.layer(it.layer).is_none_or(|layer| !layer.locked))
+                }));
     }
     // Em Space and En Space go in at an insertion point only; they do not replace selected text.
     if matches!(id, "app.insertEmSpace" | "app.insertEnSpace") {

@@ -47,8 +47,8 @@ pub(super) const CONTEXT_OBJECT: &[&str] = &[
     "-",
 ];
 
-/// Added to the object menu when a graphic frame is selected.
-pub(super) const CONTEXT_GRAPHIC_FRAME: &[&str] = &["menu:Object/Fitting"];
+/// Added once to the object menu when a graphic or text frame is selected.
+pub(super) const CONTEXT_FITTING: &[&str] = &["menu:Object/Fitting"];
 
 pub(super) const CONTEXT_OBJECT_TAIL: &[&str] = &["menu:Object/Content", "menu:Object/Effects"];
 
@@ -98,7 +98,7 @@ pub(super) const CONTEXT_CANVAS: &[&str] = &[
 const CONTEXT_PATH: &str = "Context";
 
 /// The entries of a canvas context menu for the current selection.
-fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
+pub(super) fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
     match kind {
         ContextMenu::Object => {
             let (graphic, text) = app.session.active().map_or((false, false), |st| {
@@ -106,8 +106,8 @@ fn context_entries(app: &DesignApp, kind: ContextMenu) -> Vec<&'static str> {
                 (items().any(|it| matches!(it.content, designcraft_doc::Content::Graphic(_))), items().any(|it| it.is_text_frame()))
             });
             let mut v = CONTEXT_OBJECT.to_vec();
-            if graphic {
-                v.extend(CONTEXT_GRAPHIC_FRAME);
+            if graphic || text {
+                v.extend(CONTEXT_FITTING);
             }
             v.extend(CONTEXT_OBJECT_TAIL);
             if text {
