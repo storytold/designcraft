@@ -68,6 +68,7 @@ impl Session {
         }
         self.tool = designcraft_tools::create(id);
         self.temp_tool = None;
+        self.refused_gesture = false;
         if matches!(self.tool.id(), "selection" | "directSelection") {
             self.last_selection_tool = self.tool.id();
         }
@@ -273,7 +274,10 @@ impl Session {
     pub fn run_actions(&mut self, actions: Vec<Action>) -> Result<()> {
         for a in actions {
             match a {
-                Action::Begin(label) => self.begin_interaction(&label)?,
+                Action::Begin(label) => self.begin_gesture(&label)?,
+                // A refused gesture leaves the open interaction alone until it ends.
+                Action::Preview(..) if self.refused_gesture => {}
+                Action::Commit | Action::Cancel if self.refused_gesture => self.refused_gesture = false,
                 Action::Preview(cmd, p) => self.preview(&cmd, p)?,
                 Action::Commit => self.commit_interaction()?,
                 Action::Cancel => self.cancel_interaction(),
@@ -289,10 +293,40 @@ impl Session {
         Ok(())
     }
 
+    /// Open an interaction (a dialog's preview) on the active document. Marked text of an IME
+    /// composition is kept as typed first. Fails while another interaction is open.
     pub fn begin_interaction(&mut self, label: &str) -> Result<()> {
+        self.end_composition()?;
+        self.open_interaction(label, false)
+    }
+
+    /// A tool's Begin. The tool's own gesture on this document that never got its end (a release
+    /// lost to a tool or document switch) is kept as its own undo step first. While another
+    /// interaction is open (a dialog's preview) the gesture is refused, and its previews, commit and
+    /// cancel are dropped.
+    fn begin_gesture(&mut self, label: &str) -> Result<()> {
+        if self.active().is_some_and(|st| st.interaction.as_ref().is_some_and(|it| it.tool)) {
+            self.commit_interaction()?;
+        }
+        let r = self.open_interaction(label, true);
+        self.refused_gesture = r.is_err();
+        r
+    }
+
+    fn open_interaction(&mut self, label: &str, tool: bool) -> Result<()> {
         let st = self.doc_mut()?;
-        st.interaction =
-            Some(Interaction { label: label.into(), doc: st.doc.clone(), selection: st.selection.clone(), preview: None, revision: st.revision });
+        // Replacing an open interaction would leave its preview in the document with no undo step.
+        if let Some(open) = &st.interaction {
+            return Err(EngineError::Other(format!("{} is in progress", open.label)));
+        }
+        st.interaction = Some(Interaction {
+            label: label.into(),
+            doc: st.doc.clone(),
+            selection: st.selection.clone(),
+            preview: None,
+            revision: st.revision,
+            tool,
+        });
         Ok(())
     }
 
