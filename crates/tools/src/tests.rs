@@ -2616,3 +2616,120 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }
+
+#[test]
+fn direct_selection_and_type_tool_reach_items_in_group_and_nested_groups() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+
+    // Create a text frame and a rectangle
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "child text", ParaFormat::default()).unwrap();
+    let child1 = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+
+    let rid = ItemId(d.alloc());
+    let rect = Item::new(rid, lid, Shape::Rectangle, shapes::rectangle(Rect::new(220.0, 100.0, 320.0, 200.0)));
+    let child2 = std::sync::Arc::new(rect);
+
+    // Inner group containing both children
+    let inner_gid = ItemId(d.alloc());
+    let mut inner_g = Item::new(inner_gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    inner_g.content = designcraft_doc::item::Content::Group { items: vec![child1, child2] };
+
+    // Outer group containing the inner group
+    let outer_gid = ItemId(d.alloc());
+    let mut outer_g = Item::new(outer_gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    outer_g.content = designcraft_doc::item::Content::Group { items: vec![std::sync::Arc::new(inner_g)] };
+    d.insert_item(SpreadRef::Doc(0), outer_g, None).unwrap();
+
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    let mut dt = create("directSelection");
+    let mut st = create("selection");
+    let mut tt = create("type");
+
+    // Standard Selection tool: single click selects top-level group outer_gid
+    let a_st = st.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_st, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [outer_gid.0], "content": false}))]);
+
+    // Direct Selection tool: single click on child1 (nested in 2 levels of groups) directly selects child1
+    let a_dt1 = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_dt1, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [fid.0], "content": true}))]);
+
+    // Direct Selection tool: single click on child2 directly selects child2
+    let a_dt2 = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 250.0, 150.0));
+    assert_eq!(a_dt2, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": [rid.0], "content": true}))]);
+
+    // Type tool: single click on nested text frame child1 places caret at click position
+    let a_tt1 = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_tt1, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+
+    // Type tool: double click on nested text frame child1 selects word at click position
+    let a_tt2 = tt.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, 150.0, 150.0).with_clicks(2));
+    assert_eq!(a_tt2, vec![Action::Exec("text.selectAt".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0], "unit": "word"}))]);
+}
+
+#[test]
+fn type_tool_and_direct_selection_reject_items_in_locked_ancestor_groups() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+
+    let (_fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    let child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.locked = true;
+    g.content = designcraft_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+
+    let mut dt = create("directSelection");
+    let mut tt = create("type");
+
+    // Direct Selection: clicking item inside locked group does not select it
+    let a_dt = dt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_dt, vec![Action::Exec("selection.set".into(), serde_json::json!({"ids": []}))]);
+
+    // Type tool: clicking text frame inside locked group does not place caret
+    let a_tt = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a_tt, vec![]);
+}
+
+#[test]
+fn type_tool_places_the_caret_in_a_standalone_locked_text_frame() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    d.item_mut(fid).unwrap().locked = true;
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    // Locked text frames take the caret; only a lock inherited from a group refuses it.
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}
+
+#[test]
+fn type_tool_places_the_caret_in_a_locked_text_frame_in_an_unlocked_group() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "locked text", ParaFormat::default()).unwrap();
+    let mut child = d.spread_mut(SpreadRef::Doc(0)).unwrap().items.pop().unwrap();
+    std::sync::Arc::make_mut(&mut child).locked = true;
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, designcraft_geom::PathData::default());
+    g.content = designcraft_doc::item::Content::Group { items: vec![child] };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let s = Selection::default();
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut tt = create("type");
+    let a = tt.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 150.0));
+    assert_eq!(a, vec![Action::Exec("text.placeCaret".into(), serde_json::json!({"frame": fid.0, "point": [150.0, 150.0]}))]);
+}

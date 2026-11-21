@@ -3485,3 +3485,77 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
 }
+
+/// A document with two text frames grouped, and that group grouped with a third frame; returns
+/// the harness and the ids of the three frames.
+fn nested_groups() -> (Harness<'static, DesignApp>, [u64; 3]) {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let a = app.run("frame.create", json!({"rect": [36, 36, 200, 120], "content": "text", "text": "A"})).unwrap()["id"].as_u64().unwrap();
+    let b = app.run("frame.create", json!({"rect": [36, 150, 200, 230], "content": "text", "text": "B"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+    let inner = app.run("object.group", json!({})).unwrap()["id"].as_u64().unwrap();
+    let c = app.run("frame.create", json!({"rect": [36, 260, 200, 340], "content": "text", "text": "C"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [inner, c]})).unwrap();
+    app.run("object.group", json!({})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    (harness(app), [a, b, c])
+}
+
+#[test]
+fn direct_selection_click_selects_items_in_nested_groups() {
+    let (mut h, [a, _, c]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+    h.run_steps(3);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    click(&mut h, on_a);
+    h.run_steps(3);
+    assert_eq!(selected(&h), [a], "the clicked item is selected directly, not its group");
+    let on_c = screen_of(&h, 60.0, 290.0);
+    click(&mut h, on_c);
+    h.run_steps(3);
+    assert_eq!(selected(&h), [c]);
+}
+
+#[test]
+fn direct_selection_right_click_keeps_the_picked_item_in_a_group() {
+    let (mut h, [a, _, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "directSelection"})).unwrap();
+    h.run_steps(3);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    click(&mut h, on_a);
+    h.run_steps(3);
+    right_click(&mut h, on_a);
+    assert_eq!(selected(&h), [a], "right-clicking the picked item does not replace it with its group");
+}
+
+#[test]
+fn type_tool_click_in_a_grouped_text_frame_places_the_caret_and_types() {
+    let (mut h, [_, b, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+    h.run_steps(3);
+    let on_b = screen_of(&h, 60.0, 190.0);
+    click(&mut h, on_b);
+    h.run_steps(5);
+    assert!(h.state_mut().session.wants_text(), "a click on a grouped text frame starts text editing");
+    let sel = h.state().session.doc().unwrap().selection.text;
+    assert_eq!(sel.and_then(|t| t.frame), Some(designcraft_doc::ItemId(b)), "the caret is in the clicked frame");
+    h.state_mut().run("text.insert", json!({"text": "!"})).unwrap();
+    let story = h.state().session.doc().unwrap().doc.text_story(sel.unwrap().story, None).unwrap().text.clone();
+    assert!(story.contains('!'), "typed text goes into the grouped frame's story");
+}
+
+#[test]
+fn right_clicking_a_grouped_text_frame_while_typing_places_the_caret_there() {
+    let (mut h, [_, b, _]) = nested_groups();
+    h.state_mut().run("tool.select", json!({"tool": "type"})).unwrap();
+    h.run_steps(3);
+    let on_b = screen_of(&h, 60.0, 190.0);
+    click(&mut h, on_b);
+    h.run_steps(5);
+    let on_a = screen_of(&h, 60.0, 60.0);
+    right_click(&mut h, on_a);
+    let frame = h.state().session.doc().unwrap().selection.text.and_then(|t| t.frame);
+    assert_ne!(frame, Some(designcraft_doc::ItemId(b)), "the caret moved to the frame under the pointer");
+    assert!(frame.is_some());
+}
