@@ -633,21 +633,15 @@ impl Document {
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
     /// Frames hit by area if they have a fill or are text/graphic frames; otherwise near the outline.
     pub fn hit_item(&self, si: usize, p: Point, tol: f64) -> Option<ItemId> {
-        self.hit_item_where(si, p, tol, |_| true)
-    }
-
-    /// [`Self::hit_item`] among the objects `take` accepts: the frontmost of those under `p`,
-    /// whatever lies above it (a click passes through locked objects to select what is behind).
-    pub fn hit_item_where(&self, si: usize, p: Point, tol: f64, take: impl Fn(&Item) -> bool) -> Option<ItemId> {
         let sp = self.spreads.get(si)?;
         let mut items: Vec<&Arc<Item>> = sp.items.iter().collect();
         items.sort_by_key(|i| self.layer_rank(i.layer));
         for it in items.into_iter().rev() {
             let layer = self.layer(it.layer);
-            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) || !take(it) {
+            if it.hidden || layer.is_some_and(|l| !l.visible || l.locked) {
                 continue;
             }
-            if item_hit_where(it, p, tol, &take) {
+            if item_hit(it, p, tol) {
                 return Some(it.id);
             }
         }

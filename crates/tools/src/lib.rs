@@ -254,13 +254,14 @@ impl ToolContext<'_> {
     /// with "Prevent Selection of Locked Objects", and a click reaches what is behind them.
     pub fn hit_unlocked(&self, p: Point) -> Option<(SpreadRef, ItemId)> {
         let (sr, sp) = self.layout.spread_at(p)?;
-        let SpreadRef::Doc(si) = sr else {
-            // Editing a parent page: its objects pass the same lock checks.
-            let s = self.doc.spread(sr)?;
-            let open = |it: &designcraft_doc::Item| !it.locked && !it.hidden && !self.doc.layer(it.layer).is_some_and(|l| l.locked || !l.visible);
-            return s.items.iter().rev().find(|it| open(it) && designcraft_doc::edit_hit_where(it, sp, self.tol(4.0), &open)).map(|it| (sr, it.id));
-        };
-        self.doc.hit_item_where(si, sp, self.tol(4.0), |it| !it.locked).map(|id| (sr, id))
+        let s = self.doc.spread(sr)?;
+        // One test for the objects and the children of groups, on document and parent spreads
+        // alike: not locked, not hidden, on a visible, unlocked layer.
+        let open = |it: &designcraft_doc::Item| !it.locked && !it.hidden && !self.doc.layer(it.layer).is_some_and(|l| l.locked || !l.visible);
+        // Front to back as drawn: by layer, then by stacking order within a layer.
+        let mut items: Vec<_> = s.items.iter().collect();
+        items.sort_by_key(|it| self.doc.layer_rank(it.layer));
+        items.into_iter().rev().find(|it| open(it) && designcraft_doc::edit_hit_where(it, sp, self.tol(4.0), &open)).map(|it| (sr, it.id))
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the

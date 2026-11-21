@@ -2615,9 +2615,10 @@ fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
     // A quarter turn: the columns stack down the canvas.
     let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
     assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
+}
 
 /// Locked objects can't be selected with the selection tools: a click on one selects nothing, or
-/// passes through it to an object behind it; a marquee leaves it out.
+/// passes through it to an object behind it.
 #[test]
 fn locked_objects_are_not_selected_and_clicks_pass_through_them() {
     let mut d = Document::new(&NewDocument::default());
