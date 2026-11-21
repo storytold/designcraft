@@ -271,6 +271,19 @@ fn contact_sheet_strings_are_translated_in_every_interface_language() {
     assert_eq!(["Columns", "Rows", "Gutter"].map(|s| tr("es", s)), ["Columnas", "Filas", "Medianil"]);
 }
 
+/// Find/Change's status lines read in every interface language, the count kept.
+#[test]
+fn find_change_status_lines_are_translated_in_every_interface_language() {
+    let strings = ["{count} match(es)", "{count} replacement(s) made", "{count} found", "{count} changed", "Found", "No matches"];
+    for (code, name) in LANGUAGES.iter().filter(|(code, _)| !code.is_empty()) {
+        for s in strings {
+            let text = tr(code, s);
+            assert!(text != s && !text.trim().is_empty(), "{name}: {s:?} is still English");
+            assert_eq!(text.contains("{count}"), s.contains("{count}"), "{name}: {s:?}");
+        }
+    }
+}
+
 /// The Links panel's captions for a status its background check hasn't found yet, and for when
 /// the check can't run.
 #[test]
