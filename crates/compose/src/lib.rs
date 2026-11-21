@@ -5710,7 +5710,7 @@ struct DropCap {
 /// steps apart. With `align_left` its ink starts at the indent (see [`DropCap::lsb`]). Tabs inside
 /// it advance to the stops of `tabs` (stops and the start-side indent; in right-to-left paragraphs
 /// both measured from the column's right edge). Spaces right after it join it at its size without
-/// widening it.
+/// widening it. A CJK drop cap, which has no cap height, is sized by its ink instead.
 #[allow(clippy::too_many_arguments)]
 fn split_drop_cap(
     db: &ScopedFonts<'_>,
@@ -5745,9 +5745,26 @@ fn split_drop_cap(
         Some(b) if b > 0.0 && own_size > 0.0 && (own_size / b).is_finite() => own_size / b,
         _ => 1.0,
     };
-    let k = if own > 0.0 { (drop + cap) / own * ratio } else { 1.0 };
+    // A CJK drop cap (Hangul, Han, kana) has no cap height: its ink runs above the cap line and
+    // below the baseline. It's sized by its ink instead, ink to ink as a Latin cap is (the body's
+    // capitals are inked from the cap line down to the baseline): from the ink top of the CJK text
+    // after it down to that text's ink bottom on line `lines`, and raised (or, inked only above
+    // it, lowered) so its ink bottom sits there. Spaces among its characters don't count; a Latin
+    // letter or a digit makes it a mixed cap, sized by the cap height.
+    let cjk = dc.iter().any(|g| upright_in_vertical(g.ch)) && dc.iter().all(|g| g.len == 0 || g.is_space() || upright_in_vertical(g.ch));
+    let (ink_top, ink_bottom) = if cjk { ink_extent(db, &dc) } else { (0.0, 0.0) };
+    let (body_top, body_bottom) =
+        if cjk { ink_extent(db, glyphs.iter().filter(|g| g.len > 0 && upright_in_vertical(g.ch)).take(16)) } else { (0.0, 0.0) };
+    // A one-line drop cap isn't enlarged (see below), so it stays on its baseline. A flat cap
+    // (一, ー, 〜: ink under a third of an em tall) is a stroke, not a letter-sized shape: sized by
+    // its ink it would be blown up to fill the drop, so it keeps the cap height.
+    let tall = ink_top + ink_bottom > 0.0 && ink_top + ink_bottom >= own_size / 3.0;
+    let by_ink = cjk && lines > 1 && tall && body_top > 0.0;
+    let (own, target) = if by_ink { (ink_top + ink_bottom, drop + body_top + body_bottom) } else { (own, drop + cap) };
+    let k = if own > 0.0 { target / own * ratio } else { 1.0 };
     let k = if lines == 1 { k.min(1.0) } else { k };
     let k = if k.is_finite() && k > 0.0 { k.min(1000.0) } else { 1.0 };
+    let raise = if by_ink { ink_bottom * k - body_bottom } else { 0.0 };
     for g in dc.iter_mut().chain(after.iter_mut()) {
         g.adv *= k;
         g.dx *= k;
@@ -5761,6 +5778,9 @@ fn split_drop_cap(
         g.xh *= k;
         g.size *= k;
         g.space *= k;
+    }
+    for g in &mut dc {
+        g.dy -= raise;
     }
     let lsb = match dc.first() {
         Some(g) if align_left => {
@@ -5786,8 +5806,25 @@ fn split_drop_cap(
     }
     let width = dc.iter().map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
+    // A CJK cap sized by its ink reaches its ink top above the baseline.
+    let cap = if by_ink { own * k - body_bottom } else { dc.iter().map(|g| g.cap).fold(0.0, f64::max) };
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
+}
+
+/// How far `glyphs`' ink reaches above and below the baseline, in points (the highest top and the
+/// lowest bottom; glyphs without ink don't count). Both are signed: ink wholly above the baseline
+/// has a negative bottom. (0, 0) when none has ink.
+fn ink_extent<'g>(db: &ScopedFonts<'_>, glyphs: impl IntoIterator<Item = &'g Glyph>) -> (f64, f64) {
+    glyphs
+        .into_iter()
+        .filter_map(|g| {
+            let ink = designcraft_geom::Shape::bounding_box(&*db.outline(g.face.get(), g.gid));
+            // Outlines are y-down: y0 is the top, y1 the bottom.
+            let (t, b) = (-(g.dy + ink.y0 * g.sy), g.dy + ink.y1 * g.sy);
+            (ink.height() > 0.0 && t.is_finite() && b.is_finite()).then_some((t, b))
+        })
+        .reduce(|(top, bottom), (t, b)| (top.max(t), bottom.max(b)))
+        .unwrap_or((0.0, 0.0))
 }
 
 impl DropCap {

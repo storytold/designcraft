@@ -5053,6 +5053,140 @@ fn drop_cap_box_follows_vertical_justification() {
     assert!((db.rect.y0 - da.rect.y0 - dy).abs() < 1e-6 && (db.rect.y1 - da.rect.y1 - dy).abs() < 1e-6);
 }
 
+/// Ink top and bottom of a placed glyph on a line at `baseline`, y-down.
+fn ink_of(g: &PlacedGlyph, baseline: f64) -> (f64, f64) {
+    let ink = designcraft_geom::Shape::bounding_box(&*designcraft_fonts::FontDb::global().outline(&g.face, g.gid));
+    (baseline + g.y + ink.y0 * g.sy, baseline + g.y + ink.y1 * g.sy)
+}
+
+/// Hangul has no cap height: a Hangul drop cap scaled by the cap height comes out too large and
+/// runs into the line below its last one.
+#[test]
+fn a_hangul_drop_cap_is_sized_by_its_ink() {
+    // 가 is drawn as g (ink below the baseline, none up to the cap line), the text after it as H.
+    let mut map = vec![('가', 'g'), (' ', ' ')];
+    map.extend("나다라마바사".chars().map(|c| (c, 'H')));
+    let font = designcraft_fonts::testing::font_mapping("DC Test Drop Hangul", &map).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = ["가나다라 마바사"; 30].join(" ");
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, 1));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test Drop Hangul".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    assert_eq!((dc.byte, dc.len), (0, '가'.len_utf8()));
+    let (top, bottom) = ink_of(dc, lines[0].baseline);
+    let body = lines[0].glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap();
+    // Its ink runs from the ink top of the text on line 1 down to the ink bottom of the text on
+    // line 3 (its 가s, drawn as g), not past it into line 4.
+    let text_bottom = lines[2].glyphs.iter().map(|g| ink_of(g, lines[2].baseline)).filter(|(t, b)| b > t).map(|(_, b)| b).fold(f64::MIN, f64::max);
+    assert!(text_bottom > lines[2].baseline + 1.0, "line 3's text is inked below its baseline");
+    assert!((bottom - text_bottom).abs() < 0.01, "ink bottom {bottom}, line 3's text {text_bottom}");
+    assert!((top - ink_of(body, lines[0].baseline).0).abs() < 0.01, "ink top {top}");
+    // A one-line drop cap keeps its size and its baseline.
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(1, 1));
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some("DC Test Drop Hangul".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let (dc, body) = (&line.glyphs[0], line.glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap());
+    assert!((dc.sy - body.sy).abs() < 1e-9 && dc.y.abs() < 1e-9, "one-line drop cap: sy {} vs {}, y {}", dc.sy, body.sy, dc.y);
+}
+
+/// A three-line drop cap of 가 drawn as `glyph` (font `family`), the text after it (no 가) as H,
+/// after `edit` (given the story and its text's length).
+fn hangul_drop_cap(family: &str, glyph: char, edit: impl FnOnce(&mut designcraft_doc::Story, usize)) -> ComposedStory {
+    hangul_drop_cap_of(family, glyph, 'H', "가", edit)
+}
+
+/// A three-line drop cap of `cap` (its 가 drawn as `glyph`), the text after it drawn as `body`.
+fn hangul_drop_cap_of(family: &str, glyph: char, body: char, cap: &str, edit: impl FnOnce(&mut designcraft_doc::Story, usize)) -> ComposedStory {
+    let mut map = vec![('가', glyph), (' ', ' ')];
+    map.extend("나다라마바사".chars().map(|c| (c, body)));
+    let font = designcraft_fonts::testing::font_mapping(family, &map).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let text = format!("{cap}{}", ["나다라 마바사"; 30].join(" "));
+    let (mut d, sid, _) = drop_doc(&text, drop_cap(3, cap.chars().count() as u32));
+    let story = d.story_mut(sid).unwrap();
+    story.format_chars(0..text.len(), |f| f.over.font_family = Some(family.into()));
+    edit(story, text.len());
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+/// CJK text is inked below its baseline too: a CJK drop cap is fitted ink to ink, its ink bottom
+/// on the text's ink bottom on its last line, not on the baseline above it.
+#[test]
+fn a_cjk_drop_cap_ends_at_the_ink_bottom_of_the_text_beside_it() {
+    // The text after the drop cap is drawn as p (ink below the baseline).
+    let cs = hangul_drop_cap_of("DC Test Drop Hangul Inked Text", 'g', 'p', "가", |_, _| {});
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    let (top, bottom) = ink_of(dc, lines[0].baseline);
+    let body = |l: usize| {
+        let line = lines[l];
+        // The first inked glyph of the text (spaces have no ink).
+        let inked = line.glyphs.iter().filter(|g| g.byte > 0).map(|g| ink_of(g, line.baseline)).find(|(t, b)| b > t);
+        inked.unwrap()
+    };
+    assert!(body(2).1 > lines[2].baseline + 1.0, "the text is inked below its baseline");
+    assert!((bottom - body(2).1).abs() < 0.01, "ink bottom {bottom}, the text's on line 3 {}", body(2).1);
+    assert!((top - body(0).0).abs() < 0.01, "ink top {top}, the text's on line 1 {}", body(0).0);
+}
+
+/// A space among a CJK drop cap's characters (가 and a space, two characters) keeps it CJK.
+#[test]
+fn a_space_in_a_cjk_drop_cap_keeps_it_sized_by_its_ink() {
+    let cs = hangul_drop_cap_of("DC Test Drop Hangul Space", 'g', 'H', "가 ", |_, _| {});
+    let lines = all_lines(&cs);
+    let dc = &lines[0].glyphs[0];
+    let (_, bottom) = ink_of(dc, lines[0].baseline);
+    assert!((bottom - lines[2].baseline).abs() < 0.01, "ink bottom {bottom}, line 3 {}", lines[2].baseline);
+}
+
+/// Many CJK letters have no ink below the baseline (二, へ, ハ, and 으 in some Hangul fonts): a
+/// drop cap of one is lowered so its ink bottom still sits on its last line's baseline.
+#[test]
+fn a_cjk_drop_cap_inked_above_the_baseline_is_lowered_onto_it() {
+    // ^ is inked from 0.28 em up to 0.67 em, none of it below the baseline.
+    let cs = hangul_drop_cap("DC Test Drop Hangul Above", '^', |_, _| {});
+    let lines = all_lines(&cs);
+    let (dc, body) = (&lines[0].glyphs[0], lines[0].glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap());
+    let (top, bottom) = ink_of(dc, lines[0].baseline);
+    assert!((bottom - lines[2].baseline).abs() < 0.01, "ink bottom {bottom}, line 3 {}", lines[2].baseline);
+    assert!((top - ink_of(body, lines[0].baseline).0).abs() < 0.01, "ink top {top}");
+}
+
+/// A flat CJK cap (一, ー, 〜) is a stroke, not a letter-sized shape: sized by its ink it would be
+/// blown up to fill the drop. It keeps the cap-height sizing.
+#[test]
+fn a_flat_cjk_drop_cap_is_sized_by_the_cap_height() {
+    // ~ is inked from 0.26 em up to 0.4 em.
+    let cs = hangul_drop_cap("DC Test Drop Hangul Flat", '~', |_, _| {});
+    let lines = all_lines(&cs);
+    let (dc, body) = (&lines[0].glyphs[0], lines[0].glyphs.iter().find(|g| g.byte == '가'.len_utf8()).unwrap());
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {}", lines[0].baseline + dc.y);
+    let top = lines[2].baseline - cap_of(dc);
+    assert!((top - (lines[0].baseline - cap_of(body))).abs() < 0.01, "cap top {top}");
+}
+
+/// A CJK drop cap is fitted to the unshifted text, as a Latin one is to its cap height: a baseline
+/// shift on the drop cap moves it by that shift, one on the text beside it leaves it alone.
+#[test]
+fn a_cjk_drop_cap_is_fitted_before_baseline_shift() {
+    let family = "DC Test Drop Hangul Shift";
+    // The drop cap's ink bottom (relative to line 3's baseline) and its scale.
+    let fit = |cs: &ComposedStory| {
+        let lines = all_lines(cs);
+        let dc = &lines[0].glyphs[0];
+        (ink_of(dc, lines[0].baseline).1 - lines[2].baseline, dc.sy)
+    };
+    let plain = fit(&hangul_drop_cap(family, 'g', |_, _| {}));
+    let cap = '가'.len_utf8();
+    let raised = fit(&hangul_drop_cap(family, 'g', |s, _| s.format_chars(0..cap, |f| f.over.baseline_shift = Some(2.0))));
+    assert!((raised.0 - (plain.0 - 2.0)).abs() < 1e-6 && (raised.1 - plain.1).abs() < 1e-9, "{raised:?} vs {plain:?}");
+    let text = fit(&hangul_drop_cap(family, 'g', |s, n| s.format_chars(cap..n, |f| f.over.baseline_shift = Some(2.0))));
+    assert!((text.0 - plain.0).abs() < 1e-6 && (text.1 - plain.1).abs() < 1e-9, "{text:?} vs {plain:?}");
+}
+
 #[test]
 fn drop_cap_spans_lines_and_indents_them() {
     let text = [LOREM; 2].join(" ");
