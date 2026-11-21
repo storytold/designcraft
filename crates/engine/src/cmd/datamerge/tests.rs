@@ -1849,3 +1849,27 @@ fn hyperlink_over_marker_does_not_hide_its_field_usage() {
     assert_eq!(fields[0]["uses"], 1);
     assert_eq!(fields[1]["uses"], 1);
 }
+
+/// A styled QR code made with Generate QR Code and used as a QR placeholder keeps its dots,
+/// colours and background when Data Merge fills in each record's content.
+#[test]
+fn a_styled_qr_placeholder_keeps_its_style() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "#Code\nhello\n");
+    exec(&mut s, "swatch.create", json!({"name": "Ink", "color": "#123456"}));
+    let made = exec(
+        &mut s,
+        "object.qrCode",
+        json!({"type": "text", "content": "placeholder", "rect": [10.0, 10.0, 110.0, 110.0], "modules": "dots", "color": "Ink", "background": "[Paper]"}),
+    );
+    let frame = made["frame"].as_u64().unwrap();
+    exec(&mut s, "data.placeholder.add", json!({"field": "Code", "item": frame}));
+    exec(&mut s, "data.merge", json!({}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let codes: Vec<&designcraft_doc::Item> =
+        doc.spreads.iter().flat_map(|sp| &sp.items).flat_map(|it| it.children()).map(|c| &**c).filter(|c| c.alt_text.ends_with("hello")).collect();
+    let [code] = codes.as_slice() else { panic!("one merged code: {codes:?}") };
+    assert!(code.qr.is_some(), "still dotted");
+    assert_eq!(code.fill.swatch, "Ink", "still in its colour");
+}

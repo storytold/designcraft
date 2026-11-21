@@ -355,6 +355,35 @@ fn replace_item(d: &mut designcraft_doc::Document, id: ItemId, new: Item) -> Res
     Ok(())
 }
 
+/// Data Merge filling a QR placeholder that holds a generated code: the code drawn anew for
+/// `text` with its own style and colours, in its frame; a logo and anything else in the frame
+/// stay. None when `frame` holds no generated code (the merge then places a plain one).
+pub(crate) fn merge_redraw(d: &mut designcraft_doc::Document, frame: ItemId, text: &str) -> Option<std::result::Result<(), String>> {
+    let f = d.item(frame)?.clone();
+    let code_id = f.children().iter().rev().find_map(|c| code_under(c, 0))?;
+    let kids = f.children().to_vec();
+    let code = kids.iter().find(|i| i.id == code_id).map(|i| (**i).clone())?;
+    let finders = kids.iter().find(|i| i.qr_part == Some(QrPart::Finders)).map(|i| (**i).clone());
+    let style = code.qr.unwrap_or_default();
+    let colors = Colors::of(d, code_id);
+    let parts = match qr_parts(d, code.layer, text, f.inner_bounds(), &style, &colors, Some(&code), finders.as_ref()) {
+        Ok(p) => p,
+        Err(e) => return Some(Err(e)),
+    };
+    // The new parts where the old code was, back to front; the rest (a logo above it) as it was.
+    let mut items: Vec<std::sync::Arc<Item>> = Vec::new();
+    for k in &kids {
+        if k.id == code_id {
+            items.extend(parts.iter().cloned().map(std::sync::Arc::new));
+        } else if k.qr_part != Some(QrPart::Finders) {
+            items.push(k.clone());
+        }
+    }
+    let it = d.item_mut(frame)?;
+    it.content = Content::Group { items };
+    Some(Ok(()))
+}
+
 /// A new code's frame on `r`'s square: the background as its fill, no stroke.
 fn qr_frame(d: &mut designcraft_doc::Document, layer: designcraft_doc::LayerId, r: Rect, colors: &Colors) -> Item {
     let mut f = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(r));

@@ -709,6 +709,15 @@ fn place_qr(doc: &mut designcraft_doc::Document, item: ItemId, field: &str, cell
         report.warnings.push(format!("Record {record}, field {field}: the QR cell is empty."));
         return;
     }
+    // A styled code generated in the placeholder keeps its style, colours and logo.
+    match crate::cmd::qr::merge_redraw(doc, item, cell) {
+        Some(Ok(())) => return,
+        Some(Err(_)) => {
+            report.warnings.push(format!("Record {record}, field {field}: the QR content does not fit."));
+            return;
+        }
+        None => {}
+    }
     let Some(it) = doc.item(item).cloned() else {
         report.warnings.push(format!("Record {record}, field {field}: the QR content does not fit."));
         return;
