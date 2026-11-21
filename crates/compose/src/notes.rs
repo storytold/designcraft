@@ -70,11 +70,27 @@ fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_betw
     h.map_or(0.0, |h| h + descent)
 }
 
+/// The unit footnote numbers restart in (page, spread or section start) for a frame on `page`.
+fn restart_key(doc: &Document, page: Option<usize>) -> Option<usize> {
+    page.and_then(|p| match doc.footnote_options.restart {
+        NoteRestart::Never => None,
+        NoteRestart::Page => Some(p),
+        NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
+        NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
+    })
+}
+
 pub(crate) struct Notes {
     /// Byte offsets of the reference characters (index = footnote index).
     refs: Vec<usize>,
     /// Number of each footnote (assigned when its paragraph is shaped).
     numbers: Vec<u32>,
+    /// The restart unit each footnote was numbered in.
+    keys: Vec<Option<usize>>,
+    /// The restart unit a reference was found to land in when it was numbered in another one; its paragraph is laid again so the reference is numbered where it is. Kept across re-lays and replaced when a later re-lay moves the reference again; `moves` bounds the re-lays.
+    landed: HashMap<usize, Option<usize>>,
+    /// How often each reference has moved to another unit; bounded per reference so one moving back and forth cannot end the corrections of the others.
+    moves: Vec<u8>,
     /// Next number and the restart unit (page / spread / section start) it counts in.
     pub num: u32,
     pub key: Option<usize>,
@@ -95,6 +111,9 @@ impl Notes {
         let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
         Notes {
             numbers: vec![start; refs.len()],
+            keys: vec![None; refs.len()],
+            landed: HashMap::new(),
+            moves: vec![0; refs.len()],
             refs,
             num: start,
             key: None,
@@ -124,18 +143,19 @@ impl Notes {
     /// Number the references in a paragraph (shaped on `page`) and hand their labels to the shaper.
     pub fn number_refs(&mut self, doc: &Document, prange: Range<usize>, page: Option<usize>, sub: &mut SubstCtx) {
         let o = &doc.footnote_options;
-        let key = page.and_then(|p| match o.restart {
-            NoteRestart::Never => None,
-            NoteRestart::Page => Some(p),
-            NoteRestart::Spread => doc.page_loc(p).map(|l| l.0),
-            NoteRestart::Section => Some(doc.section_of(p).map_or(0, |s| s.start)),
-        });
+        let para_key = restart_key(doc, page);
         let a = self.refs.partition_point(|&b| b < prange.start);
         let b = self.refs.partition_point(|&b| b < prange.end);
         for k in a..b {
+            // A reference in a paragraph that runs on from an earlier page counts on the page it
+            // lands on (#2969).
+            let key = self.landed.get(&k).copied().unwrap_or(para_key);
             if o.restart != NoteRestart::Never && key != self.key {
                 self.key = key;
                 self.num = o.start_at;
+            }
+            if let Some(slot) = self.keys.get_mut(k) {
+                *slot = key;
             }
             self.numbers[k] = self.num;
             self.num = self.num.saturating_add(1);
@@ -143,6 +163,30 @@ impl Notes {
         }
         sub.note_position = o.ref_position;
         sub.note_style = (o.ref_char_style != designcraft_doc::NO_CHAR_STYLE).then(|| o.ref_char_style.clone());
+    }
+
+    /// Whether a footnote of `line_notes`, placed in a frame on `page`, was numbered in another
+    /// restart unit: its paragraph started on an earlier page. Records where it landed (again when a re-lay moves it, at most four times per reference)
+    /// so the paragraph can be laid again and the footnote numbered there.
+    pub fn moved_unit(&mut self, doc: &Document, line_notes: &[usize], page: Option<usize>) -> bool {
+        if doc.footnote_options.restart == NoteRestart::Never {
+            return false;
+        }
+        let landing = restart_key(doc, page);
+        let mut moved = false;
+        for &k in line_notes {
+            if self.keys.get(k).is_some_and(|&key| key != landing)
+                && self.landed.get(&k) != Some(&landing)
+                && self.moves.get(k).is_some_and(|&m| m < 4)
+            {
+                self.landed.insert(k, landing);
+                if let Some(m) = self.moves.get_mut(k) {
+                    *m += 1;
+                }
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Footnote indices referenced by a line's glyphs.
@@ -319,5 +363,48 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
     match crate::caret(&n.text, pos) {
         Some((_, x, bl, a, d)) => Some((fi, x + n.origin.x, bl + n.origin.y, a, d)),
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::notes::NoteRestart;
+    use designcraft_doc::{Document, ParaFormat, SpreadRef};
+    use designcraft_geom::Rect;
+
+    use super::Notes;
+
+    /// A reference whose label width moves it back and forth between two pages stops being
+    /// re-laid after a few moves, and the other references still move to the page they land on.
+    /// With one re-lay budget for the whole story, that reference used it up (#2969).
+    #[test]
+    fn a_reference_moving_back_and_forth_leaves_the_others_their_corrections() {
+        let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 600.0), lid, "One. Two.", ParaFormat::default()).unwrap();
+        d.footnote_options.restart = NoteRestart::Page;
+        {
+            let st = d.story_mut(sid).unwrap();
+            for word in ["Two.", "One."] {
+                let at = st.text.find(word).unwrap() + word.len();
+                st.insert_note(at, "Note.", ParaFormat::default());
+            }
+        }
+        let mut notes = Notes::new(&d, d.story(sid).unwrap());
+        assert_eq!(notes.refs.len(), 2);
+        notes.keys = vec![Some(0), Some(0)];
+        // Footnote 0 alternates between pages 1 and 0, renumbered on each re-lay.
+        let mut moves = 0;
+        for i in 0..40 {
+            let page = 1 - i % 2;
+            if notes.moved_unit(&d, &[0], Some(page)) {
+                moves += 1;
+                notes.keys[0] = Some(page);
+            }
+        }
+        assert_eq!(moves, 4);
+        // Footnote 1, numbered on page 0, lands on page 1.
+        assert!(notes.moved_unit(&d, &[1], Some(1)));
     }
 }

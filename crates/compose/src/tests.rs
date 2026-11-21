@@ -10489,3 +10489,30 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Restarting footnote numbers every page, a reference counts on the page it lands on. One in a
+/// paragraph that started on the page before was numbered there, and the next reference restarted
+/// the count, so the page's footnotes read 2, 1 (or 1, 1) instead of 1, 2 (#2969).
+#[test]
+fn footnote_numbers_restart_on_the_page_a_reference_lands_on() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let body = format!("Start.\n{LOREM} {LOREM} {LOREM} {LOREM} {LOREM} {LOREM} Across.\nNext.");
+    let (a, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 400.0, 160.0), lid, &body, ParaFormat::default()).unwrap();
+    let (b, _) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(36.0, 36.0, 400.0, 600.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(a, b).unwrap();
+    d.footnote_options.restart = designcraft_doc::notes::NoteRestart::Page;
+    {
+        let st = d.story_mut(sid).unwrap();
+        // From the end, so the offsets found stay valid.
+        for word in ["Next.", "Across.", "Start."] {
+            let at = st.text.find(word).unwrap() + word.len();
+            st.insert_note(at, "Note.", ParaFormat::default());
+        }
+    }
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let labels = |fid| cs.frame(fid).unwrap().notes.iter().map(|n| (n.index, n.label.clone())).collect::<Vec<_>>();
+    // The long paragraph starts on page 1 and its reference lands on page 2.
+    assert_eq!(labels(a), [(0, "1".to_string())]);
+    assert_eq!(labels(b), [(1, "1".to_string()), (2, "2".to_string())]);
+}
