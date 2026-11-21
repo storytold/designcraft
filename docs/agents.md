@@ -50,8 +50,9 @@ same references, and MCP's `batch` tool takes `commands` or `script` text with t
 `--all-pages` that follow them, so one run can write several sizes
 (`run --sample --scale 0.5 --export small.png --scale 2 --export large.png`); one with no export after it is an error.
 
-`--export` writes the file type its extension names: `.png` or `.jpg` (a page), `.pdf`, `.designcraft`, `.idml`,
-`.epub`, `.html`, and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
+`--export` writes the file type its extension names: `.png`, `.jpg`, or `.jpeg` (a page), `.pdf`,
+`.designcraft`, `.idml`, `.epub`, `.pptx` (one PowerPoint slide per document page), `.html` or `.htm`,
+and `.rtf` or `.txt` (the story being edited or of the selected frame). A name with no extension
 is a PNG of the page; another extension is an error, and nothing runs.
 
 ## Table of contents bookmarks
