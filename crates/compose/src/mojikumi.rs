@@ -40,6 +40,31 @@ fn em(g: &Glyph) -> f64 {
     g.face.units_per_em() * if g.upright { g.sy } else { g.sx }
 }
 
+/// Is `postscript_name` that of an Adobe-Japan1 CID font (Kozuka, Ryumin, ...)? InDesign classes
+/// characters of such fonts by CID, not by Unicode. This is a heuristic on the PostScript name's
+/// prefix, case-sensitive, and the list covers the Adobe faces named below only: another
+/// Adobe-Japan1 font whose name starts differently keeps the Unicode (ideograph) class.
+fn adobe_japan1_name(postscript_name: Option<&str>) -> bool {
+    const PREFIXES: [&str; 6] = ["Koz", "Ryumin", "GothicBBB", "FutoGo", "FutoMin", "MidashiGo"];
+    postscript_name.is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
+}
+
+/// Class of `c` set in a font with `postscript_name`. The whole CJK Compatibility block
+/// U+3300–U+33FF (square unit and abbreviation symbols such as ㎡ ㎏ ㎝) is ideographs by Unicode,
+/// but in an Adobe-Japan1 font (Kozuka) InDesign sets them like Roman letters: no quarter em against
+/// "/" or digits ("¥12,000/㎡"). Other fonts (Yu Mincho) keep the ideograph spacing.
+fn class_for(c: char, postscript_name: Option<&str>) -> i16 {
+    if matches!(c, '\u{3300}'..='\u{33ff}') && adobe_japan1_name(postscript_name) {
+        return 18;
+    }
+    rules::class(c)
+}
+
+/// Class of a cluster's first glyph (see [`class_for`]).
+fn class_of(g: &Glyph) -> i16 {
+    class_for(g.rendered_char, g.face.postscript_name())
+}
+
 pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
     let Ok(Some(table)) = Rules::resolve(styles, name) else { return };
     // Boundaries belong to shaped clusters, not individual glyphs. In particular
@@ -60,7 +85,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
         if !cluster.iter().any(eligible) {
             continue;
         }
-        let class = rules::class(cluster[0].rendered_char);
+        let class = class_of(&cluster[0]);
         let unit = em(&cluster[0]);
         let body: f64 = cluster.iter().map(|g| g.moji.body).sum();
         for g in cluster.iter_mut() {
@@ -89,7 +114,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
         if !glyphs[start].moji.active {
             continue;
         }
-        let class = rules::class(glyphs[start].rendered_char);
+        let class = class_of(&glyphs[start]);
         let unit = em(&glyphs[start]);
         let mut gap = Aki::default();
         if let Some(&(next, _)) = clusters.get(index + 1)
@@ -97,12 +122,7 @@ pub fn apply(glyphs: &mut [Glyph], styles: &Styles, name: &str) {
             && !glyphs[end - 1].moji.explicit_after
             && !glyphs[next].moji.explicit_before
         {
-            gap = table.pair_with_bodies(
-                class,
-                rules::class(glyphs[next].rendered_char),
-                glyphs[end - 1].moji.blank_after,
-                glyphs[next].moji.blank_before,
-            );
+            gap = table.pair_with_bodies(class, class_of(&glyphs[next]), glyphs[end - 1].moji.blank_after, glyphs[next].moji.blank_before);
         }
         let width: f64 = glyphs[start..end].iter().map(|g| g.adv).sum();
         let g = &mut glyphs[end - 1];
@@ -219,4 +239,35 @@ pub fn start_elastic(g: &Glyph, justify: bool, shrink: bool) -> [f64; 2] {
         return [0.0; 2];
     }
     [if justify { (a.max - a.desired).max(0.0) * em(g) } else { 0.0 }, if shrink { (a.desired - a.min).max(0.0) * em(g) } else { 0.0 }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn square_units_are_roman_only_in_adobe_japan1_fonts() {
+        for (c, name, want) in [
+            ('㎡', Some("KozMinPr6N-Regular"), 18),
+            ('㎏', Some("KozGoPr6N-Medium"), 18),
+            ('㎝', Some("Ryumin-Light"), 18),
+            ('㎡', Some("GothicBBB-Medium"), 18),
+            ('㎡', Some("YuMincho-Regular"), 12),
+            ('㎡', Some("kozminpr6n-regular"), 12), // the prefix test is case-sensitive
+            ('㎡', None, 12),
+            ('㎡', Some("Unrelated-Font"), 12),
+            ('漢', Some("KozMinPr6N-Regular"), 12), // only the compatibility block changes
+        ] {
+            assert_eq!(class_for(c, name), want, "{c} in {name:?}");
+        }
+        // Next to digits and "/" the Roman class closes the gap an ideograph would keep.
+        let styles = Styles::default();
+        let rules = Rules::resolve(&styles, "LineEndAllOneHalfEmEnum").unwrap().unwrap();
+        let (slash, digit) = (rules::class('/'), rules::class('2'));
+        let adobe = class_for('㎡', Some("KozMinPr6N-Regular"));
+        let yu = class_for('㎡', Some("YuMincho-Regular"));
+        assert_eq!(rules.pair(slash, adobe).desired, 0.0, "/㎡ in Kozuka");
+        assert_eq!(rules.pair(slash, yu).desired, 0.25, "/㎡ in Yu Mincho");
+        assert_eq!(rules.pair(adobe, digit).desired, 0.0, "㎡2 in Kozuka");
+    }
 }
