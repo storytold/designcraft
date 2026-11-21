@@ -189,6 +189,24 @@ fn unrewritable_layer_choices_are_rejected_atomically_without_an_undo_step() {
 }
 
 #[test]
+fn malformed_hidden_pdf_layers_do_not_change_visibility() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = place(&mut s, &two_layer_pdf(), 0.0);
+    s.execute("object.layerOptions", &json!({"ids": [id], "hidden": ["Red"]})).unwrap();
+    let query = json!({"id": id});
+    let before = s.execute("object.pdfLayers", &query).unwrap();
+    let undo = s.doc().unwrap().history.undo.len();
+
+    for hidden in [json!("Red"), json!(["Blue", 1]), json!(null)] {
+        let err = s.execute("object.layerOptions", &json!({"ids": [id], "hidden": hidden})).unwrap_err();
+        assert!(err.to_string().contains("hidden must be an array of layer names"));
+        assert_eq!(s.execute("object.pdfLayers", &query).unwrap(), before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    }
+}
+
+#[test]
 fn explicit_all_on_validates_an_actual_rewrite_before_editing() {
     // 33 xref sections: the layers stay readable, but the visibility rewrite refuses the history.
     let mut unsupported = two_layer_pdf();
