@@ -19,7 +19,8 @@
 //! character and object styles (with `BasedOn` and style groups), fonts, document preferences
 //! (page size, facing pages, bleed/slug, margins and columns including dragged column positions,
 //! units, grids), ruler guides, layers, sections,
-//! parent (master) spreads and applied parents, spreads and pages, page items (`TextFrame`,
+//! parent (master) spreads and applied parents, page override pairs linking local copies to parent
+//! items (including grouped copies and deleted overrides), spreads and pages, page items (`TextFrame`,
 //! `Rectangle`, `Oval`, `Polygon`, `GraphicLine`, `Group`) with fill/stroke, corner options, text
 //! frame options (with column rules), text wrap, transparency (opacity, blend mode, drop shadow,
 //! feather, gradient feather, directional feather), images (embedded `Contents` or linked), stories with paragraph/character style ranges and local overrides, special
@@ -28,8 +29,7 @@
 //! ## TODO (ignored on import / not written on export)
 //! - Tables, footnotes, anchored/inline objects, notes, tracked changes, hyperlinks, index and
 //!   cross-reference markers, text variables, conditions, XML structure (`XML/*` parts).
-//! - Page-item overrides of parent items (only the page's `OverrideList` is read),
-//!   parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid object constraints.
+//! - Parent-of-parent page mapping beyond `AppliedMaster`, alternate layouts, liquid object constraints.
 //! - Nested/GREP/line styles, bullets & numbering details (bullet glyph, number format), OpenType
 //!   feature flags, paragraph borders, grid alignment, custom dashed stroke styles; column rule
 //!   stroke type and overprint.

@@ -1,6 +1,6 @@
 # File format parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-14 · **Change:** minor (native format 5 stores linked placed images as records with proxies; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-19 · **Change:** minor (IDML parent/copy override import and review fixes; native format 5 stores linked placed images as records with proxies; package PDF soft effects, hyperlinks and export warnings; PDF/X-4 visible unembedded font detection, #909; IDML liquid guide types, #872; .indd and .indt open through indd-utils; XLSX cached values preserve numeric precision and text; shared print spooler; Windows CI passes; content-indexed asset deduplication, #727) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every format InDesign 2026 reads or writes, with DesignCraft's support, fidelity and tests. The
 InDesign list comes from its bundle's `Info.plist` (`CFBundleDocumentTypes`,
@@ -30,6 +30,17 @@ score below).
 | InDesign Interchange (legacy) | `.inx` | read | ✗ | — | | <1% |
 | PageMaker | `.pmd`, `.p65`, `.t65`, `.pmt` | read | ✗ | — | | <1% |
 | QuarkXPress | `.qxd`, `.qxt` | read (old versions) | ✗ (#73) | — | | <1% |
+
+IDML imports page `OverrideList` parent/copy pairs, including copies inside groups and `n` for
+deleted overrides. Legacy parent-only lists keep their original parent order and duplicates
+without warnings, including even-length lists.
+Export writes `n` in the copy slot for a deleted override, rather than an unused id.
+Empty copies use their full transform to choose a page. Indexed candidate queues preserve
+page reservations, writer order and spread-wide fallback; a regression compares exact lists
+with the original scan.
+Unresolved copy ids keep the whole page's legacy behavior with a warning; conflicting parents
+keep the first pair with a warning. Synthetic import/export and 20,000-pair import regressions
+are in `crates/idml/src/tests/override_pairs.rs`; real-file and InDesign checks remain pending.
 
 IDML preserves stored page liquid rules and distinguishes liquid guides from ordinary ruler
 guides on document and parent pages. Guide positions, orientation, Fit to Page, lock state and
