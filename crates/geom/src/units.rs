@@ -231,7 +231,7 @@ fn parse_single(tok: &str, default: Unit, percent_base: Option<f64>) -> Option<f
     for (sep, unit_pt, sub_pt) in [('p', PT_PER_PICA, 1.0), ('c', PT_PER_CICERO, PT_PER_DIDOT)] {
         if let Some(pos) = tok.find(sep) {
             let (a, b) = (&tok[..pos], &tok[pos + 1..]);
-            let num_ok = |s: &str| s.is_empty() || s.parse::<f64>().is_ok();
+            let num_ok = |s: &str| s.is_empty() || (s.chars().all(|c| c.is_ascii_digit() || c == '.') && s.parse::<f64>().is_ok());
             // Exclude `pt`, `px`, `cm`.
             if num_ok(a) && num_ok(b) && !(a.is_empty() && b.is_empty()) {
                 let a = if a.is_empty() { 0.0 } else { a.parse::<f64>().ok()? };
@@ -349,6 +349,13 @@ mod tests {
         assert!(close(p("14ag"), 72.0));
         assert!(close(p("4Q"), PT_PER_MM));
         assert!(close(parse_measure("3", Unit::Millimeters).unwrap(), 3.0 * PT_PER_MM));
+    }
+
+    #[test]
+    fn picas_and_ciceros_reject_exponents() {
+        for s in ["1e5p", "1e5c", "1p1e2", "1c1e2", "1e5"] {
+            assert!(parse_measure(s, Unit::Points).is_err(), "{s}");
+        }
     }
 
     #[test]
