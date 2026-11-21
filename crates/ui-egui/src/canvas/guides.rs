@@ -258,18 +258,31 @@ fn begin_guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Respons
 /// the tools never see that press.
 pub(super) fn guide_drag(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response, rect: Rect, xf: &Xf) -> bool {
     let id = egui::Id::unique(GUIDE_DRAG);
-    let (pressed, released, origin, latest) =
-        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    let (pressed, released, origin, latest) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            // A release this frame, or one missed while something else had the pointer (#2833):
+            // otherwise the guide follows the pointer after the click and drops at the next one.
+            i.pointer.primary_released() || !i.pointer.primary_down(),
+            i.pointer.press_origin(),
+            i.pointer.latest_pos(),
+        )
+    });
     let mut drag: Option<GuideDrag> = ui.data(|d| d.get_temp(id));
     if drag.is_none() && pressed && resp.hovered() && app.ui.guides && !app.ui.guides_locked {
         let Some(o) = origin else { return false };
         drag = begin_guide_drag(app, ui, resp, rect, xf, o);
     }
     let Some(mut g) = drag else { return false };
-    if let Some(p) = latest {
-        g.at = Some(p);
+    // A release missed while something else had the pointer ends the drag where it was last shown
+    // (position and modifiers), not wherever the pointer went since.
+    let missed = released && !ui.input(|i| i.pointer.primary_released());
+    if !missed {
+        if let Some(p) = latest {
+            g.at = Some(p);
+        }
+        g.mods = ui.input(|i| i.modifiers);
     }
-    g.mods = ui.input(|i| i.modifiers);
     if !released {
         ui.ctx().set_cursor_icon(match g.orientation {
             designcraft_doc::Orientation::Horizontal => egui::CursorIcon::ResizeVertical,
