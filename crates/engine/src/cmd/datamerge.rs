@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use designcraft_doc::{
-    DataField, DataFieldKind, DataSource, Delimiter, Document, ItemId, MergeOptions, Page, Placeholder, PlaceholderAnchor, PlaceholderRole,
-    Selection, SourceStatus, SpreadRef, StoryId,
+    DataField, DataFieldKind, DataSource, Delimiter, DelimiterOrigin, Document, ItemId, MergeOptions, Page, Placeholder, PlaceholderAnchor,
+    PlaceholderRole, Selection, SourceStatus, SpreadRef, StoryId,
 };
 use designcraft_geom::{Rect, Vec2};
 use serde_json::{Value, json};
@@ -104,16 +104,22 @@ fn source_file(src: &DataSource, document: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn source_update(s: &mut Session, _p: &Value) -> Result<Value> {
-    let (path, name, delimiter, sheet) = {
+    let (path, name, delimiter, resniff, sheet) = {
         let st = s.doc()?;
         let src = st.doc.data_merge.sources.first().ok_or_else(|| bad("data.source.update", "select a data source"))?;
         let path = src.path.clone().ok_or_else(|| bad("data.source.update", "this source has no file to update"))?;
         let at =
             crate::io::document_path(&path, st.path.as_deref().map(Path::new)).map_err(|why| bad("data.source.update", format!("{path}: {why}")))?;
-        (at.to_string_lossy().into_owned(), src.name.clone(), src.delimiter, src.sheet.clone())
+        let resniff = src.delimiter_origin == DelimiterOrigin::Legacy
+            && src.delimiter == Delimiter::Comma
+            && src.fields.len() == 1
+            && src.fields.first().is_some_and(|f| f.name.contains(['\t', ';']))
+            && !fill::doc_references_any_field(&st.doc, &src.fields);
+        let delimiter = if resniff { None } else { Some(src.delimiter) };
+        (at.to_string_lossy().into_owned(), src.name.clone(), delimiter, resniff, src.sheet.clone())
     };
     let bytes = read_path(&path).map_err(|e| bad("data.source.update", e))?;
-    let table = parse_file(&bytes, &name, Some(delimiter), sheet.as_deref()).map_err(|e| bad("data.source.update", e))?;
+    let table = parse_file(&bytes, &name, delimiter, sheet.as_deref()).map_err(|e| bad("data.source.update", e))?;
     let report = json!({
         "fields": field_pairs(&table.fields),
         "records": table.rows.len(),
@@ -125,6 +131,9 @@ fn source_update(s: &mut Session, _p: &Value) -> Result<Value> {
         src.rows = table.rows;
         src.warnings = table.warnings;
         src.delimiter = table.delimiter;
+        if resniff {
+            src.delimiter_origin = DelimiterOrigin::Detected;
+        }
         src.fingerprint = fingerprint_of(Path::new(&path));
         src.status = SourceStatus::Ok;
         Ok(report)
@@ -753,6 +762,7 @@ fn read_source(p: &Value) -> std::result::Result<(DataSource, Value), String> {
         relative_path: None,
         name,
         delimiter: table.delimiter,
+        delimiter_origin: if delimiter.is_some() { DelimiterOrigin::Explicit } else { DelimiterOrigin::Detected },
         sheet,
         fields: table.fields,
         rows: table.rows,

@@ -21,11 +21,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
 
     ui.horizontal(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         let label = source_name.clone().unwrap_or_else(|| tr(&lang, "No data source").to_string());
         let color = if source_name.is_some() { t.text_strong } else { t.text_dim };
         crate::rtl::label(ui, egui::RichText::new(label).color(color));
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui.button(w(ui, &lang, "Select Data Source…")).clicked() {
             select_source(app);
         }
@@ -46,17 +47,34 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let name = field["name"].as_str().unwrap_or("").to_string();
         let kind = field["kind"].as_str().unwrap_or("text").to_string();
         let uses = field["uses"].as_u64().unwrap_or(0);
-        ui.horizontal(|ui| {
-            kind_icon(ui, &kind, t.icon);
-            crate::rtl::label(ui, egui::RichText::new(name.clone()).color(t.text));
-            crate::rtl::label(ui, egui::RichText::new(uses.to_string()).size(11.0).color(t.text_dim));
-            let bind = kind == "image" || kind == "qr";
-            let caption = if bind { "Bind to frame" } else { "Insert field" };
-            if ui.small_button(w(ui, &lang, caption)).clicked() {
-                let params = if bind { json!({"field": name}) } else { json!({"field": name, "role": "text"}) };
-                let _ = app.run("data.placeholder.add", params);
-            }
-        });
+        let bind = kind == "image" || kind == "qr";
+        let caption = if bind { "Bind to frame" } else { "Insert field" };
+        let spacing = ui.spacing().item_spacing.x;
+        let uses_text = egui::RichText::new(uses.to_string()).size(11.0).color(t.text_dim);
+        let button_text = w(ui, &lang, caption);
+        let uses_galley =
+            egui::WidgetText::from(uses_text.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+        let button_galley = button_text.clone().into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+        let right_w = uses_galley.size().x + spacing + button_galley.size().x + 2.0 * ui.spacing().button_padding.x + 2.0;
+        let mut top_rect = ui.available_rect_before_wrap();
+        top_rect.max.y = top_rect.min.y + ui.spacing().interact_size.y;
+
+        let left_rect_max = top_rect.with_max_x((top_rect.max.x - right_w - spacing).max(top_rect.min.x));
+        let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left_rect_max).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        left_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        kind_icon(&mut left_ui, &kind, t.icon);
+        crate::rtl::label(&mut left_ui, egui::RichText::new(name.clone()).color(t.text));
+        let left_rect = left_ui.min_rect();
+
+        let right_rect_max = top_rect.with_min_x((top_rect.max.x - right_w).max(left_rect.max.x + spacing));
+        let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(right_rect_max).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        crate::rtl::label(&mut right_ui, uses_text);
+        if right_ui.small_button(button_text).clicked() {
+            let params = if bind { json!({"field": name}) } else { json!({"field": name, "role": "text"}) };
+            let _ = app.run("data.placeholder.add", params);
+        }
+        let right_rect = right_ui.min_rect();
+        ui.advance_cursor_after_rect(left_rect | right_rect);
     }
     ui.separator();
 
@@ -72,7 +90,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
     let mut jump = None;
     ui.add_enabled_ui(preview_record > 0, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.small_button(w(ui, &lang, "First")).clicked() {
                 jump = Some(1);
             }
@@ -281,6 +299,57 @@ mod tests {
         };
         assert_eq!(combos(&h, "Merge options"), 1, "records selection keeps its name");
         assert_eq!(combos(&h, "Arrangement"), 1, "the arrangement control has its own name");
+        h.check_accessibility();
+    }
+
+    #[test]
+    fn tab_csv_and_long_field_names_keep_insert_buttons_inside_narrow_panel() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [36.0, 36.0, 300.0, 120.0], "content": "text", "text": "", "caret": true})).unwrap();
+        let story = designcraft_doc::StoryId(frame["story"].as_u64().unwrap());
+        let csv = b"Name\tPosition\tVeryLongColumnHeaderNameForNarrowPanel\nAda\tLead\tValue\n";
+        app.run("data.source.select", json!({"bytes": designcraft_engine::cmd::base64_encode(csv), "name": "CSV-Visitenkarten.csv"})).unwrap();
+        let mut h = Harness::builder().with_size(vec2(240.0, 600.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("datamerge_tab_test_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let buttons: Vec<_> = h.query_all_by_label("Insert field").collect();
+        assert_eq!(buttons.len(), 3, "tab-delimited .csv should produce 3 separate field rows");
+        for btn in &buttons {
+            assert!(btn.rect().right() <= 240.0, "Insert field button must stay inside narrow panel: {:?}", btn.rect());
+        }
+        assert!(h.get_by_label("Remove").rect().right() <= 240.0, "Remove button must wrap inside narrow panel");
+        assert!(h.get_by_label("Next").rect().right() <= 240.0, "Next button must wrap inside narrow panel");
+        assert!(h.get_by_label("Last").rect().right() <= 240.0, "Last button must wrap inside narrow panel");
+
+        // Accessibility order keeps each field name ahead of its action button.
+        let ordered_labels: Vec<String> = h
+            .query_all(egui_kittest::kittest::By::new())
+            .filter_map(|n| {
+                let ak = n.accesskit_node();
+                if ak.role() == egui::accesskit::Role::Label { ak.value() } else { ak.label() }
+            })
+            .filter(|l| matches!(l.as_str(), "Name" | "Position" | "VeryLongColumnHeaderNameForNarrowPanel" | "Insert field"))
+            .collect();
+        assert_eq!(
+            ordered_labels,
+            vec!["Name", "Insert field", "Position", "Insert field", "VeryLongColumnHeaderNameForNarrowPanel", "Insert field"]
+        );
+
+        h.get_all_by_label("Insert field").next().unwrap().click();
+        h.run_steps(3);
+        let text = h.state().session.active().unwrap().doc.story(story).unwrap().text.clone();
+        assert_eq!(text, "<<Name>>");
         h.check_accessibility();
     }
 }

@@ -379,6 +379,13 @@ fn fill_nested_markers(doc: &mut designcraft_doc::Document, fields: &[DataField]
     }
 }
 
+/// Whether `doc` has any anchored placeholder or typed `<<Field>>` marker (including inside
+/// tables, footnotes, and endnotes) matching a field in `fields`.
+pub(super) fn doc_references_any_field(doc: &designcraft_doc::Document, fields: &[DataField]) -> bool {
+    doc.data_merge.placeholders.iter().any(|ph| fields.iter().any(|f| f.name == ph.field))
+        || doc.stories.values().any(|st| own_has(st, fields) || inner_has(st, fields, 0))
+}
+
 /// Whether `st`'s own text holds a marker of a known field.
 fn own_has(st: &Story, fields: &[DataField]) -> bool {
     find_markers(&st.text).iter().any(|(_, _, name)| fields.iter().any(|f| f.name == *name))

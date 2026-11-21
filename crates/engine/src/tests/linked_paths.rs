@@ -68,6 +68,7 @@ fn links_to_other_computers_never_reach_the_file_system() {
         relative_path: Some(FILE_URL.replace("x.png", "data.csv")),
         name: "data.csv".into(),
         delimiter: designcraft_doc::Delimiter::Comma,
+        delimiter_origin: designcraft_doc::DelimiterOrigin::Detected,
         sheet: None,
         fields: vec![],
         rows: vec![],
