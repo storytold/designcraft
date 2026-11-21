@@ -65,7 +65,10 @@ impl FrameOutline {
         // edges of a compound path's inner sub-rectangles do.
         let on_side = |a: Point, b: Point| {
             let near = |v: f64, side: f64| (v - side).abs() < eps;
-            (near(a.x, x0) && near(b.x, x0)) || (near(a.x, x1) && near(b.x, x1)) || (near(a.y, y0) && near(b.y, y0)) || (near(a.y, y1) && near(b.y, y1))
+            (near(a.x, x0) && near(b.x, x0))
+                || (near(a.x, x1) && near(b.x, x1))
+                || (near(a.y, y0) && near(b.y, y0))
+                || (near(a.y, y1) && near(b.y, y1))
         };
         let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_side(a, b));
         if rect {
