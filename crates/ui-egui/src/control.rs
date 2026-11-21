@@ -9,7 +9,7 @@
 //! - `ui.tool.select {tool}`, `ui.tool.list`
 //! - `ui.pointer {events:[{kind: down|drag|up|move|doubleclick, x, y, space?: "doc"|"screen"}], mods?}`:
 //!   drive the active tool through the same path as the mouse
-//! - `ui.key {key, shift?, alt?, cmd?}`: synthetic keyboard input
+//! - `ui.key {key, shift?, alt?, cmd?, ctrl?, text?}`: synthetic keyboard input
 //! - `ui.text {text}`: insert at the explicit caret, or type into a focused UI field
 //! - `ui.ime {preedit?, active?: [start, end], commit?}`: input method events, as the system IME
 //!   sends them (marked text with its converting clause in characters, then the committed text)
