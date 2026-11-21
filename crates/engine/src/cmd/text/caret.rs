@@ -396,8 +396,14 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"pos": new}))
 }
 
+/// The line the caret at `pos` is on. At a soft wrap, where one line ends and the next starts at
+/// `pos`, the caret is on the next line (only a paragraph's last line owns its end).
 fn line_of(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
-    cs.frames.iter().flat_map(|f| f.lines.iter()).find(|l| pos >= l.range.start && pos <= l.range.end).map(|l| (l.range.start, l.range.end))
+    let lines = || cs.frames.iter().flat_map(|f| f.lines.iter());
+    lines()
+        .find(|l| pos >= l.range.start && (pos < l.range.end || (pos == l.range.end && l.last_in_para)))
+        .or_else(|| lines().find(|l| pos >= l.range.start && pos <= l.range.end))
+        .map(|l| (l.range.start, l.range.end))
 }
 
 fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> {
