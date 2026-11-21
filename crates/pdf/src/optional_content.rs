@@ -25,7 +25,7 @@ fn references(dict: &Dict<'_>, key: &[u8]) -> Result<Vec<ObjectIdentifier>> {
     dict.get::<Array<'_>>(key).ok_or_else(invalid)?.raw_iter().map(|value| value.as_obj_ref().map(Into::into).ok_or_else(invalid)).collect()
 }
 
-fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
+pub(crate) fn edited(dict: &Dict<'_>, replacements: &[(&[u8], &[u8])]) -> Result<Vec<u8>> {
     edited_with(dict, replacements, invalid)
 }
 
@@ -206,7 +206,7 @@ pub(crate) fn append_with(
     Ok(out)
 }
 
-fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
+pub(crate) fn append(bytes: &[u8], changes: &[(ObjectIdentifier, Vec<u8>)], root: ObjectIdentifier) -> Result<Vec<u8>> {
     append_with(
         bytes,
         changes,
