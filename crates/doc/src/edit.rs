@@ -1139,12 +1139,16 @@ mod placed_item_tests {
         assert!(item_hit(&group, Point::new(60.0, 60.0), 1.0));
     }
 
-    /// Placing or dropping a graphic fills a frame holding only nested graphics, not one holding
-    /// other objects.
+    /// Placing or dropping a graphic fills a frame holding one nested graphic, not one holding
+    /// several, or other objects.
     #[test]
-    fn a_frame_with_only_nested_graphics_takes_a_graphic() {
+    fn a_frame_with_one_nested_graphic_takes_a_graphic() {
         let frame = frame_with_nested_image();
         assert!(frame.takes_graphic());
+        let mut several = frame.clone();
+        let Content::Group { items } = &mut several.content else { panic!("a nested image") };
+        items.push(items[0].clone());
+        assert!(!several.takes_graphic(), "one graphic would replace them all");
         let mut other = frame.clone();
         other.content = Content::Group { items: vec![Arc::new(Item::new(ItemId(3), LayerId(1), Shape::Rectangle, Default::default()))] };
         assert!(!other.takes_graphic());
