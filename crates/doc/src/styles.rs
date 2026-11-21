@@ -226,7 +226,7 @@ impl Default for Styles {
             character: vec![CharacterStyle { name: NO_CHAR_STYLE.into(), based_on: None, chars: CharAttrs::default(), shortcut: String::new() }],
             object: vec![
                 ObjectStyle { name: NO_OBJECT_STYLE.into(), ..Default::default() },
-                ObjectStyle { name: BASIC_GRAPHICS_FRAME.into(), stroke: Some(Stroke::default()), ..Default::default() },
+                ObjectStyle { name: BASIC_GRAPHICS_FRAME.into(), stroke: Some(Stroke::none()), ..Default::default() },
                 ObjectStyle {
                     name: BASIC_TEXT_FRAME.into(),
                     fill: Some(Fill::none()),
@@ -835,7 +835,7 @@ impl Styles {
     pub fn object_style(&self, name: &str) -> Option<&ObjectStyle> {
         self.object.iter().find(|s| s.name == name)
     }
-    /// The effects object style `name` sets, if any (for new items that get a default style).
+    /// The effects object style `name` sets, if any.
     pub fn object_effects(&self, name: &str) -> Option<&Effects> {
         self.object_style(name)?.effects.as_ref()
     }

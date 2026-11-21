@@ -1024,9 +1024,22 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         };
         if content == "text" {
             let (id, sid) = d.add_text_frame(sr, rect, lid, &text, ParaFormat { style: d.styles.default_paragraph.clone(), ..Default::default() })?;
+            // The default text frame style again on the frame's own shape (its corners follow the
+            // shape), and its paragraph styles on the text, as `style.object.apply` gives them.
+            let os = d.styles.object_style(&d.styles.default_text_frame).cloned();
             if let Some(it) = d.item_mut(id) {
                 it.path = path;
                 it.shape = sh;
+                if let Some(os) = &os {
+                    os.apply_to(it);
+                }
+            }
+            if let Some(os) = &os
+                && let Some(mut st) = d.story(sid).cloned()
+                && os.restyle(&d.styles, &mut st)
+                && let Some(own) = d.story_mut(sid)
+            {
+                *own = st;
             }
             super::text::set_story_direction(d, &[sid], vertical);
             *sel = if caret {
@@ -1040,8 +1053,8 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
         let mut it = Item::new(id, lid, sh, path);
         if content == "graphic" {
             it.object_style = d.styles.default_graphic_frame.clone();
-            if let Some(e) = d.styles.object_effects(&it.object_style) {
-                it.effects = e.clone();
+            if let Some(os) = d.styles.object_style(&it.object_style) {
+                os.apply_to(&mut it);
             }
         } else {
             // Shapes drawn with Rectangle/Ellipse/Polygon get a 1 pt stroke in the document's

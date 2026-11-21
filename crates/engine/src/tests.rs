@@ -1009,6 +1009,76 @@ fn object_style_text_frame_general_options_leave_the_other_frame_settings() {
     assert!(s.execute("style.object.edit", &json!({"name": name, "textFrame": {"columns": 60}})).is_err());
 }
 
+/// A new text frame takes every part of the default text frame style: its Text Frame General
+/// Options (insets, columns, vertical justification), its paragraph style, fill, stroke, corners
+/// and effects. A new graphic frame takes the default graphic frame style's fill, stroke, corners
+/// and effects. Each is one undo step.
+#[test]
+fn new_frames_take_their_whole_default_object_style() {
+    use designcraft_doc::{BASIC_GRAPHICS_FRAME, BASIC_TEXT_FRAME, ItemId, VerticalJustification};
+    let mut s = session();
+    s.execute("style.paragraph.create", &json!({"name": "Box Text"})).unwrap();
+    s.execute(
+        "style.object.edit",
+        &json!({"name": BASIC_TEXT_FRAME, "paragraphStyle": "Box Text", "fill": "[Paper]", "stroke": {"swatch": "[Black]", "weight": 3},
+                "corners": {"shape": "rounded", "size": 8}, "feather": 4,
+                "textFrame": {"inset": 6, "columns": 2, "verticalJustification": "center"}}),
+    )
+    .unwrap();
+    s.execute(
+        "style.object.edit",
+        &json!({"name": BASIC_GRAPHICS_FRAME, "fill": "[Paper]", "stroke": {"swatch": "[Black]", "weight": 2}, "corners": {"shape": "rounded", "size": 5}, "feather": 3}),
+    )
+    .unwrap();
+    let item = |s: &Session, id: u64| s.doc().unwrap().doc.item(ItemId(id)).unwrap().clone();
+    let undo = |s: &Session| s.doc().unwrap().history.undo.len();
+
+    let before = undo(&s);
+    let r = s.execute("frame.create", &json!({"rect": [36, 36, 236, 236], "content": "text", "text": "One\nTwo", "caret": false})).unwrap();
+    assert_eq!(undo(&s), before + 1);
+    let t = item(&s, r["id"].as_u64().unwrap());
+    let o = &t.text_frame().unwrap().options;
+    assert_eq!((o.inset, o.columns, o.vertical_justification), ([6.0; 4], 2, VerticalJustification::Center));
+    assert_eq!((t.fill.swatch.as_str(), t.stroke.weight, t.effects.feather), ("[Paper]", 3.0, 4.0));
+    assert!(!t.corners.is_none(), "the style's corners");
+    let d = &s.doc().unwrap().doc;
+    let st = d.story(t.text_frame().unwrap().story).unwrap();
+    assert_eq!(st.paras.iter().map(|p| p.style.as_str()).collect::<Vec<_>>(), ["Box Text", "Box Text"]);
+    // An oval text frame takes the style too.
+    let r = s.execute("frame.create", &json!({"rect": [300, 36, 500, 236], "content": "text", "shape": "ellipse"})).unwrap();
+    let e = item(&s, r["id"].as_u64().unwrap());
+    assert_eq!((e.text_frame().unwrap().options.columns, e.fill.swatch.as_str()), (2, "[Paper]"));
+
+    let before = undo(&s);
+    let g = s.execute("frame.create", &json!({"rect": [36, 300, 136, 400], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(undo(&s), before + 1);
+    let g = item(&s, g);
+    assert_eq!(
+        (g.object_style.as_str(), g.fill.swatch.as_str(), g.stroke.swatch.as_str(), g.stroke.weight, g.effects.feather),
+        (BASIC_GRAPHICS_FRAME, "[Paper]", "[Black]", 2.0, 3.0)
+    );
+    assert!(!g.corners.is_none(), "the style's corners");
+    // Applying the style to the new frames changes nothing: they already have all of it.
+    let rev = s.doc().unwrap().revision;
+    s.execute("style.object.apply", &json!({"name": BASIC_GRAPHICS_FRAME, "ids": [g.id.0]})).unwrap();
+    s.execute("style.object.apply", &json!({"name": BASIC_TEXT_FRAME, "ids": [t.id.0]})).unwrap();
+    assert_eq!(s.doc().unwrap().revision, rev);
+}
+
+/// In a new document the built-in graphic frame style sets no stroke, so a new graphic frame and a
+/// placed image have no border.
+#[test]
+fn new_graphic_frames_have_no_stroke_in_a_new_document() {
+    use designcraft_color::swatch::NONE as NONE_SWATCH;
+    use designcraft_doc::{BASIC_GRAPHICS_FRAME, ItemId};
+    let mut s = session();
+    let style = s.doc().unwrap().doc.styles.object_style(BASIC_GRAPHICS_FRAME).unwrap().stroke.clone();
+    assert_eq!(style.map(|st| st.swatch), Some(NONE_SWATCH.to_string()));
+    let g = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    let d = &s.doc().unwrap().doc;
+    assert_eq!(d.item(ItemId(g)).unwrap().stroke.swatch, NONE_SWATCH);
+}
+
 /// A stroke added to a style that set none reaches a drawn shape still carrying its default 1 pt
 /// stroke and a frame with none, and leaves a shape or text frame with its own stroke.
 #[test]

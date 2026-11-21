@@ -817,6 +817,35 @@ fn an_image_field_at_the_insertion_point_merges_as_an_inline_image() {
     assert!((wide.1 - width).abs() < 0.01 && (wide.2 - width / 8.0).abs() < 0.01, "a wide image is scaled down to the frame: {wide:?}");
 }
 
+/// An image merged at a text insertion point is a new graphic frame: it takes the default graphic
+/// frame style's fill, stroke, corners and effects.
+#[test]
+fn a_merged_inline_image_takes_the_whole_default_graphic_frame_style() {
+    let dir = scratch("inline-image-style");
+    let data = dir.join("data");
+    write_png_sized(&data.join("pics").join("small.png"), 40, 20);
+    write(&data.join("cards.csv"), "Name,@Photo\nAda,pics/small.png\n");
+
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(
+        &mut s,
+        "style.object.edit",
+        json!({"name": designcraft_doc::BASIC_GRAPHICS_FRAME, "fill": "[Paper]", "stroke": {"swatch": "[Black]", "weight": 2}, "corners": {"shape": "rounded", "size": 5}, "feather": 3}),
+    );
+    exec(&mut s, "data.source.select", json!({"path": data.join("cards.csv")}));
+    let made = text_frame(&mut s, [36.0, 36.0, 236.0, 236.0], "Photo: ", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 7, "focus": 7}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Photo"}));
+    exec(&mut s, "data.merge", json!({}));
+    let doc = &s.documents()[s.active_index().unwrap()].doc;
+    let images: Vec<_> = doc.stories.values().flat_map(|st| &st.objects).filter(|o| matches!(o.item.content, Content::Graphic(_))).collect();
+    assert_eq!(images.len(), 1);
+    let it = &images[0].item;
+    assert_eq!((it.fill.swatch.as_str(), it.stroke.swatch.as_str(), it.stroke.weight, it.effects.feather), ("[Paper]", "[Black]", 2.0, 3.0));
+    assert!(!it.corners.is_none(), "the style's corners");
+}
+
 /// A QR field at a text insertion point is refused instead of merging its payload as text.
 #[test]
 fn a_qr_field_at_the_insertion_point_is_refused() {

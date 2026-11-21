@@ -53,6 +53,10 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, asset: Asset) -> Result<Va
                 let id = ItemId(d.alloc());
                 let r = super::finite_rect("file.place", Rect::new(x, y, x + w, y + h))?;
                 let mut it = Item::new(id, lid, Shape::Rectangle, shapes::rectangle(r));
+                it.object_style = d.styles.default_graphic_frame.clone();
+                if let Some(os) = d.styles.object_style(&it.object_style) {
+                    os.apply_to(&mut it);
+                }
                 it.content = Content::Graphic(Graphic {
                     layer_options: None,
                     asset: aid,
@@ -238,6 +242,29 @@ mod tests {
         assert!(read("OEBPS/content.opf").contains("video/mp4"), "the video is in the package");
         let x = read("OEBPS/content.xhtml");
         assert!(x.contains("<video src=") && x.contains("loop=") && x.contains("poster="), "{x}");
+    }
+
+    /// A video or sound placed into a new frame takes the default graphic frame style's fill,
+    /// stroke, corners and effects, as a placed image does.
+    #[test]
+    fn a_placed_media_frame_takes_the_whole_default_graphic_frame_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute(
+            "style.object.edit",
+            &json!({"name": designcraft_doc::BASIC_GRAPHICS_FRAME, "fill": "[Paper]", "stroke": {"swatch": "[Black]", "weight": 2}, "corners": {"shape": "rounded", "size": 5}, "feather": 3}),
+        )
+        .unwrap();
+        let fake = super::super::file::base64_encode(b"\x00\x00\x00\x18ftypmp42");
+        let r = s.execute("file.place", &json!({"base64": fake, "name": "clip.mp4", "x": 100, "y": 100})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let it = d.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap();
+        assert!(it.media.is_some());
+        assert_eq!(
+            (it.object_style.as_str(), it.fill.swatch.as_str(), it.stroke.swatch.as_str(), it.stroke.weight, it.effects.feather),
+            (designcraft_doc::BASIC_GRAPHICS_FRAME, "[Paper]", "[Black]", 2.0, 3.0)
+        );
+        assert!(!it.corners.is_none(), "the style's corners");
     }
 
     #[test]
