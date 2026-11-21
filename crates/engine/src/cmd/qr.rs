@@ -28,7 +28,8 @@ fn encode(p: &Value) -> std::result::Result<String, String> {
     let g = |k: &str| str_param(p, k).unwrap_or("").trim().to_string();
     let esc = |s: String| s.replace('\\', r"\\").replace(';', r"\;").replace(':', r"\:").replace(',', r"\,");
     let out = match str_param(p, "type").unwrap_or("url") {
-        "url" | "text" => g("content"),
+        "url" => g("content"),
+        "text" => str_param(p, "content").filter(|text| !text.trim().is_empty()).unwrap_or_default().to_string(),
         "sms" => format!("SMSTO:{}:{}", g("number"), g("message")),
         "email" => format!("MATMSG:TO:{};SUB:{};BODY:{};;", esc(g("to")), esc(g("subject")), esc(g("body"))),
         "vcard" => {
@@ -114,10 +115,29 @@ mod tests {
     use crate::Session;
 
     #[test]
+    fn plain_text_qr_keeps_surrounding_whitespace() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let content = "  first line\r\nsecond line\t ";
+        let rect = [72, 72, 216, 216];
+        let r = s.execute("object.qrCode", &json!({"type": "text", "content": content, "rect": rect})).unwrap();
+        assert_eq!(r["content"], content);
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        let item = s.doc().unwrap().doc.item(id).unwrap();
+        assert_eq!(item.alt_text, format!("{}{content}", super::MARK));
+
+        for content in ["", " \t\n"] {
+            let error = s.execute("object.qrCode", &json!({"type": "text", "content": content, "rect": rect})).unwrap_err();
+            assert!(error.to_string().contains("nothing to encode"));
+        }
+    }
+
+    #[test]
     fn generate_and_edit_qr_codes() {
         let mut s = Session::new();
         s.execute("file.new", &json!({})).unwrap();
-        let r = s.execute("object.qrCode", &json!({"content": "https://example.com", "rect": [72, 72, 216, 216]})).unwrap();
+        let r = s.execute("object.qrCode", &json!({"content": " https://example.com ", "rect": [72, 72, 216, 216]})).unwrap();
+        assert_eq!(r["content"], "https://example.com");
         let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
         let item = |s: &Session| s.doc().unwrap().doc.item(id).unwrap().clone();
         let a = item(&s);
