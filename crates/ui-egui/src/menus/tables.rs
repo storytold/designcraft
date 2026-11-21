@@ -555,6 +555,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Story Editor",
             "ui:view.storyEditorStyleColumn",
             "ui:view.storyEditorDepthRuler",
+            "ui:view.storyEditorParagraphMarks",
             "<",
         ],
     ),

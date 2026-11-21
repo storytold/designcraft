@@ -289,6 +289,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         None,
         "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
     ),
+    (
+        "view.storyEditorParagraphMarks",
+        "Show/Hide Paragraph Break Marks",
+        None,
+        "{} — a ¶ after each paragraph that a paragraph break ends, in the Story Editor",
+    ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
     ("window.nextDocument", "Next Document", Some("Cmd+F6"), "{}"),
