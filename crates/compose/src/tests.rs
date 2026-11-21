@@ -2808,7 +2808,10 @@ fn a_leader_pattern_cut_by_the_gap_keeps_the_glyphs_that_fit() {
             let n = adv.len();
             assert!(!set.is_empty(), "{leader:?} at step {step}");
             for &(k, x) in &set {
-                assert!(x >= start - 0.01 && x + adv[k] <= end + LEADER_FIT_TOLERANCE + 1e-6, "{leader:?} step {step}: glyph {k} at {x} outside {start}..{end}");
+                assert!(
+                    x >= start - 0.01 && x + adv[k] <= end + LEADER_FIT_TOLERANCE + 1e-6,
+                    "{leader:?} step {step}: glyph {k} at {x} outside {start}..{end}"
+                );
             }
             for w in set.windows(2) {
                 assert_eq!(w[1].0, (w[0].0 + 1) % n, "{leader:?} step {step}: pattern order");
