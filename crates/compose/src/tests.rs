@@ -6236,6 +6236,9 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     assert!(with.iter().any(|g| g.len == 0 && g.gid == g.face.glyph_for('\u{0640}')));
     d.story_mut(sid).unwrap().paras[0].para.kashidas = Some(false);
     let without = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    // The kashidas' tatweels sit inside the words; the other glyphs are as without them.
+    let with: Vec<_> = with.iter().filter(|g| !(g.len == 0 && g.gid == g.face.glyph_for('\u{0640}'))).cloned().collect();
+    assert_eq!(with.len(), without.len());
     for (a, b) in with.iter().zip(&without) {
         assert_eq!((a.gid, a.byte), (b.gid, b.byte));
         let first_a = with.iter().find(|g| g.byte == a.byte).unwrap();
@@ -10487,5 +10490,48 @@ fn cross_reference_text_breaks_at_its_spaces() {
         for w in l.split(' ').filter(|w| !w.is_empty()) {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
+    }
+}
+
+/// A kashida is drawn with the font's tatweels at their natural size, as many as the gap takes, so
+/// their shaped ends and the font's own kashida forms stay as designed. One tatweel was stretched
+/// over the gap, and its shaped ends stretched with it: a bend at each join in Lotus Linotype and
+/// long pointed ends in Amiri.
+#[test]
+fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
+    use designcraft_fonts::testing::font_mapping;
+    // Arabic letters drawn with Latin glyphs, and the tatweel as `_`.
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    // A private database: in the global one, these Arabic letters would become other tests'
+    // fallback.
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Tatweel Run", &glyphs).unwrap());
+    let text = "بسم بسم";
+    let (mut d, sid, fid) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 300.0, 100.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Tatweel Run".into());
+        f.over.size = Some(24.0);
+    });
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let glyphs = &cs.frame(fid).unwrap().lines[0].glyphs;
+    let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
+    let tatweel = letter.face.glyph_for('\u{0640}');
+    let tatweels: Vec<_> = glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel).collect();
+    assert!(tatweels.len() > 2, "a long kashida takes several tatweels: {}", tatweels.len());
+    let width = letter.face.advance(tatweel) * letter.sx;
+    for t in &tatweels {
+        assert!((t.sx - letter.sx).abs() < 1e-9, "drawn at its natural size, not stretched: {} for {}", t.sx, letter.sx);
+    }
+    // In runs side by side, each run ending where the letter on its right starts.
+    let starts: Vec<f64> = glyphs.iter().filter(|g| g.len > 0 && g.adv > 0.0).map(|g| g.x - g.dx).collect();
+    for t in &tatweels {
+        let end = t.x + width;
+        let joined = tatweels.iter().any(|o| (o.x - end).abs() < 1e-6) || starts.iter().any(|&x| (x - end).abs() < 1e-6);
+        assert!(joined, "the tatweel at {} ends at {end}, at no tatweel or letter", t.x);
     }
 }
