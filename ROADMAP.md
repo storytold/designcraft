@@ -12,6 +12,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-21** · With Digits at Default, a page number after Arabic text is drawn in Arabic-Indic digits like typed digits (#3091): its marker counted as Latin text, so it stayed Western. No readiness percentage change.
 - **2026-11-21** · With Digits at Default, footnote and endnote references and the number before a footnote's text follow the Arabic text like typed digits (#3090): the reference's own marker counted as Latin text, so both stayed Western after Arabic. No readiness percentage change.
 - **2026-11-18** · Footnote and endnote references are drawn in the Digits of their character style (#1510): an Arabic document with Hindi digits showed 1 at the reference and ١ before the footnote text. No readiness percentage change.
 - **2026-11-14** · Files placed from disk are linked instead of embedded: the document keeps a 1024 px proxy and a content hash, opens without reading the originals, and shows link status OK, Modified or Missing, with Update, Relink, Embed and Unembed (native format 5; old embedded documents migrate on save). Several images load into one place cursor, a grid or a contact sheet; see [linked-artwork.md](docs/linked-artwork.md) and [multi-image-placement.md](docs/multi-image-placement.md). No readiness percentage change.

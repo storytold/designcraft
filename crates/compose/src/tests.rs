@@ -10568,3 +10568,25 @@ fn footnote_numbers_follow_arabic_text_with_default_digits() {
     let reference: String = cs.frame(fid).unwrap().lines[0].glyphs.iter().filter(|g| g.byte == at).map(|g| g.rendered_char).collect();
     assert_eq!(reference, "١");
 }
+
+/// With Digits at Default, a page number after Arabic text is drawn in Arabic-Indic digits like a
+/// typed digit there. The marker is a private-use character, which counted as Latin text, so the
+/// number stayed Western (#3091).
+#[test]
+fn page_numbers_follow_arabic_text_with_default_digits() {
+    let rtl = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    // The digits drawn on the first line.
+    let digits = |text: &str| {
+        let (d, sid, fid) = doc_with(text, Rect::new(36.0, 36.0, 400.0, 400.0), rtl.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frame(fid).unwrap().lines[0]
+            .glyphs
+            .iter()
+            .map(|g| g.rendered_char)
+            .filter(|c| c.is_ascii_digit() || ('\u{660}'..='\u{669}').contains(c))
+            .collect::<String>()
+    };
+    let p = story::PAGE_NUMBER;
+    assert_eq!(digits(&format!("صفحة 1 {p} {p}")), "١١١");
+    assert_eq!(digits(&format!("Page 1 {p}")), "11");
+}

@@ -1447,11 +1447,19 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
 }
 
 /// Which text a character makes digits with Default Digits follow: Arabic (`Some(true)`), other
-/// strong text (`Some(false)`), or neither. A note reference is neither: it is a private-use
-/// character standing for a number, and as bidi class L it made the reference after Arabic text
-/// take Western digits (#3090).
+/// strong text (`Some(false)`), or neither. A note reference or a page number marker is neither:
+/// it is a private-use character standing for a number, and as bidi class L it made the number
+/// after Arabic text take Western digits (#3090, #3091).
 pub(crate) fn digit_context(c: char) -> Option<bool> {
-    if matches!(c, designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF) {
+    if matches!(
+        c,
+        designcraft_doc::FOOTNOTE_REF
+            | designcraft_doc::ENDNOTE_REF
+            | story::PAGE_NUMBER
+            | story::NEXT_PAGE_NUMBER
+            | story::PREV_PAGE_NUMBER
+            | story::SECTION_MARKER
+    ) {
         return None;
     }
     match unicode_bidi::bidi_class(c) {
