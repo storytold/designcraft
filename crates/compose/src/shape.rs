@@ -1020,14 +1020,36 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 }
 
 /// What the pair of a word space and the first letter of the word after it does to the two glyphs
-/// beyond what each has shaped alone: the space's advance, the letter's advance and offset.
+/// beyond what each has shaped alone: the space's advance, the letter's advance and vertical offset.
 #[derive(Clone, Copy)]
 struct SpaceKern {
     space_gid: u32,
     letter_gid: u32,
     space_advance: i32,
     letter_advance: i32,
-    letter_offset: (i32, i32),
+    letter_y_offset: i32,
+}
+
+/// What kerning the space (`space`, `pair[0]`) and the letter (`letter`, `pair[1]`) shaped together
+/// adds to what each has shaped alone, None when shaping them together changes the glyphs. The
+/// letter's horizontal offset is moved into the two advances: a `kern` table gives the second glyph
+/// of a pair the offset along with its share of the advance, which draws the letter that far left
+/// when the space before it is not there (the line broke at it), outside the line. With the offset
+/// in the space's advance, the letter sits where it did within a line and at the line's start when
+/// the space is gone, and the glyphs after it are where they were.
+fn space_kern(pair: [&ShapedGlyph; 2], space: &ShapedGlyph, letter: &ShapedGlyph) -> Option<SpaceKern> {
+    let [ps, pl] = pair;
+    if (ps.gid, pl.gid) != (space.gid, letter.gid) {
+        return None;
+    }
+    let dx = pl.x_offset - letter.x_offset;
+    Some(SpaceKern {
+        space_gid: space.gid,
+        letter_gid: letter.gid,
+        space_advance: ps.x_advance - space.x_advance + dx,
+        letter_advance: pl.x_advance - letter.x_advance - dx,
+        letter_y_offset: pl.y_offset - letter.y_offset,
+    })
 }
 
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
@@ -1084,7 +1106,11 @@ fn shape_cached(
         let cached = words.read().unwrap_or_else(|e| e.into_inner()).get(key.as_str()).cloned();
         cached.unwrap_or_else(|| {
             let g: Arc<[ShapedGlyph]> = shape(&key, ShapeContext { language: lang, ..Default::default() }).into();
-            words.write().unwrap_or_else(|e| e.into_inner()).insert(key.into(), g.clone());
+            let mut w = words.write().unwrap_or_else(|e| e.into_inner());
+            if w.len() >= WORD_CACHE_MAX {
+                w.clear();
+            }
+            w.insert(key.into(), g.clone());
             g
         })
     };
@@ -1092,16 +1118,8 @@ fn shape_cached(
     for k in (1..pieces.len()).filter(|_| !vertical) {
         let Some(c) = pieces[k].chars().next().filter(|&c| c != ' ' && pieces[k - 1].ends_with(' ')) else { continue };
         let (pair, space, letter) = (alone(format!(" {c}")), alone(" ".into()), alone(c.to_string()));
-        if let ([ps, pl], [s], [l]) = (&*pair, &*space, &*letter)
-            && (ps.gid, pl.gid) == (s.gid, l.gid)
-        {
-            after_space[k] = Some(SpaceKern {
-                space_gid: s.gid,
-                letter_gid: l.gid,
-                space_advance: ps.x_advance - s.x_advance,
-                letter_advance: pl.x_advance - l.x_advance,
-                letter_offset: (pl.x_offset - l.x_offset, pl.y_offset - l.y_offset),
-            });
+        if let ([ps, pl], [s], [l]) = (&*pair, &*space, &*letter) {
+            after_space[k] = space_kern([ps, pl], s, l);
         }
     }
     let mut out: Vec<ShapedGlyph> = Vec::with_capacity(src.len());
@@ -1109,9 +1127,9 @@ fn shape_cached(
     for (k, (piece, glyphs)) in pieces.iter().zip(found).enumerate() {
         let glyphs = glyphs.unwrap_or_else(|| Arc::from(Vec::new()));
         // The space that ended the word before is kerned against this word's first letter. What
-        // the pair shaped alone does to each of the two glyphs, advance and offset, is done to
-        // them here: a `kern` table's value is shared between the two (the first's advance takes
-        // half, the second's advance and offset the rest), a GPOS pair gives it all to the first.
+        // the pair shaped alone does to each of the two glyphs is done to them here (see
+        // `space_kern`: a `kern` table shares its value between the two, a GPOS pair gives it all
+        // to the first).
         let mut letter_kern = None;
         if let (Some(kern), Some(space), Some(letter)) = (after_space[k], out.last_mut(), glyphs.first())
             && space.gid == kern.space_gid
@@ -1125,8 +1143,7 @@ fn shape_cached(
             let mut g = ShapedGlyph { cluster: g.cluster + start, ..*g };
             if let (0, Some(kern)) = (n, letter_kern) {
                 g.x_advance += kern.letter_advance;
-                g.x_offset += kern.letter_offset.0;
-                g.y_offset += kern.letter_offset.1;
+                g.y_offset += kern.letter_y_offset;
             }
             g
         }));
@@ -1602,5 +1619,35 @@ mod style_of_substitute_tests {
         assert_eq!(style_of_substitute("Malgun Gothic"), Some(true));
         assert_eq!(style_of_substitute("Batang"), Some(false));
         assert_eq!(style_of_substitute("Helvetica"), None, "a name that says neither");
+    }
+}
+
+#[cfg(test)]
+mod space_kern_tests {
+    use super::{ShapedGlyph, space_kern};
+
+    fn glyph(gid: u32, x_advance: i32, x_offset: i32) -> ShapedGlyph {
+        ShapedGlyph { gid, cluster: 0, x_advance, y_advance: 0, x_offset, y_offset: 0, safe_tatweel_before: false, rtl: false }
+    }
+
+    /// A `kern` table shares a pair's value between the two glyphs: the first's advance takes half,
+    /// the second's advance and offset the rest. When the line breaks at the space, the space is gone
+    /// and the letter must start the line where an unkerned letter does, not left of it by its
+    /// share; within a line it sits, and the glyphs after it sit, where the pair put them.
+    #[test]
+    fn a_kern_tables_shared_pair_leaves_the_letter_at_the_line_start_when_the_space_is_gone() {
+        let (space, letter) = (glyph(3, 250, 0), glyph(7, 600, 0));
+        // A pair value of -30 units as a `kern` table gives it: -15 to the space, -15 to the letter's advance and offset.
+        let pair = [glyph(3, 250 - 15, 0), glyph(7, 600 - 15, -15)];
+        let kern = space_kern([&pair[0], &pair[1]], &space, &letter).expect("the same glyphs");
+        // Within a line: where the pair put the letter and what follows it.
+        let letter_at = 250 + kern.space_advance;
+        let next_at = letter_at + 600 + kern.letter_advance;
+        assert_eq!(letter_at, pair[0].x_advance + pair[1].x_offset, "the letter is drawn where the pair draws it");
+        assert_eq!(next_at, pair[0].x_advance + pair[1].x_advance, "what follows is where the pair puts it");
+        // With the space trimmed at a line's start the letter keeps no offset (it is drawn at the start)
+        // and no advance of the pair's (what follows it is where an unkerned letter puts it).
+        assert_eq!(kern.letter_advance, 0);
+        assert_eq!(kern.letter_y_offset, 0);
     }
 }
