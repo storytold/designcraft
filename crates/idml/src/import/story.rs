@@ -94,6 +94,7 @@ impl<'r> Importer<'r> {
             direction: if source.right_to_left() { designcraft_doc::TextDirection::RightToLeft } else { designcraft_doc::TextDirection::LeftToRight },
             vertical: source.vertical(),
             optical_margin,
+            frame_grid: None,
             rev: 0,
             tables,
             notes,
