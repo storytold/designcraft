@@ -457,7 +457,7 @@ fn an_anchored_placement_keeps_its_layer_choice_in_saves_and_exports() {
     });
     let layer = d.default_layer();
     let (_, story) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 80.0), layer, "Body", Default::default()).unwrap();
-    d.story_mut(story).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+    d.story_mut(story).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
     assert!(d.has_pdf_layer_overrides(), "the anchored placement carries the choice");
     let mut s = Session::new();
     s.add_document(crate::DocState::new(d, None));

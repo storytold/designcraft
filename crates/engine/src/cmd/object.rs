@@ -1295,7 +1295,12 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
 /// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
-    renumber_anchored_in(dst, src, st, stories, depth, 0)
+    let mut ids = HashMap::new();
+    let complete = renumber_anchored_in(dst, src, st, stories, depth, 0, &mut ids);
+    if complete {
+        remap_copied_captions(st, &ids, 0);
+    }
+    complete
 }
 
 /// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
@@ -1307,10 +1312,14 @@ fn renumber_anchored_in(
     stories: &mut HashMap<StoryId, StoryId>,
     depth: usize,
     level: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
 ) -> bool {
     let mut complete = true;
     for o in &mut st.objects {
-        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+        let obj = Arc::make_mut(o);
+        let old = obj.item.id;
+        complete &= renumber_in(dst, src, &mut obj.item, stories, depth, false);
+        ids.insert(old, obj.item.id);
     }
     if level >= MAX_COPY_DEPTH {
         let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
@@ -1320,13 +1329,32 @@ fn renumber_anchored_in(
     }
     for t in st.tables.values_mut() {
         for c in &mut Arc::make_mut(t).cells {
-            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1, ids);
         }
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1, ids);
     }
     complete
+}
+
+/// Remap explicit captions after every anchored item in the bounded story copy has a fresh id.
+fn remap_copied_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, level: usize) {
+    for o in &mut st.objects {
+        let obj = Arc::make_mut(o);
+        obj.caption_id = obj.caption_id.and_then(|id| ids.get(&id).copied());
+    }
+    if level >= MAX_COPY_DEPTH {
+        return;
+    }
+    for t in st.tables.values_mut() {
+        for c in &mut Arc::make_mut(t).cells {
+            remap_copied_captions(&mut c.text, ids, level + 1);
+        }
+    }
+    for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        remap_copied_captions(&mut Arc::make_mut(n).text, ids, level + 1);
+    }
 }
 
 fn transform_move(s: &mut Session, p: &Value) -> Result<Value> {
@@ -7002,6 +7030,7 @@ mod anchored_copy_tests {
         assert_reopens(doc);
     }
 
+    /// Verify repeated paste assigns distinct IDs to copied anchored objects.
     #[test]
     fn pasting_a_frame_with_an_anchored_object_twice_keeps_ids_unique() {
         let mut s = Session::new();
@@ -7015,7 +7044,50 @@ mod anchored_copy_tests {
         assert_reopens(doc);
     }
 
+    /// Duplicating a linked graphic and caption must link the two new IDs, not the originals.
+    #[test]
+    fn duplicated_story_remaps_caption_link_and_reopens() {
+        let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
+        let layer = d.default_layer();
+        let (host, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 300.0), layer, "Host", ParaFormat::default()).unwrap();
+        let (caption, caption_sid) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 90.0, 30.0), layer, "Caption", ParaFormat::default()).unwrap();
+        let caption_item = d.item(caption).unwrap().clone();
+        let caption_story = d.stories.get(&caption_sid).unwrap().clone();
+        d.remove_item(caption).unwrap();
+        d.stories.insert(caption_sid, caption_story);
+        let graphic_id = ItemId(d.alloc());
+        let mut graphic =
+            Item::new(graphic_id, layer, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 60.0, 40.0)));
+        graphic.content = Content::Graphic(designcraft_doc::Graphic {
+            layer_options: None,
+            asset: designcraft_doc::AssetId(1),
+            size: (60.0, 40.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut linked = AnchoredObject::new(graphic, Default::default());
+        linked.caption_id = Some(caption);
+        d.story_mut(sid).unwrap().insert_object(0, linked);
+        d.story_mut(sid).unwrap().insert_object(1, AnchoredObject::new(caption_item, Default::default()));
+        assert_reopens(&d);
+        let src = d.clone();
+        let copied = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        let new_sid = d.item(copied[0]).unwrap().text_frame().unwrap().story;
+        let objects = &d.story(new_sid).unwrap().objects;
+        assert_ne!(objects[0].item.id, graphic_id);
+        assert_ne!(objects[1].item.id, caption);
+        assert_eq!(objects[1].caption_id, Some(objects[0].item.id));
+        assert_reopens(&d);
+    }
+
     // IDML import can anchor a text frame; its story is copied too, with the copy in its thread.
+    /// Verify copying an anchored text frame also duplicates its nested story.
     #[test]
     fn an_anchored_text_frame_gets_its_own_story_copy() {
         let mut d = Document::new(&designcraft_doc::build::NewDocument::default());
@@ -7026,7 +7098,7 @@ mod anchored_copy_tests {
         let inner_story = d.stories.get(&inner_sid).unwrap().clone();
         d.remove_item(inner).unwrap();
         d.stories.insert(inner_sid, inner_story);
-        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+        d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
         d.check().unwrap();
         let src = d.clone();
         let copy = duplicate_from(&mut d, &src, &[host], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
@@ -7058,7 +7130,7 @@ mod anchored_copy_tests {
             let story = d.stories.get(&sid).unwrap().clone();
             d.remove_item(id).unwrap();
             d.stories.insert(sid, story);
-            d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+            d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
         }
         d.check().unwrap();
         let src = d.clone();

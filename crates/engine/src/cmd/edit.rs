@@ -39,7 +39,12 @@ fn has_selection_or_text(s: &Session) -> std::result::Result<(), String> {
     if s.active().and_then(|d| d.selection.text).is_some_and(|t| !t.is_caret()) {
         return Ok(());
     }
-    has_selection(s)
+    has_selection(s)?;
+    let st = s.active().ok_or_else(|| "no document".to_string())?;
+    if st.selection.items.iter().any(|id| st.doc.item(*id).is_none() && st.doc.anchored_item(*id).is_some()) {
+        return Err("copy/cut of anchored selections is unsupported; select their text markers or release the objects first".into());
+    }
+    Ok(())
 }
 
 /// Plain text of a story slice: markers and anchored objects dropped, footnote text omitted.
@@ -273,6 +278,43 @@ fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
     out
 }
 
+/// Clear an anchor's graphic content or remove its marker, including in notes and cells.
+/// Only a top-level marker deletion adjusts document-wide text ranges.
+fn clear_anchored(st: &mut designcraft_doc::Story, id: ItemId, content: bool, depth: usize) -> Option<(bool, Option<std::ops::Range<usize>>)> {
+    if let Some(k) = st.objects.iter().position(|o| o.item.id == id) {
+        if content && matches!(st.objects.get(k)?.item.content, designcraft_doc::Content::Graphic(_)) {
+            let obj = Arc::make_mut(st.objects.get_mut(k)?);
+            obj.item.content = designcraft_doc::Content::Unassigned;
+            obj.caption_id = None;
+            st.rev = st.rev.wrapping_add(1);
+            return Some((true, None));
+        }
+        let pos = st.text.match_indices(designcraft_doc::OBJECT_MARK).nth(k)?.0;
+        let range = pos..pos + designcraft_doc::OBJECT_MARK.len_utf8();
+        st.delete(range.clone());
+        return Some((false, Some(range)));
+    }
+    if depth >= 64 {
+        return None;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if let Some((kept, _)) = clear_anchored(&mut Arc::make_mut(note).text, id, content, depth + 1) {
+            st.rev = st.rev.wrapping_add(1);
+            return Some((kept, None));
+        }
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            if let Some((kept, _)) = clear_anchored(&mut cell.text, id, content, depth + 1) {
+                st.rev = st.rev.wrapping_add(1);
+                return Some((kept, None));
+            }
+        }
+    }
+    None
+}
+
+/// Describe the available clipboard, undo, and editing commands.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {
@@ -311,7 +353,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     ids.push(*id);
                 }
             }
-            let ids: Vec<ItemId> = ids.into_iter().filter(|i| st.doc.item(*i).is_some()).collect();
+            let ids: Vec<ItemId> = ids.into_iter().filter(|i| st.doc.item(*i).is_some() || st.doc.anchored_item(*i).is_some()).collect();
             if add {
                 // Adding objects (no points) leaves no live points: Delete would otherwise remove
                 // the stale points instead of the objects.
@@ -423,16 +465,33 @@ pub fn specs() -> Vec<CommandSpec> {
                 let content = s.doc()?.selection.content && p.get("ids").is_none();
                 s.edit(|d, sel| {
                     let mut kept = Vec::new();
+                    let mut deleted = 0;
                     for id in &ids {
+                        let owner = d.anchored_items().iter().find_map(|(sid, item)| (item.id == *id).then_some(*sid));
+                        if let Some(sid) = owner {
+                            let story = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                            let (keep, range) = clear_anchored(story, *id, content, 0)
+                                .ok_or_else(|| super::bad("edit.clear", "deleting a member of an anchored group is unsupported"))?;
+                            if let Some(range) = range {
+                                d.adjust_text_ranges(sid, range, 0);
+                            }
+                            if keep {
+                                kept.push(*id);
+                            }
+                            deleted += 1;
+                            continue;
+                        }
                         if let Some(it) = d.item_mut(*id).filter(|it| content && matches!(it.content, designcraft_doc::Content::Graphic(_))) {
                             it.content = designcraft_doc::Content::Unassigned;
                             kept.push(*id);
-                        } else {
-                            let _ = d.remove_item(*id);
+                            deleted += 1;
+                        } else if d.item(*id).is_some() {
+                            d.remove_item(*id)?;
+                            deleted += 1;
                         }
                     }
                     *sel = Selection::items(kept);
-                    Ok(json!({"deleted": ids.len()}))
+                    Ok(json!({"deleted": deleted}))
                 })
             }
         ),
@@ -585,6 +644,13 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
     let st = s.doc()?;
     let mut d = (*st.doc).clone();
     let keep: Vec<ItemId> = st.selection.items.clone();
+    // Never replace the clipboard with a partial or empty clipping of an anchored selection.
+    if keep.iter().any(|id| st.doc.item(*id).is_none() && st.doc.anchored_item(*id).is_some()) {
+        return Err(super::bad(
+            "edit.copy",
+            "copy/cut of anchored selections is unsupported; select their text markers or release the objects first",
+        ));
+    }
     // Gather the selected items (in their spread coordinates, nested ones too) into spread 0.
     let mut items = Vec::new();
     for id in &keep {
@@ -594,6 +660,9 @@ pub(crate) fn clip_doc(s: &Session) -> Result<designcraft_doc::Document> {
             designcraft_doc::Content::Graphic(g) if st.selection.content => graphic_alone(it, g, parent),
             _ => designcraft_doc::Item { xf: parent * it.xf, ..it.clone() },
         }));
+    }
+    if items.is_empty() {
+        return Err(super::bad("edit.copy", "no copyable selected items"));
     }
     for sp in d.spreads.iter_mut() {
         Arc::make_mut(sp).items.clear();
@@ -876,7 +945,7 @@ mod paste_tests {
                 let story = d.stories.get(&sid).unwrap().clone();
                 d.remove_item(id).unwrap();
                 d.stories.insert(sid, story);
-                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default() });
+                d.story_mut(into).unwrap().insert_object(0, AnchoredObject { item, position: Default::default(), caption_id: None });
                 sid
             };
             let inner = anchor_frame(d, host_sid, "Inner");
@@ -962,7 +1031,7 @@ mod paste_tests {
             d.stories.insert(sid, story);
             let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Group, Default::default());
             group.content = Content::Group { items: vec![Arc::new(child)] };
-            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default() });
+            d.story_mut(host_sid).unwrap().insert_object(0, AnchoredObject { item: group, position: Default::default(), caption_id: None });
             d.check().unwrap();
             Ok(())
         })
