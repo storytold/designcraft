@@ -1437,9 +1437,22 @@ fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
     // adding a full group copy alongside the band during `TiffBands::decode`.
     // Orientations 5..=8 also swap the reduced output dimensions.
     let rgba_raw = vec![120u8; px_count * 4];
+    let mut rgba_swapped = rgba_raw.clone();
+    let paint_2x2 = |buf: &mut [u8], x0: usize, y0: usize, px: [u8; 4]| {
+        for y in y0..y0 + 2 {
+            for x in x0..x0 + 2 {
+                let off = (y * w as usize + x) * 4;
+                buf[off..off + 4].copy_from_slice(&px);
+            }
+        }
+    };
+    paint_2x2(&mut rgba_swapped, 0, 0, [240, 20, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 0, [20, 240, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 0, 10, [20, 20, 240, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 10, [240, 240, 20, 255]);
     let upright = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(1), &[&rgba_raw], Some(2), None);
     let flipped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(3), &[&rgba_raw], Some(2), None);
-    let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_raw], Some(2), None);
+    let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_swapped], Some(2), None);
     let est_upright = reduced_estimate(&upright, 1).unwrap();
     let est_flip = reduced_estimate(&flipped, 1).unwrap();
     let est_swapped = reduced_estimate(&swapped, 1).unwrap();
@@ -1449,7 +1462,15 @@ fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
     assert_eq!(decode_rgba_reduced(&flipped, 1).unwrap().dimensions(), (8, 6));
     assert_eq!((est_swapped.0, est_swapped.1), (6, 8));
     assert_eq!(est_swapped.2, est_upright.2 + px_count * 4);
-    assert_eq!(decode_rgba_reduced(&swapped, 1).unwrap().dimensions(), (6, 8));
+    let swapped_out = decode_rgba_reduced(&swapped, 1).unwrap();
+    assert_eq!(swapped_out.dimensions(), (6, 8));
+    // Orientation 6 rotates 90 deg CW: stored (TL=red, TR=green, BL=blue, BR=yellow)
+    // maps to upright (TR=red, BR=green, TL=blue, BL=yellow).
+    assert_eq!(swapped_out.get_pixel(0, 0).0, [20, 20, 240, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 0).0, [240, 20, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(0, 7).0, [240, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 7).0, [20, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(2, 3).0, [120, 120, 120, 120]);
 
     // Lab8 and Rgb32F convert through normalized 32-bit float intermediates before U8 output.
     let rgb_raw = vec![128u8; px_count * 3];
