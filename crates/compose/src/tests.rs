@@ -2814,6 +2814,15 @@ fn a_leader_pattern_cut_by_the_gap_keeps_the_glyphs_that_fit() {
                 assert_eq!(w[1].0, (w[0].0 + 1) % n, "{leader:?} step {step}: pattern order");
                 assert!((w[1].1 - (w[0].1 + adv[w[0].0])).abs() < 1e-6, "{leader:?} step {step}: pattern spacing");
             }
+            // Order and spacing hold when every glyph shifts by the same amount, so also pin the
+            // grid itself: glyph k sits a whole number of repeats from the tab origin (the frame's
+            // left edge here) plus the advances of the glyphs before it in the repeat, which is what
+            // lines each leader up with the one above and below.
+            let repeat: f64 = adv.iter().sum();
+            for &(k, x) in &set {
+                let repeats = (x - adv[..k].iter().sum::<f64>()) / repeat;
+                assert!((repeats - repeats.round()).abs() * repeat < 1e-6, "{leader:?} step {step}: glyph {k} at {x} is off the grid of repeats");
+            }
             // Nothing more fits at either end.
             let &(k, x) = set.last().unwrap();
             let next = (k + 1) % n;
