@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-15** · File › Export PDF (Interactive)… opens Export to Interactive PDF before it asks where to save: the pages, Export As Pages or Spreads, the View, the Layout, Open in Full Screen Mode and Flip Pages Every. A facing-pages document can now be exported with each spread on one PDF page; before, the menu item always wrote single pages (#2756). No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

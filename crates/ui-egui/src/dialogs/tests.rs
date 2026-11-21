@@ -5909,3 +5909,148 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
 }
+
+/// File › Export PDF (Interactive)… shows its options before it asks where to save, as Export
+/// PDF does, and Export As › Spreads puts each spread of a facing-pages document on one PDF page.
+/// It went straight to the save dialog and always wrote single pages (#2756).
+#[test]
+fn interactive_pdf_export_asks_for_options_and_exports_spreads() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use std::sync::{Arc, Mutex};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
+    let written: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = written.clone();
+    app.services.write = Some(Box::new(move |_: &str, b: &[u8]| {
+        *sink.lock().unwrap() = b.to_vec();
+        Ok(())
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(dir.path().join("out.pdf").to_string_lossy().into_owned())));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("interactive_pdf_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(2);
+    // Pages, as before: four PDF pages.
+    crate::menus::activate(h.state_mut(), "app.exportInteractivePdf", &Value::Null);
+    h.state_mut().settle_dialogs();
+    assert!(written.lock().unwrap().is_empty(), "nothing is written before the options are confirmed");
+    assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("interactivePdfExport"));
+    h.run_steps(3);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    h.state_mut().settle_dialogs();
+    assert!(h.state().ui.dialog.is_none());
+    let pages = std::mem::take(&mut *written.lock().unwrap());
+    assert_eq!(designcraft_render::pdf_page_count(&pages), Some(4), "pages by default");
+    // Spreads: page 1, pages 2 and 3 side by side, page 4.
+    crate::menus::activate(h.state_mut(), "app.exportInteractivePdf", &Value::Null);
+    h.run_steps(3);
+    h.get_by_label("Spreads").click();
+    h.run_steps(2);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    h.state_mut().settle_dialogs();
+    let spreads = std::mem::take(&mut *written.lock().unwrap());
+    assert_eq!(designcraft_render::pdf_page_count(&spreads), Some(3), "one PDF page per spread");
+    let width = |i: usize| designcraft_render::pdf_page_box(&spreads, i, "trim").unwrap().2;
+    assert!((width(1) - 2.0 * width(0)).abs() < 0.5, "the middle spread is two pages wide: {} and {}", width(0), width(1));
+}
+
+/// Export to Interactive PDF starts from the options the command was given, and a flip time
+/// that is not a positive number keeps the dialog open, saying why, without asking for a file.
+#[test]
+fn interactive_pdf_export_options_seed_and_refuse_a_bad_flip_time() {
+    let mut app = test_app();
+    app.run("app.exportInteractivePdf", json!({"spreads": true, "pages": "1", "advanceSeconds": 3})).unwrap();
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.id.as_str(), d.b("spreads"), d.s("range"), d.s("pages")), (INTERACTIVE_PDF_EXPORT, true, "range".into(), "1".into()));
+    assert_eq!((d.b("flip"), d.s("seconds"), d.s("pageLayout")), (true, "3".into(), "single".into()));
+    for bad in ["0", "-2", "soon", "inf", "NaN"] {
+        app.ui.dialog.as_mut().unwrap().fields.insert("seconds".into(), json!(bad));
+        assert!(confirm(&mut app).is_err(), "{bad}");
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.id, INTERACTIVE_PDF_EXPORT, "{bad}: still open");
+        assert!(d.s("status").contains("Flip Pages Every"), "{bad}: says why");
+    }
+    cancel(&mut app);
+    app.run("app.exportInteractivePdf", json!({"pages": [2, 3], "bookmarksPanel": false})).unwrap();
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!((d.s("pages"), d.b("bookmarksPanel"), d.b("media")), ("2,3".to_string(), false, true));
+    cancel(&mut app);
+}
+
+/// A page range the export would refuse keeps Export to Interactive PDF open, saying why: a
+/// browser runs the export before the dialog returns, so a closed dialog would say nothing at all.
+#[test]
+fn interactive_pdf_export_refuses_a_bad_page_range() {
+    let mut app = test_app();
+    app.run("app.exportInteractivePdf", json!({"pages": "1-x"})).unwrap();
+    assert!(confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, INTERACTIVE_PDF_EXPORT);
+    assert_eq!(d.s("status"), "bad page range `1-x`");
+    // A page the document does not have is refused the same way.
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!("9"));
+    assert!(confirm(&mut app).is_err());
+    assert_eq!(app.ui.dialog.as_ref().unwrap().s("status"), "page 9 does not exist");
+    // A range the export accepts goes on to ask where to save.
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!("1"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+}
+
+/// A range of only commas parses to no page at all (not to an error), which the export refuses
+/// (`NoPages`). The dialog must refuse it too, rather than close with nothing written and no
+/// explanation; a range with the same stray commas around a page still exports that page.
+#[test]
+fn interactive_pdf_export_refuses_a_range_that_selects_no_page() {
+    let mut app = test_app();
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("range".into(), json!("range"));
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!(","));
+    assert!(confirm(&mut app).is_err());
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.id, INTERACTIVE_PDF_EXPORT);
+    assert_eq!(d.s("status"), "nothing to export (no pages selected)");
+    app.ui.dialog.as_mut().unwrap().fields.insert("pages".into(), json!(",1,"));
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+}
+
+/// `{"pages": []}` selects no page. The direct export refuses it (`NoPages`); the dialog must not
+/// turn the empty list into an empty range, which would export every page.
+#[test]
+fn interactive_pdf_export_refuses_an_empty_page_selection() {
+    let mut app = test_app();
+    let e = app.run("app.exportInteractivePdf", json!({"pages": []})).unwrap_err();
+    assert_eq!(e, "nothing to export (no pages selected)");
+    assert!(app.ui.dialog.is_none(), "no dialog to confirm");
+}
+
+/// The options belong to the document the dialog opened in: OK exports that one, and says so when
+/// it has closed instead of exporting another document with its page range and layout.
+#[test]
+fn interactive_pdf_export_options_are_for_the_document_they_opened_in() {
+    let mut app = test_app();
+    let first = app.session.active().unwrap().uid;
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.run("file.new", json!({"title": "second"})).unwrap();
+    assert_ne!(app.session.active().unwrap().uid, first);
+    confirm(&mut app).unwrap();
+    assert_eq!(app.session.active().unwrap().uid, first, "OK exports the document the dialog opened in");
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.run("file.close", json!({"index": 0})).unwrap();
+    confirm(&mut app).unwrap();
+    assert!(app.ui.dialog.is_none());
+    assert!(app.ui.status.contains("has closed"), "{}", app.ui.status);
+}

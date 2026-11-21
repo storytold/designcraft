@@ -66,7 +66,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "app.exportInteractivePdf",
         "Export PDF (Interactive)…",
         None,
-        "{path?, fullScreen?, advanceSeconds?} — single pages fitted, bookmarks panel open, buttons, forms, transitions",
+        "{path?, spreads?, pages?, pageLayout?, view?, fullScreen?, advanceSeconds?} — single pages fitted unless set, bookmarks panel open, buttons, forms, transitions; without a path, Export to Interactive PDF's options (Export As Pages or Spreads) and then the save dialog",
     ),
     ("app.exportFixedEpub", "Export EPUB (Fixed Layout)…", None, "{path?} — pre-paginated EPUB 3"),
     ("app.exportHtml", "Export HTML…", None, "{path?} — one self-contained web page"),
