@@ -2,10 +2,10 @@
 //! it instead of assuming 72 ppi (#1991: a 600 px photo saved at 600 dpi places one inch wide).
 //! Delegates container resolution probes to `craft-image-codecs` (`file_resolution`, which reads
 //! JPEG Photoshop ResolutionInfo -> XMP -> EXIF -> JFIF, PNG eXIf, WebP EXIF, and classic TIFF;
-//! plus `exif_resolution` and `bmp_probe::pixels_per_meter`) and PSD `ResolutionInfo` to
-//! [`crate::psd`]. PNG `pHYs` is read locally in `f64` before falling back to `file_resolution`
-//! for `eXIf`. GIF and files without (usable) metadata report nothing and keep the
-//! pixel-is-a-point size.
+//! plus `exif_resolution`, `png_probe::pixels_per_meter`, and `bmp_probe::pixels_per_meter`) and
+//! PSD `ResolutionInfo` to [`crate::psd`]. JPEG EXIF orientation keeps the strict local APP1 scan
+//! (`"Exif\0\0"` with complete segment bounds). GIF and files without (usable) metadata report
+//! nothing and keep the pixel-is-a-point size.
 
 /// Dots per inch in x and y, when the file carries usable resolution metadata.
 pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
@@ -43,7 +43,7 @@ fn orientation(bytes: &[u8]) -> u16 {
     1
 }
 
-/// EXIF orientation from a JPEG's APP1 `"Exif\0\0"` segment before the first scan.
+/// EXIF orientation from a JPEG's first APP1 `"Exif\0\0"` segment before the first scan.
 fn jpeg_orientation(bytes: &[u8]) -> u16 {
     let mut i = 2usize;
     while i + 4 <= bytes.len() {
@@ -77,31 +77,11 @@ fn jpeg_orientation(bytes: &[u8]) -> u16 {
     1
 }
 
-/// The pHYs chunk: pixels-per-unit in x and y plus the unit (1 = meter -> dpi, in f64).
+/// PNG `pHYs` pixels-per-metre via the shared probe: meters -> dpi in `f64` (preserving exact
+/// placement DPI without `dpi_of_ppm` snapping).
 fn png_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
-    let mut pos = 8;
-    loop {
-        let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
-        let kind = bytes.get(pos + 4..pos + 8)?;
-        if kind == b"pHYs" {
-            if len != 9 {
-                return None;
-            }
-            let data = bytes.get(pos + 8..pos + 8 + 13)?;
-            let (x, y) = (u32::from_be_bytes(data[0..4].try_into().ok()?), u32::from_be_bytes(data[4..8].try_into().ok()?));
-            if data[8] == 1 && x > 0 && y > 0 {
-                return Some((x as f64 * 0.0254, y as f64 * 0.0254));
-            }
-            return None;
-        }
-        if kind == b"IEND" || kind == b"IDAT" {
-            return None;
-        }
-        pos = pos.checked_add(8)?.checked_add(len)?.checked_add(4)?;
-        if pos >= bytes.len() {
-            return None;
-        }
-    }
+    let (x, y) = craft_image_codecs::png_probe::pixels_per_meter(bytes)?;
+    Some((f64::from(x) * 0.0254, f64::from(y) * 0.0254))
 }
 
 /// A parsed density is usable when both axes are finite, positive and below the absurdity cap
