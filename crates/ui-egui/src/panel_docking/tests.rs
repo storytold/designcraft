@@ -1361,4 +1361,10 @@ fn a_floating_panel_comes_back_at_the_size_it_was_left_at() {
     assert_eq!(saved.panel_sizes.get("properties"), Some(&[360.0, 450.0]));
     let old: crate::UiState = serde_json::from_str("{}").unwrap();
     assert!(old.panel_sizes.is_empty(), "a file from before loads");
+    // A damaged or hand-edited size is passed over: the panel floats at its own size.
+    app.run("window.panel.dock", json!({"panel":"properties"})).unwrap();
+    app.ui.panel_sizes.insert("properties".to_owned(), [1.0e7, 450.0]);
+    app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
+    let r = rect(&app, "properties");
+    assert!(r[2] < 8192.0, "not a huge window: {r:?}");
 }

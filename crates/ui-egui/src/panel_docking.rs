@@ -1266,9 +1266,15 @@ fn floating_size_for(ui: &crate::UiState, panel: &str) -> egui::Vec2 {
     remembered_size(ui, panel).unwrap_or_else(|| floating_size(panel))
 }
 
+/// The sizes a floating panel is remembered at: below, too small to use; above, a damaged or
+/// hand-edited file, which mustn't open a huge native window.
+fn usable_size(v: f32) -> bool {
+    v.is_finite() && (40.0..=8192.0).contains(&v)
+}
+
 /// The size `panel` last floated at, if it has floated (and the number is usable).
 fn remembered_size(ui: &crate::UiState, panel: &str) -> Option<egui::Vec2> {
-    ui.panel_sizes.get(panel).filter(|s| s.iter().all(|v| v.is_finite() && *v >= 40.0)).map(|s| egui::vec2(s[0], s[1]))
+    ui.panel_sizes.get(panel).filter(|s| s.iter().all(|v| usable_size(*v))).map(|s| egui::vec2(s[0], s[1]))
 }
 
 /// Remembers the size of every floating window's panels (its own OS window's size when it has
@@ -1277,7 +1283,7 @@ fn remembered_size(ui: &crate::UiState, panel: &str) -> Option<egui::Vec2> {
 fn remember_sizes(app: &mut DesignApp, layout: &Layout<String>) {
     for window in layout.floating.iter().filter(|w| !w.minimized) {
         let [_, _, w, h] = window.native.unwrap_or(window.rect);
-        if !(w.is_finite() && h.is_finite() && w >= 40.0 && h >= 40.0) {
+        if !(usable_size(w) && usable_size(h)) {
             continue;
         }
         for panel in window.panels() {

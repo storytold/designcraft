@@ -319,8 +319,12 @@ fn main() -> std::process::ExitCode {
     }
     // The window as it was left: its size, maximized or full screen.
     let window = saved_window();
-    let size =
-        window.and_then(|w| w.size).filter(|s| s.iter().all(|v| v.is_finite())).map_or([1440.0, 900.0], |s| [s[0].max(900.0), s[1].max(560.0)]);
+    // Bounded both ways: a damaged or hand-edited file can't open a window of absurd size before
+    // it is fitted to the monitor.
+    let size = window
+        .and_then(|w| w.size)
+        .filter(|s| s.iter().all(|v| v.is_finite()))
+        .map_or([1440.0, 900.0], |s| [s[0].clamp(900.0, 8192.0), s[1].clamp(560.0, 8192.0)]);
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DesignCraft")
