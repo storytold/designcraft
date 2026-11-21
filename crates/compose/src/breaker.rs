@@ -926,6 +926,9 @@ fn emergency_split(glyphs: &[Glyph], start: usize, i: usize) -> usize {
 
 /// Greedy first-fit breaking (single-line composer; also used for paragraphs with tabs).
 ///
+/// A line may break after a tab, so a run of tabs at the end of a line keeps the tabs that start
+/// before the edge (the last of them ending at the edge) and the next line starts with the rest.
+///
 /// `tab(line, x, i)` is the advance of the tab glyph `i` when it starts `x` from the start of
 /// line `line`: tabs have no width until they reach their stop, which depends on where they sit.
 pub fn greedy(
@@ -974,7 +977,16 @@ pub fn greedy(
                 continue;
             }
             let hang_r = right_hang(g, sp);
-            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            let mut adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            // A tab that starts before or at the edge stays on the line even when its stop lies
+            // beyond it, and ends at the edge; the line ends after it, even before a forced break,
+            // and the tabs after it start the next line (as in InDesign). A tab that may not end a
+            // line (No Break) keeps the old wrapping, unless a forced break ends the line anyway.
+            let may_end = (!g.no_break && g.break_after != Some(false)) || glyphs.get(i + 1).is_none_or(|next| is_forced(next.ch));
+            let clipped = g.ch == '\t' && may_end && x <= w + FIT_EPS && x + adv > w + FIT_EPS;
+            if clipped {
+                adv = (w - x).max(0.0);
+            }
             let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only())[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
             if sp.kinsoku_cjk
@@ -1011,7 +1023,8 @@ pub fn greedy(
                             last_ok = Some((i + 1, true));
                         }
                     }
-                } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                } else if g.ch == '\t'
+                    || matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
                     last_ok = Some((i + 1, false));
@@ -1025,6 +1038,10 @@ pub fn greedy(
                         last_ok = Some((i + 1, true));
                     }
                 }
+            }
+            if clipped && i + 1 < n {
+                brk = Some((i + 1, false, false));
+                break;
             }
             i += 1;
         }
