@@ -37,6 +37,15 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        // Every queued background export is listed, whichever surface asked for it: a menu, a
+        // panel's dialog, or the control channel. The Exports panel then shows its progress and
+        // Cancel, and the status bar counts it.
+        if let Ok(v) = &r
+            && id == "file.exportPdf"
+            && let Some(job) = v.get("job").and_then(Value::as_u64)
+        {
+            self.adopt_export_job(job, &params);
+        }
         match &r {
             Err(e) => self.status(e.clone()),
             // Copied text goes to the system clipboard too, whichever way Copy was chosen.

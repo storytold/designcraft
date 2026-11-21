@@ -5,6 +5,7 @@ pub mod conditions;
 mod font_menu;
 pub use font_menu::{FONT_MENU_HEIGHT, FontMenu, FontPick, SAMPLES as FONT_SAMPLES, font_menu_header, font_menu_list};
 pub mod datamerge;
+pub mod exports;
 pub mod glyphs;
 pub mod interactive;
 pub mod layers;

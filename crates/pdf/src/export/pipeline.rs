@@ -2,6 +2,7 @@ use super::common::{tf, to_path};
 use super::images::ImageContentCache;
 use super::metadata::{date_time, export_time, file_info_metadata};
 use super::*;
+use crate::ExportProgress;
 
 /// Export `doc` as PDF bytes.
 pub fn export_pdf(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<Vec<u8>> {
@@ -153,7 +154,37 @@ pub fn print_color(doc: &Document, opts: &PdfOptions) -> bool {
 
 /// Like [`export_pdf`], also returning warnings about approximated or dropped features.
 pub fn export_pdf_with_report(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
-    write::guard(|| export_pdf_with_report_inner(doc, cache, opts))
+    export_pdf_with_report_progress(doc, cache, opts, &mut |_| {})
+}
+
+/// Like [`export_pdf_with_report`], reporting progress as it writes each sheet.
+///
+/// The callback runs on the exporting thread; it must not block for long and must be cheap to
+/// call (it is called once per page, and a few times around them).
+pub fn export_pdf_with_report_progress(
+    doc: &Document,
+    cache: &Cache,
+    opts: &PdfOptions,
+    progress: &mut dyn FnMut(ExportProgress),
+) -> Result<ExportReport> {
+    export_pdf_with_report_progress_cancel(doc, cache, opts, progress, &|| false)
+}
+
+/// [`export_pdf_with_report_progress`], stopping between sheets when `should_cancel` is true.
+///
+/// Cancellation is cooperative: it is checked before each sheet, so a single heavy page (or the
+/// final PDF/X-1a flattening) still runs to its end. A cancelled export writes no file.
+pub fn export_pdf_with_report_progress_cancel(
+    doc: &Document,
+    cache: &Cache,
+    opts: &PdfOptions,
+    progress: &mut dyn FnMut(ExportProgress),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<ExportReport> {
+    write::guard(|| {
+        progress(ExportProgress::phase("preparing"));
+        export_pdf_with_report_inner(doc, cache, opts, progress, should_cancel)
+    })
 }
 
 /// Form fields (Buttons and Forms) and, for interactive PDF, video and sound; not in PDF/X
@@ -176,7 +207,13 @@ fn add_form_fields(bytes: &mut Vec<u8>, warnings: &mut Vec<String>, doc: &Docume
     }
 }
 
-fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions) -> Result<ExportReport> {
+fn export_pdf_with_report_inner(
+    doc: &Document,
+    cache: &Cache,
+    opts: &PdfOptions,
+    progress: &mut dyn FnMut(ExportProgress),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<ExportReport> {
     let sheets = sheets(doc, opts)?;
     let (version, archival) = match opts.standard {
         Standard::None => (PdfVersion::Pdf17, None),
@@ -241,6 +278,10 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
         pdf.set_outline(o);
     }
     for (sheet_idx, sh) in sheets.iter().enumerate() {
+        if should_cancel() {
+            return Err(PdfError::Cancelled);
+        }
+        progress(ExportProgress::page_labeled(sheet_idx, sheets.len(), &sh.label));
         let size = Size::from_wh(sh.media.width().max(1.0) as f32, sh.media.height().max(1.0) as f32).ok_or(PdfError::NoPages)?;
         let local = |r: Rect| {
             krilla::geom::Rect::from_ltrb(
@@ -279,10 +320,18 @@ fn export_pdf_with_report_inner(doc: &Document, cache: &Cache, opts: &PdfOptions
     if opts.tagged {
         pdf.set_tag_tree(ex.tag_tree());
     }
+    if should_cancel() {
+        return Err(PdfError::Cancelled);
+    }
+    progress(ExportProgress::page(sheets.len(), sheets.len()));
     ex.check_placed_versions()?;
     if let Some(error) = ex.layer_error {
         return Err(error);
     }
+    if should_cancel() {
+        return Err(PdfError::Cancelled);
+    }
+    progress(ExportProgress::phase("finishing"));
     let mut bytes = writer.finish().map_err(PdfError::from)?;
     let mut warnings = ex.warnings;
     if ex.has_optional_content {

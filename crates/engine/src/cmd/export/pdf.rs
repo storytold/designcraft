@@ -89,9 +89,7 @@ fn first_page_ref(pdf: &[u8]) -> Option<usize> {
 
 /// Every page sharing a spread with one of `pages` (0-based), for an export that puts whole
 /// spreads on a sheet. The pages come back in document order.
-fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
-    let Some(st) = s.active() else { return pages.to_vec() };
-    let d = &st.doc;
+fn with_their_spreads_doc(d: &designcraft_doc::Document, pages: &[usize]) -> Vec<usize> {
     let spreads: std::collections::BTreeSet<usize> = pages.iter().filter_map(|p| d.page_loc(*p)).map(|(si, _)| si).collect();
     if spreads.is_empty() {
         return pages.to_vec();
@@ -100,14 +98,12 @@ fn with_their_spreads(s: &Session, pages: &[usize]) -> Vec<usize> {
 }
 
 pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
-    let mut r = pdf_export(s, p)?;
-    // Text the pages have no room for is not in the file: say so, as preflight does (#1465).
-    // A spread export puts the whole spread on the sheet, so choosing page 2 exports page 3 as
-    // well and page 3's overset is as absent from the file as page 2's would be. The selection
-    // is widened to the spreads it touches before the warnings are collected (noted in review).
-    let opts = options(p, s.doc()?.doc.page_count())?;
-    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads(s, pages) } else { pages.to_vec() });
-    r.warnings.extend(crate::cmd::preflight::overset_warnings(s, warn_pages.as_deref()));
+    if p.get("background").and_then(Value::as_bool) == Some(true) {
+        return crate::export_job::start_pdf(s, p);
+    }
+    let doc = s.doc()?.doc.clone();
+    let cache = s.cache.clone();
+    let r = pdf_export_report_with_progress(&doc, &cache, p, &mut |_| {}, &|| false)?;
     match str_param(p, "path") {
         Some(path) => {
             write_file(path, &r.bytes)?;
@@ -115,6 +111,26 @@ pub(super) fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => Ok(json!({"base64": crate::cmd::base64_encode(&r.bytes), "bytes": r.bytes.len(), "pages": r.pages, "warnings": r.warnings})),
     }
+}
+
+/// The PDF `file.exportPdf` writes for `p`, with its warnings: the print PDF
+/// ([`pdf_report`]) with its view options, timings and transitions, plus the overset text the
+/// exported pages have no room for. It needs no session, so a background export can run it.
+pub(crate) fn pdf_export_report_with_progress(
+    doc: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    p: &Value,
+    progress: &mut dyn FnMut(designcraft_pdf::ExportProgress),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<designcraft_pdf::ExportReport> {
+    let mut r = pdf_report_with_progress(doc, cache, p, progress, should_cancel)?;
+    if should_cancel() {
+        return Err(EngineError::Other("export cancelled".into()));
+    }
+    let opts = options(p, doc.page_count())?;
+    let warn_pages = opts.pages.as_deref().map(|pages| if opts.spreads { with_their_spreads_doc(doc, pages) } else { pages.to_vec() });
+    r.warnings.extend(crate::cmd::preflight::overset_warnings_doc(doc, cache, warn_pages.as_deref()));
+    Ok(r)
 }
 
 /// Transparency Flattener presets (`flatten`): High / Medium / Low Resolution, or a ppi.
@@ -139,24 +155,63 @@ pub(crate) fn print_pdf(
     opts: &PdfOptions,
     ppi: Option<f64>,
 ) -> Result<designcraft_pdf::ExportReport> {
+    print_pdf_with_progress(d, cache, opts, ppi, &mut |_| {}, &|| false)
+}
+
+/// [`print_pdf`], reporting progress as it flattens transparency, rasterizes soft effects and
+/// writes the sheets.
+pub(crate) fn print_pdf_with_progress(
+    d: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    opts: &PdfOptions,
+    ppi: Option<f64>,
+    progress: &mut dyn FnMut(designcraft_pdf::ExportProgress),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<designcraft_pdf::ExportReport> {
+    use designcraft_pdf::ExportProgress;
     // PDF/X-1a: craft-prepress flattens the PDF in its inks; `ppi` sets its resolution.
     let x1a = opts.standard == Standard::PdfX1a;
     let mut opts = opts.clone();
     if x1a {
         opts.flatten_dpi = ppi.unwrap_or(300.0) as f32;
     }
-    let flattened = if x1a { None } else { ppi.map(|ppi| flatten(d, cache, ppi)) };
+    // A cancel is honoured before each expensive stage, not only inside the sheet loop: on a
+    // large document flattening and rasterizing take long enough that the interface would
+    // otherwise keep the document frozen for work the user has already stopped.
+    let cancelled = || Err(EngineError::Other(designcraft_pdf::PdfError::Cancelled.to_string()));
+    if should_cancel() {
+        return cancelled();
+    }
+    let flattened = if x1a {
+        None
+    } else {
+        ppi.map(|ppi| {
+            progress(ExportProgress::phase("flattening"));
+            flatten(d, cache, ppi)
+        })
+    };
+    if should_cancel() {
+        return cancelled();
+    }
     let base: &designcraft_doc::Document = flattened.as_ref().map_or(d, |f| &f.0);
+    progress(ExportProgress::phase("rasterizing"));
     let (layered, layer_count) = if opts.standard == Standard::PdfA2b { rasterize_layered(base)? } else { (None, 0) };
+    if should_cancel() {
+        return cancelled();
+    }
     let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
     let shadows = if x1a { shadow_masks(base2, cache, f64::from(opts.flatten_dpi)) } else { Default::default() };
+    if should_cancel() {
+        return cancelled();
+    }
     let (fx_doc, fx_count) = rasterize_effects(base2, cache, &shadows);
     opts.shadows = std::sync::Arc::new(shadows);
     let opts = &opts;
     let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
     let boxed = crate::cmd::interchange::with_pdf_boxes(doc);
     let doc: &designcraft_doc::Document = &boxed;
-    let mut r = designcraft_pdf::export_pdf_with_report(doc, cache, opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut r = designcraft_pdf::export_pdf_with_report_progress_cancel(doc, cache, opts, progress, should_cancel)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
     // Flattening and effect rasterization replace placements, so inspect the source too.
     if d.has_graphic_layer_visibility_overrides() && !r.warnings.iter().any(|w| w == designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING) {
         r.warnings.push(designcraft_doc::GRAPHIC_LAYER_RENDERING_WARNING.into());
@@ -193,10 +248,21 @@ pub(crate) fn pdf_export(s: &Session, p: &Value) -> Result<designcraft_pdf::Expo
 
 /// [`pdf_export`] of `doc`: `file.package` writes its PDF of the packaged copy with it.
 pub(crate) fn pdf_report(doc: &designcraft_doc::Document, cache: &designcraft_compose::Cache, p: &Value) -> Result<designcraft_pdf::ExportReport> {
+    pdf_report_with_progress(doc, cache, p, &mut |_| {}, &|| false)
+}
+
+/// [`pdf_report`], reporting progress as it writes.
+pub(crate) fn pdf_report_with_progress(
+    doc: &designcraft_doc::Document,
+    cache: &designcraft_compose::Cache,
+    p: &Value,
+    progress: &mut dyn FnMut(designcraft_pdf::ExportProgress),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<designcraft_pdf::ExportReport> {
     let opts = options(p, doc.page_count())?;
     let ppi = flatten_ppi("file.exportPdf", p)?;
     let (cat, dest) = view_options(p)?;
-    let mut r = print_pdf(doc, cache, &opts, ppi)?;
+    let mut r = print_pdf_with_progress(doc, cache, &opts, ppi, progress, should_cancel)?;
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     let mut cat = cat;
     if let Some(dest) = dest

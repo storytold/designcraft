@@ -146,6 +146,87 @@ impl DesignApp {
         self.ui.status = format!("{}: {error}", crate::i18n::tr(&self.ui.language, feature));
     }
 
+    /// Take what the background exports have done: their progress while they run, then the file
+    /// each wrote or the error that stopped it. The status bar shows the newest busy one as a
+    /// progress bar; the Exports panel lists them all.
+    /// Register a job the engine queued, whoever asked for it: the Exports panel lists every
+    /// background export, including one started through the control channel or an agent.
+    pub fn adopt_export_job(&mut self, job: u64, params: &Value) {
+        if self.ui.export_jobs.iter().any(|j| j.id == job) {
+            return;
+        }
+        let path = params.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+        let (uid, title) = self.session.active().map(|d| (d.uid, d.doc.title.clone())).unwrap_or((0, String::new()));
+        self.ui.export_jobs.push(crate::state::ExportJob::queued(job, uid, title, "PDF", path));
+    }
+
+    /// Take each running job's progress. Returns whether a job finished on this poll, so the frame
+    /// can draw once more without its progress bar even when nothing is left to poll.
+    pub fn poll_export(&mut self) -> bool {
+        if self.ui.export_jobs.is_empty() {
+            return false;
+        }
+        let language = self.ui.language.clone();
+        let mut finished: Option<u64> = None;
+        for job in &mut self.ui.export_jobs {
+            if !job.busy {
+                continue;
+            }
+            let v = match self.session.execute("file.export.progress", &json!({"job": job.id})) {
+                Ok(v) => v,
+                Err(_) => {
+                    // The job is gone (the session was replaced, or it was dropped): stop asking,
+                    // and report the interruption like any other outcome so it reaches the bar.
+                    job.busy = false;
+                    job.result = Some(crate::state::ExportResult {
+                        path: String::new(),
+                        bytes: 0,
+                        pages: 0,
+                        warnings: Vec::new(),
+                        error: Some(crate::i18n::tr(&language, "the export was interrupted").to_string()),
+                        cancelled: false,
+                    });
+                    finished = Some(job.id);
+                    continue;
+                }
+            };
+            job.phase = v["phase"].as_str().unwrap_or("").to_string();
+            job.done = v["done"].as_u64().unwrap_or(0) as usize;
+            job.total = v["total"].as_u64().unwrap_or(0) as usize;
+            job.page = v["page"].as_str().unwrap_or("").to_string();
+            if v["busy"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            job.busy = false;
+            job.result = Some(crate::state::ExportResult {
+                path: v["path"].as_str().unwrap_or_default().to_string(),
+                bytes: v["bytes"].as_u64().unwrap_or(0),
+                pages: v["pages"].as_u64().unwrap_or(0),
+                warnings: v["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+                error: v["error"].as_str().map(str::to_string),
+                cancelled: v["cancelled"].as_bool().unwrap_or(false),
+            });
+            finished = Some(job.id);
+        }
+        let Some(id) = finished else { return false };
+        let report = self.ui.export_jobs.iter().find(|j| j.id == id).and_then(|j| j.result.clone());
+        let Some(result) = report else { return false };
+        if let Some(e) = &result.error {
+            self.status_error("Export PDF", e);
+        } else if result.cancelled {
+            self.status(crate::i18n::tr(&language, "Export cancelled"));
+        } else {
+            let mut message = crate::i18n::tr(&language, "Exported {path}").replace("{path}", &result.path);
+            if !result.warnings.is_empty() {
+                message.push_str(" (");
+                message.push_str(&result.warnings.join("; "));
+                message.push(')');
+            }
+            self.status(message);
+        }
+        true
+    }
+
     /// First frame only: load the saved colour profiles and make the saved Color Settings active.
     fn apply_saved_color_settings(&mut self) {
         if self.color_applied {

@@ -37,7 +37,7 @@ pub fn enabled(app: &DesignApp, id: &str) -> bool {
         return false;
     }
     match designcraft_engine::find_command(id) {
-        Some(c) => (c.enabled)(&app.session).is_ok(),
+        Some(c) => (c.enabled)(&app.session).is_ok() && !(c.mutates && app.session.exporting_active()),
         None => true,
     }
 }

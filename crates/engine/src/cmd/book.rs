@@ -360,6 +360,11 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"path": b.path, "styleSource": b.style_source, "documents": docs}))
         }),
+        // Not behind the export lock (`noundo`, not `noundo_mut`): these rewrite chapter files on
+        // disk, not the open document, and `writable_chapter` already refuses a chapter that is
+        // open in the app — an exporting document is open. So an export of another document must
+        // not stop work on an unrelated book, and a book chapter that is exporting is refused
+        // there, by `writable_chapter`, as it always was.
         cmd!(noundo "book.paginate", "Update Numbering", [], None, "{} — each document starts numbering where the previous one ended, and takes its chapter number (automatic: one more than the previous document's; same as previous; or its own start) (files are saved) → {pages, chapters}", has_book, |s, _| {
             paginate(s)
         }),

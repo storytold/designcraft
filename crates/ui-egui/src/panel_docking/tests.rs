@@ -1124,6 +1124,19 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     }
 }
 
+/// The status bar opens the Exports panel, so it has to be a float-only panel: `window.floatPanel`
+/// lists it at the place it is given, and `window.dockPanel` closes it again.
+#[test]
+fn the_exports_panel_is_float_only_and_opens_and_closes() {
+    let mut app = app();
+    assert!(crate::dock::float_only("exports"), "the status bar's click target is float-only");
+    let r = app.run("window.floatPanel", json!({"panel": "exports", "x": 40, "y": 60})).unwrap();
+    assert!(r["floating"].as_array().unwrap().iter().any(|p| p == "exports"), "{r}");
+    assert_eq!(app.ui.floating.last().map(|(p, at)| (p.as_str(), *at)), Some(("exports", [40.0, 60.0])));
+    app.run("window.dockPanel", json!({"panel": "exports"})).unwrap();
+    assert!(app.ui.floating.iter().all(|(p, _)| p != "exports"), "Dock Panel closes it");
+}
+
 /// A tab released over the canvas floats there (craft-ui: the protected canvas takes no tabs or
 /// splits); a lone panel released in the window's left edge band makes a new dock there.
 #[test]

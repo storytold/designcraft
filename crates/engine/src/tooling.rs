@@ -298,6 +298,11 @@ impl Session {
 
     /// Apply `cmd` on top of the interaction's snapshot (replacing the previous preview).
     pub fn preview(&mut self, cmd: &str, params: Value) -> Result<()> {
+        // Checked before the snapshot is restored: a preview refused because the document is being
+        // exported must leave the one on screen alone, not reset the page and then fail.
+        if let Err(reason) = self.check_not_exporting() {
+            return Err(EngineError::Disabled(cmd.into(), reason));
+        }
         let st = self.doc_mut()?;
         let Some(it) = st.interaction.clone() else { return Err(EngineError::Other("no interaction".into())) };
         st.doc = it.doc.clone();

@@ -347,6 +347,42 @@ fn pdf_export_menu_item_opens_the_dialog_or_exports() {
     assert!(app.ui.dialog.is_none());
 }
 
+/// A PDF export from the menu runs on a background job: the command returns at once, the status
+/// bar follows it, and the file is there when it finishes.
+#[test]
+fn the_pdf_menu_export_runs_in_the_background_and_reports_progress() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.pdf").to_string_lossy().to_string();
+    app.run("app.exportPdf", json!({"path": path})).unwrap();
+    assert!(!app.ui.export_jobs.is_empty(), "the menu export queues a background job");
+    for _ in 0..2000 {
+        if !app.ui.export_jobs.iter().any(|j| j.busy) {
+            break;
+        }
+        app.poll_export();
+        if app.ui.export_jobs.iter().any(|j| j.busy) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(!app.ui.export_jobs.iter().any(|j| j.busy), "the job finished");
+    assert!(std::path::Path::new(&path).exists(), "the job wrote the file");
+    assert!(app.ui.status.contains("Exported"), "the status reports the export: {}", app.ui.status);
+}
+
+/// A job whose progress cannot be read stops being busy and reports the interruption in the
+/// status bar, instead of waiting forever with its error unshown.
+#[test]
+fn an_export_whose_progress_cannot_be_read_reports_the_interruption() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.ui.export_jobs.push(crate::state::ExportJob::queued(9999, 0, "Untitled".to_string(), "PDF", "/tmp/gone.pdf".to_string()));
+    assert!(app.poll_export(), "a poll that ends a job asks for one more frame");
+    assert!(!app.ui.export_jobs[0].busy, "the job stops being polled");
+    assert!(app.ui.status.contains("interrupted"), "the status bar reports the interruption: {}", app.ui.status);
+}
+
 /// With the Type tool in the second frame of a thread, Cmd+B opens Text Frame Options, and OK
 /// changes the frame that shows the caret.
 #[test]

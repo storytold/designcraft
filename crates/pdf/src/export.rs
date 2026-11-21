@@ -47,7 +47,8 @@ use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, emb
 pub(crate) use metadata::civil;
 pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
 pub use pipeline::{
-    drawn_children, export_pdf, export_pdf_with_report, item_exported, layer_exported, print_color, sheet_spreads, shown_parent_items,
+    drawn_children, export_pdf, export_pdf_with_report, export_pdf_with_report_progress, export_pdf_with_report_progress_cancel, item_exported,
+    layer_exported, print_color, sheet_spreads, shown_parent_items,
 };
 #[cfg(test)]
 impl std::hash::Hasher for ConstantImageHasher {

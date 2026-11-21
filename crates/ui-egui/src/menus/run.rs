@@ -925,6 +925,10 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
+            if panel == "exports" {
+                // A float-only panel (like Type › Tabs): it has no place in the docking layout.
+                return crate::panel_docking::command(app, "window.floatPanel", &json!({"panel": panel}));
+            }
             if panel != "tabs" {
                 return crate::panel_docking::command(app, "window.panel.activate", &json!({"panel": panel}));
             }

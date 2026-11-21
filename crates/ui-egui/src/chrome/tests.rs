@@ -180,6 +180,100 @@ fn status_bar_error_count_opens_the_preflight_panel() {
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
 
+/// A background export shows its progress in the status bar: a bar that names the phase and
+/// carries the fraction, which goes when the job does.
+#[test]
+fn the_status_bar_shows_an_exports_progress_while_it_runs() {
+    use egui::accesskit::Role;
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, "en");
+    ctx.enable_accesskit();
+    let mut app = app();
+    app.run("file.new", serde_json::json!({})).unwrap();
+    app.ui.export_jobs = vec![crate::state::ExportJob {
+        id: 7,
+        doc_uid: 1,
+        doc_title: "Doc".into(),
+        format: "PDF".into(),
+        path: String::new(),
+        busy: true,
+        phase: "pages".into(),
+        done: 2,
+        total: 5,
+        page: "3".into(),
+        cancelling: false,
+        result: None,
+    }];
+    let draw = |app: &mut crate::DesignApp| {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| status_bar(app, ui));
+        out.textures_delta.clear();
+        out.platform_output.accesskit_update
+    };
+    let update = draw(&mut app).expect("an AccessKit tree");
+    let bars: Vec<_> = update.nodes.iter().map(|(_, n)| n).filter(|n| n.role() == Role::ProgressIndicator).collect();
+    assert_eq!(bars.len(), 1, "the status bar shows one progress bar");
+    assert_eq!(bars[0].label(), Some("Exporting Pages"), "the bar names the phase as the Exports panel does");
+    assert_eq!(bars[0].numeric_value(), Some(40.0), "two of five pages");
+    // No job: no bar.
+    app.ui.export_jobs.clear();
+    let update = draw(&mut app).expect("an AccessKit tree");
+    assert!(!update.nodes.iter().any(|(_, n)| n.role() == Role::ProgressIndicator), "no job, no bar");
+}
+
+/// Clicking the status bar's progress bar opens the Exports panel, which lists every running
+/// export and can cancel one of them.
+#[test]
+fn the_exports_panel_lists_running_exports_and_cancels_one() {
+    fn job(id: u64, path: &str) -> crate::state::ExportJob {
+        crate::state::ExportJob {
+            id,
+            doc_uid: id,
+            doc_title: format!("Doc {id}"),
+            format: "PDF".into(),
+            path: path.into(),
+            busy: true,
+            phase: "pages".into(),
+            done: 1,
+            total: 4,
+            page: "2".into(),
+            cancelling: false,
+            result: None,
+        }
+    }
+    let mut app = app();
+    app.run("file.new", serde_json::json!({})).unwrap();
+    app.ui.export_jobs = vec![job(1, "a.pdf"), job(2, "b.pdf")];
+    // A harness that draws the chrome and the float-only windows without running the engine's
+    // per-frame logic: the synthetic jobs stay running for the whole test.
+    let mut ready = false;
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 800.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut crate::DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "en");
+                ready = true;
+                return;
+            }
+            crate::chrome::status_bar(app, ui);
+            crate::dock::float_only_windows(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    // The status bar shows the newest job; clicking it opens the Exports panel.
+    let bar = h.query_by(|n| n.role() == egui::accesskit::Role::ProgressIndicator);
+    assert!(bar.is_some(), "the status bar shows the newest export");
+    bar.expect("a progress bar").click();
+    h.run_steps(2);
+    let cancels: Vec<_> = h.query_all_by_label("Cancel").collect();
+    assert_eq!(cancels.len(), 2, "a Cancel per running export");
+    assert!(h.query_by_label("Doc 1").is_some(), "the panel names the document");
+    cancels[0].click();
+    h.run_steps(1);
+    assert!(h.state().ui.export_jobs[0].cancelling, "the first job is cancelling");
+    assert!(!h.state().ui.export_jobs[1].cancelling, "the second is not");
+}
+
 /// The course's chapter 25: while a parent is shown, the status bar's page box names it
 /// ("A-Parent"), as InDesign's. Its menu lists the pages, then the parents: a parent shows
 /// that parent, a page leaves the parents for that page.
@@ -1136,6 +1230,29 @@ fn check_parent_margin_edits(h: &mut egui_kittest::Harness<'_, DesignApp>) {
     assert_eq!(h.state().session.doc().unwrap().doc, saved);
 }
 
+/// A background export started through the command channel, as an agent or script does, is listed
+/// for the Exports panel too: `DesignApp::run` registers every queued job, not only the menu's.
+#[test]
+fn a_command_started_export_is_listed_for_the_exports_panel() {
+    let mut app = app();
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let path = std::env::temp_dir().join("designcraft-adopted-export.pdf").to_string_lossy().to_string();
+    let r = app.run("file.exportPdf", serde_json::json!({"background": true, "path": path, "created": 0})).unwrap();
+    let job = r["job"].as_u64().expect("a job id");
+    let listed = app.ui.export_jobs.iter().find(|j| j.id == job).expect("the job is listed");
+    assert_eq!(listed.format, "PDF");
+    assert_eq!(listed.path, path);
+    // Let it finish, so the temporary file is closed before it is removed.
+    for _ in 0..2000 {
+        if !app.ui.export_jobs.iter().any(|j| j.busy) {
+            break;
+        }
+        app.poll_export();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 fn edit_parent_resize_field(h: &mut egui_kittest::Harness<'_, DesignApp>, value: &str, input: &str) {
     h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(value)).next().expect("page size field").click();
     h.run_steps(2);
@@ -1143,4 +1260,38 @@ fn edit_parent_resize_field(h: &mut egui_kittest::Harness<'_, DesignApp>, value:
     h.event(egui::Event::Text(input.into()));
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
+}
+
+/// An export belongs to the session, not to a document: with every document closed the status bar
+/// still shows its progress and still opens the Exports panel.
+#[test]
+fn the_status_bar_shows_an_export_with_no_document_open() {
+    use egui::accesskit::Role;
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, "en");
+    ctx.enable_accesskit();
+    let mut app = app();
+    app.ui.export_jobs = vec![crate::state::ExportJob {
+        id: 9,
+        doc_uid: 1,
+        doc_title: "Doc".into(),
+        format: "PDF".into(),
+        path: String::new(),
+        busy: true,
+        phase: "pages".into(),
+        done: 1,
+        total: 4,
+        page: "2".into(),
+        cancelling: false,
+        result: None,
+    }];
+    assert!(app.session.active().is_none(), "no document is open");
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1400.0, 900.0))), ..Default::default() };
+    let mut out = ctx.run_ui(input, |ui| super::status_bar(&mut app, ui));
+    out.textures_delta.clear();
+    let update = out.platform_output.accesskit_update.expect("an AccessKit tree");
+    let bars: Vec<_> = update.nodes.iter().map(|(_, n)| n).filter(|n| n.role() == Role::ProgressIndicator).collect();
+    assert_eq!(bars.len(), 1, "the bar keeps its export progress");
+    assert_eq!(bars[0].label(), Some("Exporting Pages"), "the bar names the phase");
+    assert_eq!(bars[0].numeric_value(), Some(25.0), "one of four pages");
 }

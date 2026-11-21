@@ -108,6 +108,17 @@ impl DesignApp {
                 }
             }
         }
+        // Background exports: take their progress each frame, and keep the frames coming while any
+        // of them writes so the progress bars move. The bar is drawn earlier in the frame, so a job
+        // that finished on this poll needs one more frame to disappear from an idle window.
+        if self.ui.export_jobs.iter().any(|j| j.busy) {
+            let finished = self.poll_export();
+            if self.ui.export_jobs.iter().any(|j| j.busy) {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            } else if finished {
+                ctx.request_repaint();
+            }
+        }
         let dt = now - self.last_time;
         if dt > 0.0 {
             self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
