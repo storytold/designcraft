@@ -58,6 +58,14 @@ pub fn specs() -> Vec<CommandSpec> {
             let export = p.get("export").and_then(Value::as_bool);
             let order = ids_param(p, "order");
             s.edit(|d, _| {
+                let current = d.articles.iter().find(|a| a.name == name).ok_or_else(|| bad("article.options", format!("no article `{name}`")))?;
+                // Commands identify articles by name; a duplicate would make edits ambiguous.
+                if let Some(t) = &to
+                    && *t != current.name
+                    && d.articles.iter().any(|a| a.name == *t)
+                {
+                    return Err(bad("article.options", format!("an article named `{t}` exists")));
+                }
                 let a = d.articles.iter_mut().find(|a| a.name == name).ok_or_else(|| bad("article.options", format!("no article `{name}`")))?;
                 if let Some(e) = export {
                     a.export = e;
@@ -113,5 +121,37 @@ mod tests {
         assert!(!html(&mut s).contains("Top story"), "only articles' objects are exported");
         s.execute("article.options", &json!({"name": "Main", "export": false})).unwrap();
         assert!(html(&mut s).contains("Top story"), "no exported articles: page order again");
+    }
+
+    #[test]
+    fn article_renames_keep_names_unique_and_reject_conflicts_atomically() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("article.new", &json!({"name": "Main", "ids": []})).unwrap();
+        s.execute("article.new", &json!({"name": "Other", "ids": []})).unwrap();
+        let before = s.execute("article.list", &json!({})).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+
+        let err = s.execute("article.options", &json!({"name": "Main", "to": "Other", "export": false})).unwrap_err();
+        assert!(err.to_string().contains("an article named `Other` exists"));
+        assert_eq!(s.execute("article.list", &json!({})).unwrap(), before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+
+        let err = s.execute("article.options", &json!({"name": "Missing", "to": "Other"})).unwrap_err();
+        assert!(err.to_string().contains("no article `Missing`"));
+        assert_eq!(s.execute("article.list", &json!({})).unwrap(), before);
+
+        s.execute("article.options", &json!({"name": "Main", "to": "Main", "export": false})).unwrap();
+        let same_name = s.execute("article.list", &json!({})).unwrap();
+        assert_eq!(same_name[0]["name"], "Main");
+        assert_eq!(same_name[0]["export"], false);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("article.list", &json!({})).unwrap(), before);
+
+        s.execute("article.options", &json!({"name": "Main", "to": "Renamed"})).unwrap();
+        assert_eq!(s.execute("article.list", &json!({})).unwrap()[0]["name"], "Renamed");
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.execute("article.list", &json!({})).unwrap(), before);
     }
 }
