@@ -93,6 +93,10 @@ impl<'r> Importer<'r> {
             }
         }
         let id = self.alloc();
+        // XML elements name the table and its cells by their Self (`XMLContent`).
+        if let Some(me) = e.get("Self") {
+            self.xml.tables.insert(me.to_string(), id);
+        }
         let rows = &layout.rows[..nr.min(layout.rows.len())];
         let cols = &layout.columns[..nc.min(layout.columns.len())];
         let mut t = Table::new(id, nr, nc, 0, 0, 0.0);
@@ -173,6 +177,9 @@ impl<'r> Importer<'r> {
                 designcraft_doc::resolve_cell_style(&self.styles.cell, &cell_style).apply_to(&mut cell);
             }
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
+            if let Some(me) = model_cell.values.get("Self") {
+                self.xml.cells.insert(me.to_string(), (id, r * nc + c));
+            }
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
             cell.text = self.story_with_para(StoryId(0), &cell_el, default_para);
             self.read_cell_attrs(&mut cell, &options, border_unset);

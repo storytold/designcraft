@@ -173,5 +173,8 @@ attr_set! {
         change: ChangeMark = ChangeMark::None,
         /// XML: the element this text is tagged with (Tags panel, inline).
         xml_tag: String = String::new(),
+        /// XML structure: the inline element (an id in `XmlSettings::elements`) this text is the
+        /// content of; 0 for none.
+        xml_element: u64 = 0,
     }
 }

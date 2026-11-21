@@ -19,6 +19,7 @@ mod rtl_binding;
 mod spread_rotation;
 mod variables;
 mod wrap;
+mod xml_structure;
 
 fn zip_files(files: &[(&str, &str)]) -> Vec<u8> {
     use zip::write::SimpleFileOptions;

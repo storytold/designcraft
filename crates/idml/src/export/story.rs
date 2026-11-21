@@ -70,7 +70,7 @@ impl<'a> Ex<'a> {
     /// and the separator (as InDesign stores them).
     fn footnote_el(&mut self, note: &Story) -> El {
         let mut el = El::new("Footnote");
-        let mut paras = self.story_paras(note);
+        let mut paras = self.story_paras_marked(note);
         let lead = vec![Node::Pi("ACE".into(), "4".into()), Node::Text(self.d.footnote_options.separator.clone())];
         if let Some(Node::El(csr)) =
             paras.first_mut().and_then(|p| p.children.iter_mut().find(|n| matches!(n, Node::El(e) if e.name == "CharacterStyleRange")))
@@ -89,7 +89,7 @@ impl<'a> Ex<'a> {
                 }
             }
         }
-        for p in paras {
+        for p in self.wrap_inline_xml(paras) {
             el.push(p);
         }
         el
@@ -114,7 +114,8 @@ impl<'a> Ex<'a> {
             }
             .to_el(),
         ));
-        for psr in self.story_paras(s) {
+        let paras = self.story_paras(s);
+        for psr in self.story_xml(s.id.0, paras) {
             el.push(psr);
         }
         el
@@ -239,8 +240,23 @@ impl<'a> Ex<'a> {
         }
     }
 
-    /// `ParagraphStyleRange`s of a story (or a table cell's story).
+    /// Anchored object `k` of `s`, inside its XML element if it has one.
+    fn anchored_object_xml(&mut self, s: &Story, k: usize) -> Option<El> {
+        let el = self.anchored_object(s, k)?;
+        Some(match s.objects.get(k) {
+            Some(o) => self.anchored_xml(&o.item, el),
+            None => el,
+        })
+    }
+
+    /// `ParagraphStyleRange`s of a story (or a table cell's story), with its inline XML elements.
     pub(super) fn story_paras(&mut self, s: &Story) -> Vec<El> {
+        let paras = self.story_paras_marked(s);
+        self.wrap_inline_xml(paras)
+    }
+
+    /// `ParagraphStyleRange`s whose ranges still carry their inline XML element (see `wrap_inline_xml`).
+    pub(super) fn story_paras_marked(&mut self, s: &Story) -> Vec<El> {
         let ranges = s.para_ranges();
         let n = ranges.len();
         // The runs and the marker offsets, once: each paragraph (and each marker) searched them from the start.
@@ -362,7 +378,8 @@ impl<'a> Ex<'a> {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
                     if let Some(t) = s.para_table(pi) {
-                        out.push(Node::El(self.table_el(t)));
+                        let table = self.table_el(t);
+                        out.push(Node::El(self.table_xml(t.id, table)));
                     }
                 } else if ch == designcraft_doc::ANCHOR_MARK {
                     flush_text(&mut cur, &mut pending);
@@ -376,7 +393,7 @@ impl<'a> Ex<'a> {
                     flush_text(&mut cur, &mut pending);
                     flush_content(&mut pending, &mut out);
                     let k = marks.object.partition_point(|&at| at < seg_start + ci);
-                    if let Some(el) = self.anchored_object(s, k) {
+                    if let Some(el) = self.anchored_object_xml(s, k) {
                         out.push(Node::El(el));
                     }
                 } else if ch == designcraft_doc::INDEX_MARK {
@@ -489,7 +506,7 @@ impl<'a> Ex<'a> {
             }
             self.apply_tracked_changes(&f, &mut csrs, para_br, runs, r.end);
             let link = links.iter().find(|(_, l)| l.contains(&seg_start) || (l.start == seg_start && l.start == l.end)).map(|(i, _)| *i);
-            for c in csrs {
+            for c in self.marked_ranges(s, &f, csrs, para_br, r.end) {
                 psr_csrs.push((link, c));
             }
         }
@@ -562,6 +579,36 @@ impl<'a> Ex<'a> {
                 }
             }
         }
+    }
+
+    /// A paragraph's ranges, each marked with its inline XML element. The paragraph's end belongs to
+    /// the element of its line feed: a range of its own when that isn't the element of the text
+    /// before it.
+    fn marked_ranges(&mut self, s: &Story, f: &CharFormat, mut csrs: Vec<El>, para_br: bool, para_end: usize) -> Vec<El> {
+        let mut own_break = None;
+        if para_br && f.over.change.is_none() {
+            let nl = s.char_format_at(para_end + 1).over.xml_element;
+            if nl != f.over.xml_element
+                && let Some(last) = csrs.last_mut()
+                && matches!(last.children.last(), Some(Node::El(b)) if b.name == "Br")
+            {
+                let br = last.children.pop();
+                if last.children.iter().all(|n| matches!(n, Node::El(p) if p.name == "Properties")) {
+                    csrs.pop();
+                }
+                let mut c = self.csr_el(f);
+                c.children.extend(br);
+                own_break = Some((c, nl));
+            }
+        }
+        for c in &mut csrs {
+            super::xml_structure::mark_element(c, f.over.xml_element);
+        }
+        if let Some((mut c, nl)) = own_break {
+            super::xml_structure::mark_element(&mut c, nl);
+            csrs.push(c);
+        }
+        csrs
     }
 
     pub(super) fn psr_el(&mut self, pf: &ParaFormat) -> El {

@@ -23,6 +23,7 @@ mod story;
 mod styles;
 mod table;
 mod text_attrs;
+mod xml_structure;
 
 use common::pkg_root;
 pub(crate) use common::uid;
@@ -100,6 +101,8 @@ struct Ex<'a> {
     /// Index topic path → first serialized sort key; See / See also cross-references.
     index_topics: BTreeMap<Vec<String>, String>,
     index_xrefs: Vec<(Vec<String>, &'static str, String)>,
+    /// Where the XML structure's elements are written.
+    xml: xml_structure::XmlIndex,
     /// Bytes of image data written into `<Contents>` so far (see [`MAX_EMBEDDED_BYTES`]).
     embedded: usize,
     embed_limit: usize,
@@ -127,6 +130,7 @@ impl<'a> Ex<'a> {
             link_text_sources: Vec::new(),
             index_topics: BTreeMap::new(),
             index_xrefs: Vec::new(),
+            xml: xml_structure::XmlIndex::new(d),
             embedded: 0,
             embed_limit: MAX_EMBEDDED_BYTES,
             warnings: Vec::new(),
@@ -206,7 +210,9 @@ impl<'a> Ex<'a> {
         let graphic = self.graphic_part();
         let fonts = self.fonts_part();
         let prefs = self.prefs_part();
-        let designmap = self.designmap(&masters, &spreads, &story_parts);
+        let tags = self.tags_part();
+        let backing = self.backing_story_part();
+        let designmap = self.designmap(&masters, &spreads, &story_parts, tags.is_some(), backing.is_some());
 
         parts.push(("META-INF/container.xml".to_string(), CONTAINER.as_bytes().to_vec()));
         parts.push(("META-INF/metadata.xml".to_string(), metadata_xmp(d).into_bytes()));
@@ -215,6 +221,12 @@ impl<'a> Ex<'a> {
         parts.push(("Resources/Fonts.xml".to_string(), fonts));
         parts.push(("Resources/Styles.xml".to_string(), styles));
         parts.push(("Resources/Preferences.xml".to_string(), prefs));
+        if let Some(t) = tags {
+            parts.push(("XML/Tags.xml".to_string(), t));
+        }
+        if let Some(b) = backing {
+            parts.push(("XML/BackingStory.xml".to_string(), b));
+        }
         parts.extend(masters);
         parts.extend(spreads);
         parts.extend(story_parts);

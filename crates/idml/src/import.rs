@@ -32,6 +32,7 @@ mod swatches;
 mod table;
 mod text_attrs;
 mod values;
+mod xml_structure;
 
 use frame::margins_of_el;
 use package::Package;
@@ -245,6 +246,8 @@ struct Importer<'r> {
     /// Tab lists [`TabStop::sanitized_list`] had to repair (an import warning).
     repaired_tab_lists: usize,
     toc: Option<designcraft_doc::Toc>,
+    /// The XML structure read so far (`XMLElement`s, the root, tags).
+    xml: xml_structure::XmlImport,
 }
 
 impl<'r> Importer<'r> {
@@ -325,6 +328,7 @@ impl<'r> Importer<'r> {
             modified: None,
             repaired_tab_lists: 0,
             toc: None,
+            xml: Default::default(),
         }
     }
 
@@ -623,6 +627,14 @@ impl<'r> Importer<'r> {
             );
         }
         self.link_threads();
+        // The tags and the XML story are plain elements (neither stories nor spreads).
+        let xml_top: Vec<El> = top
+            .iter()
+            .filter(|n| !matches!(n.kind, TopKind::Story | TopKind::Spread | TopKind::MasterSpread))
+            .map(top_el)
+            .filter(|e| matches!(e.local(), "XMLTag" | "XmlStory"))
+            .collect();
+        self.xml_structure(&xml_top);
         Ok(())
     }
 
@@ -792,7 +804,13 @@ impl<'r> Importer<'r> {
             inks: std::mem::take(&mut self.inks),
             stroke_styles: std::mem::take(&mut self.stroke_styles),
             articles: vec![],
-            xml: Default::default(),
+            xml: std::sync::Arc::new(designcraft_doc::XmlSettings {
+                root: std::mem::take(&mut self.xml.root),
+                tags: std::mem::take(&mut self.xml.tags),
+                elements: std::mem::take(&mut self.xml.elements),
+                root_children: std::mem::take(&mut self.xml.root_children),
+                ..Default::default()
+            }),
             endnote_options: Default::default(),
             endnote_story: None,
             sections: std::mem::take(&mut self.sections),
