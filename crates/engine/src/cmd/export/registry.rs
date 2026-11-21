@@ -1,4 +1,5 @@
 use super::formats::{epub_split_param, export_epub, export_html, export_pptx, export_text, has_story_target, print_booklet};
+use super::impose::{export_imposed_pdf, imposed_layout};
 use super::pdf::export_pdf;
 use super::{CommandSpec, Value, cmd, has_doc, json};
 
@@ -40,6 +41,12 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(noundo "file.printBooklet", "Print Booklet…", ["File"], None,
         "{path?, type?: saddleStitch|twoUpConsecutive, spaceBetween? (pt)} — printer spreads as PDF (pages imposed in booklet order) → {path, bytes, sheets} (no path: {base64, …})",
         has_doc, print_booklet),
+        cmd!(noundo "file.exportImposedPdf", "Export Imposed PDF…", ["File"], None,
+        "{path?, sheet?: \"A4\"|\"A3\"|\"SRA3\"|\"Letter\"|… | [width, height] (default A4), orientation?: portrait|landscape, margins?: length | [top, bottom, left, right], gap?: length | [horizontal, vertical] (between columns, between rows), rotation?: auto|off|on (auto: the orientation that fits more copies), center?: bool (default true), pages?: \"1-3,5\" | [1,3] (1-based positions; default all), copies?: int (of each page, default 1), bleed?: bool (each copy keeps the document bleed, up to half the gap), cropMarks?: none|corners|border (at each copy's corners where the gap leaves room, or along the sheet border at every trim line), marksWeight?, marksOffset?, title?} — copies of pages n-up on press sheets, filling the sheets in page order; a length is points or a measurement (\"3mm\") → {path, bytes, sheets, perSheet, warnings} (no path: {base64, …})",
+        has_doc, export_imposed_pdf),
+        cmd!(query "file.imposedLayout", "Imposed PDF Layout", [], None,
+        "{…file.exportImposedPdf options, sheetIndex?: int (0-based, default 0)} — where Export Imposed PDF puts the copies → {sheet: [w, h], page: [w, h], cols, rows, rotated, perSheet, copies, sheets, bleed, sheetIndex, placements: [{page (1-based), slot, trim: [x0, y0, x1, y1], clip, rotated}], marks: [[x0, y0, x1, y1]]} (points from the sheet's top left)",
+        has_doc, imposed_layout),
         cmd!(noundo "file.exportHtml", "Export HTML…", ["File"], None,
         "{path?, title?, language?} — one self-contained page (styles inline, images embedded), stories and graphics in reading order → {path, bytes, warnings} (no path: {text, bytes, warnings})",
         has_doc, export_html),

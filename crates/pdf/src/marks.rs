@@ -43,20 +43,7 @@ impl Exporter<'_> {
                 }
             }
         }
-        if let Some(p) = to_path(&bp) {
-            s.set_fill(None);
-            s.set_stroke(Some(Stroke {
-                paint: registration(1.0, self.rgb_only).into(),
-                width: m.weight.max(0.05) as f32,
-                miter_limit: 4.0,
-                line_cap: LineCap::Butt,
-                line_join: LineJoin::Miter,
-                opacity: NormalizedF32::ONE,
-                dash: None,
-            }));
-            s.draw_path(&p);
-            s.set_stroke(None);
-        }
+        self.stroke_marks(s, &bp, m.weight);
         if m.page_info {
             let mut info = format!("{title}    Page {}", sh.label);
             if let Some(c) = created.map(civil) {
@@ -65,5 +52,22 @@ impl Exporter<'_> {
             let at = (t.x0 + start + 6.0, t.y1 + start + 10.0);
             self.plain_text(s, &info, at, 6.0, registration(1.0, self.rgb_only));
         }
+    }
+
+    /// Mark lines stroked `weight` pt wide in `[Registration]`.
+    pub(crate) fn stroke_marks(&mut self, s: &mut Surface, bp: &BezPath, weight: f64) {
+        let Some(p) = to_path(bp) else { return };
+        s.set_fill(None);
+        s.set_stroke(Some(Stroke {
+            paint: registration(1.0, self.rgb_only).into(),
+            width: weight.max(0.05) as f32,
+            miter_limit: 4.0,
+            line_cap: LineCap::Butt,
+            line_join: LineJoin::Miter,
+            opacity: NormalizedF32::ONE,
+            dash: None,
+        }));
+        s.draw_path(&p);
+        s.set_stroke(None);
     }
 }
