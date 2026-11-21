@@ -565,3 +565,35 @@ fn x4_checks_read_object_streams() {
     let issues = check_pdfx4(&out);
     assert!(!issues.iter().any(|i| i == NO_INTENT || i == NO_INFO), "{issues:?}");
 }
+
+/// #2947, #2948: the page boxes nest as PDF/X requires. The CropBox and the BleedBox lie within the MediaBox, the
+/// TrimBox (or ArtBox) within the BleedBox and the MediaBox, and the CropBox, the visible page,
+/// doesn't cut into the TrimBox. Boxes that agree to a hundredth of a point pass.
+#[test]
+fn page_boxes_must_nest() {
+    let boxes = |entries: &str| -> Vec<String> {
+        check_pdfx4(&tiny_pdf(entries, "")).into_iter().filter(|i| i.contains(" box") && !i.starts_with("every page")).collect()
+    };
+    // tiny_pdf's MediaBox is [0 0 100 100].
+    assert_eq!(boxes("/BleedBox[0 0 100 100]/TrimBox[9 9 91 91]"), Vec::<String>::new());
+    assert_eq!(boxes("/TrimBox[0 0 100.004 100]"), Vec::<String>::new(), "within a hundredth of a point");
+    assert_eq!(boxes("/CropBox[0 0 100 100]/TrimBox[9 9 91 91]"), Vec::<String>::new());
+    assert_eq!(boxes("/CropBox[30 30 60 60]/TrimBox[9 9 91 91]"), ["the crop box cuts into the trim box"]);
+    assert_eq!(boxes("/CropBox[-10 -10 110 110]/TrimBox[9 9 91 91]"), ["the crop box extends past the media box"]);
+    // A box past the media on one side can still be cut by the CropBox on another.
+    assert_eq!(
+        boxes("/CropBox[10 0 100 100]/TrimBox[5 0 105 100]"),
+        ["the trim box extends past the media box", "the crop box cuts into the trim box"]
+    );
+    // A box wholly off the media is past it, and has nothing on it for the CropBox to cut.
+    assert_eq!(boxes("/CropBox[0 0 90 100]/TrimBox[110 10 120 90]"), ["the trim box extends past the media box"]);
+    // A box just past the media edge, within the hundredth of a point, is on it and can be cut.
+    assert_eq!(boxes("/CropBox[0 0 90 100]/TrimBox[100.002 10 100.008 90]"), ["the crop box cuts into the trim box"]);
+    // The hundredth of a point is in points: with /UserUnit 10 a user unit is ten of them.
+    assert_eq!(boxes("/UserUnit 10/TrimBox[0 0 100.0005 100]"), Vec::<String>::new());
+    assert_eq!(boxes("/UserUnit 10/TrimBox[0 0 100.005 100]"), ["the trim box extends past the media box"]);
+    assert_eq!(boxes("/TrimBox[0 0 300 400]"), ["the trim box extends past the media box"]);
+    assert_eq!(boxes("/BleedBox[0 0 300 400]/TrimBox[9 9 91 91]"), ["the bleed box extends past the media box"]);
+    assert_eq!(boxes("/BleedBox[10 10 90 90]/TrimBox[9 9 91 91]"), ["the trim box extends past the bleed box"]);
+    assert_eq!(boxes("/ArtBox[-5 0 50 50]"), ["the art box extends past the media box"]);
+}
