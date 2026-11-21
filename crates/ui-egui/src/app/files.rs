@@ -32,7 +32,26 @@ impl DesignApp {
         if purpose == "place" {
             return self.place_path(&path, false);
         }
+        self.open_document(path)
+    }
+
+    /// Open the document file at `path` as `file.open` does. Chosen by the person (File › Open,
+    /// Open Recent, a drop, the operating system), the file is read on a worker thread where the
+    /// host allows it ([`crate::Services::open_in_background`]) and opens on a later frame, with
+    /// `Ok(Null)` now. Scripts and the control channel open it at once, so their next command
+    /// finds it open.
+    pub(crate) fn open_document(&mut self, path: String) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.opens_in_background() {
+            return self.open_in_background(path);
+        }
         self.open_file("file.open", json!({"path": path}))
+    }
+
+    /// Whether [`Self::open_document`] reads the file on a worker thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn opens_in_background(&self) -> bool {
+        self.services.open_in_background && !self.in_control
     }
 
     /// File › Place of the file at `path`, asking a multi-page PDF's Image Import Options first.
@@ -376,7 +395,7 @@ impl DesignApp {
                 && designcraft_engine::io::read_capped(path, designcraft_engine::cmd::DOCUMENT_SNIFF_BYTES)
                     .is_ok_and(|b| designcraft_engine::cmd::is_document(&b)));
         if document {
-            return self.open_file("file.open", json!({"path": path}));
+            return self.open_document(path.to_string());
         }
         // A graphic dropped on a frame that takes one fills it, as File > Place does. Text keeps
         // getting a frame of its own, so it never replaces the image in a graphic frame.
@@ -423,7 +442,7 @@ impl DesignApp {
 
     pub(crate) fn open_os_documents(&mut self) {
         for path in std::mem::take(&mut self.os_documents) {
-            if let Err(e) = self.open_file("file.open", json!({"path": path})) {
+            if let Err(e) = self.open_document(path.clone()) {
                 log::warn!("{path}: {e}");
             }
         }

@@ -88,4 +88,8 @@ pub struct Services {
     /// pointer events fills no frame: an image loads the place cursor, and other files land in the
     /// middle of the view (`canvas::drop_point`).
     pub pointer: Option<PointerFn>,
+    /// Documents the person opens (File › Open, Open Recent, a drop, the operating system) are
+    /// read on a worker thread while the UI keeps running, with "Opening …" in the status line.
+    /// Off: they open within the command, as scripts' opens always do.
+    pub open_in_background: bool,
 }
