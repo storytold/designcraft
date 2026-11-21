@@ -19,6 +19,7 @@ fn new_document_settings(s: &Session, p: &Value) -> Result<NewDocument> {
         Some(name) => find_preset(s, name).ok_or_else(|| bad("file.new", format!("unknown preset `{name}`")))?,
         None => s.default_new_document(),
     };
+    check_binding("file.new", p)?;
     apply_settings(&mut nd, p);
     check_size("file.new", &nd)?;
     Ok(nd)
@@ -142,6 +143,7 @@ pub(super) fn save_preset(s: &mut Session, p: &Value) -> Result<Value> {
     if NewDocument::from_preset(&name).is_some() {
         return Err(bad("file.savePreset", format!("`{name}` is a built-in preset")));
     }
+    check_binding("file.savePreset", p)?;
     let mut nd = NewDocument::default();
     apply_settings(&mut nd, p);
     check_size("file.savePreset", &nd)?;
@@ -175,6 +177,12 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     nd.pages = p.get("pages").and_then(Value::as_u64).map(|v| v as usize).unwrap_or(nd.pages).clamp(1, 9999);
     nd.start_page = p.get("startPage").and_then(Value::as_u64).map(|v| v.clamp(1, 99_999) as u32).unwrap_or(nd.start_page);
     nd.facing_pages = p.get("facingPages").and_then(Value::as_bool).unwrap_or(nd.facing_pages);
+    // Checked by `check_binding` before the settings are applied.
+    match p.get("binding").and_then(Value::as_str) {
+        Some("rightToLeft") => nd.right_to_left_binding = true,
+        Some("leftToRight") => nd.right_to_left_binding = false,
+        _ => {}
+    }
     nd.columns = p.get("columns").and_then(Value::as_u64).map(|v| v.clamp(1, 216) as u32).unwrap_or(nd.columns);
     nd.gutter = p.get("gutter").and_then(Value::as_f64).filter(|g| g.is_finite()).unwrap_or(nd.gutter).max(0.0);
     nd.primary_text_frame = p.get("primaryTextFrame").and_then(Value::as_bool).unwrap_or(nd.primary_text_frame);
@@ -192,6 +200,16 @@ fn apply_settings(nd: &mut NewDocument, p: &Value) {
     }
     if let Some(b) = edges(p, "slug") {
         nd.slug = b;
+    }
+}
+
+/// `binding`, when given, is `leftToRight` or `rightToLeft`: a misspelt one is refused rather than
+/// making a left-to-right document that looks like success.
+fn check_binding(cmd: &str, p: &Value) -> Result<()> {
+    match p.get("binding") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(b)) if b == "leftToRight" || b == "rightToLeft" => Ok(()),
+        Some(v) => Err(bad(cmd, format!("binding must be leftToRight or rightToLeft, not {v}"))),
     }
 }
 
@@ -218,6 +236,33 @@ mod new_document_tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// `file.new {binding}` makes a right-to-left bound document, as Document Setup's Binding
+    /// does later; left to right is the default, and a misspelt value is refused.
+    #[test]
+    fn new_documents_take_their_binding() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        assert!(!s.doc().unwrap().doc.settings.right_to_left_binding);
+        s.execute("file.new", &json!({"pages": 3, "binding": "rightToLeft"})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert!(d.settings.right_to_left_binding);
+        // A misspelt binding is refused, and makes no document.
+        let docs = s.documents().len();
+        for bad in [json!("righttoleft"), json!("sideways"), json!(true)] {
+            assert!(s.execute("file.new", &json!({"binding": bad})).is_err(), "{bad}");
+            assert!(s.execute("file.savePreset", &json!({"name": "Bad", "binding": bad})).is_err(), "{bad}");
+        }
+        assert_eq!(s.documents().len(), docs);
+        assert!(s.prefs.document_presets.is_empty());
+        // A saved preset keeps its binding, and the presets list shows it.
+        s.execute("file.savePreset", &json!({"name": "Hebrew Book", "binding": "rightToLeft"})).unwrap();
+        let listed = s.execute("file.presets", &json!({})).unwrap();
+        let saved = listed.as_array().unwrap().iter().find(|p| p["name"] == "Hebrew Book").unwrap().clone();
+        assert_eq!(saved["binding"], "rightToLeft");
+        s.execute("file.new", &json!({"preset": "Hebrew Book"})).unwrap();
+        assert!(s.doc().unwrap().doc.settings.right_to_left_binding);
+    }
 
     #[test]
     fn saved_presets_make_documents_by_name() {

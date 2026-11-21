@@ -352,6 +352,25 @@ pub fn cjk_features(app: &DesignApp) -> bool {
     app.session.prefs.cjk_features.unwrap_or_else(|| i18n::is_cjk(&app.ui.language))
 }
 
+/// Whether the right-to-left setup controls are shown (Preferences › Type › Show Right-to-Left
+/// Features): the explicit preference, else on for a right-to-left interface language.
+///
+/// It shows paragraph direction in the Control panel, the Paragraph panel, Properties and
+/// Paragraph Style Options, binding in New Document, Document Setup and Properties, and the Table
+/// panel's direction, so right-to-left setup doesn't weigh on every interface. Like
+/// [`cjk_features`] it hides interface only: the commands behind it run whatever it says. The
+/// Paragraph panel menu's direction items are shown either way, for the odd paragraph.
+pub fn rtl_features(app: &DesignApp) -> bool {
+    app.session.prefs.rtl_features.unwrap_or_else(|| i18n::is_rtl(&app.ui.language))
+}
+
+/// Whether a right-to-left control is shown: under [`rtl_features`], or when what it sets is
+/// already right to left (a right-to-left bound document, table or paragraph), so the preference
+/// never hides a setting the document uses.
+pub fn show_rtl_control(app: &DesignApp, already_right_to_left: bool) -> bool {
+    already_right_to_left || rtl_features(app)
+}
+
 #[cfg(test)]
 mod tests;
 

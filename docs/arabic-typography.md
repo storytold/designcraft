@@ -1,6 +1,6 @@
 # Arabic import and composition
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-07 · **Change:** minor (Show Right-to-Left Features: the interface a right-to-left document is set up with) · **Target:** Adobe InDesign 2026
 
 Task: AR1. These changes repair verified gaps in the existing typesetting pipeline.
 They do not claim full InDesign or vendor-specific Naskh composition parity.
@@ -36,6 +36,7 @@ positions are reversed. Physical left/right insertion commands account for direc
 | Story direction | Independent right-to-left column flow, including span-column bounds |
 | Table direction | Right-to-left cell placement, merged spans, physical edge styles/borders, hit testing and left/right column insertion |
 | Serialization | Character controls, paragraph policy/width values, story/table directions survive native data and IDML round trips |
+| Interface | Preferences › Type › Show Right-to-Left Features (`rtlFeatures`; until set, on for a right-to-left interface) shows Paragraph Direction buttons right after alignment in the Control panel (¶), the Paragraph panel and Properties › Paragraph, Paragraph Direction in Paragraph Style Options › Indents and Spacing, Binding as two buttons in New Document (`file.new {binding}`), Document Setup and Properties › Document, and the Table panel's Direction. The Paragraph panel menu's direction items are shown in every interface. It hides interface only; layout, IDML and commands work either way |
 
 ## Remaining limitations
 
@@ -81,5 +82,6 @@ compatibility warnings remain, along with separate font/link/overset findings.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-07 | minor | Interface row: Show Right-to-Left Features |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-07 | major | Created: AR1: Arabic import and composition |
