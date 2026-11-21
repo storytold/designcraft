@@ -4,6 +4,7 @@ use std::collections::HashSet;
 /// Every per-language table `tr` looks up, by interface language.
 const LANGUAGE_TABLES: &[(&str, &[(&str, &str)])] = &[
     ("ar", ar::TABLE),
+    ("he", he::TABLE),
     ("cs", cs::TABLE),
     ("de", de::TABLE),
     ("fr", fr::TABLE),
@@ -463,9 +464,9 @@ fn missing_translations_report() {
 }
 
 #[test]
-fn only_arabic_lays_out_right_to_left() {
+fn arabic_and_hebrew_lay_out_right_to_left() {
     for (code, _) in LANGUAGES {
-        assert_eq!(is_rtl(code), *code == "ar", "{code}");
+        assert_eq!(is_rtl(code), matches!(*code, "ar" | "he"), "{code}");
     }
 }
 
@@ -640,4 +641,644 @@ fn czech_counts_use_the_plural_form_for_the_number() {
     }
     // A noun without plural forms keeps the plain translation.
     assert_eq!(count_label("cs", "a new noun", 3), "3 a new noun");
+}
+
+/// Hebrew is an RTL *interface* option, without changing document language or user-defined data.
+/// This also locks the initial catalog to English labels in the application's own source.
+#[test]
+fn hebrew_catalog_is_selectable_rtl_and_preserves_english_keys() {
+    let mut seen = HashSet::new();
+    assert_eq!(he::TABLE.len(), 1534, "Hebrew source-linked table changed");
+    for (source, translated) in he::TABLE {
+        assert!(seen.insert(*source), "duplicate Hebrew source key: {source}");
+        assert!(!translated.trim().is_empty(), "empty Hebrew: {source}");
+        // Arabic is a separate, incomplete locale, not an English source-key inventory.
+        // Valid native UI labels may be localized in Hebrew before they appear in Arabic.
+        let fields = |text: &str| {
+            let mut fields: Vec<String> =
+                text.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(field, _)| field.to_owned())).collect();
+            fields.sort_unstable();
+            fields
+        };
+        assert_eq!(fields(source), fields(translated), "placeholders: {source}");
+        assert_eq!(source.ends_with('…'), translated.ends_with('…'), "ellipsis: {source}");
+        assert_eq!(tr("he", source), *translated, "Hebrew lookup: {source}");
+        assert!(translated.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)), "no Hebrew letters in {source}");
+    }
+    // These native UI labels are English-source-linked, even though Arabic lacks entries.
+    // A locale table must not be treated as the canonical inventory of another locale.
+    for (source, expected) in [
+        ("Activate Panel", "הפעלת חלונית"),
+        ("Don't Save", "לא לשמור"),
+        ("Relinked {count}", "קושרו מחדש: {count}"),
+        ("About", "אודות"),
+        ("Quick Apply", "החלה מהירה"),
+        ("Press keys…", "הקש על מקשים…"),
+        ("Stop Preview", "עצור תצוגה מקדימה"),
+        ("Reload Fonts", "טעינת גופנים מחדש"),
+    ] {
+        assert_eq!(tr("he", source), expected, "native Hebrew UI label: {source}");
+    }
+    assert!(LANGUAGES.iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(picker_languages().iter().any(|(code, native)| *code == "he" && *native == "עברית"));
+    assert!(is_rtl("he"), "Hebrew menus and panels must use the existing RTL UI layout");
+    assert!(is_rtl("ar"), "Arabic RTL support must remain unchanged");
+    assert!(!is_rtl("en"), "English UI must remain LTR");
+    assert_eq!(tr("he", "File"), "קובץ");
+    assert_eq!(tr("he", "Save As…"), "שמירה בשם…");
+    assert_eq!(tr("he", "Arrangement"), "סידור");
+    assert_eq!(tr("he", "Font Size"), "גודל גופן");
+    assert_eq!(tr("he", "Hyphenation…"), "חלוקת מילים…");
+    assert_eq!(tr("he", "Panel Options…"), "אפשרויות חלונית…");
+    assert_eq!(tr("he", "Create Flex Layout"), "יצירת פריסת Flex");
+    assert_eq!(tr("he", "Go to Page…"), "מעבר לעמוד…");
+    assert_eq!(tr("he", "Right to Left"), "מימין לשמאל");
+    assert_eq!(tr("he", "Fit Page in Window"), "התאמת עמוד לחלון");
+    assert_eq!(tr("he", "Primary Text Frame"), "מסגרת טקסט ראשית");
+    assert_eq!(tr("he", "No document open"), "אין מסמך פתוח");
+    assert_eq!(tr("he", "Merge Cells"), "מיזוג תאים");
+    assert_eq!(tr("he", "Export IDML…"), "ייצוא כ־IDML…");
+    assert_eq!(tr("he", "Preflight"), "בדיקה לפני הפקה");
+    assert_eq!(tr("he", "Missing Glyphs"), "גליפים חסרים");
+    assert_eq!(tr("he", "Save Recovery Data"), "שמירת נתוני שחזור");
+    assert_eq!(tr("he", "Apply Table Style"), "החלת סגנון טבלה");
+    assert_eq!(tr("he", "Tagged PDF"), "PDF מתויג");
+    assert_eq!(tr("he", "Insert Footnote"), "הוספת הערת שוליים");
+    assert_eq!(tr("he", "No errors"), "לא נמצאו שגיאות");
+    assert_eq!(tr("he", "Hyphenate"), "חלוקת מילים באמצעות מקפים");
+    assert_eq!(tr("he", "Edit/Spelling"), "עריכה/איות");
+    assert_eq!(tr("he", "Object/Clipping Path"), "אובייקט/נתיב חיתוך");
+    assert_eq!(tr("he", "Object/Transform Again"), "אובייקט/חזרה על שינוי הצורה");
+    assert_eq!(tr("he", "Type/Insert Special Character/Symbols"), "טקסט/הוספת תו מיוחד/סמלים");
+    assert_eq!(tr("he", "Type/Hyperlinks & Cross-References"), "טקסט/היפר־קישורים והפניות צולבות");
+    assert_eq!(tr("he", "Type/Track Changes"), "טקסט/מעקב אחר שינויים");
+    assert_eq!(tr("he", "View/Grids & Guides"), "תצוגה/רשתות וקווי עזר");
+    assert_eq!(tr("he", "Window/Type & Tables"), "חלון/טקסט וטבלאות");
+    assert_eq!(tr("he", "Type on a Path"), "טקסט על נתיב");
+    assert_eq!(tr("he", "Document Footnote Options..."), "אפשרויות הערות שוליים במסמך...");
+    assert_eq!(tr("he", "Object States"), "מצבי אובייקט");
+    assert_eq!(tr("he", "Color Blindness – Protanopia"), "עיוורון צבעים – פרוטנופיה");
+    assert_eq!(tr("he", "Smart Text Reflow"), "זרימת טקסט חכמה");
+    assert_eq!(tr("he", "Baseline Grid"), "רשת קווי בסיס");
+    assert_eq!(tr("he", "Frame Fitting"), "התאמת מסגרת");
+    assert_eq!(tr("he", "Smart Guides"), "קווי עזר חכמים");
+    assert_eq!(tr("he", "Apply Parent to Pages…"), "החלת עמוד אב על עמודים…");
+    assert_eq!(tr("he", "Convert Text to Table"), "המרת טקסט לטבלה");
+    assert_eq!(tr("he", "Margins and Columns"), "שוליים ועמודות");
+    assert_eq!(tr("he", "This swatch can't be edited."), "לא ניתן לערוך את דוגמית הצבע הזו.");
+    assert_eq!(tr("he", "Layer Options for \"{name}\"…"), "אפשרויות השכבה ״{name}״…");
+    assert_eq!(tr("he", "No text selected"), "לא נבחר טקסט");
+    assert_eq!(tr("he", "Delete Hyperlink"), "מחיקת היפר־קישור");
+    assert_eq!(tr("he", "New Book…"), "ספר חדש…");
+    assert_eq!(tr("he", "No data source"), "אין מקור נתונים");
+    assert_eq!(tr("he", "Check Spelling"), "בדיקת איות");
+    assert_eq!(tr("he", "Insert Row Below"), "הוספת שורה מתחת");
+    assert_eq!(tr("he", "Paragraph Shading"), "הצללת פסקה");
+    assert_eq!(tr("he", "New Hyperlink…"), "היפר־קישור חדש…");
+    assert_eq!(tr("he", "Table Panel"), "חלונית טבלה");
+    assert_eq!(tr("he", "Delete Row"), "מחיקת שורה");
+    assert_eq!(tr("he", "Insert Column"), "הוספת עמודה");
+    assert_eq!(tr("he", "Show Baseline Grid"), "הצגת רשת קווי הבסיס");
+    assert_eq!(tr("he", "Select Table"), "בחירת טבלה");
+    assert_eq!(tr("he", "Create Alternate Layout…"), "יצירת פריסה חלופית…");
+    assert_eq!(tr("he", "Relink…"), "קישור מחדש…");
+    assert_eq!(tr("he", "Page (1–{count}):"), "עמוד (1–{count}):");
+    assert_eq!(tr("he", "A user-defined untranslated label"), "A user-defined untranslated label");
+}
+
+#[test]
+fn hebrew_parallel_round4_document_translations() {
+    for (source, expected) in [
+        ("Book", "ספר"),
+        ("Recent files", "קבצים אחרונים"),
+        (
+            "Number of Recent Items to Display:",
+            "מספר הפריטים האחרונים להצגה:",
+        ),
+        ("Place", "הצבה"),
+        ("Place and Link", "הצבה וקישור"),
+        ("Place with Import Options…", "הצבה עם אפשרויות ייבוא…"),
+        ("Update Link", "עדכון קישור"),
+        ("Records per page", "רשומות בעמוד"),
+        (
+            "The library is empty. Select objects and Add Selection.",
+            "הספרייה ריקה. בחרו אובייקטים ולחצו על ״הוספת הבחירה״.",
+        ),
+        (
+            "A PNG or JPEG file; left empty, the first page is the cover.",
+            "קובץ PNG או JPEG; אם משאירים ריק, העמוד הראשון ישמש ככריכה.",
+        ),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_typography_translations() {
+    for (source, expected) in [
+        ("Apply Superscript", "החלת כתב עילי"),
+        ("Superscript", "כתב עילי"),
+        ("Superscript:", "כתב עילי:"),
+        ("List Type:", "סוג רשימה:"),
+        (
+            "Minimum Space Before First Footnote:",
+            "מרווח מזערי לפני הערת השוליים הראשונה:",
+        ),
+        ("Text After:", "טקסט אחרי:"),
+        ("Underline", "קו תחתון"),
+        ("Underline On", "הפעלת קו תחתון"),
+        ("Underline Options", "אפשרויות קו תחתון"),
+        (
+            "Hyperlink from the selected text or frames",
+            "היפר־קישור מהטקסט או מהמסגרות שנבחרו",
+        ),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_parallel_round4_appearance_translations() {
+    for (source, expected) in [
+        ("Drop Shadow", "הטלת צל"),
+        ("Effects: Drop Shadow", "אפקטים: הטלת צל"),
+        ("Inner Shadow", "צל פנימי"),
+        ("Alternating Row Fills", "מילוי שורות לסירוגין"),
+        ("Align Left", "יישור לשמאל"),
+        ("Align Center", "יישור למרכז"),
+        ("Align Right", "יישור לימין"),
+        ("Swap Fill and Stroke", "החלפת מילוי וקו מתאר"),
+        ("Toggle Fill and Stroke", "החלפה בין מילוי לקו מתאר"),
+        ("Default Fill and Stroke", "מילוי וקו מתאר כברירת מחדל"),
+    ] {
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew localization regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_grokbot_context_reviewed_live_ui_labels() {
+    for (source, expected) in [
+        ("Desired", "רצוי"),
+        ("forcedLineBreak", "מעבר שורה כפוי"),
+        ("emSpace", "רווח Em"),
+        ("enSpace", "רווח En"),
+        ("dropcap", "אות פתיח"),
+    ] {
+        assert!(ar::TABLE.iter().any(|(english, _)| english == source), "missing source key: {source}");
+        assert_eq!(tr("he", source), expected, "new Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Desired"), "Desired", "English UI must remain unchanged");
+}
+
+#[test]
+fn hebrew_core_dialog_controls_are_translated() {
+    for (source, expected) in [
+        ("Direction", "כיוון"),
+        ("Horizontal", "אופקי"),
+        ("Vertical", "אנכי"),
+        ("On", "מופעל"),
+        ("Off", "כבוי"),
+        ("None", "ללא"),
+        ("[None]", "[ללא]"),
+        ("Quick Actions", "פעולות מהירות"),
+        ("More Options", "אפשרויות נוספות"),
+        ("Dialog", "תיבת דו־שיח"),
+        ("General", "כללי"),
+        ("Justification", "יישור לשני הצדדים"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew native UI control: {source}");
+    }
+}
+#[test]
+fn hebrew_source_linked_native_tool_and_window_labels() {
+    for (source, expected) in [
+        ("Display name", "שם לתצוגה"),
+        ("Maximize/Restore Window", "הגדל/שחזר חלון"),
+        ("Menus", "תפריטים"),
+        ("Minimize Window", "מזער חלון"),
+        ("Move Tab", "העבר כרטיסייה"),
+        ("Page Options", "אפשרויות עמוד"),
+        ("Polygon Frame Tool", "כלי מסגרת מצולעת"),
+        ("Polygon Tool", "כלי מצולע"),
+        ("Reorder Objects", "סדר אובייקטים מחדש"),
+        ("Report an Issue", "דווח על בעיה"),
+        ("Resize Window", "שנה את גודל החלון"),
+        ("Rotate Tool", "כלי סיבוב"),
+        ("Scissors Tool", "כלי מספריים"),
+        ("Scripts", "סקריפטים"),
+        ("Select Page", "בחר עמוד"),
+        ("Selection Tool", "כלי בחירה"),
+        ("Shear Tool", "כלי הטיה"),
+        ("Smooth Tool", "כלי החלקה"),
+        ("Type Tool", "כלי טקסט"),
+        ("Type on a Path Tool", "כלי טקסט על נתיב"),
+        ("Unassigned", "לא משויך"),
+        ("Unsaved Changes", "שינויים שלא נשמרו"),
+        ("Username", "שם משתמש"),
+        ("Versions", "גרסאות"),
+        ("Vertical Type Tool", "כלי טקסט אנכי"),
+        ("Zoom Tool", "כלי הגדלה"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(
+            tr("he", source),
+            expected,
+            "Hebrew native UI label regression: {source}"
+        );
+    }
+}
+
+#[test]
+fn hebrew_source_linked_data_merge_styles_and_export_labels() {
+    for (source, expected) in [
+        ("Convert Rows", "המרת שורות"),
+        ("Data Fields", "שדות נתונים"),
+        ("Define Lists", "הגדרת רשימות"),
+        ("Figure Space", "רווח ברוחב ספרה"),
+        ("Generate Live Caption", "יצירת כיתוב דינמי"),
+        ("Import InDesign Shortcut Set", "ייבוא ערכת קיצורי דרך של InDesign"),
+        ("Insert Field", "הוספת שדה"),
+        ("List Styles in File", "הצגת סגנונות בקובץ"),
+        ("None (keep transparency)", "ללא (שמירה על שקיפות)"),
+        ("Place with Import Options", "הצבה עם אפשרויות ייבוא"),
+        ("Preview Change", "תצוגה מקדימה של שינוי"),
+        ("Preview Record", "תצוגה מקדימה של רשומה"),
+        ("Rectangle Frame Tool", "כלי מסגרת מלבנית"),
+        ("Redefine Character Style", "הגדרה מחדש של סגנון תו"),
+        ("Redefine Paragraph Style", "הגדרה מחדש של סגנון פסקה"),
+        ("Remove Data Source", "הסרת מקור נתונים"),
+        ("Remove Field", "הסרת שדה"),
+        ("Resize Row or Column", "שינוי גודל שורה או עמודה"),
+        ("Reset Bar Position", "איפוס מיקום הסרגל"),
+        ("Files to export: {n}", "קבצים לייצוא: {n}"),
+        ("Put each version in its own folder", "שמירת כל גרסה בתיקייה נפרדת"),
+        ("Message:", "הודעה:"),
+        ("Range:", "טווח:"),
+        ("Organization:", "ארגון:"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(tr("he", source), expected, "Hebrew native UI label: {source}");
+    }
+}
+
+#[test]
+fn hebrew_source_linked_typography_panels_and_search_night05() {
+    for (source, expected) in [
+        ("Cell Number:", "מספר תא:"),
+        ("Change fill to:", "שינוי המילוי ל:"),
+        ("Company", "חברה"),
+        ("Contributors", "תורמים"),
+        ("Dark", "כהה"),
+        ("Email Address:", "כתובת דוא״ל:"),
+        ("Graphic", "גרפיקה"),
+        ("Hair Space", "רווח דקיק"),
+        ("Light", "בהיר"),
+        ("Lines added", "שורות שנוספו"),
+        ("Lines deleted", "שורות שנמחקו"),
+        ("Low Resolution", "רזולוציה נמוכה"),
+        ("Medium Resolution", "רזולוציה בינונית"),
+        ("PDF import cancelled: the originating document has closed", "ייבוא PDF בוטל: מסמך המקור נסגר"),
+        ("Pin Bar Position", "קיבוע מיקום הסרגל"),
+        ("Reverse the order", "היפוך הסדר"),
+        ("Ruler Zero Point", "נקודת האפס בסרגל"),
+        ("Select Story", "בחירת רצף טקסט"),
+        ("Select Text Unit", "בחירת יחידת טקסט"),
+        ("Simulate Paper Color", "הדמיית צבע הנייר"),
+        ("Step and Repeat", "שכפול בצעדים קבועים"),
+        ("Story Editor — {count} words", "עורך רצף טקסט — {count} מילים"),
+        ("Subscript:", "כתב תחתי:"),
+        ("Swap Text Fill and Stroke", "החלפת המילוי וקו המתאר של הטקסט"),
+        ("Thread Text Frames", "שרשור מסגרות טקסט"),
+        ("To Footer", "לכותרת תחתונה"),
+        ("To Header", "לכותרת עליונה"),
+        ("Update Data Source", "עדכון מקור הנתונים"),
+        ("[No Language]", "[ללא שפה]"),
+        ("{count} match(es)", "{count} התאמות"),
+        ("{count} replacement(s) made", "בוצעו {count} החלפות"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source key missing: {source}"
+        );
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Step and Repeat"), "Step and Repeat");
+}
+
+#[test]
+fn hebrew_typography_table_and_view_source_labels_day05() {
+    // Official DesignCraft English keys; no translation content is copied from other locales.
+    for (source, expected) in [
+        ("Alpha Channel", "ערוץ אלפא"),
+        ("View/Structure", "תצוגה/מבנה"),
+        ("Kerning/Tracking Step", "צעד ריווח בין אותיות"),
+        ("Object Style Options…", "אפשרויות סגנון אובייקט…"),
+        ("Punctuation Space", "רווח סימני פיסוק"),
+        ("Quarter Space", "רבע רווח"),
+        ("Registered Trademark Symbol", "סימן מסחר רשום"),
+        ("Section Symbol", "סימן סעיף"),
+        ("Set OpenType Features", "הגדרת תכונות OpenType"),
+        ("Single Left Quotation Mark", "גרש פותח"),
+        ("Single Right Quotation Mark", "גרש סוגר"),
+        ("Sixth Space", "שישית רווח"),
+        ("Straight Double Quotation Marks", "מרכאות כפולות ישרות"),
+        ("Straight Single Quotation Mark (Apostrophe)", "גרש ישר (אפוסטרוף)"),
+        ("Table/Convert Cell Type", "טבלה/המרת סוג תא"),
+        ("Table/Delete", "טבלה/מחיקה"),
+        ("Table/Insert", "טבלה/הוספה"),
+        ("Table/Select", "טבלה/בחירה"),
+        ("Thin Space", "רווח דק"),
+        ("Third Space", "שליש רווח"),
+        ("To Body", "לגוף הטקסט"),
+        ("Trademark Symbol", "סימן מסחר"),
+        ("Vertical Type on a Path Tool", "כלי טקסט אנכי על נתיב"),
+        ("View/Proof Setup", "תצוגה/הגדרת הגהת צבע"),
+        ("View/Separations Preview", "תצוגה/תצוגה מקדימה של הפרדות צבע"),
+        ("Working CMYK", "מרחב CMYK לעבודה"),
+    ] {
+        assert!(fr::TABLE.iter().any(|(english, _)| english == source), "official English source missing: {source}");
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+    assert_eq!(tr("en", "Object Style Options…"), "Object Style Options…");
+}
+
+#[test]
+fn hebrew_layout_color_typography_and_panel_controls_are_localized() {
+    // Original English keys are independently present in the official source-language catalog.
+    for (source, expected) in [
+        ("All Inks", "כל צבעי הדפוס"),
+        ("Ink Limit 300%", "מגבלת דיו 300%"),
+        ("Internet Standard RGB (sRGB)", "RGB תקני לאינטרנט (sRGB)"),
+        ("Monitor RGB", "RGB של הצג"),
+        ("Get Cell Stroke", "קבלת קו המתאר של התא"),
+        ("Global Light", "תאורה כללית"),
+        ("List Composite Fonts", "רשימת גופנים מורכבים"),
+        ("Set Composite Font", "הגדרת גופן מורכב"),
+        ("View/Extras", "תצוגה/עזרים"),
+        ("View/Rotate Spread", "תצוגה/סיבוב מפתח עמודים"),
+        ("View/Screen Mode", "תצוגה/מצב מסך"),
+        ("Transform Again Individually", "חזרה על שינוי צורה לכל פריט בנפרד"),
+        ("Transform Sequence Again", "חזרה על רצף שינויי צורה"),
+        ("Transform Sequence Again Individually", "חזרה על רצף שינויי צורה לכל פריט בנפרד"),
+        ("Title Case", "אות גדולה בתחילת כל מילה"),
+        ("Sentence case", "אות גדולה בתחילת משפט"),
+        ("lowercase", "אותיות קטנות"),
+        ("Name (A–Z)", "שם (A–Z)"),
+        ("Invalid panel layout; restored the default dock", "פריסת החלוניות אינה תקינה; סידור החלוניות המוגדר כברירת מחדל שוחזר"),
+        ("Text:", "טקסט:"),
+        ("Subject:", "נושא:"),
+        ("URL:", "כתובת URL:"),
+        ("Load DTD", "טעינת DTD"),
+        ("Validate from Root Element", "אימות מרכיב השורש"),
+        ("Layout/Index", "פריסה/אינדקס"),
+        ("Layout/Pages", "פריסה/עמודים"),
+    ] {
+        assert!(fr::TABLE.iter().any(|(english, _)| english == source), "official English source missing: {source}");
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+}
+
+#[test]
+fn hebrew_repository_help_asset_and_desktop_publishing_labels_are_localized() {
+    // These keys are English-source entries in the official UI catalog, never copied translations.
+    for (source, expected) in [
+        ("(any)", "(כלשהו)"),
+        ("(unchanged)", "(ללא שינוי)"),
+        ("ArtCraft App Page", "עמוד היישום ב־ArtCraft"),
+        ("ArtCraft Website", "אתר ArtCraft"),
+        ("Binary assets added", "נכסים בינאריים שנוספו"),
+        ("Binary assets removed", "נכסים בינאריים שהוסרו"),
+        ("Chinese: Simplified", "סינית: מפושטת"),
+        ("Chinese: Traditional", "סינית: מסורתית"),
+        ("Commit Preview", "תצוגה מקדימה של קומיט"),
+        ("DesignCraft Website", "אתר DesignCraft"),
+        ("DesignCraft on GitHub", "DesignCraft ב־GitHub"),
+        ("DesignCraft page", "עמוד DesignCraft"),
+        ("First commit", "הקומיט הראשון"),
+        ("Join the ArtCraft Discord", "הצטרפות לקהילת ArtCraft ב־Discord"),
+        ("Last commit", "הקומיט האחרון"),
+        ("Legacy Macintosh RGB", "RGB מדור קודם של Macintosh"),
+        ("Line delta", "שינוי במספר השורות"),
+        ("Lines +/−", "שורות +/−"),
+        ("Medium Dark", "כהה בינוני"),
+        ("Medium Light", "בהיר בינוני"),
+        ("Merged PRs", "בקשות משיכה שמוזגו"),
+        ("Models", "מודלים"),
+        ("+ Add Version", "+ הוספת גרסה"),
+        ("No contributor data was built into this copy.", "עותק זה נבנה ללא נתוני תורמים."),
+        ("No model credits were built into this copy.", "עותק זה נבנה ללא פרטי ייחוס למודלים."),
+        ("PRs", "בקשות משיכה"),
+        ("Picas", "פיקות"),
+        ("Real name", "שם אמיתי"),
+        ("Report an issue", "דיווח על בעיה"),
+        ("image editing", "עריכת תמונות"),
+        ("layer", "שכבה"),
+        ("layers", "שכבות"),
+        ("motion graphics and visual effects", "גרפיקה בתנועה ואפקטים חזותיים"),
+        ("photo library and raw development", "ספריית תמונות ופיתוח קובצי RAW"),
+        ("reading, organizing and protecting PDFs", "קריאה, ארגון והגנה על קובצי PDF"),
+        ("the default printer", "מדפסת ברירת המחדל"),
+        ("vector illustration", "איור וקטורי"),
+        ("video editing, color and sound", "עריכת וידאו, צבע וקול"),
+        ("{contributors} contributors · {commits} commits", "תורמים: {contributors} · קומיטים: {commits}"),
+        ("{label}: {name} (double-click: Color Picker)", "{label}: {name} (לחיצה כפולה: בורר הצבעים)"),
+        ("Story {story} ← story {parent}", "רצף טקסט {story} ← רצף טקסט {parent}"),
+        ("{count} conflict(s): {names}", "התנגשויות ({count}): {names}"),
+        ("{name}: {count} step(s) done", "{name}: מספר השלבים שהושלמו — {count}"),
+        ("Sent {count} page(s) to {printer}", "מספר העמודים שנשלחו אל {printer}: {count}"),
+    ] {
+        assert!(
+            fr::TABLE.iter().any(|(english, _)| english == source),
+            "official English source missing: {source}"
+        );
+        assert_eq!(tr("he", source), expected, "Hebrew UI label: {source}");
+    }
+}
+
+#[test]
+fn hebrew_night04_live_native_dialog_controls() {
+    for (source, expected) in [
+        ("Weight:", "משקל:"),
+        ("Tint:", "גוון:"),
+        ("Offset:", "היסט:"),
+        ("Size:", "גודל:"),
+        ("All", "הכול"),
+        ("Auto-Fit", "התאמה אוטומטית"),
+        ("Horizontal Scale:", "קנה מידה אופקי:"),
+        ("Position:", "מיקום:"),
+        ("Vertical Scale:", "קנה מידה אנכי:"),
+        ("Name:", "שם:"),
+        ("Stroke Behind Fill", "קו מתאר מאחורי המילוי"),
+        ("Width:", "רוחב:"),
+        ("lines", "שורות"),
+        ("Align On:", "יישור לפי:"),
+        ("Angle:", "זווית:"),
+        ("Based On", "מבוסס על"),
+        ("Based On:", "מבוסס על:"),
+        ("Cap:", "קצה קו:"),
+        ("Color Mode", "מצב צבע"),
+        ("Delete Preset", "מחיקת ערכת הגדרות"),
+        ("Digits", "ספרות"),
+        ("Font Style", "סגנון גופן"),
+        ("Go To", "מעבר אל"),
+        ("Home", "בית"),
+        ("Include Roman Characters", "כלילת תווים לטיניים"),
+        ("Invert", "היפוך"),
+        ("Join:", "חיבור:"),
+        ("Leader:", "תו מילוי:"),
+        ("Merge options", "אפשרויות מיזוג"),
+        ("Prefix:", "קידומת:"),
+        ("Preset:", "ערכת הגדרות:"),
+        ("Record", "רשומה"),
+        ("Replace with:", "החלפה ב:"),
+        ("Strikethrough", "קו חוצה"),
+        ("Style Name", "שם הסגנון"),
+        ("Text Color", "צבע הטקסט"),
+        ("Update", "עדכון"),
+        ("Found", "נמצאו"),
+        ("Accept", "אישור"),
+        ("Accept All", "אישור הכול"),
+        ("All Caps", "אותיות רישיות"),
+        ("Case sensitive", "התאמה לאותיות רישיות וקטנות"),
+        ("Clear All", "ניקוי הכול"),
+        ("Compress images", "דחיסת תמונות"),
+        ("Create", "יצירה"),
+        ("Crop", "חיתוך"),
+        ("Crop Marks", "סימני חיתוך"),
+        ("Cover Image:", "תמונת כריכה:"),
+        ("Copies:", "עותקים:"),
+        ("Custom", "מותאם אישית"),
+        ("Default", "ברירת מחדל"),
+        ("Cancelled: the document the dialog was for has closed", "בוטל: המסמך שעבורו נפתחה תיבת הדו־שיח נסגר"),
+        ("DesignCraft Updates", "עדכוני DesignCraft"),
+        ("Dimensions Include Stroke Weight", "המידות כוללות את עובי קו המתאר"),
+        ("Distance", "מרחק"),
+        ("Convert Shape", "המרת צורה"),
+        ("Color Theme", "ערכת צבעים"),
+        ("Add at least one version.", "יש להוסיף גרסה אחת לפחות."),
+        ("Choose at least one layout.", "יש לבחור פריסה אחת לפחות."),
+        ("Format:", "תבנית:"),
+        ("Apply to Stroke", "החלה על קו המתאר"),
+        ("Clear overrides", "ניקוי דריסות עיצוב"),
+        ("Crop to:", "חיתוך לפי:"),
+        ("Color Type", "סוג צבע"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew native control: {source}");
+        assert_eq!(tr("en", source), source, "English must remain unchanged: {source}");
+    }
+}
+
+#[test]
+fn hebrew_night04_live_page_export_and_font_controls() {
+    for (source, expected) in [
+        ("[Custom]", "[מותאם אישית]"),
+        ("Add to the name", "הוספה לשם"),
+        ("Adjust page elements to document changes", "התאמת רכיבי העמוד לשינויים במסמך"),
+        ("All Classes", "כל הסיווגים"),
+        ("All pages", "כל העמודים"),
+        ("Apply the changes; objects follow the new page size and margins", "החלת השינויים; האובייקטים יותאמו לגודל העמוד ולשוליים החדשים"),
+        ("Apply to:", "החל על:"),
+        ("Automatic Page Numbering", "מספור עמודים אוטומטי"),
+        ("Auto-Size", "התאמת גודל אוטומטית"),
+        ("Auto-Sizing", "התאמת גודל אוטומטית"),
+        ("Between Entry and Number:", "בין הרשומה למספר:"),
+        ("Binding:", "כריכה:"),
+        ("Bleed and Slug", "גלישה ושטח מידע"),
+        ("Bleed Marks", "סימני גלישה"),
+        ("Bleed, no marks", "גלישה ללא סימנים"),
+        ("Book Name:", "שם הספר:"),
+        ("Both pages of the parent spread", "שני עמודי כפולת האב"),
+        ("Both pages of the spread", "שני עמודי הכפולה"),
+        ("Colors and Inks: {process} process, {spot} spot", "צבעים ודיו: {process} צבעי תהליך, {spot} צבעי ספוט"),
+        ("Column Gutter", "מרווח בין טורים"),
+        ("Compress Images", "דחיסת תמונות"),
+        ("Corner Size", "גודל הפינות"),
+        ("Create PDF Bookmarks", "יצירת סימניות PDF"),
+        ("Document Chapter Numbering", "מספור פרקי המסמך"),
+        ("Document Name", "שם המסמך"),
+        ("Duplicate version", "שכפול גרסה"),
+        ("Embedded", "מוטמע"),
+        ("Embedded images: {embedded}", "תמונות מוטמעות: {embedded}"),
+        ("Entry Style:", "סגנון רשומה:"),
+        ("Filters:", "מסננים:"),
+        ("Fixed", "קבוע"),
+        ("Folder name", "שם התיקייה"),
+        ("Fonts: {used} in use, {missing} unavailable", "גופנים: {used} בשימוש, {missing} אינם זמינים"),
+        ("Gray", "אפור"),
+        ("Height:", "גובה:"),
+        ("Include Paragraph Styles:", "כלול סגנונות פסקה:"),
+        ("Include Prefix when Numbering Pages", "כלול קידומת במספור העמודים"),
+        ("Increment Every:", "הגדל בכל:"),
+        ("Large Sample Text Size", "גודל טקסט לדוגמה — גדול"),
+        ("Level:", "רמה:"),
+        (
+            "Links and Images: {found} linked, {modified} changed, {missing} not found",
+            "קישורים ותמונות: {found} מקושרים, {modified} שונו, {missing} לא נמצאו",
+        ),
+        ("Medium Sample Text Size", "גודל טקסט לדוגמה — בינוני"),
+        ("Min:", "מינימום:"),
+        ("Minimum Height", "גובה מזערי"),
+        ("Minimum Width", "רוחב מזערי"),
+        ("Mode:", "מצב:"),
+        ("No Line Breaks", "ללא מעברי שורה"),
+        ("Optical Margin Alignment", "יישור שוליים אופטי"),
+        ("Optical Margin Size", "גודל שוליים אופטיים"),
+        ("Orientation:", "כיוון העמוד:"),
+        ("Other Styles:", "סגנונות אחרים:"),
+        ("Page Number:", "מספר עמוד:"),
+        ("Page Size:", "גודל העמוד:"),
+        ("Preset Details", "פרטי הגדרה קבועה מראש"),
+        ("Preset name", "שם ההגדרה הקבועה מראש"),
+        ("Preset saved.", "ההגדרה הקבועה מראש נשמרה."),
+        ("Print: marks + bleed", "הדפסה: סימנים וגלישה"),
+        ("Remove Existing Ruler Guides", "הסרת קווי העזר הקיימים"),
+        ("Replace Existing Table of Contents", "החלפת תוכן העניינים הקיים"),
+        ("Save Document Preset", "שמירת הגדרות מסמך"),
+        ("Save Document Preset As:", "שמירת הגדרות מסמך בשם:"),
+        ("Save Preset", "שמירת הגדרה קבועה מראש"),
+        ("Section Marker:", "סמן מקטע:"),
+        ("Section Prefix:", "קידומת מקטע:"),
+        ("Show Recently Added", "הצגת גופנים שנוספו לאחרונה"),
+        ("Show Similar Fonts", "הצגת גופנים דומים"),
+        ("Similar to {family}", "דומים ל־{family}"),
+        ("Small Sample Text Size", "גודל טקסט לדוגמה — קטן"),
+        ("Sort Entries in Alphabetical Order", "מיון רשומות לפי סדר אלפביתי"),
+        ("Start Page Numbering at:", "התחלת מספור העמודים מ־:"),
+        ("Start Section", "התחלת מקטע"),
+        ("Styles in Table of Contents", "סגנונות בתוכן העניינים"),
+        ("The document has one layout: all its pages are exported.", "במסמך יש פריסה אחת: כל העמודים ייוצאו."),
+        ("This page", "עמוד זה"),
+        ("Title:", "כותרת:"),
+        ("Use Custom Baseline Grid", "שימוש ברשת קווי בסיס מותאמת אישית"),
+    ] {
+        assert_eq!(tr("he", source), expected, "Hebrew live control: {source}");
+        assert_eq!(tr("en", source), source, "Unchanged English: {source}");
+    }
+}
+
+#[test]
+fn hebrew_catalog_has_unique_source_keys_including_multiline_entries() {
+    let mut keys = HashSet::new();
+    for (source, translated) in he::TABLE {
+        assert!(keys.insert(*source), "duplicate Hebrew source key: {source}");
+        assert!(!translated.trim().is_empty(), "empty Hebrew translation: {source}");
+    }
 }
