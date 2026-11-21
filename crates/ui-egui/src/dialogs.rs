@@ -6608,7 +6608,7 @@ fn link_toggle(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, key: &str, linked:
 
 /// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
 /// picked.
-fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+pub(crate) fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
     swatch_menu_with(ui, doc, id, current, width, None)
 }
 
