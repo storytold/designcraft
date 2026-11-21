@@ -244,6 +244,21 @@ fn draw_inverse_highlight(
             let k = sh.zoom * ppp as f64;
             (((c.x - sh.origin.x) * k).round() as i64, ((c.y - sh.origin.y) * k).round() as i64, px)
         });
+    // Without the canvas's pixels the area would be rendered here, on the UI thread. That is
+    // done for a turned view (its texture never matches; cached until the view or selection
+    // changes), but not on every frame of a zoom or right after text is selected, when the worker
+    // is already bringing a texture with its pixels: meanwhile, and with Separations Preview on
+    // (which shows a plate, not the composite the canvas pixels hold), a plain highlight.
+    let waiting = from_canvas.is_none() && xf.rot == 0 && app.canvas.pending.is_some();
+    if app.ui.separations.is_some() || waiting {
+        for (m, quads) in runs {
+            for q in quads {
+                let poly = q.map(|p| to_screen(*m, p));
+                painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+            }
+        }
+        return;
+    }
     let at = from_canvas.as_ref().map(|(x, y, _)| (*x, *y));
     let key = egui::Id::unique(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
         .with(&display)
