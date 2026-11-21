@@ -2076,6 +2076,150 @@ fn object_style_clear_overrides_restores_the_paragraph_style_and_choke_is_clampe
 }
 
 #[test]
+fn free_transform_scales_with_contents_rotates_reflects_shears_and_moves() {
+    // The Free Transform tool as InDesign documents it (and Chris Nielsen's "The Adobe InDesign
+    // Toolbox", 13:23–13:48): inside the box it moves, a handle scales (contents too; Shift keeps
+    // proportions, Alt from the centre), past the opposite edge it reflects, outside the box it
+    // rotates (Shift: 45° steps), and Cmd during a handle's drag shears (Alt+Cmd: from the centre).
+    use designcraft_tools::{Mods, PointerEvent, PointerKind, SnapView};
+    let mut s = session();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("place.load", &json!({"base64": cmd::base64_encode(&png)})).unwrap();
+    s.execute("place.drop", &json!({"frame": f})).unwrap();
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    let item = |s: &Session| s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+    // The frame's corners on the spread, and the picture's width there.
+    let corners = |s: &Session| {
+        let it = item(s);
+        it.path.subpaths[0].anchors.iter().map(|a| it.xf * a.p).collect::<Vec<_>>()
+    };
+    let graphic_w = |it: &designcraft_doc::Item| (it.xf * it.graphic().unwrap().xf).as_coeffs()[0];
+    let w0 = graphic_w(&item(&s));
+    s.set_tool("freeTransform");
+    assert_eq!(s.tool_id(), "freeTransform");
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let layout = s.layout();
+    let at = |x: f64, y: f64| layout.to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(x, y));
+    let drag = |s: &mut Session, a: designcraft_geom::Point, b: designcraft_geom::Point, mods: Mods| {
+        s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Drag, (a.x + b.x) / 2.0, (a.y + b.y) / 2.0).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y).with_mods(mods), v).unwrap();
+        s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y).with_mods(mods), v).unwrap();
+    };
+    let none = Mods::default();
+    let near = |a: designcraft_geom::Point, x: f64, y: f64| (a.x - x).abs() < 1e-6 && (a.y - y).abs() < 1e-6;
+    // Scale: the right handle to x = 400, half as wide again, the picture with it.
+    drag(&mut s, at(300.0, 200.0), at(400.0, 200.0), none);
+    let it = item(&s);
+    assert!((it.bounds().width() - 300.0).abs() < 1e-6, "{:?}", it.bounds());
+    assert!((graphic_w(&it) / w0 - 1.5).abs() < 1e-6, "the graphic scales with its frame: {w0} → {}", graphic_w(&it));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Reflect: the right handle dragged past the left edge, to x = 0.
+    drag(&mut s, at(300.0, 200.0), at(0.0, 200.0), none);
+    let it = item(&s);
+    assert!((it.bounds().x0 - 0.0).abs() < 1e-6 && (it.bounds().x1 - 100.0).abs() < 1e-6, "{:?}", it.bounds());
+    assert!(corners(&s)[0].x > corners(&s)[1].x, "the frame reflects: {:?}", corners(&s));
+    assert!(graphic_w(&it) < 0.0, "the graphic reflects: {:?}", it.xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Rotate: just outside the top-right corner; Shift keeps to 45° steps.
+    drag(&mut s, at(308.0, 92.0), at(330.0, 160.0), none);
+    assert!(item(&s).xf.as_coeffs()[1].abs() > 1e-3, "rotated: {:?}", item(&s).xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    drag(&mut s, at(308.0, 92.0), at(330.0, 160.0), Mods { shift: true, ..none });
+    let [a, b, ..] = item(&s).xf.as_coeffs();
+    let angle = b.atan2(a).to_degrees().abs();
+    assert!(angle > 1e-3 && (angle % 45.0) < 1e-6, "a nonzero 45° step: {:?}", item(&s).xf);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Shear: Cmd on the top handle slides the top edge, the bottom one stays.
+    drag(&mut s, at(200.0, 100.0), at(300.0, 100.0), Mods { cmd: true, ..none });
+    let c = corners(&s);
+    assert!(near(c[0], 200.0, 100.0) && near(c[1], 400.0, 100.0), "the top edge moved 100: {c:?}");
+    assert!(near(c[2], 300.0, 300.0) && near(c[3], 100.0, 300.0), "the bottom edge stayed: {c:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    // A press off the handle's centre must not add that offset to the shear.
+    drag(&mut s, at(203.0, 100.0), at(303.0, 100.0), Mods { cmd: true, ..none });
+    let c = corners(&s);
+    assert!(near(c[0], 200.0, 100.0) && near(c[1], 400.0, 100.0), "the pointer moved 100, not 103: {c:?}");
+    assert!(near(c[2], 300.0, 300.0) && near(c[3], 100.0, 300.0), "the bottom edge stayed: {c:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Alt+Cmd on the right handle: from the centre, both sides slide.
+    drag(&mut s, at(300.0, 200.0), at(300.0, 250.0), Mods { cmd: true, alt: true, ..none });
+    let c = corners(&s);
+    assert!(near(c[1], 300.0, 150.0) && near(c[0], 100.0, 50.0), "right side down 50, left side up 50: {c:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Move: inside the box.
+    drag(&mut s, at(200.0, 200.0), at(200.0, 250.0), none);
+    assert!(near(corners(&s)[0], 100.0, 150.0), "{:?}", corners(&s));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(near(corners(&s)[0], 100.0, 100.0) && (item(&s).bounds().width() - 200.0).abs() < 1e-6, "every gesture undoes in one step");
+    // The picture selected (Direct Selection), then Free Transform: the frame's handles work.
+    s.set_tool("directSelection");
+    s.execute("selection.set", &json!({"ids": [f], "content": true})).unwrap();
+    s.set_tool("freeTransform");
+    assert!(!s.doc().unwrap().selection.content, "Free Transform works on the frame");
+    drag(&mut s, at(300.0, 200.0), at(400.0, 200.0), none);
+    assert!((item(&s).bounds().width() - 300.0).abs() < 1e-6, "{:?}", item(&s).bounds());
+    s.execute("edit.undo", &json!({})).unwrap();
+    // A double click on the frame keeps the frame selected.
+    s.pointer(&PointerEvent::new(PointerKind::Down, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Down, at(200.0, 200.0).x, at(200.0, 200.0).y).with_clicks(2), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, at(200.0, 200.0).x, at(200.0, 200.0).y), v).unwrap();
+    assert!(!s.doc().unwrap().selection.content);
+}
+
+#[test]
+fn free_transform_moves_path_text_frame_without_editing_its_brackets() {
+    use designcraft_tools::{Overlay, PointerEvent, PointerKind, SnapView};
+    let mut s = session();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("type.onPath", &json!({"id": f, "text": "Path text", "start": 50})).unwrap();
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    s.set_tool("selection");
+    assert!(s.overlays(v).iter().any(|o| matches!(o, Overlay::Line { .. })), "Selection exposes path brackets");
+    s.set_tool("freeTransform");
+    assert!(!s.overlays(v).iter().any(|o| matches!(o, Overlay::Line { .. })), "Free Transform hides path brackets");
+    let layout = s.layout();
+    let at = |x| layout.to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(x, 100.0));
+    let a = at(150.0);
+    let b = at(180.0);
+    let undo = s.doc().unwrap().history.undo.len();
+    for (kind, p) in [(PointerKind::Down, a), (PointerKind::Drag, b), (PointerKind::Up, b)] {
+        s.pointer(&PointerEvent::new(kind, p.x, p.y), v).unwrap();
+    }
+    let item = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap();
+    assert!((item.bounds().x0 - 130.0).abs() < 1e-6, "the frame moved: {:?}", item.bounds());
+    let designcraft_doc::Content::Text(tf) = &item.content else { panic!("text frame") };
+    assert_eq!(tf.options.path.as_ref().unwrap().start, 50.0, "the text start stays unchanged");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo + 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().bounds().x0, 100.0);
+}
+
+#[test]
+fn free_transform_moves_at_the_selection_corner_widget_without_editing_corners() {
+    use designcraft_tools::{Overlay, PointerEvent, PointerKind, SnapView};
+    let mut s = session();
+    let f = s.execute("frame.create", &json!({"rect": [100, 100, 300, 300], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("selection.set", &json!({"ids": [f]})).unwrap();
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    s.set_tool("selection");
+    let widget = s.overlays(v).into_iter().find_map(|o| if let Overlay::LiveCornerWidget(p) = o { Some(p) } else { None }).unwrap();
+    s.set_tool("freeTransform");
+    assert!(!s.overlays(v).iter().any(|o| matches!(o, Overlay::LiveCornerWidget(_) | Overlay::LiveCornerDiamond(_))));
+    let before = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap().clone();
+    let end = widget + designcraft_geom::Vec2::new(20.0, 20.0);
+    for (kind, p) in [(PointerKind::Down, widget), (PointerKind::Drag, end), (PointerKind::Up, end)] {
+        s.pointer(&PointerEvent::new(kind, p.x, p.y), v).unwrap();
+    }
+    let item = s.doc().unwrap().doc.item(designcraft_doc::ItemId(f)).unwrap();
+    assert_eq!(item.corners, before.corners);
+    assert_eq!(item.bounds().origin(), before.bounds().origin() + designcraft_geom::Vec2::new(20.0, 20.0));
+}
+
+#[test]
 fn parent_resize_tool_previews_cancels_commits_and_undoes_on_the_selected_spread() {
     use designcraft_tools::{Mods, Overlay, PointerEvent, PointerKind};
     let mut s = Session::new();
