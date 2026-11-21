@@ -706,6 +706,14 @@ impl Session {
     /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // Explicit story/frame targets do not need a selection. Keep menu enablement
+            // selection-based; these handlers validate even malformed non-null targets.
+            if matches!(id, "file.exportText" | "type.fillWithPlaceholder")
+                && self.active().is_some()
+                && ["story", "frame"].iter().any(|key| params.get(*key).is_some_and(|v| !v.is_null()))
+            {
+                return Ok(());
+            }
             // A table command that takes `story` and `table` acts on the table the call names, so
             // the selection doesn't matter: with nothing selected, the caret outside a table, or
             // selected rows the command can't act on, `{"table": 3}` still runs.

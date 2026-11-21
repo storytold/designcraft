@@ -266,3 +266,126 @@ fn placeholder_text_checks_its_target_before_converting_a_frame() {
     assert_eq!(s.doc().unwrap().history.undo.len(), steps, "and no step may be left behind");
     assert!(error.to_string().contains("no such story 999999"), "{error}");
 }
+
+#[test]
+fn explicit_story_targets_do_not_need_a_selection() {
+    for command in COMMANDS {
+        for key in ["story", "frame"] {
+            let d = two_stories();
+            let mut s = d.s;
+            s.execute("selection.set", &json!({"ids": []})).unwrap();
+            assert!(s.doc().unwrap().selection.items.is_empty());
+            assert!(s.doc().unwrap().selection.text.is_none());
+            let spec = crate::cmd::find_command(command).unwrap();
+            let selection_gated = matches!(command, "file.exportText" | "type.fillWithPlaceholder");
+            if selection_gated {
+                assert!((spec.enabled)(&s).is_err(), "{command}: its menu still needs a selection");
+            }
+            let p = if key == "story" { json!({"story": d.other["story"]}) } else { json!({"frame": d.other["id"]}) };
+            let before = s.doc().unwrap().doc.clone();
+            let steps = s.doc().unwrap().history.undo.len();
+            let result = s.execute(command, &acting(command, p)).unwrap_or_else(|e| panic!("{command} {key}: {e}"));
+            assert_eq!(story_text(&s, &d.selected), "Selected", "{command} {key}: the other story is untouched");
+            match command {
+                "file.exportText" | "story.get" => {
+                    assert_eq!(result["text"], "Explicit", "{command} {key}");
+                    assert_eq!(s.doc().unwrap().doc, before);
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps);
+                }
+                _ => {
+                    if command == "story.setDirection" {
+                        let direction = s.execute("story.get", &json!({"story": d.other["story"]})).unwrap()["direction"].clone();
+                        assert_eq!(direction, "rightToLeft");
+                    } else {
+                        assert!(story_text(&s, &d.other).len() > 500);
+                    }
+                    assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+                    s.execute("edit.undo", &json!({})).unwrap();
+                    assert_eq!(s.doc().unwrap().doc, before);
+                }
+            }
+            if selection_gated {
+                assert!((spec.enabled)(&s).is_err(), "{command}: executing an explicit target did not relax its menu");
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_explicit_story_targets_without_a_selection_reach_validation() {
+    for command in COMMANDS {
+        let d = two_stories();
+        let mut s = d.s;
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unchanged.txt");
+        std::fs::write(&path, "keep this file").unwrap();
+        for mut p in [
+            json!({"story": 999999u64}),
+            json!({"frame": 999999u64}),
+            json!({"story": "invalid"}),
+            json!({"frame": "invalid"}),
+            json!({"story": d.other["story"], "frame": 999999u64}),
+            json!({"story": 999999u64, "frame": d.other["id"]}),
+        ] {
+            if command == "file.exportText" {
+                p["path"] = json!(path.to_string_lossy());
+            }
+            let st = s.doc().unwrap();
+            let before = st.doc.clone();
+            let saved = st.saved_doc.clone();
+            let quiet = (st.revision, st.saved_revision, st.is_dirty(), st.selection.clone(), st.history.undo.len(), st.history.redo.len());
+            let journal = s.journal.len();
+            let error = s.execute(command, &acting(command, p.clone())).unwrap_err();
+            assert!(matches!(error, crate::EngineError::BadParams { .. }), "{command} {p}: {error}");
+            let st = s.doc().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&st.doc, &before), "{command} {p}: live document identity changed");
+            assert!(std::sync::Arc::ptr_eq(&st.saved_doc, &saved), "{command} {p}: saved document identity changed");
+            assert_eq!((st.revision, st.saved_revision, st.is_dirty(), st.selection.clone(), st.history.undo.len(), st.history.redo.len()), quiet);
+            assert_eq!(s.journal.len(), journal);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep this file", "{command} {p}: export wrote before refusing");
+        }
+    }
+}
+
+#[test]
+fn placeholder_conversion_does_not_need_a_selection() {
+    for content in ["graphic", "unassigned"] {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [0, 0, 300, 500], "content": content})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let before = s.doc().unwrap().doc.clone();
+        let steps = s.doc().unwrap().history.undo.len();
+        let spec = crate::cmd::find_command("type.fillWithPlaceholder").unwrap();
+        assert!((spec.enabled)(&s).is_err(), "the menu remains selection-based");
+        s.execute("type.fillWithPlaceholder", &json!({"frame": frame["id"]})).unwrap();
+        let item = s.doc().unwrap().doc.item(ItemId(frame["id"].as_u64().unwrap())).unwrap();
+        let story = item.text_frame().unwrap().story;
+        assert!(s.doc().unwrap().doc.story(story).unwrap().text.len() > 500);
+        assert_eq!(s.doc().unwrap().history.undo.len(), steps + 1);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc, before, "one Undo restores the original frame");
+    }
+}
+
+#[test]
+fn selection_gates_still_apply_without_an_explicit_story_target_or_document() {
+    for command in ["file.exportText", "type.fillWithPlaceholder"] {
+        let d = two_stories();
+        let mut s = d.s;
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        for p in [json!({}), json!({"story": null}), json!({"frame": null}), json!({"story": null, "frame": null})] {
+            let before = s.doc().unwrap().doc.clone();
+            let error = s.execute(command, &p).unwrap_err();
+            assert!(matches!(error, crate::EngineError::Disabled(..)), "{command} {p}: {error}");
+            assert!(std::sync::Arc::ptr_eq(&s.doc().unwrap().doc, &before));
+        }
+        let mut empty = Session::new();
+        for p in [json!({"story": 1}), json!({"frame": 1})] {
+            let error = empty.execute(command, &p).unwrap_err();
+            assert!(matches!(error, crate::EngineError::Disabled(..)), "{command} without a document: {error}");
+            assert!(empty.active().is_none());
+        }
+    }
+}
