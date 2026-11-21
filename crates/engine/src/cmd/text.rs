@@ -226,7 +226,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Kerning",
             [],
             None,
-            "{kerning: {kind: metrics|optical|none}|{kind: manual, value: 1/1000 em}|null} — at a caret in text, the pair at the caret (the character before the caret takes it); at the start of a story or paragraph, the next typing; a selection or frames take it like `type.char`",
+            "{kerning: {kind: metrics|metricsRomanOnly|optical|none}|{kind: manual, value: 1/1000 em}|null} — at a caret in text, the pair at the caret (the character before the caret takes it); at the start of a story or paragraph, the next typing; a selection or frames take it like `type.char`",
             has_text_or_frames,
             kern_pair
         ),
