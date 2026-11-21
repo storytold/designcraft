@@ -164,9 +164,10 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         app.canvas.shown_doc = app.canvas.pending_doc.take();
         app.canvas.pending = None;
         app.perf.render_ms = done.ms;
-        // A full render this fast lets edits render on the UI thread again (and its regions).
+        // A full render this fast lets edits render on the UI thread again; their regions too,
+        // after a slow repaint once enough renders have passed (see `patch_measured`).
         app.canvas.sync_ms = done.ms;
-        app.canvas.patch_ms = app.canvas.patch_ms.min(done.ms);
+        worker_rendered(&mut app.canvas, done.ms);
     }
     let images = {
         let live = designcraft_render::images::generation();
@@ -291,10 +292,12 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     // document counts against the budget as a slow repaint does (`patch_ms`).
     let t0 = crate::now_ms();
     let timed = |app: &mut DesignApp, patched: bool| {
-        app.canvas.patch_ms = crate::now_ms() - t0;
+        patch_measured(&mut app.canvas, crate::now_ms() - t0);
         patched
     };
     let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return timed(app, false) };
+    // The render time shown (`perf.render_ms`) is the repaint's own, without the comparison.
+    let t_render = crate::now_ms();
     let k = sh.zoom * ppp;
     let mut px: Option<(i64, i64, i64, i64)> = None;
     for (r, rect) in &regions {
@@ -337,8 +340,32 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     }
     done(app);
     app.canvas.patches += 1;
-    app.perf.render_ms = crate::now_ms() - t0;
+    app.perf.render_ms = crate::now_ms() - t_render;
     timed(app, true)
+}
+
+/// A repaint of an edit's regions took `ms`. Slow, the next edits render on the worker, and
+/// the UI thread retries a repaint only after `patch_backoff` worker renders, twice as many each
+/// time the retry is slow again: a slow damage comparison stalls once in a while, not every
+/// other edit.
+pub(super) fn patch_measured(c: &mut crate::CanvasCache, ms: f64) {
+    c.patch_ms = ms;
+    if ms > super::SYNC_BUDGET_MS {
+        c.patch_backoff = c.patch_backoff.saturating_mul(2).clamp(1, 64);
+        c.patch_wait = c.patch_backoff;
+    } else {
+        c.patch_backoff = 0;
+        c.patch_wait = 0;
+    }
+}
+
+/// A worker render took `ms`: one render less to wait before repainting regions is tried again.
+pub(super) fn worker_rendered(c: &mut crate::CanvasCache, ms: f64) {
+    if c.patch_wait > 0 {
+        c.patch_wait -= 1;
+    } else {
+        c.patch_ms = c.patch_ms.min(ms);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

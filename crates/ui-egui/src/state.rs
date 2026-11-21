@@ -575,6 +575,8 @@ impl CanvasCache {
             images: (0, f64::NEG_INFINITY),
             sync_ms: 0.0,
             patch_ms: 0.0,
+            patch_backoff: 0,
+            patch_wait: 0,
         }
     }
 }
@@ -615,6 +617,11 @@ pub struct CanvasCache {
     /// [`canvas::SYNC_BUDGET_MS`], edits render on the worker instead of the UI thread.
     pub sync_ms: f64,
     pub patch_ms: f64,
+    /// After a slow repaint of an edit's regions, how many worker renders pass before the UI
+    /// thread tries a repaint again (`patch_wait`), doubling while the retries stay slow
+    /// (`patch_backoff`): a full render's speed says little about the damage comparison.
+    pub patch_backoff: u32,
+    pub patch_wait: u32,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

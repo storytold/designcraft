@@ -89,3 +89,29 @@ fn a_repaint_that_ends_early_records_its_time_too() {
     frame(&mut app, &ctx);
     assert!(app.canvas.patch_ms < SYNC_BUDGET_MS, "{}", app.canvas.patch_ms);
 }
+
+/// After a slow repaint of an edit's regions, quick worker renders let the UI thread try again
+/// only after a while, and later still when the retry is slow again: a slow damage comparison
+/// doesn't stall every other edit.
+#[test]
+fn a_slow_repaint_is_retried_later_each_time() {
+    let mut c = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()).canvas;
+    let slow = 10.0 * SYNC_BUDGET_MS;
+    // Worker renders until a repaint may run on the UI thread again.
+    let renders_until_retry = |c: &mut crate::CanvasCache| {
+        (1..1000).find(|_| {
+            super::render::worker_rendered(c, 1.0);
+            c.patch_ms <= SYNC_BUDGET_MS
+        })
+    };
+    super::render::patch_measured(&mut c, slow);
+    let first = renders_until_retry(&mut c).expect("retried at last");
+    assert!(first > 1, "not at the very next render");
+    super::render::patch_measured(&mut c, slow);
+    let second = renders_until_retry(&mut c).expect("retried at last");
+    assert!(second > first, "slow again: a longer wait ({first} then {second})");
+    // A quick repaint ends the waiting.
+    super::render::patch_measured(&mut c, 1.0);
+    super::render::patch_measured(&mut c, slow);
+    assert_eq!(renders_until_retry(&mut c), Some(first), "back to the first wait");
+}
