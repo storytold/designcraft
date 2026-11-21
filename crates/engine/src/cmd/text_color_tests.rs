@@ -221,6 +221,8 @@ fn a_gradient_across_threaded_frames_is_in_each_frames_own_space() {
     let sid = a["story"].as_u64().unwrap();
     let a = a["id"].as_u64().unwrap();
     let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 600], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+    // Moved: its text space is no longer the spread's (a new frame's path is in spread space).
+    s.execute("transform.move", &json!({"ids": [b], "dx": 100, "dy": 50})).unwrap();
     s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
     let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
     let split = cs.frames.iter().find(|f| f.frame.0 == b).map(|f| f.range.start).expect("text runs on into the second frame");
