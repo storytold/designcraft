@@ -15,6 +15,8 @@ repository = "https://github.com/storytold/designcraft"
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1" }
 # Shared JSON-RPC 2.0 / MCP server framing and lifecycle.
 craft-mcp-server = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
+# Shared Hunspell reader and nonstandard hyphenation; hu data comes from a Language pack.
+craft-proof = { git = "https://github.com/storytold/craft-libs", rev = "cbc79f6a7a144da7b485b5f41f06342869f4664b" }
 # Shared reader and writer; publish the immutable revision before this consumer.
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0", default-features = false }
 craft-designcraft-format = { git = "https://github.com/storytold/craft-libs", rev = "c60e7a20063313b80a994075adb4f797b24ab4f1", version = "=0.1.0" }
