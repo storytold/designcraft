@@ -12,9 +12,9 @@
 //! first whose hash is the recorded one is the file, and its time is kept with the asset; when
 //! none matches the link is Modified and the file's bytes are never used.
 //!
-//! Graphics placed from files link to them at once. The same thread makes their content hash
-//! and proxy ([`prepare`]), and hashes linked files that an open found by size and time and that
-//! have no hash yet. A save makes the proxies still missing ([`with_proxies`]), never a hash.
+//! Graphics placed from files link to them at once. The same thread makes their proxies and
+//! any deferred content hashes ([`prepare`]), and hashes linked files that an open found by size
+//! and time and that have no hash yet. A save makes missing proxies ([`with_proxies`]), never a hash.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -121,8 +121,8 @@ enum Work {
     /// Compare the file at `source`'s path (the first of its candidates that has the size of the
     /// embedded `bytes`) with the embedded bytes of a document saved before linked storage.
     Migrate { asset: AssetId, key: SourceKey, bytes: Arc<Vec<u8>>, source: LinkedSource, page: u32 },
-    /// Hash the `bytes` of graphics just placed from a file, and make their proxy with `proxy`.
-    Prepare { key: SourceKey, bytes: Arc<Vec<u8>>, page: u32, proxy: bool },
+    /// Hash placed graphics that lack a `hash`, and make their proxy when requested.
+    Prepare { key: SourceKey, bytes: Arc<Vec<u8>>, hash: Option<String>, page: u32, proxy: bool },
 }
 
 /// What a [`Work`] found. `key` is the asset's bytes' key when the check started: a result for
@@ -152,12 +152,13 @@ enum Outcome {
     Prepared { key: SourceKey, hash: String, proxy: Option<designcraft_render::proxy::ProxyImage> },
 }
 
-/// A graphic placed from a file whose content hash and proxy are still to be made
-/// ([`super::links::give_placed`]); [`prepare`] has them made in the background.
+/// A graphic placed from a file with preparation left ([`super::links::give_placed`]);
+/// [`prepare`] makes the proxy and any deferred hash in the background.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) struct Pending {
     key: SourceKey,
     bytes: Arc<Vec<u8>>,
+    hash: Option<String>,
     page: u32,
     proxy: bool,
 }
@@ -165,7 +166,7 @@ pub(crate) struct Pending {
 impl Pending {
     /// The work for `a`, linked with `bytes` just read from its file. Video and sound get no proxy.
     pub(super) fn of(a: &Asset, bytes: Arc<Vec<u8>>) -> Self {
-        Pending { key: a.data.key(), bytes, page: a.page, proxy: !media(a) }
+        Pending { key: a.data.key(), bytes, hash: a.link_hash.clone(), page: a.page, proxy: !media(a) }
     }
 }
 
@@ -363,7 +364,7 @@ pub(crate) fn prepare(st: &mut DocState, pending: Vec<Pending>) {
     {
         // Taken from the end: the first placed is made first, before checks still waiting.
         let work: Vec<Work> =
-            pending.into_iter().rev().map(|Pending { key, bytes, page, proxy }| Work::Prepare { key, bytes, page, proxy }).collect();
+            pending.into_iter().rev().map(|Pending { key, bytes, hash, page, proxy }| Work::Prepare { key, bytes, hash, page, proxy }).collect();
         let mut results = Vec::new();
         if let Some(handle) = &st.links.job {
             let mut state = lock(&handle.0);
@@ -469,8 +470,8 @@ fn check(work: Work, cancel: &AtomicBool) -> Option<Outcome> {
             let fingerprint = if super::links::settled(&before) { before } else { Fingerprint { size: len, mtime: super::links::UNVERIFIED_MTIME } };
             Some(Outcome::Confirmed { asset, key, path, fingerprint, hash, proxy })
         }
-        Work::Prepare { key, bytes, page, proxy } => {
-            let hash = hash_bytes(&bytes, cancel)?;
+        Work::Prepare { key, bytes, hash, page, proxy } => {
+            let hash = hash.or_else(|| hash_bytes(&bytes, cancel))?;
             if cancel.load(Ordering::Relaxed) {
                 return None;
             }
