@@ -2041,15 +2041,14 @@ fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
 }
 
 /// Generate QR Code… is in an object's context menu, not only in the Object menu, and fills
-/// the frame right-clicked (not the one selected before); again on that frame, it edits its
-/// code in place.
+/// the frame right-clicked: not the one selected before, nor the first of several selected; again
+/// on that frame, its code is replaced by the new one.
 #[test]
 fn an_objects_context_menu_generates_a_qr_code() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     let other = app.run("frame.create", json!({"rect": [300, 36, 400, 136]})).unwrap()["id"].as_u64().unwrap();
     let clicked = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-    app.run("selection.set", json!({"ids": [other]})).unwrap();
     let mut h = harness(app);
     // The codes a frame holds, by what they encode.
     let codes = |h: &Harness<'_, DesignApp>, id: u64| -> Vec<String> {
@@ -2061,7 +2060,11 @@ fn an_objects_context_menu_generates_a_qr_code() {
             .filter_map(|c| c.alt_text.strip_prefix("QR code: ").map(str::to_string))
             .collect()
     };
-    for content in ["https://example.com", "https://example.org"] {
+    // The other frame selected, then both with it first: the right-click keeps a selection
+    // it is in, and the code still goes to the frame right-clicked.
+    for (content, select) in [("https://example.com", vec![other]), ("https://example.org", vec![other, clicked])] {
+        h.state_mut().run("selection.set", json!({"ids": select})).unwrap();
+        h.run_steps(1);
         let on_frame = screen_of(&h, 60.0, 60.0);
         right_click(&mut h, on_frame);
         // The object menu is taller than the room below the click: scroll it, as the user would.
@@ -2083,8 +2086,8 @@ fn an_objects_context_menu_generates_a_qr_code() {
         dialog.fields.insert("content".into(), json!(content));
         crate::dialogs::confirm(app).unwrap();
         h.run_steps(2);
-        assert_eq!(codes(&h, clicked), [content.to_string()], "one code, in the frame right-clicked");
-        assert!(codes(&h, other).is_empty(), "the frame selected before is left alone");
+        assert_eq!(codes(&h, clicked), [content.to_string()], "{select:?}: one code, in the frame right-clicked");
+        assert!(codes(&h, other).is_empty(), "{select:?}: the other frame is left alone");
     }
 }
 

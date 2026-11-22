@@ -292,7 +292,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.qrCode" => {
-            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", json!({})));
+            // From an object's context menu: the frame right-clicked, also among several selected.
+            let fields = app.ui.context_object.map_or(json!({}), |id| json!({"id": id.0}));
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("qrCode", fields));
             Ok(Value::Null)
         }
         "app.exportText" => export_bytes(app, p, "rtf", "file.exportText"),

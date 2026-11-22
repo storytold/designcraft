@@ -254,6 +254,9 @@ pub struct UiState {
     /// View › Separations Preview: the plate shown and the ink limit; `None` is off.
     #[serde(skip)]
     pub separations: Option<separations::Separations>,
+    /// While a canvas context menu runs a row: the object right-clicked.
+    #[serde(skip)]
+    pub context_object: Option<designcraft_doc::ItemId>,
     /// View › Display Performance.
     pub display_quality: designcraft_render::DisplayQuality,
     /// Preferences › Interface › UI scaling (1 = 100%).
@@ -441,6 +444,7 @@ impl Default for UiState {
             export_batch: None,
             style_preview: false,
             separations: None,
+            context_object: None,
             display_quality: designcraft_render::DisplayQuality::High,
             ui_scale: 1.0,
             rich_black: true,

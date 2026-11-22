@@ -82,6 +82,8 @@ fn modifiers_id() -> egui::Id {
 struct MenuRequest {
     kind: crate::menus::ContextMenu,
     open: bool,
+    /// The object right-clicked, for the menu's commands that act on one object.
+    target: Option<designcraft_doc::ItemId>,
 }
 
 /// The popup id of the canvas context menu in split-view pane `pane`.
@@ -116,7 +118,11 @@ pub(super) fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Resp
         .open_memory(req.open.then_some(egui::SetOpenCommand::Bool(true)))
         .at_pointer_fixed()
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| crate::menus::context_menu(app, ui, req.kind));
+        .show(|ui| {
+            app.ui.context_object = req.target;
+            crate::menus::context_menu(app, ui, req.kind);
+            app.ui.context_object = None;
+        });
     if req.open {
         if egui::Popup::is_id_open(ui.ctx(), id) {
             ui.data_mut(|d| d.insert_temp(id, MenuRequest { open: false, ..req }));
@@ -129,9 +135,10 @@ pub(super) fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Resp
 /// Prepares a right-click at canvas point `p`: picks the menu and the selection it acts on.
 /// - Typing: a click in a text frame places the caret there as a left click would, except
 ///   inside the selected text, which stays selected; elsewhere the text is left as it is.
-/// - On an object: it is selected first unless it already is, as the Selection tool would.
+/// - On an object: it is selected first unless it already is, as the Selection tool would, and
+///   it is the object the menu's one-object commands act on.
 /// - On nothing: the selection stays.
-fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::ContextMenu {
+fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> (crate::menus::ContextMenu, Option<designcraft_doc::ItemId>) {
     use crate::menus::ContextMenu;
     let hit = item_at(app, p, zoom);
     if app.session.wants_text() {
@@ -142,20 +149,20 @@ fn context_target(app: &mut DesignApp, p: Point, zoom: f64) -> crate::menus::Con
                 let _ = app.run("text.release", json!({"frame": id.0, "point": [sp.x, sp.y], "moved": true}));
             }
         }
-        return ContextMenu::Text;
+        return (ContextMenu::Text, None);
     }
-    let Some((id, _)) = hit else { return ContextMenu::Canvas };
+    let Some((id, _)) = hit else { return (ContextMenu::Canvas, None) };
     let direct = app.session.tool_id() == "directSelection";
     let Some((target, selected)) = app.session.active().map(|st| {
         let target = if direct { id } else { st.doc.top_level_of(id).unwrap_or(id) };
         (target, st.selection.contains(target))
     }) else {
-        return ContextMenu::Canvas;
+        return (ContextMenu::Canvas, None);
     };
     if !selected {
         let _ = app.run("selection.set", json!({"ids": [target.0], "content": direct}));
     }
-    ContextMenu::Object
+    (ContextMenu::Object, Some(target))
 }
 
 /// The frontmost item under canvas point `p` and that point in its spread, hit as the tools do.
@@ -399,8 +406,8 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         && app.ui.screen_mode != ScreenMode::Presentation
         && let Some(o) = resp.interact_pointer_pos().filter(|o| in_view(*o))
     {
-        let kind = context_target(app, xf.to_canvas(o), xf.zoom);
-        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, open: true }));
+        let (kind, target) = context_target(app, xf.to_canvas(o), xf.zoom);
+        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, open: true, target }));
         ui.ctx().request_repaint();
     }
     if resp.clicked() || resp.drag_started() {
