@@ -520,3 +520,42 @@ fn a_groups_drop_shadow_is_cast_by_its_objects() {
     assert!(lum(img.pixel(65, 40)) < 120, "the glow surrounds the objects: {:?}", img.pixel(65, 40));
     assert_eq!(lum(img.pixel(75, 40)), WHITE, "and stops {} pt from them", 10);
 }
+
+/// A knockout group's shadow is cast by what the group paints: an object that knocks out the one
+/// behind it takes that one's shadow away too.
+#[test]
+fn a_knockout_groups_shadow_follows_what_it_paints() {
+    let mut d = doc();
+    let lid = d.default_layer();
+    let r = Rect::new(20.0, 20.0, 60.0, 60.0);
+    let kid = |d: &mut Document, opacity: f32| {
+        std::sync::Arc::new(Item {
+            fill: Fill::swatch("C=100 M=0 Y=0 K=0"),
+            opacity,
+            ..Item::new(ItemId(d.alloc()), lid, Shape::Rectangle, shapes::rectangle(r))
+        })
+    };
+    let items = vec![kid(&mut d, 1.0), kid(&mut d, 0.0)];
+    let gid = ItemId(d.alloc());
+    let mut g = Item::new(gid, lid, Shape::Group, shapes::rectangle(r));
+    g.content = designcraft_doc::Content::Group { items };
+    d.insert_item(SpreadRef::Doc(0), g, None).unwrap();
+    let ds = &mut d.item_mut(gid).unwrap().effects.drop_shadow;
+    ds.on = true;
+    ds.color = "[Black]".into();
+    ds.angle = 90.0;
+    ds.distance = 40.0;
+    ds.size = 0.0;
+    ds.opacity = 1.0;
+    let img = render(&d);
+    assert!(lum(img.pixel(40, 80)) < 120, "a plain group casts its first object's shadow: {:?}", img.pixel(40, 80));
+    d.item_mut(gid).unwrap().knockout = true;
+    for spread in [0.0, 50.0] {
+        d.item_mut(gid).unwrap().effects.drop_shadow.spread = spread;
+        for threads in [0, 3] {
+            let img = render_with(&d, threads);
+            assert_eq!(lum(img.pixel(40, 40)), WHITE, "the group paints nothing");
+            assert_eq!(lum(img.pixel(40, 80)), WHITE, "spread {spread}, {threads} threads: and casts no shadow: {:?}", img.pixel(40, 80));
+        }
+    }
+}

@@ -210,31 +210,29 @@ impl Renderer {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, None, None, None, None);
         }
-        if it.knockout {
-            // Knockout: each object first clears its area of those behind it, so it composites
-            // with the group's backdrop rather than with its siblings.
-            for c in it.shown_children() {
-                if !c.hidden {
-                    ctx.set_transform(Affine::IDENTITY);
-                    ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                    ctx.set_transform(f.view * xf * c.xf);
-                    ctx.set_paint(peniko::Color::BLACK);
-                    ctx.fill_path(&c.path.to_bezpath());
-                    ctx.pop_layer();
-                }
-                self.draw_item(ctx, f, c, xf, page);
-            }
-        } else {
-            for c in it.shown_children() {
-                self.draw_item(ctx, f, c, xf, page);
-            }
-        }
+        self.draw_children(ctx, f, it, xf, page);
         if feather {
             fx::gradient_feather_mask(ctx, f, it, xf);
             ctx.pop_layer();
         }
         if layered {
             ctx.pop_layer();
+        }
+    }
+
+    /// A group's objects in order; in a knockout group each object first clears its area of those
+    /// behind it, so it composites with the group's backdrop rather than with its siblings.
+    pub(crate) fn draw_children(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine, page: ShownOn) {
+        for c in it.shown_children() {
+            if it.knockout && !c.hidden {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                ctx.set_transform(f.view * xf * c.xf);
+                ctx.set_paint(peniko::Color::BLACK);
+                ctx.fill_path(&c.path.to_bezpath());
+                ctx.pop_layer();
+            }
+            self.draw_item(ctx, f, c, xf, page);
         }
     }
 

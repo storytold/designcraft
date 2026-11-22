@@ -203,10 +203,9 @@ impl Renderer {
         if it.is_group() || !it.children().is_empty() && !it.has_nested_items() {
             // Child effects stay out: each nesting level would otherwise draw its whole subtree's
             // effects again for every shadow and glow above it.
+            // A knockout group's objects clear those behind them here as they do in the group.
             let was = std::mem::replace(&mut self.bare, true);
-            for child in it.shown_children() {
-                self.draw_item(c, fr, child, xf, page);
-            }
+            self.draw_children(c, fr, it, xf, page);
             self.bare = was;
         } else {
             self.draw_body(c, fr, it, bp, xf, page);
@@ -996,44 +995,102 @@ pub(crate) fn group_reach(it: &Item, xf: Affine) -> Rect {
 /// its distance to the nearest painted pixel allows (antialiased over one pixel), and never less
 /// than it did. Exact Euclidean distances (Felzenszwalb and Huttenlocher's transform), seeded
 /// with sub-pixel distances from the antialiased edge.
+///
+/// Partial opacity is kept apart from edge coverage: a pixel's level is the most alpha within the
+/// radius around it, its edge coverage is its alpha against that level, and what the
+/// growth adds reaches at most the level of the nearest painted pixel. A uniformly half-transparent
+/// shape grows as a half-transparent shape; an opaque one grows opaque.
 fn dilate(coverage: &[u8], w: usize, h: usize, radius: f64) -> Vec<u8> {
     const FAR: f64 = 1e20;
+    // The level: the most alpha within the radius (a square around the pixel, one pixel wider).
+    let k = (radius.max(0.0).ceil() as usize + 1).min(w.max(h));
+    let mut level = coverage.to_vec();
+    let mut buf = Vec::with_capacity(w.max(h));
+    for y in 0..h {
+        sliding_max(&mut level[y * w..(y + 1) * w], k, &mut buf);
+    }
+    let mut col = vec![0u8; h];
+    for x in 0..w {
+        for y in 0..h {
+            col[y] = level[y * w + x];
+        }
+        sliding_max(&mut col, k, &mut buf);
+        for y in 0..h {
+            level[y * w + x] = col[y];
+        }
+    }
     // A pixel's centre lies (0.5 − coverage) outside the edge when less than half covered.
-    let seed = |a: u8| match a {
-        0 => FAR,
-        1..128 => (0.5 - f64::from(a) / 255.0).powi(2),
-        _ => 0.0,
+    let seed = |a: u8, l: u8| {
+        if a == 0 {
+            return FAR;
+        }
+        let c = f64::from(a) / f64::from(l);
+        if c < 0.5 { (0.5 - c).powi(2) } else { 0.0 }
     };
-    let mut d: Vec<f64> = coverage.iter().map(|&a| seed(a)).collect();
+    let mut d: Vec<f64> = coverage.iter().zip(&level).map(|(&a, &l)| seed(a, l)).collect();
+    // The level of each pixel's nearest painted pixel, carried along with the distances.
+    let mut near: Vec<u8> = level.clone();
     let n = w.max(h);
     let (mut line, mut out) = (vec![0.0; n], vec![0.0; n]);
-    let (mut v, mut z) = (vec![0usize; n], vec![0.0; n + 1]);
+    let (mut v, mut z, mut from) = (vec![0usize; n], vec![0.0; n + 1], vec![0usize; n]);
+    let mut lv = vec![0u8; n];
     for x in 0..w {
         for y in 0..h {
             line[y] = d[y * w + x];
+            lv[y] = near[y * w + x];
         }
-        distance_1d(&line[..h], &mut out[..h], &mut v, &mut z);
+        distance_1d(&line[..h], &mut out[..h], &mut v, &mut z, &mut from[..h]);
         for y in 0..h {
             d[y * w + x] = out[y];
+            near[y * w + x] = lv[from[y]];
         }
     }
     for y in 0..h {
         line[..w].copy_from_slice(&d[y * w..(y + 1) * w]);
-        distance_1d(&line[..w], &mut out[..w], &mut v, &mut z);
+        lv[..w].copy_from_slice(&near[y * w..(y + 1) * w]);
+        distance_1d(&line[..w], &mut out[..w], &mut v, &mut z, &mut from[..w]);
         d[y * w..(y + 1) * w].copy_from_slice(&out[..w]);
+        for x in 0..w {
+            near[y * w + x] = lv[from[x]];
+        }
     }
     coverage
         .iter()
         .zip(d)
-        .map(|(&a, d2)| {
+        .zip(near)
+        .map(|((&a, d2), l)| {
             let grown = (radius + 0.5 - d2.sqrt()).clamp(0.0, 1.0);
-            a.max((grown * 255.0).round() as u8)
+            a.max((grown * f64::from(l)).round() as u8)
         })
         .collect()
 }
 
-/// Squared distance transform of one line (`f`: 0 at sources, huge elsewhere) into `out`.
-fn distance_1d(f: &[f64], out: &mut [f64], v: &mut [usize], z: &mut [f64]) {
+/// Each of `line`'s values replaced by the most within `k` of it on either side (`buf` is scratch).
+fn sliding_max(line: &mut [u8], k: usize, buf: &mut Vec<usize>) {
+    let n = line.len();
+    let src = line.to_vec();
+    // `buf` holds indices of falling values: its front is the window's maximum.
+    buf.clear();
+    let mut head = 0;
+    let mut next = 0;
+    for (i, out) in line.iter_mut().enumerate() {
+        while next < n && next <= i + k {
+            while buf.len() > head && buf.last().is_some_and(|&j| src[j] <= src[next]) {
+                buf.pop();
+            }
+            buf.push(next);
+            next += 1;
+        }
+        while buf[head] + k < i {
+            head += 1;
+        }
+        *out = src[buf[head]];
+    }
+}
+
+/// Squared distance transform of one line (`f`: 0 at sources, huge elsewhere) into `out`, with
+/// the index of each point's nearest source in `from`.
+fn distance_1d(f: &[f64], out: &mut [f64], v: &mut [usize], z: &mut [f64], from: &mut [usize]) {
     let n = f.len();
     if n == 0 {
         return;
@@ -1057,13 +1114,14 @@ fn distance_1d(f: &[f64], out: &mut [f64], v: &mut [usize], z: &mut [f64]) {
         z[k + 1] = f64::INFINITY;
     }
     k = 0;
-    for (q, o) in out.iter_mut().enumerate() {
+    for (q, (o, fr)) in out.iter_mut().zip(from.iter_mut()).enumerate() {
         while z[k + 1] < q as f64 {
             k += 1;
         }
         let p = v[k];
         let dq = q as f64 - p as f64;
         *o = dq * dq + f[p];
+        *fr = p;
     }
 }
 
@@ -1201,6 +1259,37 @@ mod tests {
     }
 
     use super::*;
+
+    /// Spread grows a half-transparent shape as a half-transparent shape and an opaque one opaque;
+    /// the antialiased edge of an opaque shape still counts as its edge.
+    #[test]
+    fn spread_keeps_partial_opacity_apart_from_edge_coverage() {
+        let (w, h) = (30, 30);
+        let square = |a: u8, edge: u8| -> Vec<u8> {
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    if (10..20).contains(&x) && (10..20).contains(&y) {
+                        a
+                    } else if x == 20 && (10..20).contains(&y) {
+                        edge
+                    } else {
+                        0
+                    }
+                })
+                .collect()
+        };
+        let half = dilate(&square(128, 0), w, h, 3.0);
+        assert_eq!(half[15 * w + 15], 128, "the inside keeps its opacity");
+        assert_eq!(half[15 * w + 21], 128, "the grown part has the shape's opacity, not full");
+        assert!(half.iter().all(|&a| a <= 128), "nothing turns opaque");
+        assert_eq!(half[15 * w + 25], 0, "and it grows by the radius only");
+        let opaque = dilate(&square(255, 128), w, h, 3.0);
+        assert_eq!(opaque[15 * w + 22], 255, "an opaque shape grows opaque");
+        assert_eq!(opaque[15 * w + 25], 0);
+        // The half-covered column is the opaque shape's edge: growth counts from its middle.
+        assert!((100..160).contains(&opaque[15 * w + 23]), "{}", opaque[15 * w + 23]);
+    }
 
     #[test]
     fn a_wide_blur_is_drawn_offscreen_at_a_lower_resolution() {
