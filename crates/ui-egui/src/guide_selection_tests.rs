@@ -454,3 +454,25 @@ fn an_injected_button_change_waits_for_a_pass_without_one() {
     app.raw_input_hook(&ctx, &mut next);
     assert_eq!(next.events, vec![button(5.0, true)], "and comes in the next pass");
 }
+
+/// An injected batch led by a key (up to the key's release) that holds a button change stops
+/// before it when the pass already has one: the rest comes in the next pass.
+#[test]
+fn an_injected_key_batch_brings_no_second_button_change() {
+    let ctx = egui::Context::default();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let button = |x: f32, pressed| Event::PointerButton { pos: pos2(x, 10.0), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    let key = |pressed| Event::Key { key: egui::Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    app.synthetic.extend([key(true), button(5.0, true), key(false)]);
+    let buttons = |raw: &egui::RawInput| raw.events.iter().filter(|e| matches!(e, Event::PointerButton { .. })).count();
+    let mut raw = egui::RawInput { events: vec![button(1.0, true)], ..Default::default() };
+    app.raw_input_hook(&ctx, &mut raw);
+    assert_eq!(buttons(&raw), 1, "only the user's: {:?}", raw.events);
+    assert!(raw.events.contains(&key(true)), "the key press before it comes now");
+    // The pass ran: the next takes the rest.
+    app.synthetic_injected = false;
+    let mut next = egui::RawInput::default();
+    app.raw_input_hook(&ctx, &mut next);
+    assert_eq!(next.events, vec![button(5.0, true)], "the button in the next pass");
+    assert_eq!(app.synthetic, vec![key(false)], "the release after it");
+}

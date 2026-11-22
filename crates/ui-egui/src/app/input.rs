@@ -70,9 +70,11 @@ impl DesignApp {
                 }
             }
         }
+        // A stale batch goes first, while it is still whole: pacing could move part of it into
+        // the input held for the next pass.
+        self.discard_stale_injected_batch(raw);
         // Presses and releases beyond the first button change wait for the next pass.
         self.pace_pointer_buttons(raw);
-        self.discard_stale_injected_batch(raw);
         // A batch acknowledged by the previous pass keeps its private provenance through that
         // pass's end hook (the clipboard guard), and is cleared at the next host iteration.
         if !self.synthetic_injected {
@@ -88,16 +90,27 @@ impl DesignApp {
         let private = !self.control_synthetic.is_empty();
         let events = if private { &mut self.control_synthetic } else { &mut self.synthetic };
         let Some(first) = events.first() else { return };
-        // A button change of the user's (or one held back from the last pass) is in this pass
-        // already: an injected one waits for the next, so no pass sees two (see
-        // `pace_pointer_buttons`). Pending injection keeps the passes coming.
-        if matches!(first, egui::Event::PointerButton { .. }) && raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. })) {
-            return;
-        }
         let n = match first {
             egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } => 1,
             _ => events.iter().position(|e| matches!(e, egui::Event::Key { pressed: false, .. })).map_or(events.len(), |i| i + 1),
         };
+        // No pass sees two button changes (see `pace_pointer_buttons`): with one in this pass
+        // already (the user's, or one held back from the last pass), the batch ends before its
+        // own; and a batch ends before its second. The rest waits for the next pass; pending
+        // injection keeps the passes coming.
+        let mut seen = raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. }));
+        let n = events[..n]
+            .iter()
+            .position(|e| {
+                let button = matches!(e, egui::Event::PointerButton { .. });
+                let second = button && seen;
+                seen |= button;
+                second
+            })
+            .unwrap_or(n);
+        if n == 0 {
+            return;
+        }
         let batch: Vec<egui::Event> = events.drain(..n).collect();
         self.injected_generation = self.input_generation();
         self.injected_private = private;
