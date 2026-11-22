@@ -275,6 +275,27 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
     assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
 }
 
+/// A row's second line, the source path, stays on the row's stripe instead of running into the
+/// next row.
+#[test]
+fn links_panel_keeps_the_source_path_on_its_row() {
+    let path = "/project/assets/studio-a/very-long-folder-name/another-long-folder-name/photo.svg";
+    let (app, _, _) = linked_graphics(&[Some(path)]);
+    let h = links_harness(app, 320.0);
+    let stripe = Tokens::for_brightness(Default::default()).panel_darker;
+    let source = h.get_by_label(path).rect();
+    let row = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill == stripe => Some(r.rect),
+            _ => None,
+        })
+        .expect("the first row is striped");
+    assert!(row.contains_rect(source), "the source path {source:?} lies on its row {row:?}");
+}
+
 #[test]
 fn properties_character_section_sets_the_language() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
