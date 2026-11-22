@@ -64,6 +64,10 @@ attr_set! {
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,
+        /// Justification Alternates: a justified line swaps in the font's wider letter forms
+        /// (OpenType `jalt`), one word at a time from the line's end, while they fit the length
+        /// the line still needs, before kashidas and wider spaces.
+        justification_alternates: bool = false,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
         /// Kashida Width: the longest a kashida may grow at one join, counted in the font's own

@@ -5179,38 +5179,104 @@ fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize
     }
 }
 
-/// The word holding the join after `line[i]`, shaped again with as many tatweels at the join (at
-/// most `most`) as add at most `room`: (its glyph range on the line, its new glyphs, the length added). `None`
-/// when shaping the word's text again doesn't give the glyphs on the line (substituted or
-/// generated text, features the default shaping doesn't use), so nothing is changed blindly.
-fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, most: usize) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
-    let start = (seg..=i).rev().take_while(|&j| !line[j].is_space()).last()?;
-    let end = (i + 1..line.len()).find(|&j| line[j].is_space()).unwrap_or(line.len());
-    let word = line.get(start..end)?;
-    let n = line.get(i + 1)?;
-    let first = word.first()?;
-    // One face at one horizontal scale, so the word is measured as it is drawn.
-    if word.iter().any(|g| g.face.id() != first.face.id() || g.sx != first.sx || g.generated_text.is_some() || g.list_label) {
-        return None;
+/// A word of a line that can be shaped again: its glyphs `range` on the line, its text `src`
+/// (starting at byte `b0`), and that text shaped with no features (`plain`), which gave the
+/// glyphs on the line.
+struct Word<'a> {
+    range: Range<usize>,
+    glyphs: &'a [Glyph],
+    b0: usize,
+    src: &'a str,
+    plain: Vec<designcraft_fonts::ShapedGlyph>,
+}
+
+impl<'a> Word<'a> {
+    /// The word holding `line[i]`, after the tab segment start `seg`. `None` when shaping the
+    /// word's text again doesn't give the glyphs on the line (substituted or generated text,
+    /// features the default shaping doesn't use) or the word mixes faces or horizontal scales,
+    /// so nothing is changed blindly.
+    fn at(line: &'a [Glyph], text: &'a str, i: usize, seg: usize) -> Option<Self> {
+        let start = (seg..=i).rev().take_while(|&j| !line[j].is_space()).last()?;
+        let end = (i + 1..line.len()).find(|&j| line[j].is_space()).unwrap_or(line.len());
+        let glyphs = line.get(start..end)?;
+        let first = glyphs.first()?;
+        // One face at one horizontal scale, so the word is measured as it is drawn.
+        if glyphs.iter().any(|g| g.face.id() != first.face.id() || g.sx != first.sx || g.generated_text.is_some() || g.list_label) {
+            return None;
+        }
+        let b0 = glyphs.iter().map(|g| g.byte).min()?;
+        let b1 = glyphs.iter().map(|g| g.byte + g.len).max()?;
+        let src = text.get(b0..b1)?;
+        let mut word = Word { range: start..end, glyphs, b0, src, plain: Vec::new() };
+        let plain = word.shape(src, &[]);
+        if plain.len() != glyphs.len() || plain.iter().zip(glyphs).any(|(s, g)| s.gid != g.gid) {
+            return None;
+        }
+        word.plain = plain;
+        Some(word)
     }
-    let b0 = word.iter().map(|g| g.byte).min()?;
-    let b1 = word.iter().map(|g| g.byte + g.len).max()?;
-    let src = text.get(b0..b1)?;
-    let at = n.byte.checked_sub(b0).filter(|&at| src.is_char_boundary(at))?;
-    let face = first.face.get();
-    let shape = |s: &str| {
+
+    /// `s` (the word's text, edited) shaped in the word's face and language with `features`.
+    fn shape(&self, s: &str, features: &[designcraft_fonts::Feature]) -> Vec<designcraft_fonts::ShapedGlyph> {
+        let first = &self.glyphs[0];
         let context = designcraft_fonts::ShapeContext { language: first.lang, ..Default::default() };
-        designcraft_fonts::shape_with_context(face, s, &[], |c| c, context)
-    };
-    let width = |shaped: &[designcraft_fonts::ShapedGlyph]| shaped.iter().map(|s| f64::from(s.x_advance) * first.sx).sum::<f64>();
-    let plain = shape(src);
-    if plain.len() != word.len() || plain.iter().zip(word).any(|(s, g)| s.gid != g.gid) {
-        return None;
+        designcraft_fonts::shape_with_context(first.face.get(), s, features, |c| c, context)
     }
+
+    fn width(&self, shaped: &[designcraft_fonts::ShapedGlyph]) -> f64 {
+        shaped.iter().map(|s| f64::from(s.x_advance) * self.glyphs[0].sx).sum()
+    }
+
+    /// The line glyph a glyph shaped again from cluster `cluster` (of `plain`) stands for: the
+    /// cluster's next glyph on the line, or its first again, without text, when the cluster
+    /// now has more glyphs. `seen` counts the glyphs taken from each cluster.
+    fn original(&self, cluster: usize, seen: &mut HashMap<usize, usize>) -> Option<Glyph> {
+        let nth = seen.entry(cluster).or_default();
+        let mut originals = self.plain.iter().zip(self.glyphs).filter(|(p, _)| p.cluster == cluster).map(|(_, g)| g);
+        let mut g = originals.clone().nth(*nth).or_else(|| originals.next())?.clone();
+        if *nth > 0 {
+            g.len = 0;
+        }
+        *nth += 1;
+        Some(g)
+    }
+
+    /// Tracking and other extra advance the line gave each cluster, put back on the last glyph of
+    /// that cluster in `glyphs` (the word shaped again), so a cluster's glyphs stay joined.
+    fn keep_extra_advance(&self, glyphs: &mut [Glyph]) {
+        let mut extra_adv: HashMap<usize, f64> = HashMap::new();
+        for (s, g) in self.plain.iter().zip(self.glyphs) {
+            *extra_adv.entry(s.cluster).or_default() += g.adv - f64::from(s.x_advance) * g.sx;
+        }
+        for (cluster, adv) in extra_adv {
+            if let Some(g) = glyphs.iter_mut().rev().find(|g| g.byte == self.b0 + cluster) {
+                g.adv += adv;
+            }
+        }
+    }
+}
+
+/// `g` drawn as the shaper's glyph `s`.
+fn take_shape(g: &mut Glyph, s: &designcraft_fonts::ShapedGlyph) {
+    g.gid = s.gid;
+    g.adv = f64::from(s.x_advance) * g.sx;
+    g.dx = f64::from(s.x_offset) * g.sx;
+    g.dy = -f64::from(s.y_offset) * g.sy;
+}
+
+/// The word holding the join after `line[i]`, shaped again with as many tatweels at the join (at
+/// most `most`) as add at most `room`: (its glyph range on the line, its new glyphs, the length
+/// added). `None` when the word can't be shaped again ([`Word::at`]).
+fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, most: usize) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
+    let word = Word::at(line, text, i, seg)?;
+    let n = line.get(i + 1)?;
+    let src = word.src;
+    let at = n.byte.checked_sub(word.b0).filter(|&at| src.is_char_boundary(at))?;
+    let plain_width = word.width(&word.plain);
     let with = |count: usize| {
         let tatweels = "\u{0640}".repeat(count);
-        let shaped = shape(&format!("{}{tatweels}{}", src.get(..at).unwrap_or(""), src.get(at..).unwrap_or("")));
-        let added = width(&shaped) - width(&plain);
+        let shaped = word.shape(&format!("{}{tatweels}{}", src.get(..at).unwrap_or(""), src.get(at..).unwrap_or("")), &[]);
+        let added = word.width(&shaped) - plain_width;
         (shaped, added, tatweels.len())
     };
     let (_, one, _) = with(1);
@@ -5220,11 +5286,6 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, mo
     // A font's kashida forms need not be one tatweel wide each: try down from the estimate.
     let estimate = ((room / one).floor() as usize).clamp(1, 200);
     let (shaped, added, run) = (1..=(estimate + 2).min(most)).rev().map(with).find(|(_, added, _)| *added > 0.0 && *added <= room + 1e-6)?;
-    // Tracking and other extra advance the line gave each cluster, kept on its last glyph.
-    let mut extra_adv: HashMap<usize, f64> = HashMap::new();
-    for (s, g) in plain.iter().zip(word) {
-        *extra_adv.entry(s.cluster).or_default() += g.adv - f64::from(s.x_advance) * g.sx;
-    }
     let mut letters: Vec<Glyph> = Vec::with_capacity(shaped.len());
     let mut tatweels: Vec<Glyph> = Vec::new();
     let mut seen: HashMap<usize, usize> = HashMap::new();
@@ -5240,20 +5301,9 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, mo
             g.space = 0.0;
             g
         } else {
-            let cluster = if s.cluster < at { s.cluster } else { s.cluster - run };
-            let nth = seen.entry(cluster).or_default();
-            let mut originals = plain.iter().zip(word).filter(|(p, _)| p.cluster == cluster).map(|(_, g)| g);
-            let mut g = originals.clone().nth(*nth).or_else(|| originals.next())?.clone();
-            if *nth > 0 {
-                g.len = 0;
-            }
-            *nth += 1;
-            g
+            word.original(if s.cluster < at { s.cluster } else { s.cluster - run }, &mut seen)?
         };
-        g.gid = s.gid;
-        g.adv = f64::from(s.x_advance) * g.sx;
-        g.dx = f64::from(s.x_offset) * g.sx;
-        g.dy = -f64::from(s.y_offset) * g.sy;
+        take_shape(&mut g, s);
         if in_run { tatweels.push(g) } else { letters.push(g) }
     }
     // The tatweels go with the letter after the join, after its glyphs and in visual order: the
@@ -5263,12 +5313,66 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, mo
     letters.splice(after..after, tatweels);
     // Each cluster's extra advance (tracking) on its last glyph, the tatweels included, so they
     // stay joined to their letter.
-    for (cluster, adv) in extra_adv {
-        if let Some(g) = letters.iter_mut().rev().find(|g| g.byte == b0 + cluster) {
-            g.adv += adv;
-        }
+    word.keep_extra_advance(&mut letters);
+    Some((word.range, letters, added))
+}
+
+/// Justification Alternates: lengthen a justified line with the font's justification alternates
+/// (OpenType `jalt`) before kashidas and wider spaces, taking at most `extra` (which shrinks by
+/// what they add). One letter per word, the words taken from the line's end, each the last
+/// letter of its word whose alternate still fits; a line that fits keeps its default forms.
+/// Turning `jalt` on for a whole run instead swaps in every alternate, needed or not.
+fn insert_alternates(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize, extra: &mut f64) {
+    if !(pp.justification_alternates && *extra > 0.0) {
+        return;
     }
-    Some((start..end, letters, added))
+    let mut end = line.len();
+    while end > seg && *extra > 0.0 {
+        while end > seg && line[end - 1].is_space() {
+            end -= 1;
+        }
+        let Some(start) = (seg..end).rev().take_while(|&j| !line[j].is_space()).last() else { break };
+        if let Some((range, glyphs, added)) = widen_word(line, text, end - 1, seg, *extra) {
+            line.splice(range, glyphs);
+            *extra -= added;
+        }
+        end = start;
+    }
+}
+
+/// The word holding `line[i]` with one letter in its justification alternate: the last letter
+/// whose alternate adds at most `room`. (Its glyph range on the line, its new glyphs, the length
+/// added.) `None` when no letter's alternate fits or the word can't be shaped again.
+fn widen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) -> Option<(Range<usize>, Vec<Glyph>, f64)> {
+    let word = Word::at(line, text, i, seg)?;
+    let jalt = designcraft_fonts::feature("jalt")?;
+    let plain_width = word.width(&word.plain);
+    let mut clusters: Vec<usize> = word.plain.iter().map(|s| s.cluster).collect();
+    clusters.sort_unstable();
+    clusters.dedup();
+    for (k, &start) in clusters.iter().enumerate().rev() {
+        let end = clusters.get(k + 1).copied().unwrap_or(word.src.len());
+        // The feature on this letter only, so the others keep their default forms.
+        let one = designcraft_fonts::Feature { start: u32::try_from(start).ok()?, end: u32::try_from(end).ok()?, ..jalt };
+        let shaped = word.shape(word.src, &[one]);
+        if shaped.len() == word.plain.len() && shaped.iter().zip(&word.plain).all(|(a, b)| a.gid == b.gid) {
+            continue;
+        }
+        let added = word.width(&shaped) - plain_width;
+        if !(added > 0.0 && added <= room + 1e-6) {
+            continue;
+        }
+        let mut seen: HashMap<usize, usize> = HashMap::new();
+        let mut glyphs = Vec::with_capacity(shaped.len());
+        for s in &shaped {
+            let mut g = word.original(s.cluster, &mut seen)?;
+            take_shape(&mut g, s);
+            glyphs.push(g);
+        }
+        word.keep_extra_advance(&mut glyphs);
+        return Some((word.range, glyphs, added));
+    }
+    None
 }
 
 /// Average the actual word-space ratios for H&J highlighting.
@@ -5348,7 +5452,11 @@ fn layout_line(
     let seg_justifies = last_tab.is_none_or(|(_, left)| left);
     let align = page_alignment(pp.align, left_page);
     let justify_this = align.is_justified() && (!last || align == Align::FullyJustified || forced_mid) && seg_justifies;
-    // Kashidas: in justified Arabic, the joins of words take the extra length first.
+    // The extra length goes to the font's justification alternates first (when the paragraph
+    // asks for them), then, in justified Arabic, to kashidas at the joins of words.
+    if justify_this {
+        insert_alternates(&mut line, text, pp, seg, &mut extra);
+    }
     if justify_this && bidi_info.has_rtl() {
         insert_kashidas(&mut line, text, pp, seg, &mut extra);
     }

@@ -10592,3 +10592,68 @@ fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
         }
     }
 }
+
+/// Justification Alternates (#3097): a justified line swaps in the font's `jalt` forms only as far
+/// as its shortfall takes them, one letter per word (the word's last), before kashidas; off, or
+/// on a line with too little room, the default forms stay. Turning `jalt` on for the whole run
+/// would swap every letter that has an alternate.
+#[test]
+fn justification_alternates_fill_only_the_room_a_line_has() {
+    use designcraft_fonts::testing::{font_mapping, with_jalt};
+    // ن is drawn as `n`, its justification alternate as the wider `w` (mapped to W only to look
+    // the glyph up).
+    let glyphs = [('ب', 'o'), ('ن', 'n'), (' ', ' '), ('\u{0640}', '_'), ('W', 'w')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(with_jalt(&font_mapping("DC Test Justification Alternates", &glyphs).unwrap(), &[('n', 'w')]).unwrap());
+    let text = "بنن بنن بنن بنن";
+    let compose = |width: f64, align: Align, alternates: bool, kashidas: bool| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, width, 100.0),
+            ParaAttrs {
+                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                align: Some(align),
+                justification_alternates: Some(alternates),
+                kashidas: Some(kashidas),
+                ..Default::default()
+            },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Justification Alternates".into());
+            f.over.size = Some(24.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let lines = &cs.frame(fid).unwrap().lines;
+        assert_eq!(lines.len(), 1, "the text fits one line");
+        lines[0].clone()
+    };
+    let face = compose(400.0, Align::Right, false, false).glyphs[0].face;
+    let (n, w) = (face.glyph_for('ن'), face.glyph_for('W'));
+    let all = designcraft_fonts::shape(face.get(), "نن", &[designcraft_fonts::feature("jalt").unwrap()], |c| c);
+    assert!(all.iter().all(|g| g.gid == w), "the font's jalt swaps ن: {all:?} {n} {w}");
+    let gain = (face.advance(w) - face.advance(n)) * 24.0 / face.units_per_em();
+    assert!(gain > 1.0, "the alternate is wider");
+    // The words' alternates, by the byte of their word's first letter.
+    let swapped = |line: &Line| line.glyphs.iter().filter(|g| g.gid == w).map(|g| g.byte).collect::<Vec<_>>();
+    let natural = {
+        let line = compose(400.0, Align::Right, false, false);
+        line.glyphs.iter().map(|g| g.x - g.dx + g.adv).fold(f64::MIN, f64::max) - line.glyphs.iter().map(|g| g.x - g.dx).fold(f64::MAX, f64::min)
+    };
+    // Room for one and a half alternates: one, in the last word, on its last letter.
+    let one = compose(natural + 1.5 * gain, Align::FullyJustified, true, false);
+    assert_eq!(swapped(&one), vec![text.len() - 'ن'.len_utf8()], "one alternate, on the line's last letter");
+    // Room for less than one: none. Off: none.
+    assert!(swapped(&compose(natural + 0.5 * gain, Align::FullyJustified, true, false)).is_empty(), "a line with too little room keeps its forms");
+    assert!(swapped(&compose(natural + 3.5 * gain, Align::FullyJustified, false, false)).is_empty(), "off, no alternate");
+    // Plenty of room: one per word, each on the word's last letter, and the line still ends at its edge.
+    let wide = compose(natural + 40.0 * gain, Align::FullyJustified, true, false);
+    let ends: Vec<usize> = text.match_indices(' ').map(|(i, _)| i - 'ن'.len_utf8()).chain([text.len() - 'ن'.len_utf8()]).collect();
+    let mut got = swapped(&wide);
+    got.sort_unstable();
+    assert_eq!(got, ends, "each word's last letter, and only that");
+    // Alternates come before kashidas: with kashidas on, the same letters swap.
+    let mut with_kashidas = swapped(&compose(natural + 40.0 * gain, Align::FullyJustified, true, true));
+    with_kashidas.sort_unstable();
+    assert_eq!(with_kashidas, ends);
+}

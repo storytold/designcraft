@@ -33,6 +33,7 @@ positions are reversed. Physical left/right insertion commands account for direc
 | Diacritics | Font GDEF classification and OpenType mark anchors; explicit X/Y offsets affect marks only, in thousandths of an em |
 | Positional forms | Explicit isolated/initial/medial/final OpenType feature selection; automatic forms remain the default |
 | Kashidas | Paragraph and character switches, actual font coverage, shaper-approved insertion boundaries, nonjoiner protection, whole-cluster movement to keep marks attached; Kashida Width caps each join at a number of the font's tatweels (DesignCraft's own definition: 0 = none, 1–20; unset, up to 1.5 em) |
+| Justification alternates | Paragraph option, off by default: a justified line swaps in the font's `jalt` forms one word at a time from its end, the last letter of each word whose alternate still fits the line's shortfall, before kashidas and spaces; a line that fits keeps its default forms, and a word with an alternate takes no kashida. Line breaking doesn't count them yet |
 | Story direction | Independent right-to-left column flow, including span-column bounds |
 | Table direction | Right-to-left cell placement, merged spans, physical edge styles/borders, hit testing and left/right column insertion |
 | Serialization | Character controls, paragraph policy/width values, story/table directions survive native data and IDML round trips |
@@ -46,7 +47,8 @@ positions are reversed. Physical left/right insertion commands account for direc
   there.
 - Loose/Medium/Tight/OpenType-from-baseline diacritic presets are preserved and
   reported. Composition uses font anchors and explicit offsets instead.
-- Script-specific stretched alternates, contextual swash policies, complete RTL
+- The line breaker doesn't yet count justification alternates as a way to fill a line,
+  so they never change where lines break. Contextual swash policies, complete RTL
   tab-stop semantics and re-shaping at emergency intra-word line breaks require
   further compatibility work. Tracking and arbitrary metric changes within a
   cursive word can still open joining gaps.
