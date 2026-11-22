@@ -238,6 +238,7 @@ fn control_text(app: &mut DesignApp, ui: &mut egui::Ui) {
         control_paragraph(app, ui, &attrs, &para, &tr);
     } else {
         control_character(app, ui, &attrs, &chars, &para, &tr);
+        trailing_paragraph_groups(app, ui, &attrs, &para, &tr);
     }
 }
 
@@ -412,6 +413,10 @@ fn control_character(
     });
 }
 
+/// The Paragraph Formatting Controls' groups, in the order the bar shows them: alignment; the
+/// indents, spacing and drop cap; the lists; shading and border; the paragraph style.
+const PARA_GROUPS: usize = 5;
+
 fn control_paragraph(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
@@ -419,19 +424,100 @@ fn control_paragraph(
     para: &serde_json::Value,
     tr: &dyn Fn(&str) -> String,
 ) {
-    let cur: Align = serde_json::from_value(para["align"].clone()).unwrap_or_default();
-    if let Some(a) = align_buttons(ui, cur, tr) {
-        let _ = app.run("type.para", json!({"attrs": {"align": a}}));
+    for group in 0..PARA_GROUPS {
+        if group > 0 {
+            vsep(ui);
+        }
+        paragraph_group_measured(app, ui, attrs, para, tr, group);
     }
-    vsep(ui);
-    let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    if let Some((k, v)) = indent_space_fields(ui, para, units, tr) {
-        let _ = app.run("type.para", json!({"attrs": {k: v}}));
+}
+
+/// The Paragraph Formatting Controls that fit after the Character Formatting Controls, as many
+/// groups as the bar's visible width leaves room for, so a wide window shows the alignment (and
+/// more) without switching to ¶.
+fn trailing_paragraph_groups(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+) {
+    let right = ui.clip_rect().right();
+    for group in 0..PARA_GROUPS {
+        let known: Option<f32> = ui.data(|d| d.get_temp(group_width_id(group)));
+        let sep = 9.0 + 2.0 * ui.spacing().item_spacing.x;
+        if known.is_some_and(|w| ui.cursor().min.x + sep + w > right) {
+            break;
+        }
+        vsep(ui);
+        let end = paragraph_group_measured(app, ui, attrs, para, tr, group);
+        // A group drawn before its width was known that doesn't fit: lay the frame out again
+        // without it.
+        if known.is_none() && end > right {
+            ui.ctx().request_discard("the Control panel measured a paragraph group");
+            break;
+        }
     }
-    if let Some((k, v)) = drop_cap_fields(ui, para, tr) {
-        let _ = app.run("type.para", json!({"attrs": {k: v.max(0.0) as u64}}));
+}
+
+fn group_width_id(group: usize) -> egui::Id {
+    egui::Id::unique(("ctl_para_group_width", group))
+}
+
+/// One of the [`PARA_GROUPS`], remembering its width for [`trailing_paragraph_groups`]: its right
+/// edge.
+fn paragraph_group_measured(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+    group: usize,
+) -> f32 {
+    let rect = ui.scope(|ui| paragraph_group(app, ui, attrs, para, tr, group)).response.rect;
+    ui.data_mut(|d| d.insert_temp(group_width_id(group), rect.width()));
+    rect.right()
+}
+
+fn paragraph_group(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+    group: usize,
+) {
+    match group {
+        0 => {
+            let cur: Align = serde_json::from_value(para["align"].clone()).unwrap_or_default();
+            if let Some(a) = align_buttons(ui, cur, tr) {
+                let _ = app.run("type.para", json!({"attrs": {"align": a}}));
+            }
+        }
+        1 => {
+            let units = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+            if let Some((k, v)) = indent_space_fields(ui, para, units, tr) {
+                let _ = app.run("type.para", json!({"attrs": {k: v}}));
+            }
+            if let Some((k, v)) = drop_cap_fields(ui, para, tr) {
+                let _ = app.run("type.para", json!({"attrs": {k: v.max(0.0) as u64}}));
+            }
+        }
+        2 => list_buttons(app, ui, tr),
+        3 => {
+            let (shade, dialog) = shading_buttons(app, ui, para, tr);
+            if let Some(attrs) = shade {
+                let _ = app.run("type.para", json!({ "attrs": attrs }));
+            }
+            if let Some(tab) = dialog {
+                let _ = app.run("app.paragraphBordersDialog", json!({ "tab": tab }));
+            }
+        }
+        _ => style_and_hyphenation(app, ui, attrs, para, tr),
     }
-    vsep(ui);
+}
+
+fn list_buttons(app: &mut DesignApp, ui: &mut egui::Ui, tr: &dyn Fn(&str) -> String) {
     // Bulleted List over Numbered List, as InDesign's (a list with the default hanging indent, or,
     // pressed, none). Pressed when every selected paragraph has it, as Type › Apply Bullets shows.
     use designcraft_doc::ListType;
@@ -447,15 +533,16 @@ fn control_paragraph(
     if let Some((cmd, on)) = list {
         let _ = app.run(cmd, json!({"on": on}));
     }
-    vsep(ui);
-    let (shade, dialog) = shading_buttons(app, ui, para, tr);
-    if let Some(attrs) = shade {
-        let _ = app.run("type.para", json!({ "attrs": attrs }));
-    }
-    if let Some(tab) = dialog {
-        let _ = app.run("app.paragraphBordersDialog", json!({ "tab": tab }));
-    }
-    vsep(ui);
+}
+
+/// The paragraph style over Hyphenate and Align to Baseline Grid.
+fn style_and_hyphenation(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    attrs: &Option<serde_json::Value>,
+    para: &serde_json::Value,
+    tr: &dyn Fn(&str) -> String,
+) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
         let ps = attrs.as_ref().and_then(|a| a["paragraphStyle"].as_str()).unwrap_or("").to_string();
