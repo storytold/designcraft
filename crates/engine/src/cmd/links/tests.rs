@@ -868,6 +868,47 @@ fn placing_leaves_the_proxy_and_hash_to_the_background() {
     assert!(!s.doc().unwrap().links.checking());
 }
 
+/// A link whose modification time cannot identify its bytes must still reopen from
+/// the original after an immediate save, rather than appear modified and show a proxy.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn immediate_save_preserves_a_link_without_a_trustworthy_timestamp() {
+    let dir = TempDir::new("save-unverified");
+    let path = dir.0.join("art.png");
+    let (placed_bytes, later_bytes) = same_size_pngs();
+    let write_art = |bytes: &[u8]| {
+        std::fs::write(&path, bytes).unwrap();
+        // A timestamp of zero never vouches for bytes, even on a slow test runner.
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+    };
+    write_art(&placed_bytes);
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let id = AssetId(s.execute("file.place", &json!({"path": path.to_string_lossy()})).unwrap()["asset"].as_u64().unwrap());
+    let doc = dir.0.join("doc.designcraft");
+    s.execute("file.save", &json!({"path": doc.to_string_lossy()})).unwrap();
+
+    let reopen = |path: &Path| {
+        let mut t = Session::new();
+        t.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
+        crate::cmd::native_links::wait(&mut t);
+        t
+    };
+    let mut t = reopen(&doc);
+    assert_eq!(row(&mut t, id)["status"], "ok", "unchanged artwork must not look modified");
+    let a = asset_of(&t, id);
+    assert!(a.data.is_linked(), "the original must not be embedded just to save it");
+    assert_eq!(a.data.load().unwrap().as_slice(), placed_bytes.as_slice());
+
+    // Saving a copy after the disk file changes must not adopt its replacement as the original.
+    write_art(&later_bytes);
+    let copy = dir.0.join("copy.designcraft");
+    s.execute("file.saveACopy", &json!({"path": copy.to_string_lossy()})).unwrap();
+    assert_eq!(row(&mut reopen(&copy), id)["status"], "modified", "same size and timestamp do not prove identity");
+    write_art(&placed_bytes);
+    assert_eq!(row(&mut reopen(&copy), id)["status"], "ok", "the copy must still refer to the placed bytes");
+}
+
 /// Cmd-S right after placing a large photo writes a link and a proxy, not the photo.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
