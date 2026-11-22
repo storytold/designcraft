@@ -10,9 +10,9 @@ const RECT_TOLERANCE: f64 = TOLERANCE;
 /// The same as a fraction of the outline's larger side: a tall frame is a little further off square
 /// before anyone could see it (a chart's axis-label frame 239 pt tall is 0.54 pt off).
 const RECT_RELATIVE_TOLERANCE: f64 = 0.003;
-/// The most an edge may be off, as a fraction of its own length, however large the frame: the
-/// frame-wide fraction above would let a 600 pt tall frame 17 pt wide take a 1.8 pt slant (6
-/// degrees) on its bottom edge. The one measured frame has 0.54 pt over 16.74 pt (3.2%).
+/// The most a side may be off, as a fraction of the length of its run of edges, however large the
+/// frame: the frame-wide fraction above would let a 600 pt tall frame 17 pt wide take a 1.8 pt
+/// slant (6 degrees) on its bottom side. The one measured frame has 0.54 pt over 16.74 pt (3.2%).
 const RECT_EDGE_SLOPE: f64 = 0.04;
 /// Most edges a flattened outline may have; a larger one is flattened coarser.
 const MAX_EDGES: usize = 4096;
@@ -212,10 +212,26 @@ fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
 
 /// Whether every run of consecutive edges that lean the same way (each nearer horizontal, or each
 /// nearer vertical) is straight: the run's spread across its direction is under `limit` of the
-/// spread along it. A run is counted whole, including across the start of a closed subpath.
+/// spread along it. A run is counted whole, including across the start of its closed subpath, and
+/// never crosses into another subpath, whose edges may start where this one ends.
 fn runs_are_straight(edges: &[(Point, Point)], limit: impl Fn(f64) -> f64) -> bool {
     // An edge with no length leans no way (it closes a path that already ends at its start).
     let edges: Vec<(Point, Point)> = edges.iter().copied().filter(|(a, b)| a != b).collect();
+    // A subpath ends with the edge that returns to its first point.
+    let mut start = 0;
+    for i in 0..edges.len() {
+        if edges[i].1 == edges[start].0 {
+            if !subpath_runs_are_straight(&edges[start..=i], &limit) {
+                return false;
+            }
+            start = i + 1;
+        }
+    }
+    start == edges.len() || subpath_runs_are_straight(&edges[start..], &limit)
+}
+
+/// [`runs_are_straight`] for the edges of one closed subpath, in order.
+fn subpath_runs_are_straight(edges: &[(Point, Point)], limit: &impl Fn(f64) -> f64) -> bool {
     let n = edges.len();
     if n == 0 {
         return true;
@@ -224,13 +240,13 @@ fn runs_are_straight(edges: &[(Point, Point)], limit: impl Fn(f64) -> f64) -> bo
     let joins = |i: usize, j: usize| edges[i].1 == edges[j].0 && horizontal(&edges[i]) == horizontal(&edges[j]);
     // Begin at an edge that does not continue its predecessor, so no run wraps past the start.
     let Some(first) = (0..n).find(|&i| !joins((i + n - 1) % n, i)) else {
-        return runs_ok(edges.iter(), &limit);
+        return runs_ok(edges.iter(), limit);
     };
     let mut start = 0;
     let ordered: Vec<(Point, Point)> = (0..n).map(|k| edges[(first + k) % n]).collect();
     for k in 1..=n {
         if k == n || !joins((first + k - 1) % n, (first + k) % n) {
-            if !runs_ok(ordered[start..k].iter(), &limit) {
+            if !runs_ok(ordered[start..k].iter(), limit) {
                 return false;
             }
             start = k;
@@ -474,5 +490,22 @@ mod tests {
                 "the measured frame in 32 pieces, starting at {skip}"
             );
         }
+    }
+
+    /// Two subpaths whose edges meet at a point are not one run: A's last edge ends where B's first
+    /// begins, and joined they would spread 0.69 pt, over the 0.64 pt limit, though each subpath is
+    /// 0.34 pt off square on its own and B lies inside A.
+    #[test]
+    fn two_touching_subpaths_are_judged_apart() {
+        let mut bp = BezPath::new();
+        for y in [256.34375, 255.65625] {
+            bp.move_to((8.0, 256.0));
+            bp.line_to((16.0, y));
+            bp.line_to((16.0, 0.0));
+            bp.line_to((0.0, 0.0));
+            bp.line_to((0.0, y));
+            bp.close_path();
+        }
+        assert!(FrameOutline::new(&bp, 0.0).is_none());
     }
 }
