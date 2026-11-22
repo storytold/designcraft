@@ -1,16 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
 <!-- Installed as share/mime/packages/ai.storyteller.designcraft.xml (package.sh, the Flatpak
      manifests). Both formats are zip files, so they are matched by extension: zip magic would
      claim every archive. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-designcraft">
     <comment>DesignCraft document</comment>
+    <comment xml:lang="ru">Документ DesignCraft</comment>
     <sub-class-of type="application/zip"/>
     <generic-icon name="ai.storyteller.designcraft"/>
     <glob pattern="*.designcraft"/>
   </mime-type>
   <mime-type type="application/vnd.adobe.indesign-idml-package">
     <comment>IDML document</comment>
+    <comment xml:lang="ru">Документ IDML</comment>
     <sub-class-of type="application/zip"/>
     <glob pattern="*.idml"/>
   </mime-type>

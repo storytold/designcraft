@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
+<!-- Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0 -->
 <!-- AppStream metadata (software centres, Flathub). Template: package.sh and the Flatpak
      manifest substitute @VERSION@ and @DATE@ from Cargo.toml and the build date. -->
 <component type="desktop-application">
@@ -7,12 +9,17 @@
   <project_license>MIT OR Apache-2.0</project_license>
   <name>DesignCraft</name>
   <summary>Lay out magazines, books and print documents</summary>
+  <summary xml:lang="ru">Вёрстка журналов, книг и документов для печати</summary>
   <developer id="ai.storyteller">
     <name>Learning Machines LLC</name>
   </developer>
   <description>
     <p>
       DesignCraft is a page layout. Lay out magazines, books and print documents
+    </p>
+    <p xml:lang="ru">
+      DesignCraft — программа вёрстки страниц. Вёрстка журналов, книг и документов для
+      печати
     </p>
   </description>
   <launchable type="desktop-id">ai.storyteller.designcraft.desktop</launchable>
@@ -29,13 +36,18 @@
   </categories>
   <keywords>
     <keyword>photo</keyword>
+    <keyword xml:lang="ru">фото</keyword>
     <keyword>image editor</keyword>
+    <keyword xml:lang="ru">редактор изображений</keyword>
     <keyword>psd</keyword>
+    <keyword xml:lang="ru">psd</keyword>
     <keyword>layers</keyword>
+    <keyword xml:lang="ru">слои</keyword>
   </keywords>
   <screenshots>
     <screenshot type="default">
       <caption>Magazine spread with threaded text frames and layout properties</caption>
+      <caption xml:lang="ru">Журнальный разворот со связанными текстовыми рамками и свойствами макета</caption>
       <image type="source" width="1600" height="1000">https://raw.githubusercontent.com/storytold/designcraft/main/docs/images/ui-spread.png</image>
     </screenshot>
   </screenshots>

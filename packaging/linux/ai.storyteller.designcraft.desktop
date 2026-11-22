@@ -1,8 +1,13 @@
+# Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
+# Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 [Desktop Entry]
 Type=Application
 Name=DesignCraft
+Name[ru]=DesignCraft
 GenericName=Page Layout
+GenericName[ru]=Вёрстка страниц
 Comment=Lay out magazines, books and print documents
+Comment[ru]=Вёрстка журналов, книг и документов для печати
 Exec=designcraft %F
 TryExec=designcraft
 Icon=ai.storyteller.designcraft
@@ -12,3 +17,4 @@ StartupWMClass=ai.storyteller.designcraft
 Categories=Graphics;Publishing;
 MimeType=application/x-designcraft;application/vnd.adobe.indesign-idml-package;
 Keywords=layout;page;desktop publishing;dtp;magazine;book;indesign;idml;typesetting;
+Keywords[ru]=вёрстка;верстка;страница;настольная издательская система;dtp;журнал;книга;indesign;idml;типографика;
