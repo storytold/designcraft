@@ -3567,3 +3567,70 @@ fn the_text_highlight_follows_the_display_options() {
     let after = cached(&h).expect("the highlight is drawn");
     assert_ne!(after, before, "a new display option: the highlight is drawn again");
 }
+
+/// The highlight's plain fill (painted at `h`'s last frame) and the rects it is clipped to.
+fn plain_highlights(h: &Harness<'_, crate::test_window::Window>) -> Vec<Rect> {
+    h.output()
+        .shapes
+        .iter()
+        .filter(|c| matches!(&c.shape, egui::Shape::Path(p) if p.fill == super::text_overlay::PLAIN_HIGHLIGHT))
+        .map(|c| c.clip_rect)
+        .collect()
+}
+
+/// A selected text frame that runs past the page's left edge, in a new document.
+fn text_past_the_page_edge() -> DesignApp {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let text = "Some text past the edge";
+    app.run("frame.create", serde_json::json!({"rect": [-150, 72, 300, 200], "content": "text", "text": text, "caret": true})).unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    app.run("type.char", serde_json::json!({"attrs": {"size": 28}})).unwrap();
+    app
+}
+
+/// In Preview the plain highlight (here with Separations Preview on) shows only on the page, as
+/// the inverted one does: not on the pasteboard where the selection runs past the trim.
+#[test]
+fn the_plain_text_highlight_is_clipped_to_the_shown_area() {
+    let mut app = text_past_the_page_edge();
+    app.ui.separations = Some(crate::separations::Separations::default());
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    assert!(plain_highlights(&h).iter().any(|c| c.left() < page_left(&h) - 1.0), "Normal: on the pasteboard too");
+    h.state_mut().app.ui.screen_mode = ScreenMode::Preview;
+    h.run_steps(4);
+    let clips = plain_highlights(&h);
+    assert!(!clips.is_empty(), "the highlight is drawn");
+    let left = page_left(&h);
+    assert!(clips.iter().all(|c| c.left() >= left - 0.5), "only on the page: {clips:?}, page from {left}");
+}
+
+/// The page's left edge on screen.
+fn page_left(h: &Harness<'_, crate::test_window::Window>) -> f32 {
+    let app = &h.state().app;
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let canvas = app.session.layout().xf(designcraft_doc::SpreadRef::Doc(0));
+    xf.to_screen(canvas * Point::new(0.0, 100.0)).x
+}
+
+/// In a turned view the canvas's pixels never match, so the highlight is not rendered on the UI
+/// thread: neither when text is selected nor on each zoom step, which get the plain highlight.
+#[test]
+fn a_turned_view_draws_the_plain_highlight_while_zooming() {
+    let mut h = crate::test_window::open(text_past_the_page_edge(), vec2(900.0, 600.0));
+    let rendered = |h: &Harness<'_, crate::test_window::Window>| {
+        h.ctx.data(|d| d.get_temp::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex"))).is_some()
+    };
+    h.state_mut().app.view_mut().unwrap().rotation = 1;
+    // What the unturned view drew when the window opened goes; a turned view adds nothing.
+    h.ctx.data_mut(|d| d.remove::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex")));
+    h.run_steps(6);
+    assert!(!rendered(&h), "selected in a turned view: nothing rendered");
+    for zoom in [1.0, 1.5, 2.0] {
+        h.state_mut().app.view_mut().unwrap().zoom *= zoom;
+        h.run_steps(2);
+        assert!(!plain_highlights(&h).is_empty(), "zoom ×{zoom}: the plain highlight");
+        assert!(!rendered(&h), "zoom ×{zoom}: nothing rendered for it");
+    }
+}

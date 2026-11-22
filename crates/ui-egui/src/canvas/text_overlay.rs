@@ -244,17 +244,26 @@ fn draw_inverse_highlight(
             let k = sh.zoom * ppp as f64;
             (((c.x - sh.origin.x) * k).round() as i64, ((c.y - sh.origin.y) * k).round() as i64, px)
         });
-    // Without the canvas's pixels the area would be rendered here, on the UI thread. That is
-    // done for a turned view (its texture never matches; cached until the view or selection
-    // changes), but not on every frame of a zoom or right after text is selected, when the worker
-    // is already bringing a texture with its pixels: meanwhile, and with Separations Preview on
-    // (which shows a plate, not the composite the canvas pixels hold), a plain highlight.
-    let waiting = from_canvas.is_none() && xf.rot == 0 && app.canvas.pending.is_some();
-    if app.ui.separations.is_some() || waiting {
-        for (m, quads) in runs {
-            for q in quads {
-                let poly = q.map(|p| to_screen(*m, p));
-                painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+    // Preview, Bleed, Slug: only where each spread shows its content, as the canvas.
+    let clips: Vec<Rect> = if app.ui.screen_mode == crate::ScreenMode::Normal {
+        vec![painter.clip_rect()]
+    } else {
+        layout.slots.iter().map(|slot| super::page_decor::shown_area(app, doc, xf, slot).intersect(painter.clip_rect())).collect()
+    };
+    // Without the canvas's pixels the area would be rendered here, on the UI thread. That is not
+    // done on a frame of a zoom or right after text is selected, when the worker is already
+    // bringing a texture with its pixels, nor in a turned view, whose texture never matches (every
+    // zoom or selection change would render again): there, and with Separations Preview on (which
+    // shows a plate, not the composite the canvas pixels hold), a plain highlight.
+    let waiting = from_canvas.is_none() && app.canvas.pending.is_some();
+    if app.ui.separations.is_some() || waiting || xf.rot != 0 {
+        for clip in &clips {
+            let painter = painter.with_clip_rect(*clip);
+            for (m, quads) in runs {
+                for q in quads {
+                    let poly = q.map(|p| to_screen(*m, p));
+                    painter.add(egui::Shape::convex_polygon(poly.to_vec(), PLAIN_HIGHLIGHT, Stroke::NONE));
+                }
             }
         }
         return;
@@ -321,16 +330,13 @@ fn draw_inverse_highlight(
         }
     };
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-    if app.ui.screen_mode == crate::ScreenMode::Normal {
-        painter.image(tex.id(), bbox, uv, Color32::WHITE);
-    } else {
-        // Preview, Bleed, Slug: only where each spread shows its content, as the canvas.
-        for slot in &layout.slots {
-            let r = super::page_decor::shown_area(app, doc, xf, slot);
-            painter.with_clip_rect(r.intersect(painter.clip_rect())).image(tex.id(), bbox, uv, Color32::WHITE);
-        }
+    for clip in &clips {
+        painter.with_clip_rect(*clip).image(tex.id(), bbox, uv, Color32::WHITE);
     }
 }
+
+/// The highlight where the inverse of what lies under it isn't at hand.
+pub(super) const PLAIN_HIGHLIGHT: Color32 = Color32::from_rgba_premultiplied(35, 60, 110, 110);
 
 /// Premultiplied RGBA: the inverse of `under` (composited over `back` where it is transparent),
 /// shown as far as `mask` (premultiplied white) covers each pixel.
