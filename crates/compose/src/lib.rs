@@ -5279,6 +5279,8 @@ fn layout_line(
     let mut add = vec![0.0; line.len()];
     let mut scale = vec![1.0; line.len()];
     let mut offset = 0.0;
+    // A line of one word, including the last line under Justify All Lines.
+    let lone_word = justify_this && spaces.is_empty() && line.len() > seg + 1 && (!last || align == Align::FullyJustified);
     // Kashidas: in justified Arabic, the joins of words take the extra length first.
     let kashidas = if justify_this { allocate_kashidas(&line, &mut add, pp, seg, &mut extra) } else { Vec::new() };
     if (justify_this || squeeze_last) && (extra >= 0.0 || !sp.push_out_only()) {
@@ -5289,12 +5291,12 @@ fn layout_line(
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last && extra < 0.0 {
+    } else if lone_word && extra < 0.0 {
         // An overfull single word shrinks only as far as the minimum letter spacing and glyph scaling allow.
         let (seg_line, seg_add, seg_scale) =
             (line.get(seg..).unwrap_or(&[]), add.get_mut(seg..).unwrap_or(&mut []), scale.get_mut(seg..).unwrap_or(&mut []));
         distribute(seg_line, &[], extra, sp, seg_add, seg_scale);
-    } else if justify_this && spaces.is_empty() && line.len() > seg + 1 && !last {
+    } else if lone_word {
         // Single word: Single Word Justification.
         match pp.single_word_justify {
             Align::FullyJustified => {
@@ -5304,13 +5306,28 @@ fn layout_line(
                     .take(line.len() - 1)
                     .skip(seg)
                     .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
-                    .map(|(i, _)| i)
+                    // Spreading the letters never opens an Arabic join.
+                    .filter(|&(i, g)| !(joins_next(g.ch) && line.get(i + 1).is_some_and(|n| n.byte != g.byte && joins_prev(n.ch))))
+                    // Right to left, a gap goes on the last glyph of the next cluster, whose box
+                    // is drawn to the left of this one: the space falls between the two letters,
+                    // not after the first one at the line's right edge.
+                    .filter_map(|(i, g)| {
+                        if !bidi_info.levels.get(g.bidi_offset).is_some_and(|l| l.is_rtl()) {
+                            return Some(i);
+                        }
+                        let byte = line.get(i + 1).filter(|n| n.byte != g.byte)?.byte;
+                        (i + 1..line.len()).take_while(|&j| line[j].byte == byte).last()
+                    })
                     .collect();
                 if !gaps.is_empty() {
                     let per = extra / gaps.len() as f64;
                     for i in gaps {
                         add[i] += per;
                     }
+                } else if pp.direction == designcraft_doc::TextDirection::RightToLeft {
+                    // Nowhere to spread (every letter joins the next): the word stays at the
+                    // paragraph's starting edge.
+                    offset = extra;
                 }
             }
             // After a tab the word moves by widening the tab, so text before it stays put.
