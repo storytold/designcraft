@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 mod docx;
-mod docx_numbering;
 pub mod export;
 mod rtf;
 pub mod tagged;
@@ -28,33 +27,6 @@ pub fn xlsx_records(bytes: &[u8], sheet: Option<&str>) -> Result<Vec<Vec<String>
 }
 
 use designcraft_doc::{CharAttrs, ParaAttrs, Story};
-
-/// Joins UTF-16 code units that arrive one at a time (RTF `\uN`, Tagged Text `<0xNNNN>`) into
-/// characters. A character past U+FFFF comes as two units, a surrogate pair: the first half
-/// waits for the second.
-#[derive(Default)]
-pub(crate) struct Utf16Units {
-    high: Option<u32>,
-}
-
-impl Utf16Units {
-    /// The character that `unit` is or completes. Half a pair without its partner is no character.
-    pub(crate) fn push(&mut self, unit: u32) -> Option<char> {
-        match (self.high.take(), unit) {
-            (Some(high), 0xDC00..=0xDFFF) => char::from_u32(0x10000 + ((high - 0xD800) << 10) + (unit - 0xDC00)),
-            (_, 0xD800..=0xDBFF) => {
-                self.high = Some(unit);
-                None
-            }
-            _ => char::from_u32(unit),
-        }
-    }
-
-    /// Other text came in between: a waiting first half has no partner.
-    pub(crate) fn reset(&mut self) {
-        self.high = None;
-    }
-}
 
 /// A paragraph or character style found in the source.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -92,34 +64,38 @@ impl std::fmt::Display for ImportError {
 
 /// Text files this crate reads, by extension.
 pub fn is_text_file(name: &str) -> bool {
-    let l = name.to_ascii_lowercase();
-    l.ends_with(".txt") || l.ends_with(".text") || l.ends_with(".md") || l.ends_with(".docx") || l.ends_with(".rtf") || l.ends_with(".xlsx")
+    matches!(
+        craft_file_formats::detect(name, &[]),
+        Some(
+            craft_file_formats::Format::PlainText
+                | craft_file_formats::Format::Docx
+                | craft_file_formats::Format::Rtf
+                | craft_file_formats::Format::Xlsx
+        )
+    )
 }
 
 /// Import `bytes` (format from the file name, else sniffed).
 pub fn import(name: &str, bytes: &[u8]) -> Result<Imported, ImportError> {
-    let l = name.to_ascii_lowercase();
-    if l.ends_with(".xlsx") {
-        return xlsx::import(bytes);
+    match craft_file_formats::detect(name, bytes) {
+        Some(craft_file_formats::Format::Xlsx) => return xlsx::import(bytes),
+        Some(craft_file_formats::Format::Docx) => return docx::import(bytes),
+        Some(craft_file_formats::Format::Rtf) => return rtf::import(bytes),
+        Some(craft_file_formats::Format::TaggedText) => return tagged::import(bytes),
+        Some(craft_file_formats::Format::LegacyDoc) => {
+            return Err(ImportError::Unsupported("legacy Word .doc (save it as .docx)".into()));
+        }
+        _ => {}
     }
-    if l.ends_with(".docx") || bytes.starts_with(b"PK\x03\x04") {
-        return docx::import(bytes);
-    }
-    if l.ends_with(".rtf") || bytes.starts_with(b"{\\rtf") {
-        return rtf::import(bytes);
-    }
-    if tagged::is_tagged(bytes) {
-        return tagged::import(bytes);
-    }
-    if l.ends_with(".doc") {
-        return Err(ImportError::Unsupported("legacy Word .doc (save it as .docx)".into()));
-    }
-    Ok(plain(&String::from_utf8_lossy(bytes)))
+    Ok(plain(&tagged::decode(bytes)))
 }
 
-/// Plain text: line breaks become paragraphs (CRLF / CR normalised).
+/// Plain text: line breaks become paragraphs (CRLF / CR normalised). The private-use characters
+/// (U+E000–U+E1FF) that stories use as markers are dropped, since a stray one would be read as a
+/// marker without its payload.
 pub fn plain(text: &str) -> Imported {
     let t = text.trim_start_matches('\u{FEFF}').replace("\r\n", "\n").replace('\r', "\n");
+    let t: String = t.chars().filter(|c| !('\u{E000}'..='\u{E1FF}').contains(c)).collect();
     let story = Story::with_text(designcraft_doc::StoryId(0), &t, Default::default());
     Imported { story, para_styles: vec![], char_styles: vec![], warnings: vec![] }
 }
@@ -135,5 +111,21 @@ mod tests {
         assert_eq!(i.story.paras.len(), 3);
         assert!(is_text_file("Report.DOCX") && !is_text_file("a.png"));
         assert!(matches!(import("x.doc", b"\xD0\xCF"), Err(ImportError::Unsupported(_))));
+    }
+
+    #[test]
+    fn plain_text_drops_story_markers() {
+        let i = import("a.txt", "a\u{E009}b\u{E000}c\u{E002}d".as_bytes()).unwrap();
+        assert_eq!(i.story.text, "abcd");
+    }
+
+    #[test]
+    fn plain_text_utf16() {
+        let mut le = vec![0xFF, 0xFE];
+        le.extend("Hi there".encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(import("a.txt", &le).unwrap().story.text, "Hi there");
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("Hi there".encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(import("a.txt", &be).unwrap().story.text, "Hi there");
     }
 }

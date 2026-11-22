@@ -37,8 +37,21 @@ fn tagged(d: &Document) -> Vec<ItemId> {
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
+/// Escapes markup characters and drops characters XML 1.0 cannot hold.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            c if (c as u32) < 0x20 || c == '\u{FFFE}' || c == '\u{FFFF}' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Plain text of a story (markers dropped, forced breaks as newlines).
@@ -47,10 +60,13 @@ fn plain(t: &str) -> String {
 }
 
 /// A paragraph's text with inline-tagged runs as elements.
-fn para_xml(st: &designcraft_doc::Story, r: std::ops::Range<usize>) -> String {
+/// `runs` are the story's runs in order (collected once per story): only those reaching the
+/// paragraph are visited, found by binary search.
+fn para_xml(st: &designcraft_doc::Story, runs: &[(std::ops::Range<usize>, &designcraft_doc::CharFormat)], r: std::ops::Range<usize>) -> String {
     let mut out = String::new();
     let mut open: Option<String> = None;
-    for (rr, f) in st.runs() {
+    let first = runs.partition_point(|(rr, _)| rr.end <= r.start);
+    for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < r.end) {
         let (a, b) = (rr.start.max(r.start), rr.end.min(r.end));
         if a >= b {
             continue;
@@ -84,8 +100,10 @@ pub fn export_xml(d: &Document) -> String {
                 let Some(st) = d.story(tf.story) else { continue };
                 let mapped = |style: &str| d.xml.style_map.iter().find(|(s, _)| s == style).map(|(_, t)| t.clone());
                 // Paragraph text with inline tags already escaped.
-                let paras: Vec<(Option<String>, String)> =
-                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, r))).collect();
+                let paras: Vec<(Option<String>, String)> = {
+                    let runs: Vec<_> = st.runs().collect();
+                    st.para_ranges().into_iter().enumerate().map(|(i, r)| (mapped(&st.paras[i].style), para_xml(st, &runs, r))).collect()
+                };
                 if paras.iter().any(|(m, _)| m.is_some()) {
                     out.push_str(&format!("  <{tag}>\n"));
                     for (m, text) in paras {
@@ -118,61 +136,38 @@ struct Element {
 }
 
 fn parse(xml: &str) -> std::result::Result<Vec<Element>, String> {
-    use quick_xml::events::Event;
-    let mut r = quick_xml::Reader::from_str(xml);
-    let mut depth = 0usize;
-    let mut out: Vec<Element> = Vec::new();
-    let mut child: Option<(String, String)> = None;
-    loop {
-        match r.read_event().map_err(|e| e.to_string())? {
-            Event::Start(e) => {
-                depth += 1;
-                let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                match depth {
-                    2 => out.push(Element { name, text: String::new(), children: vec![] }),
-                    3 => child = Some((name, String::new())),
-                    _ => {}
-                }
+    fn descendant_text(element: &craft_xml::El, into: &mut String) {
+        for node in &element.children {
+            match node {
+                craft_xml::Node::Text(text) | craft_xml::Node::CData(text) => into.push_str(text),
+                craft_xml::Node::El(child) => descendant_text(child, into),
+                craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
             }
-            Event::Empty(e) if depth == 1 => {
-                out.push(Element { name: String::from_utf8_lossy(e.local_name().as_ref()).to_string(), text: String::new(), children: vec![] });
-            }
-            ev @ (Event::Text(_) | Event::GeneralRef(_) | Event::CData(_)) => {
-                let s = match ev {
-                    Event::Text(t) => t.decode().map_err(|e| e.to_string())?.to_string(),
-                    Event::CData(t) => String::from_utf8_lossy(&t).to_string(),
-                    Event::GeneralRef(g) => match g.resolve_char_ref().map_err(|e| e.to_string())? {
-                        Some(c) => c.to_string(),
-                        None => match g.decode().map_err(|e| e.to_string())?.as_ref() {
-                            "amp" => "&".into(),
-                            "lt" => "<".into(),
-                            "gt" => ">".into(),
-                            "quot" => "\"".into(),
-                            "apos" => "'".into(),
-                            _ => String::new(),
-                        },
-                    },
-                    _ => String::new(),
-                };
-                match (depth, child.as_mut(), out.last_mut()) {
-                    (3, Some(c), _) => c.1.push_str(&s),
-                    (2, _, Some(el)) => el.text.push_str(&s),
-                    _ => {}
-                }
-            }
-            Event::End(_) => {
-                if depth == 3
-                    && let (Some(c), Some(el)) = (child.take(), out.last_mut())
-                {
-                    el.children.push(c);
-                }
-                depth = depth.saturating_sub(1);
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
-    Ok(out)
+
+    let mut options = craft_xml::Options::local();
+    options.strict = true;
+    let root = options.parse(xml.as_bytes()).map_err(|e| e.to_string())?;
+    root.elements()
+        .map(|element| {
+            let mut children = Vec::new();
+            for child in element.elements() {
+                let mut text = String::new();
+                descendant_text(child, &mut text);
+                children.push((child.name.clone(), text));
+            }
+            let mut text = String::new();
+            for node in &element.children {
+                match node {
+                    craft_xml::Node::Text(value) | craft_xml::Node::CData(value) => text.push_str(value),
+                    craft_xml::Node::Pi { .. } | craft_xml::Node::Comment(_) => {}
+                    craft_xml::Node::El(_) => {}
+                }
+            }
+            Ok(Element { name: element.name.clone(), text, children })
+        })
+        .collect()
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -268,6 +263,11 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let style = str_param(p, "style").unwrap_or("").to_string();
                 let tag = str_param(p, "tag").map(str::to_string);
+                if let Some(t) = &tag
+                    && !valid_name(t)
+                {
+                    return Err(bad("xml.mapStyle", format!("`{t}` isn't a valid XML name")));
+                }
                 if s.doc()?.doc.styles.para(&style).is_none() {
                     return Err(bad("xml.mapStyle", format!("no paragraph style `{style}`")));
                 }
@@ -323,8 +323,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let dtd = crate::dtd::parse(&text).map_err(|e| bad("xml.loadDtd", e))?;
                 let names: Vec<String> = dtd.element_names().map(str::to_string).collect();
                 s.edit(|d, _| {
+                    // The tags there are, then those added: one set, not a search per element.
+                    let mut known: std::collections::HashSet<String> = d.xml.tags.iter().map(|t| t.name.clone()).collect();
                     for n in &names {
-                        if valid_name(n) && !d.xml.tags.iter().any(|t| t.name == *n) {
+                        if valid_name(n) && known.insert(n.clone()) {
                             let color = COLORS[d.xml.tags.len() % COLORS.len()];
                             d.xml.tags.push(XmlTag { name: n.clone(), color });
                         }
@@ -438,7 +440,7 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             fresh.frames = frames;
-            fresh.rev = st.rev + 1;
+            fresh.rev = st.rev.wrapping_add(1);
             *st = fresh;
         }
         Ok(json!({"placed": placed, "unmatched": unmatched}))
@@ -473,6 +475,59 @@ mod tests {
         assert!(s.execute("xml.loadDtd", &json!({"text": "<!ELEMENT a (b,|c)>"})).is_err());
         s.execute("xml.deleteDtd", &json!({})).unwrap();
         assert!(s.execute("xml.validate", &json!({})).is_err());
+    }
+
+    #[test]
+    fn export_xml_drops_forbidden_control_chars() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "A\u{1}B\u{8}C\u{FFFE}\u{FFFF}", "caret": false}))
+            .unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<story>ABC</story>"), "{x:?}");
+    }
+
+    #[test]
+    fn map_style_rejects_invalid_tag_name() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        assert!(s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "a b><x"})).is_err());
+        let d = &s.doc().unwrap().doc;
+        assert!(d.xml.style_map.is_empty());
+        assert!(d.xml.tags.iter().all(|t| t.name != "a b><x"));
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.xml.style_map.len(), 1);
+    }
+
+    #[test]
+    fn import_xml_keeps_text_of_inline_tags_in_mapped_paragraphs() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Head"})).unwrap();
+        let a = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "See the glossary entry", "caret": false}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Head"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Head", "tag": "title"})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 8, "focus": 16})).unwrap();
+        s.execute("xml.tagText", &json!({"tag": "term"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(x.contains("<title>See the <term>glossary</term> entry</title>"), "{x}");
+        s.execute("file.importXml", &json!({"text": x})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
+    }
+
+    #[test]
+    fn parse_keeps_text_nested_below_a_child_element() {
+        let els = super::parse("<root><story><note>See the <term>x</term> y</note></story></root>").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].children, vec![("note".to_string(), "See the x y".to_string())]);
     }
 
     #[test]

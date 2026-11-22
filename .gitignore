@@ -4,6 +4,7 @@ plan/
 /dist
 /corpus
 /log
+/outputs/
 .DS_Store
 /.claude/
 /target-*/

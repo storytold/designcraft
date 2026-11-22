@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Cross-Reference…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{anchor? | paragraph?: text to find (first paragraph containing it) | story? + para? (0-based), format?: name (default Full Paragraph & Page Number)} — at the insertion point; the text updates itself as the destination moves",
+            "{anchor? | paragraph?: text to find (first paragraph containing it) | story?: with para? | para?: 0-based paragraph of `story`, format?: name (default Full Paragraph & Page Number)} — at the insertion point; the text updates itself as the destination moves",
             in_story_text,
             insert
         ),
@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Hyperlink Destination…",
             ["Type", "Hyperlinks & Cross-References"],
             None,
-            "{name} — a text anchor at the insertion point",
+            "{name} — a text anchor at the insertion point; the name is the document's, so it must not be one another anchor already has",
             in_story_text,
             create_anchor
         ),
@@ -67,7 +67,15 @@ fn destination(d: &mut designcraft_doc::Document, p: &Value) -> Result<u64> {
     } else {
         return Err(bad("xref.insert", "give `anchor`, `paragraph` or `story` + `para`"));
     };
-    d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))
+    let before = d.story(sid).map_or(0, |st| st.len());
+    let id = d.paragraph_anchor(sid, pos).ok_or_else(|| bad("xref.insert", "could not anchor the paragraph"))?;
+    let grew = d.story(sid).map_or(0, |st| st.len()).saturating_sub(before);
+    if grew > 0
+        && let Some((asid, apos)) = d.find_anchor(id)
+    {
+        d.adjust_text_ranges(asid, apos..apos, grew);
+    }
+    Ok(id)
 }
 
 fn insert(s: &mut Session, p: &Value) -> Result<Value> {
@@ -94,7 +102,10 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
         let r = t2.range();
         let r = r.start.min(st.len())..r.end.min(st.len());
         st.delete(r.clone());
-        st.insert_xref(r.start, CrossRef { target, format });
+        st.insert_xref(r.start, CrossRef { target, format, ..Default::default() });
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, r.clone(), designcraft_doc::XREF_MARK.len_utf8());
+        }
         let pos = r.start + designcraft_doc::XREF_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t2 });
         Ok(json!({"target": target, "pos": r.start}))
@@ -103,11 +114,22 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn create_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     let name = str_param(p, "name").ok_or_else(|| bad("anchor.create", "missing name"))?.to_string();
+    if name.trim().is_empty() {
+        return Err(bad("anchor.create", "a text anchor needs a name (a cross-reference and a hyperlink find it by that name)"));
+    }
+    // Two anchors of the same name made every reference to it ambiguous: `xref.insert` and
+    // `hyperlink.create` take the first they find, and a file writes both under one name.
+    if s.doc()?.doc.stories.values().any(|st| st.anchors.iter().any(|a| a.name == name)) {
+        return Err(bad("anchor.create", format!("a text anchor named `{name}` is already in this document (anchor.list names them)")));
+    }
     s.edit(|d, sel| {
         let t = sel.text.ok_or_else(|| bad("anchor.create", "no insertion point"))?;
         let st = d.story_mut(t.story).ok_or(designcraft_doc::DocError::NoStory(t.story))?;
         let at = t.range().start.min(st.len());
         let id = st.insert_anchor(at, &name);
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, at..at, designcraft_doc::ANCHOR_MARK.len_utf8());
+        }
         let pos = t.focus + designcraft_doc::ANCHOR_MARK.len_utf8();
         sel.text = Some(TextSel { anchor: pos, focus: pos, ..t });
         Ok(json!({"id": id}))
@@ -161,8 +183,11 @@ fn set_format(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
         let x = st.xrefs.get_mut(k).ok_or_else(|| bad("xref.setFormat", "no such cross-reference"))?;
-        std::sync::Arc::make_mut(x).format = format;
-        st.rev += 1;
+        let x = std::sync::Arc::make_mut(x);
+        x.format = format;
+        // A new format generates the text again, replacing any edits (InDesign does the same).
+        x.text = None;
+        st.rev = st.rev.wrapping_add(1);
         Ok(Value::Null)
     })
 }
@@ -215,6 +240,44 @@ mod tests {
         assert_eq!(s.execute("xref.list", &json!({})).unwrap()[0]["text"], "(p. 3)");
     }
 
+    /// Two text anchors of the same name made every reference to it ambiguous: `xref.insert
+    /// {"anchor": "A"}` and `hyperlink.create {"anchor": "A"}` take the first they find, and an
+    /// exported file writes both destinations under one name.
+    #[test]
+    fn a_text_anchor_name_is_the_documents_so_it_is_not_reused() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Photo one here"})).unwrap();
+        let select = |s: &mut Session, story: serde_json::Value, from: usize| {
+            s.execute("text.select", &json!({"story": story, "anchor": from, "focus": from})).unwrap();
+        };
+        select(&mut s, a["story"].clone(), 0);
+        s.execute("anchor.create", &json!({"name": "Photo 1"})).unwrap();
+
+        // The same name again, in the same story and in another one.
+        select(&mut s, a["story"].clone(), 10);
+        let e = s.execute("anchor.create", &json!({"name": "Photo 1"})).expect_err("refused").to_string();
+        assert!(e.contains("already in this document"), "{e}");
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        let b = s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 200], "content": "text", "text": "Photo two"})).unwrap();
+        select(&mut s, b["story"].clone(), 0);
+        assert!(s.execute("anchor.create", &json!({"name": "Photo 1"})).is_err(), "not in another story either");
+        // A name of spaces is not a name.
+        assert!(s.execute("anchor.create", &json!({"name": "   "})).is_err());
+        assert!(s.execute("anchor.create", &json!({"name": ""})).is_err());
+
+        // One anchor, so a reference by name can only mean that one.
+        let anchors = s.execute("anchor.list", &json!({})).unwrap();
+        assert_eq!(anchors.as_array().unwrap().len(), 1, "{anchors}");
+        // Another name is fine.
+        s.execute("anchor.create", &json!({"name": "Photo 2"})).unwrap();
+        assert_eq!(s.execute("anchor.list", &json!({})).unwrap().as_array().unwrap().len(), 2);
+        // The check is on the name, not on where it is: a name that differs only in case is a
+        // different name, as it is everywhere else in the document.
+        select(&mut s, b["story"].clone(), 0);
+        s.execute("anchor.create", &json!({"name": "photo 1"})).expect("a different name");
+    }
+
     #[test]
     fn cross_reference_into_a_story_with_a_running_header_composes() {
         let mut s = Session::new();
@@ -232,5 +295,159 @@ mod tests {
         let cs = s.cache.get(&d, StoryId(head.as_u64().unwrap()), None);
         let glyphs: usize = cs.frames[0].lines.iter().map(|l| l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).count()).sum();
         assert_eq!(glyphs, "SeeChapter".len());
+    }
+
+    /// Every `/Rect` in an exported PDF, as `[x0, y0, x1, y1]`: the link annotations of a
+    /// document with nothing else annotated.
+    fn link_rects(s: &mut Session) -> Vec<[f64; 4]> {
+        let r = s.execute("file.exportPdf", &json!({})).unwrap();
+        let bytes = super::super::file::base64_decode(r["base64"].as_str().unwrap());
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut out = Vec::new();
+        for part in text.split("/Rect[").skip(1) {
+            let Some(end) = part.find(']') else { continue };
+            let v: Vec<f64> = part[..end].split_whitespace().filter_map(|n| n.parse().ok()).collect();
+            if let [x0, y0, x1, y1] = v[..] {
+                out.push([x0, y0, x1, y1]);
+            }
+        }
+        out
+    }
+
+    /// A cross-reference's link covered its first letter only: the source range is the one marker
+    /// character, and the glyphs of the text it generates all point at that character while only
+    /// the first of them owns it, so measuring the glyphs that own their bytes measured one glyph
+    /// — a ~7 pt link under ~40 pt of text (#1446).
+    #[test]
+    fn a_cross_references_link_covers_the_text_it_generated() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let sp = s.doc().unwrap().doc.page_loc(1).unwrap().0;
+        s.execute("frame.create", &json!({"spread": sp, "rect": [72, 72, 400, 200], "content": "text", "text": "Photo 1"})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "See  for details."})).unwrap();
+        let src = r["story"].clone();
+        s.execute("text.select", &json!({"story": src, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("xref.defineFormat", &json!({"name": "Bare", "definition": "<paraText />"})).unwrap();
+        s.execute("xref.insert", &json!({"paragraph": "Photo 1", "format": "Bare"})).unwrap();
+        let generated = s.execute("xref.list", &json!({})).unwrap()[0]["text"].as_str().unwrap().to_string();
+        assert_eq!(generated, "Photo 1");
+        let xref_rects = link_rects(&mut s);
+        assert_eq!(xref_rects.len(), 1, "one link, for the cross-reference: {xref_rects:?}");
+        let xref_width = xref_rects[0][2] - xref_rects[0][0];
+
+        // The same text, written out and linked as text: the same letters in the same font at the
+        // same size, so the two links cover the same width.
+        let mut t = Session::new();
+        t.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let r = t
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": format!("See {generated} for details.")}))
+            .unwrap();
+        let story = r["story"].clone();
+        let (start, end) = (4, 4 + generated.len());
+        t.execute("text.select", &json!({"story": story, "anchor": start, "focus": end})).unwrap();
+        t.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+        let plain = link_rects(&mut t);
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        let plain_width = plain[0][2] - plain[0][0];
+
+        assert!(plain_width > 20.0, "the text is wider than one glyph: {plain_width}");
+        assert!((xref_width - plain_width).abs() < 1.0, "the cross-reference covers its text: {xref_width} vs {plain_width}");
+        // And it starts where the text starts.
+        assert!((xref_rects[0][0] - plain[0][0]).abs() < 1.0, "{:?} vs {:?}", xref_rects[0], plain[0]);
+    }
+
+    /// A link starting at the first character of a numbered paragraph took the number in: the
+    /// composer gives the list label that character's offset and no length, so the rectangle
+    /// reached over text outside the link (noted in review of #1446).
+    #[test]
+    fn a_links_rectangle_leaves_out_the_number_a_list_adds() {
+        // The same linked words twice: once in a plain paragraph, once in a numbered one.
+        let width = |numbered: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Linked words here"})).unwrap();
+            let story = r["story"].clone();
+            if numbered {
+                s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+                s.execute("type.para", &json!({"attrs": {"listType": "numbers"}})).unwrap();
+            }
+            // The link starts at the paragraph's first character, where the label also sits.
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Linked words".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (numbered: {numbered}): {rects:?}");
+            (rects[0][2] - rects[0][0], rects[0][0])
+        };
+
+        let (plain, plain_x0) = width(false);
+        let (listed, listed_x0) = width(true);
+        assert!(plain > 20.0, "the linked words are wider than one glyph: {plain}");
+        // The same letters at the same size, so the link is the same width either way. The label
+        // sits before the text and the paragraph is indented for it, so the rectangle starts
+        // further right -- but it covers the words and nothing else.
+        assert!((listed - plain).abs() < 1.0, "the number is not inside the link: {listed} vs {plain}");
+        assert!(listed_x0 >= plain_x0, "the numbered paragraph's text starts no earlier: {listed_x0} vs {plain_x0}");
+    }
+
+    /// A list label's tab can carry a leader: the paragraph defines a stop at the Tab Position
+    /// with one, so the composer does not add its own stop there and the label's tab takes that
+    /// leader. Those leader glyphs carry the paragraph's first byte, as the label does, but were
+    /// not flagged as part of it -- so a link starting at the first text character swept them into
+    /// its rectangle and it reached back across the label (#1495 review).
+    #[test]
+    fn a_links_rectangle_leaves_out_the_leader_of_a_list_labels_tab() {
+        let left_edge = |leader: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 460, 200], "content": "text", "text": "Chapter one here"})).unwrap();
+            let story = r["story"].clone();
+            s.execute("text.select", &json!({"story": story.clone(), "anchor": 0, "focus": 1})).unwrap();
+            s.execute("type.para", &json!({"listType": "numbers", "listTab": 72})).unwrap();
+            if leader {
+                s.execute("type.tabs.add", &json!({"position": 72, "leader": "."})).unwrap();
+            }
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Chapter one".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (leader: {leader}): {rects:?}");
+            rects[0][0]
+        };
+
+        // The same link, with and without a leader on the label's tab: the leader sits between the
+        // label and the text, so taking it in would move the rectangle's left edge leftwards.
+        let plain = left_edge(false);
+        let dotted = left_edge(true);
+        assert!((dotted - plain).abs() < 0.5, "the leader is left out of the link: {dotted} vs {plain}");
+    }
+
+    /// The rectangle is the extent of the selected glyphs, not the first and the last of them.
+    /// Kenten marks and ruby are appended after a line's base glyphs, so with only the first
+    /// character marked the last glyph in the range was that mark, sitting over the first
+    /// character -- and the link ended there, leaving the rest of it unclickable (noted in
+    /// review of #1446).
+    #[test]
+    fn a_links_rectangle_spans_its_glyphs_whatever_order_they_are_in() {
+        let width = |marked: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+            let r = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Linked words here"})).unwrap();
+            let story = r["story"].clone();
+            if marked {
+                // The first character only, so its mark is the line's last glyph.
+                s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": 1})).unwrap();
+                s.execute("type.char", &json!({"attrs": {"kenten": true}})).unwrap();
+            }
+            s.execute("text.select", &json!({"story": story, "anchor": 0, "focus": "Linked words".len()})).unwrap();
+            s.execute("hyperlink.create", &json!({"page": 2})).unwrap();
+            let rects = link_rects(&mut s);
+            assert_eq!(rects.len(), 1, "one link (marked: {marked}): {rects:?}");
+            rects[0][2] - rects[0][0]
+        };
+
+        let plain = width(false);
+        assert!(plain > 20.0, "the linked words are wider than one glyph: {plain}");
+        // A mark over the first character does not shorten the link to that character.
+        let marked = width(true);
+        assert!((marked - plain).abs() < 1.0, "the link still covers its words: {marked} vs {plain}");
     }
 }

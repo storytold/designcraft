@@ -72,15 +72,19 @@ pub fn font_mapping(family: &str, glyphs: &[(char, char)]) -> Option<Vec<u8>> {
 /// ("Kepler Std" / "Light Display" and "Kepler Std Display" / "Light"). `None` if the bundled font
 /// can't be read.
 pub fn font_with_wws(family: &str, style: &str, wws_family: &str, wws_style: &str, chars: &[char]) -> Option<Vec<u8>> {
-    let base = font_with(family, chars)?;
-    let entries = [(1u16, family), (2, style), (16, family), (17, style), (21, wws_family), (22, wws_style)];
+    font_with_names(&[(1, family), (2, style), (16, family), (17, style), (21, wws_family), (22, wws_style)], chars)
+}
+
+/// [`font_with`] whose name table holds exactly `entries`: (name ID, Windows English name).
+pub fn font_with_names(entries: &[(u16, &str)], chars: &[char]) -> Option<Vec<u8>> {
+    let base = font_with(entries.first()?.1, chars)?;
     let count = u16::try_from(entries.len()).ok()?;
     let mut name = Vec::new();
     for v in [0u16, count, 6 + count * 12] {
         name.extend_from_slice(&v.to_be_bytes());
     }
     let mut at = 0usize;
-    for (id, s) in entries {
+    for &(id, s) in entries {
         let len = s.encode_utf16().count() * 2;
         for v in [3u16, 1, 0x409, id, u16::try_from(len).ok()?, u16::try_from(at).ok()?] {
             name.extend_from_slice(&v.to_be_bytes());
@@ -89,6 +93,42 @@ pub fn font_with_wws(family: &str, style: &str, wws_family: &str, wws_style: &st
     }
     entries.iter().for_each(|(_, s)| name.extend(s.encode_utf16().flat_map(u16::to_be_bytes)));
     with_tables(&base, vec![(*b"name", name)])
+}
+
+/// `font` with an `fvar` table: `axes` are (tag, min, default, max, axis name id) and `instances`
+/// are (subfamily name id, PostScript name id, one user coordinate per axis). Version 1.0, with
+/// the optional `postScriptNameID` present only when some instance names one.
+pub fn with_fvar(font: &[u8], axes: &[([u8; 4], f32, f32, f32, u16)], instances: &[(u16, Option<u16>, Vec<f32>)]) -> Option<Vec<u8>> {
+    let fixed = |v: f32| ((v * 65536.0).round() as i32).to_be_bytes();
+    let any_ps = instances.iter().any(|(_, ps, _)| ps.is_some());
+    let axis_count = u16::try_from(axes.len()).ok()?;
+    let instance_size = axis_count.checked_mul(4)?.checked_add(if any_ps { 6 } else { 4 })?;
+    let mut t = Vec::new();
+    for v in [1u16, 0, 16, 2, axis_count, 20, u16::try_from(instances.len()).ok()?, instance_size] {
+        t.extend_from_slice(&v.to_be_bytes());
+    }
+    for (tag, min, def, max, name_id) in axes {
+        t.extend_from_slice(tag);
+        t.extend_from_slice(&fixed(*min));
+        t.extend_from_slice(&fixed(*def));
+        t.extend_from_slice(&fixed(*max));
+        t.extend_from_slice(&0u16.to_be_bytes());
+        t.extend_from_slice(&name_id.to_be_bytes());
+    }
+    for (subfamily, ps, coords) in instances {
+        if coords.len() != axes.len() {
+            return None;
+        }
+        t.extend_from_slice(&subfamily.to_be_bytes());
+        t.extend_from_slice(&0u16.to_be_bytes());
+        coords.iter().for_each(|v| t.extend_from_slice(&fixed(*v)));
+        if any_ps {
+            // 0xFFFF is "no PostScript name" in `fvar`; 0 is the copyright notice's name id, so
+            // writing 0 made an instance look as though it named itself (noted in review).
+            t.extend_from_slice(&ps.unwrap_or(0xFFFF).to_be_bytes());
+        }
+    }
+    with_tables(font, vec![(*b"fvar", t)])
 }
 
 /// Every table of the font file `font`: (tag, bytes).
@@ -184,6 +224,36 @@ pub fn with_vorg(font: &[u8], default: i16, overrides: &[(u16, i16)]) -> Option<
         vorg.extend_from_slice(&y.to_be_bytes());
     }
     with_tables(font, vec![(*b"VORG", vorg)])
+}
+
+/// `font` with a `BASE` table whose horizontal axis gives the default script the `baselines`
+/// (tag, coordinate in font units). `None` if `font` can't be read.
+pub fn with_base(font: &[u8], baselines: &[([u8; 4], i16)]) -> Option<Vec<u8>> {
+    let mut lines = baselines.to_vec();
+    lines.sort_unstable_by_key(|l| l.0);
+    lines.dedup_by_key(|l| l.0);
+    let n = u16::try_from(lines.len()).ok()?;
+    let u16s = |out: &mut Vec<u8>, vs: &[u16]| vs.iter().for_each(|v| out.extend_from_slice(&v.to_be_bytes()));
+    // Header (version 1.0, horizontal axis at 8), the axis (tag list at 4, script list after it),
+    // the tag list, one `DFLT` script record, its BaseScript (values at 6) and the BaseValues
+    // with one format-1 BaseCoord per baseline.
+    let mut base = Vec::new();
+    u16s(&mut base, &[1, 0, 8, 0]);
+    u16s(&mut base, &[4, 4 + 2 + 4 * n]);
+    u16s(&mut base, &[n]);
+    lines.iter().for_each(|(tag, _)| base.extend_from_slice(tag));
+    u16s(&mut base, &[1]);
+    base.extend_from_slice(b"DFLT");
+    u16s(&mut base, &[8, 6, 0, 0]);
+    u16s(&mut base, &[0, n]);
+    for k in 0..n {
+        u16s(&mut base, &[4 + 2 * n + 4 * k]);
+    }
+    for (_, y) in &lines {
+        u16s(&mut base, &[1]);
+        base.extend_from_slice(&y.to_be_bytes());
+    }
+    with_tables(font, vec![(*b"BASE", base)])
 }
 
 /// `font` with its OS/2 `fsType` (embedding licence bits) set to `fs_type`. `None` if the font has
@@ -285,4 +355,35 @@ pub fn with_meta(font: &[u8], dlng: Option<&str>, slng: Option<&str>) -> Option<
     }
     maps.iter().for_each(|(_, v)| meta.extend_from_slice(v.as_bytes()));
     with_tables(font, vec![(*b"meta", meta)])
+}
+
+/// The first face of the font `bytes` as if installed from `path` (which isn't read).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn installed_face(bytes: Vec<u8>, path: std::path::PathBuf) -> Option<crate::FontFace> {
+    crate::FontDb::with_font_dirs(vec![]).new_faces(bytes, crate::FontSource::Installed(path)).into_iter().next()
+}
+
+/// A synthetic weight-variable font with Regular and SemiBold named instances, using bundled outlines.
+/// Only discovery is variable; the outlines do not change with weight.
+pub fn variable_font(family: &str) -> Option<Vec<u8>> {
+    let base =
+        font_with_names(&[(1, family), (2, "Regular"), (6, "SyntheticVF-Regular"), (256, "Weight"), (257, "Regular"), (258, "SemiBold")], &['X'])?;
+    // fvar 1.0: one weight axis and two named instances, without PostScript name IDs.
+    let mut fvar = Vec::new();
+    for v in [1u16, 0, 16, 2, 1, 20, 2, 8] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    fvar.extend_from_slice(b"wght");
+    for v in [100i32 << 16, 400 << 16, 900 << 16] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    for v in [0u16, 256] {
+        fvar.extend_from_slice(&v.to_be_bytes());
+    }
+    for (id, weight) in [(257u16, 400i32), (258, 600)] {
+        fvar.extend_from_slice(&id.to_be_bytes());
+        fvar.extend_from_slice(&0u16.to_be_bytes());
+        fvar.extend_from_slice(&(weight << 16).to_be_bytes());
+    }
+    with_tables(&base, vec![(*b"fvar", fvar)])
 }

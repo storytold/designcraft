@@ -12,7 +12,20 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "app.links", "Community & Project Links", [], None,
             "{} → {discord, website, appPage, github, issues} (ArtCraft Discord, website, DesignCraft page and repository)", always, |_, _| Ok(crate::links::all())),
         cmd!(query "document.list", "List Documents", [], None, "{}", always, |s, _| {
-            Ok(json!(s.documents().iter().enumerate().map(|(i, d)| json!({"index": i, "title": d.title(), "dirty": d.is_dirty(), "active": Some(i) == s.active_index()})).collect::<Vec<_>>()))
+            let preview = s.new_document_preview();
+            Ok(json!(s
+                .documents()
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let mut v = json!({"index": i, "title": d.title(), "dirty": d.is_dirty(), "active": Some(i) == s.active_index()});
+                    // New Document's preview, not a document yet.
+                    if preview == Some(d.uid) {
+                        v["preview"] = json!(true);
+                    }
+                    v
+                })
+                .collect::<Vec<_>>()))
         }),
         cmd!(noundo "tool.select", "Select Tool", [], None, "{tool: selection|directSelection|type|rectangleFrame|…}", always, |s, p| {
             let t = p.get("tool").and_then(Value::as_str).unwrap_or("selection");
@@ -72,7 +85,9 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
                     let abs = d.first_page_of_spread(si) + pi;
                     json!({"index": abs, "name": d.page_name(abs), "bounds": [p.x, 0.0, p.x + p.width, p.height], "side": p.side,
                         "parent": p.parent.and_then(|pid| d.parents.iter().find(|x| x.id == pid)).and_then(|x| x.parent.as_ref()).map(|i| i.label()),
-                        "margins": p.margins, "columns": p.columns.count})
+                        "margins": p.margins, "columns": p.columns.count, "gutter": p.columns.gutter,
+                        "customColumns": p.columns.valid_positions(p.margin_rect().width()).is_some(),
+                        "columnRects": p.column_rects().iter().map(|r| [r.x0, r.y0, r.x1, r.y1]).collect::<Vec<_>>()})
                 }).collect::<Vec<_>>(),
                 "items": sp.items.iter().map(|i| item_json(i)).collect::<Vec<_>>(),
             })
@@ -92,7 +107,10 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "title": st.title(), "path": st.path, "dirty": st.is_dirty(), "pageCount": d.page_count(),
         "settings": {"pageWidth": d.settings.page_width, "pageHeight": d.settings.page_height, "facingPages": d.settings.facing_pages, "intent": d.settings.intent},
         "spreads": spreads,
-        "parents": d.parents.iter().map(|p| json!({"id": p.id.0, "label": p.parent.as_ref().map(|i| i.label()), "items": p.items.len()})).collect::<Vec<_>>(),
+        "parents": d.parents.iter().map(|p| {
+            let based_on = p.parent.as_ref().and_then(|i| i.based_on).and_then(|b| d.parents.iter().find(|x| x.id == b)).and_then(|x| x.parent.as_ref()).map(|i| i.label());
+            json!({"id": p.id.0, "label": p.parent.as_ref().map(|i| i.label()), "basedOn": based_on, "items": p.items.len()})
+        }).collect::<Vec<_>>(),
         "layers": d.layers,
         "stories": stories,
         "paragraphStyles": d.styles.paragraph.iter().map(|p| &p.name).collect::<Vec<_>>(),

@@ -1,12 +1,15 @@
-//! Read-only interface text: Unicode bidi run ordering followed by Arabic shaping.
-//! Source strings stay logical. Never use these galleys for editable text/caret mapping.
+//! Read-only interface text in any script. Source strings stay logical: epaint resolves each
+//! paragraph's direction (`LayoutJob::direction == Auto`), runs the Unicode bidi algorithm once
+//! and orders a row's glyphs for painting while the glyph array and `Galley::job.text` stay
+//! logical. Never use these galleys for editable text/caret mapping (the canvas has its own
+//! composer).
+use egui::epaint::text::TextDirection;
 use egui::text::{LayoutJob, TextWrapping};
-use egui::{Align, Align2, Color32, FontFamily, FontId, Galley, Pos2, Rect, WidgetText};
-use std::{collections::HashMap, ops::Range, sync::Arc};
-use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
-use unicode_segmentation::UnicodeSegmentation;
+use egui::{Align, Align2, Color32, FontId, Galley, Pos2, Rect, WidgetText};
+use std::{collections::HashMap, sync::Arc};
+use unicode_bidi::{BidiClass, bidi_class};
 
-/// Allocation-free preflight: ordinary Latin, CJK and emoji labels need no bidi analysis.
+/// Allocation-free preflight: ordinary Latin, CJK and emoji labels need no cache lookup.
 /// Include directional controls so explicit embeddings/overrides keep their existing behavior.
 fn may_have_rtl(text: &str) -> bool {
     !text.is_ascii()
@@ -29,26 +32,28 @@ fn may_have_rtl(text: &str) -> bool {
         })
 }
 
-fn has_rtl(text: &str) -> bool {
-    may_have_rtl(text) && BidiInfo::new(text, None).has_rtl()
-}
-
-/// Resolve translated labels through bidi, without changing IDs, commands or stored text.
+/// Resolve translated labels through the shaper, without changing IDs, commands or stored text.
 pub fn widget(ui: &egui::Ui, text: impl Into<WidgetText>) -> WidgetText {
     let text = text.into();
-    if !has_rtl(text.text()) {
+    if !may_have_rtl(text.text()) {
         return text;
     }
     let mut job = (*text.into_layout_job(ui.style(), egui::FontSelection::Default, Align::Center)).clone();
+    // The shaper owns bidi: it keeps the glyphs in logical order and gives each row a visual
+    // order (and the paragraph's start edge), so nothing here may reorder or mirror text.
+    job.direction = TextDirection::Auto;
+    if job.language.is_none() {
+        job.language = ui.language();
+    }
     job.wrap = TextWrapping::from_wrap_mode_and_width(ui.wrap_mode(), ui.available_width());
     WidgetText::Galley(layout(ui.ctx(), job))
 }
 
-/// Labels are read-only: egui's LTR selection indices cannot map bidi glyph order.
-/// Accessibility still receives the original logical string through Galley::job.
+/// Labels are read-only: no editable text/caret mapping is derived from a shaped galley.
+/// Accessibility still receives the original logical string through `Galley::job`.
 pub fn label(ui: &mut egui::Ui, text: impl Into<WidgetText>) -> egui::Response {
     let text = text.into();
-    let rtl = has_rtl(text.text());
+    let rtl = may_have_rtl(text.text());
     if !rtl {
         return ui.label(text);
     }
@@ -88,62 +93,6 @@ pub fn paint(p: &egui::Painter, pos: Pos2, anchor: Align2, text: &str, font: Fon
     let galley = plain(p.ctx(), text, font, color);
     let rect = anchor.anchor_rect(Rect::from_min_size(pos, galley.size()));
     p.galley(rect.min, galley, color);
-}
-
-/// Reorder directional runs, not characters: the shaper needs logical Arabic to join letters.
-fn visual_line(job: &LayoutJob, bidi: &BidiInfo<'_>, line: Range<usize>) -> LayoutJob {
-    let mut visual = LayoutJob { break_on_newline: false, ..Default::default() };
-    if line.is_empty() {
-        if let Some(section) =
-            job.sections.iter().find(|s| usize::from(s.byte_range.start) <= line.start && line.start <= usize::from(s.byte_range.end))
-        {
-            visual.append("", 0.0, section.format.clone());
-        }
-        return visual;
-    }
-    let Some(para) = bidi.paragraphs.iter().find(|p| p.range.start <= line.start && line.start < p.range.end) else {
-        // Preserve the font/height for an empty line.
-        if let Some(section) = job.sections.first() {
-            visual.append("", 0.0, section.format.clone());
-        }
-        return visual;
-    };
-    let (levels, runs) = bidi.visual_runs(para, line);
-    for run in runs {
-        let rtl = levels[run.start].is_rtl();
-        let mut sections: Vec<_> = job
-            .sections
-            .iter()
-            .filter_map(|section| {
-                let start = run.start.max(section.byte_range.start.into());
-                let end = run.end.min(section.byte_range.end.into());
-                (start < end).then_some((section, start..end))
-            })
-            .collect();
-        if rtl {
-            sections.reverse();
-        }
-        for (section, range) in sections {
-            let mut format = section.format.clone();
-            if rtl {
-                let bold = format.font_id.family == FontFamily::Name("semibold".into());
-                format.font_id.family = FontFamily::Name(if bold { "arabic-semibold" } else { "arabic" }.into());
-                if bold {
-                    format.coords = egui::epaint::text::VariationCoords::new([(*b"wght", 600.0)]);
-                }
-            }
-            let text = &job.text[range];
-            if rtl && !text.chars().any(designcraft_fonts::is_rtl) {
-                // Neutral-only RTL runs have no script for the shaper to infer a direction.
-                // Apply UBA L4 mirroring here; Arabic runs are mirrored by the shaper.
-                let neutral: String = text.chars().rev().map(|c| unicode_bidi_mirroring::get_mirrored(c).unwrap_or(c)).collect();
-                visual.append(&neutral, section.leading_space, format);
-            } else {
-                visual.append(text, section.leading_space, format);
-            }
-        }
-    }
-    visual
 }
 
 const MAX_CACHED_LABELS: usize = 256;
@@ -191,6 +140,7 @@ impl LayoutCache {
     }
 }
 
+/// Lay out text without RTL candidates directly; otherwise use a bounded job cache that checks full job equality and invalidates on the font token.
 fn layout(ctx: &egui::Context, job: LayoutJob) -> Arc<Galley> {
     if !may_have_rtl(&job.text) {
         return ctx.fonts_mut(|fonts| fonts.layout_job(job));
@@ -200,7 +150,7 @@ fn layout(ctx: &egui::Context, job: LayoutJob) -> Arc<Galley> {
         return layout_uncached(ctx, job);
     }
     let token = ctx.fonts_mut(|fonts| fonts.layout_no_wrap(String::new(), FontId::default(), Color32::TRANSPARENT));
-    let id = egui::Id::new("designcraft.rtl.layout-cache");
+    let id = egui::Id::unique("designcraft.rtl.layout-cache");
     let key = egui::util::hash(&job);
     let cached = ctx.data_mut(|data| data.get_temp_mut_or_default::<LayoutCache>(id).lookup(token, key, &job));
     if let Some(galley) = cached {
@@ -211,100 +161,18 @@ fn layout(ctx: &egui::Context, job: LayoutJob) -> Arc<Galley> {
     galley
 }
 
+/// Set paragraph direction to `Auto` and preserve the logical source, including line separators in a single-line label.
 fn layout_uncached(ctx: &egui::Context, mut job: LayoutJob) -> Arc<Galley> {
-    if !has_rtl(&job.text) {
-        return ctx.fonts_mut(|fonts| fonts.layout_job(job));
-    }
-    let original = Arc::new(job.clone());
-    if !job.break_on_newline {
-        // Single-line widgets show line separators as spaces; byte offsets stay unchanged.
-        job.text = job.text.replace(['\n', '\r'], " ");
-    }
-    let bidi = BidiInfo::new(&job.text, None);
-    let shape = |range| ctx.fonts_mut(|fonts| fonts.layout_job(visual_line(&job, &bidi, range)));
-    // Wrap in logical reading order BEFORE applying bidi separately to each line.
-    let mut ranges = Vec::new();
-    let mut start = 0;
-    for paragraph in job.text.split_inclusive('\n') {
-        let end = start + paragraph.len();
-        let content_end = if paragraph.ends_with('\n') { end - 1 } else { end };
-        if !job.wrap.max_width.is_finite() || shape(start..content_end).size().x <= job.wrap.max_width {
-            ranges.push(start..content_end);
-            start = end;
-            continue;
-        }
-        let mut line_start = start;
-        let mut word_break = start;
-        for (offset, cluster) in job.text[start..content_end].grapheme_indices(true) {
-            let index = start + offset;
-            let boundary = index + cluster.len();
-            if job.wrap.max_width.is_finite() && index > line_start && shape(line_start..boundary).size().x > job.wrap.max_width {
-                let cut = if !job.wrap.break_anywhere && word_break > line_start { word_break } else { index };
-                ranges.push(line_start..cut);
-                line_start = cut;
-            }
-            if cluster.chars().all(char::is_whitespace) {
-                word_break = boundary;
-            }
-        }
-        ranges.push(line_start..content_end);
-        start = end;
-    }
-    if job.text.ends_with('\n') {
-        ranges.push(start..start);
-    }
-    let elided = ranges.len() > job.wrap.max_rows;
-    ranges.truncate(job.wrap.max_rows);
-    let mut lines = Vec::new();
-    for (i, range) in ranges.iter().enumerate() {
-        if elided && i + 1 == ranges.len() {
-            // Append the ellipsis in logical order, then reorder and shape the final line.
-            let mut last = LayoutJob::default();
-            for section in &job.sections {
-                let start = range.start.max(section.byte_range.start.into());
-                let end = range.end.min(section.byte_range.end.into());
-                if start < end {
-                    last.append(&job.text[start..end], 0.0, section.format.clone());
-                }
-            }
-            let format = last.sections.last().or(job.sections.first()).map(|s| s.format.clone()).unwrap_or_default();
-            let tail = job.wrap.overflow_character.map_or(String::new(), |c| c.to_string());
-            let base = bidi.paragraphs.iter().find(|p| p.range.contains(&range.start)).map(|p| p.level);
-            loop {
-                let mut candidate = last.clone();
-                candidate.append(&tail, 0.0, format.clone());
-                let info = BidiInfo::new(&candidate.text, base);
-                let shaped = ctx.fonts_mut(|fonts| fonts.layout_job(visual_line(&candidate, &info, 0..candidate.text.len())));
-                if shaped.size().x <= job.wrap.max_width || last.text.is_empty() {
-                    lines.push(shaped);
-                    break;
-                }
-                let end = last.text.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
-                last.text.truncate(end);
-                for section in &mut last.sections {
-                    section.byte_range.end = usize::from(section.byte_range.end).min(end).into();
-                }
-                last.sections.retain(|s| s.byte_range.start < s.byte_range.end);
-            }
-        } else {
-            lines.push(shape(range.clone()));
-        }
-    }
-    let mut galley = Galley::concat(original, &lines, ctx.pixels_per_point());
-    galley.elided = elided;
-    // Each Arabic line shares the right edge; Latin runs and numbers remain LTR.
-    let width = galley.rect.width();
-    galley.mesh_bounds = Rect::NOTHING;
-    for row in &mut galley.rows {
-        row.pos.x += width - row.size.x;
-        galley.mesh_bounds |= row.visuals.mesh_bounds.translate(row.pos.to_vec2());
-    }
-    Arc::new(galley)
+    job.direction = TextDirection::Auto;
+    // The 0.37 shaper owns single-line handling as well as bidi. Preserve the logical source
+    // for accessibility and cache equality, including line separators in a single-line label.
+    ctx.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::FontFamily;
 
     fn with_fonts(test: impl FnOnce(&egui::Context)) {
         let ctx = egui::Context::default();
@@ -317,6 +185,20 @@ mod tests {
         output.textures_delta.clear();
     }
 
+    /// The glyphs in the order they are painted, left to right per row.
+    fn drawn(galley: &Galley) -> String {
+        let mut out = String::new();
+        for row in &galley.rows {
+            for i in row.row.visual_order().filter(|&i| row.row.glyphs.get(i).is_some_and(|g| g.advance_width > 0.0)) {
+                if let Some(glyph) = row.row.glyphs.get(i) {
+                    out.push(glyph.chr);
+                }
+            }
+        }
+        out
+    }
+
+    /// The glyphs in logical order (the stored order, independent of the paragraph direction).
     fn displayed(galley: &Galley) -> String {
         galley.rows.iter().flat_map(|row| row.glyphs.iter().filter(|g| g.advance_width > 0.0).map(|g| g.chr)).collect()
     }
@@ -438,22 +320,22 @@ mod tests {
         });
     }
 
+    /// Latin, CJK, combining and emoji labels skip the RTL path; Arabic/Hebrew, controls and Arabic-Indic digits take it.
     #[test]
-    fn ordinary_multilingual_labels_skip_bidi_analysis() {
+    fn ordinary_multilingual_labels_skip_the_rtl_layout_cache() {
         for text in ["", "File (123)", "Édition", "中文排版", "スウォッチ", "e\u{301}", "🎨 🙂"] {
             assert!(!may_have_rtl(text), "{text:?}");
-            assert!(!BidiInfo::new(text, None).has_rtl(), "{text:?}");
         }
         for text in ["ملف", "עברית", "PDF ملف 123", "\u{1e900}", "\u{200f}", "\u{202e}abc\u{202c}", "\u{2067}abc\u{2069}", "١٢٣"] {
             assert!(may_have_rtl(text), "{text:?}");
-            assert_eq!(has_rtl(text), BidiInfo::new(text, None).has_rtl(), "{text:?}");
         }
     }
 
+    /// Non-RTL widgets remain `RichText`, keep their text and lay out with finite bounds.
     #[test]
     fn non_rtl_widgets_keep_native_text_and_formatting() {
         with_fonts(|ctx| {
-            egui::Area::new(egui::Id::new("rtl-fast-path-test")).show(ctx, |ui| {
+            egui::Area::new(egui::Id::unique("rtl-fast-path-test")).show(ctx, |ui| {
                 for text in ["中文", "日本語", "Édition", "🎨"] {
                     let rendered = widget(ui, egui::RichText::new(text).strong());
                     assert!(matches!(rendered, WidgetText::RichText(_)));
@@ -464,25 +346,27 @@ mod tests {
         });
     }
 
+    /// Source and glyph arrays stay logical; painting applies bidi, mirrors brackets, keeps `PDF 123` left-to-right and gives finite metrics.
     #[test]
     fn mixed_arabic_latin_digits_and_brackets_preserve_logical_source() {
         with_fonts(|ctx| {
             let text = "ملف (PDF 123) جديد";
             let galley = plain(ctx, text, FontId::proportional(15.0), Color32::WHITE);
+            // The source stays logical in both the job and the glyph array.
             assert_eq!(galley.job.text, text);
-            let visual = displayed(&galley);
+            let row = &galley.rows[0].row;
+            assert_eq!(row.text(), text);
+            // Painting is reordered once by the shaper: the last logical word is drawn leftmost,
+            // and the Latin number inside the Arabic sentence still reads left to right.
+            let visual = drawn(&galley);
             assert!(visual.contains("PDF 123"), "{visual}");
-            let row = &galley.rows[0];
-            let left_bracket = row.glyphs.iter().find(|g| g.chr == ')' && !g.uv_rect.is_nothing()).unwrap();
-            // A neutral-only final bracket must be mirrored even without an Arabic script run.
-            let job = LayoutJob::simple_singleline("ملف (PDF 123)".to_owned(), FontId::proportional(15.0), Color32::WHITE);
-            let bidi = BidiInfo::new(&job.text, None);
-            let visual_job = visual_line(&job, &bidi, 0..job.text.len());
-            assert!(visual_job.text.starts_with("(PDF 123"), "{}", visual_job.text);
-            let p = row.glyphs.iter().find(|g| g.chr == 'P').unwrap();
-            let three = row.glyphs.iter().find(|g| g.chr == '3').unwrap();
-            assert!(left_bracket.pos.x < p.pos.x && p.pos.x < three.pos.x);
             assert!(visual.starts_with('د'), "Arabic final word belongs at the left: {visual}");
+            let x = |c: char| row.glyphs.iter().find(|g| g.chr == c && g.advance_width > 0.0).unwrap().pos.x;
+            // The shaper mirrors the brackets: the logical ')' is drawn as '(' left of the number,
+            // the logical '(' as ')' right of it.
+            assert!(x(')') < x('P') && x('3') < x('('), "brackets around the number: {visual}");
+            // Letters inside the right-to-left words are placed right to left.
+            assert!(x('ج') < x('ف'), "Arabic word order: {visual}");
             assert!(galley.rect.is_finite());
             assert!(galley.mesh_bounds.is_finite());
         });
@@ -502,23 +386,33 @@ mod tests {
         });
     }
 
+    /// Fallback shaping matches the native Auto-direction shaper in displayed glyphs, sizes, atlas UVs, advances and spaces.
     #[test]
-    fn joins_arabic_letters_using_one_font_including_spaces() {
+    fn arabic_fallback_matches_the_native_shaper_including_spaces() {
         with_fonts(|ctx| {
             let text = "بِدء مُستند جَديد";
             let galley = plain(ctx, text, FontId::proportional(15.0), Color32::WHITE);
             let expected = ctx.fonts_mut(|fonts| {
-                fonts.layout_job(LayoutJob::simple_singleline(text.to_owned(), FontId::new(15.0, FontFamily::Name("arabic".into())), Color32::WHITE))
+                // The native shaper resolves Arabic clusters from the requested UI family. A
+                // different Arabic-primary family changes spaces and line metrics too; it is
+                // not an oracle for fallback shaping in a proportional UI label.
+                let mut job = LayoutJob::simple_singleline(text.to_owned(), FontId::proportional(15.0), Color32::WHITE);
+                job.direction = TextDirection::Auto;
+                fonts.layout_job(job)
             });
+            assert_eq!(galley.job.text, text);
             assert_eq!(displayed(&galley), displayed(&expected));
             assert_eq!(galley.size(), expected.size());
-            // Contextual glyphs (atlas positions) must match the unbroken Arabic shaping run.
+            assert_eq!(galley.rows[0].glyphs.len(), expected.rows[0].glyphs.len());
+            // Contextual glyphs (atlas positions) must match the native logical shaping run.
             for (actual, expected) in galley.rows[0].glyphs.iter().zip(&expected.rows[0].glyphs) {
                 assert_eq!(actual.uv_rect, expected.uv_rect);
+                assert_eq!(actual.advance_width, expected.advance_width);
             }
         });
     }
 
+    /// Logical wrapping puts the first word first and every RTL row flush right within one pixel.
     #[test]
     fn wraps_first_logical_word_first_and_right_aligns_lines() {
         with_fonts(|ctx| {
@@ -530,8 +424,10 @@ mod tests {
             assert!(galley.rows.len() >= 3);
             let first: String = galley.rows[0].glyphs.iter().map(|g| g.chr).collect();
             assert!(first.contains('م') && first.contains('س') && !first.contains('ج'), "{first}");
+            // Every right-to-left row is flush with the right edge. Rows are pixel-snapped, so the
+            // shared edge can differ from the galley width by less than one pixel.
             for row in &galley.rows {
-                assert!((row.pos.x + row.size.x - galley.size().x).abs() < 0.01);
+                assert!((row.pos.x + row.size.x - galley.size().x).abs() < 1.0, "{:?}", row.pos);
             }
             assert_eq!(galley.job.text, text);
         });

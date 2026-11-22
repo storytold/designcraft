@@ -98,9 +98,11 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Swatch>, AseError> {
             }
         }
         let color = match &model[..] {
-            b"CMYK" => Color::Cmyk { c: b.f32()?, m: b.f32()?, y: b.f32()?, k: b.f32()? },
-            b"RGB " => Color::Rgb { r: b.f32()?, g: b.f32()?, b: b.f32()? },
-            b"Gray" => Color::Gray { k: 1.0 - b.f32()? },
+            b"CMYK" => {
+                Color::Cmyk { c: b.f32()?.clamp(0.0, 1.0), m: b.f32()?.clamp(0.0, 1.0), y: b.f32()?.clamp(0.0, 1.0), k: b.f32()?.clamp(0.0, 1.0) }
+            }
+            b"RGB " => Color::Rgb { r: b.f32()?.clamp(0.0, 1.0), g: b.f32()?.clamp(0.0, 1.0), b: b.f32()?.clamp(0.0, 1.0) },
+            b"Gray" => Color::Gray { k: (1.0 - b.f32()?).clamp(0.0, 1.0) },
             b"LAB " => {
                 let (l, a, bb) = (b.f32()?, b.f32()?, b.f32()?);
                 let [r, g, bl] = cms::lab::lab_to_srgb(cms::Lab { l: l * 100.0, a, b: bb });
@@ -126,8 +128,14 @@ pub fn write(swatches: &[Swatch]) -> Vec<u8> {
             continue;
         }
         let mut b = Vec::new();
-        let units: Vec<u16> = s.name.encode_utf16().chain(std::iter::once(0)).collect();
-        b.extend((units.len() as u16).to_be_bytes());
+        // The length field is a u16 that counts the terminating NUL: truncate longer names.
+        let mut units: Vec<u16> = s.name.encode_utf16().take(usize::from(u16::MAX) - 1).collect();
+        // Do not leave half of a surrogate pair at the cut.
+        if units.last().is_some_and(|u| (0xD800..0xDC00).contains(u)) {
+            units.pop();
+        }
+        units.push(0);
+        b.extend(u16::try_from(units.len()).unwrap_or(u16::MAX).to_be_bytes());
         for u in units {
             b.extend(u.to_be_bytes());
         }
@@ -229,6 +237,51 @@ mod tests {
         let sw = vec![gray; MAX_COLORS + 1];
         assert_eq!(read(&write(&sw)).err(), Some(AseError::TooManyColors));
         assert_eq!(read(&write(&sw[1..])).map(|w| w.len()), Ok(MAX_COLORS), "up to the limit");
+    }
+
+    #[test]
+    fn over_long_name_is_truncated_to_fit() {
+        let sw = vec![Swatch {
+            name: "x".repeat(70_000),
+            value: SwatchValue::Color { color: Color::Gray { k: 0.5 }, color_type: ColorType::Process },
+            locked: false,
+            named: true,
+            hidden: false,
+        }];
+        let back = read(&write(&sw)).unwrap();
+        assert_eq!(back.len(), 1, "the swatch must survive the round trip");
+        assert_eq!(back[0].name, "x".repeat(usize::from(u16::MAX) - 1));
+        assert_eq!(back[0].value, sw[0].value);
+    }
+
+    #[test]
+    fn out_of_range_components_are_clamped() {
+        let mut f = Vec::new();
+        f.extend(b"ASEF\x00\x01\x00\x00");
+        f.extend(3u32.to_be_bytes());
+        let cases: [(&[u8; 4], &[f32]); 3] = [(b"RGB ", &[5.0, -2.0, 0.5]), (b"CMYK", &[2.0, -1.0, 0.5, 9.0]), (b"Gray", &[-1.0])];
+        for (model, vals) in cases {
+            let mut c = Vec::new();
+            c.extend(2u16.to_be_bytes());
+            c.extend([0, b'X', 0, 0]);
+            c.extend(model);
+            for v in vals {
+                c.extend(v.to_bits().to_be_bytes());
+            }
+            c.extend(2u16.to_be_bytes());
+            f.extend(COLOR.to_be_bytes());
+            f.extend((c.len() as u32).to_be_bytes());
+            f.extend(&c);
+        }
+        let colors: Vec<Color> = read(&f)
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| match s.value {
+                SwatchValue::Color { color, .. } => Some(color),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(colors, [Color::Rgb { r: 1.0, g: 0.0, b: 0.5 }, Color::Cmyk { c: 1.0, m: 0.0, y: 0.5, k: 1.0 }, Color::Gray { k: 1.0 },]);
     }
 
     #[test]
