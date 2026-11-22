@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
@@ -429,6 +431,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-11-19** · A placed TIFF drawn at a half, a quarter or an eighth of its pixel size or less (or past the 1 GiB full-size RGBA cap, #2381) is decoded a band at a time (`TiffBands`) into that reduced size, so large print TIFFs draw on the canvas, in page thumbnails and in linked-file proxies without a full-size decode. No readiness percentage change.
 - **2026-11-19** · `footnote.list` says where each footnote is laid out: `page` (0-based) and `bounds` (`[x0, y0, x1, y1]` in spread coordinates, as the PDF export draws it), null while the footnote's reference is overset, so a script can keep objects it places clear of the footnote area. No readiness percentage change.
 - **2026-11-12** · An idle canvas frame no longer does work for the spreads out of view (part of #1343): page shadows, paper, guides, margins, frame edges and overset marks are painted for the spreads and objects in view, and only their stories are looked up. In a 400-page document with two frames a page, an idle frame painted 5,099 shapes and looked up 400 stories; it now paints 311 and looks up 1, the same as in a 4-page document. No readiness percentage change.
 - **2026-11-06** · Preflight warns about white or [Paper] set to overprint (#2401): a fill, stroke or stroke gap, or ruby and kenten, in [Paper] or a colour that lays down no ink (C=0 M=0 Y=0 K=0, a 0% tint; a spot ink, such as a white ink or a varnish, prints whatever colour stands in for it), is reported as `whiteOverprint`, since it disappears on press. Text itself has no overprint, so white text in a frame set to Overprint Fill still knocks out and prints, and is not reported. Preflight no longer says PDF export drops ruby and kenten overprint, which it writes. No readiness percentage change.
