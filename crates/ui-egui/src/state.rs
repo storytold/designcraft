@@ -201,6 +201,12 @@ impl WindowState {
         WindowState { size, maximized, fullscreen }
     }
 
+    /// Whether the window (`vp`) shows the maximized or full screen state [`Self::restore`] asked
+    /// for; an ordinary window has nothing to wait for.
+    pub fn arrived(self, vp: &egui::ViewportInfo) -> bool {
+        if self.fullscreen { vp.fullscreen == Some(true) } else { !self.maximized || vp.maximized == Some(true) }
+    }
+
     /// Whether the window went from maximized or full screen (`self`) to an ordinary one (`now`).
     pub fn unmaximized_to(self, now: WindowState) -> bool {
         (self.maximized || self.fullscreen) && !(now.maximized || now.fullscreen)

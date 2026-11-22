@@ -254,6 +254,9 @@ pub struct DesignApp {
     window_frames: u8,
     /// The window opened before its monitor's size was known: fitted to it once it is.
     window_fit_pending: bool,
+    /// Passes left to wait for the window to show the maximized or full screen state restored:
+    /// meanwhile it shows as created, which must not be saved over that state.
+    window_awaiting: u8,
     /// Files the operating system asked to open (macOS Finder, Dock, Open With), opened once the
     /// window is ready; see [`DesignApp::open_documents_later`].
     os_documents: Vec<String>,
@@ -506,6 +509,12 @@ mod window_state_tests {
         assert_eq!(full.restore(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO), vec![egui::ViewportCommand::Fullscreen(true)]);
         let plain = WindowState { size: Some([1200.0, 800.0]), ..Default::default() };
         assert!(plain.restore(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO).is_empty());
+        // Until the window reports the state asked for, it isn't observed (it would save the
+        // unmaximized window over the maximized one).
+        assert!(!max.arrived(&vp([1200.0, 800.0], [1920.0, 1080.0], false)));
+        assert!(max.arrived(&vp([1920.0, 1050.0], [1920.0, 1080.0], true)));
+        assert!(!full.arrived(&vp([1920.0, 1050.0], [1920.0, 1080.0], true)), "maximized is not full screen");
+        assert!(plain.arrived(&vp([1200.0, 800.0], [1920.0, 1080.0], false)));
     }
 
     /// Wayland reports no window rect: the size comes from the window's content, so a resize is

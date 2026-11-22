@@ -953,7 +953,8 @@ fn open_floating_group(app: &mut DesignApp, params: &Value) -> Option<Result<Val
         return None;
     }
     let layout = layout_of(app);
-    let size = floating_size_for(&app.ui, panel);
+    // A panel that never floated opens at the size it always did.
+    let size = remembered_size(&app.ui, panel).unwrap_or(egui::vec2(290.0, 340.0));
     let (w, h) = (size.x, size.y);
     let (x, y) = app.canvas_rect.map_or((400.0, 140.0), |r| ((r.right() - w - 24.0).max(r.left()), r.top() + 96.0));
     let icon_group = dock_columns(&layout)

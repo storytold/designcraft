@@ -104,6 +104,7 @@ impl DesignApp {
             window_fitted: false,
             window_frames: 0,
             window_fit_pending: false,
+            window_awaiting: 0,
             os_documents: Vec::new(),
             integrated_titlebar: false,
             custom_titlebar: false,
@@ -218,6 +219,7 @@ impl DesignApp {
                 ctx.send_viewport_cmd(cmd);
             }
             self.window_fitted = true;
+            self.window_awaiting = if saved.maximized || saved.fullscreen { 60 } else { 0 };
             // Without the monitor's size an ordinary window can't be fitted yet: once it is known.
             self.window_fit_pending = !monitor_known && !(saved.maximized || saved.fullscreen);
         } else if self.window_fit_pending && monitor_known {
@@ -230,7 +232,16 @@ impl DesignApp {
         }
         // Only once the saved state is applied: before, the window shows as created (not yet
         // maximized), which must not replace what was saved.
-        if self.window_fitted {
+        if self.window_awaiting > 0 {
+            let saved = self.ui.window.unwrap_or_default();
+            if ctx.input(|i| saved.arrived(i.viewport())) {
+                self.window_awaiting = 0;
+            } else {
+                self.window_awaiting -= 1;
+                ctx.request_repaint();
+            }
+        }
+        if self.window_fitted && self.window_awaiting == 0 {
             let content = ctx.content_rect().size();
             let zoom = ctx.zoom_factor();
             let window = ctx.input(|i| self.ui.window.unwrap_or_default().observe(i.viewport(), content, zoom));
