@@ -5597,6 +5597,35 @@ fn an_empty_paragraph_keeps_the_leading_under_a_leading_model() {
     }
 }
 
+/// Baselines of `text` set in a Hangul test font under the Japanese composer with Aki Below and
+/// 20 pt leading.
+fn hangul_lines(text: &str) -> Vec<f64> {
+    let chars: Vec<char> = "가나".chars().collect();
+    let font = designcraft_fonts::testing::font_with("DC Test Korean Lines", &chars).unwrap();
+    designcraft_fonts::FontDb::global().add_font(font);
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 500.0), japanese());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Korean Lines".into());
+        f.over.language = Some("Korean".into());
+        f.over.leading = Some(designcraft_doc::Leading::Points(20.0));
+        f.over.leading_model = Some(designcraft_doc::cjk::LeadingModel::AkiBelow);
+    });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    all_lines(&cs).iter().map(|l| l.baseline).collect()
+}
+
+/// Hangul text under Aki Below: an empty paragraph between two lines keeps the leading, so the
+/// baselines match those of three lines of text. The empty paragraph rose and the line after it
+/// dropped back by as much.
+#[test]
+fn an_empty_hangul_paragraph_keeps_the_leading_under_aki_below() {
+    let (text, empty) = (hangul_lines("가나\n가나\n가나"), hangul_lines("가나\n\n가나"));
+    assert_eq!(empty.len(), 3);
+    for (a, b) in text.iter().zip(&empty) {
+        assert!((a - b).abs() < 1e-6, "{text:?} vs {empty:?}");
+    }
+}
+
 /// The empty line a trailing forced line break leaves measures from its paragraph mark's em box,
 /// like an empty paragraph, so it keeps the leading too. It measured from the paragraph style's
 /// characters: text formatted with a leading model the style doesn't have moved that line by the
