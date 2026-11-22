@@ -444,7 +444,7 @@ fn trailing_paragraph_groups(
 ) {
     let right = ui.clip_rect().right();
     for group in 0..PARA_GROUPS {
-        let known: Option<f32> = ui.data(|d| d.get_temp(group_width_id(group)));
+        let known: Option<f32> = ui.data(|d| d.get_temp(group_width_id(group, &app.ui.language)));
         let sep = 9.0 + 2.0 * ui.spacing().item_spacing.x;
         if known.is_some_and(|w| ui.cursor().min.x + sep + w > right) {
             break;
@@ -460,8 +460,10 @@ fn trailing_paragraph_groups(
     }
 }
 
-fn group_width_id(group: usize) -> egui::Id {
-    egui::Id::unique(("ctl_para_group_width", group))
+/// Where a group's width is kept: per interface language, since the labels set it (a width
+/// measured in another language would hide a group that fits, or show one that doesn't).
+fn group_width_id(group: usize, lang: &str) -> egui::Id {
+    egui::Id::unique(("ctl_para_group_width", group, lang))
 }
 
 /// One of the [`PARA_GROUPS`], remembering its width for [`trailing_paragraph_groups`]: its right
@@ -475,7 +477,7 @@ fn paragraph_group_measured(
     group: usize,
 ) -> f32 {
     let rect = ui.scope(|ui| paragraph_group(app, ui, attrs, para, tr, group)).response.rect;
-    ui.data_mut(|d| d.insert_temp(group_width_id(group), rect.width()));
+    ui.data_mut(|d| d.insert_temp(group_width_id(group, &app.ui.language), rect.width()));
     rect.right()
 }
 
