@@ -64,9 +64,10 @@ const MAX_CURVE_SIZE: f64 = 1e100;
 /// for a curve larger than `STEPS_PER_CURVE` times it). Where the steps of two curves come within
 /// that distance, the curves themselves are halved to tell whether they meet, so the tolerance
 /// does not set how far apart they must be: `Some(false)` means the contours do not cross or touch,
-/// not that they are at least `tolerance` apart. Each
-/// edge made takes one from `edges_left` and each comparison one from `tests_left`; `None` when
-/// either runs out.
+/// not that they are at least `tolerance` apart. At a cusp, where neighboring curves leave their
+/// joint along one line, the thousandth of each curve next to the joint is not compared. Each edge
+/// made takes one from `edges_left` and each comparison one from `tests_left`; `None` when either
+/// runs out.
 pub fn edges_cross(path: &PathData, tolerance: f64, edges_left: &mut usize, tests_left: &mut usize) -> Option<bool> {
     let mut edges: Vec<Edge> = Vec::new();
     for (contour, sp) in path.subpaths.iter().enumerate() {
