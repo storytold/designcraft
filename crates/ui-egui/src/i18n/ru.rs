@@ -1,5 +1,4 @@
 // Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
-// Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 //! Russian interface translations. Publishing terms follow established Russian desktop-publishing
 //! usage (рамка, выпуск под обрез, интерлиньяж, плашечный/триадный цвет) and are reviewed in context.
 //! The translations are our own; counted nouns are genitive plurals because the caption puts the
@@ -2706,7 +2705,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Save changes to “{set}”?", "Сохранить изменения в «{set}»?"),
     ("Saved", "Сохранено"),
     ("Saved Presets", "Сохранённые наборы"),
-    ("Scale Tool", "Инструмент «Масштаб»"),
+    ("Scale Tool", "Инструмент «Масштабирование»"),
     ("Scale for Descenders", "Учитывать нижние выносные элементы"),
     ("Scissors Tool", "Инструмент «Ножницы»"),
     ("Scope", "Область"),
