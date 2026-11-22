@@ -78,7 +78,8 @@ fn imported_bitmap_white_reveals_the_frame_while_black_stays_visible() {
     let document = imported_bitmap_over_cyan();
     let mut renderer = Renderer::new();
     renderer.threads = 0;
-    let rendered = renderer.render_page(&document, &Cache::new(), 0, 1.0, false, &RenderOptions::default()).unwrap();
+    let options = RenderOptions { rich_black: true, ..Default::default() };
+    let rendered = renderer.render_page(&document, &Cache::new(), 0, 1.0, false, &options).unwrap();
 
     let white_pixel = rendered.pixel(5, 10);
     let black_pixel = rendered.pixel(15, 10);
