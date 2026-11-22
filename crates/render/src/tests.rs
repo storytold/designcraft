@@ -112,6 +112,68 @@ fn to_png_survives_a_mismatched_buffer() {
 }
 
 #[test]
+fn to_png_parity_color_alpha_no_icc_no_phys_and_zero_guard() {
+    let rendered = Rendered {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            128, 64, 0, 128, // premultiplied half-alpha -> straight [255, 128, 0, 128]
+            10, 20, 30, 255, // opaque
+            0, 0, 0, 0, // transparent
+            255, 0, 0, 255, // opaque red
+        ],
+    };
+    let png = rendered.to_png();
+    let decoded = craft_image_codecs::decode(&png).expect("valid PNG");
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.layout(), craft_image_codecs::ChannelLayout::Rgba);
+    assert_eq!(decoded.sample_type(), craft_image_codecs::SampleType::U8);
+    assert_eq!(decoded.icc, None);
+    assert_eq!(decoded.meta.dpi, None);
+    assert_eq!(designcraft_images::raster_resolution(&png), None);
+    assert_eq!(decoded.data(), &[255, 128, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0, 255, 0, 0, 255]);
+
+    assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 0, height: 4, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 4, height: 0, pixels: vec![] }.to_png().is_empty());
+}
+
+#[test]
+fn to_jpeg_parity_white_backdrop_quality_no_icc_no_density_and_guards() {
+    let rendered = Rendered {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            128, 0, 0, 128, // premultiplied half-alpha red over white -> ~[255, 127, 127]
+            0, 0, 0, 0, // transparent -> white [255, 255, 255]
+            10, 20, 30, 255, // opaque dark
+            0, 255, 0, 255, // opaque green
+        ],
+    };
+    let jpeg = rendered.to_jpeg(95);
+    let decoded = craft_image_codecs::decode(&jpeg).expect("valid JPEG");
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.layout(), craft_image_codecs::ChannelLayout::Rgb);
+    assert_eq!(decoded.sample_type(), craft_image_codecs::SampleType::U8);
+    assert_eq!(decoded.icc, None);
+    assert_eq!(decoded.meta.dpi, None);
+    assert_eq!(designcraft_images::raster_resolution(&jpeg), None);
+
+    // Quality clamping (0 -> 1, 200 -> 100) produces valid JPEGs and respects quality ordering.
+    let low = rendered.to_jpeg(0);
+    let high = rendered.to_jpeg(200);
+    assert_eq!(craft_image_codecs::decode(&low).expect("clamped low").dimensions(), (2, 2));
+    assert_eq!(craft_image_codecs::decode(&high).expect("clamped high").dimensions(), (2, 2));
+
+    // Mismatched short buffer survives like to_png, and zero dimensions return empty.
+    let short = Rendered { width: 4, height: 4, pixels: vec![255; 10] }.to_jpeg(90);
+    assert_eq!(craft_image_codecs::decode(&short).expect("short buffer").dimensions(), (4, 4));
+    assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_jpeg(90).is_empty());
+    assert!(Rendered { width: 0, height: 4, pixels: vec![] }.to_jpeg(90).is_empty());
+    assert!(Rendered { width: 4, height: 0, pixels: vec![] }.to_jpeg(90).is_empty());
+}
+
+#[test]
 fn proof_view_simulates_the_target() {
     use designcraft_color::cms::{ProofSetup, ProofTarget};
     let red = |a: u8| Rendered { width: 1, height: 1, pixels: vec![a, 0, 0, a] };

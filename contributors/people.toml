@@ -101,3 +101,7 @@ real_name = "Madhav Agarwal"
 [people.mskim]
 display_name = "mskim"
 sync_github_name = false
+
+[people.thib-cal]
+display_name = "TS-Ca"
+sync_github_name = true
