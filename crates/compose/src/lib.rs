@@ -5749,7 +5749,8 @@ fn caret_stops(l: &Line) -> Vec<(usize, f64)> {
     ps.extend([l.range.start, l.range.end]);
     ps.sort_unstable();
     ps.dedup();
-    ps.into_iter().filter(|p| (l.range.contains(p) || *p == l.range.end) && !before_own_mark(l, *p)).map(|p| (p, caret_x(l, p))).collect()
+    let marks = OwnMarks::of(l);
+    ps.into_iter().filter(|p| (l.range.contains(p) || *p == l.range.end) && !marks.starts_at(*p)).map(|p| (p, caret_x(l, p))).collect()
 }
 
 /// Whether glyph `i` of line `l` is a combining mark in a cluster of its own after a letter (a
@@ -5766,9 +5767,44 @@ fn own_mark(l: &Line, i: usize) -> bool {
     })
 }
 
-/// Whether story byte `p` is where such a mark ([`own_mark`]) starts: no caret position.
-fn before_own_mark(l: &Line, p: usize) -> bool {
-    l.glyphs.iter().enumerate().any(|(i, g)| g.byte == p && own_mark(l, i))
+/// The marks in clusters of their own ([`own_mark`]) on a line, found in one pass over its glyphs
+/// so that a walk over the line's caret positions does not scan the glyphs for each of them.
+struct OwnMarks {
+    /// Story byte range (start, end) of each such mark, sorted by start; the first glyph in line
+    /// order stands for a byte that several glyphs share.
+    spans: Vec<(usize, usize)>,
+}
+
+impl OwnMarks {
+    fn of(l: &Line) -> Self {
+        let mut spans: Vec<(usize, usize)> =
+            l.glyphs.iter().enumerate().filter(|(i, _)| own_mark(l, *i)).map(|(_, g)| (g.byte, g.byte.saturating_add(g.len))).collect();
+        // Stable, so the first glyph of a byte stays first and survives the dedup.
+        spans.sort_by_key(|s| s.0);
+        spans.dedup_by_key(|s| s.0);
+        Self { spans }
+    }
+
+    /// The end of the mark that starts at story byte `p`, if one does.
+    fn end_of(&self, p: usize) -> Option<usize> {
+        let i = self.spans.binary_search_by_key(&p, |s| s.0).ok()?;
+        self.spans.get(i).map(|s| s.1)
+    }
+
+    /// Whether story byte `p` is where such a mark starts: no caret position.
+    fn starts_at(&self, p: usize) -> bool {
+        self.end_of(p).is_some()
+    }
+
+    /// `p`, or past the marks that start there, looked for on the whole line: a mark shifted
+    /// vertically is on no row with its letter.
+    fn past(&self, mut p: usize) -> usize {
+        // `own_mark` needs a length, so each step moves on.
+        while let Some(end) = self.end_of(p).filter(|end| *end > p) {
+            p = end;
+        }
+        p
+    }
 }
 
 /// Bidi caret movement: the position one step to the left (or right) of `pos` on its line as
@@ -5836,13 +5872,14 @@ pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     // On a drop cap (it reaches down beside the lines after its own): the nearest caret position in it.
     for l in &ft.lines {
         let Some(dc) = l.drop_cap.filter(|dc| dc.rect.contains(p)) else { continue };
+        let marks = OwnMarks::of(l);
         return l
             .glyphs
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
             .flat_map(|g| [g.byte, g.byte + g.len])
             // No caret position between a letter and a mark in a cluster of its own, as on the line.
-            .filter(|&at| !before_own_mark(l, at))
+            .filter(|&at| !marks.starts_at(at))
             .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
     }
     let l = hit_line(ft, p)?;
@@ -5903,11 +5940,12 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
     let mut saw_last = false;
+    let marks = OwnMarks::of(l);
     for g in &glyphs {
         if last_byte == Some(g.byte) {
             saw_last = true;
         }
-        if before_own_mark(l, g.byte) {
+        if marks.starts_at(g.byte) {
             // No caret position between a letter and its mark, as on a line without stacked rows.
             best = g.byte + g.len;
             continue;
@@ -5924,17 +5962,7 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
     if glyphs.is_empty() {
         return if l.last_in_para { l.range.end } else { l.range.start };
     }
-    if saw_last && l.last_in_para { l.range.end } else { past_own_marks(l, best).min(l.range.end) }
-}
-
-/// `p`, or past the marks in clusters of their own ([`own_mark`]) that start there, looked for on
-/// the whole line: a mark shifted vertically is on no row with its letter.
-fn past_own_marks(l: &Line, mut p: usize) -> usize {
-    // `own_mark` needs a length, so each step moves on.
-    while let Some(g) = l.glyphs.iter().enumerate().find_map(|(i, g)| (g.byte == p && own_mark(l, i)).then_some(g)) {
-        p = g.byte + g.len;
-    }
-    p
+    if saw_last && l.last_in_para { l.range.end } else { marks.past(best).min(l.range.end) }
 }
 
 fn hit_stacked(l: &Line, p: Point) -> usize {
