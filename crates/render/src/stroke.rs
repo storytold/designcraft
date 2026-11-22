@@ -319,7 +319,7 @@ impl Renderer {
     }
 }
 
-/// Graphic space of a page `page_w` × `page_h` points at `page` → the pixels of `pm`, its image.
+/// The pixels of `pm`, the image of a page `page_w` × `page_h` points at `page`, → graphic space (the paint transform; its inverse maps back to the pixels).
 fn image_space(page: Rect, page_w: f64, page_h: f64, pm: &vello_cpu::Pixmap) -> Affine {
     let sx = page_w / pm.width().max(1) as f64;
     let sy = page_h / pm.height().max(1) as f64;
