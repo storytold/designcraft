@@ -661,7 +661,16 @@ mod tests {
         let ordered: Vec<_> = document_fonts_from(&fonts).into_iter().map(|f| (f.family, f.style)).collect();
         assert_eq!(
             ordered,
-            [("Mincho", "Regular"), ("Mincho", "Bold"), ("Gothic", "Regular"), ("Noto Sans Hebrew", "Regular"), ("Noto Sans Devanagari", "Regular"), ("Chinese", "Regular"), ("Arabic", "Regular"), ("Thai", "Regular"),]
+            [
+                ("Mincho", "Regular"),
+                ("Mincho", "Bold"),
+                ("Gothic", "Regular"),
+                ("Noto Sans Hebrew", "Regular"),
+                ("Noto Sans Devanagari", "Regular"),
+                ("Chinese", "Regular"),
+                ("Arabic", "Regular"),
+                ("Thai", "Regular"),
+            ]
         );
         assert!(document_fonts_from(&[]).is_empty());
     }

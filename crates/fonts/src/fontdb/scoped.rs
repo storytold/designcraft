@@ -474,7 +474,11 @@ mod native_gui_document_fonts_tests {
         let admitted = assert_canonical_script_fonts(&db, &scope, latin.id());
         let loaded = loaded_faces(&db);
         let previous_len = canonical_bundled_faces(&japanese).len();
-        assert_eq!(&loaded[previous_len..previous_len + admitted.len()], admitted.as_slice(), "canonical Regular tuples follow the existing document faces");
+        assert_eq!(
+            &loaded[previous_len..previous_len + admitted.len()],
+            admitted.as_slice(),
+            "canonical Regular tuples follow the existing document faces"
+        );
         assert!(!scope.has_family("Unavailable Native GUI Family"));
         assert_eq!(scope.face("Unavailable Native GUI Family", "Regular").family, FALLBACK_FAMILY);
     }
