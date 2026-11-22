@@ -343,6 +343,48 @@ fn a_feature_switch_keeps_kerning() {
     assert_eq!(xs(&d), kerned);
 }
 
+/// Arabic letters join across a feature switch: a letter in the middle of a word with Ligatures
+/// off, or with an OpenType feature of its own, is shaped with its neighbours, so every letter
+/// keeps the form and the place it has without the switch. Lam-alif, a required ligature, still
+/// forms when only the alif has Ligatures off.
+#[test]
+fn a_feature_switch_keeps_arabic_joining() {
+    type Switch = fn(&mut designcraft_doc::CharFormat);
+    let set = |text: &str, range: std::ops::Range<usize>, switch: Option<Switch>| {
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 200.0), ParaAttrs::default());
+        d.settings.glyph_fallback = true;
+        if let Some(switch) = switch {
+            d.story_mut(sid).unwrap().format_chars(range, switch);
+        }
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().map(|g| (g.byte, g.len, g.gid, g.x, g.adv)).collect::<Vec<_>>()
+    };
+    let ligatures_off: Switch = |f| f.over.ligatures = Some(false);
+    // Stylistic set 20: a switch no bundled or system Arabic font is expected to act on.
+    let own_feature: Switch = |f| f.over.otf_features = Some(vec!["ss20".into()]);
+    // Three joining letters: initial, medial and final forms (a font may draw two of them alike).
+    let word = "\u{0628}\u{0628}\u{0628}";
+    let plain = set(word, 0..0, None);
+    if plain.iter().any(|g| g.2 == 0) {
+        eprintln!("skipped: no installed font has the Arabic letters");
+        return;
+    }
+    let forms: std::collections::HashSet<u32> = plain.iter().map(|g| g.2).collect();
+    assert!(forms.len() > 1, "the letter takes joined forms: {plain:?}");
+    assert_eq!(set(word, 2..4, Some(ligatures_off)), plain, "Ligatures off on the middle letter");
+    assert_eq!(set(word, 2..4, Some(own_feature)), plain, "an OpenType feature on the middle letter");
+    assert_eq!(set(word, 0..2, Some(ligatures_off)), plain, "Ligatures off on the first letter");
+    // Lam-alif between two letters that join it.
+    let word = "\u{0628}\u{0644}\u{0627}";
+    let plain = set(word, 0..0, None);
+    if plain.len() != 2 || plain.iter().any(|g| g.2 == 0) {
+        eprintln!("skipped: no installed font forms the lam-alif ligature");
+        return;
+    }
+    assert_eq!(set(word, 4..6, Some(ligatures_off)), plain, "Ligatures off on the alif keeps lam-alif");
+    assert_eq!(set(word, 4..6, Some(own_feature)), plain, "an OpenType feature on the alif keeps lam-alif");
+}
+
 /// Lam-alif stays one ligature when its letters differ only in colour, as in InDesign: it takes
 /// the lam's colour. (Outside Arabic a change of style still ends a ligature, see
 /// `colour_change_keeps_kerning_and_ligatures_keep_colour`.)
