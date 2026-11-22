@@ -111,11 +111,12 @@ pub(crate) fn plate_part(
         return None;
     }
     // All or nearly all of it in view (three quarters or more): convert the whole plate once and
-    // keep it, as long as it takes at most half the cache (kept whole, a bigger one would push
-    // every other image out). Converting it in parts would redo nearly all of it on every render.
+    // keep it, as long as it takes at most a quarter of the cache: both ink passes keep a plate,
+    // so a bigger one would push the other images out. Converting it in parts would redo nearly
+    // all of it on every render.
     let part_area = u64::from(x1 - x0) * u64::from(y1 - y0);
     let whole_area = u64::from(w) * u64::from(h);
-    if part_area.saturating_mul(4) >= whole_area.saturating_mul(3) && plate_bytes(w, h) <= PLATE_CACHE_BYTES / 2 {
+    if part_area.saturating_mul(4) >= whole_area.saturating_mul(3) && plate_bytes(w, h) <= PLATE_CACHE_BYTES / 4 {
         return Some((plate_pixmap(pm, plate), (0, 0)));
     }
     let row = usize::from(w);
