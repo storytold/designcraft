@@ -288,58 +288,81 @@ pub(super) fn text_gradient(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let st = s.doc()?;
     let d = &st.doc;
-    // Selected text or table cells: the vector in the text space of their frame.
+    // Selected story text (not in a table cell): each frame's characters take the drag in their
+    // own frame's text space, where they are drawn, also when the selection lies wholly in a
+    // later threaded frame.
+    if let Some(t) = st.selection.text.filter(|t| st.selection.cells.is_none() && t.cell.is_none() && t.anchor != t.focus) {
+        let parts = frame_parts(s, t.story, t.anchor.min(t.focus)..t.anchor.max(t.focus), false);
+        if !parts.is_empty() {
+            return set_vectors(s, &parts, from, to);
+        }
+    }
+    // A caret, cell text or table cells: the vector in the text space of their frame.
     let text_frame = match (st.selection.text, st.selection.cells) {
-        (Some(t), _) => Some(t.frame.or_else(|| d.story(t.story).and_then(|story| story.frames.first().copied()))),
+        (Some(t), _) => Some(t.frame.or_else(|| {
+            let at = t.focus;
+            let cs = s.cache.get(d, t.story, None);
+            (t.cell.is_none())
+                .then(|| cs.frames.iter().find(|f| f.range.contains(&at) || f.range.end == at).map(|f| f.frame))
+                .flatten()
+                .or_else(|| d.story(t.story).and_then(|story| story.frames.first().copied()))
+        })),
         (None, Some(c)) => Some(d.story(c.story).and_then(|story| story.frames.first().copied())),
         (None, None) => None,
     };
     if let Some(frame) = text_frame {
         let frame = frame.ok_or_else(|| bad(ID, "the text has no frame"))?;
-        // A selection running through threaded frames: each frame's characters take the drag
-        // in their own frame's text space, where they are drawn.
-        if let Some(t) = st.selection.text.filter(|t| st.selection.cells.is_none() && t.anchor != t.focus) {
-            let range = t.anchor.min(t.focus)..t.anchor.max(t.focus);
-            let cs = s.cache.get(d, t.story, None);
-            let parts: Vec<(Target, designcraft_doc::ItemId)> = cs
-                .frames
-                .iter()
-                .map(|ft| (range.start.max(ft.range.start)..range.end.min(ft.range.end), ft.frame))
-                .filter(|(r, _)| !r.is_empty())
-                .map(|(range, frame)| (Target { story: t.story, cell: None, range }, frame))
-                .collect();
-            if parts.len() > 1 {
-                let parts: Vec<(Target, [f64; 4])> =
-                    parts.into_iter().map(|(t, frame)| drag_in_frame(d, frame, from, to).map(|v| (t, v))).collect::<Result<_>>()?;
-                return s.edit(|d, _| {
-                    for (t, v) in &parts {
-                        let a = CharAttrs { fill_gradient: Some(Some(*v)), ..Default::default() };
-                        apply_char_attrs(d, std::slice::from_ref(t), &a, &[]);
-                    }
-                    ok()
-                });
-            }
-        }
         let v = drag_in_frame(d, frame, from, to)?;
         return format_chars(s, &json!({"fillGradient": v}));
     }
-    // Selected text frames (Formatting Affects Text): each story's own vector, in the space of
-    // the frame selected, so frames apart each show the drag where it was made.
-    let frames: Vec<(designcraft_doc::ItemId, StoryId)> =
-        st.selection.items.iter().filter_map(|i| d.item(*i).and_then(|it| it.text_frame()).map(|tf| (*i, tf.story))).collect();
-    if frames.is_empty() {
+    // Selected text frames (Formatting Affects Text): each story's characters, each frame's in
+    // its own text space, so a story threaded on into frames not selected shows the drag where
+    // it was made there too.
+    let stories: Vec<StoryId> = st.selection.items.iter().filter_map(|i| d.item(*i).and_then(|it| it.text_frame()).map(|tf| tf.story)).collect();
+    if stories.is_empty() {
         return Err(bad(ID, "no text selected"));
     }
-    let mut per_story: Vec<(Target, [f64; 4])> = Vec::new();
-    for (frame, story) in frames {
-        if per_story.iter().any(|(t, _)| t.story == story) {
+    let mut parts: Vec<(Target, designcraft_doc::ItemId)> = Vec::new();
+    for story in stories {
+        if parts.iter().any(|(t, _)| t.story == story) {
             continue;
         }
         let len = d.story(story).map_or(0, |x| x.len());
-        per_story.push((Target { story, cell: None, range: 0..len }, drag_in_frame(d, frame, from, to)?));
+        parts.extend(frame_parts(s, story, 0..len, true));
     }
+    set_vectors(s, &parts, from, to)
+}
+
+/// `range` of `story` split by the frames it is drawn in, each part with its frame. With
+/// `overset`, characters past the last frame go with the last frame's part.
+fn frame_parts(s: &Session, story: StoryId, range: std::ops::Range<usize>, overset: bool) -> Vec<(Target, designcraft_doc::ItemId)> {
+    let Ok(st) = s.doc() else { return Vec::new() };
+    let cs = s.cache.get(&st.doc, story, None);
+    let mut parts: Vec<(Target, designcraft_doc::ItemId)> = cs
+        .frames
+        .iter()
+        .map(|ft| (range.start.max(ft.range.start)..range.end.min(ft.range.end), ft.frame))
+        .filter(|(r, _)| !r.is_empty())
+        .map(|(range, frame)| (Target { story, cell: None, range }, frame))
+        .collect();
+    if overset && let Some((last, _)) = parts.last_mut() {
+        last.range.end = range.end;
+    }
+    parts
+}
+
+/// The drag as each part's vector, in its frame's text space, in one undo step.
+fn set_vectors(
+    s: &mut Session,
+    parts: &[(Target, designcraft_doc::ItemId)],
+    from: designcraft_geom::Point,
+    to: designcraft_geom::Point,
+) -> Result<Value> {
+    let d = &s.doc()?.doc;
+    let parts: Vec<(Target, [f64; 4])> =
+        parts.iter().map(|(t, frame)| drag_in_frame(d, *frame, from, to).map(|v| (t.clone(), v))).collect::<Result<_>>()?;
     s.edit(|d, _| {
-        for (t, v) in &per_story {
+        for (t, v) in &parts {
             let a = CharAttrs { fill_gradient: Some(Some(*v)), ..Default::default() };
             apply_char_attrs(d, std::slice::from_ref(t), &a, &[]);
         }
