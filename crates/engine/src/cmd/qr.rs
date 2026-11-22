@@ -555,7 +555,11 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
             designcraft_doc::SpreadRef::Parent(i) => json!({"kind": "parent", "index": i}),
         };
         let logo = s.execute("frame.create", &json!({"rect": [a.x0, a.y0, a.x1, a.y1], "content": "unassigned", "spread": spread}))?["id"].clone();
-        s.execute("file.place", &json!({"path": file, "frame": logo}))?;
+        // A logo that can't be placed leaves no empty frame behind.
+        if let Err(e) = s.execute("file.place", &json!({"path": file, "frame": logo})) {
+            let _ = s.execute("edit.clear", &json!({"ids": [logo]}));
+            return Err(e);
+        }
         s.execute("object.fit", &json!({"mode": "fitProportionally", "ids": [logo]}))?;
         let lid = ItemId(logo.as_u64().ok_or_else(|| bad(ID, "no logo frame"))?);
         let select = made.select;
@@ -766,6 +770,37 @@ mod tests {
         let f = item(&s, fid);
         assert!(f.fill.is_none() && f.children().len() == 1 && f.children()[0].fill.swatch == "[Black]");
         assert!(s.execute("object.qrCode", &json!({"content": "x", "rect": [0, 0, 9, 9], "background": "Nope"})).is_err());
+    }
+
+    /// A logo file that can't be placed fails the command and leaves no empty frame on the spread.
+    #[test]
+    fn a_logo_that_cant_be_placed_leaves_no_frame() {
+        let mut s = new_doc();
+        let missing = std::env::temp_dir().join("designcraft-no-such-logo.png");
+        let r =
+            s.execute("object.qrCode", &json!({"content": "https://example.com", "rect": [100, 100, 300, 300], "logo": missing.to_string_lossy()}));
+        assert!(r.is_err());
+        let d = &s.doc().unwrap().doc;
+        let frames = d.spreads[0].items.iter().filter(|it| !it.children().iter().any(|c| c.alt_text.starts_with(MARK))).count();
+        assert_eq!(frames, 0, "nothing but the code");
+    }
+
+    /// A code and frame coloured with an unnamed colour or gradient (not a swatch) still edit:
+    /// new content keeps those colours.
+    #[test]
+    fn a_code_in_unnamed_colours_still_edits() {
+        let mut s = new_doc();
+        let fid = id(&s.execute("object.qrCode", &json!({"content": "https://example.com", "rect": [100, 100, 200, 200]})).unwrap());
+        let cid = code(&s, fid).id;
+        s.execute("object.color", &json!({"ids": [fid.0], "color": "#336699"})).unwrap();
+        s.execute("object.gradient", &json!({"ids": [cid.0], "stops": [{"location": 0, "color": "#000000"}, {"location": 100, "color": "#cc0000"}]}))
+            .unwrap();
+        let (frame_fill, code_fill) = (item(&s, fid).fill.swatch, code(&s, fid).fill.swatch);
+        s.execute("selection.set", &json!({"ids": [fid.0]})).unwrap();
+        s.execute("object.qrCode", &json!({"content": "https://example.org"})).unwrap();
+        let (f, c) = (item(&s, fid), code(&s, fid));
+        assert!(c.alt_text.ends_with("example.org"), "edited");
+        assert_eq!((f.fill.swatch, c.fill.swatch), (frame_fill, code_fill), "with its colours");
     }
 
     /// Codes made before codes had a frame open as they were and edit like new ones: a lone code
