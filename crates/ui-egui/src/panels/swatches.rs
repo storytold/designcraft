@@ -1194,7 +1194,7 @@ fn stop_color_widgets(
     });
     let _ = crate::widgets::name_combo(combo, crate::i18n::tr(lang, "Color"));
     let [r, gg, bb] = s.color.to_rgb();
-    let mut rgb = [(r * 255.0) as u8, (gg * 255.0) as u8, (bb * 255.0) as u8];
+    let mut rgb = [r, gg, bb].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
     if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).on_hover_text(crate::i18n::tr(lang, "Stop Color:")).changed() {
         let mut stops = stops_json(g);
         set_stop_color(&mut stops, i, json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
@@ -1563,6 +1563,7 @@ mod gradient_panel_tests {
         h.run_steps(4);
         let g = gradient(&h.state().app).expect("choosing a stop colour starts the gradient");
         assert_eq!(g.stops[0].color, Color::cmyk(1.0, 0.0, 0.0, 0.0), "the first stop is chosen at first");
+        assert_eq!(g.stops[0].swatch.as_deref(), Some("C=100 M=0 Y=0 K=0"), "linked to the swatch, not only its colour");
         assert_eq!(g.stops.len(), 2);
         let at = stop_list(&h).center();
         crate::test_window::click_at(&mut h, at);
