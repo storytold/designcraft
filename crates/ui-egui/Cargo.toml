@@ -10,8 +10,13 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
-craft-ui-legacy = { workspace = true, features = ["native-windows"] }
 craft-ui = { workspace = true }
+# The craft UI framework: the whole interface, on the desktop and in the browser.
+craft-ui-widgets = { workspace = true }
+craft-color-ui = { workspace = true }
+craft-theme = { workspace = true }
+craft-host = { workspace = true }
+craft-ui-shell = { workspace = true }
 # The panel dock's model and its JSON commands, on every target.
 craft-behavior = { workspace = true }
 craft-ui-panels = { workspace = true }
@@ -57,17 +62,9 @@ serde_json = { workspace = true }
 toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The craft UI framework's own components (Properties > Transform's pilot rows). The browser build
-# keeps the bespoke fields, so the framework is not a wasm dependency.
-craft-ui-widgets = { workspace = true }
-craft-ui-shell = { workspace = true }
-craft-color-ui = { workspace = true }
-craft-theme = { workspace = true }
-craft-host = { workspace = true }
-craft-window-sdk = { workspace = true }
+# Platform services the browser build has its own paths for, or goes without: updates, the native menus and the
+# Keyboard Shortcuts dialog over them, and file and message dialogs that never block the frame.
 craft-update = { workspace = true }
-# Edit > Keyboard Shortcuts: the framework's dialog over the app's keymap. The browser build has no dialog (craft-menu is native).
 craft-menu = { workspace = true }
-# File and message dialogs that never block the frame; the browser build uses its own path.
 craft-dialogs = { workspace = true }
 raw-window-handle = { workspace = true }

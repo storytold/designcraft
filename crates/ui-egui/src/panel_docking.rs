@@ -1186,16 +1186,12 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // The dock lays out in the interface language's direction (the dock at the end edge: the left in right-to-left
     // languages), with its words in that language.
     let rtl = crate::i18n::is_rtl(&app.ui.language);
-    #[cfg(not(target_arch = "wasm32"))]
     let words = crate::framework_host::words(&app.ui.language);
     let output = craft_ui::runtime::env::with_env(
         ui,
         |env| {
             env.direction = Some(if rtl { craft_ui::runtime::env::Direction::Rtl } else { craft_ui::runtime::env::Direction::Ltr });
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                env.words = Some(craft_ui::runtime::env::WordsOverride::Replace(words));
-            }
+            env.words = Some(craft_ui::runtime::env::WordsOverride::Replace(words));
         },
         |ui| {
             let mut content = PanelContent { app: &mut *app };

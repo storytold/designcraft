@@ -427,8 +427,8 @@ fn main() -> std::process::ExitCode {
                 // The window's frame, which the framework's title bar follows: set before the runtime is installed.
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
-                // The craft UI framework's runtime, when the Transform pilot asked for it, before the
-                // context's first pass (it refuses to install inside one).
+                // The craft UI framework's runtime, before the context's first pass (it refuses to install
+                // inside one): the whole interface is the framework's.
                 app.install_framework(&cc.egui_ctx);
                 app.set_startup_update_check(true);
                 if let Some(line) = restarted.or_else(|| created.status_line()) {

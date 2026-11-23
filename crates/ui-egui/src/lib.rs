@@ -67,19 +67,16 @@ pub use prefs::ReadPreferences;
 
 mod app;
 mod clock;
-#[cfg(not(target_arch = "wasm32"))]
-mod framework_opacity;
+mod framework_host;
 #[cfg(test)]
 mod framework_keys_tests;
+mod framework_opacity;
+#[cfg(test)]
+mod framework_opacity_tests;
 #[cfg(test)]
 mod framework_tab_diagnostic_tests;
 #[cfg(test)]
 mod framework_tab_sdk_tests;
-#[cfg(test)]
-mod framework_opacity_tests;
-#[cfg(not(target_arch = "wasm32"))]
-mod framework_host;
-#[cfg(not(target_arch = "wasm32"))]
 mod framework_transform;
 #[cfg(test)]
 mod framework_transform_tests;
@@ -339,18 +336,8 @@ pub struct DesignApp {
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
-    /// Properties > Transform's X/Y/W/H on the craft UI framework's own `NumberField`
-    /// (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`, see [`framework_transform`]). Off, every panel keeps the
-    /// implementation it had.
-    pub framework_transform: bool,
-    /// The framework's runtime is on this context: without it a component paints but takes no input, so
-    /// the Transform fields stay bespoke instead of drawing fields that ignore the pointer.
-    pub(crate) framework_installed: bool,
     /// The pilot's field rects from the last pass, as the framework laid them out (tests and `ui.inspect`).
     pub(crate) framework_fields: Vec<(String, egui::Rect)>,
-    /// Properties > Appearance's Opacity on the framework's own `NumberField` and `SliderField`
-    /// (`DESIGNCRAFT_FRAMEWORK_OPACITY=1`, see [`framework_opacity`]). Off, the row keeps what it had.
-    pub framework_opacity: bool,
     /// The Opacity pilot's row rects from the last pass (`opacity`, `more`, `slider`), for the tests and
     /// `ui.inspect`.
     pub(crate) framework_opacity_fields: Vec<(String, egui::Rect)>,
@@ -403,9 +390,7 @@ pub(crate) mod test_window {
         ready: bool,
     }
 
-    /// A context with the craft UI runtime installed, as the shipping window's is: the panel dock, and the canvas it
-    /// holds, need it. The app's own `framework_installed` stays as the test sets it, so every other surface draws
-    /// as that flag chooses.
+    /// A context with the craft UI runtime installed, as the shipping window's is: the whole UI is the framework's.
     pub fn context() -> egui::Context {
         let ctx = egui::Context::default();
         // Floating panels stay in the test window, where the accessibility tree and the pointer reach them, as they do

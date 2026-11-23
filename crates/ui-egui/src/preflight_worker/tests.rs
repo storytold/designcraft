@@ -72,7 +72,7 @@ fn each_document_state_is_checked_once() {
 #[test]
 fn a_new_save_path_or_font_reload_is_checked_again() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     assert!(super::issues(&mut app, &ctx).is_some());
     assert!(super::issues(&mut app, &ctx).is_some());
     assert_eq!(app.preflight.inline_checks, 1);
@@ -97,7 +97,7 @@ fn a_new_save_path_or_font_reload_is_checked_again() {
 #[test]
 fn a_busy_worker_keeps_one_waiting_job() {
     let (mut app, id) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (jobs, _done) = stalled_worker(&mut app);
     for k in 0..20 {
         let dx = if k % 2 == 0 { 1.0 } else { -1.0 };
@@ -119,7 +119,7 @@ fn a_busy_worker_keeps_one_waiting_job() {
 #[test]
 fn an_unchanged_document_is_checked_again_after_the_refresh_interval() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (jobs, done) = stalled_worker(&mut app);
     assert!(super::issues_at(&mut app, &ctx, 10.0).is_none());
     let job = jobs.try_recv().expect("the state is queued");
@@ -144,7 +144,7 @@ fn an_unchanged_document_is_checked_again_after_the_refresh_interval() {
 #[test]
 fn shown_issues_ask_for_a_frame_when_they_are_due_again() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (jobs, done) = stalled_worker(&mut app);
     assert!(super::issues_at(&mut app, &ctx, 10.0).is_none());
     let job = jobs.try_recv().expect("the state is queued");
@@ -163,7 +163,7 @@ fn shown_issues_ask_for_a_frame_when_they_are_due_again() {
 #[test]
 fn a_worker_that_ends_is_tried_again_later() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (_jobs, done) = stalled_worker(&mut app);
     drop(done);
     assert_eq!(super::issues(&mut app, &ctx).map(|i| i.iter().filter(|i| i.severity == "error").count()), Some(1));
@@ -189,7 +189,7 @@ fn a_worker_that_ends_is_tried_again_later() {
 #[test]
 fn a_blocked_check_of_another_document_is_superseded() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (jobs, _done) = stalled_worker(&mut app);
     let mut other = current(&app);
     other.uid += 1;
@@ -254,7 +254,7 @@ fn a_check_of_an_older_state_keeps_the_current_compositions() {
 #[test]
 fn closing_the_last_document_drops_the_waiting_job() {
     let (mut app, id) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let (_jobs, _done) = stalled_worker(&mut app);
     for dx in [1.0, -1.0] {
         app.run("transform.move", json!({"ids": [id], "dx": dx, "dy": 0.0})).unwrap();
@@ -274,7 +274,7 @@ fn closing_the_last_document_drops_the_waiting_job() {
 #[test]
 fn another_documents_result_keeps_the_active_documents_issues() {
     let (mut app, _) = overset_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let errors = |app: &mut crate::DesignApp| super::issues(app, &ctx).map(|i| i.iter().filter(|i| i.severity == "error").count());
     assert_eq!(errors(&mut app), Some(1));
     let (_jobs, done) = stalled_worker(&mut app);

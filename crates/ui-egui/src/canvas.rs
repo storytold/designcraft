@@ -222,7 +222,6 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
 }
 
 /// Where the canvas of the pane that has the keyboard was drawn in this pass: its response id, for [`take_key_focus`].
-#[cfg(not(target_arch = "wasm32"))]
 const KEY_TARGET: &str = "canvas_key_target";
 
 /// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
@@ -236,7 +235,6 @@ const CANVAS_LAST: &str = "canvas_last_response";
 /// stop) gives its focus when that stop registers, which can be after the canvas is drawn, and it must not lose it to the
 /// canvas. Not while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys; the
 /// focus a click gave stays where it is.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
     // `egui::Id` has no `Default`, so `remove_temp` cannot take it: read it, then remove it.
@@ -278,11 +276,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.data_mut(|data| data.insert_temp(last, resp.id));
     // A sizing or measuring run of the dock's body shows the canvas too (the framework runs a body more than once to find its
     // size); only the pass that is drawn takes the pass's input, or one Paste would paste once per run.
-    #[cfg(not(target_arch = "wasm32"))]
     let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
-    #[cfg(target_arch = "wasm32")]
-    let measuring = ui.is_sizing_pass();
-    #[cfg(not(target_arch = "wasm32"))]
     if !measuring && input::keyboard_pane(app) {
         ui.data_mut(|data| data.insert_temp(egui::Id::new(KEY_TARGET), resp.id));
     }
