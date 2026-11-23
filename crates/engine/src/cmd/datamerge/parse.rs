@@ -370,149 +370,16 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    let format = craft_file_formats::detect(name, &[]);
-    if format == Some(craft_file_formats::Format::Tsv) {
-        return Delimiter::Tab;
+    let detected = match craft_file_formats::detect(name, &[]) {
+        Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
+        Some(craft_file_formats::Format::Csv) => craft_csv::sniff_csv_delimiter(text, '"'),
+        _ => craft_csv::sniff_delimiter(text, '"'),
+    };
+    match detected {
+        b'\t' => Delimiter::Tab,
+        b';' => Delimiter::Semicolon,
+        _ => Delimiter::Comma,
     }
-    let candidates = [
-        (Delimiter::Tab, scan_delimiter(text, '\t')),
-        (Delimiter::Comma, scan_delimiter(text, ',')),
-        (Delimiter::Semicolon, scan_delimiter(text, ';')),
-    ];
-    if format == Some(craft_file_formats::Format::Csv) && csv_prefers_comma(candidates) {
-        return Delimiter::Comma;
-    }
-    let prefer_coherent = candidates.iter().any(|(_, s)| s.min_count > 0 && s.coherent);
-    let mut best = (Delimiter::Comma, 0usize, 0usize);
-    for (delimiter, s) in candidates {
-        if s.min_count > 0 && (!prefer_coherent || s.coherent) && (s.min_count, s.total) > (best.1, best.2) {
-            best = (delimiter, s.min_count, s.total);
-        }
-    }
-    best.0
-}
-
-#[derive(Clone, Copy)]
-struct DelimStats {
-    seen: bool,
-    header_splits: bool,
-    min_count: usize,
-    total: usize,
-    coherent: bool,
-}
-
-impl DelimStats {
-    fn separates_coherently(self) -> bool {
-        self.seen && self.coherent && self.min_count > 0
-    }
-}
-
-/// For `.csv` files, prefer `Comma` when `,` coherently separates all sampled records, or when the
-/// header splits coherently on `,` and neither `\t` nor `;` coherently separates all sampled
-/// records (so padded short rows in a comma CSV don't fall back to an incoherent `;`/`\t` parse,
-/// while tab/semicolon CSVs whose header happens to contain a comma still sniff cleanly).
-fn csv_prefers_comma([(.., tab), (.., comma), (.., semi)]: [(Delimiter, DelimStats); 3]) -> bool {
-    if !comma.seen || !comma.coherent {
-        return false;
-    }
-    if comma.min_count > 0 {
-        return true;
-    }
-    comma.header_splits && !tab.separates_coherently() && !semi.separates_coherently()
-}
-
-/// Scan up to 20 non-blank records within the first 64 KiB for separator counts and quote-boundary
-/// coherence. Records whose cells are all empty or whitespace (including `""` and whitespace-only
-/// tab lines like `\t \t`) are skipped as blank, matching [`parse_delimited`].
-fn scan_delimiter(text: &str, delim: char) -> DelimStats {
-    const SAMPLE_BYTES: usize = 64 * 1024;
-    const SAMPLE_RECORDS: usize = 20;
-    let mut sample_end = text.len().min(SAMPLE_BYTES);
-    while sample_end > 0 && !text.is_char_boundary(sample_end) {
-        sample_end -= 1;
-    }
-    let sample = text.get(..sample_end).unwrap_or("");
-    let truncated = sample_end < text.len();
-
-    let mut seen = 0usize;
-    let mut header_splits = false;
-    let mut min_count = usize::MAX;
-    let mut total = 0usize;
-    let mut coherent = true;
-    let mut count = 0usize;
-    let mut quoted = false;
-    let mut after_quote = false;
-    let mut field_start = true;
-    let mut record_has_content = false;
-    let mut record_coherent = true;
-    let mut reached_record_limit = false;
-    let mut chars = sample.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if quoted {
-            if ch == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    record_has_content = true;
-                } else {
-                    quoted = false;
-                    after_quote = true;
-                }
-            } else if !ch.is_whitespace() {
-                record_has_content = true;
-            }
-            continue;
-        }
-        if ch == '\r' || ch == '\n' {
-            if ch == '\r' && chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            if record_has_content {
-                if seen == 0 {
-                    header_splits = count > 0;
-                }
-                min_count = min_count.min(count);
-                total = total.saturating_add(count);
-                coherent &= record_coherent;
-                seen = seen.saturating_add(1);
-                if seen >= SAMPLE_RECORDS {
-                    reached_record_limit = true;
-                    break;
-                }
-            }
-            count = 0;
-            after_quote = false;
-            field_start = true;
-            record_has_content = false;
-            record_coherent = true;
-            continue;
-        }
-        if ch == '"' && field_start {
-            quoted = true;
-            field_start = false;
-        } else if ch == delim {
-            count = count.saturating_add(1);
-            field_start = true;
-            after_quote = false;
-        } else {
-            record_coherent &= !after_quote || ch.is_whitespace();
-            record_has_content |= !ch.is_whitespace();
-            field_start = false;
-        }
-    }
-    if !reached_record_limit && !truncated {
-        if quoted {
-            coherent = false;
-        } else if record_has_content {
-            if seen == 0 {
-                header_splits = count > 0;
-            }
-            min_count = min_count.min(count);
-            total = total.saturating_add(count);
-            coherent &= record_coherent;
-            seen = seen.saturating_add(1);
-        }
-    }
-    DelimStats { seen: seen > 0, header_splits, min_count: if seen > 0 { min_count } else { 0 }, total, coherent }
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
