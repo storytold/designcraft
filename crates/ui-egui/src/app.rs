@@ -39,7 +39,15 @@ impl DesignApp {
     pub fn install_framework(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_arch = "wasm32"))]
         if self.framework_transform || self.framework_opacity {
-            crate::framework_transform::install(ctx);
+            // The main window's frame: the app's own title bar where decorations are off, the bar under the macOS traffic lights.
+            let chrome = if self.custom_titlebar {
+                craft_host::target::WindowChrome::Integrated
+            } else if self.integrated_titlebar {
+                craft_host::target::WindowChrome::Inset
+            } else {
+                craft_host::target::WindowChrome::Native
+            };
+            crate::framework_transform::install_with(ctx, chrome);
             // A context that already had the runtime is fine; the fields draw either way. Without it they
             // would paint and take no input, so the panel keeps the bespoke fields instead.
             self.framework_installed = true;

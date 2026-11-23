@@ -122,6 +122,8 @@ craft-cms = { version = "0.1.0", git = "file:///home/codex/work/CraftApps/craft-
 # build keeps the bespoke fields.
 craft-ui-widgets = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "6540d8081ac45658917c56a8e4672e4ed5a503d5" }
 craft-ui-panels = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "6540d8081ac45658917c56a8e4672e4ed5a503d5" }
+# The shell's title bar, which draws the application bar's frame and moves the window by it.
+craft-ui-shell = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "6540d8081ac45658917c56a8e4672e4ed5a503d5" }
 # The framework's colour components: the Color Picker, colour wells and their popover.
 craft-color-ui = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "6540d8081ac45658917c56a8e4672e4ed5a503d5", features = ["ui"] }
 craft-theme = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "6540d8081ac45658917c56a8e4672e4ed5a503d5", default-features = false }
