@@ -1327,7 +1327,7 @@ mod line_workflow_tests {
             .into_iter()
             .flat_map(|r| &r.elements)
             .filter(|e| e.component.contains("FlyoutButton") || e.component.contains("Rail"))
-            .map(|e| (e.component.clone(), e.facts.as_ref().and_then(|f| f.name.clone())))
+            .map(|e| (e.component.to_string(), e.facts.as_ref().and_then(|f| f.name.clone())))
             .collect();
         assert_eq!(elements.len(), 1, "exactly the standalone Line slot is the installed rail's Line button; recorded rail parts: {buttons:?}");
         let element = elements.remove(0);
@@ -1364,7 +1364,7 @@ mod line_workflow_tests {
             let Some(focused_line) = named else {
                 let buttons: Vec<String> = h
                     .query_all_by_role(egui::accesskit::Role::Button)
-                    .filter_map(|n| n.accesskit_node().label().map(str::to_owned))
+                    .filter_map(|n| n.accesskit_node().label())
                     .take(80)
                     .collect();
                 panic!("no {:?} button; the buttons: {buttons:?}", label(h));
@@ -2017,7 +2017,7 @@ mod framework_tests {
                 let names: Vec<String> = h
                     .query_all_by_role(Role::Button)
                     .filter(|n| panel.contains(n.rect().center()))
-                    .filter_map(|n| n.accesskit_node().label().map(str::to_owned))
+                    .filter_map(|n| n.accesskit_node().label())
                     .collect();
                 panic!("no {label:?} in the Tools panel; its buttons: {names:?}")
             })
