@@ -293,11 +293,14 @@ fn the_field_rect_is_this_frames_and_goes_with_the_selection() {
     assert!(h.state().framework_opacity_fields.is_empty(), "stale rect with no selection: {:?}", h.state().framework_opacity_fields);
 }
 
+/// The framework is on by default on the desktop; with no framework runtime at all (the browser build's case) the
+/// row keeps its bespoke field and command. Successor of the old pilot-off test.
 #[test]
-fn the_row_stays_bespoke_when_the_pilot_is_off() {
-    let (app, id) = app_with_frame();
+fn the_row_stays_bespoke_without_the_framework_runtime() {
+    let (mut app, id) = app_with_frame();
+    app.framework_transform = false;
     let mut h = properties_harness(app, false);
-    assert!(!h.state().framework_opacity, "the pilot is off");
+    assert!(!h.state().framework_opacity, "no framework row");
     assert!(!h.state().framework_installed, "so nothing installed the framework's runtime");
     assert!(h.state().framework_opacity_fields.is_empty(), "the bespoke field drew instead: {:?}", h.state().framework_opacity_fields);
     // The row is unchanged: the command behind the bespoke field still moves the object in one step.
