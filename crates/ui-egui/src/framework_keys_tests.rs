@@ -10,8 +10,9 @@
 //! - ArrowUp with the canvas focused must move the selected frame and leave a `transform.move` in the journal;
 //! - ArrowUp while the framework's field is being typed in must step that field's value and put no
 //!   `transform.move` in the journal, with the frame's bounds unchanged;
-//! - Tab must commit what was typed, as one undo step, and hand the keyboard to an identified existing control
-//!   whose response has a real rect inside the Properties panel;
+//! - Tab must commit what was typed, as one undo step, and hand the keyboard to an identified control of the same
+//!   row, the framework chevron after the field, whose response has a real rect inside the Properties panel; and Tab
+//!   again goes on through the row's framework stops;
 //! - Shift+Tab must come back to the framework field's own stop;
 //! - Escape must leave a typed draft uncommitted.
 
@@ -174,11 +175,7 @@ fn arrow_up_on_the_focused_canvas_moves_the_selected_frame() {
     // key must nudge the selection and reach the journal.
     let on_frame = item_screen_rect(&h, id).center();
     click(&mut h, on_frame);
-    assert_eq!(
-        h.state().session.active().expect("a document").selection.items,
-        vec![id],
-        "the press on the frame's own geometry kept it selected"
-    );
+    assert_eq!(h.state().session.active().expect("a document").selection.items, vec![id], "the press on the frame's own geometry kept it selected");
     let before = bounds(&h, id);
     let mark = journal(&h);
     press(&mut h, Key::ArrowUp, Modifiers::NONE);
@@ -238,16 +235,31 @@ fn tab_commits_the_typed_value_and_hands_the_keyboard_to_an_identified_app_contr
     let component = rect_of(&h, "component");
     assert!(!rect.intersects(component), "the keyboard went outside the framework component: {rect:?} vs {component:?}");
     let stops = h.state().framework_opacity_component_stops.clone();
-    assert!(
-        stops.iter().all(|(_, stop)| !stop.intersects(rect)),
-        "and it is not one of the component's own stops {stops:?}: {rect:?}"
-    );
-    // The identified legacy target: the chevron beside the field, at the row's own recorded rect.
+    assert!(stops.iter().all(|(_, stop)| !stop.intersects(rect)), "and it is not one of the component's own stops {stops:?}: {rect:?}");
+    // The identified target: the chevron beside the field, the row's next framework stop, at its recorded rect.
     let more = rect_of(&h, "more");
-    assert!(
-        (rect.center() - more.center()).length() < 1.5,
-        "the keyboard landed on the row's own chevron control at {more:?}, not {rect:?}"
-    );
+    assert!((rect.center() - more.center()).length() < 1.5, "the keyboard landed on the row's own chevron control at {more:?}, not {rect:?}");
+}
+
+#[test]
+fn tab_from_the_chevron_goes_on_to_the_rows_frame_fitting_button() {
+    let (app, _id) = app_with_frame();
+    let mut h = window_harness(app);
+    let field = rect_of(&h, "opacity");
+    type_draft(&mut h, field.center(), "40");
+    press(&mut h, Key::Tab, Modifiers::NONE);
+    let on_chevron = focused(&h).expect("Tab left the keyboard on the chevron");
+    let more = rect_of(&h, "more");
+    let chevron = h.ctx.read_response(on_chevron).map(|r| r.rect).expect("the chevron is an identified control");
+    assert!((chevron.center() - more.center()).length() < 1.5, "the first Tab landed on the chevron at {more:?}, not {chevron:?}");
+    // The positive control for "the row is one framework Tab order": the next Tab reaches the row's next control, the
+    // Frame Fitting button, not some stop elsewhere in the window and not nothing.
+    press(&mut h, Key::Tab, Modifiers::NONE);
+    let next = focused(&h).expect("Tab left the keyboard on another stop");
+    assert_ne!(next, on_chevron, "the keyboard left the chevron");
+    let rect = h.ctx.read_response(next).map(|r| r.rect).expect("the stop that took the keyboard is an identified control");
+    let fitting = h.get_by_role_and_label(egui::accesskit::Role::Button, "Frame Fitting").rect();
+    assert!((rect.center() - fitting.center()).length() < 1.5, "the keyboard went on to the row's Frame Fitting button at {fitting:?}, not {rect:?}");
 }
 
 #[test]
