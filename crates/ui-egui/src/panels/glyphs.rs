@@ -49,12 +49,11 @@ fn panel_style(ui: &mut egui::Ui, language: &str, framework: bool, family: &str,
 fn panel_query(ui: &mut egui::Ui, language: &str, framework: bool, query: &mut String) {
     #[cfg(not(target_arch = "wasm32"))]
     if framework {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         use craft_theme::ControlSize;
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         use craft_ui_widgets::text::TextField;
 
         let label = crate::i18n::tr(language, "Search: character or U+code");
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
         TextField::new(label, Bind::bound(query))
             .keeps_on_escape()
             .limit(None)
@@ -62,7 +61,8 @@ fn panel_query(ui: &mut egui::Ui, language: &str, framework: bool, query: &mut S
             .placeholder(label)
             .tooltip(label)
             .size(ControlSize::Sm)
-            .show_at(ui, rect);
+            .sizing(craft_ui_widgets::contract::Sizing::FillWidth)
+            .show(ui);
         return;
     }
     #[cfg(target_arch = "wasm32")]
@@ -82,9 +82,9 @@ fn recent_name(language: &str, c: char) -> String {
 fn panel_recent(ui: &mut egui::Ui, language: &str, framework: bool, target: &Option<String>, c: char) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if framework {
+        use craft_theme::ControlSize;
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_theme::ControlSize;
 
         return Button::new(recent_name(language, c))
             .painted(c.to_string())
@@ -111,7 +111,84 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     show_contents(app, ui);
 }
 
+/// The panel on the framework: the font and style choosers in a row, the search field, the recently used characters,
+/// and the glyph grid in a framework scroll area.
+#[cfg(not(target_arch = "wasm32"))]
+fn show_framework_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::TypeRole;
+
+    let target = app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.text, &st.selection.cells)));
+    let id = egui::Id::unique("glyphs_panel");
+    let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    default_font(app, &mut st);
+    let lang = app.ui.language.clone();
+    let (db, scope) = (super::fonts(app), super::font_scope(app));
+    let mut insert: Option<char> = None;
+    let mut count = 0;
+    Stack::new().id_salt("glyphs").fill_width().show(ui, |ui, _| {
+        Row::new().id_salt("glyph_font").show(ui, |ui, _| {
+            if let Some(f) = super::font_combo(app, ui, "glyph_family", &st.family, 140.0) {
+                st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
+                st.family = f.family;
+            }
+            panel_style(ui, &lang, true, &st.family, &mut st.style, db.styles(&st.family));
+        });
+        panel_query(ui, &lang, true, &mut st.query);
+        let q = st.query.trim().to_string();
+        if !st.recent.is_empty() {
+            Row::new().id_salt("glyph_recent").wrap(true).show(ui, |ui, _| {
+                Text::new(crate::i18n::tr(&lang, "Recently Used").to_owned()).role(TypeRole::Caption).shade(Shade::Muted).show(ui);
+                for c in st.recent.clone() {
+                    if panel_recent(ui, &lang, true, &target, c) {
+                        insert = Some(c);
+                    }
+                }
+            });
+        }
+        let (picked, shown) = framework_grid(ui, &lang, &db, scope, &st.family, &st.style, &q, 320.0);
+        insert = insert.or(picked);
+        count = shown;
+        Text::new(crate::i18n::tr(&lang, "{count} glyphs — click to insert at the text cursor").replace("{count}", &shown.to_string()))
+            .role(TypeRole::Caption)
+            .shade(Shade::Muted)
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+    });
+    let _ = count;
+    if let Some(c) = insert {
+        match app.run("text.insert", json!({"text": c.to_string(), "raw": true})) {
+            Ok(_) => {
+                st.recent.retain(|x| *x != c);
+                st.recent.insert(0, c);
+                st.recent.truncate(12);
+            }
+            Err(e) => app.status_error("Glyphs", e),
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, st));
+}
+
+/// The font at the text cursor, until the user chooses another.
+fn default_font(app: &mut DesignApp, st: &mut State) {
+    if st.family.is_empty() {
+        let a = super::text_attrs(app);
+        st.family = a
+            .as_ref()
+            .and_then(|a| a["chars"]["fontFamily"].as_str().map(str::to_string))
+            .unwrap_or_else(|| designcraft_fonts::DEFAULT_FAMILY.into());
+        st.style = a.as_ref().and_then(|a| a["chars"]["fontStyle"].as_str().map(str::to_string)).unwrap_or_else(|| "Regular".into());
+    }
+}
+
 fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        show_framework_contents(app, ui);
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let framework = app.framework_installed;
     #[cfg(target_arch = "wasm32")]
@@ -121,14 +198,7 @@ fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     let id = egui::Id::unique("glyphs_panel");
     let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     // Default to the font at the text cursor.
-    if st.family.is_empty() {
-        let a = super::text_attrs(app);
-        st.family = a
-            .as_ref()
-            .and_then(|a| a["chars"]["fontFamily"].as_str().map(str::to_string))
-            .unwrap_or_else(|| designcraft_fonts::DEFAULT_FAMILY.into());
-        st.style = a.as_ref().and_then(|a| a["chars"]["fontStyle"].as_str().map(str::to_string)).unwrap_or_else(|| "Regular".into());
-    }
+    default_font(app, &mut st);
     let (db, scope) = (super::fonts(app), super::font_scope(app));
     ui.horizontal(|ui| {
         if let Some(f) = super::font_combo(app, ui, "glyph_family", &st.family, 140.0) {
@@ -173,18 +243,15 @@ fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(id, st));
 }
 
-/// The characters of font `family` `style` in a grid (those matching `query`, a character or
-/// U+code, when it isn't empty), at most `max_height` tall and scrolling: the character clicked,
-/// and how many are shown.
-pub fn grid(
-    ui: &mut egui::Ui,
-    db: &designcraft_fonts::ScopedFonts<'_>,
-    scope: u32,
-    family: &str,
-    style: &str,
-    query: &str,
-    max_height: f32,
-) -> (Option<char>, usize) {
+/// What a grid shows: the characters, their columns, and the one texture they are drawn into.
+struct GridModel {
+    chars: Vec<char>,
+    cols: u32,
+    tex: egui::TextureHandle,
+}
+
+/// The characters of font `family` `style` matching `query`, in as many columns as fit `ui`, and their texture.
+fn grid_model(ui: &mut egui::Ui, db: &designcraft_fonts::ScopedFonts<'_>, scope: u32, family: &str, style: &str, query: &str) -> GridModel {
     let t = Tokens::get(ui.ctx());
     let face = db.face(family, style);
     let q = query.trim();
@@ -218,6 +285,23 @@ pub fn grid(
             h
         }
     };
+    GridModel { chars, cols, tex }
+}
+
+/// The characters of font `family` `style` in a grid (those matching `query`, a character or
+/// U+code, when it isn't empty), at most `max_height` tall and scrolling: the character clicked,
+/// and how many are shown.
+pub fn grid(
+    ui: &mut egui::Ui,
+    db: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    style: &str,
+    query: &str,
+    max_height: f32,
+) -> (Option<char>, usize) {
+    let t = Tokens::get(ui.ctx());
+    let GridModel { chars, cols, tex } = grid_model(ui, db, scope, family, style, query);
     let rows = (chars.len() as u32).div_ceil(cols);
     let mut picked = None;
     egui::ScrollArea::vertical().id_salt(("glyph_scroll", family, style)).max_height(max_height).show(ui, |ui| {
@@ -252,6 +336,168 @@ pub fn grid(
         }
     });
     (picked, chars.len())
+}
+
+/// The same grid as a framework component in a framework scroll area, for the panels that show the framework: the
+/// character clicked, and how many are shown. The Bullets page of the paragraph style dialog uses it too.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn framework_grid(
+    ui: &mut egui::Ui,
+    language: &str,
+    db: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    style: &str,
+    query: &str,
+    max_height: f32,
+) -> (Option<char>, usize) {
+    use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::layout_components::Stack;
+
+    let GridModel { chars, cols, tex } = grid_model(ui, db, scope, family, style, query);
+    let count = chars.len();
+    let height = ((count as u32).div_ceil(cols) as f32 * CELL).min(max_height);
+    let mut picked = None;
+    Stack::new().id_salt(("glyph_scroll", family, style)).fill_width().scroll(Scroll::vertical()).room_height(height).show(ui, |ui, _| {
+        picked = glyph_grid::GlyphGrid::new(crate::i18n::tr(language, "Glyphs").to_owned(), chars.clone(), cols, tex.clone())
+            .id_salt("glyph_grid")
+            .show(ui)
+            .picked;
+    });
+    (picked, count)
+}
+
+/// The glyph grid as a framework component: the characters of a face in one texture with cell borders, a hovered cell
+/// outlined, and the character of the cell clicked as its output. It has no keyboard handling, as the native grid
+/// has none.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod glyph_grid {
+    use super::CELL;
+    use craft_behavior::{Metrics, PressPhase, Sense};
+    use craft_ui_widgets::contract::{Common, Component, Cx, Input, MeasureCx, NoValue, Outcome, PaintUi, PartsCx, Pointer as _, Props as _, Role};
+    use craft_ui_widgets::runtime::env::Label;
+    use craft_ui_widgets::runtime::focus::KeyUse;
+    use craft_ui_widgets::style::{ComponentStyle, StyleCx};
+    use egui::{Rect, Vec2, pos2, vec2};
+
+    const AREA: craft_behavior::PartKey = craft_behavior::PartKey::new("glyphs");
+
+    /// The look of the grid: no surface of its own, the painting is the grid's.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct GlyphGridStyle;
+
+    impl ComponentStyle for GlyphGridStyle {
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// What the grid reports: its response and the character clicked in this pass.
+    #[derive(Debug)]
+    pub(crate) struct GlyphGridOutput {
+        pub(crate) response: egui::Response,
+        pub(crate) picked: Option<char>,
+    }
+
+    impl Outcome for GlyphGridOutput {
+        type Value = NoValue;
+
+        fn response(&self) -> &egui::Response {
+            &self.response
+        }
+    }
+
+    /// The characters of a face in a grid of `cols` columns, drawn from `texture`.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(content_painter)]
+    pub(crate) struct GlyphGrid {
+        #[common]
+        common: Common,
+        chars: Vec<char>,
+        cols: u32,
+        texture: egui::TextureHandle,
+        picked: Option<char>,
+    }
+
+    impl GlyphGrid {
+        /// A grid named `label` over `chars` in `cols` columns.
+        pub(crate) fn new(label: impl Into<Label>, chars: Vec<char>, cols: u32, texture: egui::TextureHandle) -> Self {
+            GlyphGrid { common: Common::new(), chars, cols: cols.max(1), texture, picked: None }.label(label)
+        }
+
+        fn rows(&self) -> u32 {
+            (self.chars.len() as u32).div_ceil(self.cols)
+        }
+
+        /// The character at the point `p` of a grid at `rect`.
+        fn cell_at(&self, rect: Rect, p: egui::Pos2) -> Option<char> {
+            if !rect.contains(p) {
+                return None;
+            }
+            let (cx, cy) = (((p.x - rect.min.x) / CELL) as u32, ((p.y - rect.min.y) / CELL) as u32);
+            self.chars.get((cy * self.cols + cx.min(self.cols - 1)) as usize).copied()
+        }
+    }
+
+    impl Component for GlyphGrid {
+        const ROLE: Role = Role::GROUP;
+        const OVERLAYS: bool = false;
+        const KEYS: KeyUse = KeyUse::of(Input::Pointer);
+        type Style = GlyphGridStyle;
+        type Output = GlyphGridOutput;
+
+        fn style(_: &StyleCx<'_>, _: GlyphGridStyleKey) -> GlyphGridStyle {
+            GlyphGridStyle
+        }
+
+        fn measure(&mut self, _: &MeasureCx<'_, Self>) -> Vec2 {
+            vec2(self.cols as f32 * CELL, self.rows() as f32 * CELL)
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::HOVER
+        }
+
+        fn parts(&mut self, rect: Rect, cx: &mut PartsCx<'_, Self>) {
+            cx.part(AREA, rect).sense(Sense::CLICK);
+        }
+
+        /// A click on a cell picks its character.
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            if let PressPhase::Release { start, click: true, .. } = cx.part(AREA).press.phase {
+                self.picked = self.cell_at(cx.rect, start.origin);
+            }
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let t = crate::theme::Tokens::get(&cx.ctx);
+            let content = ui.content_painter(cx);
+            let p = &content.painter;
+            let r = cx.rect;
+            p.rect_filled(r, 0.0, t.input);
+            p.image(self.texture.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+            let stroke = egui::Stroke::new(1.0, t.border);
+            for c in 1..self.cols {
+                let x = r.min.x + c as f32 * CELL;
+                p.line_segment([pos2(x, r.min.y), pos2(x, r.max.y)], stroke);
+            }
+            for row in 1..self.rows() {
+                let y = r.min.y + row as f32 * CELL;
+                p.line_segment([pos2(r.min.x, y), pos2(r.max.x, y)], stroke);
+            }
+            if let Some(pos) = cx.ctx.input(|i| i.pointer.hover_pos())
+                && self.cell_at(r, pos).is_some()
+            {
+                let (cx_, cy_) = (((pos.x - r.min.x) / CELL).floor(), ((pos.y - r.min.y) / CELL).floor());
+                let cell = Rect::from_min_size(r.min + vec2(cx_ * CELL, cy_ * CELL), vec2(CELL, CELL));
+                p.rect_stroke(cell, 0.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+            }
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> GlyphGridOutput {
+            GlyphGridOutput { response: cx.response.clone(), picked: self.picked }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -636,9 +882,11 @@ mod framework_actions_tests {
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
         let family_name = label(&h, "Font Family");
-        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.label().as_deref() == Some(family_name.as_str())).rect().center();
+        // The framework family field is a button that opens the Font menu popover (the framework has no combo opener for an
+        // app-owned popover), so it is a Button named "Font Family" rather than a ComboBox.
+        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(family_name.as_str())).rect().center();
         click_at(&mut h, pos);
-        // The unchanged family menu naturally puts typing in its real search field.
+        // The family menu naturally puts typing in its real search field.
         event(&mut h, Event::Text("Source Sans 3".to_owned()));
         steps(&mut h, 2);
         let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Source Sans 3")).rect().center();

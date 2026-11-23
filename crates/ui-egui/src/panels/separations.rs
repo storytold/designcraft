@@ -43,12 +43,26 @@ fn mode_button(ui: &mut egui::Ui, framework: bool, kind: &str, label: &str, on: 
 
 fn mode_actions(ui: &mut egui::Ui, lang: &str, framework: bool, on: bool, limit: Option<f32>) -> Option<serde_json::Value> {
     let mut run = None;
+    let modes = [
+        ("off", "Off", !on, json!({"plate": null, "inkLimit": null})),
+        ("separations", "Separations", on && limit.is_none(), json!({"plate": "all", "inkLimit": null})),
+        ("ink-limit", "Ink Limit", limit.is_some(), json!({"inkLimit": limit.unwrap_or(300.0)})),
+    ];
+    #[cfg(not(target_arch = "wasm32"))]
+    if framework {
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        use craft_ui_widgets::layout_components::Row;
+
+        Row::new().id_salt("separations_modes").show(ui, |ui, _| {
+            for (kind, label, selected, params) in &modes {
+                if mode_button(ui, true, kind, tr(lang, label), *selected) && !*selected {
+                    run = Some(params.clone());
+                }
+            }
+        });
+        return run;
+    }
     ui.horizontal(|ui| {
-        let modes = [
-            ("off", "Off", !on, json!({"plate": null, "inkLimit": null})),
-            ("separations", "Separations", on && limit.is_none(), json!({"plate": "all", "inkLimit": null})),
-            ("ink-limit", "Ink Limit", limit.is_some(), json!({"inkLimit": limit.unwrap_or(300.0)})),
-        ];
         for (kind, label, selected, params) in modes {
             if mode_button(ui, framework, kind, tr(lang, label), selected) && !selected {
                 run = Some(params);
@@ -78,12 +92,14 @@ fn ink_plate_button(
     let label = if plate.is_some() { format!("{}: {name}", tr(&app.ui.language, "Plate")) } else { name.to_owned() };
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::contract::{Props as _, Show as _, Sizing};
         return craft_ui_widgets::buttons::Button::new(label)
             .painted(name.to_owned())
             .id(id)
             .enabled(enabled)
             .selected(selected)
+            .align(craft_ui_widgets::primitives::HAlign::Start)
+            .sizing(Sizing::FillWidth)
             .size(craft_theme::ControlSize::Sm)
             .variant(craft_ui_widgets::style::Variant::GHOST)
             .show(ui)
@@ -101,7 +117,120 @@ fn ink_plate_button(
 }
 // SEPARATIONS_PLATE_ADAPTER_END
 
+/// The panel on the framework: the mode buttons, the ink limit field, and a row for each plate (its swatch, its button and
+/// the percentage under the pointer). The commands are the native panel's.
+#[cfg(not(target_arch = "wasm32"))]
+fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
+    use craft_ui_widgets::form::Field;
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::style::TypeRole;
+    use craft_ui_widgets::text::NumberField;
+
+    let lang = app.ui.language.clone();
+    let sep = app.ui.separations.clone();
+    let mut run: Option<serde_json::Value> = None;
+    Stack::new().id_salt("separations").fill_width().show(ui, |ui, _| {
+        run = mode_actions(ui, &lang, true, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit));
+        if let Some(limit) = sep.as_ref().and_then(|s| s.ink_limit) {
+            let label = tr(&lang, "Ink Limit");
+            Field::new(label.to_owned()).id_salt("separations_ink_limit_field").sizing(Sizing::Content).show(ui, |ui, _| {
+                let out = NumberField::new(label.to_owned(), Bind::given(Some(f64::from(limit))))
+                    .id_salt("separations_ink_limit")
+                    .unit("%".to_owned())
+                    .range(0.0..=400.0)
+                    .step(1.0)
+                    .show(ui);
+                if let Some(value) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
+                    run = Some(json!({"inkLimit": value}));
+                }
+            });
+        }
+    });
+    if let Some(p) = run.take() {
+        if let Err(e) = app.run("view.separations", p) {
+            app.status_error("Separations Preview", e);
+        }
+        return;
+    }
+    let note = |ui: &mut egui::Ui, text: String| {
+        Text::new(text).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+    };
+    let Some(sep) = sep else {
+        Stack::new()
+            .id_salt("separations_empty")
+            .fill_width()
+            .show(ui, |ui, _| note(ui, tr(&lang, "Shows the plates the exported PDF prints.").to_owned()));
+        return;
+    };
+    let Some(designcraft_doc::SpreadRef::Doc(si)) = crate::canvas::current_spread(app) else { return };
+    let sheet = match app.canvas.separations.sheet(si) {
+        None => {
+            Stack::new().id_salt("separations_wait").fill_width().show(ui, |ui, _| note(ui, tr(&lang, "Separating…").to_owned()));
+            return;
+        }
+        Some(Err(e)) => {
+            let message = e.to_string();
+            Stack::new().id_salt("separations_error").fill_width().show(ui, |ui, _| note(ui, message));
+            return;
+        }
+        Some(Ok(sheet)) => sheet.clone(),
+    };
+    // Each ink's percentage under the pointer.
+    let k = f64::from(sheet.plates.dpi) / 72.0;
+    let coverage = app.canvas.separations.pointer.filter(|(psi, _)| *psi == si).and_then(|(_, p)| {
+        let (x, y) = ((p.x - sheet.area.x0) * k, (p.y - sheet.area.y0) * k);
+        (x >= 0.0 && y >= 0.0).then(|| sheet.plates.coverage_at(x as u32, y as u32, &[])).flatten()
+    });
+    let pct = |v: Option<f32>| v.map_or_else(String::new, |v| format!("{v:.0}%"));
+    let app_ref: &DesignApp = app;
+    let row = |ui: &mut egui::Ui, selected: bool, color: Option<egui::Color32>, plate: Option<usize>, name: &str, value: String| -> bool {
+        let mut clicked = false;
+        Row::new().id_salt(("separations_row", plate)).fill_width().show(ui, |ui, _| {
+            Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                if let Some(c) = color {
+                    cx.painter.rect_filled(egui::Rect::from_center_size(rect.center(), egui::vec2(12.0, 12.0)), 1.0, c);
+                }
+            })
+            .id_salt(("separations_swatch", plate))
+            .show(ui);
+            clicked = ink_plate_button(app_ref, ui, &sheet, si, plate, name, selected);
+            Text::new(value.clone()).role(TypeRole::Caption).show(ui);
+        });
+        clicked
+    };
+    let mut pick: Option<serde_json::Value> = None;
+    Stack::new().id_salt("separations_plates").fill_width().show(ui, |ui, _| {
+        Divider::horizontal().show(ui);
+        if row(ui, sep.plate.is_none(), None, None, tr(&lang, "All Inks"), pct(coverage.as_ref().map(|c| c.total))) {
+            pick = Some(json!({"plate": "all"}));
+        }
+        for (id, ink) in sheet.plates.inks.iter() {
+            let selected = sep.plate.as_deref().and_then(|n| sheet.ink(n)) == Some(id);
+            let value = pct(coverage.as_ref().and_then(|c| c.inks.get(id.index()).copied()));
+            if row(ui, selected, Some(ink_color(ink)), Some(id.index()), ink.name(), value) {
+                pick = Some(json!({"plate": if selected { "all" } else { ink.name() }}));
+            }
+        }
+        for name in &sheet.plates.unseparated {
+            note(ui, format!("{name} ({})", tr(&lang, "not separated")));
+        }
+    });
+    if let Some(p) = pick
+        && let Err(e) = app.run("view.separations", p)
+    {
+        app.status_error("Separations Preview", e);
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        show_framework(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let sep = app.ui.separations.clone();
