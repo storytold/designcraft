@@ -215,7 +215,7 @@ impl<'a> Ex<'a> {
         // Tracked changes wrap the text they mark.
         if let Some(kind) = change_type(f.over.change) {
             for c in csrs.iter_mut().filter(|c| c.name == "CharacterStyleRange" && !c.children.is_empty()) {
-                let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
+                let mut ch = crate::xml::from_craft(craft_idml::model::tracked_change_el(&self.fresh(), kind, Vec::new()));
                 ch.children = std::mem::take(&mut c.children);
                 c.push(ch);
             }
@@ -230,7 +230,7 @@ impl<'a> Ex<'a> {
                 Some(kind) => match c.children.last_mut() {
                     Some(Node::El(ch)) if ch.name == "Change" && ch.get("ChangeType") == Some(kind) => ch.push(El::new("Br")),
                     _ => {
-                        let mut ch = El::new("Change").attr("Self", self.fresh()).attr("ChangeType", kind);
+                        let mut ch = crate::xml::from_craft(craft_idml::model::tracked_change_el(&self.fresh(), kind, Vec::new()));
                         ch.push(El::new("Br"));
                         c.push(ch);
                     }
@@ -284,13 +284,12 @@ impl<'a> Ex<'a> {
         let page = x.page.clone().unwrap_or_else(|| "?".into());
         for (n, part) in t.split(designcraft_doc::xref::PAGE_NUM_BLOCK).enumerate() {
             if n > 0 {
-                c.push(
-                    El::new("TextVariableInstance")
-                        .attr("Self", self.fresh())
-                        .attr("Name", "<?AID 001b?>TV XRefPageNumber")
-                        .attr("ResultText", &page)
-                        .attr("AssociatedTextVariable", "dTextVariablen<?AID 001b?>TV XRefPageNumber"),
-                );
+                c.push(crate::xml::from_craft(craft_idml::model::text_variable_instance_el(
+                    &self.fresh(),
+                    "<?AID 001b?>TV XRefPageNumber",
+                    &page,
+                    "dTextVariablen<?AID 001b?>TV XRefPageNumber",
+                )));
             }
             if !part.is_empty() {
                 let mut content = El::new("Content");
@@ -402,12 +401,12 @@ impl<'a> Ex<'a> {
                         let fmt = self.d.xref_formats.iter().position(|ff| ff.name == x.format).map_or("n".to_string(), xref_format_self);
                         let mut c = self.csr_el(&f);
                         self.xref_content(&mut c, x);
-                        let mut src = El::new("CrossReferenceSource")
-                            .attr("Self", &me)
-                            .attr("AppliedFormat", fmt)
-                            .attr("Name", format!("Cross-Reference {}", self.xref_sources.len() + 1))
-                            .attr("Hidden", "false");
-                        src.push(c);
+                        let src = crate::xml::from_craft(craft_idml::model::CrossReferenceSource::to_el(
+                            &me,
+                            &fmt,
+                            &format!("Cross-Reference {}", self.xref_sources.len() + 1),
+                            crate::xml::to_craft(&c),
+                        ));
                         csrs.push(src);
                         self.xref_sources.push((me, x.target));
                     }
@@ -416,13 +415,12 @@ impl<'a> Ex<'a> {
                     flush_content(&mut pending, &mut out);
                     if let Some(v) = self.d.text_variables.get(vi) {
                         let result = self.d.variable_value(vi, None).unwrap_or_else(|| format!("{}{}", v.before, v.after));
-                        out.push(Node::El(
-                            El::new("TextVariableInstance")
-                                .attr("Self", self.fresh())
-                                .attr("Name", &v.name)
-                                .attr("ResultText", result)
-                                .attr("AssociatedTextVariable", format!("dTextVariablen{}", v.name)),
-                        ));
+                        out.push(Node::El(crate::xml::from_craft(craft_idml::model::text_variable_instance_el(
+                            &self.fresh(),
+                            &v.name,
+                            &result,
+                            &format!("dTextVariablen{}", v.name),
+                        ))));
                     }
                 } else if ch == designcraft_doc::NOTE_MARK {
                     // Editorial notes aren't written to IDML yet.
