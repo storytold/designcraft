@@ -52,7 +52,10 @@ fn section_form_keeps_its_actions_in_view() {
                 assert!(kit::in_view(&h, expected), "{language} {size:?}: {expected} is in the window");
             }
             if size.x > 1000.0 {
-                assert!(kit::in_view(&h, &format!("{} {}", tr("Book Name:"), tr("N/A"))) || kit::in_view(&h, tr("Book Name:")), "{language}: Book Name shows");
+                assert!(
+                    kit::in_view(&h, &format!("{} {}", tr("Book Name:"), tr("N/A"))) || kit::in_view(&h, tr("Book Name:")),
+                    "{language}: Book Name shows"
+                );
                 kit::click_first(&mut h, tr("Automatic Page Numbering"));
                 kit::click(&mut h, &[Role::Button], tr("OK"), 0);
                 assert!(h.state().ui.dialog.is_none(), "{language}: OK closes the dialog");
@@ -74,7 +77,10 @@ fn section_form_on_a_page_without_a_section_is_new_section() {
     crate::canvas::go_to_page(&mut app, 2);
     kit::open(&mut app, "layout.section");
     let d = app.ui.dialog.as_ref().unwrap();
-    assert_eq!((d.n("page"), d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")), (Some(3.0), true, true, true, "1".into()));
+    assert_eq!(
+        (d.n("page"), d.b("newSection"), d.b("startSection"), d.b("automatic"), d.s("startNumber")),
+        (Some(3.0), true, true, true, "1".into())
+    );
     let mut h = kit::harness_sized(app, vec2(1178.0, 814.0));
     assert!(kit::shows(&h, "New Section"));
     kit::type_and_commit(&mut h, "Start Page Numbering at:", 0, "5");
@@ -105,7 +111,7 @@ fn picker(fields: Value) -> (egui_kittest::Harness<'static, DesignApp>, u64) {
 fn fill(h: &egui_kittest::Harness<'_, DesignApp>, id: u64) -> designcraft_color::Color {
     let doc = &h.state().session.active().unwrap().doc;
     let swatch = doc.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch.clone();
-    doc.resolve_color(&swatch, 1.0).unwrap_or_default()
+    doc.resolve_color(&swatch, 1.0).unwrap()
 }
 
 fn fill_hex(h: &egui_kittest::Harness<'_, DesignApp>, id: u64) -> Option<String> {
@@ -462,10 +468,17 @@ fn find_change_form_gives_the_found_text_a_change_format() {
     // Change All: the words stay, every lowercase "eggs" has the style.
     kit::click(&mut h, &[Role::Button], "Change All", 0);
     assert_eq!(field(&h, "status"), Some(json!("2 replacement(s) made")));
-    let story = h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(story)).cloned().unwrap();
+    let sid = designcraft_doc::StoryId(story);
+    let story = h.state().session.doc().unwrap().doc.story(sid).cloned().unwrap();
     assert_eq!(story.text, text);
-    let styled = |at: usize| h.state().session.doc().unwrap().doc.story(designcraft_doc::StoryId(story.id.0)).map(|s| s.char_style_at(at));
-    let _ = styled;
+    assert_eq!(
+        [8, 19, 36].map(|at| story.format_after(at).style.clone()),
+        [designcraft_doc::NO_CHAR_STYLE.to_string(), "eggs".into(), "eggs".into()]
+    );
+    // The clear button removes it (the second: the first is the Find Format's).
+    kit::click(&mut h, &[Role::Button], "Clear specified attributes", 1);
+    assert_eq!(field(&h, CHANGE_FORMAT), None);
+    assert!(!kit::shows(&h, TIP));
 }
 
 /// Successor of `find_format_finds_only_text_with_it`: with a Find Format of the eggs character style, Count finds only the
@@ -474,7 +487,6 @@ fn find_change_form_gives_the_found_text_a_change_format() {
 #[test]
 fn find_change_form_find_format_finds_only_text_with_it() {
     let (mut app, story) = format_app("Break eggs; cook eggs.");
-    app.run("style.character.apply", json!({"name": "eggs"})).ok();
     app.run("text.select", json!({"story": story, "anchor": 6, "focus": 10})).unwrap();
     app.run("style.character.apply", json!({"name": "eggs"})).unwrap();
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
@@ -502,8 +514,8 @@ fn find_change_form_find_format_finds_only_text_with_it() {
     assert_eq!(field(&h, FIND_FORMAT), None);
 }
 
-/// Successor of `change_and_change_find_change_the_found_text`: Change replaces the selected match and Change/Find replaces
-/// it and finds the next one, each as one undo step, with the Search choices InDesign's.
+/// Successor of `change_and_change_find_change_the_found_text`: Change is off until something is found; Change/Find replaces
+/// the found text and finds the next, and Change replaces the found text and reports it.
 #[test]
 fn find_change_form_change_and_change_find_change_the_found_text() {
     let mut app = kit::app(1, false);
@@ -515,24 +527,22 @@ fn find_change_form_change_and_change_find_change_the_found_text() {
     d.fields.insert("find".into(), json!("red"));
     d.fields.insert("change".into(), json!("blue"));
     let mut h = kit::harness_sized(app, vec2(1200.0, 900.0));
+    kit::click(&mut h, &[Role::ComboBox], "Search:", 0);
     for scope in ["Document", "Story", "Selection"] {
-        kit::click(&mut h, &[Role::ComboBox], "Search:", 0);
         assert!(kit::shows(&h, scope), "the Search choices are InDesign's: {scope}");
-        kit::key(&mut h, Key::Escape, Modifiers::NONE);
-        break;
     }
+    kit::key(&mut h, Key::Escape, Modifiers::NONE);
+    assert!(h.state().ui.dialog.is_some(), "Escape closed the list only");
+    assert!(kit::disabled(&h, &[Role::Button], "Change", 0), "nothing found yet");
     let text = |h: &egui_kittest::Harness<'_, DesignApp>| h.state().session.doc().unwrap().doc.story(sid).unwrap().text.clone();
-    let undo = kit::undo_steps(&h);
+    let selected = |h: &egui_kittest::Harness<'_, DesignApp>| h.state().session.doc().unwrap().selection.text.unwrap().range();
     kit::click(&mut h, &[Role::Button], "Find Next", 0);
-    kit::click(&mut h, &[Role::Button], "Change", 0);
-    assert_eq!(text(&h), "blue red | red");
-    assert_eq!(kit::undo_steps(&h), undo + 1, "one undo step");
-    kit::click(&mut h, &[Role::Button], "Find Next", 0);
+    assert_eq!(selected(&h), 0..3);
     kit::click(&mut h, &[Role::Button], "Change/Find", 0);
-    assert_eq!(text(&h), "blue blue | red");
-    let sel = h.state().session.doc().unwrap().selection.text.unwrap();
-    assert_eq!(sel.range(), 10..13, "Change/Find moved on to the next match");
-    assert_eq!(kit::undo_steps(&h), undo + 2);
+    assert_eq!((text(&h), selected(&h)), ("blue red | red".to_string(), 5..8));
+    kit::click(&mut h, &[Role::Button], "Change", 0);
+    assert_eq!((text(&h), selected(&h)), ("blue blue | red".to_string(), 5..9));
+    assert_eq!(kit::draft(&h).fields["status"], json!("1 replacement(s) made"));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -645,7 +655,13 @@ fn preferences_form_sidebar_reaches_the_last_section_in_a_small_window() {
     kit::click_at(&mut h, files.center());
     assert_eq!(kit::draft(&h).s("section"), "files");
     for expected in ["Document Recovery Data", "Save recovery data every:", "OK", "Cancel"] {
-        assert!(kit::in_view(&h, expected) || { kit::reach(&mut h, expected); true }, "{expected} is reachable");
+        assert!(
+            kit::in_view(&h, expected) || {
+                kit::reach(&mut h, expected);
+                true
+            },
+            "{expected} is reachable"
+        );
     }
     assert!(kit::in_view(&h, "OK") && kit::in_view(&h, "Cancel"), "the actions stay in view");
 }

@@ -70,7 +70,8 @@ fn dialog_frame(app: &mut Rig, _ctx: &egui::Context, _screen: egui::Rect, events
 fn scope_click(app: &mut Rig, _ctx: &egui::Context, _screen: egui::Rect, label: &str) {
     kit::steps(&mut app.0, 1);
     let h = &mut app.0;
-    let listed = |h: &egui_kittest::Harness<'_, DesignApp>| h.query_all_by_label(label).any(|node| node.accesskit_node().role() == Role::ListBoxOption);
+    let listed =
+        |h: &egui_kittest::Harness<'_, DesignApp>| h.query_all_by_label(label).any(|node| node.accesskit_node().role() == Role::ListBoxOption);
     if SCOPES.contains(&label) {
         if !listed(h) {
             kit::click(h, &[Role::ComboBox], "Search:", 0);
@@ -816,4 +817,3 @@ fn find_scope_form_domain_and_object_changes_release_original_range() {
         assert_eq!(app.run("find.find", json!({"find": "red", "scope": "selection"})).unwrap().as_array().unwrap().len(), 1);
     }
 }
-

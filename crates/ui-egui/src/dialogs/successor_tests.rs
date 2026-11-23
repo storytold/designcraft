@@ -425,7 +425,9 @@ fn diagonal_lines_form_applies_its_values_but_not_a_mixed_one() {
     assert!(h.state().ui.dialog.is_none());
     let t = table_of(&h, table);
     assert!(
-        t.cells.iter().all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::Crossed && !c.diagonal.in_front && c.diagonal.stroke.weight == 0.5)
+        t.cells
+            .iter()
+            .all(|c| c.diagonal.lines == designcraft_doc::DiagonalLines::Crossed && !c.diagonal.in_front && c.diagonal.stroke.weight == 0.5)
     );
     let colors: Vec<_> = t.cells.iter().map(|c| c.diagonal.stroke.color.as_str()).collect();
     assert_eq!(colors, ["[Paper]", "[Black]", "[Black]", "[Black]"], "a mixed value is left as it is");
