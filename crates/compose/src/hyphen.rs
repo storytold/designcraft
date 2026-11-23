@@ -188,7 +188,9 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         }
     }
     // `-ing` is a syllable of its own and breaks off a stem the list has (staff-ing, stiff-ing,
-    // scoff-ing, pull-ing), which the patterns do not find after a doubled f.
+    // scoff-ing, pull-ing), which the patterns do not find after a doubled f. The rule is for any
+    // word ending in `ing` whose stem of three or more letters is in the list, not only a stem
+    // ending in a doubled f.
     if let Some(stem) = s.strip_suffix("ing")
         && stem.chars().count() >= 3
         && let Some(m) = dict.get(stem)
@@ -619,6 +621,11 @@ mod tests {
         assert_eq!(word_breaks("restrained").0, vec![2]);
         assert_eq!(h("Staffing"), "Staff-ing");
         assert_eq!(h("afflicted"), "af-flict-ed");
+        // The two-letter "ed" is allowed by the default limits (as InDesign's) and dropped by the
+        // limit of three letters before the last break.
+        let three = Limits { before_last: 3, ..Limits::default() };
+        assert_eq!(hyphen_points("afflicted", &Limits::default()), vec![2, 7]);
+        assert_eq!(hyphen_points("afflicted", &three), vec![2]);
     }
 
     #[test]
