@@ -76,6 +76,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         crate::effects_dialog::ID => Some(crate::effects_dialog::FORM),
         crate::object_style_dialog::ID => Some(crate::object_style_dialog::FORM),
         "cellOptions" | "diagonalLines" => Some(super::cell_options_form::FORM),
+        id if super::command_form::is_generic(id) => Some(super::command_form::COMMAND_FORM),
         _ => None,
     }
 }
