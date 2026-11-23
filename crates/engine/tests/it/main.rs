@@ -16,6 +16,8 @@ mod pdf_backend;
 mod preflight_resolution;
 mod primary_frame_columns;
 #[cfg(not(target_arch = "wasm32"))]
+mod save_readability;
+#[cfg(not(target_arch = "wasm32"))]
 mod save_state_atomicity;
 mod stroke_tint_range;
 mod text_decorations;
