@@ -258,6 +258,54 @@ pub(super) fn choice(ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, label: &
     }
 }
 
+/// The swatches a colour menu offers: the document's, after the text's own colour where the attribute has one, each shown
+/// with its colour chip.
+pub(super) struct Swatches<'a> {
+    options: Vec<(Value, String)>,
+    doc: Option<&'a designcraft_doc::Document>,
+}
+
+impl<'a> Swatches<'a> {
+    /// The visible swatches of `doc`; `text_color` names the entry for the text's own colour when there is one.
+    pub(super) fn new(doc: Option<&'a designcraft_doc::Document>, text_color: Option<String>) -> Self {
+        let mut options = Vec::new();
+        if let Some(caption) = text_color {
+            options.push((json!(designcraft_doc::TEXT_COLOR), caption));
+        }
+        options.extend(doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))));
+        Swatches { options, doc }
+    }
+}
+
+/// A picker over the swatches of `menu` for the draft attribute `key`: the value picked in this pass.
+pub(super) fn swatch_choice(ui: &mut Ui, d: &Dialog, a: &Attrs, key: &str, label: &str, menu: &Swatches, enabled: bool) -> Option<Value> {
+    let current = a.get(d, key);
+    let at = menu.options.iter().position(|(value, _)| *value == current);
+    let entries: Vec<Entry<usize>> = menu.options.iter().enumerate().map(|(i, (_, caption))| Entry::new(i, caption.clone())).collect();
+    let chips: Vec<Option<(Option<egui::Color32>, Option<(egui::Color32, egui::Color32)>)>> = menu
+        .options
+        .iter()
+        .map(|(value, _)| {
+            let name = value.as_str().filter(|name| *name != designcraft_doc::TEXT_COLOR)?;
+            menu.doc.map(|doc| crate::widgets::swatch_colors(doc, name, 1.0))
+        })
+        .collect();
+    let mut picker = Select::new(label.to_owned(), Bind::given(at.map_or(Mixed::Mixed, Mixed::Same)), &entries)
+        .keeps_name(true)
+        .id_salt(("text_form_swatch", a.field(key)))
+        .enabled(enabled)
+        .picture(move |index: &usize, cx: &craft_ui_widgets::primitives::ContentPainterCx, rect: egui::Rect| {
+            if let Some(Some((color, gradient))) = chips.get(*index) {
+                crate::widgets::paint_chip(&cx.painter, rect, *color, *gradient);
+            }
+        });
+    if let Some(name) = current.as_str().filter(|name| at.is_none() && !name.is_empty()) {
+        picker = picker.placeholder(name.to_owned());
+    }
+    let picked = picker.show(ui).events.committed().copied().filter(|picked| Some(*picked) != at)?;
+    menu.options.get(picked).map(|(value, _)| value.clone())
+}
+
 /// `options` as (stored value, caption in the interface language).
 pub(super) fn captioned(lang: &str, options: &[(&str, &str)]) -> Vec<(Value, String)> {
     options.iter().map(|(value, caption)| (json!(value), crate::i18n::tr(lang, caption).to_string())).collect()
@@ -490,11 +538,8 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
         .iter()
         .position(|k| std::mem::discriminant(k) == std::mem::discriminant(&kind) && !matches!(k, StrokeType::Style { .. }))
         .or_else(|| types.iter().position(|k| *k == kind));
-    let colors: Vec<(Value, String)> = std::iter::once((json!(designcraft_doc::TEXT_COLOR), tr("Text Color")))
-        .chain(doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))))
-        .collect();
-    let swatches: Vec<(Value, String)> =
-        doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))).collect();
+    let colors = Swatches::new(doc.map(|d| &**d), Some(tr("Text Color")));
+    let swatches = Swatches::new(doc.map(|d| &**d), None);
     let gaps = !matches!(kind, StrokeType::Solid);
     let gap_color = a.get(d, "gapColor").as_str().unwrap_or(designcraft_color::swatch::NONE).to_owned();
     let widths = vec![(json!(true), tr("Column")), (json!(false), tr("Text"))];
@@ -519,7 +564,11 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
                     a.set(d, "type", serde_json::to_value(kind).unwrap_or_default());
                 }
             });
-            field(ui, &tr("Color:"), "color", |ui| choice(ui, d, &a, "color", &tr("Color:"), &colors, on));
+            field(ui, &tr("Color:"), "color", |ui| {
+                if let Some(picked) = swatch_choice(ui, d, &a, "color", &tr("Color:"), &colors, on) {
+                    a.set(d, "color", picked);
+                }
+            });
             field(ui, &tr("Tint:"), "tint", |ui| {
                 let shown = tint(a.get(d, "tint"));
                 if let Some(Some(v)) = number_edit(ui, &a.field("tint"), &tr("Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), on) {
@@ -527,7 +576,11 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
                 }
             });
             // A solid rule has no gaps.
-            field(ui, &tr("Gap Color:"), "gapColor", |ui| choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps));
+            field(ui, &tr("Gap Color:"), "gapColor", |ui| {
+                if let Some(picked) = swatch_choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps) {
+                    a.set(d, "gapColor", picked);
+                }
+            });
             field(ui, &tr("Gap Tint:"), "gapTint", |ui| {
                 // A full gap tint is left out of the rule's JSON: it reads 100%.
                 let shown = Some(a.get(d, "gapTint").as_f64().unwrap_or(1.0));
@@ -690,6 +743,7 @@ pub(crate) fn hyphenation_form(lang: &str, ui: &mut Ui, d: &mut Dialog, prefix: 
             let value = step.map_or(Mixed::Mixed, Mixed::Same);
             let out = Slider::new(Bind::given(value), 0.0..=10.0)
                 .step(1.0)
+                .ticks(10)
                 .label(tr("Hyphenation Weight"))
                 .id_salt(("hyphenation_slider", prefix.to_owned()))
                 .show(ui);

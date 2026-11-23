@@ -5,8 +5,6 @@
 
 #[path = "cjk_forms.rs"]
 pub(crate) mod cjk_forms;
-#[path = "para_sections.rs"]
-pub(crate) mod para_sections;
 #[path = "style_kit.rs"]
 pub(crate) mod style_kit;
 #[path = "tab_forms.rs"]
@@ -14,7 +12,8 @@ pub(crate) mod tab_forms;
 
 use super::Form;
 use crate::DesignApp;
-use crate::dialogs::{CharFields, Dialog};
+use crate::dialogs::text_forms::{self, Attrs};
+use crate::dialogs::{CharFields, Dialog, paragraph_forms};
 use craft_ui_widgets::choice::{Radio, RadioGroup};
 use craft_ui_widgets::contract::{Bind, Props as _, Scroll, Show as _, ShowContainer as _};
 use craft_ui_widgets::form::FieldGroup;
@@ -153,32 +152,41 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
         let sections = crate::dialogs::style_cjk::sections(cjk, true, &base);
         let title = tr(app, "Paragraph Style Options");
         let section = d.s("section");
+        let lang = app.ui.language.as_str();
+        let attrs = Attrs::new("p.", &pv);
         Stack::new().id_salt("paragraph_style_options").fill_width().show(ui, |ui, _| {
             Row::new().id_salt("paragraph_style_layout").fill_width().show(ui, |ui, _| {
                 section_nav(app, ui, d, &sections, &title);
                 Stack::new().id_salt("paragraph_style_page").fill_width().show(ui, |ui, _| match section.as_str() {
                     "export" => export_tagging(app, ui, d, &name),
-                    "nested" => para_sections::nested(app, ui, d, &pv, &cnames),
-                    "grep" => para_sections::grep(app, ui, d, &pv, &cnames),
-                    // The shared character sections (dialogs/char_sections.rs, from the frame dialogs' branch).
+                    "nested" => paragraph_forms::nested_styles(lang, ui, d, &attrs, &cnames),
+                    "grep" => paragraph_forms::grep_styles(lang, ui, d, &attrs, &cnames),
+                    // The shared character sections (dialogs/char_sections.rs).
                     "chars" => crate::dialogs::char_sections::basic(app, ui, d, &cf),
-                    "indents" => para_sections::indents(app, ui, d, &pv, units),
+                    "indents" => indents(lang, ui, d, &attrs, units),
                     "tabs" => tabs_page(app, ui, d, &pv, &doc),
-                    "rules" => para_sections::rules(app, ui, d, "p.", &pv),
-                    "hyph" => para_sections::hyphenation(app, ui, d, "p.", &pv, units),
-                    "justify" => para_sections::justification(app, ui, d, "p.", &pv),
+                    "rules" => text_forms::rules_form(app, ui, d, "p.", &pv),
+                    "hyph" => text_forms::hyphenation_form(lang, ui, d, "p.", &pv, units),
+                    "justify" => text_forms::justification_form(lang, ui, d, "p.", &pv),
                     "color" => crate::dialogs::char_sections::color(app, ui, d, &cf, &doc),
                     "advanced" => crate::dialogs::char_sections::advanced(app, ui, d, &cf),
                     "openType" => crate::dialogs::char_sections::open_type(app, ui, d, &cf),
                     "underline" => crate::dialogs::char_sections::line(app, ui, d, &cf, &doc, "underline"),
                     "strikethrough" => crate::dialogs::char_sections::line(app, ui, d, &cf, &doc, "strikethrough"),
-                    "border" | "shading" => para_sections::border_shading(app, ui, d, &pv, &doc, section == "border"),
-                    "keep" => para_sections::keep(app, ui, d, &pv),
-                    "span" => para_sections::span(app, ui, d, &pv, &doc),
+                    "border" | "shading" => paragraph_forms::border_shading(lang, ui, d, &attrs, &doc, section == "border"),
+                    "keep" => paragraph_forms::keep_options(lang, ui, d, &attrs),
+                    "span" => paragraph_forms::span_columns(lang, ui, d, &attrs, &doc),
                     "bullets" => {
                         let (char_styles, families, fonts, scope) = crate::dialogs::ListUi::new_parts(app);
-                        let lu = crate::dialogs::ListUi { char_styles: &char_styles, families: &families, fonts: &fonts, scope, family: &cp.font_family, style: &cp.font_style };
-                        para_sections::bullets(app, ui, d, &pv, &doc, &lu);
+                        let bullets = paragraph_forms::Bullets {
+                            char_styles: &char_styles,
+                            families: &families,
+                            fonts: &fonts,
+                            scope,
+                            family: &cp.font_family,
+                            style: &cp.font_style,
+                        };
+                        paragraph_forms::bullets_and_numbering(lang, ui, d, &attrs, &doc, &bullets);
                     }
                     s if crate::dialogs::style_cjk::is_section(s) => cjk_forms::page(app, ui, d, s, &cf, Some(&pv), &doc),
                     _ => paragraph_general(app, ui, d, &doc, &style, &names, &based_name),
@@ -233,6 +241,34 @@ fn paragraph_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, doc: &designc
         if new && let Some(on) = toggle(ui, "style_apply", &tr(app, "Apply Style to Selection"), Some(d.b("apply")), true) {
             d.fields.insert("apply".into(), json!(on));
         }
+    });
+}
+
+/// Indents and Spacing: alignment, the five distances, Align to Grid and Ignore Optical Margin.
+fn indents(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, units: designcraft_geom::Unit) {
+    use designcraft_doc::GridAlign;
+    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    let aligns: Vec<(Value, String)> = designcraft_doc::Align::ALL.iter().filter_map(|al| Some((serde_json::to_value(al).ok()?, tr(al.label())))).collect();
+    let grid: Vec<(Value, String)> = [(GridAlign::None, "None"), (GridAlign::AllLines, "All Lines"), (GridAlign::FirstLineOnly, "First Line Only")]
+        .into_iter()
+        .filter_map(|(value, caption)| Some((serde_json::to_value(value).ok()?, tr(caption))))
+        .collect();
+    Stack::new().id_salt("style_indents").fill_width().show(ui, |ui, _| {
+        FieldGroup::new(tr("Indents and Spacing")).id_salt("style_indents_fields").show(ui, |ui, _| {
+            text_forms::field(ui, &tr("Alignment:"), "align", |ui| text_forms::choice(ui, d, a, "align", &tr("Alignment:"), &aligns, true));
+            for (caption, key) in [
+                ("Left Indent:", "leftIndent"),
+                ("First Line Indent:", "firstLineIndent"),
+                ("Right Indent:", "rightIndent"),
+                ("Space Before:", "spaceBefore"),
+                ("Space After:", "spaceAfter"),
+            ] {
+                text_forms::field(ui, &tr(caption), key, |ui| text_forms::measure(ui, d, a, key, &tr(caption), units, true));
+            }
+            // The CJK Grid Settings section edits the same `p.gridAlign` field.
+            text_forms::field(ui, &tr("Align to Grid:"), "gridAlign", |ui| text_forms::choice(ui, d, a, "gridAlign", &tr("Align to Grid:"), &grid, true));
+        });
+        text_forms::check(ui, d, a, "ignoreOpticalMargin", &tr("Ignore Optical Margin"), true);
     });
 }
 

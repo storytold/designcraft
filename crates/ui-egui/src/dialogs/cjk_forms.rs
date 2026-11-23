@@ -429,7 +429,7 @@ fn shatai(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
 
 /// A paragraph attribute as shown: the dialog's `p.<key>` edit, else the resolved value.
 fn pval(d: &Dialog, pv: &Value, key: &str) -> Value {
-    super::para_sections::val(d, "p.", pv, key)
+    crate::dialogs::text_forms::Attrs::new("p.", pv).get(d, key)
 }
 
 /// A paragraph attribute chosen from `options` (value, label); `current` is the value shown.

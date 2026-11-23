@@ -124,21 +124,6 @@ pub(crate) fn number(ui: &mut Ui, salt: &str, label: &str, value: Option<f64>, n
     input.show(ui).edit.events.committed().copied()
 }
 
-/// A whole number kept in `range` (a count of lines, letters, columns); the value committed.
-pub(crate) fn count(ui: &mut Ui, salt: &str, label: &str, value: Option<f64>, range: (u32, u32), counts: &Counts, enabled: bool) -> Option<u32> {
-    let num = Num::whole(f64::from(range.0), f64::from(range.1)).counting(counts.clone());
-    let next = number(ui, salt, label, value, &num, enabled)?;
-    Some(next.filter(|v| v.is_finite()).map_or(range.0, |v| v.round().clamp(f64::from(range.0), f64::from(range.1)) as u32))
-}
-
-/// A ratio shown as whole percents, kept in `range` (as ratios); the ratio committed.
-pub(crate) fn percent(ui: &mut Ui, salt: &str, label: &str, ratio: Option<f64>, range: (f64, f64), enabled: bool) -> Option<Option<f64>> {
-    let shown = ratio.map(|r| (r * 100.0).round());
-    let num = Num::whole(range.0 * 100.0, range.1 * 100.0).counting(Counts::Kind(UnitKind::Percent));
-    let next = number(ui, salt, label, shown, &num, enabled)?;
-    Some(next.map(|p| p / 100.0))
-}
-
 /// A text field over the string draft field `key`, every edit written as it is typed.
 pub(crate) fn text(ui: &mut Ui, d: &mut Dialog, key: &str, salt: &str, label: &str, enabled: bool) {
     let current = d.s(key);
