@@ -2488,10 +2488,11 @@ fn a_table_that_breaks_keeps_its_text_off_the_border_drawn_at_the_cut() {
     let cs = compose_story(&d, sid, &ComposeOptions::default());
     let (top, bottom) = sides(cs.frames[0].tables[0].cell(1, 0).unwrap());
     assert!((top - 0.5).abs() < 1e-6 && (bottom - 0.5).abs() < 1e-6, "{top} {bottom}");
-    // Broken between frames: the cut edges are the table border.
+    // Broken between frames: the cut edges are the table border. The first frame holds one row of
+    // 32 pt with room to spare for a border offset above it.
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
-    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 40.0), lid, "", ParaFormat::default()).unwrap();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 50.0), lid, "", ParaFormat::default()).unwrap();
     let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 600.0), lid, "", ParaFormat::default()).unwrap();
     d.thread(f1, f2).unwrap();
     d.story_mut(sid).unwrap().insert_table(0, table());
