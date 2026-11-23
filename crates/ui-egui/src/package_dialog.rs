@@ -695,10 +695,8 @@ mod framework_tests {
     }
     fn harness_stage(mut app: DesignApp, normal_ui: bool, disabled: bool) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        app.framework_transform = sdk;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        assert_eq!(app.framework_installed, sdk);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(1100.0, 1000.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {

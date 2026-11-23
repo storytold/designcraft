@@ -5,7 +5,7 @@
 
 use designcraft_doc::Intent;
 use designcraft_doc::build::{NewDocument, PRESETS};
-use designcraft_geom::units::parse_measure;
+use designcraft_geom::units::{PT_PER_MM, parse_measure};
 use designcraft_geom::{Unit, format_measure};
 use egui::{Color32, Rect, Stroke, pos2, vec2};
 use serde_json::{Map, Value, json};
