@@ -541,7 +541,7 @@ mod framework {
         Text::new(text).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
     }
 
-    fn list(app: &DesignApp, command: &str) -> Vec<Value> {
+    fn list(app: &mut DesignApp, command: &str) -> Vec<Value> {
         app.session.execute(command, &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default()
     }
 

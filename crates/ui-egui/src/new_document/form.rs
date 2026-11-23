@@ -495,7 +495,7 @@ mod tests {
         steps(h, 3);
     }
 
-    fn draft(h: &Harness<'_, DesignApp>) -> &crate::dialogs::Dialog {
+    fn draft<'h>(h: &'h Harness<'_, DesignApp>) -> &'h crate::dialogs::Dialog {
         h.state().ui.dialog.as_ref().expect("New Document is open")
     }
 
