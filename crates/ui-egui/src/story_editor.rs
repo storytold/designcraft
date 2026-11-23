@@ -645,6 +645,8 @@ mod framework {
             let mut options = TextOptions::new();
             options.lines = Some(TEXT_ROWS);
             options.size = Some(self.s.size);
+            // The text starts at the top of the editor, beside the style names and the ruler that follow its rows.
+            options.top = true;
             // The editor has no edit menu of its own, as the native editor has none.
             options.own_menu = true;
             if let Some(value) = cx.value() {
