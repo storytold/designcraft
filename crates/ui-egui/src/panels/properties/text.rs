@@ -1409,3 +1409,86 @@ pub(crate) mod framework {
         let _ = app.run("type.kernPair", json!({"kerning": kerning}));
     }
 }
+
+/// The text sections and Frame Fitting on the framework, in the real Properties panel of a real document, driven with
+/// real pointer and key events: each control runs its engine command once, as one undo step.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_tests {
+    use super::super::framework_test_kit::*;
+    use egui::accesskit::Role;
+    use serde_json::json;
+
+    fn properties(app: &mut crate::DesignApp, ui: &mut egui::Ui) {
+        crate::panels::properties::show(app, ui);
+    }
+
+    #[test]
+    fn a_typed_type_size_is_one_type_char_step() {
+        let mut app = document();
+        text_frame(&mut app, "Hello");
+        let mut h = open(app, properties);
+        let steps = undo_steps(&h);
+        type_into(&mut h, "Font Size", "24");
+        assert_eq!(journal(&h, "type.char").last(), Some(&json!({"attrs": {"size": 24.0}})));
+        assert_eq!(text_attrs(&mut h)["chars"]["size"].as_f64(), Some(24.0));
+        assert_eq!(undo_steps(&h), steps + 1, "one undo step");
+    }
+
+    #[test]
+    fn a_typed_kerning_sets_a_manual_pair_kerning() {
+        let mut app = document();
+        text_frame(&mut app, "AV");
+        let mut h = open(app, properties);
+        type_into(&mut h, "Kerning", "25");
+        assert_eq!(journal(&h, "type.kernPair").last(), Some(&json!({"kerning": {"kind": "manual", "value": 25.0}})));
+    }
+
+    #[test]
+    fn the_alignment_buttons_and_stroke_behind_fill_run_their_commands() {
+        let mut app = document();
+        text_frame(&mut app, "Hello");
+        let mut h = open(app, properties);
+        let center = designcraft_doc::Align::Center.label();
+        click(&mut h, Role::Button, center);
+        assert_eq!(text_attrs(&mut h)["para"]["align"], json!(designcraft_doc::Align::Center));
+        let steps = undo_steps(&h);
+        click(&mut h, Role::CheckBox, "Stroke Behind Fill");
+        assert_eq!(journal(&h, "type.char").last(), Some(&json!({"attrs": {"strokeBehindFill": true}})));
+        assert_eq!(undo_steps(&h), steps + 1);
+    }
+
+    #[test]
+    fn the_bulleted_list_button_turns_bullets_on() {
+        let mut app = document();
+        text_frame(&mut app, "One");
+        let mut h = open(app, properties);
+        click(&mut h, Role::Button, "Bulleted List");
+        assert_eq!(journal(&h, "list.bullets").last(), Some(&json!({"on": true})));
+        assert!(h.state().session.selection_has_list(designcraft_doc::ListType::Bullets));
+    }
+
+    #[test]
+    fn the_text_frame_columns_field_sets_the_columns() {
+        let mut app = document();
+        let (id, _) = text_frame(&mut app, "Columns");
+        let mut h = open(app, properties);
+        type_into(&mut h, "Number of Columns", "3");
+        assert_eq!(journal(&h, "object.textFrameOptions").last(), Some(&json!({"columns": 3})));
+        assert_eq!(item(&h, id).text_frame().expect("a text frame").options.columns, 3);
+    }
+
+    #[test]
+    fn frame_fitting_buttons_and_auto_fit_run_their_commands() {
+        let mut app = document();
+        let id = graphic_frame(&mut app);
+        let mut h = open(app, properties);
+        let steps = undo_steps(&h);
+        click(&mut h, Role::Button, "Fit Content Proportionally");
+        assert_eq!(journal(&h, "object.fit").last(), Some(&json!({"mode": "fitProportionally"})));
+        click(&mut h, Role::CheckBox, "Auto-Fit");
+        assert_eq!(journal(&h, "object.fittingOptions").last(), Some(&json!({"autoFit": true})));
+        assert!(item(&h, id).graphic().is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None));
+        assert!(undo_steps(&h) >= steps + 1, "the edits are undoable");
+        assert!(has(&h, Role::Button, "Options"), "Frame Fitting Options… is beside the buttons");
+    }
+}

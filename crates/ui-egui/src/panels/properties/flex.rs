@@ -16,6 +16,72 @@ const FLEX_JUSTIFY: [(&str, &str, &str); 6] = [
     ("spaceEvenly", "flex-evenly", "Space Evenly"),
 ];
 
+/// The direction buttons: direction, icon and name.
+const FLEX_DIRECTIONS: [(designcraft_doc::FlexDirection, &str, &str); 4] = [
+    (designcraft_doc::FlexDirection::Row, "flex-right", "Row"),
+    (designcraft_doc::FlexDirection::RowReverse, "flex-left", "Reverse Row"),
+    (designcraft_doc::FlexDirection::Column, "flex-down", "Column"),
+    (designcraft_doc::FlexDirection::ColumnReverse, "flex-up", "Reverse Column"),
+];
+
+/// The padding fields: icon, name, and where the icon sits in the block; in the order of `FlexLayout::padding`.
+const FLEX_PADDING: [(&str, &str, f32, f32); 4] = [
+    ("margin-top", "Top", 0.0, 0.0),
+    ("margin-inside", "Left", 112.0, 0.0),
+    ("margin-bottom", "Bottom", 0.0, 26.0),
+    ("margin-outside", "Right", 112.0, 26.0),
+];
+
+/// The spacing fields: icon, attribute, name and x.
+const FLEX_GAPS: [(&str, &str, &str, f32); 2] = [("gap-h", "gapH", "Horizontal Spacing", 0.0), ("gap-v", "gapV", "Vertical Spacing", 112.0)];
+
+/// The icon of the alignment grid's chosen cell: the direction's arrow.
+fn flex_arrow(direction: Option<designcraft_doc::FlexDirection>) -> &'static str {
+    match direction {
+        Some(designcraft_doc::FlexDirection::RowReverse) => "flex-left",
+        Some(designcraft_doc::FlexDirection::Column) => "flex-down",
+        Some(designcraft_doc::FlexDirection::ColumnReverse) => "flex-up",
+        _ => "flex-right",
+    }
+}
+
+/// Whether the alignment grid shows the cell (`col`, `row`), and whether it is the chosen one.
+fn flex_cell(f: Option<&designcraft_doc::FlexLayout>, col: usize, row: usize) -> Option<bool> {
+    let (chosen, spread_row) = flex_grid_choice(f);
+    match spread_row {
+        Some(true) if col != 0 => None,
+        Some(false) if row != 0 => None,
+        Some(true) => Some(row == chosen.1),
+        Some(false) => Some(col == chosen.0),
+        None => Some((col, row) == chosen),
+    }
+}
+
+/// The `flex.set` an edit of the width or height `key` to `v` makes: with the proportions constrained, the other
+/// side follows.
+fn flex_size_set(key: &str, v: f64, linked: bool, rect: Option<designcraft_geom::Rect>, len: Option<f64>) -> Value {
+    let mut p = json!({ key: v });
+    if linked
+        && let (Some(r), Some(len)) = (rect, len)
+        && len > 1e-9
+    {
+        let other = if key == "width" { ("height", r.height()) } else { ("width", r.width()) };
+        p[other.0] = json!(other.1 * v / len);
+    }
+    p
+}
+
+/// The padding an edit of the side `k` to `v` sets: all four while linked.
+fn flex_padding_set(pad: [f64; 4], linked: bool, k: usize, v: f64) -> [f64; 4] {
+    if linked {
+        [v; 4]
+    } else {
+        let mut p = pad;
+        p[k] = v;
+        p
+    }
+}
+
 /// The selected Flex Layout container (the first), with its objects' bounds.
 fn selected_container(app: &DesignApp) -> Option<(designcraft_doc::Item, Vec<designcraft_geom::Rect>)> {
     let st = app.session.active()?;
@@ -58,7 +124,7 @@ fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> O
     let resp = ui.interact(r, ui.scope_id().with("flex_grid"), Sense::click());
     ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let cell = r.width() / 3.0;
-    let (chosen, spread_row) = flex_grid_choice(f);
+    let (_, spread_row) = flex_grid_choice(f);
     let mut picked = None;
     for row in 0..3usize {
         for col in 0..3usize {
@@ -68,19 +134,10 @@ fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> O
                 _ => {}
             }
             let c = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
-            let on = match spread_row {
-                Some(true) => row == chosen.1,
-                Some(false) => col == chosen.0,
-                None => (col, row) == chosen,
-            };
+            let on = flex_cell(f, col, row).unwrap_or(false);
             if on && f.is_some() {
                 ui.painter().rect_filled(c.shrink(2.0), 2.0, t.well);
-                let icon = match f.map(|f| f.direction) {
-                    Some(designcraft_doc::FlexDirection::RowReverse) => "flex-left",
-                    Some(designcraft_doc::FlexDirection::Column) => "flex-down",
-                    Some(designcraft_doc::FlexDirection::ColumnReverse) => "flex-up",
-                    _ => "flex-right",
-                };
+                let icon = flex_arrow(f.map(|f| f.direction));
                 icons::paint(ui.painter(), c.shrink(3.0), icon, t.text_strong);
             } else {
                 ui.painter().circle_filled(c.center(), 1.5, t.icon);
@@ -154,6 +211,10 @@ fn flex_icon_choice(app: &DesignApp, ui: &mut Ui, key: &str, icon: &str, on: boo
 /// Flex Layout controls, as InDesign's panel: Create Flex Layout; alignment grid, width and height
 /// (Auto/Fixed); justification, direction and wrap; padding and spacing.
 pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::flex_section(app, ui);
+    }
     use designcraft_doc::{FlexSize, flex};
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
@@ -197,15 +258,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
             );
             let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
             if let Some(v) = nv {
-                let mut p = json!({ key: v });
-                if linked
-                    && let (Some(r), Some(len)) = (rect, len)
-                    && len > 1e-9
-                {
-                    let other = if key == "width" { ("height", r.height()) } else { ("width", r.width()) };
-                    p[other.0] = json!(other.1 * v / len);
-                }
-                set = Some(p);
+                set = Some(flex_size_set(key, v, linked, rect, len));
             }
             let names = [tr("Fixed"), tr("Auto")];
             let cur = if mode == Some(FlexSize::Auto) { 1 } else { 0 };
@@ -248,12 +301,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
         place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (d, icon, tip) in [
-                (designcraft_doc::FlexDirection::Row, "flex-right", "Row"),
-                (designcraft_doc::FlexDirection::RowReverse, "flex-left", "Reverse Row"),
-                (designcraft_doc::FlexDirection::Column, "flex-down", "Column"),
-                (designcraft_doc::FlexDirection::ColumnReverse, "flex-up", "Reverse Column"),
-            ] {
+            for (d, icon, tip) in FLEX_DIRECTIONS {
                 if let Some(after) = flex_icon_choice(app, ui, tip, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0))
                     // The four choices are exclusive. Activating the current one retains its
                     // direction, like the original action, rather than turning the enum off.
@@ -276,15 +324,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
     ui.add_enabled_ui(enabled, |ui| {
         let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
         let linked = temp_bool(ui, "flex_padding_linked", true);
-        for (k, (icon, tip, x, y)) in [
-            ("margin-top", "Top", 0.0, 0.0),
-            ("margin-inside", "Left", 112.0, 0.0),
-            ("margin-bottom", "Bottom", 0.0, 26.0),
-            ("margin-outside", "Right", 112.0, 26.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (k, (icon, tip, x, y)) in FLEX_PADDING.into_iter().enumerate() {
             let ir = sub(b, x, y + 2.0, 17.0, 17.0);
             icons::paint(ui.painter(), ir, icon, t.icon);
             ui.interact(ir, ui.scope_id().with(("flex_pad", k)), Sense::hover()).on_hover_ui(|ui| {
@@ -295,14 +335,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
                 NumField::measure(tip, value, u).width(76.0).spinner().range(0.0, 8000.0).show(ui)
             });
             if let Some(v) = nv {
-                let p = if linked {
-                    [v; 4]
-                } else {
-                    let mut p = pad;
-                    p[k] = v;
-                    p
-                };
-                set = Some(json!({"padding": p}));
+                set = Some(json!({"padding": flex_padding_set(pad, linked, k, v)}));
             }
         }
         if place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
@@ -315,9 +348,7 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
         // the cross axis' only counts when objects wrap.
         let (row, distributes, wrap) = f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
         let main_gap = arranged.as_ref().map(|a| a.main_gap);
-        for (k, (icon, key, tip, x)) in
-            [("gap-h", "gapH", "Horizontal Spacing", 0.0), ("gap-v", "gapV", "Vertical Spacing", 112.0)].into_iter().enumerate()
-        {
+        for (k, (icon, key, tip, x)) in FLEX_GAPS.into_iter().enumerate() {
             let main = (k == 0) == row;
             let live = if main { !distributes } else { wrap };
             let value = match &f {
@@ -348,6 +379,232 @@ pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
 pub fn flex_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
     flex_section(app, ui);
+}
+
+/// The Flex Layout section on the craft UI framework: the same rows over the same `flex` commands as the native body
+/// above, every control a framework component. Create Flex Layout and the direction and wrap buttons were already the
+/// framework's (`flex_create_choice`, `flex_icon_choice`) and keep their ids and geometry.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::*;
+    use crate::framework_transform::{Number, Quantity, choice, icon_number, number_field};
+    use craft_behavior::Mixed;
+    use craft_ui_widgets::buttons::IconButton;
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
+    use craft_ui_widgets::style::UiTokens;
+    use craft_ui_widgets::text::link_toggle;
+
+    /// The alignment grid's cells by row and column.
+    const CELLS: [[&str; 3]; 3] =
+        [["Top Left", "Top Center", "Top Right"], ["Middle Left", "Center", "Middle Right"], ["Bottom Left", "Bottom Center", "Bottom Right"]];
+
+    /// An alignment grid cell's face: the direction's arrow on the chosen cell, a dot on the others.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Cell(Option<&'static str>);
+
+    impl Glyph for Cell {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+            match self.0 {
+                Some(arrow) => icons::paint(painter, rect, arrow, color),
+                None => {
+                    painter.circle_filled(rect.center(), 1.5, color);
+                }
+            }
+        }
+    }
+
+    /// The id of the control `key` of the section the `ui` shows, for the selected container.
+    fn cid(app: &DesignApp, ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+        let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
+        ui.make_persistent_id(("flex-section", key, owner))
+    }
+
+    /// The alignment grid at `r`: 3 × 3 cell buttons (one column or row of three when a space justification spreads the
+    /// objects along the main axis), the chosen cell showing the direction's arrow. The cell picked, `row * 3 + col`.
+    fn flex_grid(app: &DesignApp, ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
+        let t = Tokens::get(ui.ctx());
+        // The 48-point outline, as the native grid draws it.
+        ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+        let cell = r.width() / 3.0;
+        let arrow = flex_arrow(f.map(|f| f.direction));
+        let mut picked = None;
+        for row in 0..3usize {
+            for col in 0..3usize {
+                let Some(on) = flex_cell(f, col, row) else { continue };
+                let on = on && f.is_some();
+                let at = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
+                let glyph = Cell(on.then_some(arrow));
+                let label = crate::i18n::tr(&app.ui.language, CELLS[row][col]).to_owned();
+                let id = cid(app, ui, ("cell", row, col));
+                if IconButton::new(IconSpec::glyph(&glyph)).id(id).label(label.clone()).tooltip(label).selected(on).show_at(ui, at).clicked() {
+                    picked = Some((row * 3 + col) as u8);
+                }
+            }
+        }
+        picked
+    }
+
+    pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
+        use designcraft_doc::{FlexSize, flex};
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let u = units(app);
+        let has_sel = app.session.active().is_some_and(|s| !s.selection.items.is_empty());
+        let container = selected_container(app);
+        let f = container.as_ref().and_then(|(it, _)| it.flex.clone());
+        let mut on = f.is_some();
+        let changed = ui.add_enabled_ui(has_sel, |ui| flex_create_choice(app, ui, &mut on, &tr("Create Flex Layout"))).inner;
+        if changed {
+            let _ = app.run(if on { "flex.add" } else { "flex.remove" }, json!({}));
+            return;
+        }
+        ui.add_space(4.0);
+        let enabled = f.is_some();
+        let rect = container.as_ref().map(|(it, _)| it.inner_bounds());
+        let arranged = container.as_ref().and_then(|(it, kids)| it.flex.as_ref().map(|f| flex::arrange(f, it.inner_bounds(), kids)));
+        let mut set: Option<Value> = None;
+        // Alignment grid, W and H with Auto/Fixed, constrain proportions.
+        let b = block(ui, 2.0 * FIELD_H + 5.0);
+        ui.add_enabled_ui(enabled, |ui| {
+            if let Some(c) = flex_grid(app, ui, sub(b, 0.0, 0.0, 48.0, 48.0), f.as_ref()) {
+                set = Some(json!({"cell": c}));
+            }
+            let linked = temp_bool(ui, "flex_size_linked", false);
+            for (k, (label, name, key, mode, len)) in [
+                ("W:", "Width", "width", f.as_ref().map(|f| f.width), rect.map(|r| r.width())),
+                ("H:", "Height", "height", f.as_ref().map(|f| f.height), rect.map(|r| r.height())),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let y = k as f32 * (FIELD_H + 5.0);
+                crate::framework_transform::caption(ui, Some(sub(b, 56.0, y, 18.0, FIELD_H)), &tr(label));
+                let id = cid(app, ui, key);
+                let field_name = tr(name);
+                let n = Number::new(&field_name, len, Quantity::Length(u)).range(0.0, 100_000.0).enabled(enabled);
+                if let Some(Some(v)) = number_field(ui, Some(sub(b, 78.0, y, 66.0, FIELD_H)), id, n) {
+                    set = Some(flex_size_set(key, v, linked, rect, len));
+                }
+                let sizes = [("fixed", tr("Fixed")), ("auto", tr("Auto"))];
+                let cur = if mode == Some(FlexSize::Auto) { "auto" } else { "fixed" };
+                let id = cid(app, ui, (key, "size"));
+                let size_name = format!("{} {}", tr(name), tr("Size"));
+                if let Some(v) = choice(ui, Some(sub(b, 148.0, y, 62.0, FIELD_H)), id, &size_name, Some(cur), &sizes, None)
+                    && v != cur
+                {
+                    set = Some(json!({ key: v }));
+                }
+            }
+            let tip = tr("Constrain proportions");
+            let id = cid(app, ui, "size-link");
+            let toggled = link_toggle(tip.clone(), Bind::given(linked))
+                .id(id)
+                .tooltip(tip)
+                .show_at(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H))
+                .events
+                .committed()
+                .copied();
+            if let Some(on) = toggled {
+                set_temp_bool(ui, "flex_size_linked", on);
+            }
+        });
+        ui.add_space(6.0);
+        // Justification, direction, wrap.
+        let b = block(ui, FIELD_H);
+        ui.add_enabled_ui(enabled, |ui| {
+            let cur = f.as_ref().map(|f| f.justify).unwrap_or_default();
+            let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            let entries: Vec<Entry<&'static str>> = FLEX_JUSTIFY.iter().map(|(id, _, label)| Entry::new(*id, tr(label))).collect();
+            let held = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map_or(Mixed::Mixed, |j| Mixed::Same(j.0));
+            let id = cid(app, ui, "justification");
+            let picked = Select::new(tr("Justification"), Bind::given(held), &entries)
+                .id(id)
+                .enabled(enabled)
+                .picture(|id: &&'static str, cx: &ContentPainterCx<'_>, rect: Rect| {
+                    let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == *id).map_or("flex-start", |j| j.1);
+                    icons::paint(&cx.painter, rect, icon, cx.ink());
+                })
+                .picture_only()
+                .show_at(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H))
+                .events
+                .committed()
+                .copied();
+            if let Some(id) = picked {
+                set = Some(json!({"justify": id}));
+            }
+            let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
+            place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (d, icon, tip) in FLEX_DIRECTIONS {
+                    if let Some(after) = flex_icon_choice(app, ui, tip, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0))
+                        // The four choices are exclusive. Activating the current one retains its direction.
+                        && (after || dir == d)
+                    {
+                        set = Some(json!({"direction": d}));
+                    }
+                }
+            });
+            let wrap = f.as_ref().is_some_and(|f| f.wrap);
+            if let Some(after) = place(ui, sub(b, 214.0, 0.0, 22.0, FIELD_H), |ui| {
+                flex_icon_choice(app, ui, "wrap", "flex-wrap", wrap, &tr("Wrap Content"), vec2(22.0, 21.0))
+            }) {
+                set = Some(json!({"wrap": after}));
+            }
+        });
+        // Spacing: padding (linked by default) and the spacing between objects.
+        section(ui, &tr("Spacing"), true);
+        let b = block(ui, 3.0 * FIELD_H + 10.0);
+        ui.add_enabled_ui(enabled, |ui| {
+            let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
+            let linked = temp_bool(ui, "flex_padding_linked", true);
+            for (k, (artwork, tip, x, y)) in FLEX_PADDING.into_iter().enumerate() {
+                let id = cid(app, ui, ("padding", k));
+                let name = tr(tip);
+                let n = Number::new(&name, f.as_ref().map(|_| pad[k]), Quantity::Length(u)).range(0.0, 8000.0).enabled(enabled);
+                if let Some(Some(v)) = icon_number(ui, sub(b, x, y + 2.0, 17.0, 17.0), sub(b, x + 20.0, y, 76.0, FIELD_H), id, artwork, n) {
+                    set = Some(json!({"padding": flex_padding_set(pad, linked, k, v)}));
+                }
+            }
+            let tip = tr("Make all settings the same");
+            let id = cid(app, ui, "padding-link");
+            let toggled = link_toggle(tip.clone(), Bind::given(linked))
+                .id(id)
+                .tooltip(tip)
+                .show_at(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H))
+                .events
+                .committed()
+                .copied();
+            if let Some(on) = toggled {
+                set_temp_bool(ui, "flex_padding_linked", on);
+            }
+            // Spacing between objects: a space justification works the main axis' out (shown greyed); the cross axis'
+            // only counts when objects wrap.
+            let (row, distributes, wrap) =
+                f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
+            let main_gap = arranged.as_ref().map(|a| a.main_gap);
+            for (k, (artwork, key, tip, x)) in FLEX_GAPS.into_iter().enumerate() {
+                let main = (k == 0) == row;
+                let live = if main { !distributes } else { wrap };
+                let value = match &f {
+                    Some(_) if main && distributes => main_gap,
+                    Some(f) => Some(if k == 0 { f.gap_h } else { f.gap_v }),
+                    None => None,
+                };
+                let y = 2.0 * FIELD_H + 10.0;
+                let id = cid(app, ui, key);
+                let name = tr(tip);
+                let n = Number::new(&name, value, Quantity::Length(u)).range(0.0, 8000.0).enabled(enabled && live);
+                if let Some(Some(v)) = icon_number(ui, sub(b, x, y + 2.0, 17.0, 17.0), sub(b, x + 20.0, y, 76.0, FIELD_H), id, artwork, n) {
+                    set = Some(json!({ key: v }));
+                }
+            }
+        });
+        if let Some(p) = set {
+            let _ = app.run("flex.set", p);
+        }
+    }
 }
 
 // FLEX_CREATE_DIRECTION_WRAP_TESTS_BEGIN
