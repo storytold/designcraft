@@ -138,10 +138,11 @@ mod framework {
                         }
                         _ => crate::i18n::tr(lang, label).to_owned(),
                     };
-                    let mut row = MenuItem::new(text)
-                        .id_salt(("cmd", path.to_owned(), i))
-                        .check(menus::checked(app, id, params))
-                        .enabled(menus::menu_enabled(app, id));
+                    let mut row = MenuItem::new(text).id_salt(("cmd", path.to_owned(), i)).enabled(menus::menu_enabled(app, id));
+                    // A command that is not a toggle has no mark.
+                    if let Some(on) = menus::checked(app, id, params) {
+                        row = row.check(on);
+                    }
                     if let Some(sc) = menus::shortcut_label(app, id, params) {
                         row = row.shortcut(sc);
                     }
@@ -242,7 +243,7 @@ mod framework {
                         for (k, it) in items.iter().enumerate() {
                             let mut row = MenuItem::new(it.label.clone())
                                 .id_salt(("match", k))
-                                .radio_mark(Some(k == st.highlight))
+                                .radio_mark(k == st.highlight)
                                 .enabled(menus::menu_enabled(app, &it.id));
                             if let Some(sc) = &it.shortcut {
                                 row = row.shortcut(menus::shortcut_text(sc));
@@ -280,8 +281,7 @@ mod framework {
         let customs: Vec<String> = app.ui.custom_workspaces.iter().map(|w| w.name.clone()).collect();
         let _ = Menu::new(tr("Workspace")).id_salt("app_bar_workspace_menu").opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
             for w in menus::WORKSPACES.iter().map(|w| w.to_string()).chain(customs.iter().cloned()) {
-                let row =
-                    MenuItem::new(crate::i18n::workspace_name(&lang, &w).to_owned()).id_salt(("workspace", w.clone())).check(Some(w == current));
+                let row = MenuItem::new(crate::i18n::workspace_name(&lang, &w).to_owned()).id_salt(("workspace", w.clone())).check(w == current);
                 if row.show(ui).ran {
                     asks.borrow_mut().push(Ask::Workspace(w.clone()));
                 }

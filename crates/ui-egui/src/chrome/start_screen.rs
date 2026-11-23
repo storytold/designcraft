@@ -195,8 +195,10 @@ mod framework {
                             .arrangement(Arrangement::Stacked)
                             .picture(
                                 aspect,
-                                Picture::painter("", aspect, move |cx, rect| cx.painter.rect_filled(rect, 0.0, egui::Color32::from_gray(245)))
-                                    .extent(PictureSize::Thumb(ThumbSize::Large)),
+                                Picture::painter("", aspect, move |cx, rect| {
+                                    cx.painter.rect_filled(rect, 0.0, egui::Color32::from_gray(245));
+                                })
+                                .extent(PictureSize::Thumb(ThumbSize::Large)),
                             )
                             .show(ui);
                         if card.clicked() {
