@@ -26,7 +26,12 @@ pub(crate) fn open(app: &mut DesignApp, command: &str) {
 }
 
 /// The app with the framework installed, showing its active dialog every frame.
-pub(crate) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
+pub(crate) fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
+    harness_sized(app, vec2(1000.0, 900.0))
+}
+
+/// [`harness`] in a window of `size`.
+pub(crate) fn harness_sized(mut app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
     // The dialog router gates on the installed framework runtime; the pilot flag only asks for it.
     app.framework_transform = false;
@@ -35,7 +40,7 @@ pub(crate) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     assert!(app.framework_installed, "the framework forms need the installed runtime");
     let mut ready = false;
-    let mut h = Harness::builder().with_context(ctx).with_size(vec2(1000.0, 900.0)).build_ui_state(
+    let mut h = Harness::builder().with_context(ctx).with_size(size).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), &app.ui.language);
@@ -63,7 +68,7 @@ pub(crate) fn steps(h: &mut Harness<'_, DesignApp>, count: usize) {
     }
 }
 
-fn event(h: &mut Harness<'_, DesignApp>, event: Event) {
+pub(crate) fn event(h: &mut Harness<'_, DesignApp>, event: Event) {
     let mut raw = std::mem::take(h.input_mut());
     raw.events.push(event);
     let ctx = h.ctx.clone();
@@ -81,7 +86,7 @@ pub(crate) fn key(h: &mut Harness<'_, DesignApp>, key: Key, modifiers: Modifiers
     steps(h, 3);
 }
 
-fn click_at(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
+pub(crate) fn click_at(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
     event(h, Event::PointerMoved(at));
     for pressed in [true, false] {
         event(h, Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -192,4 +197,126 @@ pub(crate) fn click_containing(h: &mut Harness<'_, DesignApp>, part: &str) {
 pub(crate) fn type_text(h: &mut Harness<'_, DesignApp>, text: &str) {
     event(h, Event::Text(text.to_owned()));
     steps(h, 3);
+}
+
+/// The centre of the `nth` node with one of `roles` whose name contains `part`: a field whose name the form builds from a
+/// caption (with or without the colon a field adds) is found by the words of its caption.
+pub(crate) fn centre_containing(h: &Harness<'_, DesignApp>, roles: &[Role], part: &str, nth: usize) -> egui::Pos2 {
+    let found: Vec<_> = h.query_all_by_label_contains(part).filter(|node| roles.contains(&node.accesskit_node().role())).collect();
+    let node = found.get(nth).unwrap_or_else(|| panic!("no {roles:?} named like {part:?} (number {nth}); {} found", found.len()));
+    node.rect().center()
+}
+
+/// Clicks the `nth` node with one of `roles` whose name contains `part`.
+pub(crate) fn click_named_like(h: &mut Harness<'_, DesignApp>, roles: &[Role], part: &str, nth: usize) {
+    let at = centre_containing(h, roles, part, nth);
+    click_at(h, at);
+}
+
+/// Types `text` over the `nth` field whose name contains `part` and leaves it with Tab, so the field commits.
+pub(crate) fn type_and_commit_named_like(h: &mut Harness<'_, DesignApp>, part: &str, nth: usize, text: &str) {
+    click_named_like(h, FIELD, part, nth);
+    key(h, Key::A, Modifiers::COMMAND);
+    event(h, Event::Text(text.to_owned()));
+    steps(h, 3);
+    key(h, Key::Tab, Modifiers::NONE);
+}
+
+/// Opens the `nth` picker whose name contains `part` and picks the entry named `choice`.
+pub(crate) fn pick_named_like(h: &mut Harness<'_, DesignApp>, part: &str, nth: usize, choice: &str) {
+    click_named_like(h, &[Role::ComboBox], part, nth);
+    let options = [Role::ListBoxOption, Role::MenuItem, Role::MenuItemRadio, Role::ListItem, Role::Row];
+    let found: Vec<_> = h.query_all_by_label(choice).collect();
+    let node = found
+        .iter()
+        .find(|node| options.contains(&node.accesskit_node().role()))
+        .or(found.last())
+        .unwrap_or_else(|| panic!("no entry named {choice:?}"));
+    let at = node.rect().center();
+    click_at(h, at);
+}
+
+/// Opens the dialog the menu command `command` opens, in a harness that is already showing dialogs, and runs a few frames.
+pub(crate) fn reopen(h: &mut Harness<'_, DesignApp>, command: &str) {
+    open(h.state_mut(), command);
+    steps(h, 3);
+}
+
+/// Whether any node is named `label`.
+pub(crate) fn shows(h: &Harness<'_, DesignApp>, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
+}
+
+/// Resizes the window and runs a few frames.
+pub(crate) fn resize(h: &mut Harness<'_, DesignApp>, size: egui::Vec2) {
+    h.set_size(size);
+    steps(h, 4);
+}
+
+/// The window.
+pub(crate) fn screen(h: &Harness<'_, DesignApp>) -> egui::Rect {
+    h.ctx.content_rect()
+}
+
+/// The bounds of the first node named `label` that is not a dialog frame; `None` when nothing is named so.
+pub(crate) fn rect_of(h: &Harness<'_, DesignApp>, label: &str) -> Option<egui::Rect> {
+    h.query_all_by_label(label).find(|node| node.accesskit_node().role() != Role::Dialog).map(|node| node.rect())
+}
+
+/// Whether a node named `label` lies wholly inside the window.
+pub(crate) fn in_view(h: &Harness<'_, DesignApp>, label: &str) -> bool {
+    h.query_all_by_label(label).any(|node| node.accesskit_node().role() != Role::Dialog && screen(h).contains_rect(node.rect()))
+}
+
+/// Scrolls the node named `label` into view, as an assistive tool would, and returns its bounds; panics when it cannot be
+/// reached.
+pub(crate) fn reach(h: &mut Harness<'_, DesignApp>, label: &str) -> egui::Rect {
+    for _ in 0..4 {
+        if let Some(rect) = rect_of(h, label).filter(|rect| screen(h).contains_rect(*rect)) {
+            return rect;
+        }
+        if let Some(node) = h.query_all_by_label(label).find(|node| node.accesskit_node().role() != Role::Dialog) {
+            node.scroll_to_me();
+        }
+        steps(h, 3);
+    }
+    let found = rect_of(h, label);
+    let window = screen(h);
+    panic!("{label:?} cannot be reached: {found:?} in {window:?}");
+}
+
+/// The centre of the text field whose text is `shown`, ignoring case and a leading `#`.
+pub(crate) fn field_showing(h: &Harness<'_, DesignApp>, shown: &str) -> egui::Pos2 {
+    let want = shown.trim_start_matches('#').to_lowercase();
+    h.query_all_by_role(Role::TextInput)
+        .find(|node| node.value().is_some_and(|value| value.trim_start_matches('#').to_lowercase() == want))
+        .unwrap_or_else(|| panic!("no text field shows {shown:?}"))
+        .rect()
+        .center()
+}
+
+/// Types `text` over the field that shows `shown` and leaves it with Tab.
+pub(crate) fn retype_showing(h: &mut Harness<'_, DesignApp>, shown: &str, text: &str) {
+    let at = field_showing(h, shown);
+    click_at(h, at);
+    key(h, Key::A, Modifiers::COMMAND);
+    event(h, Event::Text(text.to_owned()));
+    steps(h, 3);
+    key(h, Key::Tab, Modifiers::NONE);
+}
+
+/// Drags the pointer from `from` to `to` in eight steps, as a person does.
+pub(crate) fn drag(h: &mut Harness<'_, DesignApp>, from: egui::Pos2, to: egui::Pos2) {
+    event(h, Event::PointerMoved(from));
+    event(h, Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    for step in 1..=8 {
+        event(h, Event::PointerMoved(from + (to - from) * (step as f32 / 8.0)));
+    }
+    event(h, Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    steps(h, 3);
+}
+
+/// The bounds of the dialog named `title`.
+pub(crate) fn dialog_rect(h: &Harness<'_, DesignApp>, title: &str) -> egui::Rect {
+    h.get_by_role_and_label(Role::Dialog, title).rect()
 }
