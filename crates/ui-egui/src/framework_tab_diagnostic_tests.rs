@@ -3,7 +3,7 @@
 //! Diagnostic (not a gate): where does Tab go when a craft framework field holds the keyboard in this host?
 //!
 //! It prints, for one Tab press: the pending raw input before the host hook, after the hook, the focus before
-//! and after the pass, and — through `DESIGNCRAFT_TAB_TRACE` — what the framework field itself saw that pass.
+//! and after the pass, and — through `DESIGNCRAFT_TAB_TRACE` — the events the pass itself received.
 
 use crate::DesignApp;
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
