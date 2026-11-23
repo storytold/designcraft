@@ -2434,6 +2434,42 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// InDesign keeps cell text at least half the stroke weight off each edge: a side's inset is the
+/// larger of the inset and half the weight of that edge's stroke (measured with single cells: the
+/// text origin, the wrap width and the row height all follow it).
+#[test]
+fn a_cell_inset_is_at_least_half_its_edge_stroke() {
+    let sides = |inset: f64, weight: f64| {
+        let mut t = filled(1, 1, 0, 100.0);
+        t.cell_mut(0, 0).unwrap().insets = [inset; 4];
+        t.options.border.weight = weight;
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let cell = cs.frames[0].tables[0].cell(0, 0).unwrap();
+        [cell.clip.y0 - cell.rect.y0, cell.clip.x0 - cell.rect.x0, cell.rect.y1 - cell.clip.y1, cell.rect.x1 - cell.clip.x1]
+    };
+    for side in sides(0.0, 8.0) {
+        assert!((side - 4.0).abs() < 1e-6, "a 0 pt inset under an 8 pt stroke is 4 pt, not {side}");
+    }
+    for side in sides(6.0, 8.0) {
+        assert!((side - 6.0).abs() < 1e-6, "a larger inset wins: {side}");
+    }
+    for side in sides(0.0, 0.0) {
+        assert!(side.abs() < 1e-6, "no stroke, no inset: {side}");
+    }
+    // The wrap width follows: a narrower column of the same text breaks sooner under the stroke.
+    let lines = |weight: f64| {
+        let mut t = filled(1, 1, 0, 30.0);
+        t.cell_mut(0, 0).unwrap().insets = [0.0; 4];
+        t.cell_mut(0, 0).unwrap().text.insert(0, "aaaa bbbb ");
+        t.options.border.weight = weight;
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].tables[0].cell(0, 0).unwrap().text.frames[0].lines.len()
+    };
+    assert!(lines(8.0) > lines(0.0), "{} vs {}", lines(8.0), lines(0.0));
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
