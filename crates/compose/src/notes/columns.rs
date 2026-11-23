@@ -2,6 +2,7 @@
 use crate::ComposedStory;
 use std::{ops::Range, sync::Arc};
 
+#[derive(Debug)]
 pub(super) struct Fragment {
     pub note: usize,
     pub column: usize,
@@ -11,52 +12,78 @@ pub(super) struct Fragment {
     pub bottom: f64,
 }
 
-pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) -> (f64, Vec<Fragment>) {
-    let lines: Vec<_> = texts.iter().map(|t| t.frames.first().map(|f| f.lines.as_slice()).unwrap_or_default()).collect();
-    let run = |height: f64| {
-        let mut out: Vec<Fragment> = Vec::new();
-        let (mut col, mut bottom, mut last) = (0, 0.0_f64, None::<f64>);
-        for (note, ls) in lines.iter().enumerate() {
-            let mut start = 0;
-            while let Some(first) = ls.get(start) {
-                let first_offset = if start == 0 { first.baseline } else { first.leading };
-                let y = last.map_or(first_offset - first.baseline, |b| b + space + first.leading - first.baseline);
-                let mut end = start;
-                for (i, line) in ls.iter().enumerate().skip(start) {
-                    if y + line.baseline + line.descent > height + 1e-7 {
-                        break;
-                    }
-                    let n = i + 1;
-                    // Long notes leave at least two lines on both sides of every break.
-                    if n == ls.len() || ls.len() < 4 || (n - start >= 2 && ls.len() - n >= 2) {
-                        end = n;
-                    }
+#[derive(Clone, Copy)]
+enum PlaceMode {
+    IntactOnly,
+    MinSplits,
+    AllowSplits,
+}
+
+fn place_columns(
+    lines: &[&[crate::Line]],
+    start_at: (usize, usize),
+    count: usize,
+    space: f64,
+    height: f64,
+    mode: PlaceMode,
+) -> Option<(f64, Vec<Fragment>)> {
+    let mut out: Vec<Fragment> = Vec::new();
+    let (mut col, mut bottom, mut last) = (start_at.1, 0.0_f64, None::<f64>);
+    for (note, ls) in lines.iter().enumerate().skip(start_at.0) {
+        let mut start = 0;
+        while let Some(first) = ls.get(start) {
+            let first_offset = if start == 0 { first.baseline } else { first.leading };
+            let y = last.map_or(first_offset - first.baseline, |b| b + space + first.leading - first.baseline);
+            let mut end = start;
+            for (i, line) in ls.iter().enumerate().skip(start) {
+                if y + line.baseline + line.descent > height + 1e-7 {
+                    break;
                 }
-                if end == start {
-                    col += 1;
-                    if col >= count {
-                        return None;
-                    }
-                    last = None;
-                    continue;
-                }
-                let z = ls.get(end - 1)?;
-                let fragment_bottom = ls.get(start..end)?.iter().map(|line| y + line.baseline + line.descent).fold(0.0_f64, f64::max);
-                bottom = bottom.max(fragment_bottom);
-                out.push(Fragment { note, column: col, lines: start..end, y, top: y + first.baseline - first.ascent, bottom: fragment_bottom });
-                last = Some(y + z.baseline);
-                start = end;
-                if start < ls.len() {
-                    col += 1;
-                    if col >= count {
-                        return None;
-                    }
-                    last = None;
+                let n = i + 1;
+                // Long notes leave at least two lines on both sides of every break.
+                if n == ls.len() || ls.len() < 4 || (n - start >= 2 && ls.len() - n >= 2) {
+                    end = n;
                 }
             }
+            let move_intact = end < ls.len()
+                && last.is_some()
+                && col + 1 < count
+                && match mode {
+                    PlaceMode::IntactOnly => true,
+                    PlaceMode::MinSplits => place_columns(lines, (note, col + 1), count, space, height, PlaceMode::AllowSplits).is_some(),
+                    PlaceMode::AllowSplits => false,
+                };
+            if end == start || move_intact {
+                col += 1;
+                if col >= count {
+                    return None;
+                }
+                last = None;
+                continue;
+            }
+            if matches!(mode, PlaceMode::IntactOnly) && end < ls.len() {
+                return None;
+            }
+            let z = ls.get(end - 1)?;
+            let fragment_bottom = ls.get(start..end)?.iter().map(|line| y + line.baseline + line.descent).fold(0.0_f64, f64::max);
+            bottom = bottom.max(fragment_bottom);
+            out.push(Fragment { note, column: col, lines: start..end, y, top: y + first.baseline - first.ascent, bottom: fragment_bottom });
+            last = Some(y + z.baseline);
+            start = end;
+            if start < ls.len() {
+                col += 1;
+                if col >= count {
+                    return None;
+                }
+                last = None;
+            }
         }
-        Some((bottom, out))
-    };
+    }
+    Some((bottom, out))
+}
+
+pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) -> (f64, Vec<Fragment>) {
+    let lines: Vec<_> = texts.iter().map(|t| t.frames.first().map(|f| f.lines.as_slice()).unwrap_or_default()).collect();
     // A full single-column stack is a feasible upper bound, including inter-note leading.
     let (mut high, mut previous) = (0.0_f64, None::<f64>);
     for ls in &lines {
@@ -73,26 +100,28 @@ pub(super) fn balance(texts: &[Arc<ComposedStory>], count: usize, space: f64) ->
     // A fixed iteration bound avoids input-dependent searches and gives sub-point precision.
     for _ in 0..48 {
         let mid = (low + high) * 0.5;
-        if run(mid).is_some() {
+        if place_columns(&lines, (0, 0), count, space, mid, PlaceMode::AllowSplits).is_some() {
             high = mid;
         } else {
             low = mid;
         }
     }
-    run(high).unwrap_or_else(|| {
-        // Invalid imported metrics must not silently discard a note's text.
-        let mut bottom = 0.0;
-        let mut out = Vec::new();
-        for (note, ls) in lines.iter().enumerate() {
-            if let (Some(a), Some(z)) = (ls.first(), ls.last()) {
-                let y = bottom;
-                bottom = y + z.baseline + z.descent;
-                out.push(Fragment { note, column: 0, lines: 0..ls.len(), y, top: y + a.baseline - a.ascent, bottom });
-                bottom += space;
+    place_columns(&lines, (0, 0), count, space, high, PlaceMode::IntactOnly)
+        .or_else(|| place_columns(&lines, (0, 0), count, space, high, PlaceMode::MinSplits))
+        .unwrap_or_else(|| {
+            // Invalid imported metrics must not silently discard a note's text.
+            let mut bottom = 0.0;
+            let mut out = Vec::new();
+            for (note, ls) in lines.iter().enumerate() {
+                if let (Some(a), Some(z)) = (ls.first(), ls.last()) {
+                    let y = bottom;
+                    bottom = y + z.baseline + z.descent;
+                    out.push(Fragment { note, column: 0, lines: 0..ls.len(), y, top: y + a.baseline - a.ascent, bottom });
+                    bottom += space;
+                }
             }
-        }
-        (bottom, out)
-    })
+            (bottom, out)
+        })
 }
 
 /// Keep original line coordinates and byte offsets; placement translates the fragment.
@@ -157,5 +186,32 @@ mod tests {
         let (height, fragments) = balance(&texts, 2, 0.0);
         assert!((height - 50.0).abs() < 0.01);
         assert_eq!(fragments.iter().map(|f| f.column).collect::<Vec<_>>(), [0, 1]);
+    }
+
+    #[test]
+    fn footnote_balance_keeps_notes_intact_at_same_height() {
+        let mut d = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument::default());
+        let (_, sid) = d
+            .add_text_frame(
+                designcraft_doc::SpreadRef::Doc(0),
+                designcraft_geom::Rect::new(0.0, 0.0, 200.0, 500.0),
+                d.default_layer(),
+                "Line 1.\nLine 2.\nLine 3.\nLine 4.",
+                Default::default(),
+            )
+            .unwrap();
+        let four = crate::compose_story(&d, sid, &Default::default());
+        assert_eq!(four.frames[0].lines.len(), 4);
+        let mut one = four.clone();
+        one.frames[0].lines.truncate(1);
+        let texts = vec![Arc::new(one), Arc::new(four.clone()), Arc::new(four.clone())];
+        let expected_height = {
+            let ls = &four.frames[0].lines;
+            ls.iter().map(|l| l.baseline + l.descent).fold(0.0_f64, f64::max)
+        };
+        let (height, fragments) = balance(&texts, 3, 6.0);
+        assert!((height - expected_height).abs() < 0.01, "height {height} vs {expected_height}");
+        assert_eq!(fragments.len(), 3, "notes should stay intact: {fragments:?}");
+        assert_eq!(fragments.iter().map(|f| f.column).collect::<Vec<_>>(), [0, 1, 2]);
     }
 }
