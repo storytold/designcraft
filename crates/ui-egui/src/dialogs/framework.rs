@@ -62,6 +62,12 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "convertTextToTable" | "convertTableToText" => Some(super::table_forms::CONVERT),
         "createGuides" => Some(super::layout_forms::CREATE_GUIDES),
         "marginsAndColumns" => Some(super::layout_forms::MARGINS_AND_COLUMNS),
+        "footnoteOptions" => Some(super::text_forms::FOOTNOTE_OPTIONS),
+        "paragraphRules" => Some(super::text_forms::PARAGRAPH_RULES),
+        "justification" => Some(super::text_forms::JUSTIFICATION),
+        "hyphenation" => Some(super::text_forms::HYPHENATION),
+        "insertXref" => Some(super::text_forms::INSERT_XREF),
+        "paragraphLocal" => Some(super::paragraph_forms::PARAGRAPH_LOCAL),
         "textFrameOptions" => Some(super::frame_forms::TEXT_FRAME_OPTIONS),
         "fittingOptions" => Some(super::frame_forms::FITTING_OPTIONS),
         "polygonSettings" => Some(super::frame_forms::POLYGON_SETTINGS),
@@ -110,23 +116,21 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form) {
     let mut opened = true;
     let mut from_form = None;
     // The area only gives the dialog a parent: the framework mounts its own modal layer.
-    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str())))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            FrameworkDialog::new(title)
-                .id_salt(("framework_dialog", d.id.clone()))
-                .opened(Bind::bound(&mut opened))
-                .enabled(ui.is_enabled())
-                // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
-                .backdrop(Backdrop::None)
-                .closable(false)
-                .outer_gesture(false)
-                .close_on_enter(true)
-                .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
-                .buttons(buttons)
-                .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
-                .output
-        });
+    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str()))).order(egui::Order::Foreground).show(ctx, |ui| {
+        FrameworkDialog::new(title)
+            .id_salt(("framework_dialog", d.id.clone()))
+            .opened(Bind::bound(&mut opened))
+            .enabled(ui.is_enabled())
+            // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
+            .backdrop(Backdrop::None)
+            .closable(false)
+            .outer_gesture(false)
+            .close_on_enter(true)
+            .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
+            .buttons(buttons)
+            .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
+            .output
+    });
     let out = shown.inner;
     let picked_extra = out.picked.and_then(|picked| picked.checked_sub(if d.id == "alert" { 1 } else { 2 }));
     if let Some((_, field)) = picked_extra.and_then(|at| form.extra.get(at)) {

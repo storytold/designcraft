@@ -146,3 +146,29 @@ pub(super) fn journal(h: &Harness<'_, DesignApp>, id: &str) -> Vec<(String, Valu
 pub(super) fn undo_steps(h: &Harness<'_, DesignApp>) -> usize {
     h.state().session.doc().unwrap().history.undo.len()
 }
+
+/// A document with a text frame of two paragraphs, "One" and "Two", the caret in the first, whose Word Spacing Minimum is
+/// 70%; and the story's id.
+pub(super) fn two_paragraphs() -> (DesignApp, u64) {
+    let mut app = app(1, false);
+    let frame = app.run("frame.create", json!({"rect": [72, 72, 300, 400], "content": "text", "text": "One\nTwo"})).unwrap();
+    app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
+    app.run("type.para", json!({"attrs": {"wordSpaceMin": 0.7}})).unwrap();
+    let story = frame["story"].as_u64().unwrap();
+    (app, story)
+}
+
+/// The resolved paragraph attribute `key` of the paragraph at byte `at` of `story`; the caret ends there.
+pub(super) fn para_attr(h: &mut Harness<'_, DesignApp>, story: u64, at: usize, key: &str) -> Value {
+    h.state_mut().run("text.select", json!({"story": story, "anchor": at, "focus": at})).unwrap();
+    h.state_mut().run("type.selectionAttrs", json!({})).unwrap()["para"][key].clone()
+}
+
+/// Clicks the first node named `label`, whatever its role (a row of a list, a segment of a strip).
+pub(super) fn click_first(h: &mut Harness<'_, DesignApp>, label: &str) {
+    let at = h.query_all_by_label(label).next().unwrap_or_else(|| panic!("nothing named {label:?}")).rect().center();
+    click_at(h, at);
+}
+
+/// The roles a check box, a switch and a toggle button can report.
+pub(super) const TOGGLE: &[Role] = &[Role::CheckBox, Role::Switch, Role::Button, Role::RadioButton];
