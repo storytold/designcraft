@@ -974,7 +974,10 @@ mod height_tests {
                 let layout = measure(&cell, 92.0);
                 let line = &layout.text.frames[0].lines[0];
                 let expected = cell.insets[0] + line.baseline + bottom;
-                let composed = compose_table(single_table(cell), 200.0);
+                let mut table = single_table(cell);
+                // No stroke: half a stroke would raise a 0 pt inset (see `effective_insets`).
+                table.options.border.weight = 0.0;
+                let composed = compose_table(table, 200.0);
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
                 assert!((placed.rect.height() - expected).abs() < 1e-6);
                 assert!(!placed.overset);
@@ -1070,6 +1073,8 @@ mod height_tests {
                 let layout = measure(&cell, 92.0);
                 let required = cell.insets[0] + layout.content_h + bottom;
                 let mut table = single_table(cell);
+                // No stroke: half a stroke would raise a 0 pt inset (see `effective_insets`).
+                table.options.border.weight = 0.0;
                 table.rows[0].mode = RowHeightMode::Exactly;
                 table.rows[0].height = required + 20.0;
                 let composed = compose_table(table, 200.0);
