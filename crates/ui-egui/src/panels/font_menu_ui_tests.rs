@@ -215,6 +215,12 @@ fn typing_in_the_font_menu_searches_and_never_reaches_the_story() {
 /// stays open and lists only the matches, then picks the first with ↓ and Return.
 fn search_in_menu(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) {
     click_at(h, at.center());
+    // FONTMENU-DEBUG: temporary, to find why a field's menu does not focus its search field.
+    eprintln!("FONTMENU-DEBUG {what}: field rect {at:?}, framework_installed {}", h.state().app.framework_installed);
+    for n in h.query_all_by(|n| matches!(n.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::ComboBox)) {
+        eprintln!("FONTMENU-DEBUG   {:?} label {:?} value {:?} rect {:?} focused {}", n.role(), n.label(), n.value(), n.rect(), n.is_focused());
+    }
+    eprintln!("FONTMENU-DEBUG {what}: egui focused {:?}, popup open {}", h.ctx.memory(|m| m.focused()), egui::Popup::is_any_open(&h.ctx));
     let field = h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).map(|n| n.rect());
     let field = field.unwrap_or_else(|| panic!("{what}: the menu opens with the search field focused"));
     click_at(h, field.center());
