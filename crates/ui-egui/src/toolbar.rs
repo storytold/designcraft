@@ -1885,7 +1885,8 @@ mod line_workflow_tests {
         pointer(&mut h, old.rect.center(), false);
         idle(&mut h, 2);
         unchanged(&h, &before);
-        assert_eq!(h.state().app.session.journal.len(), start);
+        let ran = &h.state().app.session.journal[start..];
+        assert!(ran.is_empty(), "the release at the old place ran nothing; it ran {ran:?}, tool {:?}", h.state().app.session.tool_id());
         assert_eq!(h.state().app.session.tool_id(), "selection");
         choose_line(&mut h);
     }
