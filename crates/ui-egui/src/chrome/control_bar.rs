@@ -847,7 +847,7 @@ mod framework {
             if let Some(v) = icon_field(ui, rect, 0, "size", "font-size", 84.0, size) {
                 let _ = app.run("type.char", json!({"attrs": {"size": v}}));
             }
-            // Automatic leading shows its value; the native field puts it in parentheses.
+            // Automatic leading shows its value in parentheses, as the native field does.
             let auto = chars["leading"]["kind"].as_str() != Some("points");
             let lead = if auto {
                 chars["size"].as_f64().map(|s| s * para["autoLeading"].as_f64().unwrap_or(1.2))
@@ -856,7 +856,7 @@ mod framework {
             };
             let lead = lead.map(|v| (v * 100.0).round() / 100.0);
             let lead_label = tr("Leading");
-            let leading = Number::new(&lead_label, lead, Quantity::Points).presets(SIZES).range(0.0, 5000.0);
+            let leading = Number::new(&lead_label, lead, Quantity::Points).presets(SIZES).range(0.0, 5000.0).derived(auto);
             if let Some(v) = icon_field(ui, rect, 1, if auto { "leading_auto" } else { "leading" }, "leading", 84.0, leading) {
                 let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
             }
