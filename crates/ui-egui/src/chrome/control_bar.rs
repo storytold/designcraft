@@ -1264,6 +1264,9 @@ mod framework_tests {
         let mut session = designcraft_engine::Session::new();
         session.execute("file.new", &json!({"width": 252, "height": 144, "facingPages": false})).unwrap();
         session.set_tool("page");
+        // The Page tool's selection names the page: this harness draws the Control panel alone, with no canvas, so
+        // there is no page in view for the panel to fall back on.
+        session.active_mut().unwrap().selection.page = Some(0);
         let mut h = harness(DesignApp::new_for_panel_tests(session, crate::Services::default()));
         // The rule's select is named by its caption; the framework may name it without the caption's colon.
         let rule = ["Liquid Page Rule:", "Liquid Page Rule"].iter().any(|name| has_role(&h, name, &[Role::ComboBox]));

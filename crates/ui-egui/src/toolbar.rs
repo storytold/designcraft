@@ -995,19 +995,6 @@ mod framework {
                     [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
                 {
                     let out = button(ui, icon, icon, &tr(tip), text_mode == (k == 1));
-                    // Temporary: what the button reports, for the red-round diagnosis of the footer's clicks.
-                    if std::env::var_os("DESIGNCRAFT_DEBUG_RAIL").is_some() {
-                        let r = &out.response;
-                        eprintln!(
-                            "RAIL-DEBUG footer {tip}: clicks={} clicked={} hovered={} contains_pointer={} rect={:?} pass={}",
-                            out.clicks,
-                            out.clicked(),
-                            r.hovered(),
-                            r.contains_pointer(),
-                            r.rect,
-                            ui.ctx().current_pass_index()
-                        );
-                    }
                     if out.clicked() {
                         let _ = app.run("app.formattingAffectsText", json!({"on": k == 1}));
                     }
@@ -1300,27 +1287,6 @@ mod line_workflow_tests {
         harness(app, anchor, installed, vec2(1800.0, 1000.0))
     }
 
-    /// Temporary diagnosis for the red round: what the installed Line harness records and exposes. Run alone with
-    /// `--ignored --nocapture`.
-    #[test]
-    #[ignore = "diagnostic"]
-    fn diagnose_installed_line_harness() {
-        let h = ordinary(true);
-        eprintln!("LINE-DEBUG parent panel rect: {:?}", h.state().parent);
-        for e in h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements) {
-            eprintln!(
-                "LINE-DEBUG element {} part={:?} depth={} name={:?} role={:?} rect={:?}",
-                e.component,
-                e.part,
-                e.depth,
-                e.facts.as_ref().and_then(|f| f.name.clone()),
-                e.facts.as_ref().map(|f| f.role.clone()),
-                e.rect
-            );
-        }
-        let buttons: Vec<String> = h.query_all_by_role(egui::accesskit::Role::Button).filter_map(|n| n.accesskit_node().label()).collect();
-        eprintln!("LINE-DEBUG AX buttons ({}): {buttons:?}", buttons.len());
-    }
     fn mark(h: &Harness<'_, Rig>) -> Mark {
         let st = h.state().app.session.active().unwrap();
         (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
@@ -1394,15 +1360,18 @@ mod line_workflow_tests {
         unchanged(h, &before);
     }
     fn tab_to_line(h: &mut Harness<'_, Rig>) {
+        // Tab on the page is the app's: it hides the panels (InDesign), and the canvas holds the keyboard while
+        // nothing else does. Traversal starts where a person starts it, from a click in the Control panel's X field.
+        if h.state().app.framework_installed {
+            let x = h.query_all_by_role_and_label(egui::accesskit::Role::TextInput, "X").next().expect("the Control panel's X field").rect().center();
+            click(h, x);
+        }
         let mut visited = HashSet::new();
         loop {
             let named = h.query_all_by_role_and_label(egui::accesskit::Role::Button, &label(h)).next().map(|n| n.is_focused());
             let Some(focused_line) = named else {
-                let buttons: Vec<String> = h
-                    .query_all_by_role(egui::accesskit::Role::Button)
-                    .filter_map(|n| n.accesskit_node().label())
-                    .take(80)
-                    .collect();
+                let buttons: Vec<String> =
+                    h.query_all_by_role(egui::accesskit::Role::Button).filter_map(|n| n.accesskit_node().label()).take(80).collect();
                 panic!("no {:?} button; the buttons: {buttons:?}", label(h));
             };
             if focused_line {
