@@ -630,7 +630,6 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
         // canvas is drawn first. Middle-click changes pane focus without moving the caret.
         let other = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
         frame(&mut app, vec![egui::Event::PointerMoved(other)]);
-        let journal_before = app.session.journal.len();
         frame(
             &mut app,
             vec![
@@ -639,14 +638,11 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
             ],
         );
         assert_eq!(app.focus_pane, 1 - focus_pane);
-        assert_eq!(
-            app.run("story.get", json!({"story": story})).unwrap()["text"],
-            "B",
-            "a key in the pane-switch frame is dispatched once; pane {} focus {}, commands {:?}",
-            app.pane,
-            app.focus_pane,
-            &app.session.journal[journal_before..]
-        );
+        // The craft UI runtime lets a frame carry at most one pointer press as its last pointer event: what arrives after
+        // it waits and leads the next frame (`hold_back_presses`). The text is dispatched in that frame, by the pane the
+        // press focused, once.
+        frame(&mut app, vec![]);
+        assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
         assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
     }
 }

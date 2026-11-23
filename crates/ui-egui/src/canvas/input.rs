@@ -418,26 +418,6 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     // Keyboard for the active tool. A field focused when the frame began keeps this frame's keys.
     let field_id = field_focused_id(ui.ctx());
     let field = ui.ctx().text_edit_focused() || ui.data(|d| d.get_temp::<bool>(field_id)).unwrap_or(false);
-    // TEMPORARY probe for split_window_dispatches_text_once_to_the_shared_document; remove once read.
-    if std::env::var_os("DESIGNCRAFT_DEBUG_FOCUS").is_some() {
-        let events: Vec<String> = ui.input(|i| {
-            i.events
-                .iter()
-                .filter(|e| !matches!(e, egui::Event::PointerMoved(_) | egui::Event::ModifiersChanged(_)))
-                .map(|e| format!("{e:?}"))
-                .collect()
-        });
-        eprintln!(
-            "canvas input: pane {} focus_pane {} pass {} sizing {} menu_open {menu_open} modal {} field {field} has_focus {} wants_text {} events {events:?}",
-            app.pane,
-            app.focus_pane,
-            ui.ctx().current_pass_index(),
-            ui.is_sizing_pass(),
-            modal_open(app),
-            resp.has_focus(),
-            app.session.wants_text()
-        );
-    }
     if menu_open || modal_open(app) || (field && !resp.has_focus()) || !keyboard_pane(app) {
         return;
     }
