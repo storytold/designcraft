@@ -940,6 +940,12 @@ pub fn panel_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let Some((si, _)) = doc.page_loc(cur) else { return };
     let layouts = doc.layouts();
+    // The dock's menu button opens a framework menu: its rows are `MenuItem`s there, and native rows in the browser build.
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::panel_menu(app, ui, &doc, &layouts, cur, si);
+        return;
+    }
     page_menu(app, ui, &doc, &layouts, cur, si);
 }
 
