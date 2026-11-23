@@ -262,12 +262,8 @@ pub(crate) fn place_table(
                         if natural <= row.max_height + 0.01 {
                             return natural;
                         }
-                        // Past the row's maximum height it grows by whole lines: to the last line that
-                        // fits under it (the lines after it are left out of the cell).
                         let ins = &table.cells[r * nc + c].insets;
-                        layouts[r * nc + c].as_ref().map_or(0.0, |l| {
-                            l.line_heights.iter().map(|h| h + ins[0] + ins[2]).filter(|h| *h <= row.max_height + 0.01).fold(0.0, f64::max)
-                        })
+                        layouts[r * nc + c].as_ref().map_or(0.0, |l| capped_content(&l.line_heights, ins[0] + ins[2], row.max_height))
                     })
                     .fold(0.0, f64::max);
                 content.max(row.height)
@@ -391,6 +387,15 @@ pub(crate) fn place_table(
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     true
+}
+
+/// The height of a growing row's content past its maximum height: it grows by whole lines, to the
+/// last line of the prefix of lines that fit under `max` (`line_heights` are the lines' fit heights
+/// without the insets, `insets` their top and bottom sum). The lines after the first one that does
+/// not fit are left out of the cell by [`clip_overset`] whatever their own height, so they do not
+/// count here either.
+fn capped_content(line_heights: &[f64], insets: f64, max: f64) -> f64 {
+    line_heights.iter().map(|h| h + insets).take_while(|h| *h <= max + 0.01).fold(0.0, f64::max)
 }
 
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
@@ -1022,6 +1027,16 @@ mod height_tests {
         table.rows[0].max_height = 10.0;
         let composed = compose_table(table, 400.0);
         assert!((composed.frames[0].tables[0].cell(0, 0).unwrap().rect.height() - 60.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_capped_row_counts_only_the_prefix_of_lines_that_fits() {
+        // A later short line does not count once an earlier line has not fit: the cell shows the
+        // lines before the first one that does not.
+        assert_eq!(capped_content(&[20.0, 80.0, 40.0], 0.0, 50.0), 20.0);
+        assert_eq!(capped_content(&[20.0, 80.0, 40.0], 8.0, 50.0), 28.0);
+        assert_eq!(capped_content(&[20.0, 40.0, 60.0], 0.0, 50.0), 40.0, "increasing lines: the last whole line");
+        assert_eq!(capped_content(&[60.0, 80.0], 0.0, 50.0), 0.0, "no line fits");
     }
 
     #[test]
