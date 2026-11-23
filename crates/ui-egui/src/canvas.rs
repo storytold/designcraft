@@ -253,7 +253,13 @@ pub(crate) fn note_focus_at_start(ctx: &egui::Context) {
 pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
     let at_start = ctx.data(|data| data.get_temp::<bool>(egui::Id::new(FOCUS_AT_START))).unwrap_or(false);
-    let Some(canvas) = ctx.data_mut(|data| data.remove_temp::<egui::Id>(egui::Id::new(KEY_TARGET))) else { return };
+    let Some(canvas) = ctx.data_mut(|data| {
+        let id = data.get_temp::<egui::Id>(egui::Id::new(KEY_TARGET));
+        data.remove::<egui::Id>(egui::Id::new(KEY_TARGET));
+        id
+    }) else {
+        return;
+    };
     let now = ctx.memory(|memory| memory.focused());
     let blocked = app.ui.dialog.is_some() || app.ui.palette.is_some() || app.ui.about || any_open(ctx, OpenFilter::Keys);
     let take = now.is_none() && !at_start && !blocked;

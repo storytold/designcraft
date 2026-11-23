@@ -942,7 +942,7 @@ mod plate_action_tests {
                 h.state().app.ui.status
             );
             for n in h.query_all_by(|n| n.role() == egui::accesskit::Role::Button) {
-                eprintln!("SEPARATIONS-DEBUG   button {:?} rect {:?}", n.label(), n.rect());
+                eprintln!("SEPARATIONS-DEBUG   button {:?} rect {:?}", n.accesskit_node().label(), n.rect());
             }
         }
         assert_view(&h.state().app, Some(SPOT), None);

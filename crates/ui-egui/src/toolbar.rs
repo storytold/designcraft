@@ -1318,7 +1318,7 @@ mod line_workflow_tests {
                 e.rect
             );
         }
-        let buttons: Vec<String> = h.query_all_by_role(egui::accesskit::Role::Button).filter_map(|n| n.accesskit_node().label().map(str::to_owned)).collect();
+        let buttons: Vec<String> = h.query_all_by_role(egui::accesskit::Role::Button).filter_map(|n| n.accesskit_node().label()).collect();
         eprintln!("LINE-DEBUG AX buttons ({}): {buttons:?}", buttons.len());
     }
     fn mark(h: &Harness<'_, Rig>) -> Mark {

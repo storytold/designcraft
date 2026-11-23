@@ -218,7 +218,7 @@ fn search_in_menu(h: &mut Harness<'static, Window>, at: egui::Rect, what: &str) 
     // FONTMENU-DEBUG: temporary, to find why a field's menu does not focus its search field.
     eprintln!("FONTMENU-DEBUG {what}: field rect {at:?}, framework_installed {}", h.state().app.framework_installed);
     for n in h.query_all_by(|n| matches!(n.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::ComboBox)) {
-        eprintln!("FONTMENU-DEBUG   {:?} label {:?} value {:?} rect {:?} focused {}", n.role(), n.label(), n.value(), n.rect(), n.is_focused());
+        eprintln!("FONTMENU-DEBUG   {:?} label {:?} value {:?} rect {:?} focused {}", n.accesskit_node().role(), n.accesskit_node().label(), n.accesskit_node().value(), n.rect(), n.is_focused());
     }
     eprintln!("FONTMENU-DEBUG {what}: egui focused {:?}, popup open {}", h.ctx.memory(|m| m.focused()), egui::Popup::is_any_open(&h.ctx));
     let field = h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_focused()).map(|n| n.rect());
