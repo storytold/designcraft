@@ -15,6 +15,8 @@ mod insert_pages_parent;
 mod layer_merge_descendants;
 mod param_keys;
 mod pdf_backend;
+#[cfg(not(target_arch = "wasm32"))]
+mod pdf_flatten_print_regressions;
 mod preflight_resolution;
 mod primary_frame_columns;
 #[cfg(not(target_arch = "wasm32"))]
