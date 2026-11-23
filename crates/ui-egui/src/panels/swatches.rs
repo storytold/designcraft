@@ -1918,8 +1918,8 @@ mod framework {
             });
         let menu_id = list_id.with("row-menu");
         let mut actions = Vec::new();
-        // The renames the pass committed, and the groups it folded: a rename commits only where its row is still there.
-        let (mut renames, mut folded) = (Vec::new(), Vec::new());
+        // The renames the pass committed.
+        let mut renames = Vec::new();
         for event in &out.events {
             match event {
                 CollectionEvent::Activate(RowKey::Group(name)) => {
@@ -1929,9 +1929,6 @@ mod framework {
                     } else {
                         let open = ui.data(|d| d.get_temp::<bool>(open_id(name))).unwrap_or(true);
                         ui.data_mut(|d| d.insert_temp(open_id(name), !open));
-                        if open {
-                            folded.push(name.as_str());
-                        }
                     }
                 }
                 CollectionEvent::Activate(RowKey::Swatch { name, .. }) => {
@@ -1969,16 +1966,28 @@ mod framework {
                 _ => {}
             }
         }
+        // A commit waits for the pointer to be up: the click that ended the name field may also fold the folder the swatch
+        // stands in, and a swatch no longer shown is not renamed. A field retired by the panel being disabled or measured, or
+        // by its swatch going, hidden or locked, never commits.
+        let pending_id = list_id.with("pending-rename");
         for after in renames {
             let Some(name) = after.key.swatch() else { continue };
-            // A name field that was retired (the panel disabled or being measured, the swatch gone, renamed outside, hidden
-            // or locked, or its folder folded away) applies nothing.
-            let alive = ui.is_enabled()
-                && !ui.is_sizing_pass()
-                && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden)
-                && !matches!(&after.key, RowKey::Swatch { group: Some(group), .. } if folded.contains(&group.as_str()));
-            if alive {
-                rename(app, ui, Some(name), &after.name);
+            if ui.is_enabled() && !ui.is_sizing_pass() && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden) {
+                ui.data_mut(|d| d.insert_temp(pending_id, (after.key.clone(), after.name.clone())));
+            }
+        }
+        if let Some((key, to)) = ui.data(|d| d.get_temp::<(RowKey, String)>(pending_id)) {
+            if ui.input(|i| i.pointer.any_down()) {
+                ui.ctx().request_repaint();
+            } else {
+                ui.data_mut(|d| d.remove::<(RowKey, String)>(pending_id));
+                let shown = match &key {
+                    RowKey::Swatch { group: Some(group), .. } => ui.data(|d| d.get_temp::<bool>(open_id(group))).unwrap_or(true),
+                    _ => true,
+                };
+                if let Some(name) = key.swatch().filter(|name| shown && ui.is_enabled() && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden)) {
+                    rename(app, ui, Some(name), &to);
+                }
             }
         }
         // A pick by the keys (the arrows move the pick) is the swatch Delete Swatch removes; a pick that ended on a
