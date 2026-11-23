@@ -5249,6 +5249,214 @@ fn drop_cap_in_right_to_left_paragraphs_is_on_the_right() {
 }
 
 #[test]
+fn hebrew_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    // Lowercase z has a flat horizontal top below the font's declared Latin cap height.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn hebrew_body_height_skips_a_quote_in_a_latin_only_face() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Body";
+    const LATIN: &str = "DC Test Latin Body Quote";
+    let db = designcraft_fonts::FontDb::global();
+    let Some(hebrew) = designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'z') else { return };
+    let Some(latin) = designcraft_fonts::testing::font_with_glyph(LATIN, &['"'], 'H') else { return };
+    db.add_font(hebrew);
+    db.add_font(latin);
+    let compose = |quote: &str| {
+        let text = format!("הדה {quote}{}", "הדה הדה ".repeat(20));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        let story = d.story_mut(sid).unwrap();
+        story.format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        if !quote.is_empty() {
+            let start = "הדה ".len();
+            story.format_chars(start..start + quote.len(), |f| f.over.font_family = Some(LATIN.into()));
+        }
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("");
+    let quoted = compose("\"");
+    let plain_line = all_lines(&plain)[0];
+    let quoted_line = all_lines(&quoted)[0];
+    let quote = quoted_line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    assert_eq!(quote.face.family, LATIN);
+    assert_eq!(quote.face.glyph_for('ה'), 0);
+    let first = plain_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    assert!((first.sy - after_quote.sy).abs() < 1e-6, "plain scale {}, quoted scale {}", first.sy, after_quote.sy);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
+fn hebrew_drop_word_aligns_with_latin_body_cap_height() {
+    const FAMILY: &str = "DC Test Hebrew Drop Latin Body";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', 'a'], 'z').unwrap());
+    let text = format!("הדה {}", "aaa aaa ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    let body_cap_top = body.y - body.face.cap_height * body.sy;
+    assert!((top(dropped) - body_cap_top).abs() < 0.01, "drop top {}, body cap top {body_cap_top}", top(dropped));
+    assert!((top(dropped) - top(body)).abs() > 0.1, "the body's ink top must differ from its declared cap height");
+}
+
+#[test]
+fn hebrew_presentation_form_drop_word_aligns_ink_tops_with_the_first_body_line() {
+    const FAMILY: &str = "DC Test Hebrew Presentation Drop Height";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['\u{FB2E}', 'ה', 'ד', ' '], 'z').unwrap());
+    let text = format!("\u{FB2E}דה {}", "הדה הדה הדה ".repeat(30));
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "\u{FB2E}דה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let ink = designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid));
+        assert!(-ink.y0 < g.face.cap_height, "the fixture must be shorter than Latin capitals");
+        g.y + ink.y0 * g.sy
+    };
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop top {}, body top {}", top(dropped), top(body));
+}
+
+#[test]
+fn hebrew_drop_word_aligns_top_strokes_instead_of_serifs() {
+    use designcraft_geom::kurbo::{Line as OutlineLine, ParamCurve as _};
+
+    const FAMILY: &str = "DC Test Hebrew Drop Stroke";
+    let db = designcraft_fonts::FontDb::global();
+    // v's sides rise above its centre, standing in for serifs above a horizontal stroke.
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' '], 'v').unwrap());
+    let text = "הדה הדה הדה ".repeat(30);
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, 3) };
+    let (mut d, sid, _) = drop_doc(&text, para);
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &all_lines(&cs)[0];
+    let dropped = line.glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let body = line.glyphs.iter().find(|g| g.byte == "הדה ".len()).unwrap();
+    let top = |g: &PlacedGlyph| {
+        let outline = db.outline(&g.face, g.gid);
+        let ink = designcraft_geom::Shape::bounding_box(&*outline);
+        let x = (ink.x0 + ink.x1) / 2.0;
+        let column = OutlineLine::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+        let top_y = outline
+            .segments()
+            .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+            .filter(|y| y.is_finite())
+            .min_by(f64::total_cmp)
+            .unwrap();
+        assert!(top_y - ink.y0 > 1.0, "the fixture's centre top must be below its ink top");
+        g.y + top_y * g.sy
+    };
+    let ink_top = |g: &PlacedGlyph| g.y + designcraft_geom::Shape::bounding_box(&*db.outline(&g.face, g.gid)).y0 * g.sy;
+    assert!((top(dropped) - top(body)).abs() < 0.01, "drop stroke {}, body stroke {}", top(dropped), top(body));
+    assert!((ink_top(dropped) - ink_top(body)).abs() > 0.1, "ink tops must differ when strokes align");
+}
+
+#[test]
+fn hebrew_drop_cap_height_skips_leading_punctuation() {
+    const FAMILY: &str = "DC Test Hebrew Quoted Drop";
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(designcraft_fonts::testing::font_with_glyph(FAMILY, &['ה', 'ד', ' ', '"'], 'z').unwrap());
+    let compose = |prefix: &str, chars| {
+        let text = format!("{prefix}{}", "הדה הדה הדה ".repeat(30));
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..drop_cap(2, chars) };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose("", 3);
+    let quoted = compose("\"", 4);
+    let plain_lines = all_lines(&plain);
+    let quoted_lines = all_lines(&quoted);
+    let first = plain_lines[0].glyphs.iter().find(|g| g.byte == 0).unwrap();
+    let after_quote = quoted_lines[0].glyphs.iter().find(|g| g.byte == 1).unwrap();
+    assert_eq!(after_quote.face.family, FAMILY);
+    assert!((first.sy - after_quote.sy).abs() < 1e-6);
+    assert!((first.y - after_quote.y).abs() < 0.01);
+}
+
+#[test]
+fn right_to_left_drop_cap_keeps_marks_on_their_letters() {
+    const FAMILY: &str = "DC Test Hebrew Drop Marks";
+    designcraft_fonts::FontDb::global().add_font(
+        designcraft_fonts::testing::font_with(
+            FAMILY,
+            &[
+                'ה', 'ע', 'מ', 'ו', 'ד', 'ר', 'א', 'ש', 'ן', 'ל', 'ס', 'פ', '\u{5B8}', '\u{5B7}', '\u{5BC}', '\u{5B4}', '\u{5C1}', '\u{5B9}',
+                '\u{5B6}', '\u{5B5}', ' ',
+            ],
+        )
+        .unwrap(),
+    );
+    let first_word = "הָעַמּוּד";
+    let text = "הָעַמּוּד הָרִאשׁוֹן שֶׁל הַסֵּפֶר ".repeat(20);
+    let compose = |cap| {
+        let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::Right), ..cap };
+        let (mut d, sid, _) = drop_doc(&text, para);
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let plain = compose(ParaAttrs::default());
+    let dropped = compose(drop_cap(2, 9));
+    let plain_lines = all_lines(&plain);
+    let lines = all_lines(&dropped);
+    assert!(plain_lines.len() > 2 && lines.len() > 2, "the paragraph wraps beside the drop cap");
+    let plain_glyphs = &plain_lines[0].glyphs;
+    let glyphs = &lines[0].glyphs;
+    let marks: Vec<_> = glyphs
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            g.byte < first_word.len() && (g.adv == 0.0 || first_word.get(g.byte..).is_some_and(|s| s.starts_with(['\u{5B8}', '\u{5B7}', '\u{5BC}'])))
+        })
+        .collect();
+    assert!(!marks.is_empty(), "the synthetic font must shape marks in their base clusters");
+    for (i, mark_dc) in marks {
+        let base_dc = glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        let cluster_index = glyphs[..i].iter().filter(|g| g.byte == mark_dc.byte).count();
+        let mark_plain = plain_glyphs.iter().filter(|g| g.byte == mark_dc.byte).nth(cluster_index).unwrap();
+        let base_plain = plain_glyphs.iter().find(|g| g.byte == mark_dc.byte && g.adv > 0.0).unwrap();
+        assert_eq!(mark_dc.face.family, FAMILY);
+        assert_ne!(mark_dc.gid, 0);
+        let k = base_dc.sx / base_plain.sx;
+        let rel = mark_plain.x - base_plain.x;
+        let rel_dc = mark_dc.x - base_dc.x;
+        assert!((rel_dc - rel * k).abs() < 0.01 * k, "byte {}: drop-cap mark offset {rel_dc}, expected {} (scale {k})", mark_dc.byte, rel * k);
+    }
+    let rect = lines[0].drop_cap.unwrap().rect;
+    for g in glyphs.iter().filter(|g| g.byte < first_word.len()) {
+        assert!(g.x >= rect.x0 - 0.01 && g.x <= rect.x1 + 0.01, "byte {}: x {} outside {rect:?}", g.byte, g.x);
+    }
+}
+
+#[test]
 fn vertical_frames_set_no_drop_cap() {
     let (mut d, sid, _) = drop_doc(LOREM, drop_cap(3, 1));
     d.story_mut(sid).unwrap().vertical = true;

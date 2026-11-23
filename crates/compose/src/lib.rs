@@ -45,6 +45,7 @@ use designcraft_doc::{
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Affine, Point, Rect};
+use unicode_script::UnicodeScript;
 
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
@@ -5701,6 +5702,20 @@ struct DropCap {
     cap: f64,
 }
 
+/// Measure the top of the horizontal stroke at the glyph's centre so that serifs don't count.
+fn drop_cap_stroke_top(outline: &designcraft_geom::kurbo::BezPath) -> Option<f64> {
+    use designcraft_geom::kurbo::{Line, ParamCurve as _};
+
+    let ink = designcraft_geom::Shape::bounding_box(outline);
+    let x = (ink.x0 + ink.x1) / 2.0;
+    let column = Line::new((x, ink.y0 - 1.0), (x, ink.y1 + 1.0));
+    outline
+        .segments()
+        .flat_map(|seg| seg.intersect_line(column).into_iter().map(move |hit| seg.eval(hit.segment_t).y))
+        .filter(|y| y.is_finite())
+        .min_by(f64::total_cmp)
+}
+
 /// Take the drop cap (the glyphs before byte `end`) off the front of a paragraph's glyphs and scale
 /// it so its cap height reaches from the first line's cap height down to line `lines`' baseline,
 /// measured in the leading and cap height of the text after it: the size of a cap set at that text's
@@ -5732,15 +5747,41 @@ fn split_drop_cap(
     let spaces = glyphs.iter().take_while(|g| g.is_space()).count();
     let mut after: Vec<Glyph> = glyphs.drain(..spaces).collect();
     let end = after.last().map_or(end, |g| g.byte.saturating_add(g.len).max(end));
+    let is_hebrew = |glyphs: &[Glyph]| glyphs.iter().find(|g| g.ch.is_alphabetic()).is_some_and(|g| g.ch.script() == unicode_script::Script::Hebrew);
+    let hebrew = is_hebrew(&dc);
+    let body_hebrew = is_hebrew(glyphs);
+    let height = |g: &Glyph, hebrew: bool| {
+        if hebrew {
+            let gid = g.face.glyph_for('ה');
+            if gid != 0 {
+                // Outlines are y-down in font units; cap heights are positive points.
+                let outline = db.outline(g.face.get(), gid);
+                if let Some(measured) = drop_cap_stroke_top(&outline).map(|y| -y * g.sy).filter(|h| h.is_finite() && *h > 0.0) {
+                    return measured;
+                }
+                let ink = designcraft_geom::Shape::bounding_box(&*outline);
+                let measured = -ink.y0 * g.sy;
+                if measured.is_finite() && measured > 0.0 {
+                    return measured;
+                }
+            }
+        }
+        g.cap
+    };
     let body = glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0);
-    let (lead, cap, body_size) = body.map_or((base_leading, base_cap, None), |g| (g.leading, g.cap, Some(g.size)));
+    let reference = if body_hebrew { glyphs.iter().find(|g| g.len > 0 && g.cap > 0.0 && g.ch.is_alphabetic()).or(body) } else { body };
+    let (lead, body_size) = body.map_or((base_leading, None), |g| (g.leading, Some(g.size)));
+    let cap = reference.map_or(base_cap, |g| height(g, body_hebrew));
     let lead = match grid.map(|inc| (lead / inc - 1e-6).ceil().max(1.0) * inc) {
         Some(pitch) if pitch.is_finite() && pitch > 0.0 => pitch,
         _ => lead,
     };
     let drop = (lines - 1) as f64 * lead;
     // The cap's tallest glyph sets its height; its point size over the body's scales the fit.
-    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| if g.cap > c { (g.cap, g.size) } else { (c, s) });
+    let (own, own_size) = dc.iter().fold((0.0, 0.0), |(c, s), g| {
+        let h = height(g, hebrew);
+        if h > c { (h, g.size) } else { (c, s) }
+    });
     let ratio = match body_size {
         Some(b) if b > 0.0 && own_size > 0.0 && (own_size / b).is_finite() => own_size / b,
         _ => 1.0,
@@ -5786,7 +5827,7 @@ fn split_drop_cap(
     }
     let width = dc.iter().map(|g| g.adv).sum();
     dc.append(&mut after);
-    let cap = dc.iter().map(|g| g.cap).fold(0.0, f64::max);
+    let cap = dc.iter().map(|g| height(g, hebrew)).fold(0.0, f64::max);
     Some(DropCap { glyphs: dc, end, lines, width, drop, lsb, cap })
 }
 
@@ -5797,17 +5838,21 @@ impl DropCap {
     }
 }
 
-/// The drop cap's glyphs set from `at` (right to left: mirrored, its first character on the right).
+/// The drop cap's glyphs set from `at` (right to left: mirrored cluster by cluster, its first character on the right).
 fn place_drop_cap(dc: &DropCap, at: f64, rtl: bool) -> Vec<PlacedGlyph> {
     let mut x = at;
     let mut out = Vec::with_capacity(dc.glyphs.len());
-    for g in &dc.glyphs {
-        let pen = if rtl { at + at + dc.width - x - g.adv } else { x };
-        let mut p = place(g, pen);
-        p.y += dc.drop;
-        p.rtl = rtl;
-        out.push(p);
-        x += g.adv;
+    for cluster in dc.glyphs.chunk_by(|a, b| a.byte == b.byte && a.bidi_offset == b.bidi_offset) {
+        let w: f64 = cluster.iter().map(|g| g.adv).sum();
+        let mut pen = if rtl { at + at + dc.width - x - w } else { x };
+        for g in cluster {
+            let mut p = place(g, pen);
+            p.y += dc.drop;
+            p.rtl = rtl;
+            out.push(p);
+            pen += g.adv;
+        }
+        x += w;
     }
     out
 }
