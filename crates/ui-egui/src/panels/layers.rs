@@ -2046,7 +2046,7 @@ mod framework_tests {
         let nodes: Vec<_> = h.query_all_by_label(label).collect();
         let pick = [egui::accesskit::Role::TreeItem, egui::accesskit::Role::Button]
             .into_iter()
-            .find_map(|role| nodes.iter().find(|n| n.role() == role))
+            .find_map(|role| nodes.iter().find(|n| n.accesskit_node().role() == role))
             .or(nodes.first())
             .unwrap_or_else(|| panic!("no node named {label}"));
         pick.rect()

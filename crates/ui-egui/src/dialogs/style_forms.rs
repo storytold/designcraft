@@ -659,7 +659,7 @@ mod tests {
             }
             event(h, Event::PointerMoved(egui::pos2(target.center().x, top + 100.0)));
             let delta = (target.center().y - (top + 180.0)).clamp(-300.0, 300.0);
-            event(h, Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -delta), modifiers: Modifiers::NONE });
+            event(h, Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -delta), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE, source: egui::MouseWheelSource::Unknown });
             steps(h, 2);
         }
         click(h, Role::RadioButton, label);

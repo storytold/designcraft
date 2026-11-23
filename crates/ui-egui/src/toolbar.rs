@@ -1873,13 +1873,12 @@ mod framework_tests {
     }
     fn press(h: &mut Harness<'_, Rig>, pos: egui::Pos2, button: PointerButton, modifiers: Modifiers) {
         // The modifiers are held over the click, as a real Alt-click holds them, not only on its events.
-        h.input_mut().modifiers = modifiers;
+        h.input_mut().events.push(Event::ModifiersChanged(modifiers));
         event(h, Event::PointerMoved(pos));
         for pressed in [true, false] {
-            h.input_mut().modifiers = modifiers;
             event(h, Event::PointerButton { pos, button, pressed, modifiers });
         }
-        h.input_mut().modifiers = Modifiers::NONE;
+        event(h, Event::ModifiersChanged(Modifiers::NONE));
     }
 
     fn harness() -> Harness<'static, Rig> {
