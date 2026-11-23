@@ -207,12 +207,12 @@ fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Colo
 /// Text Wrap keeps its existing artwork; only discrete input moves through the installed SDK.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
-struct WrapModeArtwork<'a>(&'a str);
+struct WrapModeArtwork(String);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl craft_ui_widgets::primitives::Glyph for WrapModeArtwork<'_> {
+impl craft_ui_widgets::primitives::Glyph for WrapModeArtwork {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
-        icons::paint(painter, rect, self.0, color);
+        icons::paint(painter, rect, &self.0, color);
     }
 }
 
@@ -239,7 +239,7 @@ fn wrap_mode_button(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, icon: &str
         if selected {
             ui.painter().rect_filled(rect, 3.0, Tokens::get(ui.ctx()).tool_active);
         }
-        let artwork = WrapModeArtwork(icon);
+        let artwork = WrapModeArtwork(icon.to_owned());
         return Button::new(label.to_owned())
             .id(id)
             .painted("")

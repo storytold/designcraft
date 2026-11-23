@@ -113,13 +113,13 @@ fn flex_create_choice(app: &DesignApp, ui: &mut Ui, on: &mut bool, label: &str) 
 }
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
-struct FlexChoiceGlyph<'a>(&'a str);
+struct FlexChoiceGlyph(String);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl craft_ui_widgets::primitives::Glyph for FlexChoiceGlyph<'_> {
+impl craft_ui_widgets::primitives::Glyph for FlexChoiceGlyph {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
         // These are physical layout directions, just as in the original app artwork.
-        icons::paint(painter, rect, self.0, color);
+        icons::paint(painter, rect, &self.0, color);
     }
 }
 
@@ -132,7 +132,7 @@ fn flex_icon_choice(app: &DesignApp, ui: &mut Ui, key: &str, icon: &str, on: boo
         // epochs retire old input; value/revision changes are not a different physical control.
         let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
         let id = ui.make_persistent_id(("flex-icon-choice", key, owner));
-        let glyph = FlexChoiceGlyph(icon);
+        let glyph = FlexChoiceGlyph(icon.to_owned());
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         return craft_ui_widgets::buttons::ToggleButton::new(label.to_owned(), Bind::given(on))
             .id(id)
