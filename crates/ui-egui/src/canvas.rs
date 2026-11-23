@@ -276,11 +276,19 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let held = ui.data(|data| data.get_temp::<egui::Id>(last)).is_some_and(|id| ui.memory(|memory| memory.has_focus(id)));
     let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
     ui.data_mut(|data| data.insert_temp(last, resp.id));
+    // A sizing or measuring run of the dock's body shows the canvas too (the framework runs a body more than once to find its
+    // size); only the pass that is drawn takes the pass's input, or one Paste would paste once per run.
     #[cfg(not(target_arch = "wasm32"))]
-    if input::keyboard_pane(app) {
+    let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
+    #[cfg(target_arch = "wasm32")]
+    let measuring = ui.is_sizing_pass();
+    #[cfg(not(target_arch = "wasm32"))]
+    if !measuring && input::keyboard_pane(app) {
         ui.data_mut(|data| data.insert_temp(egui::Id::new(KEY_TARGET), resp.id));
     }
-    if presenting {
+    if measuring {
+        // Nothing to take: the real run reads the input.
+    } else if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,
         // Shift-click the previous one. Tools and selection don't see the input.
         present_fit(app, rect);
