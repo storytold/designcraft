@@ -853,11 +853,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!("layer.deleteUnused", "Delete Unused Layers", [], None, "{} — layers without objects (one layer always stays)", has_doc, |s, _| {
             s.edit(|d, _| {
-                let used: std::collections::HashSet<LayerId> =
-                    d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| sp.items.iter().map(|i| i.layer)).collect();
+                // Objects inside groups and objects anchored in text (cells and notes included) use their layers too.
+                let in_use = |id: LayerId| {
+                    let layer = [id];
+                    d.spreads.iter().chain(d.parents.iter()).any(|sp| sp.items.iter().any(|i| item_uses_layers(i, &layer)))
+                        || d.stories.values().any(|st| story_uses_layers(st, &layer))
+                };
+                let used: std::collections::HashSet<LayerId> = d.layers.iter().map(|l| l.id).filter(|id| in_use(*id)).collect();
                 let before = d.layers.len();
                 if used.is_empty() {
-                    // Nothing anywhere: keep the first layer.
+                    // No layer has objects: keep the first layer.
                     d.layers.truncate(1);
                 } else {
                     d.layers.retain(|l| used.contains(&l.id));
