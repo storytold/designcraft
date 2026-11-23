@@ -376,19 +376,26 @@ fn context_menu(ui: &mut Ui, label: String, opener: &egui::Response, mut entries
 // The panel
 
 pub(super) fn show(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, p: &Plan) {
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
     let mut drop: Option<PageDrop> = None;
-    ui.spacing_mut().item_spacing.y = 0.0;
-    if p.opts.pages_on_top {
-        pages(app, ui, doc, p, &mut drop);
-        divider(app, ui, p);
-        parents(app, ui, doc, p);
-    } else {
-        parents(app, ui, doc, p);
-        divider(app, ui, p);
-        pages(app, ui, doc, p, &mut drop);
-    }
-    ui.spacing_mut().item_spacing.y = 4.0;
-    footer(app, ui, doc, p.cur);
+    with_env(
+        ui,
+        |scope| scope.direction = Some(direction),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if p.opts.pages_on_top {
+                pages(app, ui, doc, p, &mut drop);
+                divider(app, ui, p);
+                parents(app, ui, doc, p);
+            } else {
+                parents(app, ui, doc, p);
+                divider(app, ui, p);
+                pages(app, ui, doc, p, &mut drop);
+            }
+            ui.spacing_mut().item_spacing.y = 4.0;
+            footer_contents(app, ui, doc, p.cur);
+        },
+    );
     apply_drop(app, doc, drop);
 }
 
@@ -509,9 +516,15 @@ fn parents_list(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Documen
     let mut picked = None;
     let mut edit = None;
     let mut menu = None;
+    // An arrow key that moves the selection over New Parent does not make a parent; a click or Enter on it does.
+    let by_keys = out.events.iter().any(|event| matches!(event, CollectionEvent::LeadMoved { by: LeadSource::Keys, .. }));
     for event in out.events {
         match event {
-            CollectionEvent::Selection(SelectionChange::Set(keys)) => picked = keys.last().copied(),
+            CollectionEvent::Selection(SelectionChange::Set(keys)) => {
+                if let Some(key) = keys.last().copied().filter(|key| !(by_keys && *key == ParentKey::New)) {
+                    picked = Some(key);
+                }
+            }
             CollectionEvent::LeadMoved { key, by: LeadSource::Pointer } => picked = Some(key),
             CollectionEvent::Activate(key) => {
                 picked = Some(key);
