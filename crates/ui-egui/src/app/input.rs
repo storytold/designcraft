@@ -36,7 +36,10 @@ impl DesignApp {
             use craft_ui_widgets::runtime::frame::{FrameInput, set_input, take_output};
             let _fired = take_output(ctx);
             // The host carries the interface language's command labels, which the framework's Keyboard Shortcuts dialog shows.
-            set_input(ctx, FrameInput::new(RootEnv::new()).host(crate::framework_host::host(&self.ui.language)));
+            use craft_ui_widgets::runtime::commands::CommandInput;
+            // The tools are commands on the board, without chords, so the Tools rail resolves and fires them.
+            let commands = CommandInput::new().catalog(crate::toolbar::tool_catalog(&self.ui.language));
+            set_input(ctx, FrameInput::new(RootEnv::new()).host(crate::framework_host::host(&self.ui.language)).commands(commands));
         }
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#1295).

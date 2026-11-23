@@ -13,6 +13,11 @@ const BTN: f32 = 24.0;
 /// Draws the adaptive Tools panel with localized tool flyouts, fill/stroke controls and
 /// screen-mode buttons; flyout rows accommodate translated labels and their shortcuts.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let frame = egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.divider));
     // A single column that doesn't fit the window's height becomes two, without changing the
@@ -627,34 +632,6 @@ fn line_tool_button(app: &DesignApp, ui: &mut egui::Ui, icon: &str, active: bool
         format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells))
     });
     let id = ui.scope_id().with(("tools-line", target));
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::{Glyph, IconSpec};
-        use craft_ui_widgets::style::UiTokens;
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_theme::ControlSize;
-
-        #[derive(craft_ui::contract::MemoProps)]
-        struct LineGlyph;
-        impl Glyph for LineGlyph {
-            fn paint(&self, painter: &egui::Painter, _: &UiTokens, rect: egui::Rect, color: Color32, _: bool) {
-                let artwork = egui::Rect::from_center_size(rect.center(), vec2(17.0, 17.0));
-                icons::paint(painter, artwork, "tool-line", color);
-            }
-        }
-        static LINE: LineGlyph = LineGlyph;
-        let (rect, _) = ui.allocate_exact_size(vec2(BTN, BTN), Sense::hover());
-        return IconButton::new(IconSpec::glyph(&LINE))
-            .id(id)
-            .label(tip.to_owned())
-            .selected(active)
-            .size(ControlSize::Sm)
-            .show_at_with_tip(ui, rect, |ui| {
-                crate::rtl::label(ui, tip);
-            })
-            .response;
-    }
     ui.push_id(id, |ui| tool_button(ui, icon, active, tip)).inner
 }
 
@@ -733,6 +710,402 @@ pub(crate) fn apply_gradient(app: &mut DesignApp) -> Result<Value, String> {
 /// the objects.
 pub(crate) fn apply_none(app: &mut DesignApp) -> Result<Value, String> {
     crate::panels::apply_swatch(app, app.ui.stroke_front, "[None]", None)
+}
+
+/// The tools as framework commands, for the board in the language `lang`: each tool's own keymap command
+/// (`keys::tool`), its translated label and its artwork's name. They carry no default chords: the app's keymap is the
+/// one dispatcher of every key, and the board only resolves and fires these for the Tools rail. One catalog per
+/// language, so its generation moves only when the language does.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tool_catalog(lang: &str) -> craft_ui_widgets::runtime::commands::AppCatalog {
+    use craft_ui_widgets::runtime::commands::AppCatalog;
+    use std::sync::{Mutex, PoisonError};
+    static CATALOGS: Mutex<Vec<(String, AppCatalog)>> = Mutex::new(Vec::new());
+    let mut catalogs = CATALOGS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, catalog)) = catalogs.iter().find(|(code, _)| code == lang) {
+        return catalog.clone();
+    }
+    let defs: Vec<craft_keymap::CommandDef> = crate::keys::catalog()
+        .iter()
+        .filter_map(|def| {
+            let tool = crate::keys::tool_of(&def.command)?;
+            let icon = TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.id == tool).map(|t| t.icon);
+            let mut def = def.clone();
+            def.defaults.clear();
+            def.label = crate::i18n::tr(lang, &def.label).to_owned();
+            if let Some(icon) = icon {
+                def = def.with_icon(icon);
+            }
+            Some(def)
+        })
+        .collect();
+    let generation = catalogs.len() as u64 + 1;
+    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
+        log::warn!("the tool commands are not on the framework's board: {error}");
+        AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
+    });
+    catalogs.push((lang.to_owned(), catalog.clone()));
+    catalog
+}
+
+/// The Tools panel on the framework: the tool rail with its slots and flyouts, and under it, in the rail's footer, the
+/// fill and stroke pair, Formatting affects container or text, the apply buttons, View Options and the Screen Mode.
+/// The same commands, tool state and dialogs as the native panel.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{VIEW_OPTIONS, transform_dialog_of};
+    use crate::DesignApp;
+    use crate::framework_transform::{self as kit, Artwork, MenuRow};
+    use craft_behavior::Mixed;
+    use craft_color_ui::ui::{PairWell, SwatchPair, Well};
+    use craft_theme::{ControlSize, Srgba};
+    use craft_ui_panels::docking::{DockGrid, DockSizes};
+    use craft_ui_panels::rails::{LastUsed, RailFooter, RailTool, ToolRail, ToolSlot};
+    use craft_ui_widgets::buttons::{ButtonOutput, IconButton};
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Tracked, Trigger};
+    use craft_ui_widgets::display::Divider;
+    use craft_ui_widgets::layout::RowAlign;
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::primitives::{Glyph, IconSpec};
+    use craft_ui_widgets::style::UiTokens;
+    use designcraft_tools::{SPLIT_IN_TWO_COLUMNS, TOOL_GROUPS, ToolInfo};
+    use egui::{Color32, Rect, Ui, vec2};
+    use serde_json::{Value, json};
+    use std::sync::OnceLock;
+
+    /// Every tool in the panel's order: a tool's place here is its id on the rail.
+    fn tools() -> &'static [&'static ToolInfo] {
+        static ALL: OnceLock<Vec<&'static ToolInfo>> = OnceLock::new();
+        ALL.get_or_init(|| TOOL_GROUPS.iter().flat_map(|group| group.iter()).collect())
+    }
+
+    /// Each tool's artwork, as the native panel draws it, by the tool's place in [`tools`].
+    fn artwork() -> &'static [Artwork] {
+        static ART: OnceLock<Vec<Artwork>> = OnceLock::new();
+        ART.get_or_init(|| tools().iter().map(|tool| Artwork(tool.icon)).collect())
+    }
+
+    /// The rail's slots in `columns` columns: a slot per tool group (its current tool shown, the others in its
+    /// flyout), or, in two columns, a slot per tool of a group InDesign lays out tool by tool. An empty group ends the
+    /// group of slots before it.
+    fn slots(columns: usize) -> Vec<ToolSlot<u8>> {
+        let (all, art) = (tools(), artwork());
+        let tool = |info: &ToolInfo| {
+            let at = all.iter().position(|t| t.id == info.id).unwrap_or(0);
+            // The app's own artwork: the icon sets have no InDesign tool drawings. (Framework gap fixed on
+            // design-port/framework-gaps: `RailTool::icon`.)
+            RailTool::new(at as u8, crate::keys::tool(info.id)).icon(IconSpec::glyph(&art[at]))
+        };
+        let mut slots: Vec<ToolSlot<u8>> = Vec::new();
+        for (gi, group) in TOOL_GROUPS.iter().enumerate() {
+            let Some(first) = group.first() else {
+                if let Some(last) = slots.last_mut() {
+                    last.group_end = true;
+                }
+                continue;
+            };
+            let id = |k: usize| (gi * 16 + k) as u32;
+            if columns == 2 && SPLIT_IN_TWO_COLUMNS.contains(&first.id) {
+                slots.extend(group.iter().enumerate().map(|(k, info)| ToolSlot::new(id(k), vec![tool(info)])));
+            } else {
+                slots.push(ToolSlot::new(id(0), group.iter().map(tool).collect()));
+            }
+        }
+        slots
+    }
+
+    thread_local! {
+        /// The slots in one and in two columns, kept so the rail's memoized grid replays while they stay the same.
+        static SLOTS: [Tracked<Vec<ToolSlot<u8>>>; 2] = [Tracked::new(slots(1)), Tracked::new(slots(2))];
+        /// The tool each slot showed last: none, so a slot shows its current tool, else its first, as the native
+        /// panel does.
+        static LAST_USED: Tracked<LastUsed<u8>> = Tracked::new(LastUsed::default());
+    }
+
+    /// The Tools panel: one column unless the preference or a window too short for one asks for two.
+    pub(super) fn show(app: &mut DesignApp, ui: &mut Ui) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let all = tools();
+        let current = all.iter().position(|t| t.id == app.session.tool_id()).map_or(u8::MAX, |at| at as u8);
+        // A held activation belongs to this document incarnation and ordered selection: a new target is a new rail.
+        let target =
+            app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
+        let rail_id = egui::Id::new(("tools-rail", target));
+        let toggle_h = 24.0;
+        SLOTS.with(|slots| {
+            LAST_USED.with(|last| {
+                let sizes = DockSizes::of_scope(ui);
+                let grid = |cols: usize| DockGrid::rail(slots[cols - 1].len()).resolved(&sizes);
+                // A single column that doesn't fit the window's height becomes two, without changing the preference.
+                let crowded = !app.ui.tools_double_column && {
+                    let width = grid(1).width(1);
+                    let tall =
+                        ToolRail::new(tr("Tools"), &slots[0], &current, last).id(rail_id).measure_rail(ui, width, |ui, at| footer(app, ui, at)).y;
+                    tall > ui.available_height() - toggle_h
+                };
+                let cols = if app.ui.tools_double_column || crowded { 2 } else { 1 };
+                let width = grid(cols).width(cols as u16);
+                egui::Panel::left("tools").exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |ui| {
+                    Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                        let icon = if cols == 1 { "double-chevron-right" } else { "double-chevron-left" };
+                        let label = tr("Toggle double column");
+                        let toggled = IconButton::new(IconSpec::glyph(&Artwork(icon)))
+                            .id(egui::Id::new("tools-double-column"))
+                            .label(label.clone())
+                            .tooltip(label)
+                            .size(ControlSize::Sm)
+                            .enabled(!crowded)
+                            .show(ui)
+                            .clicked();
+                        if toggled {
+                            app.ui.tools_double_column = !app.ui.tools_double_column;
+                        }
+                    });
+                    let out = ToolRail::new(tr("Tools"), &slots[cols - 1], &current, last).id(rail_id).show_rail(ui, |ui, at| footer(app, ui, at));
+                    if let Some(at) = out.select {
+                        app.select_tool(all[usize::from(at)].id);
+                    }
+                    // A double click: Polygon Settings for a polygon tool, a transform tool's Object › Transform dialog.
+                    if let Some(at) = out.double_clicked {
+                        let id = all[usize::from(at)].id;
+                        if matches!(id, "polygon" | "polygonFrame") {
+                            let cur = app.session.execute("tool.polygonSettings", &json!({})).unwrap_or_default();
+                            app.ui.dialog = Some(crate::dialogs::Dialog::new("polygonSettings", cur));
+                        }
+                        if let Some(cmd) = transform_dialog_of(id) {
+                            crate::menus::activate(app, cmd, &Value::Null);
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    /// What an apply button paints: the colour applied last, a gradient, or None.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Apply {
+        kind: u8,
+        /// The colour applied last, `[r, g, b]`, when there is one.
+        last: bool,
+        r: u8,
+        g: u8,
+        b: u8,
+    }
+
+    impl Glyph for Apply {
+        fn paint(&self, painter: &egui::Painter, _: &UiTokens, rect: Rect, _: Color32, _: bool) {
+            let chip = Rect::from_center_size(rect.center(), vec2(13.0, 13.0));
+            match self.kind {
+                0 => painter.rect_filled(chip, 0.0, if self.last { Color32::from_rgb(self.r, self.g, self.b) } else { Color32::BLACK }),
+                1 => crate::widgets::paint_chip(painter, chip, None, Some((Color32::WHITE, Color32::BLACK))),
+                _ => crate::widgets::paint_chip(painter, chip, None, None),
+            }
+        }
+    }
+
+    /// The menu `label` a right click on `opener` opens, of `rows` (label and key): the key of the row run this pass.
+    fn context_menu<K: Clone>(ui: &mut Ui, id: egui::Id, label: &str, opener: &ButtonOutput, rows: &[(String, K)]) -> Option<K> {
+        Menu::new(label.to_owned())
+            .id(id)
+            .opened_by(opener, Trigger::Context)
+            .show(ui, |ui, _| {
+                let mut ran = None;
+                for (k, (label, key)) in rows.iter().enumerate() {
+                    if MenuItem::new(label.clone()).id(id.with(k)).show(ui).ran {
+                        ran = Some(key.clone());
+                    }
+                }
+                ran
+            })
+            .inner
+            .flatten()
+    }
+
+    /// An icon button of the panel's artwork `icon`, named and tipped `label`, on while `on`.
+    fn button(ui: &mut Ui, key: &str, icon: &'static str, label: &str, on: bool) -> ButtonOutput {
+        IconButton::new(IconSpec::glyph(&Artwork(icon)))
+            .id(egui::Id::new(("tools-footer", key)))
+            .label(label.to_owned())
+            .tooltip(label.to_owned())
+            .selected(on)
+            .size(ControlSize::Sm)
+            .show(ui)
+    }
+
+    /// The colour a swatch shows on a well: its colour, a gradient's first stop, or clear for None.
+    fn well_color(doc: Option<&designcraft_doc::Document>, name: &str) -> Srgba {
+        let (color, gradient) = doc.map_or((None, None), |d| crate::widgets::swatch_colors(d, name, 1.0));
+        color
+            .or(gradient.map(|(first, _)| first))
+            .map_or(Srgba::new(0.0, 0.0, 0.0, 0.0), |c| Srgba::rgb(f32::from(c.r()) / 255.0, f32::from(c.g()) / 255.0, f32::from(c.b()) / 255.0))
+    }
+
+    /// The area under the tools (InDesign 2026 §3 group 5).
+    fn footer(app: &mut DesignApp, ui: &mut Ui, at: RailFooter) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let target = crate::panels::color_target(app);
+        let doc = app.session.active().map(|d| d.doc.clone());
+        let stroke_front = app.ui.stroke_front;
+        let text_mode = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
+        let (fill_sw, stroke_sw) = match &target {
+            Some((fill, _, stroke, _)) => (fill.clone(), stroke.clone()),
+            // Nothing selected: the colours new shapes are drawn with.
+            None => doc.as_ref().map_or(("[None]".to_string(), "[Black]".to_string()), |d| {
+                (d.settings.new_object.fill.clone(), d.settings.new_object.stroke.clone())
+            }),
+        };
+        Stack::new().fill_width().show(ui, |ui, _| {
+            // The Fill and Stroke proxy with Default Fill and Stroke and Swap over it; a click brings a box to the
+            // front, a double click opens the Color Picker for it.
+            let wells = [
+                PairWell::new(tr("Fill (X)"), Mixed::Same(well_color(doc.as_deref(), &fill_sw))),
+                PairWell::new(tr("Stroke (X)"), Mixed::Same(well_color(doc.as_deref(), &stroke_sw))).ring(true),
+            ];
+            let active = if stroke_front { Well::Secondary } else { Well::Primary };
+            let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
+                .id(egui::Id::new("tools-fill-stroke"))
+                .default_button(tr("Default Fill and Stroke (D)"))
+                .swap_button(tr("Swap Fill and Stroke (Shift+X)"))
+                .popover(false)
+                .show(ui);
+            if pair.defaults {
+                let _ = app.run("color.defaultFillStroke", json!({}));
+            }
+            if pair.swap {
+                let _ = app.run("color.swapFillStroke", json!({}));
+            }
+            if pair.activated {
+                app.ui.stroke_front = pair.active == Well::Secondary;
+            }
+            if let Some(well) = pair.double_clicked {
+                let stroke = well == Well::Secondary;
+                let current = if stroke { &stroke_sw } else { &fill_sw };
+                let mut fields = crate::panels::swatches::picker_fields(doc.as_ref().and_then(|d| d.resolve_color(current, 1.0)), stroke);
+                fields["text"] = json!(crate::panels::colors_affect_text(app));
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
+            }
+            // Formatting affects container / text.
+            Row::new().show(ui, |ui, _| {
+                for (k, (icon, tip)) in
+                    [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
+                {
+                    if button(ui, icon, icon, &tr(tip), text_mode == (k == 1)).clicked() {
+                        let _ = app.run("app.formattingAffectsText", json!({"on": k == 1}));
+                    }
+                }
+            });
+            // Apply Color / Apply Gradient / Apply None: three buttons in two columns, as InDesign lays them out; one
+            // with the kind in front, and a menu of the three, in one column.
+            let front_sw = if stroke_front { &stroke_sw } else { &fill_sw };
+            let front_kind = match doc.as_ref() {
+                Some(_) if front_sw == designcraft_color::swatch::NONE => 2,
+                Some(d) if designcraft_color::swatch::resolve_gradient(&d.swatches, front_sw).is_some() => 1,
+                _ => 0,
+            };
+            let applies: [(&str, &str); 3] =
+                [("Apply Color (,)", "color.applyColor"), ("Apply Gradient (.)", "color.applyGradient"), ("Apply None (/)", "color.applyNone")];
+            let last_color = app.ui.last_color.as_deref().and_then(|sw| doc.as_ref().and_then(|d| crate::widgets::swatch_colors(d, sw, 1.0).0));
+            let glyph = |kind: u8| {
+                let c = last_color.unwrap_or(Color32::BLACK);
+                Apply { kind, last: last_color.is_some(), r: c.r(), g: c.g(), b: c.b() }
+            };
+            let mut run = None;
+            if at.columns > 1 {
+                Row::new().show(ui, |ui, _| {
+                    for (k, (tip, id)) in applies.into_iter().enumerate() {
+                        let face = glyph(k as u8);
+                        let label = tr(tip);
+                        let out = IconButton::new(IconSpec::glyph(&face))
+                            .id(egui::Id::new(("tools-apply", k)))
+                            .label(label.clone())
+                            .tooltip(label)
+                            .selected(k == front_kind)
+                            .size(ControlSize::Sm)
+                            .show(ui);
+                        if out.clicked() {
+                            run = Some(id);
+                        }
+                    }
+                });
+            } else {
+                let (tip, id) = applies[front_kind];
+                let face = glyph(front_kind as u8);
+                let label = tr(tip);
+                let out = IconButton::new(IconSpec::glyph(&face))
+                    .id(egui::Id::new("tools-apply"))
+                    .label(label.clone())
+                    .tooltip(label.clone())
+                    .size(ControlSize::Sm)
+                    .show(ui);
+                if out.clicked() {
+                    run = Some(id);
+                }
+                let rows: Vec<(String, &str)> = applies.iter().map(|(tip, id)| (tr(tip), *id)).collect();
+                run = context_menu(ui, egui::Id::new("tools-apply-menu"), &label, &out, &rows).or(run);
+            }
+            if let Some(id) = run {
+                let _ = app.run(id, json!({}));
+            }
+            Divider::horizontal().show(ui);
+            // View Options: Frame Edges, Rulers, Guides, Smart Guides, Baseline Grid, Hidden Characters, each checked
+            // when shown.
+            let label = tr("View Options");
+            let opener = button(ui, "view-options", "view-options", &label, false);
+            let ids = ["view.frameEdges", "view.rulers", "-", "view.guides", "view.smartGuides", "view.baselineGrid", "-", "view.hiddenCharacters"];
+            let labels: Vec<String> = VIEW_OPTIONS.iter().map(|l| tr(l)).collect();
+            let mut groups: Vec<Vec<MenuRow<'_, &str>>> = vec![Vec::new()];
+            for (k, id) in ids.into_iter().enumerate() {
+                if id == "-" {
+                    groups.push(Vec::new());
+                    continue;
+                }
+                let checked = crate::menus::checked(app, id, &Value::Null).unwrap_or(false);
+                let shortcut = crate::menus::shortcut_label(app, id, &Value::Null).filter(|s| !s.is_empty());
+                if let Some(group) = groups.last_mut() {
+                    group.push(MenuRow { key: id, label: &labels[k], checked: Some(checked), enabled: true, shortcut });
+                }
+            }
+            if let Some(id) = kit::menu(ui, egui::Id::new("tools-view-options"), &label, &opener, &groups) {
+                let _ = app.run(id, json!({}));
+            }
+            Divider::horizontal().show(ui);
+            // Screen Mode: Normal and Preview (with Bleed, Slug and Presentation) side by side in two columns, as
+            // InDesign's; one button with the five in its menu in one column.
+            let mode = app.ui.screen_mode;
+            let modes = [("Preview", "preview"), ("Bleed", "bleed"), ("Slug", "slug"), ("Presentation", "presentation")];
+            let mut screen = None;
+            if at.columns > 1 {
+                let normal = mode == crate::ScreenMode::Normal;
+                Row::new().show(ui, |ui, _| {
+                    if button(ui, "screen-normal", "screen-normal", &tr("Normal"), normal).clicked() {
+                        screen = Some("normal");
+                    }
+                    let other = format!("{} (W)", tr("Preview"));
+                    let out = button(ui, "screen-mode", "screen-preview", &other, !normal);
+                    if out.clicked() {
+                        screen = Some("preview");
+                    }
+                    let rows: Vec<(String, &str)> = modes.iter().map(|(l, m)| (tr(l), *m)).collect();
+                    screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &other, &out, &rows).or(screen);
+                });
+            } else {
+                let preview = mode == crate::ScreenMode::Preview;
+                let label = tr(if preview { "Preview (W)" } else { "Normal (W)" });
+                let out = button(ui, "screen-mode", if preview { "screen-preview" } else { "screen-normal" }, &label, true);
+                if out.clicked() {
+                    let _ = app.run("view.togglePreview", json!({}));
+                }
+                let rows: Vec<(String, &str)> = std::iter::once(("Normal", "normal")).chain(modes).map(|(l, m)| (tr(l), m)).collect();
+                screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &label, &out, &rows);
+            }
+            if let Some(mode) = screen {
+                let _ = app.run("view.screenMode", json!({"mode": mode}));
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -924,18 +1297,28 @@ mod line_workflow_tests {
     fn label(h: &Harness<'_, Rig>) -> String {
         let app = &h.state().app;
         let name = crate::i18n::tr(&app.ui.language, "Line Tool");
+        // The installed Tools rail names a tool by its command's label alone: its chord comes only from the
+        // framework's own keymap, which the app's keymap does not feed (a framework gap, display-only chords), so
+        // the shortcut the native button names it with is missing there.
+        if app.framework_installed {
+            return name.to_string();
+        }
         crate::menus::tool_shortcut_label(app, "line").map_or_else(|| name.to_string(), |s| format!("{name} ({s})"))
     }
-    fn line_elements(h: &Harness<'_, Rig>) -> Vec<Element> {
-        let label = label(h);
+    /// The installed rail's button of the tool named `name`.
+    fn rail_elements(h: &Harness<'_, Rig>, name: &str) -> Vec<Element> {
         h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements)
-            .filter(|e| e.component == "IconButton" && e.part.is_none()
-                && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(label.as_str())))
+            .filter(|e| e.component == "FlyoutButton" && e.part.is_none()
+                && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(name)))
             .cloned().collect()
+    }
+    fn line_elements(h: &Harness<'_, Rig>) -> Vec<Element> {
+        // Installed, the standalone Line slot is a button of the framework's Tools rail (a FlyoutButton with one tool).
+        rail_elements(h, &label(h))
     }
     fn native(h: &Harness<'_, Rig>) -> Element {
         let mut elements = line_elements(h);
-        assert_eq!(elements.len(), 1, "exactly the standalone Line slot uses the installed SDK IconButton");
+        assert_eq!(elements.len(), 1, "exactly the standalone Line slot is the installed rail's Line button");
         let element = elements.remove(0);
         assert_eq!(element.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::Button));
         element
@@ -1145,7 +1528,12 @@ mod line_workflow_tests {
             let status = h.state().app.ui.status.clone();
             let element = native(&h);
             let cell = line_rect(&h);
-            assert_eq!(element.rect.size(), vec2(BTN, BTN));
+            // The rail lays out its buttons in the framework's rail size, not the native 24 pt: the Line button is the
+            // same square as every other slot's.
+            let selection = crate::i18n::tr(&h.state().app.ui.language, "Selection Tool").to_string();
+            let other = rail_elements(&h, &selection).pop().expect("the Selection Tool's rail button");
+            assert_eq!(element.rect.size(), other.rect.size());
+            assert_eq!(element.rect.width(), element.rect.height());
             assert!(cell.expand(0.5).contains_rect(element.rect) && element.rect.expand(0.5).contains_rect(cell));
             let parent = h.state().parent.expect("actual shipping left Tools Panel state");
             assert!(parent.expand(0.5).contains_rect(element.rect));
@@ -1440,5 +1828,183 @@ mod line_workflow_tests {
         assert_eq!(h.state().app.session.journal.len(), start);
         assert_eq!(h.state().app.session.tool_id(), "selection");
         choose_line(&mut h);
+    }
+}
+
+/// The Tools panel with the framework installed, in the full application: the tool rail and the area under it run the
+/// same commands and open the same dialogs as the native panel's tests in `toolbar/tests.rs` check.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_tests {
+    use crate::DesignApp;
+    use designcraft_tools::TOOL_GROUPS;
+    use egui::accesskit::Role;
+    use egui::{Event, Modifiers, PointerButton, Rect, vec2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use serde_json::{Value, json};
+
+    struct Rig {
+        app: DesignApp,
+        panel: Option<Rect>,
+    }
+
+    fn step(h: &mut Harness<'_, Rig>) {
+        let mut raw = std::mem::take(h.input_mut());
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, Rig>, frames: usize) {
+        for _ in 0..frames {
+            step(h);
+        }
+    }
+    fn event(h: &mut Harness<'_, Rig>, event: Event) {
+        h.input_mut().events.push(event);
+        step(h);
+    }
+    fn press(h: &mut Harness<'_, Rig>, pos: egui::Pos2, button: PointerButton, modifiers: Modifiers) {
+        event(h, Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            event(h, Event::PointerButton { pos, button, pressed, modifiers });
+        }
+    }
+
+    fn harness() -> Harness<'static, Rig> {
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let mut app = DesignApp::new_for_panel_tests(session, crate::Services::default());
+        app.run("window.workspace", json!({"name": "Advanced"})).unwrap();
+        app.framework_opacity = true;
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        assert!(app.framework_installed);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(1800.0, 1000.0)).with_step_dt(0.01).build_ui_state(
+            |ui, state: &mut Rig| {
+                let ctx = ui.ctx().clone();
+                state.app.logic(&ctx);
+                let parent = ui.scope_id().with("tools");
+                state.app.ui(ui);
+                state.panel = egui::containers::panel::PanelState::load(ui.ctx(), parent).map(|panel| panel.outer_rect);
+            },
+            Rig { app, panel: None },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 6);
+        h
+    }
+
+    /// The control named `label` with one of `roles` in the Tools panel.
+    fn control(h: &Harness<'_, Rig>, label: &str, roles: &[Role]) -> Rect {
+        let panel = h.state().panel.expect("the shipping left Tools panel persisted its rect");
+        h.query_all_by_label(label)
+            .filter(|n| roles.contains(&n.accesskit_node().role()))
+            .map(|n| n.rect())
+            .find(|r| panel.contains(r.center()))
+            .unwrap_or_else(|| panic!("no {label:?} in the Tools panel"))
+    }
+    fn tr(h: &Harness<'_, Rig>, text: &str) -> String {
+        crate::i18n::tr(&h.state().app.ui.language, text).to_owned()
+    }
+    fn journal_since(h: &Harness<'_, Rig>, start: usize) -> Vec<(String, Value)> {
+        h.state().app.session.journal[start..].to_vec()
+    }
+    const BUTTONS: &[Role] = &[Role::Button, Role::ToggleButton];
+
+    #[test]
+    fn installed_tools_rail_selects_cycles_with_alt_and_picks_from_a_flyout() {
+        let mut h = harness();
+        let group = TOOL_GROUPS.iter().find(|g| g.len() > 2).expect("a group of three tools");
+        let first = control(&h, &tr(&h, group[0].label), BUTTONS);
+        let start = h.state().app.session.journal.len();
+        press(&mut h, first.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 3);
+        assert_eq!(journal_since(&h, start), [("tool.select".to_owned(), json!({"tool": group[0].id}))]);
+        // Alt-click cycles the group, as the letter key does.
+        let start = h.state().app.session.journal.len();
+        press(&mut h, first.center(), PointerButton::Primary, Modifiers::ALT);
+        idle(&mut h, 3);
+        assert_eq!(journal_since(&h, start), [("tool.select".to_owned(), json!({"tool": group[1].id}))]);
+        // A right click opens the group's flyout; a row picks its tool.
+        let slot = control(&h, &tr(&h, group[1].label), BUTTONS);
+        press(&mut h, slot.center(), PointerButton::Secondary, Modifiers::NONE);
+        idle(&mut h, 3);
+        let row = h
+            .query_all_by_label(&tr(&h, group[2].label))
+            .find(|n| matches!(n.accesskit_node().role(), Role::MenuItem | Role::MenuItemRadio))
+            .expect("the flyout lists the group's third tool")
+            .rect();
+        let start = h.state().app.session.journal.len();
+        press(&mut h, row.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 3);
+        assert_eq!(journal_since(&h, start), [("tool.select".to_owned(), json!({"tool": group[2].id}))]);
+        assert_eq!(h.state().app.session.tool_id(), group[2].id);
+    }
+
+    #[test]
+    fn installed_double_clicking_the_polygon_tool_opens_polygon_settings() {
+        let mut h = harness();
+        h.state_mut().app.select_tool("polygon");
+        idle(&mut h, 3);
+        let polygon = control(&h, &tr(&h, "Polygon Tool"), BUTTONS);
+        for _ in 0..2 {
+            event(&mut h, Event::PointerButton { pos: polygon.center(), button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+            event(&mut h, Event::PointerButton { pos: polygon.center(), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        }
+        idle(&mut h, 3);
+        assert_eq!(h.state().app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("polygonSettings"));
+    }
+
+    #[test]
+    fn installed_fill_and_stroke_pair_swaps_resets_brings_a_box_forward_and_opens_the_picker() {
+        let mut h = harness();
+        let id = h.state_mut().app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+        h.state_mut().app.run("selection.set", json!({"ids": [id]})).unwrap();
+        idle(&mut h, 3);
+        let paint = |h: &Harness<'_, Rig>| {
+            let item = h.state().app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().clone();
+            (item.fill.swatch, item.stroke.swatch)
+        };
+        let before = paint(&h);
+        let swap = control(&h, &tr(&h, "Swap Fill and Stroke (Shift+X)"), BUTTONS);
+        press(&mut h, swap.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 2);
+        assert_eq!(paint(&h), (before.1.clone(), before.0.clone()), "the swap button swaps the frame's fill and stroke");
+        let reset = control(&h, &tr(&h, "Default Fill and Stroke (D)"), BUTTONS);
+        press(&mut h, reset.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 2);
+        assert_eq!(paint(&h), ("[None]".to_owned(), "[Black]".to_owned()), "the default button gives a frame no fill and a black stroke");
+        assert!(!h.state().app.ui.stroke_front);
+        let wells = &[Role::Button, Role::ToggleButton, Role::RadioButton];
+        let stroke = control(&h, &tr(&h, "Stroke (X)"), wells);
+        press(&mut h, stroke.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 2);
+        assert!(h.state().app.ui.stroke_front, "a click on the stroke box brings it to the front");
+        let fill = control(&h, &tr(&h, "Fill (X)"), wells);
+        event(&mut h, Event::PointerMoved(fill.center()));
+        for pressed in [true, false, true, false] {
+            event(&mut h, Event::PointerButton { pos: fill.center(), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        idle(&mut h, 3);
+        let d = h.state().app.ui.dialog.clone().expect("a double click opens the Color Picker");
+        assert_eq!((d.id.as_str(), d.fields["target"].as_str()), ("colorPicker", Some("fill")));
+    }
+
+    #[test]
+    fn installed_formatting_and_screen_mode_buttons_run_their_commands() {
+        let mut h = harness();
+        let start = h.state().app.session.journal.len();
+        let text = control(&h, &tr(&h, "Formatting affects text (J)"), BUTTONS);
+        press(&mut h, text.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 2);
+        assert_eq!(journal_since(&h, start), [("app.formattingAffectsText".to_owned(), json!({"on": true}))]);
+        let mode = control(&h, &tr(&h, "Normal (W)"), BUTTONS);
+        let start = h.state().app.session.journal.len();
+        press(&mut h, mode.center(), PointerButton::Primary, Modifiers::NONE);
+        idle(&mut h, 2);
+        assert_eq!(journal_since(&h, start), [("view.togglePreview".to_owned(), json!({}))]);
+        assert_eq!(h.state().app.ui.screen_mode, crate::ScreenMode::Preview);
     }
 }
