@@ -168,7 +168,7 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         return (from_mask(m, n), Source::Dictionary);
     }
     // Inflections inherit the stem's breaks. `-s`, `-es` and `-ed` after a vowel or other
-    // consonant add no syllable, hence no break; `-ed` after t or d does (af-flict-ed, fiel-ded,
+    // consonant add no syllable, hence no break; `-ed` after t or d does (af-flict-ed, field-ed,
     // and ro-tat-ed from "rotate" + d), and breaks off the stem.
     for suf in ["'s", "s", "es", "ed", "d"] {
         if let Some(stem) = s.strip_suffix(suf)
