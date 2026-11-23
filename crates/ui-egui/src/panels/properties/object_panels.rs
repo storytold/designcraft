@@ -2737,3 +2737,64 @@ mod ui223_text_wrap_mode_invert_tests {
         domain(&h, &before.doc, &before, (before.history.0, 2));
     }
 }
+
+/// The Stroke, Effects, Align and Pathfinder panels on the framework, driven with real pointer and key events.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_panel_tests {
+    use super::super::framework_test_kit::*;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    #[test]
+    fn the_stroke_panels_weight_and_cap_run_object_stroke_once_each() {
+        let mut app = document();
+        let id = rectangle(&mut app);
+        let mut h = open(app, crate::panels::properties::stroke_panel);
+        let steps = undo_steps(&h);
+        type_into(&mut h, "Weight:", "3");
+        assert_eq!(journal(&h, "object.stroke").last(), Some(&json!({"weight": 3.0})));
+        assert_eq!(item(&h, id).stroke.weight, 3.0);
+        let at = h.query_all_by_label("Projecting").next().expect("the Projecting cap").rect().center();
+        click_at(&mut h, at);
+        assert_eq!(journal(&h, "object.stroke").last(), Some(&json!({"cap": "projecting"})));
+        assert_eq!(item(&h, id).stroke.cap, designcraft_doc::Cap::Projecting);
+        assert_eq!(undo_steps(&h), steps + 2, "one undo step each");
+    }
+
+    #[test]
+    fn the_effects_panels_drop_shadow_check_box_turns_it_on() {
+        let mut app = document();
+        let id = rectangle(&mut app);
+        let mut h = open(app, crate::panels::properties::effects_panel);
+        click(&mut h, Role::CheckBox, "Drop Shadow");
+        assert_eq!(journal(&h, "object.dropShadow").last(), Some(&json!({"on": true})));
+        assert!(item(&h, id).effects.drop_shadow.on);
+        assert!(has(&h, Role::CheckBox, "Use Global Light"), "the shadow's options show once it is on");
+    }
+
+    #[test]
+    fn the_align_panels_left_edges_button_aligns_the_selection() {
+        let mut app = document();
+        let a = rectangle(&mut app);
+        let b = app.run("frame.create", serde_json::json!({"rect": [120, 200, 220, 260]})).expect("a frame")["id"].as_u64().expect("an id");
+        app.run("selection.set", serde_json::json!({"ids": [a, b]})).expect("both are selected");
+        let mut h = open(app, crate::panels::properties::align_panel);
+        click(&mut h, Role::Button, "Align left edges");
+        assert_eq!(journal(&h, "object.align").last(), Some(&json!({"edge": "left"})));
+    }
+
+    #[test]
+    fn the_pathfinder_panels_buttons_are_framework_buttons_that_run_their_commands() {
+        let mut app = document();
+        let a = rectangle(&mut app);
+        let b = app.run("frame.create", serde_json::json!({"rect": [120, 100, 320, 200]})).expect("a frame")["id"].as_u64().expect("an id");
+        app.run("selection.set", serde_json::json!({"ids": [a, b]})).expect("both are selected");
+        let mut h = open(app, crate::panels::properties::pathfinder_panel);
+        for label in ["Join Path", "Add", "Rectangle", "Smooth"] {
+            assert!(has(&h, Role::Button, label), "{label}");
+        }
+        click(&mut h, Role::Button, "Add");
+        assert_eq!(journal(&h, "object.pathfinder").last(), Some(&json!({"op": "add"})));
+    }
+}

@@ -18,6 +18,8 @@ use crate::{DesignApp, icons};
 
 mod document;
 mod flex;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_test_kit;
 mod links;
 mod object;
 mod object_panels;

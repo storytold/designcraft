@@ -19,6 +19,8 @@ pub(crate) mod framework;
 #[cfg(not(target_arch = "wasm32"))]
 mod layout_forms;
 #[cfg(not(target_arch = "wasm32"))]
+mod preferences;
+#[cfg(not(target_arch = "wasm32"))]
 mod table_forms;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod table_layout_kit;
