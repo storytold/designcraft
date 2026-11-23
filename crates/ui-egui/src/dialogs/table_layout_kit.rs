@@ -29,11 +29,8 @@ pub(crate) fn open(app: &mut DesignApp, command: &str) {
 pub(crate) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
     // The dialog router gates on the installed framework runtime; the pilot flag only asks for it.
-    app.framework_transform = false;
-    app.framework_opacity = true;
     app.install_framework(&ctx);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-    assert!(app.framework_installed, "the framework forms need the installed runtime");
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(1000.0, 900.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {

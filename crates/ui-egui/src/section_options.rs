@@ -3,7 +3,7 @@
 //! numbering. OK applies `layout.section` and `layout.chapterNumbering`.
 
 use designcraft_doc::{ChapterSource, NumberStyle};
-use egui::{Align, Layout, Ui, vec2};
+use egui::{Ui, vec2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
@@ -21,12 +21,6 @@ const STYLES: [(NumberStyle, &str); 8] = [
     (NumberStyle::ArabicThreeDigits, "001, 002, 003…"),
     (NumberStyle::ArabicFourDigits, "0001, 0002, 0003…"),
 ];
-/// The OK and Cancel column beside the options.
-pub(crate) const ACTIONS_W: f32 = 104.0;
-/// The options' height, for the window to grow to.
-pub(crate) const BODY_H: f32 = 470.0;
-const LABEL_W: f32 = 104.0;
-const FIELD_W: f32 = 84.0;
 
 /// Open the dialog for the section at the page in view.
 pub(crate) fn open(app: &mut DesignApp) {
@@ -84,63 +78,29 @@ pub(crate) fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> 
     app.run("layout.numberingOptions", params)
 }
 
-/// A row that runs right to left in a right-to-left interface.
-fn row<R>(ui: &mut Ui, rtl: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let layout = if rtl { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
-    ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), layout, add).inner
-}
-
-/// A caption ending at the field it names (`Section Prefix:` [   ]).
-fn caption(ui: &mut Ui, rtl: bool, text: &str) -> egui::Response {
-    let layout = if rtl { Layout::left_to_right(Align::Center) } else { Layout::right_to_left(Align::Center) };
-    ui.allocate_ui_with_layout(vec2(LABEL_W, 22.0), layout, |ui| {
-        ui.set_width(LABEL_W);
-        crate::rtl::label(ui, text)
-    })
-    .inner
-}
-
-fn text(ui: &mut Ui, d: &mut Dialog, key: &str, width: f32, framework: bool, label: &str, labelled_by: Option<egui::Id>) -> bool {
+fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) -> bool {
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     let mut s = d.s(key);
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let out = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(s.clone()))
-            .id_salt(("section_text", key))
-            .limit(None::<usize>)
-            .show(ui);
-        for event in out.events {
-            event.apply(&mut s);
-        }
-        let changed = s != d.s(key);
-        if changed {
-            d.fields.insert(key.into(), Value::String(s));
-        }
-        return changed;
+    let out = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(s.clone())).id_salt(("section_text", key)).limit(None::<usize>).show(ui);
+    for event in out.events {
+        event.apply(&mut s);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, label);
-    let response = ui.add(egui::TextEdit::singleline(&mut s).desired_width(width));
-    let response = if let Some(label) = labelled_by { response.labelled_by(label) } else { response };
-    let changed = response.changed();
+    let changed = s != d.s(key);
     if changed {
         d.fields.insert(key.into(), Value::String(s));
     }
     changed
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, PartialEq)]
 struct NumberDraft<M> {
     text: String,
     mode: M,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct NumberDraftCodec<M>(M);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<M: craft_behavior::Value> craft_behavior::Codec for NumberDraftCodec<M> {
     type Value = NumberDraft<M>;
     const DRAFTS_ARE_VALUES: bool = true;
@@ -169,7 +129,6 @@ impl<M: craft_behavior::Value> craft_behavior::Codec for NumberDraftCodec<M> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn number_draft<M: craft_behavior::Value + serde::Serialize>(
     ui: &mut Ui,
     d: &mut Dialog,
@@ -197,117 +156,51 @@ fn number_draft<M: craft_behavior::Value + serde::Serialize>(
     }
 }
 
-fn number_text(ui: &mut Ui, d: &mut Dialog, key: &str, framework: bool, label: &str, labelled_by: Option<egui::Id>) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        match key {
-            "startNumber" => {
-                let mode = d.b("automatic");
-                number_draft(ui, d, key, label, "automatic", mode, false);
-            }
-            "chapterStart" => {
-                let mode = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-                number_draft(ui, d, key, label, "chapterSource", mode, ChapterSource::UserDefined);
-            }
-            _ => {}
+fn number_text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
+    match key {
+        "startNumber" => {
+            let mode = d.b("automatic");
+            number_draft(ui, d, key, label, "automatic", mode, false);
         }
-        return;
-    }
-    // The draft is editable even while automatic numbering is selected.
-    if text(ui, d, key, FIELD_W, framework, label, labelled_by) {
-        match key {
-            "startNumber" => {
-                d.fields.insert("automatic".into(), json!(false));
-            }
-            "chapterStart" => {
-                d.fields.insert("chapterSource".into(), json!(ChapterSource::UserDefined));
-            }
-            _ => {}
+        "chapterStart" => {
+            let mode = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            number_draft(ui, d, key, label, "chapterSource", mode, ChapterSource::UserDefined);
         }
+        _ => {}
     }
 }
 
-fn style_menu(ui: &mut Ui, d: &mut Dialog, key: &str, framework: bool, label: &str, labelled_by: Option<egui::Id>) {
+fn style_menu(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
     let current: NumberStyle = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-        let entries: Vec<_> = STYLES.into_iter().map(|(style, name)| Entry::new(style, name)).collect();
-        let out = craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &entries)
-            .keeps_name(true)
-            .id_salt(("section_style", key))
-            .show(ui);
-        let mut next = current;
-        for event in out.events {
-            event.apply(&mut next);
-        }
-        if next != current {
-            d.fields.insert(key.into(), json!(next));
-        }
-        return;
+    let entries: Vec<_> = STYLES.into_iter().map(|(style, name)| Entry::new(style, name)).collect();
+    let out = craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &entries)
+        .keeps_name(true)
+        .id_salt(("section_style", key))
+        .show(ui);
+    let mut next = current;
+    for event in out.events {
+        event.apply(&mut next);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, label);
-    let shown = STYLES.iter().find(|(s, _)| *s == current).map_or(STYLES[0].1, |(_, l)| l);
-    let response = craft_ui_legacy::ComboBox::from_id_salt(("section_style", key))
-        .selected_text(shown)
-        .width(150.0)
-        .show_ui(ui, |ui| {
-            for (style, label) in STYLES {
-                if ui.selectable_label(style == current, label).clicked() {
-                    d.fields.insert(key.into(), json!(style));
-                }
-            }
-        })
-        .response;
-    if let Some(label) = labelled_by {
-        response.labelled_by(label);
+    if next != current {
+        d.fields.insert(key.into(), json!(next));
     }
 }
 
-fn checkbox(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, framework: bool) {
+fn checkbox(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     let mut on = d.b(key);
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(on)).label(label.to_owned()).id_salt(("section_check", key)).show(ui);
-        for event in out.events {
-            event.apply(&mut on);
-        }
-        if on != d.b(key) {
-            d.fields.insert(key.into(), json!(on));
-        }
-        return;
+    let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(on)).label(label.to_owned()).id_salt(("section_check", key)).show(ui);
+    for event in out.events {
+        event.apply(&mut on);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = framework;
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
+    if on != d.b(key) {
         d.fields.insert(key.into(), json!(on));
     }
 }
 
-/// A titled, outlined group of options.
-fn group(ui: &mut Ui, rtl: bool, title: &str, add: impl FnOnce(&mut Ui)) {
-    let t = Tokens::get(ui.ctx());
-    row(ui, rtl, |ui| {
-        ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(title).color(t.text_strong));
-    });
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).corner_radius(3.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 6.0;
-        add(ui);
-    });
-}
-
-/// The retained browser/uninstalled form; installed native windows take `show_framework`.
-pub(crate) fn body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
-    form(app, ui, d, false);
-}
-
 /// The app-owned numbering adapter: the SDK owns modal chrome, focus and popup
 /// precedence; the existing controller alone validates and changes the document.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn show_framework(app: &mut DesignApp, ctx: &egui::Context) {
     let Some(mut draft) = app.ui.dialog.clone().filter(|d| d.id == "numberingSection") else { return };
     // This empty seed UI only supplies a parent. Dialog mounts its own real modal
@@ -318,7 +211,6 @@ pub(crate) fn show_framework(app: &mut DesignApp, ctx: &egui::Context) {
     settle_framework(app, draft, shown.inner);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_ui_panels::dialog::DialogOutput {
     use craft_ui_panels::dialog::Dialog as FrameworkDialog;
     use craft_ui_panels::sections::{DialogRole, FooterButton};
@@ -347,7 +239,6 @@ fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_u
         .output
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn settle_framework(app: &mut DesignApp, draft: Dialog, out: craft_ui_panels::dialog::DialogOutput) {
     app.ui.dialog = Some(draft);
     if out.picked == Some(0) {
@@ -357,7 +248,6 @@ fn settle_framework(app: &mut DesignApp, draft: Dialog, out: craft_ui_panels::di
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     use craft_ui_panels::sections::GroupBox;
     use craft_ui_widgets::choice::{Radio, RadioGroup};
@@ -370,8 +260,8 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let first_page = number(d, "page") == Some(1);
     Stack::new().id_salt("section_form").fill_width().show(ui, |ui, _| {
-        // The first page cannot stop being a section, exactly as in the legacy form.
-        ui.add_enabled_ui(!first_page, |ui| checkbox(ui, d, "startSection", tr("Start Section"), true));
+        // The first page cannot stop being a section.
+        ui.add_enabled_ui(!first_page, |ui| checkbox(ui, d, "startSection", tr("Start Section")));
         let section = first_page || d.b("startSection");
         GroupBox::new(tr("Page Numbering"), None).id_salt("section_page").enabled(section).show(ui, |ui, _| {
             FieldGroup::new(tr("Page Numbering")).show(ui, |ui, _| {
@@ -381,7 +271,7 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                         Radio::new(true).label(tr("Automatic Page Numbering")).show(ui);
                         Row::new().fill_width().show(ui, |ui, _| {
                             Radio::new(false).label(tr("Start Page Numbering at:")).show(ui);
-                            number_text(ui, d, "startNumber", true, tr("Start Page Numbering at:"), None);
+                            number_text(ui, d, "startNumber", tr("Start Page Numbering at:"));
                         });
                     });
                 });
@@ -393,21 +283,21 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                     d.fields.insert("automatic".into(), json!(next));
                 }
                 Field::new(tr("Section Prefix:")).id_salt("section_prefix_field").show(ui, |ui, _| {
-                    text(ui, d, "prefix", FIELD_W, true, tr("Section Prefix:"), None);
+                    text(ui, d, "prefix", tr("Section Prefix:"));
                 });
                 Field::new(tr("Style:")).id_salt("section_style_field").show(ui, |ui, _| {
-                    style_menu(ui, d, "style", true, tr("Page Numbering"), None);
+                    style_menu(ui, d, "style", tr("Page Numbering"));
                 });
                 Field::new(tr("Section Marker:")).id_salt("section_marker_field").show(ui, |ui, _| {
-                    text(ui, d, "marker", FIELD_W, true, tr("Section Marker:"), None);
+                    text(ui, d, "marker", tr("Section Marker:"));
                 });
-                checkbox(ui, d, "includePrefix", tr("Include Prefix when Numbering Pages"), true);
+                checkbox(ui, d, "includePrefix", tr("Include Prefix when Numbering Pages"));
             });
         });
         GroupBox::new(tr("Document Chapter Numbering"), None).id_salt("section_chapter").show(ui, |ui, _| {
             FieldGroup::new(tr("Document Chapter Numbering")).show(ui, |ui, _| {
                 Field::new(tr("Style:")).id_salt("chapter_style_field").show(ui, |ui, _| {
-                    style_menu(ui, d, "chapterStyle", true, tr("Document Chapter Numbering"), None);
+                    style_menu(ui, d, "chapterStyle", tr("Document Chapter Numbering"));
                 });
                 let before: ChapterSource = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 let book = d.fields.get("book").and_then(Value::as_str).map(str::to_owned);
@@ -417,7 +307,7 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                             Radio::new(ChapterSource::Automatic).label(tr("Automatic Chapter Numbering")).show(ui);
                             Row::new().fill_width().show(ui, |ui, _| {
                                 Radio::new(ChapterSource::UserDefined).label(tr("Start Chapter Numbering at:")).show(ui);
-                                number_text(ui, d, "chapterStart", true, tr("Start Chapter Numbering at:"), None);
+                                number_text(ui, d, "chapterStart", tr("Start Chapter Numbering at:"));
                             });
                             Radio::new(ChapterSource::SameAsPrevious)
                                 .label(tr("Same as Previous Document in the Book"))
@@ -439,107 +329,6 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
             });
         });
     });
-}
-
-fn form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, framework: bool) {
-    let lang = app.ui.language.as_str();
-    let tr = |s: &'static str| crate::i18n::tr(lang, s);
-    let rtl = crate::i18n::is_rtl(lang);
-    ui.spacing_mut().item_spacing.y = 6.0;
-    let first_page = number(d, "page") == Some(1);
-    // Page 1 always starts a section.
-    row(ui, rtl, |ui| {
-        ui.add_enabled_ui(!first_page, |ui| checkbox(ui, d, "startSection", tr("Start Section"), framework));
-    });
-    let section = first_page || d.b("startSection");
-    ui.add_enabled_ui(section, |ui| {
-        let (start, end) = if rtl { (0, 18) } else { (18, 0) };
-        egui::Frame::NONE.inner_margin(egui::Margin { left: start, right: end, top: 0, bottom: 0 }).show(ui, |ui| {
-            let automatic = d.b("automatic");
-            row(ui, rtl, |ui| {
-                if ui.radio(automatic, crate::rtl::widget(ui, tr("Automatic Page Numbering"))).clicked() {
-                    d.fields.insert("automatic".into(), json!(true));
-                }
-            });
-            row(ui, rtl, |ui| {
-                let label = ui.radio(!automatic, crate::rtl::widget(ui, tr("Start Page Numbering at:")));
-                if label.clicked() {
-                    d.fields.insert("automatic".into(), json!(false));
-                }
-                // As in InDesign, the number stays editable; typing one chooses Start Page Numbering at.
-                number_text(ui, d, "startNumber", framework, tr("Start Page Numbering at:"), Some(label.id));
-            });
-            ui.add_space(4.0);
-            group(ui, rtl, tr("Page Numbering"), |ui| {
-                row(ui, rtl, |ui| {
-                    let label = caption(ui, rtl, tr("Section Prefix:"));
-                    let _ = text(ui, d, "prefix", FIELD_W, framework, tr("Section Prefix:"), Some(label.id));
-                });
-                row(ui, rtl, |ui| {
-                    let label = caption(ui, rtl, tr("Style:"));
-                    style_menu(ui, d, "style", framework, tr("Page Numbering"), Some(label.id));
-                });
-                row(ui, rtl, |ui| {
-                    let label = caption(ui, rtl, tr("Section Marker:"));
-                    let _ = text(ui, d, "marker", 130.0, framework, tr("Section Marker:"), Some(label.id));
-                });
-                row(ui, rtl, |ui| checkbox(ui, d, "includePrefix", tr("Include Prefix when Numbering Pages"), framework));
-            });
-        });
-    });
-    ui.add_space(10.0);
-    let source: ChapterSource = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    let book = d.fields.get("book").and_then(Value::as_str).map(str::to_string);
-    group(ui, rtl, tr("Document Chapter Numbering"), |ui| {
-        row(ui, rtl, |ui| {
-            let label = crate::rtl::label(ui, tr("Style:"));
-            style_menu(ui, d, "chapterStyle", framework, tr("Document Chapter Numbering"), Some(label.id));
-        });
-        for (value, label, enabled) in [
-            (ChapterSource::Automatic, "Automatic Chapter Numbering", true),
-            (ChapterSource::UserDefined, "Start Chapter Numbering at:", true),
-            (ChapterSource::SameAsPrevious, "Same as Previous Document in the Book", book.is_some()),
-        ] {
-            row(ui, rtl, |ui| {
-                let label_response = ui
-                    .add_enabled_ui(enabled, |ui| {
-                        let response = ui.radio(source == value, crate::rtl::widget(ui, tr(label)));
-                        if response.clicked() {
-                            d.fields.insert("chapterSource".into(), json!(value));
-                        }
-                        response
-                    })
-                    .inner;
-                if value == ChapterSource::UserDefined {
-                    // Editable whichever is chosen, as in InDesign; typing a number chooses it.
-                    number_text(ui, d, "chapterStart", framework, tr("Start Chapter Numbering at:"), Some(label_response.id));
-                }
-            });
-        }
-        row(ui, rtl, |ui| {
-            let name = book.as_deref().map_or_else(|| tr("N/A").to_string(), crate::rtl::isolate);
-            crate::rtl::label(ui, format!("{} {name}", tr("Book Name:")));
-        });
-    });
-}
-
-/// OK and Cancel, stacked in their column → Some(true) for OK, Some(false) for Cancel.
-pub(crate) fn actions(app: &DesignApp, ui: &mut Ui) -> Option<bool> {
-    let t = Tokens::get(ui.ctx());
-    let size = vec2(ACTIONS_W - 8.0, 26.0);
-    let mut out = None;
-    let ok = egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OK")).color(egui::Color32::WHITE)))
-        .fill(t.accent_strong)
-        .corner_radius(13.0)
-        .min_size(size);
-    if ui.add(ok).clicked() {
-        out = Some(true);
-    }
-    ui.add_space(4.0);
-    if ui.add(egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Cancel"))).corner_radius(13.0).min_size(size)).clicked() {
-        out = Some(false);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -621,7 +410,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn framework_number_drafts_choose_explicit_modes_before_blur_and_apply_atomically() {
         use craft_ui_widgets::runtime::inspect::{Recorded, record};
@@ -856,7 +644,6 @@ mod tests {
         open(&mut app);
         let before = app.session.active().unwrap().doc.clone();
         let ctx = egui::Context::default();
-        app.framework_opacity = true;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut ready = false;
@@ -911,7 +698,7 @@ mod tests {
             .iter()
             .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == "Dialog" && f.name.as_deref() == Some("Numbering & Section Options")))
             .collect();
-        assert_eq!(dialogs.len(), 1, "the real SDK986 Dialog, not the legacy egui shell");
+        assert_eq!(dialogs.len(), 1, "the real SDK986 Dialog");
         assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         let initial = effects(&h);
         let initial_fields = h.state().0.ui.dialog.as_ref().unwrap().fields.clone();
@@ -1226,15 +1013,12 @@ mod tests {
         assert_quiet(&h, &canceled);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
-    #[cfg(not(target_arch = "wasm32"))]
     use egui_kittest::{
         Harness,
         kittest::{NodeT, Queryable},
     };
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_app() -> DesignApp {
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.language = "en".to_owned();
@@ -1247,15 +1031,10 @@ mod tests {
         app
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn installed_harness(mut app: DesignApp, sdk: bool) -> Harness<'static, DesignApp> {
+    fn installed_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        // The native dialog router gates on framework_installed; pin both pilot flags, independent of the environment.
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        assert_eq!(app.framework_installed, sdk, "the fixture must use its requested installed or fallback branch");
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(920.0, 1000.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
@@ -1271,14 +1050,11 @@ mod tests {
         );
         h.input_mut().max_texture_side = Some(8192);
         section_steps(&mut h, 3);
-        if sdk {
-            let _ = h.get_by_role_and_label(Role::Dialog, "Numbering & Section Options");
-            assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
-        }
+        let _ = h.get_by_role_and_label(Role::Dialog, "Numbering & Section Options");
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         h
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_event(h: &mut Harness<'_, DesignApp>, event: Event) {
         let mut raw = std::mem::take(h.input_mut());
         raw.events.push(event);
@@ -1288,7 +1064,6 @@ mod tests {
         h.step();
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_steps(h: &mut Harness<'_, DesignApp>, count: usize) {
         for _ in 0..count {
             let mut raw = std::mem::take(h.input_mut());
@@ -1299,7 +1074,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_key(h: &mut Harness<'_, DesignApp>, key: Key, modifiers: Modifiers) {
         for pressed in [true, false] {
             section_event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
@@ -1308,7 +1082,6 @@ mod tests {
         section_steps(h, 3);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_click_at(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
         section_event(h, Event::PointerMoved(at));
         for pressed in [true, false] {
@@ -1317,13 +1090,11 @@ mod tests {
         section_steps(h, 3);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_click(h: &mut Harness<'_, DesignApp>, role: Role, label: &str) {
         let at = h.get_by_role_and_label(role, label).rect().center();
         section_click_at(h, at);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_type(h: &mut Harness<'_, DesignApp>, label: &str, text: &str) {
         section_click(h, Role::TextInput, label);
         assert!(h.get_by_role_and_label(Role::TextInput, label).is_focused(), "ordinary pointer focus on {label}");
@@ -1334,7 +1105,6 @@ mod tests {
         section_steps(h, 3);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_pick_style(h: &mut Harness<'_, DesignApp>, chapter: bool, choice: &str) {
         let label = if chapter { "Document Chapter Numbering" } else { "Page Numbering" };
         section_click(h, Role::ComboBox, label);
@@ -1342,29 +1112,25 @@ mod tests {
         section_click_at(h, at);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn section_dialog<'a>(h: &'a Harness<'_, DesignApp>) -> &'a Dialog {
         h.state().ui.dialog.as_ref().unwrap()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn numbering_commands(h: &Harness<'_, DesignApp>) -> Vec<(String, Value)> {
         h.state().session.journal.iter().filter(|(id, _)| id == "layout.numberingOptions").cloned().collect()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn numbering_undo(h: &Harness<'_, DesignApp>) -> usize {
         h.state().session.doc().unwrap().history.undo.len()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_editable_automatic_numbers_choose_manual_and_cancel_without_command() {
         let mut app = section_app();
         set(&mut app, json!({"page": 3})); // In-memory dialog fixture targeting page 3; no UI mutation shortcut below.
         let before = app.session.doc().unwrap().doc.clone();
         let selection = app.session.doc().unwrap().selection.clone();
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let undo = numbering_undo(&h);
         for label in ["Start Page Numbering at:", "Start Chapter Numbering at:"] {
             assert!(!h.get_by_role_and_label(Role::TextInput, label).accesskit_node().is_disabled());
@@ -1390,7 +1156,6 @@ mod tests {
         assert!(numbering_commands(&h).is_empty());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_full_page_and_chapter_apply_is_one_exact_command_and_undo() {
         let mut app = section_app();
@@ -1398,7 +1163,7 @@ mod tests {
         let before = app.session.doc().unwrap().doc.clone();
         let selection = app.session.doc().unwrap().selection.clone();
         let uid = app.session.doc().unwrap().uid;
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let undo = numbering_undo(&h);
         section_type(&mut h, "Start Page Numbering at:", "7");
         section_type(&mut h, "Section Prefix:", "A-");
@@ -1437,7 +1202,6 @@ mod tests {
         assert_eq!(numbering_undo(&h), undo);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_invalid_number_drafts_reject_without_partial_write() {
         for (label, invalid) in [
@@ -1450,7 +1214,7 @@ mod tests {
             let mut app = section_app();
             set(&mut app, json!({"page": 3}));
             let before = app.session.doc().unwrap().doc.clone();
-            let mut h = installed_harness(app, true);
+            let mut h = installed_harness(app);
             let undo = numbering_undo(&h);
             section_type(&mut h, "Start Page Numbering at:", "5");
             section_type(&mut h, "Start Chapter Numbering at:", "2");
@@ -1465,10 +1229,9 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_first_page_lock_and_remove_disable_only_section_controls() {
-        let mut first = installed_harness(section_app(), true);
+        let mut first = installed_harness(section_app());
         assert!(first.get_by_role_and_label(Role::CheckBox, "Start Section").accesskit_node().is_disabled());
         section_click(&mut first, Role::CheckBox, "Start Section");
         assert!(section_dialog(&first).b("startSection"));
@@ -1480,7 +1243,7 @@ mod tests {
         app.run("layout.section", json!({"page": 3, "startNumber": 5, "prefix": "B-"})).unwrap();
         set(&mut app, json!({"page": 3, "automatic": false, "startNumber": "5", "prefix": "B-"}));
         let before = app.session.doc().unwrap().doc.clone();
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let undo = numbering_undo(&h);
         section_click(&mut h, Role::CheckBox, "Start Section");
         assert!(!section_dialog(&h).b("startSection"));
@@ -1508,10 +1271,9 @@ mod tests {
         assert_eq!(h.state().session.doc().unwrap().doc, before);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_bookless_previous_choice_is_disabled_and_book_name_is_readonly() {
-        let mut h = installed_harness(section_app(), true);
+        let mut h = installed_harness(section_app());
         let label = "Same as Previous Document in the Book";
         assert!(h.get_by_role_and_label(Role::RadioButton, label).accesskit_node().is_disabled());
         section_click(&mut h, Role::RadioButton, label);
@@ -1524,7 +1286,7 @@ mod tests {
         // UI membership fixture only: no book file is written and no book command is asserted.
         let mut app = section_app();
         set(&mut app, json!({"book": "Field guide"}));
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         assert!(!h.get_by_role_and_label(Role::RadioButton, label).accesskit_node().is_disabled());
         let displayed_book = crate::rtl::isolate("Field guide");
         assert_eq!(h.get_by_role_and_label(Role::Group, "Book Name:").value().as_deref(), Some(displayed_book.as_str()));
@@ -1535,10 +1297,9 @@ mod tests {
         assert!(numbering_commands(&h).is_empty());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_natural_tab_steps_the_real_style_picker_without_document_edits() {
-        let mut h = installed_harness(section_app(), true);
+        let mut h = installed_harness(section_app());
         let before = h.state().session.doc().unwrap().doc.clone();
         section_type(&mut h, "Section Prefix:", "A-");
         section_key(&mut h, Key::Tab, Modifiers::NONE);
@@ -1556,31 +1317,25 @@ mod tests {
         assert!(h.state().ui.dialog.is_none());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn sdk_section_long_marker_retains_full_draft_and_fallback_cancel_remains_usable() {
+    fn sdk_section_long_marker_retains_full_draft() {
         let long = "A long section marker ".repeat(60);
         assert!(long.chars().count() > 1024);
-        let mut h = installed_harness(section_app(), true);
+        let mut h = installed_harness(section_app());
         section_type(&mut h, "Section Marker:", &long);
         assert_eq!(section_dialog(&h).s("marker"), long);
         assert_eq!(h.get_by_role_and_label(Role::TextInput, "Section Marker:").value().as_deref(), Some(long.as_str()));
         section_click(&mut h, Role::Button, "OK");
         assert_eq!(h.state().session.doc().unwrap().doc.sections[0].marker, long);
         assert_eq!(numbering_commands(&h).len(), 1);
-        let mut fallback = installed_harness(section_app(), false);
-        section_click(&mut fallback, Role::Button, "Cancel");
-        assert!(fallback.state().ui.dialog.is_none());
-        assert!(numbering_commands(&fallback).is_empty());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[ignore = "requires a genuine Arabic UI font; run explicitly only when that native font precondition is supplied"]
     fn sdk_section_rtl_long_marker_with_genuine_arabic_ui_font() {
         let mut app = section_app();
         app.ui.language = "ar".into();
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let prefix = crate::i18n::tr("ar", "Section Prefix:");
         let marker = crate::i18n::tr("ar", "Section Marker:");
         let font = egui::FontId::proportional(13.0);
@@ -1598,13 +1353,12 @@ mod tests {
         assert!(numbering_commands(&h).is_empty());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_automatic_ok_ignores_inactive_invalid_number_drafts() {
         let mut app = section_app();
         set(&mut app, json!({"page": 3}));
         let before = app.session.doc().unwrap().doc.clone();
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let undo = numbering_undo(&h);
         section_type(&mut h, "Start Page Numbering at:", "invalid");
         section_click(&mut h, Role::RadioButton, "Automatic Page Numbering");
@@ -1633,12 +1387,11 @@ mod tests {
         assert_eq!(h.state().session.doc().unwrap().doc, before);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sdk_section_keyboard_enter_confirms_and_field_escape_cancels_without_command() {
         let app = section_app();
         let before = app.session.doc().unwrap().doc.clone();
-        let mut h = installed_harness(app, true);
+        let mut h = installed_harness(app);
         let undo = numbering_undo(&h);
         let opening_fields = section_dialog(&h).fields.clone();
         assert!(!opening_fields.is_empty());
@@ -1651,7 +1404,7 @@ mod tests {
         assert_eq!(numbering_undo(&h), undo);
         assert!(numbering_commands(&h).is_empty());
 
-        let mut h = installed_harness(section_app(), true);
+        let mut h = installed_harness(section_app());
         section_type(&mut h, "Section Prefix:", "A-");
         section_key(&mut h, Key::Enter, Modifiers::NONE);
         assert!(h.state().ui.dialog.is_none(), "Enter uses the existing native SDK dialog Accept route");

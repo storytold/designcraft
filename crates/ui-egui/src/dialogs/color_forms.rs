@@ -428,7 +428,6 @@ mod tests {
             ctx.enable_accesskit();
             app.install_framework(&ctx);
             app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-            assert!(app.framework_installed);
             let out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),

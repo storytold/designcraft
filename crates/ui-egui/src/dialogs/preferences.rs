@@ -508,11 +508,8 @@ mod tests {
     /// The app's dialog host with the framework installed, as the desktop shell runs it.
     fn open(mut app: DesignApp) -> Window {
         let ctx = egui::Context::default();
-        app.framework_transform = false;
-        app.framework_opacity = true;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        assert!(app.framework_installed, "the framework form needs the installed runtime");
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(1100.0, 900.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {

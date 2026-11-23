@@ -151,7 +151,7 @@ fn separator_field(ui: &mut Ui, d: &mut Dialog, lang: &str, key: &str, label: &s
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::super::table_layout_kit as kit;
     use super::*;

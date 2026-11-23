@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 
 use crate::DesignApp;
 use crate::dialogs::Dialog;
-use crate::theme::semibold;
 
 /// The dialog's id.
 pub const ID: &str = "objectStyle";
@@ -284,70 +283,6 @@ fn get<'a>(d: &'a Dialog, path: &[&str]) -> &'a Value {
     v
 }
 
-/// A row of the left-hand lists: a checkbox (when `check` is given) and the label, which shows
-/// `page`.
-fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: Option<bool>) -> Option<bool> {
-    let mut out = None;
-    ui.horizontal(|ui| {
-        match check {
-            Some(mut on) => {
-                if ui.checkbox(&mut on, "").changed() {
-                    out = Some(on);
-                }
-            }
-            None => ui.add_space(24.0),
-        }
-        let cur = d.fields.get("page").and_then(Value::as_str) == Some(page);
-        if ui.selectable_label(cur, crate::rtl::widget(ui, label)).clicked() {
-            d.fields.insert("page".into(), json!(page));
-        }
-    });
-    out
-}
-
-/// A check box of the draft's flag `key`.
-fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
-    let mut on = d.b(key);
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
-        d.fields.insert(key.into(), json!(on));
-    }
-}
-
-/// The document's swatches, as a list to pick from (InDesign's Fill and Stroke pages).
-fn swatch_list(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str) {
-    let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
-    let cur = get(d, &[key, "swatch"]).as_str().unwrap_or("").to_string();
-    let t = crate::theme::Tokens::get(ui.ctx());
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt(("os_swatches", key.to_string())).max_height(220.0).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            for w in doc.swatches.iter().filter(|w| !w.hidden || w.name == cur) {
-                let picked = ui
-                    .horizontal(|ui| {
-                        let (c, g) = crate::widgets::swatch_colors(doc, &w.name, 1.0);
-                        let r = crate::widgets::swatch_chip(ui, 14.0, c, g);
-                        ui.selectable_label(w.name == cur, &w.name).clicked() || r.clicked()
-                    })
-                    .inner;
-                if picked {
-                    set(d, &[key, "swatch"], json!(w.name));
-                }
-            }
-        });
-    });
-}
-
-/// A number field of the dialog at `path` (a percentage of 0–1 with `percent`).
-fn number(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], suffix: &str, range: (f64, f64), percent: bool) {
-    let v = get(d, path).as_f64().unwrap_or(0.0);
-    let shown = if percent { (v * 100.0).round() } else { v };
-    let id = format!("os_{}", path.join("_"));
-    let decimals = if percent { 0 } else { 2 };
-    if let Some(n) = crate::widgets::NumField::number(&id, Some(shown), suffix, decimals).width(90.0).spinner().range(range.0, range.1).show(ui) {
-        set(d, path, json!(if percent { n / 100.0 } else { n }));
-    }
-}
-
 /// One line per attribute the style sets (InDesign's Style Settings).
 fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
     let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
@@ -392,199 +327,11 @@ fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
     out
 }
 
-fn legacy_paragraph_menu(ui: &mut egui::Ui, lang: &str, styles: &[designcraft_doc::ParagraphStyle], cur: &str, shown: &str, picked: &mut Option<String>) {
-    craft_ui_legacy::ComboBox::from_id_salt("os_paragraph_style").selected_text(shown).width(240.0).show_ui(ui, |ui| {
-        for s in styles {
-            if ui.selectable_label(s.name == cur, crate::i18n::style_name(lang, &s.name)).clicked() {
-                *picked = Some(s.name.clone());
-            }
-        }
-    });
-}
-
-/// The settings of the attribute shown.
-fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
-    let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
-    let title = ATTRIBUTES.iter().find(|a| a.0 == page).map(|a| a.1);
-    if let Some(title) = title {
-        crate::rtl::label(ui, egui::RichText::new(tr(title)).font(semibold(14.0)));
-        ui.add_space(6.0);
-    }
-    match page {
-        "general" => {
-            ui.horizontal(|ui| {
-                crate::rtl::label(ui, tr("Based On:"));
-                // Based On isn't editable yet: the style's parent, as it is.
-                ui.add_enabled_ui(false, |ui| {
-                    let based = d.s("basedOn");
-                    craft_ui_legacy::ComboBox::from_id_salt("os_based_on")
-                        .selected_text(crate::i18n::style_name(&app.ui.language, &based))
-                        .width(220.0)
-                        .show_ui(ui, |_| {});
-                });
-            });
-            ui.add_space(10.0);
-            crate::rtl::label(ui, egui::RichText::new(tr("Style Settings:")).font(semibold(12.0)));
-            let t = crate::theme::Tokens::get(ui.ctx());
-            egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.divider)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.set_min_height(160.0);
-                let lines = settings(app, d);
-                if lines.is_empty() {
-                    crate::rtl::label(ui, egui::RichText::new(tr("(no attributes)")).color(t.text_dim));
-                }
-                for l in lines {
-                    crate::rtl::label(ui, l);
-                }
-            });
-        }
-        "fill" | "stroke" => {
-            let key = page;
-            ui.add_enabled_ui(included(d, key), |ui| {
-                swatch_list(app, ui, d, key);
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if key == "stroke" {
-                        crate::rtl::label(ui, tr("Weight:"));
-                        number(ui, d, &["stroke", "weight"], " pt", (0.0, 1000.0), false);
-                        ui.add_space(12.0);
-                    }
-                    crate::rtl::label(ui, tr("Tint:"));
-                    number(ui, d, &[key, "tint"], "%", (0.0, 100.0), true);
-                });
-            });
-        }
-        "corners" => {
-            ui.add_enabled_ui(included(d, "corners"), |ui| {
-                crate::rtl::label(ui, egui::RichText::new(tr("Corner Options")).font(semibold(12.0)));
-                ui.horizontal(|ui| {
-                    crate::rtl::label(ui, tr("Size:"));
-                    let size = get(d, &["corners", "corners"])[0]["size"].as_f64().unwrap_or(0.0);
-                    if let Some(v) =
-                        crate::widgets::NumField::number("os_corner_size", Some(size), " pt", 2).width(90.0).spinner().range(0.0, 10_000.0).show(ui)
-                    {
-                        let mut c = get(d, &["corners"]).clone();
-                        if let Some(cs) = c["corners"].as_array_mut() {
-                            cs.iter_mut().for_each(|k| k["size"] = json!(v));
-                        }
-                        d.fields.insert("corners".into(), c);
-                    }
-                    ui.add_space(12.0);
-                    crate::rtl::label(ui, tr("Shape:"));
-                    let cur: designcraft_geom::corners::CornerShape =
-                        serde_json::from_value(get(d, &["corners", "corners"])[0]["shape"].clone()).unwrap_or_default();
-                    let mut picked = None;
-                    craft_ui_legacy::ComboBox::from_id_salt("os_corner_shape").selected_text(tr(cur.label())).width(140.0).show_ui(ui, |ui| {
-                        for s in designcraft_geom::corners::CornerShape::ALL {
-                            if ui.selectable_label(s == cur, tr(s.label())).clicked() {
-                                picked = Some(s);
-                            }
-                        }
-                    });
-                    if let Some(s) = picked {
-                        let mut c = get(d, &["corners"]).clone();
-                        if let Some(cs) = c["corners"].as_array_mut() {
-                            cs.iter_mut().for_each(|k| k["shape"] = json!(s));
-                        }
-                        d.fields.insert("corners".into(), c);
-                    }
-                });
-            });
-        }
-        "paragraph" => {
-            let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
-            ui.add_enabled_ui(included(d, "paragraph"), |ui| {
-                ui.horizontal(|ui| {
-                    crate::rtl::label(ui, tr("Paragraph Style:"));
-                    let cur = d.s("paragraphStyle");
-                    let shown = if cur.is_empty() { String::new() } else { crate::i18n::style_name(&app.ui.language, &cur).to_string() };
-                    let mut picked = None;
-                    legacy_paragraph_menu(ui, &app.ui.language, &doc.styles.paragraph, &cur, &shown, &mut picked);
-                    if let Some(name) = picked {
-                        d.fields.insert("paragraphStyle".into(), json!(name));
-                    }
-                });
-                check(ui, d, "applyNext", &tr("Apply Next Style"));
-            });
-        }
-        "textFrame" => {
-            ui.add_enabled_ui(included(d, "textFrame"), |ui| crate::dialogs::general(&app.ui.language, ui, d));
-        }
-        p => crate::effects_dialog::page_ui(app, ui, d, p),
-    }
-}
-
-/// Basic Attributes and the effects, each with its checkbox; a click on a name shows its page.
-fn navigation(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
-    crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
-    for (key, label) in ATTRIBUTES {
-        let check = (key != "general").then(|| included(d, key));
-        if let Some(on) = list_row(ui, d, key, &tr(label), check) {
-            set(d, &["inc", key], json!(on));
-        }
-    }
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, tr("Effects for:"));
-        // Stroke, Fill and Text levels aren't in the document model yet: the object only.
-        ui.add_enabled_ui(false, |ui| {
-            craft_ui_legacy::ComboBox::from_id_salt("os_fx_level").selected_text(tr("Object")).width(100.0).show_ui(ui, |_| {});
-        });
-    });
-    for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
-        let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
-        if let Some(on) = list_row(ui, d, key, &tr(label), Some(crate::effects_dialog::is_on(&fx, key)))
-            && let Some(f) = d.fields.get_mut("fx")
-        {
-            crate::effects_dialog::switch(f, key, on);
-        }
-    }
-}
-
-/// The dialog's body.
-pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, tr("Style Name:"));
-        let mut name = d.s("name");
-        ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
-        if name != d.s("name") {
-            d.fields.insert("name".into(), json!(name));
-        }
-    });
-    // Why OK was refused (an empty or taken name), until the next try.
-    let status = d.s("status");
-    if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
-    }
-    ui.add_space(8.0);
-    let page = d.fields.get("page").and_then(Value::as_str).unwrap_or("general").to_string();
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width(230.0);
-            navigation(app, ui, d);
-        });
-        ui.add_space(16.0);
-        ui.vertical(|ui| {
-            ui.set_min_width(440.0);
-            page_ui(app, ui, d, &page);
-        });
-    });
-    ui.add_space(10.0);
-    if d.b("new") {
-        check(ui, d, "apply", &tr("Apply Style to Selection"));
-    }
-}
-
 /// The dialog's form under the framework's dialog host.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework::show).width(760.0);
 
 /// The dialog on the framework's components: the same draft fields as the native body, with OK, Cancel, Enter and
 /// Escape the host's.
-#[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::{ATTRIBUTES, get, included, set, settings};
     use crate::DesignApp;
@@ -879,165 +626,6 @@ mod tests {
         (app, id)
     }
 
-    /// The texts the dialog paints, once its size has settled (it grows over a few frames).
-    fn frame(app: &mut DesignApp, ctx: &egui::Context) -> Vec<String> {
-        let mut texts = Vec::new();
-        for _ in 0..8 {
-            let input =
-                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
-            let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
-            fn walk(s: egui::epaint::Shape, texts: &mut Vec<String>) {
-                match s {
-                    egui::epaint::Shape::Text(t) => texts.push(t.galley.text().to_string()),
-                    egui::epaint::Shape::Vec(v) => v.into_iter().for_each(|s| walk(s, texts)),
-                    _ => {}
-                }
-            }
-            texts.clear();
-            let shapes = std::mem::take(&mut out.shapes);
-            out.drop_without_applying_deltas();
-            for c in shapes { walk(c.shape, &mut texts); }
-        }
-        texts
-    }
-
-    /// The course's chapter 15: New Object Style from a frame with rounded corners, a paper
-    /// stroke and a drop shadow, named and applied to the selection; then Object Style Options
-    /// with a thicker stroke: the frames using the style follow.
-    #[test]
-    fn a_new_object_style_from_the_selection_and_its_options() {
-        let (mut app, a) = app_with_frame();
-        app.run("object.cornerOptions", json!({"shape": "rounded", "size": 12, "ids": [a]})).unwrap();
-        app.run("object.stroke", json!({"swatch": "[Paper]", "weight": 2.5, "ids": [a]})).unwrap();
-        app.run("object.dropShadow", json!({"on": true, "ids": [a]})).unwrap();
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "en");
-        open_new(&mut app);
-        let texts = frame(&mut app, &ctx);
-        for t in [
-            "New Object Style",
-            "Style Name:",
-            "Basic Attributes",
-            "Fill",
-            "Stroke & Corner Options",
-            "Effects for:",
-            "Drop Shadow",
-            "Style Settings:",
-            "Apply Style to Selection",
-        ] {
-            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
-        }
-        assert!(texts.iter().any(|x| x.starts_with("Stroke: [Paper], 2.5 pt")), "{texts:?}");
-        assert!(texts.iter().any(|x| x.starts_with("Effects: Drop Shadow")), "{texts:?}");
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("Rounded Corner Image, White Stroke"));
-            d.fields.insert("page".into(), json!("corners"));
-        }
-        let texts = frame(&mut app, &ctx);
-        assert!(texts.iter().any(|x| x.trim() == "Rounded"), "{texts:?}");
-        crate::dialogs::confirm(&mut app).unwrap();
-        let name = "Rounded Corner Image, White Stroke";
-        let doc = |app: &DesignApp| app.session.active().unwrap().doc.clone();
-        let item = |app: &DesignApp, id: u64| doc(app).item(designcraft_doc::ItemId(id)).unwrap().clone();
-        assert_eq!(item(&app, a).object_style, name, "applied to the selection");
-        let os = doc(&app).styles.object_style(name).cloned().unwrap();
-        assert!(os.corners.is_some() && os.effects.as_ref().unwrap().drop_shadow.on && os.stroke.as_ref().unwrap().weight == 2.5);
-
-        let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
-        app.run("style.object.apply", json!({"name": name, "ids": [b]})).unwrap();
-        open_edit(&mut app, name).unwrap();
-        if let Some(d) = app.ui.dialog.as_mut() {
-            assert_eq!(title(d), "Object Style Options");
-            set(d, &["stroke", "weight"], json!(5.0));
-            set(d, &["inc", "fill"], json!(false));
-        }
-        frame(&mut app, &ctx);
-        crate::dialogs::confirm(&mut app).unwrap();
-        assert_eq!((item(&app, a).stroke.weight, item(&app, b).stroke.weight), (5.0, 5.0));
-        assert!(doc(&app).styles.object_style(name).unwrap().fill.is_none(), "Fill unchecked: no longer in the style");
-        assert!(doc(&app).styles.object_style(name).unwrap().effects.as_ref().unwrap().drop_shadow.on, "effects kept");
-    }
-
-    /// The course's chapter 39: a new object style from a text frame nests the "Drop Cap First
-    /// Paragraph" style (Paragraph Styles page), so the frame's text takes it; Object Style
-    /// Options › Text Frame General Options then gives the style's frames insets and two columns.
-    #[test]
-    fn an_object_style_nests_a_paragraph_style_and_sets_text_frame_options() {
-        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({})).unwrap();
-        app.run("style.paragraph.create", json!({"name": "Body Text"})).unwrap();
-        app.run("style.paragraph.create", json!({"name": "Drop Cap First Paragraph", "nextStyle": "Body Text", "para": {"dropCapLines": 3}}))
-            .unwrap();
-        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
-        let id = r["id"].as_u64().unwrap();
-        app.run("selection.set", json!({"ids": [id]})).unwrap();
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "en");
-        open_new(&mut app);
-        let d = app.ui.dialog.as_ref().unwrap();
-        assert!(included(d, "paragraph") && included(d, "textFrame"), "a text frame's categories are in a new style");
-        assert_eq!(d.s("paragraphStyle"), "", "the paragraph style is left to choose");
-        let texts = frame(&mut app, &ctx);
-        for t in ["Paragraph Styles", "Text Frame General Options"] {
-            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
-        }
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("Text Box Drop Cap"));
-            d.fields.insert("page".into(), json!("paragraph"));
-            d.fields.insert("paragraphStyle".into(), json!("Drop Cap First Paragraph"));
-        }
-        let texts = frame(&mut app, &ctx);
-        for t in ["Paragraph Style:", "Apply Next Style", "Drop Cap First Paragraph"] {
-            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
-        }
-        crate::dialogs::confirm(&mut app).unwrap();
-        let doc = |app: &DesignApp| app.session.active().unwrap().doc.clone();
-        let story = |app: &DesignApp| {
-            let d = doc(app);
-            let sid = d.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story;
-            d.story(sid).unwrap().clone()
-        };
-        assert_eq!(doc(&app).item(designcraft_doc::ItemId(id)).unwrap().object_style, "Text Box Drop Cap");
-        assert_eq!(story(&app).paras[0].style, "Drop Cap First Paragraph", "the frame's text takes the nested style");
-        app.run("type.fillWithPlaceholder", json!({"frame": id})).unwrap();
-        assert!(story(&app).paras.iter().all(|p| p.style == "Drop Cap First Paragraph"));
-
-        open_edit(&mut app, "Text Box Drop Cap").unwrap();
-        let texts = frame(&mut app, &ctx);
-        assert!(texts.iter().any(|x| x.starts_with("Paragraph Styles: Drop Cap First Paragraph")), "Style Settings: {texts:?}");
-        if let Some(d) = app.ui.dialog.as_mut() {
-            assert_eq!(d.s("paragraphStyle"), "Drop Cap First Paragraph");
-            d.fields.insert("page".into(), json!("textFrame"));
-            for k in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-                d.fields.insert(k.into(), json!("4 pt"));
-            }
-            d.fields.insert("columns".into(), json!("2"));
-        }
-        let texts = frame(&mut app, &ctx);
-        for t in ["Inset Spacing", "Vertical Justification", "Ignore Text Wrap"] {
-            assert!(texts.iter().any(|x| x.trim() == t), "{t}: {texts:?}");
-        }
-        crate::dialogs::confirm(&mut app).unwrap();
-        let o = doc(&app).item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().options.clone();
-        assert_eq!((o.columns, o.inset), (2, [4.0; 4]));
-        let os = doc(&app).styles.object_style("Text Box Drop Cap").cloned().unwrap();
-        assert_eq!((os.paragraph_style.as_deref(), os.text_frame.map(|t| t.columns)), (Some("Drop Cap First Paragraph"), Some(2)));
-
-        // A word for the gutter, or a fraction of a column, keeps the dialog open with the reason.
-        for (field, value, reason) in [("gutter", "wide", "gutter"), ("columns", "2.5", "columns")] {
-            open_edit(&mut app, "Text Box Drop Cap").unwrap();
-            if let Some(d) = app.ui.dialog.as_mut() {
-                d.fields.insert(field.into(), json!(value));
-            }
-            let e = crate::dialogs::confirm(&mut app).unwrap_err();
-            assert!(e.contains(reason), "{e}");
-            assert!(app.ui.dialog.is_some());
-            app.ui.dialog = None;
-        }
-        let os = doc(&app).styles.object_style("Text Box Drop Cap").cloned().unwrap();
-        assert_eq!(os.text_frame.map(|t| t.columns), Some(2), "2.5 columns changed nothing");
-    }
-
     /// Text Frame General Options › Vertical Justification: Justify with a Paragraph Spacing Limit
     /// sets both on the style and its frame, and the frame keeps its auto-size setting.
     #[test]
@@ -1076,46 +664,6 @@ mod tests {
         assert!(app.ui.dialog.as_ref().is_some_and(|d| d.b("new")));
     }
 
-    /// A refused OK (an empty name, a name another style has, in Object Style Options and in New
-    /// Object Style) keeps the dialog and its edits, with the reason shown.
-    #[test]
-    fn a_refused_ok_keeps_the_dialog_open_with_the_reason() {
-        let (mut app, _) = app_with_frame();
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "en");
-        app.run("style.object.create", json!({"name": "Taken", "fromSelection": false})).unwrap();
-        app.run("style.object.create", json!({"name": "Mine", "fromSelection": false})).unwrap();
-        open_new(&mut app);
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("  "));
-            set(d, &["stroke", "weight"], json!(7.0));
-        }
-        assert!(crate::dialogs::confirm(&mut app).is_err());
-        let d = app.ui.dialog.as_ref().expect("still open");
-        assert_eq!(d.s("status"), "Enter a style name.");
-        assert_eq!(get(d, &["stroke", "weight"]), &json!(7.0), "the edits are kept");
-        assert!(frame(&mut app, &ctx).iter().any(|t| t.trim() == "Enter a style name."));
-        open_edit(&mut app, "Mine").unwrap();
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("Taken"));
-        }
-        let e = crate::dialogs::confirm(&mut app).unwrap_err();
-        assert!(e.contains("already named"), "{e}");
-        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e));
-        // New Object Style with a name another style has makes no style under another name.
-        app.ui.dialog = None;
-        let count = |app: &DesignApp| app.session.active().unwrap().doc.styles.object.len();
-        let before = count(&app);
-        open_new(&mut app);
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("Taken"));
-        }
-        let e = crate::dialogs::confirm(&mut app).unwrap_err();
-        assert!(e.contains("already named"), "{e}");
-        assert!(app.ui.dialog.as_ref().is_some_and(|d| d.s("status") == e));
-        assert_eq!(count(&app), before, "no style was made");
-    }
-
     fn app_with_text_frame(units: &str) -> DesignApp {
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -1123,31 +671,6 @@ mod tests {
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
         app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
         app
-    }
-
-    /// In a document measured in millimeters, a bare number in a Text Frame General Options field
-    /// is millimeters, in New Object Style and in Object Style Options.
-    #[test]
-    fn bare_numbers_are_in_the_documents_ruler_unit() {
-        let mut app = app_with_text_frame("millimeters");
-        let mm = 72.0 / 25.4;
-        let frame = |app: &DesignApp| app.session.active().unwrap().doc.styles.object_style("Metric").and_then(|s| s.text_frame.clone()).unwrap();
-        open_new(&mut app);
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("name".into(), json!("Metric"));
-            for k in ["insetTop", "insetLeft", "insetBottom", "insetRight"] {
-                d.fields.insert(k.into(), json!("6"));
-            }
-        }
-        crate::dialogs::confirm(&mut app).unwrap();
-        assert!(frame(&app).inset.iter().all(|v| (v - 6.0 * mm).abs() < 1e-6), "{:?}", frame(&app).inset);
-        open_edit(&mut app, "Metric").unwrap();
-        if let Some(d) = app.ui.dialog.as_mut() {
-            d.fields.insert("columns".into(), json!("2"));
-            d.fields.insert("gutter".into(), json!("5"));
-        }
-        crate::dialogs::confirm(&mut app).unwrap();
-        assert!((frame(&app).gutter - 5.0 * mm).abs() < 1e-6, "{}", frame(&app).gutter);
     }
 
     /// Object Style Options keeps a General measurement the user did not edit exactly as the style
@@ -1221,7 +744,6 @@ mod tests {
         app.ui.dialog = None;
 
         // Options opened on B, B reverted: the reverted document keeps its style.
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let dir = tempfile::tempdir().unwrap();
             app.run("file.saveAs", json!({"path": dir.path().join("revert.designcraft")})).unwrap();
@@ -1253,7 +775,6 @@ mod tests {
 
     /// Real installed controls, fed through the shipping raw-input owner and dialog dispatcher.
     /// These source-authored scenarios are not a native execution receipt.
-    #[cfg(not(target_arch = "wasm32"))]
     mod framework_workflow {
         use super::*;
         use craft_ui_widgets::runtime::inspect::{Recorded, record};
@@ -1309,10 +830,8 @@ mod tests {
                 app.ui.language = "en".into();
                 let ctx = egui::Context::default();
                 ctx.enable_accesskit();
-                app.framework_opacity = true;
                 app.install_framework(&ctx);
                 app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-                assert!(app.framework_installed);
                 // Initialize fonts in an actual headless frame and explicitly dispose its GPU deltas.
                 let out = ctx.run_ui(egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),

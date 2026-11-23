@@ -847,7 +847,7 @@ pub(super) fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs,
     });
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::super::table_layout_kit as kit;
     use super::*;

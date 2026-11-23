@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::dialogs::Dialog;
-use crate::theme::semibold;
 
 /// The Package dialog's id.
 pub const ID: &str = "package";
@@ -233,91 +232,6 @@ fn page_table(lang: &str, d: &Dialog, page: &str) -> Option<Listed> {
     })
 }
 
-/// A table: a header row and `cells` rows (each with an optional level colouring its last cell).
-fn table(ui: &mut egui::Ui, id: &str, header: &[String], cells: &[(Vec<String>, Option<Level>)]) {
-    let t = crate::theme::Tokens::get(ui.ctx());
-    egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.field_border)).inner_margin(6.0).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt(id).max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-            egui::Grid::new(id).num_columns(header.len()).spacing([18.0, 4.0]).striped(true).show(ui, |ui| {
-                for h in header {
-                    crate::rtl::label(ui, egui::RichText::new(h).font(semibold(11.5)));
-                }
-                ui.end_row();
-                for (row, color) in cells {
-                    for (i, c) in row.iter().enumerate() {
-                        let mut text = egui::RichText::new(c);
-                        if i + 1 == row.len()
-                            && let Some(color) = color
-                        {
-                            text = text.color(color.color(ui));
-                        }
-                        crate::rtl::label(ui, text);
-                    }
-                    ui.end_row();
-                }
-            });
-        });
-    });
-}
-
-/// The Package dialog: the pages on the left, the page on the right. The browser build's window; the desktop shows
-/// [`FORM`] on the framework's dialog host.
-pub fn show(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    let page = page_of(d);
-    let body_height = 320.0;
-    ui.horizontal_top(|ui| {
-        // A fixed height, as Preferences': the divider between the pages and the page fills it,
-        // and the dialog keeps its size from page to page.
-        ui.set_min_height(body_height);
-        ui.set_max_height(body_height);
-        ui.vertical(|ui| {
-            ui.set_width(150.0);
-            page_controls(app, ui, d, &page);
-        });
-        ui.separator();
-        ui.vertical(|ui| {
-            ui.set_min_width(460.0);
-            let title = PAGES.iter().find(|p| p.0 == page).map_or("Summary", |p| p.1);
-            crate::rtl::label(ui, egui::RichText::new(tr(title)).font(semibold(13.0)));
-            ui.add_space(6.0);
-            match page_table(&lang, d, &page) {
-                Some(listed) => table(ui, listed.id, &listed.header, &listed.rows),
-                None => {
-                    ui.horizontal(|ui| {
-                        crate::rtl::label(ui, tr("Scope:"));
-                        crate::rtl::label(ui, tr("Entire Publication"));
-                    });
-                    ui.add_space(6.0);
-                    for (line, warn) in summary_lines(&lang, d) {
-                        ui.horizontal(|ui| {
-                            let sign = egui::RichText::new(if warn { "\u{26A0}" } else { " " }).color(Level::Warn.color(ui));
-                            ui.add_sized([14.0, 16.0], egui::Label::new(sign));
-                            crate::rtl::label(ui, line);
-                        });
-                    }
-                    ui.add_space(10.0);
-                    for (key, label) in [("instructions", "Create Printing Instructions"), ("idml", "Include IDML"), ("pdf", "Include PDF (Print)")] {
-                        package_check(app, ui, d, key, label);
-                    }
-                    // The PDF's preset, as InDesign's Select PDF Preset.
-                    ui.add_enabled_ui(d.b("pdf"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            pdf_control(app, ui, d);
-                        });
-                    });
-                }
-            }
-            if matches!(page.as_str(), "fonts" | "links") {
-                ui.add_space(4.0);
-                package_check(app, ui, d, "problemsOnly", "Show Problems Only");
-            }
-        });
-    });
-}
-
 /// The `pdf` of `file.package`: false, or the options of the chosen PDF preset.
 fn pdf_param(d: &Dialog) -> Value {
     if d.b("pdf") { crate::dialogs::pdf_preset_params(&d.s("pdfPreset")) } else { json!(false) }
@@ -332,29 +246,6 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
         return Ok(Value::Null);
     }
     package_to_folder(app, idml, pdf, None, d.clone())
-}
-
-/// The Printing Instructions dialog, as InDesign's: who to contact and what to do. The browser build's window; the
-/// desktop shows [`INSTRUCTIONS_FORM`].
-pub fn show_instructions(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let lang = app.ui.language.clone();
-    egui::Grid::new("printing_instructions").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        for (key, label, lines) in INSTRUCTION_FIELDS {
-            let name = crate::rtl::label(ui, crate::i18n::tr(&lang, label));
-            let mut text = d.s(key);
-            let edit = if lines > 1 { egui::TextEdit::multiline(&mut text).desired_rows(lines) } else { egui::TextEdit::singleline(&mut text) };
-            // Named by its label, for screen readers.
-            let resp = ui.add(edit.desired_width(320.0)).labelled_by(name.id);
-            if resp.changed() {
-                d.fields.insert(key.into(), json!(text));
-            }
-            // Enter there makes a new line: the footer mustn't take it for Continue.
-            if lines > 1 && resp.has_focus() {
-                crate::dialogs::set_multiline_focus(ui.ctx());
-            }
-            ui.end_row();
-        }
-    });
 }
 
 /// The instructions as they go into the package's Instructions.txt: the contact lines, then the
@@ -413,50 +304,13 @@ pub fn package_to_folder(app: &mut DesignApp, idml: bool, pdf: Value, instructio
     })
 }
 
-fn page_controls(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
-    for (key, label) in PAGES {
-        if ui.selectable_label(page == key, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-            d.fields.insert("page".into(), json!(key));
-        }
-    }
-}
-
-fn package_check(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
-    let label = crate::i18n::tr(&app.ui.language, label).to_string();
-    let mut on = d.b(key);
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
-        d.fields.insert(key.into(), json!(on));
-    }
-}
-
-fn pdf_control(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
-    let name = crate::rtl::label(ui, tr("PDF Preset:"));
-    let cur = d.s("pdfPreset");
-    craft_ui_legacy::ComboBox::from_id_salt("package_pdf_preset")
-        .selected_text(crate::rtl::widget(ui, tr(&cur)))
-        .width(180.0)
-        .show_ui(ui, |ui| {
-            for p in crate::dialogs::pdf_presets() {
-                if ui.selectable_label(cur == p, crate::rtl::widget(ui, tr(p))).clicked() {
-                    d.fields.insert("pdfPreset".into(), json!(p));
-                }
-            }
-        })
-        .response
-        .labelled_by(name.id);
-}
-
 /// The Package dialog on the framework's dialog host.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework_form::package).width(720.0);
 /// The Printing Instructions dialog on the framework's dialog host.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const INSTRUCTIONS_FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework_form::instructions).width(520.0);
 
-/// The framework forms of Package and Printing Instructions. They edit the same draft fields the browser windows do;
+/// The framework forms of Package and Printing Instructions. They edit the dialog's draft fields;
 /// Package… and Continue go through the host to [`confirm`] and [`confirm_instructions`], which alone ask for a folder.
-#[cfg(not(target_arch = "wasm32"))]
 mod framework_form {
     use super::{INSTRUCTION_FIELDS, PAGES, page_of, page_table, summary_lines};
     use crate::DesignApp;
@@ -664,112 +518,11 @@ mod tests {
         app
     }
 
-    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-        Harness::builder().with_size(egui::vec2(1100.0, 760.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let key = egui::Id::unique("package_test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(key, true));
-                    return;
-                }
-                crate::dialogs::show(app, ui.ctx());
-            },
-            app,
-        )
-    }
-
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir().join(format!("dc-package-dialog-{tag}-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    /// The course's chapter 27: File › Package opens InDesign's Package dialog. Summary counts the
-    /// fonts, links (one missing, with a warning) and inks; Links and Images lists the link, and
-    /// Show Problems Only keeps it; Create Printing Instructions leads to Printing Instructions,
-    /// whose Continue asks for the folder and writes the package with the instructions.
-    #[test]
-    fn package_shows_a_summary_then_the_printing_instructions() {
-        let dir = temp_dir("summary");
-        let mut app = app_with_missing_link(&dir);
-        let out = dir.join("Packed Folder");
-        let picked = out.to_string_lossy().to_string();
-        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked.clone())));
-        crate::menus::activate(&mut app, "app.packageDialog", &Value::Null);
-        assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some(ID));
-        let mut h = harness(app);
-        h.run_steps(3);
-        assert!(h.query_by_label("Scope:").is_some());
-        assert!(h.query_by_label("Links and Images: 1 linked, 0 changed, 1 not found").is_some());
-        assert!(h.query_by_label("Colors and Inks: 4 process, 0 spot").is_some());
-        let fonts = h.state().ui.dialog.as_ref().unwrap().fields["fonts"].as_array().unwrap().len();
-        assert!(h.query_by_label(&format!("Fonts: {fonts} in use, 0 unavailable")).is_some());
-        // Links and Images: the link, missing; Show Problems Only keeps it.
-        h.get_by_label("Links and Images").click();
-        h.run_steps(2);
-        assert!(h.query_by_label("gone.png").is_some());
-        assert!(h.query_by_label("\u{26A0} Missing").is_some());
-        h.get_by_label("Show Problems Only").click();
-        h.run_steps(2);
-        assert!(h.query_by_label("gone.png").is_some());
-        // Back on Summary: Create Printing Instructions, then Package….
-        h.get_by_label("Summary").click();
-        h.run_steps(2);
-        h.get_by_label("Create Printing Instructions").click();
-        h.run_steps(2);
-        h.get_by_label("Package…").click();
-        h.run_steps(3);
-        h.state_mut().settle_dialogs();
-        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some(INSTRUCTIONS));
-        for (key, value) in [("contact", "Dave"), ("email", "dave@example.com"), ("instructions", "Call me if anything is wrong.")] {
-            h.state_mut().ui.dialog.as_mut().unwrap().fields.insert(key.into(), json!(value));
-        }
-        h.run_steps(2);
-        h.get_by_label("Continue").click();
-        h.run_steps(3);
-        h.state_mut().settle_dialogs();
-        assert!(h.state().ui.dialog.is_none());
-        let report = std::fs::read_to_string(out.join("Instructions.txt")).unwrap();
-        assert!(
-            report.contains("Contact: Dave") && report.contains("Email: dave@example.com") && report.contains("Call me if anything is wrong."),
-            "{report}"
-        );
-        assert!(out.join("Packed.idml").exists(), "Include IDML is on by default");
-        assert!(!out.join("Packed.pdf").exists(), "Include PDF is off by default");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// Without instructions, Package… goes straight to the folder; Include PDF adds the PDF, made
-    /// with the PDF preset chosen, and Include IDML off leaves the IDML out.
-    #[test]
-    fn package_options_choose_the_idml_and_pdf() {
-        let dir = temp_dir("options");
-        let mut app = app_with_missing_link(&dir);
-        let out = dir.join("Packed Folder");
-        let picked = out.to_string_lossy().to_string();
-        app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some(picked.clone())));
-        open(&mut app).unwrap();
-        let mut h = harness(app);
-        h.run_steps(3);
-        h.get_by_label("Include IDML").click();
-        h.run_steps(2);
-        h.get_by_label("Include PDF (Print)").click();
-        h.run_steps(2);
-        // The PDF's preset: PDF/X-4.
-        h.get_by_value("Desktop Printing").click();
-        h.run_steps(2);
-        h.get_by_label("PDF/X-4").click();
-        h.run_steps(2);
-        h.get_by_label("Package…").click();
-        h.run_steps(3);
-        h.state_mut().settle_dialogs();
-        assert!(h.state().ui.dialog.is_none());
-        assert!(out.join("Packed.pdf").exists() && !out.join("Packed.idml").exists());
-        let pdf = std::fs::read(out.join("Packed.pdf")).unwrap();
-        assert!(pdf.windows(8).any(|w| w == b"GTS_PDFX"), "the PDF/X-4 preset's PDF");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Packaging that fails (here, into a folder under a file) keeps the dialog open with its
@@ -825,32 +578,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Enter in Address or Instructions makes a new line there; in a one-line field it continues.
-    #[test]
-    fn enter_in_a_multiline_instruction_field_is_a_new_line() {
-        let dir = temp_dir("enter");
-        let mut app = app_with_missing_link(&dir);
-        let doc = app.session.active().unwrap().uid;
-        app.ui.dialog = Some(Dialog::new(INSTRUCTIONS, json!({"idml": true, "pdf": false, "doc": doc})));
-        let mut h = harness(app);
-        h.run_steps(3);
-        let field = |h: &Harness<'static, DesignApp>, n: usize| {
-            h.query_all_by(|x| x.role() == egui::accesskit::Role::TextInput || x.role() == egui::accesskit::Role::MultilineTextInput)
-                .nth(n)
-                .unwrap()
-                .rect()
-                .center()
-        };
-        // Address is the third field.
-        let address = field(&h, 2);
-        h.event(egui::Event::PointerButton { pos: address, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-        h.event(egui::Event::PointerButton { pos: address, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
-        h.run_steps(2);
-        h.key_press(egui::Key::Enter);
-        h.run_steps(3);
-        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some(INSTRUCTIONS), "still open");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -959,17 +686,16 @@ mod framework_tests {
         });
         requests
     }
-    fn harness(app: DesignApp, sdk: bool) -> Harness<'static, DesignApp> {
-        let normal_ui = sdk && app.ui.dialog.as_ref().is_some_and(|d| d.id == INSTRUCTIONS);
-        harness_stage(app, sdk, normal_ui, false)
+    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
+        let normal_ui = app.ui.dialog.as_ref().is_some_and(|d| d.id == INSTRUCTIONS);
+        harness_stage(app, normal_ui, false)
     }
     fn normal_harness(app: DesignApp) -> Harness<'static, DesignApp> {
-        harness_stage(app, true, true, false)
+        harness_stage(app, true, false)
     }
-    fn harness_stage(mut app: DesignApp, sdk: bool, normal_ui: bool, disabled: bool) -> Harness<'static, DesignApp> {
+    fn harness_stage(mut app: DesignApp, normal_ui: bool, disabled: bool) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
         app.framework_transform = sdk;
-        app.framework_opacity = false;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         assert_eq!(app.framework_installed, sdk);
@@ -1081,7 +807,7 @@ mod framework_tests {
         let mut app = app();
         diagnostic_fixture(&mut app);
         let before = snapshot(&app);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let expected = vec![
             ("Fonts: 3 in use, 1 unavailable".to_owned(), true),
             ("Links and Images: 4 linked, 1 changed, 1 not found".to_owned(), true),
@@ -1129,7 +855,7 @@ mod framework_tests {
     fn sdk_package_inclusion_flags_and_pdf_preset_preserve_draft_mapping() {
         let app = app();
         let before = snapshot(&app);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         assert!(draft(&h).b("idml"));
         assert!(!draft(&h).b("pdf"));
         let initial = draft(&h).s("pdfPreset");
@@ -1206,7 +932,7 @@ mod framework_tests {
         let mut app = app();
         let requests = cancelled_folders(&mut app);
         let before = snapshot(&app);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         assert!(!draft(&h).b("instructions"));
         click(&mut h, Role::Button, "Package…");
         h.state_mut().settle_dialogs();
@@ -1238,7 +964,7 @@ mod framework_tests {
             app.ui.dialog = Some(pending);
             let requests = cancelled_folders(&mut app);
             let before = snapshot(&app);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             click(&mut h, Role::Button, if second_stage { "Continue" } else { "Package…" });
             assert_eq!(draft(&h).fields, fields, "refusal retains all draft fields");
             assert_eq!(h.state().ui.status, "the active document changed after the Package dialog opened");
@@ -1257,7 +983,7 @@ mod framework_tests {
         let mut app = instructions_fixture();
         let requests = cancelled_folders(&mut app);
         let before = snapshot(&app);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         click(&mut h, Role::TextInput, "Contact:");
         assert!(h.get_by_role_and_label(Role::TextInput, "Contact:").is_focused());
         key(&mut h, Key::Tab, Modifiers::NONE);
@@ -1290,7 +1016,7 @@ mod framework_tests {
         let mut app = instructions_fixture();
         let requests = cancelled_folders(&mut app);
         let before = snapshot(&app);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let contact = "C".repeat(1300);
         let company = "D".repeat(1500);
         let instructions = format!("{}\nThen call.", "Keep inks separate. ".repeat(80));
@@ -1369,7 +1095,7 @@ mod framework_tests {
         let requests = cancelled_folders(&mut app);
         let fields = app.ui.dialog.as_ref().unwrap().fields.clone();
         let before = snapshot(&app);
-        let mut h = harness_stage(app, true, true, true);
+        let mut h = harness_stage(app, true, true);
         for (_, label, _) in INSTRUCTION_FIELDS {
             assert!(h.get_by_role_and_label(field_role(label), label).accesskit_node().is_disabled());
         }
@@ -1547,28 +1273,4 @@ mod framework_tests {
         assert_quiet(&h, &before);
     }
 
-    #[test]
-    fn package_uninstalled_fallback_navigation_filter_and_cancel_remain_usable() {
-        let mut app = app();
-        diagnostic_fixture(&mut app);
-        let before = snapshot(&app);
-        let mut h = harness(app, false);
-        let pos = h.get_by_label("Fonts").rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(draft(&h).s("page"), "fonts");
-        click(&mut h, Role::CheckBox, "Show Problems Only");
-        assert!(h.query_by_label("Fixture Installed Font").is_none());
-        assert!(h.get_by_label("Fixture Missing Font").rect().is_positive());
-        click(&mut h, Role::Button, "Cancel");
-        assert!(h.state().ui.dialog.is_none());
-        assert_quiet(&h, &before);
-        let app = instructions_fixture();
-        let before = snapshot(&app);
-        let mut h = harness(app, false);
-        type_field(&mut h, "Contact:", "Fallback contact");
-        assert_eq!(draft(&h).s("contact"), "Fallback contact");
-        click(&mut h, Role::Button, "Cancel");
-        assert!(h.state().ui.dialog.is_none());
-        assert_quiet(&h, &before);
-    }
 }
