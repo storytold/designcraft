@@ -1445,8 +1445,16 @@ fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
             if it.locked {
                 continue;
             }
-            // In its own space the map applies before the object's transform.
-            let m = if own && it.xf.determinant().abs() > 1e-12 { it.xf * rect_map * it.xf.inverse() } else { rect_map };
+            // In its own space the map applies before the object's transform. An object squashed
+            // flat has no own space to read `from` and `to` in: it is left alone.
+            let m = if own {
+                if it.xf.determinant().abs() <= 1e-12 {
+                    continue;
+                }
+                it.xf * rect_map * it.xf.inverse()
+            } else {
+                rect_map
+            };
             if distribute {
                 let c = it.bounds().center();
                 it.xf = Affine::translate(m * c - c) * it.xf;
