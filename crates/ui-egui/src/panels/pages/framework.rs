@@ -365,6 +365,24 @@ fn menu_rows(ui: &mut Ui, entries: &[MenuEntry], picked: &mut Option<Act>) {
     }
 }
 
+/// The panel menu's rows, for the page `abs` in spread `si`, in the framework `Menu` the dock's menu button opens: the entry
+/// run does what it did as a native row, and the menu closes.
+pub(super) fn panel_menu(
+    app: &mut DesignApp,
+    ui: &mut Ui,
+    doc: &designcraft_doc::Document,
+    layouts: &[designcraft_doc::LayoutRange],
+    abs: usize,
+    si: usize,
+) {
+    let entries = page_entries(app, doc, layouts, abs, si);
+    let mut picked = None;
+    menu_rows(ui, &entries, &mut picked);
+    if let Some(act) = picked {
+        act.run(app, doc, layouts);
+    }
+}
+
 /// A context menu named `label` over `opener`, with the entries `entries` makes while it is open: the entry run.
 fn context_menu(ui: &mut Ui, label: String, opener: &egui::Response, mut entries: impl FnMut() -> Vec<MenuEntry>) -> Option<Act> {
     let mut picked = None;
