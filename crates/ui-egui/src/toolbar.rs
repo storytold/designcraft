@@ -832,7 +832,9 @@ mod framework {
         // A held activation belongs to this document incarnation and ordered selection: a new target is a new rail.
         let target =
             app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
-        let rail_id = egui::Id::new(("tools-rail", target));
+        // A held activation also belongs to one layout of the rail: a reflow to another column count is a new rail, so a
+        // press held across it is retired rather than activating at its slot's new place.
+        let rail_id = |cols: usize| egui::Id::new(("tools-rail", &target, cols));
         let toggle_h = 24.0;
         SLOTS.with(|slots| {
             LAST_USED.with(|last| {
@@ -842,7 +844,7 @@ mod framework {
                 let crowded = !app.ui.tools_double_column && {
                     let width = grid(1).width(1);
                     let tall =
-                        ToolRail::new(tr("Tools"), &slots[0], &current, last).id(rail_id).measure_rail(ui, width, |ui, at| footer(app, ui, at)).y;
+                        ToolRail::new(tr("Tools"), &slots[0], &current, last).id(rail_id(1)).measure_rail(ui, width, |ui, at| footer(app, ui, at)).y;
                     tall > ui.available_height() - toggle_h
                 };
                 let cols = if app.ui.tools_double_column || crowded { 2 } else { 1 };
@@ -863,7 +865,8 @@ mod framework {
                             app.ui.tools_double_column = !app.ui.tools_double_column;
                         }
                     });
-                    let out = ToolRail::new(tr("Tools"), &slots[cols - 1], &current, last).id(rail_id).show_rail(ui, |ui, at| footer(app, ui, at));
+                    let out =
+                        ToolRail::new(tr("Tools"), &slots[cols - 1], &current, last).id(rail_id(cols)).show_rail(ui, |ui, at| footer(app, ui, at));
                     if let Some(at) = out.select {
                         app.select_tool(all[usize::from(at)].id);
                     }
