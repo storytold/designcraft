@@ -3553,8 +3553,9 @@ fn compose_run(
         if cur.last_baseline.is_some() {
             // Same style as the previous paragraph with a same-style spacing: it replaces space after + before.
             let same_style = pi.checked_sub(1).and_then(|p| story.paras.get(p)).is_some_and(|prev| prev.style == pf.style && prev.table.is_none());
+            // A negative value is how a file says "none" (InDesign ignores it), not a gap.
             match pp.same_para_style_spacing {
-                Some(gap) if same_style => cur.pending = gap,
+                Some(gap) if same_style && gap >= 0.0 => cur.pending = gap,
                 _ => cur.pending += if text_above { pp.space_before.max(pp.span_space_before) } else { pp.space_before },
             }
         }

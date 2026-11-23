@@ -9338,6 +9338,25 @@ fn same_para_style_spacing_replaces_space_between_same_style_paragraphs() {
     assert!((mixed[1] - mixed[0] - 14.4).abs() < 1e-6 && (mixed[2] - mixed[1] - 14.4 - 15.0).abs() < 1e-6, "{mixed:?}");
 }
 
+/// A file may carry a negative same-style spacing (InDesign 2026, observed in a document whose paragraphs hold
+/// -0.96 pt: the gaps between its paragraphs are their space after, as with no value; 0 is a real
+/// value and replaces the space after).
+#[test]
+fn a_negative_same_style_spacing_is_no_spacing() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 700.0);
+    let base = ParaAttrs { space_after: Some(13.0), ..Default::default() };
+    let gap = |same: Option<Option<f64>>| {
+        let (d, sid, _) = doc_with("A\nB", rect, ParaAttrs { same_para_style_spacing: same, ..base.clone() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ls = all_lines(&cs);
+        ls[1].baseline - ls[0].baseline
+    };
+    let none = gap(None);
+    assert!((gap(Some(Some(-0.96))) - none).abs() < 1e-6, "negative = none: {} vs {none}", gap(Some(Some(-0.96))));
+    assert!((gap(Some(Some(-1.0))) - none).abs() < 1e-6);
+    assert!(gap(Some(Some(0.0))) < none - 12.0, "0 replaces the space after");
+}
+
 // ---------- balance columns ----------
 
 /// A story of `paras` body paragraphs in one frame of `columns` columns, Balance Columns `on`.
