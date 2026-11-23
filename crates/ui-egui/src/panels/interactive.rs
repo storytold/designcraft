@@ -2385,13 +2385,16 @@ mod ui223_object_states_forms_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("object-states-forms"), |ui| (state.panel)(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -3232,13 +3235,16 @@ mod ui223_liquid_workflow_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("liquid-workflow"), |ui| liquid(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -3866,13 +3872,16 @@ mod ui223_track_workflow_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("track-workflow"), |ui| track_changes(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -4395,13 +4404,16 @@ mod ui223_tags_xml_workflow_tests {
                 state.clicked |= ui.input(|i| i.pointer.any_click());
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("tags-xml-workflow"), |ui| tags(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },

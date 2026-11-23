@@ -62,6 +62,19 @@ fn steps(h: &mut Harness<'_, DesignApp>, n: usize) {
     }
 }
 
+/// The rect of the control that holds the keyboard as AccessKit reports it. egui's own focus can be an arena root (here the
+/// dock's whole body) while a framework member of the arena, such as the Opacity row's chevron, holds the keyboard, so the
+/// member is read from the accessibility tree, never from `ctx.memory().focused()` and its response.
+fn keyboard_rect(h: &Harness<'_, DesignApp>) -> Option<egui::Rect> {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let root = h.queryable_node();
+    std::iter::once(root.clone())
+        .chain(root.children_recursive())
+        .filter(|node| node.accesskit_node().is_focused())
+        .map(|node| node.rect())
+        .min_by(|a, b| a.area().total_cmp(&b.area()))
+}
+
 fn focused(h: &Harness<'_, DesignApp>) -> Option<egui::Id> {
     h.ctx.memory(|m| m.focused())
 }
@@ -119,7 +132,7 @@ fn tab_between_two_framework_stops_commits_and_moves_to_the_next_framework_stop(
     steps(&mut h, 3);
     let value = f64::from(h.state().session.doc().expect("doc").doc.item(id).expect("frame").opacity);
     let next = focused(&h);
-    let next_rect = next.and_then(|id| h.ctx.read_response(id).map(|r| r.rect));
+    let next_rect = keyboard_rect(&h);
     assert!((value - f64::from(0.4_f32)).abs() < 1e-12, "Tab committed the typed percentage between framework stops: {value}");
     assert_eq!(h.state().session.doc().expect("doc").history.undo.len() - steps_before, 1, "and it is one undo step");
     assert_ne!(next, Some(in_opacity), "the keyboard left the Opacity stop");

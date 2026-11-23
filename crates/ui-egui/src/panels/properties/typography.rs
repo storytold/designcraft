@@ -1045,6 +1045,7 @@ mod framework {
 mod framework_tests {
     use super::super::framework_test_kit::*;
     use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
     use egui_kittest::kittest::Queryable;
     use serde_json::json;
 
