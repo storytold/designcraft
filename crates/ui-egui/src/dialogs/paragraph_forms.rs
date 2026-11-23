@@ -883,11 +883,12 @@ mod tests {
         assert!(kit::disabled(&h, &[Role::SpinButton], "Start:", 0), "All Lines in Paragraph is chosen");
         kit::click(&mut h, &[Role::RadioButton], "At Start/End of Paragraph", 0);
         assert!(!kit::disabled(&h, &[Role::SpinButton], "Start:", 0));
-        kit::type_and_commit(&mut h, "Start:", 0, "2");
+        // A paragraph keeps 2 first lines by default: a typed 2 is no edit.
+        kit::type_and_commit(&mut h, "Start:", 0, "3");
         assert_eq!(kit::undo_steps(&h), undo);
         kit::click(&mut h, &[Role::Button], "OK", 0);
         assert!(h.state().ui.dialog.is_none());
-        assert_eq!(last_attrs(&h), json!({"keepWithNext": 2, "keepLinesTogether": true, "keepAllLines": false, "keepFirst": 2}));
+        assert_eq!(last_attrs(&h), json!({"keepWithNext": 2, "keepLinesTogether": true, "keepAllLines": false, "keepFirst": 3}));
         assert_eq!(kit::undo_steps(&h), undo + 1, "one undo step");
         assert_eq!(kit::para_attr(&mut h, story, 0, "keepWithNext"), json!(2));
     }
