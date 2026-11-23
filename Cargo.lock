@@ -2682,6 +2682,7 @@ dependencies = [
  "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
  "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=6540d8081ac45658917c56a8e4672e4ed5a503d5)",
  "craft-ui-panels",
+ "craft-ui-shell",
  "craft-ui-widgets",
  "craft-update",
  "craft-window 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
