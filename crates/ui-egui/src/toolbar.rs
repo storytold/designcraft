@@ -1300,7 +1300,7 @@ mod line_workflow_tests {
     /// Two documents (or items) are the same up to floating-point noise in their coordinates (1e-6 pt). The installed and the
     /// legacy window lay the canvas out at slightly different offsets (the framework rail's width is not the native
     /// panel's), so a line drawn by the same screen points lands within a few 1e-13 pt of the other.
-    fn same_document<T: serde::Serialize>(a: &T, b: &T) -> bool {
+    fn same_document<T: serde::Serialize + ?Sized>(a: &T, b: &T) -> bool {
         fn same(a: &Value, b: &Value) -> bool {
             match (a, b) {
                 (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
