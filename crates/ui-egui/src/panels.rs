@@ -475,6 +475,15 @@ pub fn apply_font(app: &mut DesignApp, pick: &FontPick) {
 
 /// The text's font family field: [`font_combo`], applied to the text.
 pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, width: f32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let id = ui.id().with("font_family");
+        let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
+        if let Some(family) = crate::framework_transform::font_family_select(app, ui, Some(at), id, current) {
+            apply_font(app, &FontPick { family, style: None });
+        }
+        return;
+    }
     if let Some(f) = font_combo(app, ui, "font_family", current, width) {
         apply_font(app, &f);
     }
@@ -493,6 +502,15 @@ pub fn style_shown(current: &str) -> String {
 }
 
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let id = ui.id().with("font_style");
+        let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
+        if let Some(s) = crate::framework_transform::font_style_select(app, ui, Some(at), id, family, current) {
+            let _ = app.run("type.char", json!({"attrs": {"fontStyle": s}}));
+        }
+        return;
+    }
     let styles = fonts(app).styles(family);
     let mut pick = None;
     let combo = craft_ui_legacy::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
@@ -510,6 +528,13 @@ pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, c
 
 pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, overridden: bool, width: f32) {
     let names: Vec<String> = app.session.active().map(|d| d.doc.styles.paragraph.iter().map(|p| p.name.clone()).collect()).unwrap_or_default();
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        if let Some(n) = para_style_select(app, ui, &names, current, overridden, width) {
+            let _ = app.run("style.paragraph.apply", json!({"name": n, "clearOverrides": false}));
+        }
+        return;
+    }
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
@@ -524,6 +549,36 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     if let Some(n) = pick {
         let _ = app.run("style.paragraph.apply", json!({"name": n, "clearOverrides": false}));
     }
+}
+
+/// The paragraph style select `width` wide in the flow: the document's paragraph styles by the names the menus show,
+/// the current one with `+` after it on the face when its text has overrides. The style picked this pass.
+#[cfg(not(target_arch = "wasm32"))]
+fn para_style_select(app: &DesignApp, ui: &mut egui::Ui, names: &[String], current: &str, overridden: bool, width: f32) -> Option<String> {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::pickers::Select;
+    let lang = &app.ui.language;
+    let shown = crate::i18n::style_name(lang, current);
+    let face = if overridden { format!("{shown}+") } else { shown.to_string() };
+    let entries: Vec<Entry<String>> = names
+        .iter()
+        .filter(|n| *n != designcraft_doc::NO_PARA_STYLE)
+        .map(|n| {
+            let entry = Entry::new(n.clone(), crate::i18n::style_name(lang, n).to_owned());
+            if n == current { entry.closed_label(face.clone()) } else { entry }
+        })
+        .collect();
+    let held = names.iter().find(|n| *n == current && *n != designcraft_doc::NO_PARA_STYLE).cloned();
+    let held = held.map_or(craft_behavior::Mixed::Mixed, craft_behavior::Mixed::Same);
+    let id = ui.id().with("para_style");
+    let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
+    Select::new(crate::i18n::tr(lang, "Paragraph Style").to_owned(), Bind::given(held), &entries)
+        .id(id)
+        .placeholder(face)
+        .show_at(ui, at)
+        .events
+        .committed()
+        .cloned()
 }
 
 #[cfg(test)]

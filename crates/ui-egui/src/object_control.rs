@@ -80,6 +80,11 @@ fn auto_fit_checkbox(app: &DesignApp, ui: &mut Ui, value: &mut bool, label: &str
 
 /// Lay out the fixed two-row control groups for reference, geometry, transform, rotate/flip, appearance, wrap, corners, fitting, alignment and conditional columns.
 pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ui);
+        return;
+    }
     let language = app.ui.language.clone();
     let tr = |text: &str| crate::i18n::tr(&language, text).to_owned();
     let units = app.session.active().map_or(Unit::Picas, |d| d.doc.settings.horizontal_units);
@@ -332,6 +337,367 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("object.textFrameOptions", json!({"columns": v as u64}));
             }
         });
+    }
+}
+
+/// The object Control panel on the framework's components, in the same fixed two-row groups as the native panel: the
+/// same fields, buttons and commands, cell by cell.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod framework {
+    use super::{FIELD_H, ROW_PITCH, group};
+    use crate::DesignApp;
+    use crate::framework_transform::{self as kit, Artwork, Length, Number, Quantity};
+    use crate::panels::{self, properties};
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::buttons::IconButton;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    use craft_ui_widgets::display::Divider;
+    use craft_ui_widgets::primitives::IconSpec;
+    use craft_ui_widgets::runtime::env::with_env;
+    use designcraft_geom::{Unit, corners::CornerShape};
+    use egui::{Rect, Sense, Ui, vec2};
+    use serde_json::{Value, json};
+
+    /// A cell of a group, at `x` in row `row`: its framework controls take the compact control size and follow
+    /// `enabled`.
+    pub(crate) fn cell<R>(ui: &mut Ui, group: Rect, x: f32, row: usize, width: f32, enabled: bool, draw: impl FnOnce(&mut Ui, Rect) -> R) -> R {
+        let rect = Rect::from_min_size(group.min + vec2(x, row as f32 * ROW_PITCH), vec2(width, FIELD_H));
+        properties::place(ui, rect, |ui| {
+            with_env(
+                ui,
+                |env| {
+                    env.size = Some(ControlSize::Sm);
+                    if !enabled {
+                        env.enabled = Some(false);
+                    }
+                },
+                |ui| draw(ui, rect),
+            )
+        })
+    }
+
+    /// The id of the control `key` of the panel.
+    fn id(key: impl std::hash::Hash) -> egui::Id {
+        egui::Id::new(("object-control", key))
+    }
+
+    /// The rule between two groups.
+    pub(crate) fn separator(ui: &mut Ui) {
+        let (rect, _) = ui.allocate_exact_size(vec2(4.0, super::HEIGHT), Sense::hover());
+        Divider::vertical().show_at(ui, rect);
+    }
+
+    /// The link toggle of a group, kept in the panel's memory under `key`: whether it is on after this pass.
+    fn link(ui: &mut Ui, group: Rect, x: f32, key: &str, tip: &str) -> bool {
+        let memory = egui::Id::unique(key);
+        let on = ui.data(|d| d.get_temp::<bool>(memory)).unwrap_or(false);
+        let rect = Rect::from_min_size(group.min + vec2(x, 12.5), vec2(20.0, FIELD_H));
+        let clicked = properties::place(ui, rect, |ui| {
+            with_env(
+                ui,
+                |env| env.size = Some(ControlSize::Sm),
+                |ui| kit::icon_button(ui, rect, id(key), if on { "link" } else { "link-broken" }, tip, on),
+            )
+        });
+        if clicked {
+            ui.data_mut(|d| d.insert_temp(memory, !on));
+        }
+        on != clicked
+    }
+
+    /// A number field committed this pass, in a cell.
+    fn number(ui: &mut Ui, rect: Rect, key: &str, n: Number<'_>) -> Option<f64> {
+        kit::number_field(ui, Some(rect), id(key), n).flatten()
+    }
+
+    /// The swatch chip of the fill or the stroke at `rect`: a select of the document's swatches whose face is the
+    /// chip alone, the stroke's drawn as a ring as the native chip is. The swatch picked this pass.
+    fn chip(app: &DesignApp, ui: &mut Ui, rect: Rect, stroke: bool, current: Option<&str>, label: &str) -> Option<String> {
+        use craft_ui_widgets::contract::Entry;
+        use craft_ui_widgets::pickers::Select;
+        use craft_ui_widgets::primitives::ContentPainterCx;
+        let doc = app.session.active().map(|st| st.doc.clone())?;
+        let entries: Vec<Entry<String>> = doc.swatches.iter().map(|sw| Entry::new(sw.name.clone(), sw.name.clone())).collect();
+        let held = current.filter(|c| doc.swatches.iter().any(|sw| sw.name == *c)).map(str::to_owned);
+        let shown = held.clone().map_or(craft_behavior::Mixed::Mixed, craft_behavior::Mixed::Same);
+        let inner = crate::theme::Tokens::get(ui.ctx()).panel;
+        let picked = Select::new(label.to_owned(), Bind::given(shown), &entries)
+            .id(id(if stroke { "stroke" } else { "fill" }))
+            .tooltip(label.to_owned())
+            .picture(|name: &String, cx: &ContentPainterCx<'_>, at: Rect| {
+                let chip = Rect::from_center_size(at.center(), vec2(18.0, 18.0));
+                let (color, gradient) = crate::widgets::swatch_colors(&doc, name, 1.0);
+                if !stroke {
+                    crate::widgets::paint_chip(&cx.painter, chip, color, gradient);
+                } else if gradient.is_some() {
+                    crate::widgets::paint_chip(&cx.painter, chip, color, gradient);
+                    cx.painter.rect_filled(chip.shrink(5.4), 0.0, inner);
+                } else {
+                    crate::widgets::paint_stroke_chip(&cx.painter, chip, color, inner);
+                }
+            })
+            .picture_only()
+            .show_at(ui, rect)
+            .events
+            .committed()
+            .cloned();
+        picked.filter(|picked| Some(picked) != held.as_ref())
+    }
+
+    /// The object Control panel: reference point, X/Y/W/H, scale, rotation and shear, rotate and flip, fill, stroke
+    /// and opacity, text wrap, corners, fitting, alignment and a text frame's columns.
+    pub(super) fn show(app: &mut DesignApp, ui: &mut Ui) {
+        let language = app.ui.language.clone();
+        let tr = |text: &str| crate::i18n::tr(&language, text).to_owned();
+        let units = app.session.active().map_or(Unit::Picas, |d| d.doc.settings.horizontal_units);
+        let info = panels::sel_info(app);
+        let selected = info.is_some();
+        let reference = app.ui.ref_point.min(8);
+        let geometry = info.as_ref().map(|i| i.page_rect);
+        // One ruler guide selected: X (vertical guide) or Y (horizontal guide) is where it is.
+        let guide = panels::guide_field(app);
+        group(ui, "reference", 26.0, |ui, rect| {
+            let proxy = Rect::from_center_size(rect.center(), vec2(26.0, 26.0));
+            if let Some(point) = properties::reference_point(ui, proxy, id("reference"), &language, reference) {
+                app.ui.ref_point = point;
+            }
+        });
+        group(ui, "dimensions", 236.0, |ui, rect| {
+            let constrain = link(ui, rect, 216.0, "constrain_wh", &tr("Constrain proportions"));
+            let (fx, fy) = ((reference % 3) as f64 / 2.0, (reference / 3) as f64 / 2.0);
+            let values = geometry.map(|r| [r.x0 + r.width() * fx, r.y0 + r.height() * fy, r.width(), r.height()]);
+            let mut set = serde_json::Map::new();
+            for (row, fields) in [[("X:", "x", 0), ("W:", "width", 2)], [("Y:", "y", 1), ("H:", "height", 3)]].into_iter().enumerate() {
+                for (column, (label, key, index)) in fields.into_iter().enumerate() {
+                    let x = column as f32 * 108.0;
+                    cell(ui, rect, x, row, 14.0, true, |ui, at| kit::caption(ui, Some(at), label));
+                    let on_guide = guide.filter(|g| g.row() == index);
+                    let value = if guide.is_some() { on_guide.map(|g| g.value) } else { values.map(|v| v[index]) };
+                    let enabled = selected || on_guide.is_some();
+                    let unit = on_guide.map_or(units, |g| g.unit);
+                    let name = tr(label.trim_end_matches(':'));
+                    let committed = cell(ui, rect, x + 15.0, row, 86.0, enabled, |ui, at| {
+                        kit::length_field(ui, at, id(key), &name, Length { value, unit, range: None }, enabled).0
+                    });
+                    let Some(v) = committed else { continue };
+                    if let Some(g) = on_guide {
+                        let _ = app.run("guide.move", g.move_to(v));
+                        continue;
+                    }
+                    set.insert(key.into(), json!(v));
+                    if constrain
+                        && column == 1
+                        && let Some(old) = value.filter(|old| *old > 0.0)
+                    {
+                        let other = if key == "width" { ("height", 3) } else { ("width", 2) };
+                        if let Some(values) = values {
+                            set.insert(other.0.into(), json!(values[other.1] * v / old));
+                        }
+                    }
+                }
+            }
+            if !set.is_empty() {
+                set.insert("ref".into(), json!(reference));
+                let _ = app.run("transform.set", Value::Object(set));
+            }
+        });
+        separator(ui);
+        let transform = if selected { app.session.execute("transform.info", &json!({})).ok() } else { None };
+        let get = |key: &str| transform.as_ref().and_then(|v| v.get(key)).and_then(Value::as_f64);
+        group(ui, "transform", 214.0, |ui, rect| {
+            let constrain = link(ui, rect, 102.0, "ctl_constrain_scale", &tr("Constrain proportions"));
+            for (row, scale, angle, angle_icon) in [(0, "scaleX", "rotation", "tool-rotate"), (1, "scaleY", "shear", "tool-shear")] {
+                let scale_label = tr(if row == 0 { "Scale X Percentage" } else { "Scale Y Percentage" });
+                cell(ui, rect, 0.0, row, 16.0, selected, |ui, at| kit::icon(ui, at, "tool-scale", Some(scale_label.as_str()), selected));
+                if let Some(v) = cell(ui, rect, 20.0, row, 78.0, selected, |ui, at| {
+                    number(ui, at, scale, Number::new(&scale_label, get(scale), Quantity::Percent).enabled(selected))
+                }) {
+                    let mut set = json!({scale: v, "ref": reference});
+                    if constrain && let Some(old) = get(scale).filter(|v| v.abs() > 0.01) {
+                        let other = if row == 0 { "scaleY" } else { "scaleX" };
+                        if let Some(value) = get(other) {
+                            set[other] = json!(value * v / old);
+                        }
+                    }
+                    let _ = app.run("transform.set", set);
+                }
+                let angle_label = tr(if row == 0 { "Rotation Angle" } else { "Shear X Angle" });
+                cell(ui, rect, 126.0, row, 16.0, selected, |ui, at| kit::icon(ui, at, angle_icon, Some(angle_label.as_str()), selected));
+                if let Some(v) = cell(ui, rect, 146.0, row, 68.0, selected, |ui, at| {
+                    number(ui, at, angle, Number::new(&angle_label, get(angle), Quantity::Degrees).enabled(selected))
+                }) {
+                    let _ = app.run("transform.set", json!({angle: v, "ref": reference}));
+                }
+            }
+        });
+        separator(ui);
+        group(ui, "rotate_flip", 44.0, |ui, rect| {
+            for (row, angle, rotate, axis, flip) in
+                [(0, 90, "tool-rotate", "horizontal", "flip-horizontal"), (1, -90, "rotate-clockwise", "vertical", "flip-vertical")]
+            {
+                let tip = tr(if row == 0 { "Rotate 90° Counterclockwise" } else { "Rotate 90° Clockwise" });
+                if cell(ui, rect, 0.0, row, 20.0, selected, |ui, at| kit::icon_button(ui, at, id(rotate), rotate, &tip, false)) {
+                    let _ = app.run("transform.rotate", json!({"angle": angle, "ref": reference}));
+                }
+                let tip = tr(if row == 0 { "Flip Horizontal" } else { "Flip Vertical" });
+                if cell(ui, rect, 24.0, row, 20.0, selected, |ui, at| kit::icon_button(ui, at, id(flip), flip, &tip, false)) {
+                    let _ = app.run("transform.flip", json!({"axis": axis, "ref": reference}));
+                }
+            }
+        });
+        separator(ui);
+        group(ui, "appearance", 224.0, |ui, rect| {
+            for (row, stroke) in [(0, false), (1, true)] {
+                // The chips open with nothing selected too, as they always have.
+                let current = info.as_ref().map(|i| if stroke { i.stroke.clone() } else { i.fill.clone() });
+                let label = tr(if stroke { "Stroke" } else { "Fill" });
+                let picked = cell(ui, rect, 0.0, row, 30.0, true, |ui, at| chip(app, ui, at, stroke, current.as_deref(), &label));
+                if let Some(name) = picked {
+                    let _ = app.run(if stroke { "object.stroke" } else { "object.fill" }, json!({"swatch": name}));
+                }
+            }
+            let weight_label = tr("Stroke Weight");
+            cell(ui, rect, 36.0, 0, 16.0, selected, |ui, at| kit::icon(ui, at, "panel-stroke", Some(weight_label.as_str()), selected));
+            if let Some(v) = cell(ui, rect, 56.0, 0, 74.0, selected, |ui, at| {
+                number(
+                    ui,
+                    at,
+                    "stroke_weight",
+                    Number::new(&weight_label, info.as_ref().map(|i| i.stroke_weight), Quantity::Points).range(0.0, 1000.0).enabled(selected),
+                )
+            }) {
+                let _ = app.run("object.stroke", json!({"weight": v}));
+            }
+            let kind = info.as_ref().map_or("solid", |i| i.stroke_kind.as_str()).to_owned();
+            cell(ui, rect, 36.0, 1, 94.0, selected, |ui, at| properties::stroke_type_select(app, ui, at, id("stroke_type"), &kind));
+            let opacity_label = tr("Opacity");
+            cell(ui, rect, 138.0, 0, 16.0, selected, |ui, at| kit::icon(ui, at, "opacity", Some(opacity_label.as_str()), selected));
+            if let Some(v) = cell(ui, rect, 158.0, 0, 66.0, selected, |ui, at| {
+                number(
+                    ui,
+                    at,
+                    "opacity",
+                    Number::new(&opacity_label, info.as_ref().map(|i| i.opacity * 100.0), Quantity::Percent).range(0.0, 100.0).enabled(selected),
+                )
+            }) {
+                let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
+            }
+            let shadow = info.as_ref().is_some_and(|i| i.shadow);
+            let effects = tr("Effects");
+            let ran = cell(ui, rect, 138.0, 1, 20.0, selected, |ui, at| {
+                let opener = IconButton::new(IconSpec::glyph(&Artwork("fx")))
+                    .id(id("effects"))
+                    .label(effects.clone())
+                    .tooltip(effects.clone())
+                    .selected(shadow)
+                    .show_at(ui, at);
+                let drop_shadow = tr("Drop Shadow");
+                let rows = [vec![kit::MenuRow { key: (), label: &drop_shadow, checked: Some(shadow), enabled: true, shortcut: None }]];
+                kit::menu(ui, id("effects_menu"), &effects, &opener, &rows)
+            });
+            if ran.is_some() {
+                let _ = app.run("object.dropShadow", json!({}));
+            }
+        });
+        separator(ui);
+        group(ui, "wrap", 68.0, |ui, rect| {
+            for (index, (icon, mode, tip)) in [
+                ("wrap-none", "none", "No Text Wrap"),
+                ("wrap-bbox", "boundingBox", "Wrap Around Bounding Box"),
+                ("wrap-contour", "contour", "Wrap Around Object Shape"),
+                ("wrap-jump", "jumpObject", "Jump Object"),
+                ("wrap-next", "jumpToNextColumn", "Jump to Next Column"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let on = info.as_ref().is_some_and(|i| i.wrap == mode);
+                if cell(ui, rect, (index % 3) as f32 * 24.0, index / 3, 20.0, selected, |ui, at| {
+                    kit::icon_button(ui, at, id(icon), icon, &tr(tip), on)
+                }) {
+                    let _ = app.run("object.textWrap", json!({"mode": mode}));
+                }
+            }
+        });
+        separator(ui);
+        group(ui, "corners", 102.0, |ui, rect| {
+            let (shape, size) = info.as_ref().map_or((CornerShape::None, 0.0), |i| i.corner);
+            let corner_label = tr("Corner Size");
+            cell(ui, rect, 0.0, 0, 16.0, selected, |ui, at| kit::icon(ui, at, "corner", Some(corner_label.as_str()), selected));
+            let value = info.as_ref().map(|i| i.corner.1);
+            if let Some(v) = cell(ui, rect, 22.0, 0, 80.0, selected, |ui, at| {
+                kit::length_field(ui, at, id("corner"), &corner_label, Length { value, unit: units, range: Some(0.0..=1000.0) }, selected).0
+            }) {
+                let shape = if shape == CornerShape::None { CornerShape::Rounded } else { shape };
+                let _ = app.run("object.cornerOptions", json!({"shape": shape, "size": v}));
+            }
+            cell(ui, rect, 0.0, 1, 102.0, selected, |ui, at| properties::corner_shape_select(app, ui, at, id("corner_shape"), shape, size));
+        });
+        separator(ui);
+        group(ui, "fitting", 116.0, |ui, rect| {
+            let graphic = info.as_ref().is_some_and(|i| i.is_graphic);
+            for (index, (icon, mode, tip)) in [
+                ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
+                ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
+                ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
+                ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
+                ("fit-center", "centerContent", "Center Content"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if cell(ui, rect, index as f32 * 24.0, 0, 20.0, graphic, |ui, at| kit::icon_button(ui, at, id(icon), icon, &tr(tip), false)) {
+                    let _ = app.run("object.fit", json!({"mode": mode}));
+                }
+            }
+            // The displayed state intentionally follows the first selected graphic, not a new mixed-state policy.
+            let mut auto = app
+                .session
+                .active()
+                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+                .and_then(|it| it.graphic())
+                .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
+            if cell(ui, rect, 0.0, 1, 116.0, graphic, |ui, _| super::auto_fit_checkbox(app, ui, &mut auto, &tr("Auto-Fit"))) {
+                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+            }
+        });
+        separator(ui);
+        group(ui, "align", 68.0, |ui, rect| {
+            for (index, (edge, icon, tip)) in [
+                ("left", "objalign-left", "Align left edges"),
+                ("hcenter", "objalign-hcenter", "Align horizontal centers"),
+                ("right", "objalign-right", "Align right edges"),
+                ("top", "objalign-top", "Align top edges"),
+                ("vcenter", "objalign-vcenter", "Align vertical centers"),
+                ("bottom", "objalign-bottom", "Align bottom edges"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if cell(ui, rect, (index % 3) as f32 * 24.0, index / 3, 20.0, selected, |ui, at| {
+                    kit::icon_button(ui, at, id(icon), icon, &tr(tip), false)
+                }) {
+                    let _ = app.run("object.align", json!({"edge": edge}));
+                }
+            }
+        });
+        if let Some(columns) = info.as_ref().and_then(|i| i.columns) {
+            separator(ui);
+            let caption = tr("Columns");
+            let caption_w = ui
+                .painter()
+                .layout_no_wrap(caption.clone(), egui::FontId::proportional(crate::widgets::LABEL_SIZE), egui::Color32::PLACEHOLDER)
+                .size()
+                .x;
+            group(ui, "columns", (caption_w + 2.0).ceil().max(48.0), |ui, rect| {
+                cell(ui, rect, 0.0, 0, rect.width(), true, |ui, at| kit::caption(ui, Some(at), &caption));
+                if let Some(v) = cell(ui, rect, 0.0, 1, 48.0, true, |ui, at| {
+                    number(ui, at, "columns", Number::new(&caption, Some(columns as f64), Quantity::Plain { decimals: 0 }).range(1.0, 40.0).step(1.0))
+                }) {
+                    let _ = app.run("object.textFrameOptions", json!({"columns": v as u64}));
+                }
+            });
+        }
     }
 }
 
@@ -690,10 +1056,11 @@ mod auto_fit_workflow_tests {
             "Canvas focus covers the real view, including its ruler margin");
         let traversal_before = mark(&h);
         let traversal_start = h.state().app.session.journal.len();
-        let entry = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "cx").rect();
-        assert!(h.state().toolbar.unwrap().contains_rect(entry), "the unique cx editor is in the actual toolbar");
+        // The installed X field is named by its caption, as the framework names a field; the native one by its key "cx".
+        let entry = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "X").rect();
+        assert!(h.state().toolbar.unwrap().contains_rect(entry), "the unique X editor is in the actual toolbar");
         click_at(&mut h, entry.center());
-        assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "cx").is_focused());
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "X").is_focused());
         assert!(h.ctx.text_edit_focused(), "ordinary pointer input entered the real numeric TextEdit");
         let entry_owner = h.ctx.memory(|m| m.focused()).expect("the toolbar editor owns actual focus");
         assert_ne!(entry_owner, canvas_owner);
