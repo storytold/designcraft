@@ -2043,6 +2043,7 @@ mod framework_tests {
 
     /// The rectangle of the node named `label`; see [`center`].
     fn rect_of(h: &Window, label: &str) -> egui::Rect {
+        use egui_kittest::kittest::NodeT as _;
         let nodes: Vec<_> = h.query_all_by_label(label).collect();
         let pick = [egui::accesskit::Role::TreeItem, egui::accesskit::Role::Button]
             .into_iter()
