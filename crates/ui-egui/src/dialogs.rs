@@ -43,6 +43,8 @@ mod table_forms;
 pub(crate) mod text_forms;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod table_layout_kit;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
 mod options;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};

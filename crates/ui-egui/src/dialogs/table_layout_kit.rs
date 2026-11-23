@@ -63,7 +63,7 @@ pub(crate) fn steps(h: &mut Harness<'_, DesignApp>, count: usize) {
     }
 }
 
-fn event(h: &mut Harness<'_, DesignApp>, event: Event) {
+pub(crate) fn event(h: &mut Harness<'_, DesignApp>, event: Event) {
     let mut raw = std::mem::take(h.input_mut());
     raw.events.push(event);
     let ctx = h.ctx.clone();
@@ -81,7 +81,7 @@ pub(crate) fn key(h: &mut Harness<'_, DesignApp>, key: Key, modifiers: Modifiers
     steps(h, 3);
 }
 
-fn click_at(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
+pub(crate) fn click_at(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
     event(h, Event::PointerMoved(at));
     for pressed in [true, false] {
         event(h, Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -192,4 +192,52 @@ pub(crate) fn click_containing(h: &mut Harness<'_, DesignApp>, part: &str) {
 pub(crate) fn type_text(h: &mut Harness<'_, DesignApp>, text: &str) {
     event(h, Event::Text(text.to_owned()));
     steps(h, 3);
+}
+
+/// The centre of the `nth` node with one of `roles` whose name contains `part`: a field whose name the form builds from a
+/// caption (with or without the colon a field adds) is found by the words of its caption.
+pub(crate) fn centre_containing(h: &Harness<'_, DesignApp>, roles: &[Role], part: &str, nth: usize) -> egui::Pos2 {
+    let found: Vec<_> = h.query_all_by_label_contains(part).filter(|node| roles.contains(&node.accesskit_node().role())).collect();
+    let node = found.get(nth).unwrap_or_else(|| panic!("no {roles:?} named like {part:?} (number {nth}); {} found", found.len()));
+    node.rect().center()
+}
+
+/// Clicks the `nth` node with one of `roles` whose name contains `part`.
+pub(crate) fn click_named_like(h: &mut Harness<'_, DesignApp>, roles: &[Role], part: &str, nth: usize) {
+    let at = centre_containing(h, roles, part, nth);
+    click_at(h, at);
+}
+
+/// Types `text` over the `nth` field whose name contains `part` and leaves it with Tab, so the field commits.
+pub(crate) fn type_and_commit_named_like(h: &mut Harness<'_, DesignApp>, part: &str, nth: usize, text: &str) {
+    click_named_like(h, FIELD, part, nth);
+    key(h, Key::A, Modifiers::COMMAND);
+    event(h, Event::Text(text.to_owned()));
+    steps(h, 3);
+    key(h, Key::Tab, Modifiers::NONE);
+}
+
+/// Opens the `nth` picker whose name contains `part` and picks the entry named `choice`.
+pub(crate) fn pick_named_like(h: &mut Harness<'_, DesignApp>, part: &str, nth: usize, choice: &str) {
+    click_named_like(h, &[Role::ComboBox], part, nth);
+    let options = [Role::ListBoxOption, Role::MenuItem, Role::MenuItemRadio, Role::ListItem, Role::Row];
+    let found: Vec<_> = h.query_all_by_label(choice).collect();
+    let node = found
+        .iter()
+        .find(|node| options.contains(&node.accesskit_node().role()))
+        .or(found.last())
+        .unwrap_or_else(|| panic!("no entry named {choice:?}"));
+    let at = node.rect().center();
+    click_at(h, at);
+}
+
+/// Opens the dialog the menu command `command` opens, in a harness that is already showing dialogs, and runs a few frames.
+pub(crate) fn reopen(h: &mut Harness<'_, DesignApp>, command: &str) {
+    open(h.state_mut(), command);
+    steps(h, 3);
+}
+
+/// Whether any node is named `label`.
+pub(crate) fn shows(h: &Harness<'_, DesignApp>, label: &str) -> bool {
+    h.query_all_by_label(label).next().is_some()
 }
