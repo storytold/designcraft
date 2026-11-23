@@ -2040,6 +2040,35 @@ fn keep_with_next_before_table_at_top_falls_back_to_splitting() {
 }
 
 #[test]
+fn keep_with_next_before_table_caps_trailing_lines() {
+    let text = "Filler\nL1\u{2028}L2\u{2028}L3\u{2028}L4\u{2028}L5\u{2028}L6\u{2028}L7";
+    let (mut d, sid, first) = baseline_fit_doc(text, 48.0);
+    d.item_mut(first).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 75.0, 48.0));
+    let options = d.item(first).unwrap().text_frame().unwrap().options.clone();
+    let lid = d.default_layer();
+    let (second, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 0.0, 175.0, 48.0), lid, "", ParaFormat::default()).unwrap();
+    let (third, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(200.0, 0.0, 275.0, 48.0), lid, "", ParaFormat::default()).unwrap();
+    for id in [second, third] {
+        d.item_mut(id).unwrap().text_frame_mut().unwrap().options = options.clone();
+    }
+    d.thread(first, second).unwrap();
+    d.thread(second, third).unwrap();
+    let st = d.story_mut(sid).unwrap();
+    st.paras[1].para.keep_with_next = Some(1);
+    let mut table = filled(1, 1, 0, 70.0);
+    table.rows[0].height = 25.0;
+    table.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    st.insert_table(st.len(), table);
+
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset(), "moving only trailing lines must leave room for the table in frame 3");
+    assert_eq!(cs.frame(first).unwrap().lines.iter().filter(|l| l.para == 1).count(), 3);
+    assert_eq!(cs.frame(second).unwrap().lines.iter().filter(|l| l.para == 1).count(), 3);
+    assert_eq!(cs.frame(third).unwrap().lines.iter().filter(|l| l.para == 1).count(), 1);
+    assert_eq!(cs.frame(third).unwrap().tables.len(), 1);
+}
+
+#[test]
 fn keep_lines_together_moves_the_paragraph() {
     let h = 200.0;
     let n = lines_per_column(h);

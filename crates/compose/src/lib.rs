@@ -1621,14 +1621,27 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
         ft.tables.iter().skip(skip_t).find(|frag| frag.anchor == anchor && frag.first).map(|frag| (fi, frag.column as usize))
     });
     // A table can leave this column before placing even its first row. Keep its heading chain with that row.
-    if first_at.is_some_and(|at| at > start_at) && *restores < (4 * paragraph_count + 64) * (*balance_runs + 1) {
-        let j = keep_chain_start(paragraph, true, start_at, info);
-        if j < paragraph && info.get(j).is_some_and(|p| !p.at_top) && force_col.get(j) == Some(&false) {
-            force_col[j] = true;
-            *restores += 1;
-            rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
-            return TableParagraphResult::Restart(j);
-        }
+    if first_at.is_some_and(|at| at > start_at)
+        && *restores < (4 * paragraph_count + 64) * (*balance_runs + 1)
+        && let Some(action) = keep_with_next_action(paragraph, start_at, info, force_col, line_cap)
+    {
+        let j = match action {
+            KeepAction::Cap(j, n) => {
+                if let Some(slot) = line_cap.get_mut(j) {
+                    *slot = Some(n);
+                }
+                j
+            }
+            KeepAction::Force(j) => {
+                if let Some(slot) = force_col.get_mut(j) {
+                    *slot = true;
+                }
+                j
+            }
+        };
+        *restores += 1;
+        rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
+        return TableParagraphResult::Restart(j);
     }
     if !placed {
         if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
@@ -4251,6 +4264,23 @@ fn keep_chain_start(pi: usize, started_here: bool, here: (usize, usize), info: &
     j
 }
 
+/// Action to satisfy a paragraph's `keep_with_next` bond at `here`: cap only trailing lines
+/// when splitting leaves valid orphans/widows, else force the whole keep chain forward.
+fn keep_with_next_action(pi: usize, here: (usize, usize), info: &[ParaInfo], force_col: &[bool], line_cap: &[Option<usize>]) -> Option<KeepAction> {
+    let prev = pi.checked_sub(1).and_then(|k| info.get(k))?;
+    let j = keep_chain_start(pi, true, here, info);
+    if j == pi - 1 && prev.lines_in_end_col > 1 && !(prev.keep_together && prev.keep_all) && line_cap.get(j).copied().flatten().is_none() {
+        // Move only the previous paragraph's last lines (respecting its widow control).
+        let keep_last = if prev.keep_together { prev.keep_last.max(1) } else { 1 };
+        let stay = prev.lines_in_end_col.saturating_sub(keep_last);
+        let min_stay = if prev.start == here { if prev.keep_together { prev.keep_first.max(1) } else { 1 } } else { 1 };
+        if stay >= min_stay {
+            return Some(KeepAction::Cap(j, prev.lines.saturating_sub(keep_last)));
+        }
+    }
+    if j < pi && info.get(j).is_some_and(|p| !p.at_top) && force_col.get(j) == Some(&false) { Some(KeepAction::Force(j)) } else { None }
+}
+
 /// Keep Options (plan: typography §8): keep with next, keep all lines together, keep first/last
 /// lines. Returns how to re-lay, or None to just continue in the next column (also when a keep
 /// can't be satisfied, e.g. a paragraph already at the top of a column).
@@ -4268,20 +4298,12 @@ fn keep_violation(ctx: &KeepCtx, pp: &ParaProps, info: &[ParaInfo], force_col: &
     if ctx.started_here && ctx.pi > 0 {
         let prev = &info[ctx.pi - 1];
         let need = (prev.keep_with_next as usize).min(total_lines);
-        if prev.keep_with_next > 0 && prev.end == ctx.here && ctx.line_no < need {
-            let j = chain_start(ctx.pi);
-            if j == ctx.pi - 1 && prev.lines_in_end_col > 1 && !(prev.keep_together && prev.keep_all) && line_cap[j].is_none() {
-                // Move only the previous paragraph's last lines (respecting its widow control).
-                let keep_last = if prev.keep_together { prev.keep_last.max(1) } else { 1 };
-                let stay = prev.lines_in_end_col.saturating_sub(keep_last);
-                let min_stay = if prev.start == ctx.here { if prev.keep_together { prev.keep_first.max(1) } else { 1 } } else { 1 };
-                if stay >= min_stay {
-                    return Some(KeepAction::Cap(j, prev.lines - keep_last));
-                }
-            }
-            if let Some(a) = force(j) {
-                return Some(a);
-            }
+        if prev.keep_with_next > 0
+            && prev.end == ctx.here
+            && ctx.line_no < need
+            && let Some(action) = keep_with_next_action(ctx.pi, ctx.here, info, force_col, line_cap)
+        {
+            return Some(action);
         }
     }
     if !pp.keep_lines_together || ctx.in_col == 0 {
