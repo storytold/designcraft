@@ -353,6 +353,14 @@ fn read_preferences_migrates_named_pdf_preset_flatten_and_keeps_custom() {
         assert!(ui_x1a.pdf_export.flatten_chosen);
     }
 
+    let saved_x1a_global_high = json!({
+        "flattener": "high",
+        "pdfExport": { "preset": "PDF/X-1a:2003", "flatten": "", "flattenChosen": false }
+    });
+    let ui_x1a_global = UiState::read_preferences(&serde_json::to_vec(&saved_x1a_global_high).unwrap()).unwrap().ui;
+    assert!(ui_x1a_global.pdf_export.uses_global_flatten());
+    assert_eq!(ui_x1a_global.pdf_export.resolved_flatten(&ui_x1a_global.flattener), "high");
+
     let saved_custom = json!({
         "flattener": "low",
         "pdfExport": { "preset": "Custom", "flatten": "" }

@@ -3943,8 +3943,33 @@ fn pdf_export_scripted_does_not_inherit_dialog_flattener() {
     // 6. Explicit flatten parameter on scripted app.exportPdf still flattens.
     app.run("app.exportPdf", json!({"path": "/tmp/f.pdf", "flatten": "low"})).unwrap();
 
+    // 7. PDF/X-1a:2003 + explicit app.flattener "high" keeps flattening scripted exports across a
+    //    preferences save/reload, whereas dialog-only PDF/X-1a:2003 keeps scripted exports live.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "PDF/X-1a:2003");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    let dialog_only_bytes = serde_json::to_vec(&app.ui).unwrap();
+
+    app.run("app.flattener", json!({"preset": "high"})).unwrap();
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    let global_high_bytes = serde_json::to_vec(&app.ui).unwrap();
+
+    app.ui = crate::UiState::read_preferences(&global_high_bytes).unwrap().ui;
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/g.pdf"})).unwrap();
+
+    app.ui = crate::UiState::read_preferences(&dialog_only_bytes).unwrap().ui;
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(!app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/h.pdf"})).unwrap();
+
     let pdfs = writes.lock().unwrap();
-    assert_eq!(pdfs.len(), 9);
+    assert_eq!(pdfs.len(), 12);
     let as_text: Vec<_> = pdfs.iter().map(|b| String::from_utf8_lossy(b)).collect();
     assert!(as_text[0].contains("/Width 400"), "initial scripted export keeps 400px PNG unflattened");
     assert!(!as_text[1].contains("/Width 400"), "PDF/X-1a dialog export flattens");
@@ -3955,6 +3980,9 @@ fn pdf_export_scripted_does_not_inherit_dialog_flattener() {
     assert!(as_text[6].contains("/Width 400"), "Desktop Printing dialog export keeps 400px PNG unflattened");
     assert!(as_text[7].contains("/Width 400"), "scripted export after Desktop Printing keeps 400px PNG unflattened");
     assert!(!as_text[8].contains("/Width 400"), "scripted export with explicit flatten=low flattens");
+    assert!(!as_text[9].contains("/Width 400"), "PDF/X-1a dialog export before reload flattens");
+    assert!(!as_text[10].contains("/Width 400"), "reloaded PDF/X-1a + explicit global high keeps flattening scripted export");
+    assert!(as_text[11].contains("/Width 400"), "reloaded dialog-only PDF/X-1a keeps scripted export unflattened");
 }
 
 #[test]
