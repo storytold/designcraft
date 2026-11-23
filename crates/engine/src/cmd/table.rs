@@ -9,8 +9,8 @@
 use designcraft_compose as compose;
 use designcraft_doc::story::floor_char_boundary;
 use designcraft_doc::{
-    AltFills, CellAddr, CellRange, CellStroke, Document, RowHeightMode, RowKind, Selection, StoryId, StrokeType, Table, TableSel, TextSel,
-    VerticalJustification,
+    AltFills, CellAddr, CellRange, CellStroke, DiagonalLines, Document, RowHeightMode, RowKind, Selection, StoryId, StrokeType, Table, TableSel,
+    TextSel, VerticalJustification,
 };
 use serde_json::{Value, json};
 
