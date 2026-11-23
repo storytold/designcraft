@@ -4081,9 +4081,9 @@ mod ui223_track_workflow_tests {
     }
 
     #[test]
-    fn ui223_track_excerpt_preserves_forty_unicode_scalars_newline_marker_and_native_deleted_strike() {
-        // The framework excerpt is a Button, whose painted caption has no strike-through; the native remainder
-        // keeps the strike on deleted text, and keeps the excerpt apart from the framework's actions.
+    fn ui223_track_excerpt_preserves_forty_unicode_scalars_newline_marker_and_deleted_strike() {
+        // The framework draws the excerpt as its own component (ChangeExcerpt), which paints the same struck caption
+        // the native remainder does; only whether the excerpt is a framework element differs between the two.
         for sdk in [false, true] {
             let mut app = app();
             let original = format!("{}TAIL MUST NOT APPEAR", "é\n".repeat(25));
@@ -4098,32 +4098,20 @@ mod ui223_track_workflow_tests {
             let name = track_row_name("Show in the text", &change);
             let _ = h.get_by_label(&name);
             assert!(!name.contains("TAIL MUST NOT APPEAR"));
-            let reported = h
-                .state()
-                .controls
-                .as_ref()
-                .unwrap()
-                .elements
-                .iter()
-                .any(|e| e.component == "Button" && e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name.as_str()));
-            assert_eq!(reported, sdk, "the excerpt is an SDK action exactly when the SDK draws it");
+            let reported =
+                h.state().controls.as_ref().unwrap().elements.iter().any(|e| e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name.as_str()));
+            assert_eq!(
+                reported, sdk,
+                "the excerpt is a framework action exactly when the framework draws it; the native remainder is never reported as one"
+            );
             let mut painted = Vec::new();
             for clipped in &h.output().shapes {
                 paint(&clipped.shape, &mut painted);
             }
-            if sdk {
-                // The caption may be cut at the room's width, never past the forty scalars.
-                let head: String = preview.chars().take(6).collect();
-                assert!(
-                    painted.iter().any(|(text, _)| text.starts_with(&format!("Deleted “{head}")) && !text.contains("TAIL MUST NOT APPEAR")),
-                    "the excerpt paints the caption and the start of the preview: {painted:?}"
-                );
-            } else {
-                assert!(
-                    painted.iter().any(|(text, struck)| text == &format!("Deleted “{preview}”") && *struck),
-                    "actual native paint must preserve all caption/preview strike-through, not just an accessibility string: {painted:?}"
-                );
-            }
+            assert!(
+                painted.iter().any(|(text, struck)| text == &format!("Deleted “{preview}”") && *struck),
+                "actual paint must preserve all caption/preview strike-through, not just an accessibility string: {painted:?}"
+            );
             track_native_click(&mut h, &name);
             last(&h, "text.select", json!({"story":sid.0,"anchor":0,"focus":original.len()}));
             no_replay(&mut h);

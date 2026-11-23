@@ -7,15 +7,20 @@
 use super::{InteractiveDraft, InteractiveFields, LIQUID_RULES, ask_then_run, liquid_rule_label, object_based, track_identity, track_row_name};
 use crate::DesignApp;
 use craft_behavior::ColumnWidth;
+use craft_behavior::{Flow, Metrics, Sense};
 use craft_theme::ControlSize;
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+use craft_ui_widgets::contract::{
+    Bind, Common, Component, Cx, Entry, MeasureCx, NoValue, Outcome, PaintUi, Pointer as _, Props as _, Role, Scroll, Show as _, ShowContainer as _,
+    Sizing, Styled as _,
+};
 use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::layout::RowAlign;
 use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::pickers::Select;
-use craft_ui_widgets::primitives::HAlign;
+use craft_ui_widgets::primitives::{Span, TextRun, Wrap};
+use craft_ui_widgets::style::{ComponentStyle, FocusLook, Stateful, States, StyleColor, StyleCx};
 use craft_ui_widgets::style::{TypeRole, Variant};
 use craft_ui_widgets::text::{NumberField, TextField};
 use egui::Ui;
@@ -546,6 +551,105 @@ pub(super) fn transitions(app: &mut DesignApp, ui: &mut Ui) {
     }
 }
 
+/// The excerpt of a change in Track Changes: its kind and first forty characters, wrapped, struck through when the
+/// change is a deletion as the text shows it. A click, Enter or Space shows the change in the text. Its name is the
+/// full row name (`label`); `caption` is what it paints.
+#[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+struct ChangeExcerpt {
+    #[common]
+    common: Common,
+    caption: String,
+    struck: bool,
+    /// The context whose fonts lay out the struck caption.
+    fonts: egui::Context,
+}
+
+/// The look of a change excerpt: caption-size text in the body colour, and the focus ring.
+#[derive(Clone, Debug, PartialEq)]
+struct ChangeExcerptStyle {
+    focus: FocusLook,
+    text: Stateful<StyleColor>,
+}
+
+impl ComponentStyle for ChangeExcerptStyle {
+    fn focus(&self) -> Option<&FocusLook> {
+        Some(&self.focus)
+    }
+
+    fn metrics(&self) -> Metrics {
+        Metrics::new()
+    }
+}
+
+/// What a change excerpt reports: its response and whether it was activated this pass.
+struct ChangeExcerptOutput {
+    response: egui::Response,
+    clicked: bool,
+}
+
+impl Outcome for ChangeExcerptOutput {
+    type Value = NoValue;
+
+    fn response(&self) -> &egui::Response {
+        &self.response
+    }
+}
+
+impl ChangeExcerpt {
+    fn new(name: String, caption: String, struck: bool, fonts: egui::Context) -> Self {
+        ChangeExcerpt { common: Common::new(), caption, struck, fonts }.label(name)
+    }
+
+    fn run(&self) -> TextRun<'_> {
+        TextRun::spans(vec![Span::new(self.caption.as_str())]).role(TypeRole::Caption).wrap(Wrap::Wrap)
+    }
+}
+
+impl Component for ChangeExcerpt {
+    const ROLE: Role = Role::BUTTON;
+    const PARTS: bool = false;
+    const OVERLAYS: bool = false;
+    type Style = ChangeExcerptStyle;
+    type Output = ChangeExcerptOutput;
+
+    fn style(cx: &StyleCx<'_>, _: ChangeExcerptStyleKey) -> ChangeExcerptStyle {
+        let colors = &cx.tokens.color;
+        let normal = cx.color(colors.text.normal);
+        ChangeExcerptStyle {
+            focus: cx.focus_look(),
+            text: Stateful::new(normal).off(States::new(normal, normal, normal, cx.color(colors.text.disabled))),
+        }
+    }
+
+    fn sense(&self) -> Sense {
+        Sense::CLICK | Sense::FOCUS
+    }
+
+    fn measure(&mut self, cx: &MeasureCx<'_, Self>) -> egui::Vec2 {
+        cx.layout_at(&self.run(), cx.room.unwrap_or(f32::INFINITY)).size()
+    }
+
+    fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+        let color = cx.resolve(&cx.style.text);
+        let draw = ui.draw();
+        let mut layout = draw.layout(&self.run().color(color), cx.content_rect.width());
+        if self.struck {
+            // The framework's spans have no strike-through: the caption is laid out again with egui's.
+            let mut job = (*layout.galley.job).clone();
+            for section in &mut job.sections {
+                section.format.strikethrough = egui::Stroke::new(1.0, color.0);
+            }
+            layout.galley = self.fonts.fonts_mut(|fonts| fonts.layout_job(job));
+        }
+        let line = Flow::new(cx.content_rect, cx.flow.is_rtl()).take_start(layout.size().x).0;
+        draw.galley(egui::Pos2::new(line.left(), cx.content_rect.top()), &layout);
+    }
+
+    fn finish(self, cx: Cx<'_, Self>) -> ChangeExcerptOutput {
+        ChangeExcerptOutput { response: cx.response.clone(), clicked: cx.activation().is_some() }
+    }
+}
+
 /// A Track Changes action button: named in full, with its short caption painted.
 fn track_action(ui: &mut Ui, id: egui::Id, name: &str, painted: &str, enabled: bool) -> bool {
     Button::new(name.to_owned()).painted(painted.to_owned()).id(id).enabled(enabled).size(ControlSize::Sm).variant(Variant::GHOST).show(ui).clicked()
@@ -583,16 +687,13 @@ pub(super) fn track_changes(app: &mut DesignApp, ui: &mut Ui) {
                 let row = actions.with(("change", c.to_string()));
                 let shown = format!("{} “{}”", t(if kind == "inserted" { "Added" } else { "Deleted" }), text.replace('\n', "¶"));
                 // The excerpt takes the whole row; its two actions stand under it at the end edge.
-                let excerpt = Button::new(track_row_name(&t("Show in the text"), c))
-                    .painted(shown)
+                let excerpt = ChangeExcerpt::new(track_row_name(&t("Show in the text"), c), shown, kind == "deleted", ui.ctx().clone())
                     .id(row.with("show"))
                     .enabled(ready)
                     .tooltip(t("Show in the text"))
-                    .align(HAlign::Start)
                     .sizing(Sizing::FillWidth)
-                    .variant(Variant::GHOST)
                     .show(ui);
-                if excerpt.clicked() && ready {
+                if excerpt.clicked && ready {
                     commands.push(("text.select", json!({"story": story, "anchor": start, "focus": c["end"].clone()})));
                 }
                 Row::new().id_salt(("track_actions", c.to_string())).fill_width().align(RowAlign::End).show(ui, |ui, _| {
