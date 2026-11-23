@@ -84,6 +84,11 @@ impl DesignApp {
                 }
             }
         }
+        // A pointer event at a non-finite position is malformed: egui refuses NaN positions, so it never reaches the pass.
+        raw.events.retain(|event| match event {
+            egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => pos.x.is_finite() && pos.y.is_finite(),
+            _ => true,
+        });
         self.discard_stale_injected_batch(raw);
         // A batch acknowledged by the previous pass keeps its private provenance through that
         // pass's end hook (the clipboard guard), and is cleared at the next host iteration.

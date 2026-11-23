@@ -2573,7 +2573,9 @@ fn native_gui_selected_old_click_fixture() -> NativeClickFixture {
 
 /// Run one raw event batch, optionally force a discarded pass, and return the pointer edges observed by each pass.
 fn native_gui_input(f: &mut NativeClickFixture, events: Vec<egui::Event>, discard: bool) -> Vec<(bool, bool, bool)> {
-    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))), events, ..Default::default() };
+    let mut raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))), events, ..Default::default() };
+    // The host runs the app's input hook before every pass, as eframe does.
+    f.app.raw_input_hook(&f.ctx, &mut raw);
     let mut edges = Vec::new();
     let mut out = f.ctx.run_ui(raw, |ui| {
         edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
