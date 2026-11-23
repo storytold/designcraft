@@ -1065,6 +1065,9 @@ fn tab_and_presentation_hide_floating_panels_too() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     let ctx = crate::test_window::context();
+    ctx.enable_accesskit();
+    // The labels of the tabs the last pass drew, as the AccessKit tree names them: the dock has no hit ids to ask.
+    let tabs = std::cell::RefCell::new(Vec::<String>::new());
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =
@@ -1073,14 +1076,15 @@ fn tab_and_presentation_hide_floating_panels_too() {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
             });
+            if let Some(update) = out.platform_output.accesskit_update.take() {
+                let labels = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Tab);
+                *tabs.borrow_mut() = labels.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+            }
             out.textures_delta.clear();
         }
     };
-    // The docked panel's tab and a floating panel group.
-    let tab = crate::panel_docking::tab_id("preflight");
-    let docked = || ctx.read_response(tab).is_some();
-    let group = crate::panel_docking::floating_layer("preflight");
-    let shown = |layer: egui::LayerId| ctx.memory(|m| m.areas().is_visible(&layer));
+    // The docked panel's tab, and the tab of a floating panel group (a floating window draws its panel's tab too).
+    let docked = || tabs.borrow().iter().any(|label| label == "Preflight");
     let toggles = [
         ("window.hidePanels", json!({}), json!({})),
         ("window.hidePanelsExceptTools", json!({}), json!({})),
@@ -1099,14 +1103,14 @@ fn tab_and_presentation_hide_floating_panels_too() {
     }
     app.run("window.floatPanel", json!({"panel": "preflight", "x": 400, "y": 200})).unwrap();
     frame(&mut app);
-    assert!(app.ui.docking.is_some() && shown(group));
+    assert!(app.ui.docking.as_ref().is_some_and(|layout| layout.floating.iter().any(|window| window.contains("preflight"))) && docked());
     for (id, hide, show) in &toggles {
         app.run(id, hide.clone()).unwrap();
         frame(&mut app);
-        assert!(!shown(group), "{id} hides the floating panel");
+        assert!(!docked(), "{id} hides the floating panel");
         app.run(id, show.clone()).unwrap();
         frame(&mut app);
-        assert!(shown(group), "{id} again brings it back");
+        assert!(docked(), "{id} again brings it back");
     }
 }
 
@@ -3633,6 +3637,9 @@ fn window_menu_commands_restore_hidden_panels() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     let ctx = crate::test_window::context();
+    ctx.enable_accesskit();
+    // The labels of the tabs the last pass drew, as the AccessKit tree names them.
+    let tabs = std::cell::RefCell::new(Vec::<String>::new());
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =
@@ -3641,22 +3648,26 @@ fn window_menu_commands_restore_hidden_panels() {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
             });
+            if let Some(update) = out.platform_output.accesskit_update.take() {
+                let labels = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Tab);
+                *tabs.borrow_mut() = labels.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+            }
             out.textures_delta.clear();
         }
     };
-    let props_tab = crate::panel_docking::tab_id("properties");
+    let props_tab = || tabs.borrow().iter().any(|label| label == "Properties");
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+    assert!(props_tab(), "properties panel starts visible");
 
     // Window › Properties unhides panels hidden by Tab.
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 1);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_none());
+    assert!(!props_tab());
     run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+    assert!(props_tab(), "Window > Properties restores hidden panels");
 
     // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
     run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
@@ -3705,7 +3716,7 @@ fn window_menu_commands_restore_hidden_panels() {
     run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+    assert!(props_tab(), "Reset Workspace restores hidden panels");
 
     app.ui.control_bar = true;
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();

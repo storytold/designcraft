@@ -982,8 +982,9 @@ fn specs(language: &str) -> Arc<Tracked<Specs>> {
 
 /// How DesignCraft's dock behaves, as InDesign's: new docks at the docked area's free sides but no full-height column
 /// from the window's edges, a drop on no target (the canvas) floats, a floating window's title bar docks the whole
-/// window, no Maximize Frame or Close Others items and no wheel or tab close gestures. Floating windows get OS windows
-/// of their own on the desktop.
+/// window, a panel menu button on every group (as InDesign's panel menus) with Minimize and the group order in it,
+/// no Maximize Frame or Close Others items and no wheel or tab close gestures. Floating windows get OS windows of
+/// their own on the desktop.
 fn dock_config() -> DockConfig {
     DockConfig::default()
         .side_edge_zones(false)
@@ -994,6 +995,8 @@ fn dock_config() -> DockConfig {
         .maximize_item(false)
         .wheel_selects_tabs(false)
         .tab_close_buttons(false)
+        .group_order_items(true)
+        .menu_button(true)
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
@@ -1021,6 +1024,17 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             return;
         }
     };
+    // Under a modal (a dialog, About, Quick Apply) or an open popup the dock takes no gesture, and a release over the
+    // story editor, which draws after the dock (its first, unmeasured frame: over the whole window), drops nothing.
+    let ctx = ui.ctx().clone();
+    if modal_open(app) || egui::Popup::is_any_open(&ctx) {
+        cancel_gesture(&ctx);
+    } else if crate::story_editor::visible(app) {
+        let editor = ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap_or_else(|| ctx.content_rect());
+        if ctx.input(|i| i.pointer.any_released() && i.pointer.interact_pos().is_some_and(|at| editor.contains(at))) {
+            cancel_gesture(&ctx);
+        }
+    }
     let specs = specs(&app.ui.language);
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
     app.ui.docking_raise = None;
