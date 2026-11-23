@@ -3702,6 +3702,124 @@ fn right_to_left_runs_are_ordered_visually() {
     assert!(g.windows(2).all(|w| w[0].cluster <= w[1].cluster), "{:?}", g.iter().map(|g| g.cluster).collect::<Vec<_>>());
 }
 
+fn text_variable_document(text: &str, value: &str, para: ParaAttrs) -> (Document, StoryId) {
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 100.0), para);
+    d.text_variables = vec![designcraft_doc::vars::TextVariable {
+        name: "Heading".into(),
+        kind: designcraft_doc::vars::VarKind::Custom { text: value.into() },
+        before: String::new(),
+        after: String::new(),
+    }];
+    (d, sid)
+}
+
+fn compose_text_variable(text: &str, value: &str, para: ParaAttrs) -> ComposedStory {
+    let (d, sid) = text_variable_document(text, value, para);
+    compose_story(&d, sid, &ComposeOptions::default())
+}
+
+#[test]
+fn text_variables_follow_the_visual_order_of_the_same_typed_text() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let value = "אבג 123 דהו";
+    let visual = |inserted: &str| {
+        let story = compose_text_variable(inserted, value, ParaAttrs::default());
+        let mut glyphs: Vec<_> = all_lines(&story)[0].glyphs.iter().collect();
+        glyphs.sort_by(|a, b| a.x.total_cmp(&b.x));
+        glyphs.iter().map(|g| g.generated_text.as_deref().unwrap_or_else(|| &inserted[g.byte..g.byte + g.len])).collect::<String>()
+    };
+    assert_eq!(visual(&format!("Before {marker} after")), visual(&format!("Before {value} after")));
+}
+
+#[test]
+fn text_variable_selection_and_caret_use_the_whole_value() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let start = "Before ".len();
+    let end = start + marker.len_utf8();
+    let story = compose_text_variable(&format!("Before {marker} after"), "אבג", ParaAttrs::default());
+    let line = all_lines(&story)[0];
+    let variable = || line.glyphs.iter().filter(|g| g.byte == start);
+    let leftmost = variable().min_by(|a, b| a.x.total_cmp(&b.x)).unwrap();
+    let right = variable().map(|g| g.x + g.adv).fold(f64::NEG_INFINITY, f64::max);
+    let left = leftmost.x;
+    assert!(right - left > leftmost.adv);
+    let quads = highlight_quads(line, start, end, false);
+    assert_eq!(quads.len(), 1);
+    assert!((quads[0][0].x - left).abs() < 1e-6 && (quads[0][1].x - right).abs() < 1e-6, "{quads:?}");
+    assert!((caret_x(line, start) - right).abs() < 1e-6);
+    assert!((caret_x(line, end) - left).abs() < 1e-6);
+    assert_eq!(hit_char(&story, 0, Point::new(left + leftmost.adv / 2.0, line.baseline)), Some(start));
+}
+
+#[test]
+fn text_variable_caret_uses_bidi_levels_at_both_logical_ends() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let start = "A".len();
+    let end = start + marker.len_utf8();
+    let story = compose_text_variable(&format!("A{marker}ג"), "xאב", ParaAttrs::default());
+    let line = all_lines(&story)[0];
+    let cluster = |text: &str| line.glyphs.iter().find(|g| g.generated_text.as_deref() == Some(text)).unwrap();
+    let (first, last) = (cluster("x"), cluster("ב"));
+    assert!(!first.rtl && last.rtl);
+    assert!((caret_x(line, start) - first.x).abs() < 1e-6);
+    assert!((caret_x(line, end) - last.x).abs() < 1e-6, "the trailing caret follows the last RTL cluster");
+}
+
+#[test]
+fn text_variable_hit_stays_on_its_own_marker_in_mixed_bidi_text() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let start = "i".len();
+    let end = start + marker.len_utf8();
+    let story = compose_text_variable(&format!("i{marker}Z"), "אבגדהוזחטx", ParaAttrs::default());
+    let line = all_lines(&story)[0];
+    let (left, right) = variable_glyphs(line, start).map(x_span).filter(|(a, b)| a < b).min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let point = Point::new((left + right) / 2.0, line.baseline);
+    assert!(point.x < caret_x(line, start) && point.x < caret_x(line, end));
+    let at = hit(&story, 0, point).unwrap();
+    assert!([start, end].contains(&at), "the click moved to byte {at} outside the marker");
+}
+
+#[test]
+fn text_variable_caret_preserves_negative_advance() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let start = "A".len();
+    let end = start + marker.len_utf8();
+    let (mut d, sid) = text_variable_document(&format!("A{marker}Z"), "x", ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(start..end, |f| f.over.tracking = Some(-950.0));
+    let story = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&story)[0];
+    let glyph = variable_glyphs(line, start).next().unwrap();
+    assert!(!glyph.rtl && glyph.adv < 0.0, "a negative LTR advance");
+    assert!((caret_x(line, start) - glyph.x).abs() < 1e-6);
+    assert!((caret_x(line, end) - (glyph.x + glyph.adv)).abs() < 1e-6);
+}
+
+#[test]
+fn text_variable_with_no_value_does_not_split_a_right_to_left_run() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let text = format!("אב{marker}גד");
+    let story = compose_text_variable(&text, "", ParaAttrs::default());
+    let line = all_lines(&story)[0];
+    let mut letters: Vec<_> = line.glyphs.iter().filter(|g| g.rendered_char != marker).collect();
+    letters.sort_by(|a, b| a.x.total_cmp(&b.x));
+    assert_eq!(letters.iter().map(|g| g.rendered_char).collect::<String>(), "דגבא");
+    let offset = "אב".len();
+    let empty = line.glyphs.iter().find(|g| g.byte == offset).unwrap();
+    assert_eq!(empty.len, marker.len_utf8());
+}
+
+#[test]
+fn text_variable_brackets_mirror_using_the_paragraph_level() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let para = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    let story = compose_text_variable(&format!("אב {marker} גד"), "()", para);
+    let line = all_lines(&story)[0];
+    for (original, mirrored) in [("(", ')'), (")", '(')] {
+        let g = line.glyphs.iter().find(|g| g.generated_text.as_deref() == Some(original)).unwrap();
+        assert_eq!(g.gid, g.face.glyph_for(mirrored), "generated {original}");
+    }
+}
+
 #[test]
 fn bidi_matches_the_reference_order() {
     use unicode_bidi::{BidiInfo, Level};

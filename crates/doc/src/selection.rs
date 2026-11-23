@@ -71,6 +71,13 @@ impl TextSel {
     }
 }
 
+/// The side of a text-variable marker picked at a byte shared by two visual boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextVariableSide {
+    Before,
+    After,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Selection {
@@ -84,6 +91,9 @@ pub struct Selection {
     pub anchors: Vec<(ItemId, usize, usize)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextSel>,
+    /// Pointer placement of the current caret. Saved selections still use story byte offsets.
+    #[serde(skip)]
+    pub text_variable_caret: Option<(TextSel, TextVariableSide)>,
     /// Selected table cells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cells: Option<TableSel>,
@@ -114,6 +124,10 @@ impl Selection {
     }
     pub fn text(t: TextSel) -> Self {
         Selection { text: Some(t), ..Default::default() }
+    }
+    pub fn text_variable_side(&self) -> Option<TextVariableSide> {
+        let (caret, side) = self.text_variable_caret?;
+        (self.text == Some(caret)).then_some(side)
     }
     pub fn contains(&self, id: ItemId) -> bool {
         self.items.contains(&id)

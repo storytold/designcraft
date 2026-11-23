@@ -3453,7 +3453,7 @@ fn the_caret_blink_restarts_on_input_and_caret_changes() {
             if reset {
                 caret::reset(ui.ctx());
             }
-            visible = caret::visible(ui.ctx(), caret);
+            visible = caret::visible(ui.ctx(), caret, None);
         });
         out.textures_delta.clear();
         visible

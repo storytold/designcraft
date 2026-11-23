@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use designcraft_doc::{
     Align, Content, Document, FirstBaseline, GridAlign, Item, ItemId, ListAlign, ListCounter, ParaProps, SpanColumns, StartParagraph, Story, StoryId,
-    TabAlign, TextFrameOptions, VerticalJustification, WrapMode, WrapSide, story,
+    TabAlign, TextFrameOptions, TextVariableSide, VerticalJustification, WrapMode, WrapSide, story,
 };
 use designcraft_fonts::{FontDb, ScopedFonts};
 use designcraft_geom::{Affine, Point, Rect};
@@ -154,6 +154,8 @@ pub struct PlacedGlyph {
     pub len: usize,
     /// Text of a generated glyph (see [`shape::Glyph::generated_text`]).
     pub generated_text: Option<Box<str>>,
+    /// Part of a text variable's value. All its glyphs share one editable source marker.
+    pub text_variable: bool,
     /// Control characters (tabs, breaks, markers' carriers) are not drawn.
     pub visible: bool,
     /// Stays upright in vertical frames (CJK ideographs, kana, hangul, full-width forms).
@@ -172,6 +174,10 @@ pub struct PlacedGlyph {
 }
 
 impl PlacedGlyph {
+    fn represents_source_text(&self) -> bool {
+        self.len > 0 || self.text_variable
+    }
+
     /// Whether an underline or a strikethrough runs across this glyph.
     ///
     /// A tab is not drawn, but it is a character with an advance, and the rule runs across its
@@ -5502,6 +5508,7 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
                 byte: tab.byte,
                 len: 0,
                 generated_text: None,
+                text_variable: false,
                 visible: true,
                 upright: false,
                 tcy: None,
@@ -5653,6 +5660,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         byte: g.byte,
         len: g.len,
         generated_text: g.generated_text.clone(),
+        text_variable: designcraft_doc::vars::var_index(g.ch).is_some() && !g.list_label,
         visible,
         list_label: g.list_label,
         upright: g.upright,
@@ -6611,6 +6619,38 @@ fn x_span(g: &PlacedGlyph) -> (f64, f64) {
     (g.x.min(g.x + g.adv), g.x.max(g.x + g.adv))
 }
 
+fn variable_glyphs(l: &Line, byte: usize) -> impl Iterator<Item = &PlacedGlyph> {
+    l.glyphs.iter().filter(move |g| g.text_variable && g.byte == byte)
+}
+
+/// The editable span of a glyph, or of the whole value if the glyph is in a text variable.
+fn editable_span(l: &Line, g: &PlacedGlyph) -> (f64, f64) {
+    let span = x_span(g);
+    if !g.text_variable {
+        return span;
+    }
+    variable_glyphs(l, g.byte).map(x_span).fold(span, |(left, right), (a, b)| (left.min(a), right.max(b)))
+}
+
+/// A variable's source marker has one boundary on each end of its logical text.
+/// On a mixed-direction value those can lie on different bidi runs.
+fn variable_caret_x(l: &Line, first: &PlacedGlyph, after: bool) -> f64 {
+    let mut boundary = first;
+    let mut advance = first.adv;
+    for g in variable_glyphs(l, first.byte).skip(1) {
+        if g.generated_text.as_deref().is_some_and(|text| !text.is_empty()) {
+            if !after {
+                break;
+            }
+            boundary = g;
+            advance = g.adv;
+        } else {
+            advance += g.adv;
+        }
+    }
+    if boundary.rtl != after { boundary.x + advance } else { boundary.x }
+}
+
 fn x_ranges_overlap(a: &PlacedGlyph, b: &PlacedGlyph) -> bool {
     let (a0, a1) = x_span(a);
     let (b0, b1) = x_span(b);
@@ -6657,7 +6697,7 @@ fn band_quad(x0: f64, x1: f64, top: f64, bot: f64) -> [Point; 4] {
 /// Highlight rectangles for bytes `s..e` on `l`. `past_end` extends the line-end caret when the
 /// selection continues onto the next line. Stacked rows (warichu) each get their own band.
 pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Point; 4]> {
-    let selected: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.len > 0 && g.byte >= s && g.byte < e).collect();
+    let selected: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.represents_source_text() && g.byte >= s && g.byte < e).collect();
     let stacked = selected.iter().any(|g| on_stacked_row(&selected, g));
     if stacked {
         let mut items: Vec<(f64, f64, f64, f64, f64)> = selected
@@ -6695,7 +6735,7 @@ pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Poi
     let top = l.baseline - l.ascent;
     let bot = l.baseline + l.descent;
     if l.glyphs.iter().any(|g| g.rtl) {
-        let mut spans: Vec<(f64, f64)> = selected.iter().map(|g| (g.x, g.x + g.adv)).collect();
+        let mut spans: Vec<(f64, f64)> = selected.iter().map(|g| if g.text_variable { x_span(g) } else { (g.x, g.x + g.adv) }).collect();
         spans.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut merged: Vec<(f64, f64)> = Vec::new();
         for (a, b) in spans {
@@ -6714,21 +6754,50 @@ pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Poi
 /// Caret geometry for story byte `pos`: (frame index, x, baseline, ascent, descent).
 /// A stacked warichu row reports that row's baseline and em, not the parent line's.
 pub fn caret(cs: &ComposedStory, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
-    let (fi, l) = caret_line(cs, pos)?;
+    caret_with_variable_side(cs, pos, None)
+}
+
+/// Caret geometry with the visual side chosen by a pointer on a text variable. Adjacent
+/// markers can share a byte boundary even if their two carets draw at different positions.
+pub fn caret_with_variable_side(cs: &ComposedStory, pos: usize, side: Option<TextVariableSide>) -> Option<(usize, f64, f64, f64, f64)> {
+    let variable = side.and_then(|side| variable_caret_anchor(cs, pos, side));
+    let (fi, l) = variable.map(|(fi, l, _)| (fi, l)).or_else(|| caret_line(cs, pos))?;
+    let x = variable.map_or_else(|| caret_x(l, pos), |(_, _, g)| variable_caret_x(l, g, side == Some(TextVariableSide::After)));
     // In the drop cap the caret is as tall as it.
     if let Some(dc) = l.drop_cap
-        && pos < dc.end
+        && variable.map_or(pos, |(_, _, g)| g.byte) < dc.end
     {
-        return Some((fi, caret_x(l, pos), dc.baseline, dc.baseline - dc.rect.y0, l.descent));
+        return Some((fi, x, dc.baseline, dc.baseline - dc.rect.y0, l.descent));
     }
-    let x = caret_x(l, pos);
     let glyphs = line_glyphs(l);
-    let metrics = caret_anchor(l, pos).filter(|g| on_stacked_row(&glyphs, g)).map(|g| {
+    let anchor = variable.map(|(_, _, g)| g).or_else(|| caret_anchor(l, pos));
+    let metrics = anchor.filter(|g| on_stacked_row(&glyphs, g)).map(|g| {
         let (asc, desc) = glyph_extents(g);
         (l.baseline + g.y, asc, desc)
     });
     let (bl, asc, desc) = metrics.unwrap_or((l.baseline, l.ascent, l.descent));
     Some((fi, x, bl, asc, desc))
+}
+
+fn variable_caret_anchor(cs: &ComposedStory, pos: usize, side: TextVariableSide) -> Option<(usize, &Line, &PlacedGlyph)> {
+    cs.frames.iter().enumerate().find_map(|(fi, frame)| {
+        frame.lines.iter().filter(|l| (l.range.start..=l.range.end).contains(&pos)).find_map(|l| {
+            let g = l.glyphs.iter().find(|g| {
+                g.text_variable
+                    && g.len > 0
+                    && match side {
+                        TextVariableSide::Before => g.byte == pos,
+                        TextVariableSide::After => g.byte + g.len == pos,
+                    }
+            })?;
+            Some((fi, l, g))
+        })
+    })
+}
+
+/// The frame and line of a caret, accounting for the side picked at a text-variable boundary.
+pub fn caret_line_with_variable_side(cs: &ComposedStory, pos: usize, side: Option<TextVariableSide>) -> Option<(usize, &Line)> {
+    side.and_then(|side| variable_caret_anchor(cs, pos, side)).map(|(fi, l, _)| (fi, l)).or_else(|| caret_line(cs, pos))
 }
 
 /// The line the caret at `pos` is drawn on (and its frame index).
@@ -6756,13 +6825,17 @@ fn caret_line(cs: &ComposedStory, pos: usize) -> Option<(usize, &Line)> {
 
 /// The caret's x on line `l` for story byte `pos` (bidi-aware).
 pub fn caret_x(l: &Line, pos: usize) -> f64 {
-    for g in &l.glyphs {
-        if g.len > 0 && pos >= g.byte && pos < g.byte + g.len {
+    for g in l.glyphs.iter().filter(|g| g.len > 0) {
+        let end = g.byte + g.len;
+        if g.text_variable && (g.byte..=end).contains(&pos) {
+            return variable_caret_x(l, g, pos == end);
+        }
+        if pos >= g.byte && pos < end {
             // Inside a multi-char cluster (ligature): interpolate.
             let t = (pos - g.byte) as f64 / g.len as f64;
             return if g.rtl { g.x + g.adv * (1.0 - t) } else { g.x + g.adv * t };
         }
-        if g.len > 0 && g.byte >= pos {
+        if g.byte >= pos {
             return if g.rtl { g.x + g.adv } else { g.x };
         }
     }
@@ -6833,48 +6906,96 @@ pub fn hit_char(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
     // On a drop cap (it reaches down beside the lines after its own): its character under `p`.
     for dl in &ft.lines {
         let Some(dc) = dl.drop_cap.filter(|dc| dc.rect.contains(p)) else { continue };
-        return dl.glyphs.iter().filter(|g| g.len > 0 && g.byte < dc.end).min_by(|a, b| dist(a).total_cmp(&dist(b))).map(|g| g.byte);
+        return dl.glyphs.iter().filter(|g| g.represents_source_text() && g.byte < dc.end).min_by(|a, b| dist(a).total_cmp(&dist(b))).map(|g| g.byte);
     }
-    let under = l.glyphs.iter().filter(|g| g.len > 0).min_by(|a, b| dist(a).total_cmp(&dist(b)));
+    let under = l.glyphs.iter().filter(|g| g.represents_source_text()).min_by(|a, b| dist(a).total_cmp(&dist(b)));
     Some(under.map_or(l.range.start, |g| g.byte))
+}
+
+/// A hit on one of the variable's visible glyphs can only put the caret at its source
+/// marker's two ends, even when both are on the same side of the hit.
+fn hit_variable(l: &Line, p: Point) -> Option<CaretHit> {
+    let g = l.glyphs.iter().find(|g| {
+        let (left, right) = x_span(g);
+        if !g.text_variable || !g.visible || !(left..right).contains(&p.x) {
+            return false;
+        }
+        let (asc, desc) = glyph_extents(g);
+        let y = l.baseline + g.y;
+        (y - asc..=y + desc).contains(&p.y)
+    })?;
+    let first = variable_glyphs(l, g.byte).find(|g| g.len > 0)?;
+    let before = (p.x - variable_caret_x(l, first, false)).abs();
+    let after = (p.x - variable_caret_x(l, first, true)).abs();
+    Some(if before <= after {
+        CaretHit { byte: first.byte, variable_side: Some(TextVariableSide::Before) }
+    } else {
+        CaretHit { byte: first.byte + first.len, variable_side: Some(TextVariableSide::After) }
+    })
+}
+
+/// A story byte and, after hitting a text variable, the visual side of its marker.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaretHit {
+    pub byte: usize,
+    pub variable_side: Option<TextVariableSide>,
+}
+
+impl From<usize> for CaretHit {
+    fn from(byte: usize) -> Self {
+        Self { byte, variable_side: None }
+    }
 }
 
 /// Story byte nearest to point `p` (frame inner space) in frame `fi`.
 pub fn hit(cs: &ComposedStory, fi: usize, p: Point) -> Option<usize> {
+    hit_with_variable_side(cs, fi, p).map(|hit| hit.byte)
+}
+
+/// As with [`hit`], also returning the side of a text variable under the pointer.
+pub fn hit_with_variable_side(cs: &ComposedStory, fi: usize, p: Point) -> Option<CaretHit> {
     let ft = cs.frames.get(fi)?;
     if ft.lines.is_empty() {
-        return Some(ft.range.start);
+        return Some(ft.range.start.into());
     }
     // On a drop cap (it reaches down beside the lines after its own): the nearest caret position in it.
     for l in &ft.lines {
         let Some(dc) = l.drop_cap.filter(|dc| dc.rect.contains(p)) else { continue };
+        if let Some(at) = hit_variable(l, p).filter(|at| at.byte <= dc.end) {
+            return Some(at);
+        }
         return l
             .glyphs
             .iter()
             .filter(|g| g.len > 0 && g.byte < dc.end)
             .flat_map(|g| [g.byte, g.byte + g.len])
-            .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()));
+            .min_by(|a, b| (caret_x(l, *a) - p.x).abs().total_cmp(&(caret_x(l, *b) - p.x).abs()))
+            .map(CaretHit::from);
     }
     let l = hit_line(ft, p)?;
+    if let Some(at) = hit_variable(l, p) {
+        return Some(at);
+    }
     if l.glyphs.iter().any(|g| g.rtl) {
         // Bidi: the caret position drawn nearest the point.
-        return caret_stops(l).into_iter().min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs())).map(|s| s.0);
+        return caret_stops(l).into_iter().min_by(|a, b| (a.1 - p.x).abs().total_cmp(&(b.1 - p.x).abs())).map(|s| s.0.into());
     }
     if line_has_stacked_rows(l) {
-        return Some(hit_stacked(l, p));
+        return Some(hit_stacked(l, p).into());
     }
     let mut best = l.range.start;
     let mut prev_mid = f64::NEG_INFINITY;
     for g in l.glyphs.iter().filter(|g| g.len > 0) {
-        let mid = g.x + g.adv / 2.0;
+        let (left, right) = editable_span(l, g);
+        let mid = left + (right - left) / 2.0;
         if p.x < mid && p.x >= prev_mid {
-            return Some(g.byte);
+            return Some(g.byte.into());
         }
         prev_mid = mid;
         best = g.byte + g.len;
     }
     // After the last glyph: line end (before the paragraph separator / break).
-    Some(if l.last_in_para { l.range.end } else { best.min(l.range.end) })
+    Some(if l.last_in_para { l.range.end } else { best.min(l.range.end) }.into())
 }
 
 fn line_dist(l: &Line, y: f64) -> f64 {
@@ -6890,7 +7011,7 @@ fn line_dist(l: &Line, y: f64) -> f64 {
 }
 
 fn glyph_contains(l: &Line, g: &PlacedGlyph, p: Point) -> bool {
-    let (x0, x1) = x_span(g);
+    let (x0, x1) = editable_span(l, g);
     if p.x < x0 - 0.01 || p.x > x1 + 0.01 {
         return false;
     }
@@ -6911,7 +7032,8 @@ fn hit_sorted(l: &Line, mut glyphs: Vec<&PlacedGlyph>, p_x: f64) -> usize {
         if last_byte == Some(g.byte) {
             saw_last = true;
         }
-        let mid = g.x + g.adv / 2.0;
+        let (left, right) = editable_span(l, g);
+        let mid = left + (right - left) / 2.0;
         if p_x < mid && p_x >= prev_mid {
             return g.byte;
         }

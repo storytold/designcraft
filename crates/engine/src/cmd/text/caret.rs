@@ -76,12 +76,12 @@ fn hit_byte(s: &Session, frame: ItemId, pt: Point) -> Option<(StoryId, usize, Op
 
 /// [`hit_byte`] with the hit test: [`compose::hit`] (caret position) or [`compose::hit_char`]
 /// (the character under the point).
-pub(super) fn hit_byte_with(
+pub(super) fn hit_byte_with<T: Default>(
     s: &Session,
     frame: ItemId,
     pt: Point,
-    hit: fn(&compose::ComposedStory, usize, Point) -> Option<usize>,
-) -> Option<(StoryId, usize, Option<CellAddr>)> {
+    hit: fn(&compose::ComposedStory, usize, Point) -> Option<T>,
+) -> Option<(StoryId, T, Option<CellAddr>)> {
     let st = s.active()?;
     let loc = st.doc.find(frame)?;
     let it = st.doc.item_at(&loc)?;
@@ -98,7 +98,7 @@ pub(super) fn hit_byte_with(
     if let Some((id, b)) = compose::hit_note_with(&cs, fi, inner, hit) {
         return Some((sid, b, Some(CellAddr::footnote(id))));
     }
-    let b = hit(&cs, fi, inner).unwrap_or(0);
+    let b = hit(&cs, fi, inner).unwrap_or_default();
     Some((sid, b, None))
 }
 
@@ -200,7 +200,8 @@ pub(super) fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
     if needs_convert {
         s.execute("object.content", &json!({"ids": [frame.0], "type": "text"}))?;
     }
-    let (sid, b, cell) = hit_byte(s, frame, pt).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    let (sid, hit, cell) = hit_byte_with(s, frame, pt, compose::hit_with_variable_side).ok_or_else(|| bad("text.placeCaret", "not a text frame"))?;
+    let b = hit.byte;
     // A drag after several clicks: whole units from the one first selected, in either direction.
     if extend
         && let Some(unit) = str_param(p, "unit")
@@ -245,7 +246,8 @@ pub(super) fn place(s: &mut Session, p: &Value, extend: bool) -> Result<Value> {
         (true, Some(t)) if t.story == sid && t.cell == cell => TextSel { focus: b, frame: Some(frame), ..t },
         _ => TextSel { story: sid, anchor: b, focus: b, frame: Some(frame), cell },
     };
-    st.selection = Selection::text(t);
+    let text_variable_caret = hit.variable_side.filter(|_| t.is_caret()).map(|side| (t, side));
+    st.selection = Selection { text_variable_caret, ..Selection::text(t) };
     st.bump_revision();
     Ok(json!({"story": sid.0, "pos": b, "cell": cell}))
 }
@@ -402,9 +404,11 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     // In a cell, lines come from the cell's own composition.
     let cs = text_composition(s.cache.get(&st.doc, t.story, None), t.cell);
     let pos = t.focus.min(text.len());
+    let variable_side = st.selection.text_variable_side();
     // Vertical lines run top to bottom and follow each other right to left: Down and Up move along
     // the line (Right and Left of horizontal text), Left and Right to the next and previous line.
-    let vertical_text = compose::caret(&cs, pos).and_then(|(fi, ..)| cs.frames.get(fi)).is_some_and(|f| f.vertical);
+    let vertical_text =
+        compose::caret_line_with_variable_side(&cs, pos, variable_side).and_then(|(fi, _)| cs.frames.get(fi)).is_some_and(|f| f.vertical);
     let dir = match (vertical_text, dir.as_str()) {
         (true, "down") => "right",
         (true, "up") => "left",
@@ -413,6 +417,7 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
         (_, d) => d,
     };
     let collapse_to = |left: bool| if left { t.range().start } else { t.range().end };
+    let mut picked_side = None;
     let new = match dir {
         "left" if !extend && !t.is_caret() => collapse_to(true),
         "right" if !extend && !t.is_caret() => collapse_to(false),
@@ -434,7 +439,10 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
-        "up" | "down" => vertical(&cs, pos, dir == "up").unwrap_or(pos),
+        "up" | "down" => vertical(&cs, pos, variable_side, dir == "up").map_or(pos, |hit| {
+            picked_side = hit.variable_side;
+            hit.byte
+        }),
         "lineStart" => line_of(&cs, pos).map(|l| l.0).unwrap_or(0),
         "lineEnd" => line_of(&cs, pos).map(|l| l.1).unwrap_or(text.len()),
         "storyStart" => 0,
@@ -443,7 +451,13 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     };
     s.typing_format = None;
     let stm = s.doc_mut()?;
-    stm.selection.text = Some(if extend { TextSel { focus: new, ..t } } else { TextSel { anchor: new, focus: new, ..t } });
+    let next = if extend { TextSel { focus: new, ..t } } else { TextSel { anchor: new, focus: new, ..t } };
+    stm.selection.text = Some(next);
+    if let Some(side) = picked_side.filter(|_| next.is_caret()) {
+        stm.selection.text_variable_caret = Some((next, side));
+    } else if next != t {
+        stm.selection.text_variable_caret = None;
+    }
     // Moving the caret leaves the selected cells, so typing inserts at the caret.
     stm.selection.cells = None;
     stm.bump_revision();
@@ -454,23 +468,21 @@ fn line_of(cs: &compose::ComposedStory, pos: usize) -> Option<(usize, usize)> {
     cs.frames.iter().flat_map(|f| f.lines.iter()).find(|l| pos >= l.range.start && pos <= l.range.end).map(|l| (l.range.start, l.range.end))
 }
 
-fn vertical(cs: &compose::ComposedStory, pos: usize, up: bool) -> Option<usize> {
-    let (fi, x, caret_y, _, _) = compose::caret(cs, pos)?;
+fn vertical(cs: &compose::ComposedStory, pos: usize, side: Option<designcraft_doc::TextVariableSide>, up: bool) -> Option<compose::CaretHit> {
+    let (_, x, caret_y, _, _) = compose::caret_with_variable_side(cs, pos, side)?;
+    let (fi, l) = compose::caret_line_with_variable_side(cs, pos, side)?;
     let lines: Vec<(usize, &compose::Line)> = cs.frames.iter().enumerate().flat_map(|(i, f)| f.lines.iter().map(move |l| (i, l))).collect();
-    // Match the line by the bytes it owns. A warichu caret sits on a small-line baseline, so it
-    // does not equal the parent line's baseline.
-    let cur = lines.iter().position(|(i, l)| *i == fi && pos >= l.range.start && pos <= l.range.end && (pos < l.range.end || l.last_in_para))?;
-    let (_, l) = lines.get(cur)?;
+    let cur = lines.iter().position(|(i, candidate)| *i == fi && std::ptr::eq(*candidate, l))?;
     if let Some(y) = compose::adjacent_row(l, x, caret_y, up)
-        && let Some(p) = compose::hit(cs, fi, Point::new(x, y))
-        && p != pos
+        && let Some(p) = compose::hit_with_variable_side(cs, fi, Point::new(x, y))
+        && (p.byte, p.variable_side) != (pos, side)
     {
         return Some(p);
     }
     // The next row: segments of the same line (beside a wrap object) share its baseline.
     let other_row = |(i, t): &&(usize, &compose::Line)| *i != fi || (t.baseline - l.baseline).abs() > 1e-6;
     let (tf, tl) = if up { lines.get(..cur)?.iter().rfind(other_row)? } else { lines.get(cur + 1..)?.iter().find(other_row)? };
-    compose::hit(cs, *tf, Point::new(x, tl.baseline - 1.0))
+    compose::hit_with_variable_side(cs, *tf, Point::new(x, tl.baseline - 1.0))
 }
 
 #[cfg(test)]
@@ -687,9 +699,52 @@ mod drag_text_tests {
 
 #[cfg(test)]
 mod bidi_caret_tests {
+    use designcraft_doc::{ItemId, StoryId, TextVariableSide, vars::var_char};
+    use designcraft_geom::Point;
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn adjacent_text_variables_keep_the_visual_caret_side() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("variables.define", &json!({"name": "First", "type": "custom", "text": "אבג"})).unwrap();
+        s.execute("variables.define", &json!({"name": "Second", "type": "custom", "text": "xדה"})).unwrap();
+        let d = &s.active().unwrap().doc;
+        let first = var_char(d.variable("First").unwrap()).unwrap();
+        let second = var_char(d.variable("Second").unwrap()).unwrap();
+        let text = format!("A{first}{second}Z\nabcdefghijklmnop");
+        let shared = 1 + first.len_utf8();
+        let frame = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": text})).unwrap();
+        let fid = ItemId(frame["id"].as_u64().unwrap());
+        let sid = StoryId(frame["story"].as_u64().unwrap());
+        let d = &s.active().unwrap().doc;
+        let loc = d.find(fid).unwrap();
+        let xf = d.parent_xf(&loc) * d.text_xf(d.item_at(&loc).unwrap());
+        let cs = s.cache.get(d, sid, None);
+        let line = &cs.frames[0].lines[0];
+        let second_line = &cs.frames[0].lines[1];
+        let glyph = |value| line.glyphs.iter().find(|g| g.generated_text.as_deref() == Some(value)).unwrap();
+        let (last, next) = (glyph("ג"), glyph("x"));
+        assert!(last.rtl && !next.rtl);
+        assert!((last.x - next.x).abs() > 0.01, "the two visual boundaries differ");
+        let down_at = |x| crate::compose::hit(&cs, 0, Point::new(x, second_line.baseline - 1.0)).unwrap();
+        assert_ne!(down_at(last.x), down_at(next.x), "the two visual columns land at different bytes");
+        for (g, side) in [(last, TextVariableSide::After), (next, TextVariableSide::Before)] {
+            let p = xf * Point::new(g.x + g.adv * 0.1, line.baseline);
+            let at = s.execute("text.placeCaret", &json!({"frame": fid.0, "point": [p.x, p.y]})).unwrap();
+            assert_eq!(at["pos"], shared);
+            let sel = &s.active().unwrap().selection;
+            assert_eq!(sel.text_variable_side(), Some(side));
+            let (_, x, ..) = crate::compose::caret_with_variable_side(&cs, shared, sel.text_variable_side()).unwrap();
+            assert!((x - g.x).abs() < 0.01, "caret at {x} after clicking into the boundary at {}", g.x);
+            let down = s.execute("text.move", &json!({"dir": "down"})).unwrap();
+            assert_eq!(down["pos"], down_at(x), "ArrowDown follows the displayed column");
+        }
+        s.execute("text.select", &json!({"story": sid.0, "anchor": shared, "focus": shared})).unwrap();
+        assert_eq!(s.active().unwrap().selection.text_variable_side(), None);
+    }
 
     #[test]
     fn arrow_keys_in_a_right_to_left_paragraph() {

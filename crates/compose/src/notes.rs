@@ -305,11 +305,11 @@ pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)>
 }
 
 /// [`hit_note`] with the hit test for the note's text (see [`crate::hit_cell_with`]).
-pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<usize>) -> Option<(u64, usize)> {
+pub fn hit_note_with<T: Default>(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<T>) -> Option<(u64, T)> {
     let ft = cs.frames.get(fi)?;
     let n = ft.notes.iter().find(|n| n.rect.contains(p))?;
     let local = Point::new(p.x - n.origin.x, p.y - n.origin.y);
-    Some((n.id, hit(&n.text, 0, local).unwrap_or(0)))
+    Some((n.id, hit(&n.text, 0, local).unwrap_or_default()))
 }
 
 /// Caret geometry for byte `pos` of a footnote's story, in frame inner space:

@@ -1,6 +1,6 @@
 //! One blink phase for the text caret: the story, table cell and footnote carets share it.
 
-use designcraft_doc::TextSel;
+use designcraft_doc::{TextSel, TextVariableSide};
 
 const BLINK_HZ: f64 = 1.6;
 
@@ -17,9 +17,10 @@ pub(super) fn reset(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(start_id(), now));
 }
 
-pub(super) fn visible(ctx: &egui::Context, caret: TextSel) -> bool {
+pub(super) fn visible(ctx: &egui::Context, caret: TextSel, side: Option<TextVariableSide>) -> bool {
     let now = ctx.input(|i| i.time);
-    let start = ctx.data_mut(|d| match (d.get_temp::<f64>(start_id()), d.get_temp::<TextSel>(caret_id())) {
+    let caret = (caret, side);
+    let start = ctx.data_mut(|d| match (d.get_temp::<f64>(start_id()), d.get_temp::<(TextSel, Option<TextVariableSide>)>(caret_id())) {
         (Some(start), Some(last)) if last == caret => start,
         _ => {
             d.insert_temp(start_id(), now);
