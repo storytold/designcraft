@@ -11,8 +11,6 @@ use serde_json::json;
 
 fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_opacity = true;
-    app.framework_transform = true;
     app.install_framework(&ctx);
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
