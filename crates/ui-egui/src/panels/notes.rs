@@ -56,7 +56,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             .keeps_on_escape()
             .sizing(Sizing::FillWidth)
             .show(ui);
-        create = Button::new(tr("New Note at Cursor"))
+        create |= Button::new(tr("New Note at Cursor"))
             .id_salt(("notes-action", (story_id, None::<u64>, "new")))
             .enabled(has_text && !draft.trim().is_empty())
             .variant(Variant::SECONDARY)

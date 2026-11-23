@@ -208,7 +208,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .placeholder(name_label.clone())
                     .limit(None)
                     .show(ui);
-                create = Button::new(tr("New")).id_salt("new_condition").show(ui).clicked();
+                create |= Button::new(tr("New")).id_salt("new_condition").show(ui).clicked();
             });
             if has_text && !applied.is_empty() && Button::new(tr("Remove Conditions from Selection")).id_salt("remove_conditions").show(ui).clicked()
             {

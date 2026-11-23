@@ -359,10 +359,10 @@ pub(crate) fn framework_grid(
     let height = ((count as u32).div_ceil(cols) as f32 * CELL).min(max_height);
     let mut picked = None;
     Stack::new().id_salt(("glyph_scroll", family, style)).fill_width().scroll(Scroll::vertical()).room_height(height).show(ui, |ui, _| {
-        picked = glyph_grid::GlyphGrid::new(crate::i18n::tr(language, "Glyphs").to_owned(), chars.clone(), cols, tex.clone())
+        picked = picked.or(glyph_grid::GlyphGrid::new(crate::i18n::tr(language, "Glyphs").to_owned(), chars.clone(), cols, tex.clone())
             .id_salt("glyph_grid")
             .show(ui)
-            .picked;
+            .picked);
     });
     (picked, count)
 }

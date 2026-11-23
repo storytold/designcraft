@@ -666,9 +666,9 @@ fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             if scripts_action(app_ref, ui, actions.with("run"), &tr("Run"), run_enabled) {
                 run = Some(sel);
             }
-            new = scripts_action(app_ref, ui, actions.with("new"), &tr("New"), true);
-            load = scripts_action(app_ref, ui, actions.with("load"), &tr("Load…"), true);
-            delete = scripts_action(app_ref, ui, actions.with("delete"), &tr("Delete"), run_enabled);
+            new |= scripts_action(app_ref, ui, actions.with("new"), &tr("New"), true);
+            load |= scripts_action(app_ref, ui, actions.with("load"), &tr("Load…"), true);
+            delete |= scripts_action(app_ref, ui, actions.with("delete"), &tr("Delete"), run_enabled);
         });
     });
     if new {
