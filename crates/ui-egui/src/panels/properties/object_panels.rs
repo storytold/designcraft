@@ -956,9 +956,14 @@ mod attributes_workflow_tests {
         let family = "Segoe UI";
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let family = "DejaVu Sans";
+        // The regular face's style name: DejaVu Sans calls it Book.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let regular = "Regular";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let regular = "Book";
         let db = designcraft_fonts::FontDb::global();
         assert!(db.has_family(family), "the native Arabic fixture requires the already-installed {family}; do not skip Arabic or substitute tofu");
-        let face = db.face(family, "Regular");
+        let face = db.face(family, regular);
         assert!(face.family.eq_ignore_ascii_case(family), "the named fixture must resolve to {family}, not {}", face.family);
         assert!(
             !face.is_placeholder() && face.covers('\u{0627}') && face.covers('\u{0625}') && face.covers('\u{0637}') && face.covers('\u{0639}'),
@@ -966,7 +971,7 @@ mod attributes_workflow_tests {
         );
         #[cfg(target_os = "macos")]
         assert_eq!(face.index(), 0, "the observed existing Geeza Pro Regular fixture is TTC face0");
-        assert!(face.style.eq_ignore_ascii_case("Regular"), "the genuine fixture requires the requested regular face");
+        assert!(face.style.eq_ignore_ascii_case(regular), "the genuine fixture requires the requested regular face");
         for key in ROWS.iter().map(|row| row.1).chain(["Select an object."]) {
             for c in crate::i18n::tr(language, key).chars().filter(|c| designcraft_fonts::is_rtl(*c)) {
                 assert!(face.covers(c), "{family} lacks the real glyph U+{:04X} from {key}", u32::from(c));

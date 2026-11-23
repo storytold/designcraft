@@ -1369,11 +1369,16 @@ mod scripts_shelf_workflow_tests {
         let family = "Segoe UI";
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let family = "DejaVu Sans";
+        // The regular face's style name: DejaVu Sans calls it Book.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let regular = "Regular";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let regular = "Book";
         let db = designcraft_fonts::FontDb::global();
         assert!(db.has_family(family), "the genuine existing {family} is required; no skipped Unicode or tofu");
-        let face = db.face(family, "Regular");
+        let face = db.face(family, regular);
         assert!(face.family.eq_ignore_ascii_case(family), "the actual fixture must resolve exactly to {family}, not {}", face.family);
-        assert!(!face.is_placeholder() && face.style.eq_ignore_ascii_case("Regular"));
+        assert!(!face.is_placeholder() && face.style.eq_ignore_ascii_case(regular));
         #[cfg(target_os = "macos")]
         assert_eq!(face.index(), 0, "the observed actual Geeza Pro Regular is TTC face0");
         for c in ['\u{0627}', '\u{0625}', '\u{0637}', '\u{0639}'] {

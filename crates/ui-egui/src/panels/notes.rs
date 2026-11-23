@@ -493,10 +493,15 @@ mod draft_composition_tests {
         let family = "Segoe UI";
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let family = "DejaVu Sans";
+        // The regular face's style name: DejaVu Sans calls it Book.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let regular = "Regular";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let regular = "Book";
         let db = designcraft_fonts::FontDb::global();
         assert!(db.has_family(family), "the complete Arabic case requires the real existing {family}");
-        let face = db.face(family, "Regular");
-        assert!(face.family.eq_ignore_ascii_case(family) && !face.is_placeholder() && face.style.eq_ignore_ascii_case("Regular"));
+        let face = db.face(family, regular);
+        assert!(face.family.eq_ignore_ascii_case(family) && !face.is_placeholder() && face.style.eq_ignore_ascii_case(regular));
         let texts = ["Note text", "New Note at Cursor", "No notes in this document.", "Go To", "Convert to Text", "Split Note", "Delete"];
         for text in texts.into_iter().map(|text| crate::i18n::tr(language, text)).chain(std::iter::once("مرحبا")) {
             for ch in text.chars().filter(|ch| designcraft_fonts::is_rtl(*ch)) {
