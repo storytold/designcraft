@@ -45,9 +45,16 @@ pub(crate) fn enabled() -> bool {
 /// where it made the context: the desktop shell's eframe creation context, or a test's own context. A
 /// second call on the same context is not an error.
 pub(crate) fn install(ctx: &egui::Context) {
+    install_with(ctx, craft_host::target::WindowChrome::Native);
+}
+
+/// [`install`] for a main window whose frame is `chrome`: the app's own title bar (`Integrated`, decorations off) or the bar
+/// under the macOS traffic lights (`Inset`). The shell's title bar draws and moves the window by it.
+pub(crate) fn install_with(ctx: &egui::Context, chrome: craft_host::target::WindowChrome) {
+    use craft_host::target::{ShellInfo, WindowInfo, WindowKind};
     // The running platform's window services, so floating dock panels open OS windows of their own where it allows.
-    let spec =
-        craft_ui_widgets::InstallSpec::new(craft_host::target::ShellInfo::default(), std::sync::Arc::new(craft_window_sdk::system::SystemWindows));
+    let shell = ShellInfo::default().window(WindowInfo::new(WindowKind::Main).chrome(chrome));
+    let spec = craft_ui_widgets::InstallSpec::new(shell, std::sync::Arc::new(craft_window_sdk::system::SystemWindows));
     match craft_ui_widgets::install(ctx, spec) {
         Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => crate::panel_docking::note_runtime(ctx),
         Err(error) => log::warn!("the craft UI runtime was not installed; the Properties panel keeps its native controls: {error}"),

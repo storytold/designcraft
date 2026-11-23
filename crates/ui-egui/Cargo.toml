@@ -60,6 +60,7 @@ toml = "1"
 # The craft UI framework's own components (Properties > Transform's pilot rows). The browser build
 # keeps the bespoke fields, so the framework is not a wasm dependency.
 craft-ui-widgets = { workspace = true }
+craft-ui-shell = { workspace = true }
 craft-color-ui = { workspace = true }
 craft-theme = { workspace = true }
 craft-host = { workspace = true }
