@@ -3251,6 +3251,45 @@ fn complete_uniform_native_style_fields_keep_legacy_identity_on_idml_roundtrip()
 }
 
 #[test]
+fn table_style_row_fills_overlay_legacy_alt_rows_on_idml_roundtrip() {
+    let mut document = import_idml(&fixture()).unwrap();
+    document.styles_mut().table.push(designcraft_doc::TableStyle {
+        name: "RowFillsOverlay".into(),
+        alt_rows: Some(designcraft_doc::AltFills {
+            first: 2,
+            first_color: designcraft_color::swatch::PAPER.into(),
+            first_tint: 0.25,
+            next: 3,
+            next_color: designcraft_color::swatch::BLACK.into(),
+            next_tint: 0.5,
+            skip_first: 0,
+            skip_last: 0,
+        }),
+        row_fills: designcraft_doc::AltFillsAttrs {
+            first: Some(0),
+            first_color: Some(designcraft_color::swatch::BLACK.into()),
+            first_tint: Some(0.8),
+            next: Some(1),
+            next_color: Some(designcraft_color::swatch::PAPER.into()),
+            next_tint: Some(0.1),
+            skip_first: Some(1),
+            skip_last: Some(2),
+        },
+        ..Default::default()
+    });
+    let back = import_idml(&export_idml(&document)).unwrap();
+    let table = back.styles.table.iter().find(|s| s.name == "RowFillsOverlay").unwrap();
+    assert_eq!(table.row_fills.first, Some(0));
+    assert_eq!(table.row_fills.first_color.as_deref(), Some(designcraft_color::swatch::BLACK));
+    assert!((table.row_fills.first_tint.unwrap() - 0.8).abs() < 1e-4);
+    assert_eq!(table.row_fills.next, Some(1));
+    assert_eq!(table.row_fills.next_color.as_deref(), Some(designcraft_color::swatch::PAPER));
+    assert!((table.row_fills.next_tint.unwrap() - 0.1).abs() < 1e-4);
+    assert_eq!(table.row_fills.skip_first, Some(1));
+    assert_eq!(table.row_fills.skip_last, Some(2));
+}
+
+#[test]
 fn split_columns_import_and_round_trip() {
     let story = r#"<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="s1">
       <ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/[No paragraph style]" SpanColumnType="SplitColumns" SplitColumnInsideGutter="27" SplitColumnOutsideGutter="4.5">

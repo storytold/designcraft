@@ -11,10 +11,16 @@ mod distribute_locks;
 mod export_page_input;
 mod insert_pages_bounds;
 mod insert_pages_parent;
+#[cfg(not(target_arch = "wasm32"))]
+mod layer_merge_descendants;
 mod param_keys;
 mod pdf_backend;
+#[cfg(not(target_arch = "wasm32"))]
+mod pdf_flatten_print_regressions;
 mod preflight_resolution;
 mod primary_frame_columns;
+#[cfg(not(target_arch = "wasm32"))]
+mod save_readability;
 #[cfg(not(target_arch = "wasm32"))]
 mod save_state_atomicity;
 mod stroke_tint_range;
