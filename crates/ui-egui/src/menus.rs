@@ -29,11 +29,11 @@ pub use keys::paste_chord_command;
 pub use keys::{forwarded_shortcuts, shortcuts};
 #[cfg(not(target_arch = "wasm32"))]
 pub use keys::window_escape;
-#[cfg(test)]
-use quick_apply::quick_commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub use quick_apply::quick_apply_catalog;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
+#[cfg(test)]
+use quick_apply::{picked_run, quick_commands, style_command};
 pub use run::run_ui;
 pub(crate) use run::save_then;
 pub use state::{
@@ -41,8 +41,6 @@ pub use state::{
     tool_shortcut_label,
 };
 pub use tables::{CLASSIC_GROUPS, MENUS, TYPOGRAPHY_GROUPS, WORKSPACE_OPEN_PANELS, WORKSPACES, workspace_open_panel};
-#[cfg(test)]
-use tree::menu_items;
 pub use tree::{
     AppMenuItem, MAC_APP_MENU, OPEN_RECENT, all_menu_items, has_shown_item, menu_key, menu_tree, native_label, native_menu_tree, recent_items,
     recent_label,
