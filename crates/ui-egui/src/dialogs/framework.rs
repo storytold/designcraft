@@ -148,21 +148,6 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
     let state = RefCell::new((app, d));
     let cell = &state;
     // The area only gives the dialog a parent: the framework mounts its own modal layer.
-    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str()))).order(egui::Order::Foreground).show(ctx, |ui| {
-        FrameworkDialog::new(title)
-            .id_salt(("framework_dialog", d.id.clone()))
-            .opened(Bind::bound(&mut opened))
-            .enabled(ui.is_enabled())
-            // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
-            .backdrop(Backdrop::None)
-            .closable(false)
-            .outer_gesture(false)
-            .close_on_enter(true)
-            .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
-            .buttons(buttons)
-            .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
-            .output
-    });
     let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", dialog_id.as_str())))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
