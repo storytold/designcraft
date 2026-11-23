@@ -172,6 +172,23 @@ mod sort_tests {
     }
 
     #[test]
+    fn a_row_maximum_height_is_set_through_the_command_and_undone() {
+        let mut s = distribution_session();
+        let default = designcraft_doc::DEFAULT_MAX_ROW_HEIGHT;
+        assert!(table(&s).rows.iter().all(|r| r.max_height == default));
+        s.execute("table.setRowHeight", &json!({"rows": [1, 2], "maxHeight": 90, "mode": "atLeast"})).unwrap();
+        let max: Vec<f64> = table(&s).rows.iter().map(|r| r.max_height).collect();
+        assert_eq!(max, [default, 90.0, 90.0, default]);
+        // Only the maximum: the height and mode stay.
+        let before = table(&s);
+        s.execute("table.setRowHeight", &json!({"row": 1, "maxHeight": 120})).unwrap();
+        assert_eq!((table(&s).rows[1].max_height, table(&s).rows[1].height), (120.0, before.rows[1].height));
+        assert!(s.execute("table.setRowHeight", &json!({"row": 1, "maxHeight": "tall"})).is_err());
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(table(&s).rows[1].max_height, 90.0);
+    }
+
+    #[test]
     fn distribute_selected_rows_preserves_height_content_and_undo() {
         let mut s = distribution_session();
         s.execute("table.select", &json!({"rows": [1, 2], "what": "row"})).unwrap();

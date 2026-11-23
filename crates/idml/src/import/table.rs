@@ -105,6 +105,9 @@ impl<'r> Importer<'r> {
             let auto = re.auto_grow().unwrap_or(true);
             t.rows[r].mode = if auto { RowHeightMode::AtLeast } else { RowHeightMode::Exactly };
             t.rows[r].height = if auto { re.minimum_height().unwrap_or(3.0) } else { re.single_row_height().unwrap_or(12.0) };
+            if let Some(max) = re.values.num("MaximumHeight").filter(|m| m.is_finite() && *m >= 0.0) {
+                t.rows[r].max_height = max;
+            }
         }
         for (c, ce) in cols.iter().enumerate() {
             t.columns[c].width = ce.single_column_width().unwrap_or(72.0).max(3.0);

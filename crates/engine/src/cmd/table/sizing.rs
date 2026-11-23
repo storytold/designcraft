@@ -10,7 +10,13 @@ pub(super) fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
         Some(o) => return Err(bad("table.setRowHeight", format!("unknown mode `{o}`"))),
         None => None,
     };
-    if h.is_none() && mode.is_none() {
+    let max = match p.get("maxHeight") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            Some(v.as_f64().filter(|m| m.is_finite()).ok_or_else(|| bad("table.setRowHeight", "maxHeight must be a number"))?.clamp(0.0, 10000.0))
+        }
+    };
+    if h.is_none() && mode.is_none() && max.is_none() {
         return Err(bad("table.setRowHeight", "missing height"));
     }
     edit_table(s, &g, "table.setRowHeight", |t| {
@@ -20,6 +26,9 @@ pub(super) fn set_row_height(s: &mut Session, p: &Value) -> Result<Value> {
             }
             if let Some(m) = mode {
                 row.mode = m;
+            }
+            if let Some(m) = max {
+                row.max_height = m;
             }
         }
         ok()

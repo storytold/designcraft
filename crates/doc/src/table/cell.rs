@@ -24,11 +24,17 @@ pub struct Row {
     pub height: f64,
     pub mode: RowHeightMode,
     pub kind: RowKind,
+    /// The most a row that grows with its content may grow to; the lines that do not fit under it
+    /// are left out (InDesign's Maximum height, 600 pt unless set).
+    pub max_height: f64,
 }
+
+/// InDesign's default maximum row height, in points.
+pub const DEFAULT_MAX_ROW_HEIGHT: f64 = 600.0;
 
 impl Default for Row {
     fn default() -> Self {
-        Row { height: 3.0, mode: RowHeightMode::AtLeast, kind: RowKind::Body }
+        Row { height: 3.0, mode: RowHeightMode::AtLeast, kind: RowKind::Body, max_height: DEFAULT_MAX_ROW_HEIGHT }
     }
 }
 

@@ -255,7 +255,21 @@ pub(crate) fn place_table(
         .map(|(r, row)| match row.mode {
             RowHeightMode::Exactly => row.height.max(0.0),
             RowHeightMode::AtLeast => {
-                let content = (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
+                let content = (0..nc)
+                    .filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1)
+                    .map(|c| {
+                        let natural = need(r, c);
+                        if natural <= row.max_height + 0.01 {
+                            return natural;
+                        }
+                        // Past the row's maximum height it grows by whole lines: to the last line that
+                        // fits under it (the lines after it are left out of the cell).
+                        let ins = &table.cells[r * nc + c].insets;
+                        layouts[r * nc + c].as_ref().map_or(0.0, |l| {
+                            l.line_heights.iter().map(|h| h + ins[0] + ins[2]).filter(|h| *h <= row.max_height + 0.01).fold(0.0, f64::max)
+                        })
+                    })
+                    .fold(0.0, f64::max);
                 content.max(row.height)
             }
         })
@@ -976,6 +990,38 @@ mod height_tests {
                 assert!(!placed.overset);
             }
         }
+    }
+
+    #[test]
+    fn a_growing_row_stops_at_its_maximum_height_by_whole_lines() {
+        // InDesign 2026: an auto-grow row with a Maximum height grows to the last whole line that fits
+        // under it, and the lines after it are not drawn (measured with 10 pt text and 4 pt insets:
+        // maximums of 17, 20 and 29 pt gave rows of 15.28, 19.28 and 27.28 pt with 1, 1 and 2 lines).
+        let cell = text_cell("a\nb\nc\nd\ne", 8.5);
+        let layout = measure(&cell, 92.0);
+        let lines = &layout.text.frames[0].lines;
+        assert_eq!(lines.len(), 5);
+        let row_for = |max: f64| {
+            let mut table = single_table(cell.clone());
+            table.rows[0].max_height = max;
+            let composed = compose_table(table, 400.0);
+            let placed = composed.frames[0].tables[0].cell(0, 0).unwrap().clone();
+            (placed.rect.height(), placed.text.frames[0].lines.len(), placed.overset)
+        };
+        let (whole, kept, overset) = row_for(designcraft_doc::DEFAULT_MAX_ROW_HEIGHT);
+        assert!((whole - 17.0 - lines[4].baseline).abs() < 1e-6 && kept == 5 && !overset, "no cap by default");
+        for fit in [1, 2, 3, 4] {
+            let line_height = 17.0 + lines[fit - 1].baseline;
+            // Just under the next line: the row is the last whole line that fits.
+            let (h, kept, overset) = row_for(line_height + 0.4 * (lines[fit].baseline - lines[fit - 1].baseline));
+            assert!((h - line_height).abs() < 1e-6 && kept == fit && overset, "{fit}: {h} {kept} {overset}");
+        }
+        // A maximum below the minimum height does not shrink the row under its minimum.
+        let mut table = single_table(cell);
+        table.rows[0].height = 60.0;
+        table.rows[0].max_height = 10.0;
+        let composed = compose_table(table, 400.0);
+        assert!((composed.frames[0].tables[0].cell(0, 0).unwrap().rect.height() - 60.0).abs() < 1e-6);
     }
 
     #[test]
