@@ -281,7 +281,7 @@ pub(crate) mod form {
         decimals: usize,
     ) -> Option<f64> {
         let field = NumberField::new(label.to_owned(), Bind::given(Some(value))).id_salt(salt).unit_kind(kind).range(range).step(1.0);
-        let field = if decimals == 0 { field.snap_typed(true).fixed_decimals(0) } else { field };
+        let field = if decimals == 0 { field.snap_typed(true).fixed_decimals(0).exact_decimals(true) } else { field };
         let out = field.commit_decimals(decimals).show(ui);
         edited(out.edit.events, Some(value)).flatten().filter(|v| v.is_finite())
     }

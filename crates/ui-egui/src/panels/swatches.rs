@@ -1037,6 +1037,7 @@ mod framework {
                 .unit_kind(UnitKind::Percent)
                 .range(0.0..=100.0)
                 .fixed_decimals(0)
+                .exact_decimals(true)
                 .show(ui)
                 .edit
                 .events
@@ -1245,7 +1246,8 @@ mod framework {
             let field = NumberField::new(label.to_owned(), Bind::given(Some(value)))
                 .id_salt(("channel-field", id))
                 .range(0.0..=f64::from(scale))
-                .fixed_decimals(0);
+                .fixed_decimals(0)
+                .exact_decimals(true);
             let field = if percent { field.unit_kind(UnitKind::Percent) } else { field };
             let typed = field.show(ui).edit.events.committed().copied().flatten();
             slid.or(typed)
@@ -1395,6 +1397,7 @@ mod framework {
                     .unit_kind(UnitKind::Percent)
                     .range(0.0..=100.0)
                     .fixed_decimals(0)
+                    .exact_decimals(true)
                     .show(ui)
                     .edit
                     .events
