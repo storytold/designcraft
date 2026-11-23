@@ -1,6 +1,6 @@
 //! Type › Track Changes: record edits as inserted / deleted text; accept or reject them.
 
-use designcraft_doc::{ChangeMark, Document, Story, StoryId};
+use designcraft_doc::{ChangeMark, Document, Selection, Story, StoryId};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, cmd, has_doc};
@@ -46,7 +46,7 @@ fn ranges(st: &Story, mark: ChangeMark) -> Vec<std::ops::Range<usize>> {
 }
 
 /// Accept (or reject) every change in `sid`.
-fn resolve(d: &mut Document, sid: StoryId, accept: bool) -> usize {
+fn resolve(d: &mut Document, sel: &mut Selection, sid: StoryId, accept: bool) -> usize {
     let (remove, keep) = if accept { (ChangeMark::Deleted, ChangeMark::Inserted) } else { (ChangeMark::Inserted, ChangeMark::Deleted) };
     let (removed, keep_count) = {
         let st = match d.story(sid) {
@@ -68,6 +68,7 @@ fn resolve(d: &mut Document, sid: StoryId, accept: bool) -> usize {
         });
     }
     for r in removed {
+        super::notes::follow_delete(sel, sid, r.clone());
         d.adjust_text_ranges(sid, r, 0);
     }
     n
@@ -96,10 +97,12 @@ fn one(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
             }
         }
         if delete {
+            super::notes::follow_delete(sel, sid, r.clone());
             d.adjust_text_ranges(sid, r.clone(), 0);
         }
         if let Some(t) = &mut sel.text
             && t.story == sid
+            && t.cell.is_none()
         {
             let len = d.story(sid).map_or(0, |x| x.len());
             t.anchor = t.anchor.min(len);
@@ -163,10 +166,11 @@ fn all(s: &mut Session, p: &Value, accept: bool) -> Result<Value> {
         let ids: Vec<StoryId> = d.stories.keys().copied().filter(|id| only.is_none_or(|o| o == *id)).collect();
         let mut n = 0;
         for id in ids {
-            n += resolve(d, id, accept);
+            n += resolve(d, sel, id, accept);
         }
-        // The caret may now be past the end.
+        // A body-text edit must not clamp a cell or note caret against the body length.
         if let Some(t) = &mut sel.text
+            && t.cell.is_none()
             && let Some(st) = d.story(t.story)
         {
             t.anchor = t.anchor.min(st.len());
@@ -219,5 +223,92 @@ mod tests {
         s.execute("changes.acceptAll", &json!({})).unwrap();
         assert_eq!(text(&s), "The dog sat");
         assert!(s.execute("changes.list", &json!({})).unwrap().as_array().unwrap().is_empty());
+    }
+
+    /// Removing a tracked run follows the selected text by UTF-8 byte offsets, including undo.
+    #[test]
+    fn resolving_a_removed_change_follows_the_text_selection() {
+        use designcraft_doc::ChangeMark;
+
+        for (command, mark) in [
+            ("changes.accept", ChangeMark::Deleted),
+            ("changes.reject", ChangeMark::Inserted),
+            ("changes.acceptAll", ChangeMark::Deleted),
+            ("changes.rejectAll", ChangeMark::Inserted),
+        ] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let sid = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "ab猫cdéfg"})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+            s.edit(|d, _| {
+                d.story_mut(designcraft_doc::StoryId(sid)).unwrap().format_chars(2..5, |f| f.over.change = Some(mark));
+                Ok(())
+            })
+            .unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 9, "focus": 5})).unwrap();
+            let params = if command.ends_with("All") { json!({"story": sid}) } else { json!({"story": sid, "start": 2}) };
+            s.execute(command, &params).unwrap();
+            assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, "abcdéfg", "{command}");
+            let selected = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((selected.anchor, selected.focus), (6, 2), "{command}");
+            s.execute("edit.undo", &json!({})).unwrap();
+            let selected = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((selected.anchor, selected.focus), (9, 5), "undo {command}");
+            s.execute("edit.redo", &json!({})).unwrap();
+            let selected = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((selected.anchor, selected.focus), (6, 2), "redo {command}");
+        }
+    }
+
+    /// All-change resolution removes disjoint runs from the end and maps each one once.
+    #[test]
+    fn resolving_all_changes_follows_multiple_removed_runs() {
+        use designcraft_doc::ChangeMark;
+
+        for (command, mark) in [("changes.acceptAll", ChangeMark::Deleted), ("changes.rejectAll", ChangeMark::Inserted)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let sid = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "a猫bécδd"})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+            s.edit(|d, _| {
+                let story = d.story_mut(designcraft_doc::StoryId(sid)).unwrap();
+                story.format_chars(1..4, |f| f.over.change = Some(mark));
+                story.format_chars(5..7, |f| f.over.change = Some(mark));
+                Ok(())
+            })
+            .unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 10, "focus": 4})).unwrap();
+            s.execute(command, &json!({"story": sid})).unwrap();
+            assert_eq!(s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text, "abcδd", "{command}");
+            let selected = s.doc().unwrap().selection.text.unwrap();
+            assert_eq!((selected.anchor, selected.focus), (5, 1), "{command}");
+        }
+    }
+
+    /// A body-story change leaves the independent footnote insertion point alone.
+    #[test]
+    fn resolving_body_changes_keeps_a_footnote_caret() {
+        for command in ["changes.accept", "changes.acceptAll"] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let sid = s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "abcd"})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+            s.execute("text.select", &json!({"story": sid, "anchor": 4, "focus": 4})).unwrap();
+            s.execute("footnote.insert", &json!({"text": "Footnote text beyond body"})).unwrap();
+            let before = s.doc().unwrap().selection.text.unwrap();
+            s.edit(|d, _| {
+                d.story_mut(designcraft_doc::StoryId(sid))
+                    .unwrap()
+                    .format_chars(0..1, |f| f.over.change = Some(designcraft_doc::ChangeMark::Deleted));
+                Ok(())
+            })
+            .unwrap();
+            let params = if command.ends_with("All") { json!({"story": sid}) } else { json!({"story": sid, "start": 0}) };
+            s.execute(command, &params).unwrap();
+            assert_eq!(s.doc().unwrap().selection.text.unwrap(), before, "{command}");
+        }
     }
 }
