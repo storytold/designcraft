@@ -79,7 +79,7 @@ pub(super) fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
 struct Keys {
     /// Presentation keys in order: `None` leaves Presentation, `Some(step)` moves through the spreads.
     presentation: Vec<Option<isize>>,
-    hits: Vec<craft_keymap::egui::Hit>,
+    hits: Vec<craft_keymap::Hit>,
     /// An Esc press that nothing took.
     escape: bool,
 }
@@ -97,7 +97,7 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
     // in for = never reaches it, and a command's other bindings run here.
     // Copy, Cut and Paste stay too (the dispatcher's default): the canvas and text tools
     // handle them, and Paste carries the text.
-    let accept = |hit: &craft_keymap::egui::Hit| {
+    let accept = |hit: &craft_keymap::Hit| {
         let c = &hit.command;
         let on_bar =
             || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);

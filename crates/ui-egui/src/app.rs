@@ -152,7 +152,7 @@ impl DesignApp {
             native_menu: false,
             native_shortcuts: Default::default(),
             keymap: crate::keys::new_keymap(craft_keymap::Overrides::new()),
-            key_dispatcher: craft_keymap::egui::Dispatcher::new(),
+            key_dispatcher: crate::key_dispatch::Dispatcher::new(),
             shortcut_dialog: None,
             shortcut_answers: Default::default(),
             last_time: now,

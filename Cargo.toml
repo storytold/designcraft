@@ -36,8 +36,10 @@ craft-psd = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f
 craft-file-formats = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59", version = "=0.1.0" }
 craft-opc = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59", version = "=0.1.0" }
 craft-pptx = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59", version = "=0.1.0" }
-# Shared keyboard bindings: chords, overrides, conflicts, egui dispatch, the Keyboard Shortcuts dialog.
-craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", version = "=0.1.0", features = ["egui", "ui"] }
+# Shared keyboard bindings: chords, overrides, conflicts, key matching. On the next pin, so the framework's Keyboard
+# Shortcuts dialog (craft-menu) edits the same `Keymap` type the app dispatches from.
+craft-keymap = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59", version = "=0.1.0", features = ["egui"] }
+craft-menu = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59" }
 # Separations, ink coverage and the ink manager; same revision as craft-pdf and the krilla patch.
 craft-prepress = { git = "file:///home/codex/work/CraftApps/craft-libs", rev = "89d0f30615ad76c06515613c5eae49eb473c4d59", version = "=0.1.0", features = ["flatten"] }
 # craft-update: app-specific pretend versions apply to startup and manual checks.

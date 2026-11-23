@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use craft_keymap::{AssignError, Bindable, Binding, Chord, CommandRef, Key, Keymap, Kind, Mods, Overrides, Platform, Policy, Scope, Scopes, Trigger};
+use craft_keymap::{
+    AssignError, Binding, Chord, CommandDef, CommandKind, CommandRef, Key, Keymap, Mods, Overrides, Platform, Policy, Scope, Scopes, Trigger,
+};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
@@ -144,24 +146,24 @@ pub fn keymap_for(platform: Platform, overrides: Overrides) -> Keymap {
 /// Every bindable command, in dispatch order: where two share keys the earlier one runs. UI
 /// commands come first (⌘N is the New Document dialog, not a bare `file.new`), then engine
 /// commands, panels and tools.
-pub fn catalog() -> &'static [Bindable] {
+pub fn catalog() -> &'static [CommandDef] {
     &built().0
 }
 
 /// Whether the Keyboard Shortcuts dialog lists `b`. Engine commands with neither a menu row nor a
 /// default key are for scripts and the control channel (`file.save`, `selection.set`): the dialog
 /// leaves them out, and they still take keys and count in conflicts.
-pub fn listed(b: &Bindable) -> bool {
+pub fn listed(b: &CommandDef) -> bool {
     !(b.command.params.is_null() && built().1.contains(b.command.id.as_str()))
 }
 
-fn built() -> &'static (Vec<Bindable>, HashSet<&'static str>) {
-    static CATALOG: OnceLock<(Vec<Bindable>, HashSet<&'static str>)> = OnceLock::new();
+fn built() -> &'static (Vec<CommandDef>, HashSet<&'static str>) {
+    static CATALOG: OnceLock<(Vec<CommandDef>, HashSet<&'static str>)> = OnceLock::new();
     CATALOG.get_or_init(build_catalog)
 }
 
 /// The catalog and the engine commands [`listed`] leaves out.
-fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
+fn build_catalog() -> (Vec<CommandDef>, HashSet<&'static str>) {
     let paths = menu_paths();
     // An engine command's own menu placement counts only where no menu row stands: a row there
     // runs a UI command in its place (File › Save is the Save dialog when needed), and two
@@ -170,8 +172,8 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
     let rows: HashSet<Vec<String>> = paths.values().flatten().map(|p| normalized(p)).collect();
     let app = Scope::app();
     let mut out = Vec::new();
-    let mut add = |command: CommandRef, label: &str, defaults: &[&str], fallback_path: Option<Vec<String>>, kind: Kind| {
-        let mut b = Bindable::new(command, label, app.clone()).with_kind(kind);
+    let mut add = |command: CommandRef, label: &str, defaults: &[&str], fallback_path: Option<Vec<String>>, kind: CommandKind| {
+        let mut b = CommandDef::new(command, label, app.clone()).with_kind(kind);
         match paths.get(&b.command.key()) {
             Some(found) => b.paths.extend(found.iter().cloned()),
             None => b.paths.extend(fallback_path.filter(|p| !rows.contains(&normalized(p)))),
@@ -182,7 +184,7 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         out.push(b);
     };
     for (id, label, _, _) in menus::UI_COMMANDS {
-        add(CommandRef::new(*id), label, menus::default_shortcut(id).as_slice(), None, Kind::Command);
+        add(CommandRef::new(*id), label, menus::default_shortcut(id).as_slice(), None, CommandKind::Command);
     }
     // A UI command's default key runs it, never the engine command it stands in for (⌘S is the
     // Save dialog when needed, not a bare `file.save`): the engine command does not get that key.
@@ -199,7 +201,7 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
             internal.insert(c.id);
         }
         let path = (!c.menu.is_empty()).then(|| c.menu.iter().map(|s| s.to_string()).chain([c.label.to_string()]).collect());
-        add(CommandRef::new(c.id), c.label, shortcut.as_slice(), path, Kind::Command);
+        add(CommandRef::new(c.id), c.label, shortcut.as_slice(), path, CommandKind::Command);
     }
     let mut seen = Vec::new();
     for (id, label, _) in crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS) {
@@ -210,25 +212,27 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         let own = PANEL_KEYS.iter().find(|(p, _)| p == id).map(|(_, k)| *k);
         let twin = PANEL_TWINS.iter().find(|(p, _)| p == id).and_then(|(_, c)| menus::default_shortcut(c));
         let defaults: Vec<&str> = own.into_iter().chain(twin).collect();
-        add(panel(id), label, &defaults, Some(vec!["Window".into(), (*label).into()]), Kind::Command);
+        add(panel(id), label, &defaults, Some(vec!["Window".into(), (*label).into()]), CommandKind::Command);
     }
     for group in designcraft_tools::TOOL_GROUPS {
         let Some(first) = group.first() else { continue };
         for t in group.iter() {
-            let kind = Kind::Tool { group: Some(first.id.to_string()) };
+            let kind = CommandKind::Tool { group: Some(first.id.to_string()) };
             add(tool(t.id), t.label, t.shortcut.as_slice(), None, kind);
         }
     }
     for b in &mut out {
         // Shortcut sets file tools under Tools, which is no menu here.
-        if matches!(b.kind, Kind::Tool { .. }) {
+        if matches!(b.kind, CommandKind::Tool { .. }) {
             b.import_paths.push(vec!["Tools".into(), b.label.clone()]);
         }
         if !b.command.params.is_null() {
             continue;
         }
         let id = b.command.id.as_str();
-        b.is_toggle = b.label.starts_with("Show/Hide ") || TOGGLES.contains(&id);
+        if (b.label.starts_with("Show/Hide ") || TOGGLES.contains(&id)) && b.kind == CommandKind::Command {
+            b.kind = CommandKind::Toggle;
+        }
         if TYPING_COMMANDS.contains(&id)
             && let Some(text) = Scope::new(TEXT_CONTEXT)
         {
@@ -561,7 +565,7 @@ mod tests {
         let internal = find("selection.set").unwrap();
         assert!(!listed(internal));
         assert!(listed(find("edit.undo").unwrap()));
-        assert!(catalog().iter().filter(|b| matches!(b.kind, Kind::Tool { .. })).all(listed));
+        assert!(catalog().iter().filter(|b| matches!(b.kind, CommandKind::Tool { .. })).all(listed));
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         let r = menus::run_ui(&mut app, "window.setShortcut", &json!({"id": "selection.set", "shortcut": "Cmd+Z"})).unwrap().unwrap();
         assert_eq!(r["conflicts"], json!(["edit.undo"]));

@@ -27,7 +27,7 @@ mod table_forms;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod text_forms;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod table_layout_kit;
+pub(crate) mod table_layout_kit;
 mod options;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
@@ -3387,13 +3387,13 @@ pub(crate) fn footer_labels(app: &DesignApp, d: &Dialog) -> (String, &'static st
 /// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
-    if shortcuts {
+    if shortcuts || app.shortcut_dialog.is_some() {
+        // Also the frames after the dialog was closed from outside, and after another dialog took its place (its edits are
+        // cancelled): the framework dialog answers OK and Cancel inside a pass.
         crate::shortcuts_dialog::show(app, ctx);
-        return;
-    }
-    if app.shortcut_dialog.is_some() {
-        // Another dialog took its place: its edits are cancelled.
-        let _ = crate::shortcuts_dialog::close(app, false);
+        if shortcuts {
+            return;
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed && app.ui.dialog.as_ref().is_some_and(|d| d.id == "numberingSection") {

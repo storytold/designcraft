@@ -78,9 +78,12 @@ mod framework_tab_sdk_tests;
 #[cfg(test)]
 mod framework_opacity_tests;
 #[cfg(not(target_arch = "wasm32"))]
+mod framework_host;
+#[cfg(not(target_arch = "wasm32"))]
 mod framework_transform;
 #[cfg(test)]
 mod framework_transform_tests;
+mod key_dispatch;
 mod key_names;
 mod services;
 mod state;
@@ -276,7 +279,7 @@ pub struct DesignApp {
     pub native_shortcuts: std::collections::HashMap<String, String>,
     /// Every command's shortcuts, with the user's changes (`ui.shortcuts`) applied.
     pub keymap: craft_keymap::Keymap,
-    pub(crate) key_dispatcher: craft_keymap::egui::Dispatcher,
+    pub(crate) key_dispatcher: key_dispatch::Dispatcher,
     /// The open Keyboard Shortcuts dialog.
     pub(crate) shortcut_dialog: Option<Box<shortcuts_dialog::Host>>,
     /// Answers the user gave in an import review (item → command), for later imports.
