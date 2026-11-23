@@ -319,28 +319,46 @@ fn ends_token(g: &Glyph) -> bool {
     g.is_space() || matches!(g.ch, '\u{A0}' | '\u{202F}' | '\t') || is_forced(g.ch)
 }
 
-/// Whether the hyphen-minus or en dash at `glyphs[i]` is not a place to break after, because it
-/// is a sign or a join inside a short token (`(-4)`, `x-4`, `ab-cd`, `4–5%`) and not a dash
-/// between words (observed in InDesign 2026): a hyphen-minus breaks only after three or more
-/// characters of its word, and not when a single letter follows it; an en dash only after
+/// How many source characters the cluster of `g` covers: a ligature (`ff`, `fi`) is one glyph for
+/// two or more. A glyph keeps only its first character and its cluster's byte length, so a cluster
+/// of other multi-byte characters counts a little high, which only allows a break.
+fn source_chars(g: &Glyph) -> usize {
+    1 + g.len.saturating_sub(g.ch.len_utf8())
+}
+
+/// Whether the hyphen-minus, en dash or slash at `glyphs[i]` is not a place to break after,
+/// because it is a sign or a join inside a short token (`(-4)`, `x-4`, `ab-cd`, `4–5%`, `3/4`) and
+/// not a dash between words (observed in InDesign 2026): a hyphen-minus breaks only after three or
+/// more characters of its word, and not when a single letter follows it; an en dash only after
 /// something and before at least two letters or digits; a slash only before at least two letters
-/// or digits, and never between two digits (`3/4`).
+/// or digits, and never between two digits. Characters are counted in the source text, so a
+/// ligature counts as the characters it covers. A break the glyph asks for outright
+/// (`break_after`, from the kinsoku set) stands.
 fn dash_blocks_break(glyphs: &[Glyph], i: usize) -> bool {
     let Some(g) = glyphs.get(i) else { return false };
-    if !matches!(g.ch, '-' | '\u{2013}' | '/') {
+    if !matches!(g.ch, '-' | '\u{2013}' | '/') || g.break_after == Some(true) {
         return false;
     }
     // Only whether three characters precede it matters, so the scan stops there. A no-break space
     // or a tab ends the token too (their own break permissions are unchanged).
-    let before = glyphs[..i].iter().rev().take(3).take_while(|p| !ends_token(p)).count();
+    let mut before = 0;
+    for p in glyphs[..i].iter().rev() {
+        if before >= 3 || ends_token(p) {
+            break;
+        }
+        before += source_chars(p);
+    }
     let mut after = glyphs[i + 1..].iter().take_while(|n| !ends_token(n));
-    let first = after.next().map(|n| n.ch);
-    let second_is_word = after.next().is_some_and(|n| n.ch.is_alphanumeric());
+    let first_glyph = after.next();
+    let first = first_glyph.map(|n| n.ch);
+    // The rest of a ligature is more letters.
+    let second_is_word =
+        first_glyph.is_some_and(|n| n.ch.is_alphabetic() && source_chars(n) > 1) || after.next().is_some_and(|n| n.ch.is_alphanumeric());
     if g.ch == '-' {
         before < 3 || first.is_some_and(char::is_alphabetic) && !second_is_word
     } else if g.ch == '/' {
         !(first.is_some_and(char::is_alphanumeric) && second_is_word)
-            || glyphs[..i].last().is_some_and(|p| p.ch.is_ascii_digit()) && first.is_some_and(|c| c.is_ascii_digit())
+            || glyphs[..i].last().is_some_and(|p| p.ch.is_numeric()) && first.is_some_and(char::is_numeric)
     } else {
         before == 0 || !(first.is_some_and(char::is_alphanumeric) && second_is_word)
     }

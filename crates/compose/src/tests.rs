@@ -10549,6 +10549,7 @@ fn a_dash_ends_a_line_only_between_the_parts_of_a_word() {
             "a/b",
             "1234/5678",
             "abcd\u{A0}-4",
+            "\u{661}\u{662}/\u{663}\u{664}",
         ] {
             assert!(!breaks_after_dash(whole, composer, true), "{whole:?} stays whole ({composer:?})");
         }
@@ -10565,6 +10566,10 @@ fn a_dash_ends_a_line_only_between_the_parts_of_a_word() {
             "ab\u{2013}cdef",
             "abc/def",
             "ab/cdef",
+            // Ligatures (ff, fi) are one glyph for two characters.
+            "off-ice",
+            "staff-room",
+            "abc/fi",
         ] {
             assert!(breaks_after_dash(broken, composer, false), "{broken:?} may break after its dash ({composer:?})");
         }
