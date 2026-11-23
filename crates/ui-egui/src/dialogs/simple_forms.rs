@@ -160,7 +160,8 @@ fn delete_pages(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
 }
 
 fn update_link(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
-    let text = tr(app, "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.").replace("{}", &d.s("files"));
+    let text =
+        tr(app, "“{}” has been edited in this layout. Updating replaces those edits with the text from the file.").replace("{}", &d.s("files"));
     Text::new(text).show(ui);
     None
 }
@@ -204,7 +205,9 @@ fn go_to_row(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     Stack::new().id_salt("simple_go_to_row").fill_width().show(ui, |ui, _| {
         FieldGroup::new(title.clone()).show(ui, |ui, _| {
             if with_sections {
-                Field::new(section.clone()).id_salt("simple_row_section").show(ui, |ui, _| choice(ui, d, "section", section.clone(), &sections, true));
+                Field::new(section.clone())
+                    .id_salt("simple_row_section")
+                    .show(ui, |ui, _| choice(ui, d, "section", section.clone(), &sections, true));
             }
             Field::new(row.clone()).id_salt("simple_row_number").show(ui, |ui, _| text_field(ui, d, "row", row.clone()));
         });
@@ -230,10 +233,11 @@ fn insert_pages(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     let pages: Vec<String> = (0..st.doc.page_count()).map(|i| app.session.page_label(i)).collect();
     let mut parents = vec![(String::new(), tr(app, "[None]"))];
     parents.extend(st.doc.parents.iter().map(|p| (p.id.0.to_string(), p.parent.as_ref().map(|i| i.label()).unwrap_or_default())));
-    let wheres: Vec<(String, String)> = [("after", "After Page"), ("before", "Before Page"), ("start", "At Start of Document"), ("end", "At End of Document")]
-        .into_iter()
-        .map(|(value, caption)| (value.to_owned(), tr(app, caption)))
-        .collect();
+    let wheres: Vec<(String, String)> =
+        [("after", "After Page"), ("before", "Before Page"), ("start", "At Start of Document"), ("end", "At End of Document")]
+            .into_iter()
+            .map(|(value, caption)| (value.to_owned(), tr(app, caption)))
+            .collect();
     let (title, count_label, insert, page_label, parent) =
         (tr(app, "Insert Pages"), tr(app, "Pages:"), tr(app, "Insert:"), tr(app, "Page"), tr(app, "Parent:"));
     let count = d.n("count").unwrap_or(1.0).clamp(1.0, 9999.0) as u32;
@@ -804,7 +808,10 @@ mod tests {
         click(&mut h, Role::Button, "OK");
         assert!(h.state().ui.dialog.is_none());
         let o = &h.state().ui.pages_panel;
-        assert_eq!((o.page_size, o.pages_on_top, o.parents_vertical, o.resize), (IconSize::Jumbo, true, !was.parents_vertical, PanelResize::Proportional));
+        assert_eq!(
+            (o.page_size, o.pages_on_top, o.parents_vertical, o.resize),
+            (IconSize::Jumbo, true, !was.parents_vertical, PanelResize::Proportional)
+        );
         assert_eq!((o.parent_size, o.page_thumbnails, o.parent_thumbnails), (was.parent_size, was.page_thumbnails, was.parent_thumbnails));
     }
 
@@ -813,7 +820,9 @@ mod tests {
         let mut app = app_of(2);
         crate::panels::pages::open_panel_options(&mut app);
         let mut h = open(app);
-        let thumbnails = |h: &Window| h.query_all_by_role_and_label(Role::CheckBox, "Show Thumbnails").map(|n| n.accesskit_node().is_disabled()).collect::<Vec<_>>();
+        let thumbnails = |h: &Window| {
+            h.query_all_by_role_and_label(Role::CheckBox, "Show Thumbnails").map(|n| n.accesskit_node().is_disabled()).collect::<Vec<_>>()
+        };
         assert_eq!(thumbnails(&h), [false, false]);
         pick(&mut h, "Size:", "Extra Small");
         assert_eq!(dialog(&h).s("pageSize"), "extraSmall");
@@ -895,7 +904,7 @@ mod tests {
             key(&mut h, Key::Escape);
             assert!(h.state().ui.dialog.is_none(), "one Escape closes {id}");
             assert_eq!(h.state().session.journal.len(), journal_before, "{id}: Escape runs no command");
-            assert_eq!(h.state().session.doc().map(|s| s.doc.page_count()), pages_before, "{id}: the document is unchanged");
+            assert_eq!(h.state().session.doc().map(|s| s.doc.page_count()).ok(), pages_before.ok(), "{id}: the document is unchanged");
         }
     }
 }
