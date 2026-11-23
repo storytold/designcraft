@@ -10,6 +10,9 @@ use super::Dialog;
 use crate::DesignApp;
 use egui::Ui;
 
+#[path = "simple_forms.rs"]
+mod simple_forms;
+
 /// A dialog's framework form.
 #[derive(Clone, Copy)]
 pub(crate) struct Form {
@@ -44,6 +47,17 @@ pub(crate) fn form(id: &str) -> Option<Form> {
     #[allow(clippy::match_single_binding)]
     match id {
         // Ported dialogs: one arm each, `"id" => Some(module::FORM),`.
+        "alert" => Some(simple_forms::ALERT),
+        "closeDocument" => Some(simple_forms::CLOSE_DOCUMENT),
+        "deletePages" => Some(simple_forms::DELETE_PAGES),
+        "updateLink" => Some(simple_forms::UPDATE_LINK),
+        "newWorkspace" => Some(simple_forms::NEW_WORKSPACE),
+        "frameSize" => Some(simple_forms::FRAME_SIZE),
+        "goToRow" => Some(simple_forms::GO_TO_ROW),
+        "goToPage" => Some(simple_forms::GO_TO_PAGE),
+        "insertPages" => Some(simple_forms::INSERT_PAGES),
+        "pagesPanelOptions" => Some(simple_forms::PAGES_PANEL_OPTIONS),
+        "parentOptions" => Some(simple_forms::PARENT_OPTIONS),
         _ => None,
     }
 }
