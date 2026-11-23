@@ -1614,12 +1614,12 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     }
     let at_top = cursor.last_baseline.is_none();
     let start_at = (cursor.fi, cursor.col);
+    let base_frags = out.frames.get(start_at.0).map_or(0, |ft| ft.tables.len());
     let placed = table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts);
-    let first_at = out
-        .frames
-        .iter()
-        .enumerate()
-        .find_map(|(fi, ft)| ft.tables.iter().find(|frag| frag.anchor == anchor && frag.first).map(|frag| (fi, frag.column as usize)));
+    let first_at = out.frames.iter().enumerate().skip(start_at.0).find_map(|(fi, ft)| {
+        let skip_t = if fi == start_at.0 { base_frags } else { 0 };
+        ft.tables.iter().skip(skip_t).find(|frag| frag.anchor == anchor && frag.first).map(|frag| (fi, frag.column as usize))
+    });
     // A table can leave this column before placing even its first row. Keep its heading chain with that row.
     if first_at.is_some_and(|at| at > start_at) && *restores < (4 * paragraph_count + 64) * (*balance_runs + 1) {
         let j = keep_chain_start(paragraph, true, start_at, info);
@@ -3384,7 +3384,7 @@ fn compose_run(
                 balance_runs: &mut balance_runs,
                 balance_budget,
                 restores: &mut restores,
-                paragraph_count: para_ranges.len(),
+                paragraph_count: np,
                 snaps: &snaps,
                 note_snaps: &note_snaps,
                 notes: &mut notes,
