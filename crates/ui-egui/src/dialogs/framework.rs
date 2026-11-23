@@ -58,6 +58,10 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "insertPages" => Some(simple_forms::INSERT_PAGES),
         "pagesPanelOptions" => Some(simple_forms::PAGES_PANEL_OPTIONS),
         "parentOptions" => Some(simple_forms::PARENT_OPTIONS),
+        "insertTable" => Some(super::table_forms::INSERT),
+        "convertTextToTable" | "convertTableToText" => Some(super::table_forms::CONVERT),
+        "createGuides" => Some(super::layout_forms::CREATE_GUIDES),
+        "marginsAndColumns" => Some(super::layout_forms::MARGINS_AND_COLUMNS),
         _ => None,
     }
 }

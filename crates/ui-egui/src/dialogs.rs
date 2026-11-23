@@ -12,6 +12,12 @@ use crate::theme::semibold;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework;
+#[cfg(not(target_arch = "wasm32"))]
+mod layout_forms;
+#[cfg(not(target_arch = "wasm32"))]
+mod table_forms;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod table_layout_kit;
 mod options;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
