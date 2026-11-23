@@ -41,7 +41,7 @@ pub(crate) fn note_runtime(ctx: &egui::Context) {
 }
 
 /// Whether the craft UI runtime is installed on `ctx`.
-fn runtime_on(ctx: &egui::Context) -> bool {
+pub(crate) fn runtime_on(ctx: &egui::Context) -> bool {
     ctx.data(|data| data.get_temp::<bool>(runtime_key())).unwrap_or(false)
 }
 
@@ -600,11 +600,16 @@ fn shared_command(app: &mut DesignApp, id: &str, params: &Value) -> Result<Value
         txn.workspace.set_visible(panel.clone(), true, fallback, false, model_permissions).map_err(|e| e.to_string())?;
         shown = true;
     }
-    // Dock Panel with no destination returns a floating panel to the dock place it left (the command layer reads the
-    // workspace's floated records), else into the first dock group.
+    // Dock Panel with no destination returns a group that floated as one to its dock place as a whole; a floating
+    // panel goes back to the place it left (the command layer reads the workspace's floated records), else into the
+    // first dock group.
+    let returned = match &command {
+        DockCommand::Dock { panel, anchor: None, side: None, column: false, .. } if !shown => txn.dock_group_back(panel)?,
+        _ => false,
+    };
     let actions = match &command {
-        // Showing it was the whole command.
-        DockCommand::Dock { anchor: None, side: None, .. } if shown => Vec::new(),
+        // Showing it, or returning its group, was the whole command.
+        DockCommand::Dock { anchor: None, side: None, .. } if shown || returned => Vec::new(),
         _ => command.to_actions(&txn.workspace, rtl, &space, &model_permissions).map_err(|e| e.to_string())?,
     };
     let reveal = match &command {
@@ -617,9 +622,20 @@ fn shared_command(app: &mut DesignApp, id: &str, params: &Value) -> Result<Value
         )) => Some(panel.clone()),
         _ => shows,
     };
+    // A panel or group floated out of a column collapsed to icons floats expanded, as InDesign's do; the framework
+    // keeps the column's collapsed state on the window it makes.
+    let from_icons = match &command {
+        DockCommand::Float { panel, .. } => in_iconic_column(txn.workspace.layout(), panel).then(|| panel.clone()),
+        _ => None,
+    };
     let mut closed = Vec::new();
     for action in actions {
         closed.extend(txn.apply(action)?);
+    }
+    if let Some(panel) = from_icons
+        && txn.workspace.layout().floating.iter().any(|w| w.contains(&panel) && w.column.iconic)
+    {
+        closed.extend(txn.apply(Action::set_iconic(panel, false))?);
     }
     Ok(txn.commit(app, closed, reveal))
 }
@@ -677,12 +693,68 @@ impl Transaction {
         Ok(Self { workspace: Workspace::from_parts(layout, hidden, floated) })
     }
 
-    /// One action from a command or the dock area, for registered panels only.
+    /// One action from a command or the dock area, for registered panels only. Floating a docked group as a whole
+    /// records the group's own place for each of its panels, so Dock Panel brings the group back as one.
     fn apply(&mut self, action: Action<String>) -> Result<Vec<String>, String> {
         if !known(&action) {
             return Err("docking action contains an unknown panel or an excessive split path".into());
         }
-        self.workspace.apply(action, false, model_permissions).map_err(|e| e.to_string())
+        let group_place = match &action {
+            Action::MoveGroup { panel, to: Target::Float { .. }, .. } => docked_group_place(self.workspace.layout(), panel),
+            _ => None,
+        };
+        let closed = self.workspace.apply(action, false, model_permissions).map_err(|e| e.to_string())?;
+        if let Some((members, location)) = group_place {
+            let mut floated: Vec<(String, Location<String>)> =
+                self.workspace.floated().iter().filter(|(p, _)| !members.contains(p)).cloned().collect();
+            floated.extend(members.into_iter().map(|member| (member, location.clone())));
+            let (layout, hidden) = (self.workspace.layout().clone(), self.workspace.hidden().to_vec());
+            self.workspace = Workspace::from_parts(layout, hidden, floated);
+        }
+        Ok(closed)
+    }
+
+    /// Dock Panel for a panel of a floating group that floated from the dock as one: the whole group back to that
+    /// place, in the same column beside the same neighbour, with its group and column state, while that neighbour is
+    /// still docked. True when it went back.
+    fn dock_group_back(&mut self, panel: &String) -> Result<bool, String> {
+        let layout = self.workspace.layout();
+        let Some(group) = layout.floating.iter().flat_map(window_groups).find(|g| g.panels.contains(panel)) else {
+            return Ok(false);
+        };
+        let place = |p: &String| self.workspace.floated().iter().find(|(q, _)| q == p).map(|(_, location)| location.clone());
+        let Some(location) = place(panel) else { return Ok(false) };
+        // A group of one docks back as a panel. Every member keeps the same group place only while the group is the
+        // one that floated.
+        if group.panels.len() < 2 || !group.panels.iter().all(|p| place(p).as_ref() == Some(&location)) {
+            return Ok(false);
+        }
+        let Some(anchor) = location.anchor.clone().filter(|anchor| docked(layout).contains(anchor)) else {
+            return Ok(false);
+        };
+        if !matches!(location.placement, DockPlacement::Group { .. } | DockPlacement::Column { .. }) {
+            return Ok(false);
+        }
+        let mut actions = vec![Action::move_group(panel.clone(), Target::at(anchor, location.placement.clone()))];
+        if let Some(saved) = &location.group {
+            actions.push(Action::resize_group(panel.clone(), saved.height));
+            actions.push(Action::set_minimized(panel.clone(), saved.minimized));
+            actions.push(Action::resize_flyout_width(panel.clone(), saved.flyout_width));
+            actions.push(Action::move_flyout_top(panel.clone(), saved.flyout_offset));
+            // A group that had a column of its own gets that column back as it was.
+            if let (DockPlacement::Column { .. }, Some(column)) = (&location.placement, saved.column) {
+                if let Some(width) = column.width {
+                    actions.push(Action::resize_column(panel.clone(), width));
+                }
+                actions.push(Action::set_iconic(panel.clone(), column.iconic));
+            }
+        }
+        let mut candidate = self.workspace.clone();
+        if candidate.apply_all(actions, false, model_permissions).is_err() {
+            return Ok(false);
+        }
+        self.workspace = candidate;
+        Ok(true)
     }
 
     /// Store the result. `reveal` is the panel the command showed, raised (or its flyout opened)
@@ -720,6 +792,19 @@ impl Transaction {
         app.ui.open_panel = None;
         json!({"layout": app.ui.docking, "closed": closed, "floating": floating_panels(app)})
     }
+}
+
+/// The panels of the docked group holding `panel`, and that group's place as a whole: beside the group or column
+/// next to it, with its group and column state. None when `panel` is not in a dock column.
+fn docked_group_place(layout: &Layout<String>, panel: &String) -> Option<(Vec<String>, Location<String>)> {
+    let members = dock_columns(layout).into_iter().flat_map(|c| &c.groups).find(|g| g.panels.contains(panel))?.panels.clone();
+    // The place of the group's last panel left in it is the group's own place.
+    let mut alone = layout.clone();
+    for other in members.iter().filter(|p| *p != panel) {
+        apply(&mut alone, Action::close(other.clone())).ok()?;
+    }
+    let location = alone.location(panel).ok().filter(|l| l.floating.is_none())?;
+    Some((members, location))
 }
 
 /// Whether every panel an action names is registered (and a split path is not excessive).
@@ -1039,15 +1124,30 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
     app.ui.docking_raise = None;
     let auto_collapse = app.ui.dock_auto_collapse;
-    let output = {
-        let mut content = PanelContent { app: &mut *app };
-        let mut area =
-            DockArea::new(AREA, Bind::given(Arc::clone(&workspace)), &*specs, &mut content, dock_config()).flyout(Bind::bound(&mut flyout));
-        if auto_collapse {
-            area = area.auto_collapse();
-        }
-        area.show(ui)
-    };
+    // The dock lays out in the interface language's direction (the dock at the end edge: the left in right-to-left
+    // languages), with its words in that language.
+    let rtl = crate::i18n::is_rtl(&app.ui.language);
+    #[cfg(not(target_arch = "wasm32"))]
+    let words = crate::framework_host::words(&app.ui.language);
+    let output = craft_ui::runtime::env::with_env(
+        ui,
+        |env| {
+            env.direction = Some(if rtl { craft_ui::runtime::env::Direction::Rtl } else { craft_ui::runtime::env::Direction::Ltr });
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                env.words = Some(craft_ui::runtime::env::WordsOverride::Replace(words));
+            }
+        },
+        |ui| {
+            let mut content = PanelContent { app: &mut *app };
+            let mut area =
+                DockArea::new(AREA, Bind::given(Arc::clone(&workspace)), &*specs, &mut content, dock_config()).flyout(Bind::bound(&mut flyout));
+            if auto_collapse {
+                area = area.auto_collapse();
+            }
+            area.show(ui)
+        },
+    );
     app.ui.docking_flyout = flyout;
     ui.ctx().data_mut(|data| {
         data.insert_temp(
@@ -1169,16 +1269,20 @@ struct PanelContent<'a> {
 }
 
 impl DockPanels<String> for PanelContent<'_> {
+    /// A panel's body: content taller than the group scrolls in a framework scrolling stack (an egui scroll area
+    /// would take the pointer from the framework controls inside it). The Pages panel scrolls its own parts.
     fn body(&mut self, panel: &String, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
+        use craft_ui::contract::ShowContainer as _;
         if crate::dock::scrolls_itself(panel) {
             crate::dock::panel_body(self.app, ui, panel);
             return;
         }
-        // The panel bodies lay themselves out in egui; taller content scrolls in the body.
-        egui::ScrollArea::vertical()
-            .id_salt(("shared-panel-body", panel))
-            .auto_shrink([false, true])
-            .show(ui, |ui| crate::dock::panel_body(self.app, ui, panel));
+        let app = &mut *self.app;
+        craft_ui::layout_components::Stack::new()
+            .id_salt(("shared-panel-body", panel.as_str()))
+            .fill_width()
+            .scroll(craft_ui::contract::Scroll::vertical())
+            .show(ui, |ui, _| crate::dock::panel_body(app, ui, panel));
     }
 
     fn group_view(&mut self, panels: &[String], _: usize, ui: &mut egui::Ui, at: GroupAt, _: &mut BodyCx<'_>) -> Option<f32> {
@@ -1208,10 +1312,20 @@ impl DockPanels<String> for PanelContent<'_> {
             .tooltip(label.clone())
             .show(ui);
         let app = &mut *self.app;
+        // The menu's open state is the dock's: a row that ran (it closes its egui menu) closes the framework menu too.
+        let open_id = egui::Id::new("designcraft-pages-panel-menu-open");
+        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        let mut ran = false;
         // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-        let _ = craft_ui::menu::Menu::new(label)
-            .opened_by(&opener, craft_ui::contract::Trigger::Click)
-            .show(ui, |ui, _| crate::panels::pages::panel_menu(app, ui));
+        let _ =
+            craft_ui::menu::Menu::new(label).opened_by(&opener, craft_ui::contract::Trigger::Click).open(Bind::bound(&mut open)).show(ui, |ui, _| {
+                crate::panels::pages::panel_menu(app, ui);
+                ran = ui.should_close();
+            });
+        if ran {
+            open = false;
+        }
+        ui.data_mut(|d| d.insert_temp(open_id, open));
     }
 }
 

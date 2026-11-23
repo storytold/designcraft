@@ -1310,7 +1310,7 @@ mod line_workflow_tests {
     /// The installed rail's button of the tool named `name`.
     fn rail_elements(h: &Harness<'_, Rig>, name: &str) -> Vec<Element> {
         h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements)
-            .filter(|e| e.component == "FlyoutButton" && e.part.is_none()
+            .filter(|e| e.component.contains("FlyoutButton") && e.part.is_none()
                 && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(name)))
             .cloned().collect()
     }
@@ -1355,8 +1355,13 @@ mod line_workflow_tests {
                 if h.state().app.framework_installed { assert_eq!(h.ctx.memory(|m| m.focused()), Some(native(h).id)); }
                 return;
             }
-            assert!(visited.insert(h.ctx.memory(|m| m.focused())), "natural Tab traversal reaches the real Line slot without forced focus");
-            key(h, Key::Tab);
+            let focused = h.ctx.memory(|m| m.focused());
+            assert!(visited.insert(focused), "natural Tab traversal reaches the real Line slot without forced focus");
+            // The installed rail's buttons are one roving group, as a toolbar's are: Tab reaches the group, and the
+            // arrow keys move between its buttons.
+            let in_rail = h.state().app.framework_installed
+                && h.state().controls.as_ref().is_some_and(|r| r.elements.iter().any(|e| e.component.contains("FlyoutButton") && Some(e.id) == focused));
+            key(h, if in_rail { Key::ArrowDown } else { Key::Tab });
         }
     }
     fn canvas_point(h: &Harness<'_, Rig>, x: f64, y: f64) -> egui::Pos2 {
@@ -1867,10 +1872,14 @@ mod framework_tests {
         step(h);
     }
     fn press(h: &mut Harness<'_, Rig>, pos: egui::Pos2, button: PointerButton, modifiers: Modifiers) {
+        // The modifiers are held over the click, as a real Alt-click holds them, not only on its events.
+        h.input_mut().modifiers = modifiers;
         event(h, Event::PointerMoved(pos));
         for pressed in [true, false] {
+            h.input_mut().modifiers = modifiers;
             event(h, Event::PointerButton { pos, button, pressed, modifiers });
         }
+        h.input_mut().modifiers = Modifiers::NONE;
     }
 
     fn harness() -> Harness<'static, Rig> {
@@ -1979,12 +1988,19 @@ mod framework_tests {
         idle(&mut h, 2);
         assert_eq!(paint(&h), ("[None]".to_owned(), "[Black]".to_owned()), "the default button gives a frame no fill and a black stroke");
         assert!(!h.state().app.ui.stroke_front);
-        let wells = &[Role::Button, Role::RadioButton];
-        let stroke = control(&h, &tr(&h, "Stroke (X)"), wells);
+        // The pair's wells are found by their names, whatever role the framework gives them.
+        let well = |h: &Harness<'_, Rig>, label: &str| {
+            let panel = h.state().panel.expect("the shipping left Tools panel persisted its rect");
+            h.query_all_by_label(label)
+                .map(|n| n.rect())
+                .find(|r| panel.contains(r.center()))
+                .unwrap_or_else(|| panic!("no {label:?} in the Tools panel"))
+        };
+        let stroke = well(&h, &tr(&h, "Stroke (X)"));
         press(&mut h, stroke.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);
         assert!(h.state().app.ui.stroke_front, "a click on the stroke box brings it to the front");
-        let fill = control(&h, &tr(&h, "Fill (X)"), wells);
+        let fill = well(&h, &tr(&h, "Fill (X)"));
         event(&mut h, Event::PointerMoved(fill.center()));
         for pressed in [true, false, true, false] {
             event(&mut h, Event::PointerButton { pos: fill.center(), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -1997,16 +2013,15 @@ mod framework_tests {
     #[test]
     fn installed_formatting_and_screen_mode_buttons_run_their_commands() {
         let mut h = harness();
-        let start = h.state().app.session.journal.len();
+        // Both are the app's own commands, which the engine's journal does not record: their outcome is the app state.
+        assert!(!h.state().app.ui.formatting_affects_text);
         let text = control(&h, &tr(&h, "Formatting affects text (J)"), BUTTONS);
         press(&mut h, text.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);
-        assert_eq!(journal_since(&h, start), [("app.formattingAffectsText".to_owned(), json!({"on": true}))]);
+        assert!(h.state().app.ui.formatting_affects_text, "Formatting affects text is on");
         let mode = control(&h, &tr(&h, "Normal (W)"), BUTTONS);
-        let start = h.state().app.session.journal.len();
         press(&mut h, mode.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);
-        assert_eq!(journal_since(&h, start), [("view.togglePreview".to_owned(), json!({}))]);
         assert_eq!(h.state().app.ui.screen_mode, crate::ScreenMode::Preview);
     }
 }

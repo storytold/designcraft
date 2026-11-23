@@ -408,7 +408,13 @@ pub(crate) mod test_window {
     /// as that flag chooses.
     pub fn context() -> egui::Context {
         let ctx = egui::Context::default();
+        // Floating panels stay in the test window, where the accessibility tree and the pointer reach them, as they do
+        // where egui embeds viewports.
+        ctx.set_embed_viewports(true);
         crate::framework_transform::install(&ctx);
+        // The framework's services get a frame to route keys and focus in, as `DesignApp::raw_input_hook` gives them
+        // each frame in the shipping window; a test that calls the hook replaces it each frame.
+        craft_ui_widgets::runtime::frame::set_input(&ctx, craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()));
         ctx
     }
 
@@ -429,12 +435,33 @@ pub(crate) mod test_window {
 
     /// As `open_scaled`, with `step_dt` seconds between frames (a double-click needs its two
     /// clicks closer together than the default quarter second).
-    pub fn open_stepped(mut app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
+    pub fn open_stepped(app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
+        open_on(builder(), app, size, pixels_per_point, step_dt)
+    }
+
+    /// The window at `size` on a context without the craft UI runtime: the native surfaces' own input, with the
+    /// canvas alone in place of the dock (`panel_docking::show` needs the runtime for the panels).
+    pub fn open_without_runtime(app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
+        open_stepped_without_runtime(app, size, 1.0, 0.25)
+    }
+
+    /// [`open_without_runtime`] with the scale and frame step of [`open_stepped`].
+    pub fn open_stepped_without_runtime(app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
+        open_on(Harness::builder(), app, size, pixels_per_point, step_dt)
+    }
+
+    fn open_on(
+        builder: egui_kittest::HarnessBuilder<Window>,
+        mut app: crate::DesignApp,
+        size: egui::Vec2,
+        pixels_per_point: f32,
+        step_dt: f32,
+    ) -> Harness<'static, Window> {
         if app.session.active().is_none() {
             app.run("file.new", serde_json::json!({})).unwrap();
         }
         let mut h =
-            builder().with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
+            builder.with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
                 |ui, w: &mut Window| {
                     // The builder runs a frame before the texture size can be raised: skip it.
                     if !w.ready {

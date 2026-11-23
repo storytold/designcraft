@@ -20,6 +20,21 @@ impl DesignApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
     }
 
+    /// The framework's root values for this frame, from the app's: the layout direction of the interface language,
+    /// and light or dark (high contrast) as the interface brightness, so framework surfaces match the native ones.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn root_env(&self) -> craft_ui_widgets::runtime::env::RootEnv {
+        use craft_theme::{ContrastChoice, ModeChoice};
+        use craft_ui_widgets::runtime::env::{Direction, RootEnv};
+        let direction = if crate::i18n::is_rtl(&self.ui.language) { Direction::Rtl } else { Direction::Ltr };
+        let brightness = self.ui.brightness;
+        let dark = !matches!(brightness, crate::theme::Brightness::Light | crate::theme::Brightness::MediumLight);
+        let contrast = if brightness == crate::theme::Brightness::HighContrast { ContrastChoice::High } else { ContrastChoice::Standard };
+        let mut root = RootEnv::new().direction(direction).mode(if dark { ModeChoice::Dark } else { ModeChoice::Light });
+        root.contrast = contrast;
+        root
+    }
+
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -31,7 +46,7 @@ impl DesignApp {
         // The app keeps every native authority: the framework's fired commands are taken and dropped, not
         // re-dispatched into the engine, and neither the close path nor window fitting is taken over.
         #[cfg(not(target_arch = "wasm32"))]
-        if self.framework_installed {
+        if self.framework_installed || crate::panel_docking::runtime_on(ctx) {
             use craft_ui_widgets::runtime::env::RootEnv;
             use craft_ui_widgets::runtime::frame::{FrameInput, set_input, take_output};
             let _fired = take_output(ctx);
@@ -39,7 +54,7 @@ impl DesignApp {
             use craft_ui_widgets::runtime::commands::CommandInput;
             // The tools are commands on the board, without chords, so the Tools rail resolves and fires them.
             let commands = CommandInput::new().catalog(crate::toolbar::tool_catalog(&self.ui.language));
-            set_input(ctx, FrameInput::new(RootEnv::new()).host(crate::framework_host::host(&self.ui.language)).commands(commands));
+            set_input(ctx, FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands));
         }
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#1295).
