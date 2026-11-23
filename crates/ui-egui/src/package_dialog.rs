@@ -467,7 +467,7 @@ fn pdf_control(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         }
         return;
     }
-    craft_ui::ComboBox::from_id_salt("package_pdf_preset")
+    craft_ui_legacy::ComboBox::from_id_salt("package_pdf_preset")
         .selected_text(crate::rtl::widget(ui, tr(&cur)))
         .width(180.0)
         .show_ui(ui, |ui| {

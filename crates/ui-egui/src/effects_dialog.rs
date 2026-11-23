@@ -341,7 +341,7 @@ fn swatch(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
         .session
         .active()
         .map_or_else(Vec::new, |st| st.doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
-    craft_ui::ComboBox::from_id_salt(("fx_swatch", path.join("."))).selected_text(&cur).width(150.0).show_ui(ui, |ui| {
+    craft_ui_legacy::ComboBox::from_id_salt(("fx_swatch", path.join("."))).selected_text(&cur).width(150.0).show_ui(ui, |ui| {
         for n in names {
             if ui.selectable_label(n == cur, &n).clicked() {
                 set(d, path, json!(n));
@@ -390,7 +390,7 @@ pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: 
             grid("t").show(ui, |ui| {
                 row(ui, "Mode:");
                 let cur = d.fields.get("blend").and_then(Value::as_str).unwrap_or("Normal").to_string();
-                craft_ui::ComboBox::from_id_salt("fx_blend").selected_text(tr(&cur)).width(150.0).show_ui(ui, |ui| {
+                craft_ui_legacy::ComboBox::from_id_salt("fx_blend").selected_text(tr(&cur)).width(150.0).show_ui(ui, |ui| {
                     for m in designcraft_color::BlendMode::ALL {
                         if ui.selectable_label(m.label() == cur, tr(m.label())).clicked() {
                             d.fields.insert("blend".into(), json!(m.label()));
@@ -471,7 +471,7 @@ pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: 
                     ui.end_row();
                     row(ui, "Technique:");
                     let cur = d.fields.get("fx").and_then(|f| f["innerGlow"]["technique"].as_str()).unwrap_or("softer").to_string();
-                    craft_ui::ComboBox::from_id_salt("fx_technique").selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" })).show_ui(
+                    craft_ui_legacy::ComboBox::from_id_salt("fx_technique").selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" })).show_ui(
                         ui,
                         |ui| {
                             for (v, l) in [("softer", "Softer"), ("precise", "Precise")] {
@@ -485,7 +485,7 @@ pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: 
                     row(ui, "Source:");
                     let mut center = d.fields.get("fx").is_some_and(|f| f["innerGlow"]["center"].as_bool().unwrap_or(false));
                     let label = |c: bool| tr(if c { "Center" } else { "Edge" });
-                    craft_ui::ComboBox::from_id_salt("fx_source").selected_text(label(center)).show_ui(ui, |ui| {
+                    craft_ui_legacy::ComboBox::from_id_salt("fx_source").selected_text(label(center)).show_ui(ui, |ui| {
                         for c in [false, true] {
                             if ui.selectable_value(&mut center, c, label(c)).clicked() {
                                 set(d, &["innerGlow", "center"], json!(c));
@@ -566,7 +566,7 @@ pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: 
                     "rounded" => "Rounded",
                     _ => "Diffused",
                 };
-                craft_ui::ComboBox::from_id_salt("fx_corners").selected_text(tr(shown)).show_ui(ui, |ui| {
+                craft_ui_legacy::ComboBox::from_id_salt("fx_corners").selected_text(tr(shown)).show_ui(ui, |ui| {
                     for (v, l) in [("sharp", "Sharp"), ("rounded", "Rounded"), ("diffused", "Diffused")] {
                         if ui.selectable_label(cur == v, tr(l)).clicked() {
                             set(d, &["featherOptions", "corners"], json!(v));
@@ -615,7 +615,7 @@ pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: 
                 row(ui, "Type:");
                 let mut radial = d.fields.get("fx").is_some_and(|f| f["gradientFeather"]["radial"].as_bool().unwrap_or(false));
                 let label = |r: bool| tr(if r { "Radial" } else { "Linear" });
-                craft_ui::ComboBox::from_id_salt("fx_gtype").selected_text(label(radial)).show_ui(ui, |ui| {
+                craft_ui_legacy::ComboBox::from_id_salt("fx_gtype").selected_text(label(radial)).show_ui(ui, |ui| {
                     for r in [false, true] {
                         if ui.selectable_value(&mut radial, r, label(r)).clicked() {
                             set(d, &["gradientFeather", "radial"], json!(r));
@@ -650,7 +650,7 @@ fn mode_row(ui: &mut egui::Ui, d: &mut Dialog, key: &str, tr: &dyn Fn(&str) -> S
     let name = |m: &designcraft_color::BlendMode| serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     let shown = designcraft_color::BlendMode::ALL.iter().find(|m| name(m) == cur).map_or(fallback, |m| m.label());
     let mut picked = None;
-    craft_ui::ComboBox::from_id_salt(("fx_mode", key.to_string())).selected_text(tr(shown)).width(150.0).show_ui(ui, |ui| {
+    craft_ui_legacy::ComboBox::from_id_salt(("fx_mode", key.to_string())).selected_text(tr(shown)).width(150.0).show_ui(ui, |ui| {
         for m in designcraft_color::BlendMode::ALL {
             if ui.selectable_label(name(&m) == cur, tr(m.label())).clicked() {
                 picked = Some(name(&m));
@@ -671,7 +671,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         crate::rtl::label(ui, tr("Settings for:"));
         // Stroke, Fill and Text levels aren't in the document model yet: the object only.
         ui.add_enabled_ui(false, |ui| {
-            craft_ui::ComboBox::from_id_salt("fx_level").selected_text(tr("Object")).width(110.0).show_ui(ui, |_| {});
+            craft_ui_legacy::ComboBox::from_id_salt("fx_level").selected_text(tr("Object")).width(110.0).show_ui(ui, |_| {});
         });
     });
     ui.add_space(6.0);

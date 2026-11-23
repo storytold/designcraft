@@ -625,7 +625,7 @@ impl InteractiveFields {
             return out.events.committed().copied().filter(|i| enabled && *i < options.len());
         }
         let mut picked = None;
-        let combo = craft_ui::ComboBox::from_id_salt(self.id(key))
+        let combo = craft_ui_legacy::ComboBox::from_id_salt(self.id(key))
             .selected_text(crate::rtl::widget(ui, options.get(current).map_or("", String::as_str)))
             .show_ui(ui, |ui| {
                 for (i, label) in options.iter().enumerate() {
@@ -998,7 +998,7 @@ fn liquid_choice(
         return out.events.committed().and_then(|i| LIQUID_RULES.get(*i)).map(|(r, _)| *r).filter(|r| enabled && *r != rule);
     }
     let mut pick = None;
-    let combo = craft_ui::ComboBox::from_id_salt(id)
+    let combo = craft_ui_legacy::ComboBox::from_id_salt(id)
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, liquid_rule_label(rule))))
         .width(190.0)
         .show_ui(ui, |ui| {
@@ -1169,7 +1169,7 @@ pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     use designcraft_doc::TransitionKind as K;
     crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Spread"), si + 1)).strong());
     let mut kind = cur.map(|c| c.kind);
-    let combo = craft_ui::ComboBox::from_id_salt("transition_kind")
+    let combo = craft_ui_legacy::ComboBox::from_id_salt("transition_kind")
         .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kind.map_or("None", K::label))))
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut kind, None, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None")));

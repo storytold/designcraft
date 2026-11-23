@@ -142,10 +142,10 @@ impl DesignApp {
         }
         let split_layout = (self.split && !presenting)
             .then(|| {
-                craft_ui::layout::split_rect(
+                craft_ui_legacy::layout::split_rect(
                     ui.available_rect_before_wrap(),
-                    craft_ui::layout::SplitAxis::Horizontal,
-                    craft_ui::layout::SplitSize::Ratio(0.5),
+                    craft_ui_legacy::layout::SplitAxis::Horizontal,
+                    craft_ui_legacy::layout::SplitSize::Ratio(0.5),
                     2.0,
                     0.0,
                 )

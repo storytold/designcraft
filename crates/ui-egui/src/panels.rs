@@ -451,7 +451,7 @@ pub fn font_popup(
         info
     });
     let width = field.rect.width();
-    craft_ui::combo::Menu::new(ui, field)
+    craft_ui_legacy::combo::Menu::new(ui, field)
         .height(FONT_MENU_HEIGHT)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui_with_header(|ui| font_menu_header(app, ui, menu, current, width), font_menu_list)
@@ -495,7 +495,7 @@ pub fn style_shown(current: &str) -> String {
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
     let styles = fonts(app).styles(family);
     let mut pick = None;
-    let combo = craft_ui::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui_legacy::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
         for s in &styles {
             if ui.selectable_label(s == current, s).clicked() {
                 pick = Some(s.clone());
@@ -513,7 +513,7 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
-    let combo = craft_ui::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
+    let combo = craft_ui_legacy::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {
                 pick = Some(n.clone());

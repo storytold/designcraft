@@ -300,7 +300,7 @@ fn clock(p: &egui::Painter, r: Rect, color: Color32) {
 /// open (it closes on a click outside only).
 ///
 /// [`font_menu_header`] lays out the search field and the filters, [`font_menu_list`] the rows
-/// under them: the header and list of a [`craft_ui::combo::Menu`] or [`craft_ui::ComboBox`], so
+/// under them: the header and list of a [`craft_ui_legacy::combo::Menu`] or [`craft_ui_legacy::ComboBox`], so
 /// only the rows scroll. Rows a field adds above the search (a blank "no font" row) go in the
 /// header before [`font_menu_header`].
 pub struct FontMenu<'a> {

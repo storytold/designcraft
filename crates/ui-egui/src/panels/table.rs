@@ -125,7 +125,7 @@ fn table_committed_choice(
     let mut committed = None;
     ui.add_enabled_ui(valid && !choices.is_empty(), |ui| {
         let selected = choices.iter().find(|(value, _)| value == current).map_or(current, |(_, label)| label.as_str());
-        let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::rtl::widget(ui, selected)).width(width).show_ui(ui, |ui| {
+        let combo = craft_ui_legacy::ComboBox::from_id_salt(id).selected_text(crate::rtl::widget(ui, selected)).width(width).show_ui(ui, |ui| {
             for (value, label) in choices {
                 if ui.selectable_label(value == current, crate::rtl::widget(ui, label)).clicked() {
                     committed = Some(value.clone());

@@ -4,7 +4,7 @@
 //! protected `canvas` panel and a dock at the logical end edge (the right in left-to-right
 //! languages, the left in right-to-left ones).
 
-use craft_ui::docking::{
+use craft_ui_legacy::docking::{
     Action, Column, DockCommand, DockOperation, FloatSpace, Floating, Group, Layout, Node, Permissions, Placement, Side, Target, UiDock, Workspace,
 };
 use serde_json::{Value, json};
@@ -21,14 +21,14 @@ const HEADLESS_AREA: egui::Rect = egui::Rect::from_min_max(egui::Pos2::ZERO, egu
 
 /// The egui id of a docking control, for tests that press it or read its response.
 #[cfg(test)]
-pub(crate) fn hit_id(hit: &craft_ui::docking::Hit<String>) -> egui::Id {
-    craft_ui::docking::DockArea::<String>::hit_id(area_id(), hit)
+pub(crate) fn hit_id(hit: &craft_ui_legacy::docking::Hit<String>) -> egui::Id {
+    craft_ui_legacy::docking::DockArea::<String>::hit_id(area_id(), hit)
 }
 
 /// The egui id of a panel's tab.
 #[cfg(test)]
 pub(crate) fn tab_id(panel: &str) -> egui::Id {
-    hit_id(&craft_ui::docking::Hit::Tab(panel.to_owned()))
+    hit_id(&craft_ui_legacy::docking::Hit::Tab(panel.to_owned()))
 }
 
 /// The viewports of the floating windows that may have OS windows of their own. Where egui
@@ -37,18 +37,18 @@ pub(crate) fn native_viewports(app: &DesignApp, ctx: &egui::Context) -> Vec<egui
     if ctx.embed_viewports() {
         return Vec::new();
     }
-    layout_of(app).floating.iter().map(|window| craft_ui::docking::DockArea::<String>::window_viewport(area_id(), window.id)).collect()
+    layout_of(app).floating.iter().map(|window| craft_ui_legacy::docking::DockArea::<String>::window_viewport(area_id(), window.id)).collect()
 }
 
 /// The egui layer of the floating window whose first panel is `panel`.
 #[cfg(test)]
 pub(crate) fn floating_layer(panel: &str) -> egui::LayerId {
     let window = Floating::single(vec![panel.to_owned()], 0, [0.0, 0.0, 1.0, 1.0]);
-    craft_ui::docking::DockArea::<String>::floating_layer(area_id(), &window).unwrap_or_else(egui::LayerId::background)
+    craft_ui_legacy::docking::DockArea::<String>::floating_layer(area_id(), &window).unwrap_or_else(egui::LayerId::background)
 }
 
 pub(crate) fn cancel_gesture(ctx: &egui::Context) {
-    craft_ui::docking::cancel_drag::<String>(ctx, area_id());
+    craft_ui_legacy::docking::cancel_drag::<String>(ctx, area_id());
 }
 
 fn normalize(raw: &str) -> Option<&'static str> {
@@ -155,8 +155,8 @@ fn with_canvas(columns: Vec<Column<String>>, floating: Vec<Floating<String>>) ->
     let width: f32 = columns.iter().map(|c| if c.iconic { c.iconic_width.unwrap_or(ICON_WIDTH) } else { c.width }).sum();
     Layout {
         root: Some(Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::FixedSecond(width),
+            axis: craft_ui_legacy::layout::SplitAxis::Horizontal,
+            size: craft_ui_legacy::layout::SplitSize::FixedSecond(width),
             first: Box::new(Node::Tabs { panels: vec![CANVAS.to_string()], active: 0 }),
             second: Box::new(Node::Dock { side: Side::End, columns }),
         }),
@@ -251,14 +251,14 @@ pub(crate) fn from_dock_only<'a>(
 /// A floating window's tree with only the panels not placed yet; a split that loses one side
 /// becomes its other side. None when no panel is left.
 fn unplaced_tree(node: &Node<String>, depth: usize, placed: &mut Placed) -> Option<Node<String>> {
-    if depth > craft_ui::docking::MAX_DEPTH {
+    if depth > craft_ui_legacy::docking::MAX_DEPTH {
         return None;
     }
     match node {
         Node::Tabs { panels, active } => placed.group(panels, *active).map(|g| Node::Tabs { panels: g.panels, active: g.active }),
         Node::Stack { entries } => {
             let entries: Vec<_> =
-                entries.iter().filter_map(|e| placed.take(&e.panel).map(|panel| craft_ui::docking::StackEntry { panel, ..e.clone() })).collect();
+                entries.iter().filter_map(|e| placed.take(&e.panel).map(|panel| craft_ui_legacy::docking::StackEntry { panel, ..e.clone() })).collect();
             (!entries.is_empty()).then_some(Node::Stack { entries })
         }
         Node::Split { axis, size, first, second } => {
@@ -278,7 +278,7 @@ pub(crate) fn window_groups(window: &Floating<String>) -> Vec<Group<String>> {
     let mut out = Vec::new();
     let mut visit = vec![(&window.root, 0usize)];
     while let Some((node, depth)) = visit.pop() {
-        if depth > craft_ui::docking::MAX_DEPTH || out.len() > craft_ui::docking::MAX_PANELS {
+        if depth > craft_ui_legacy::docking::MAX_DEPTH || out.len() > craft_ui_legacy::docking::MAX_PANELS {
             break;
         }
         match node {
@@ -297,7 +297,7 @@ pub(crate) fn window_groups(window: &Floating<String>) -> Vec<Group<String>> {
 /// The groups of a dock-only layout's node, column by column in reading order. A vertical split
 /// stacks its parts in one column; a horizontal split puts them side by side.
 fn dock_only_columns(node: &Node<String>, depth: usize, placed: &mut Placed) -> Vec<Vec<Group<String>>> {
-    if depth > craft_ui::docking::MAX_DEPTH {
+    if depth > craft_ui_legacy::docking::MAX_DEPTH {
         return Vec::new();
     }
     let column = |groups: Vec<Group<String>>| if groups.is_empty() { Vec::new() } else { vec![groups] };
@@ -313,7 +313,7 @@ fn dock_only_columns(node: &Node<String>, depth: usize, placed: &mut Placed) -> 
             let mut parts = dock_only_columns(first, depth.saturating_add(1), placed);
             parts.extend(dock_only_columns(second, depth.saturating_add(1), placed));
             match axis {
-                craft_ui::layout::SplitAxis::Horizontal => parts,
+                craft_ui_legacy::layout::SplitAxis::Horizontal => parts,
                 _ => column(parts.into_iter().flatten().collect()),
             }
         }
@@ -338,7 +338,7 @@ fn layout_of(app: &DesignApp) -> Layout<String> {
 /// the open flyout of an iconic column?
 pub(crate) fn showing(app: &DesignApp, panel: &str) -> bool {
     let layout = layout_of(app);
-    layout.panel_state(&panel.to_string()) == craft_ui::docking::PanelState::Front
+    layout.panel_state(&panel.to_string()) == craft_ui_legacy::docking::PanelState::Front
         || (app.ui.docking_flyout.as_deref() == Some(panel) && in_iconic_column(&layout, panel))
 }
 
@@ -354,7 +354,7 @@ fn dock_columns(layout: &Layout<String>) -> Vec<&Column<String>> {
     let mut seen = 0usize;
     while let Some(node) = visit.pop() {
         seen = seen.saturating_add(1);
-        if seen > 2 * craft_ui::docking::MAX_PANELS {
+        if seen > 2 * craft_ui_legacy::docking::MAX_PANELS {
             break;
         }
         match node {
@@ -380,7 +380,7 @@ pub(crate) fn tab_group(layout: &Layout<String>, panel: &str) -> Vec<String> {
     let mut seen = 0usize;
     while let Some(node) = visit.pop() {
         seen = seen.saturating_add(1);
-        if seen > 2 * craft_ui::docking::MAX_PANELS {
+        if seen > 2 * craft_ui_legacy::docking::MAX_PANELS {
             break;
         }
         match node {
@@ -419,7 +419,7 @@ fn place(layout: &Layout<String>, panel: &str) -> Option<Place> {
     let mut seen = 0usize;
     while let Some((node, path)) = visit.pop() {
         seen = seen.saturating_add(1);
-        if seen > 2 * craft_ui::docking::MAX_PANELS || path.len() > craft_ui::docking::MAX_DEPTH {
+        if seen > 2 * craft_ui_legacy::docking::MAX_PANELS || path.len() > craft_ui_legacy::docking::MAX_DEPTH {
             return None;
         }
         match node {
@@ -452,7 +452,7 @@ fn open_in_stack(layout: &Layout<String>, panel: &str) -> bool {
     let mut seen = 0usize;
     while let Some(node) = visit.pop() {
         seen = seen.saturating_add(1);
-        if seen > 2 * craft_ui::docking::MAX_PANELS {
+        if seen > 2 * craft_ui_legacy::docking::MAX_PANELS {
             break;
         }
         match node {
@@ -553,7 +553,7 @@ fn flyout_open(app: &DesignApp, panel: &str) -> bool {
 fn close_flyout(app: &mut DesignApp) -> Value {
     app.ui.docking_flyout = None;
     if let Some(ctx) = app.egui_ctx.as_ref() {
-        craft_ui::docking::close_flyout::<String>(ctx, area_id());
+        craft_ui_legacy::docking::close_flyout::<String>(ctx, area_id());
     }
     json!({"layout": layout_of(app), "closed": [], "floating": floating_panels(app)})
 }
@@ -669,7 +669,7 @@ fn float_bounds(app: &DesignApp, ctx: &egui::Context) -> egui::Rect {
 /// same command, or headless) floats at that size too.
 fn float_space(app: &DesignApp) -> FloatSpace<String> {
     let space = match app.egui_ctx.as_ref() {
-        Some(ctx) => craft_ui::docking::float_space::<String>(ctx, area_id()).unwrap_or_else(|| FloatSpace::new(float_bounds(app, ctx))),
+        Some(ctx) => craft_ui_legacy::docking::float_space::<String>(ctx, area_id()).unwrap_or_else(|| FloatSpace::new(float_bounds(app, ctx))),
         None => FloatSpace::new(HEADLESS_AREA),
     };
     crate::dock::DOCK_TABS
@@ -695,7 +695,7 @@ impl Transaction {
         let mut workspace = Workspace::new(layout);
         let mut returns = crate::HiddenPanels::default();
         for (panel, location) in
-            app.ui.docking_hidden.0.iter().filter(|(id, _)| normalize(id) == Some(id.as_str())).take(craft_ui::docking::MAX_PANELS)
+            app.ui.docking_hidden.0.iter().filter(|(id, _)| normalize(id) == Some(id.as_str())).take(craft_ui_legacy::docking::MAX_PANELS)
         {
             if !workspace.layout.contains(panel) {
                 workspace.hidden.push((panel.clone(), location.clone()));
@@ -844,7 +844,7 @@ impl Transaction {
 /// The panels of the docked group holding `panel`, and that group's place as a whole: beside
 /// the group or column next to it, with its group and column state. None when `panel` is not
 /// in a dock.
-fn docked_group_place(layout: &Layout<String>, panel: &String) -> Option<(Vec<String>, craft_ui::docking::Location<String>)> {
+fn docked_group_place(layout: &Layout<String>, panel: &String) -> Option<(Vec<String>, craft_ui_legacy::docking::Location<String>)> {
     let members = dock_columns(layout).into_iter().flat_map(|c| &c.groups).find(|g| g.panels.contains(panel))?.panels.clone();
     // The place of the group's last panel left in it is the group's own place.
     let mut alone = layout.clone();
@@ -874,8 +874,8 @@ fn known(action: &Action<String>) -> bool {
         | Action::MoveFloating { panel, .. }
         | Action::SetStackOpen { panel, .. }
         | Action::ResizeStack { panel, .. } => registered(panel),
-        Action::ResizeSplit { path, .. } => path.len() <= craft_ui::docking::MAX_DEPTH,
-        Action::ResizeWindowSplit { panel, path, .. } => registered(panel) && path.len() <= craft_ui::docking::MAX_DEPTH,
+        Action::ResizeSplit { path, .. } => path.len() <= craft_ui_legacy::docking::MAX_DEPTH,
+        Action::ResizeWindowSplit { panel, path, .. } => registered(panel) && path.len() <= craft_ui_legacy::docking::MAX_DEPTH,
         Action::MovePanel { panel, to } | Action::MoveGroup { panel, to } | Action::MoveColumn { panel, to } | Action::MoveWindow { panel, to } => {
             registered(panel)
                 && match to {
@@ -1039,7 +1039,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         previous.is_some_and(|generation| generation != app.ui.docking_generation)
     });
     if changed_workspace {
-        craft_ui::docking::cancel_drag::<String>(ui.ctx(), area);
+        craft_ui_legacy::docking::cancel_drag::<String>(ui.ctx(), area);
     }
     if app.ui.docking.as_ref().is_some_and(|layout| !valid(layout)) {
         app.ui.docking = None;
@@ -1058,7 +1058,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         blocked.push(rect);
     }
     let style = dock_style(ui, &app.ui.language);
-    let mut dock = craft_ui::docking::DockArea::new(area)
+    let mut dock = craft_ui_legacy::docking::DockArea::new(area)
         .float_bounds(float_bounds(app, ui.ctx()))
         .blocked_rects(&blocked)
         .input_blocked(modal)
@@ -1069,8 +1069,8 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut output = dock.show_content(ui, &layout, &style, &mut PanelContent { app: &mut *app });
     for event in std::mem::take(&mut output.events) {
         match event {
-            craft_ui::docking::DockEvent::ToggleAutoCollapse => app.ui.dock_auto_collapse = !app.ui.dock_auto_collapse,
-            craft_ui::docking::DockEvent::FlyoutChanged { panel } => app.ui.docking_flyout = panel,
+            craft_ui_legacy::docking::DockEvent::ToggleAutoCollapse => app.ui.dock_auto_collapse = !app.ui.dock_auto_collapse,
+            craft_ui_legacy::docking::DockEvent::FlyoutChanged { panel } => app.ui.docking_flyout = panel,
             _ => {}
         }
     }
@@ -1102,7 +1102,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// Files dropped on a floating panel's own OS window open or place as drops on the main window
 /// do. The pointer there is in that window's coordinates, so a placed file gets no canvas point.
 #[cfg(not(target_arch = "wasm32"))]
-fn open_window_drops(app: &mut DesignApp, windows: &[craft_ui::docking::WindowFiles<String>]) {
+fn open_window_drops(app: &mut DesignApp, windows: &[craft_ui_legacy::docking::WindowFiles<String>]) {
     for window in windows {
         app.open_dropped_files(&window.dropped, None);
     }
@@ -1119,7 +1119,7 @@ pub(crate) fn modal_open(app: &DesignApp) -> bool {
 /// panels closed with a remembered place, the panel whose flyout is open, and where each
 /// docking gesture starts in the last frame (`hitRects`).
 pub(crate) fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
-    let hits = craft_ui::docking::DockArea::<String>::hit_rects(ctx, area_id());
+    let hits = craft_ui_legacy::docking::DockArea::<String>::hit_rects(ctx, area_id());
     let hit_rects: Vec<Value> = hits.iter().map(|(hit, r)| json!({"hit": hit, "rect": [r.left(), r.top(), r.width(), r.height()]})).collect();
     json!({
         "layout": layout_of(app),
@@ -1133,9 +1133,9 @@ pub(crate) fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
     })
 }
 
-fn dock_style(ui: &egui::Ui, language: &str) -> craft_ui::docking::DockStyle {
+fn dock_style(ui: &egui::Ui, language: &str) -> craft_ui_legacy::docking::DockStyle {
     let t = crate::theme::Tokens::get(ui.ctx());
-    let mut style = craft_ui::docking::DockStyle::from_ui(ui);
+    let mut style = craft_ui_legacy::docking::DockStyle::from_ui(ui);
     style.tab_height = 27.0;
     style.background = t.panel;
     style.tab_background = t.tab_strip;
@@ -1277,7 +1277,7 @@ fn panel_icon(panel: &str) -> Option<&'static str> {
 struct PanelContent<'a> {
     app: &'a mut DesignApp,
 }
-impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
+impl craft_ui_legacy::docking::DockContent<String> for PanelContent<'_> {
     fn body(&mut self, ui: &mut egui::Ui, id: &String) {
         if id == CANVAS {
             let fill = crate::theme::Tokens::get(ui.ctx()).pasteboard;
@@ -1304,9 +1304,9 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
     fn permissions(&self, id: &String) -> Permissions {
         model_permissions(id)
     }
-    fn limits(&self, id: &String) -> craft_ui::docking::PanelLimits {
+    fn limits(&self, id: &String) -> craft_ui_legacy::docking::PanelLimits {
         let min = if id == CANVAS { egui::vec2(200.0, 120.0) } else { egui::vec2(220.0, 80.0) };
-        craft_ui::docking::PanelLimits { min, ..Default::default() }
+        craft_ui_legacy::docking::PanelLimits { min, ..Default::default() }
     }
     fn floating_size(&self, id: &String) -> Option<egui::Vec2> {
         Some(floating_size(id))

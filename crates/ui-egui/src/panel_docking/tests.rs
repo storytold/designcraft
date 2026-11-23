@@ -203,7 +203,7 @@ fn serialized_layout_actions_cover_geometry_reorder_accordion_and_atomic_rejecti
     app.run("window.panel.move", json!({"panel":"swatches","anchor":"layers","zone":"top"})).unwrap();
     app.run("window.panel.layout", json!({"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.35}}}})).unwrap();
     assert!(
-        matches!(app.ui.docking.as_ref().unwrap().root, Some(Node::Split { size: craft_ui::layout::SplitSize::Ratio(value), .. }) if (value - 0.35).abs() < 0.001)
+        matches!(app.ui.docking.as_ref().unwrap().root, Some(Node::Split { size: craft_ui_legacy::layout::SplitSize::Ratio(value), .. }) if (value - 0.35).abs() < 0.001)
     );
     app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
     app.run("window.panel.layout", json!({"action":{"MoveFloating":{"panel":"properties","rect":[44,66,360,450]}}})).unwrap();
@@ -226,11 +226,11 @@ fn serialized_layout_actions_cover_geometry_reorder_accordion_and_atomic_rejecti
         assert_eq!(app.ui.docking, before);
         assert_eq!(app.ui.docking_hidden, hidden);
     }
-    let stack = Node::Stack { entries: vec![craft_ui::docking::StackEntry { panel: "layers".into(), open: true, height: Some(100.0) }] };
+    let stack = Node::Stack { entries: vec![craft_ui_legacy::docking::StackEntry { panel: "layers".into(), open: true, height: Some(100.0) }] };
     app.ui.docking = Some(Layout {
         root: Some(Node::Split {
-            axis: craft_ui::layout::SplitAxis::Horizontal,
-            size: craft_ui::layout::SplitSize::Ratio(0.7),
+            axis: craft_ui_legacy::layout::SplitAxis::Horizontal,
+            size: craft_ui_legacy::layout::SplitSize::Ratio(0.7),
             first: Box::new(Node::Tabs { panels: vec![CANVAS.into()], active: 0 }),
             second: Box::new(stack),
         }),
@@ -720,7 +720,7 @@ fn paragraph_styles_open_floating_with_character_styles() {
     assert_eq!(group.panels, ["characterStyles", "paragraphStyles"]);
     assert_eq!(group.panels[group.active], "paragraphStyles", "the one chosen is in front");
     // The dock still shows Properties in front.
-    assert_eq!(layout.panel_state(&"properties".to_string()), craft_ui::docking::PanelState::Front, "{:?}", layout.root);
+    assert_eq!(layout.panel_state(&"properties".to_string()), craft_ui_legacy::docking::PanelState::Front, "{:?}", layout.root);
     assert_eq!(layout.floating.len(), 1, "one floating window holds both tabs");
     // Other panels from Window leave it open.
     app.run("window.panel", json!({"panel":"color"})).unwrap();
@@ -837,7 +837,7 @@ fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize
 }
 
 fn drag_bar(h: &Harness<'static, DesignApp>, first: &str) -> egui::Rect {
-    h.ctx.read_response(hit_id(&craft_ui::docking::Hit::DragBar(first.to_string()))).expect("the group's drag bar").rect
+    h.ctx.read_response(hit_id(&craft_ui_legacy::docking::Hit::DragBar(first.to_string()))).expect("the group's drag bar").rect
 }
 
 /// The docked Character Styles | Paragraph Styles group moves as one by its drag bar: dropped on
@@ -1025,7 +1025,7 @@ fn arrow_after_dragging_a_dock_divider_nudges_the_selection_not_the_dock() {
         app,
     );
     h.run_steps(5);
-    let column = craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::Column("properties".to_string()));
+    let column = craft_ui_legacy::docking::Hit::Divider(craft_ui_legacy::docking::Divider::Column("properties".to_string()));
     let divider = hits(&h).into_iter().find_map(|(hit, rect)| (hit == column).then_some(rect)).expect("the main dock column's divider");
     drag(&mut h, divider.center(), divider.center() - vec2(40.0, 0.0));
     let resized = h.state().ui.docking.clone().expect("the drag customizes the layout");
@@ -1039,8 +1039,8 @@ fn arrow_after_dragging_a_dock_divider_nudges_the_selection_not_the_dock() {
     assert_eq!(h.state().ui.docking.as_ref(), Some(&resized), "the arrow doesn't resize the dock");
 }
 
-fn hits(h: &Harness<'static, DesignApp>) -> Vec<(craft_ui::docking::Hit<String>, egui::Rect)> {
-    craft_ui::docking::DockArea::<String>::hit_rects(&h.ctx, area_id())
+fn hits(h: &Harness<'static, DesignApp>) -> Vec<(craft_ui_legacy::docking::Hit<String>, egui::Rect)> {
+    craft_ui_legacy::docking::DockArea::<String>::hit_rects(&h.ctx, area_id())
 }
 
 /// `window.panel.*` ids and DesignCraft's aliases go through craft-ui's `DockCommand`.
@@ -1119,7 +1119,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     let error = app.run("window.panel.dock", json!({"panel": "stroke", "zone": "right"})).unwrap_err();
     assert!(error.contains("anchor") && error.contains("side"), "{error}");
     // Every shared id is registered for the command list and MCP.
-    for id in craft_ui::docking::DockCommand::<String>::IDS {
+    for id in craft_ui_legacy::docking::DockCommand::<String>::IDS {
         assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == *id), "{id} is not registered");
     }
 }
@@ -1130,7 +1130,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
 fn tabs_dropped_on_the_canvas_float_and_at_the_far_edge_make_a_dock() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
     let tab = |h: &Harness<'static, DesignApp>, panel: &str| {
-        hits(h).into_iter().find(|(hit, _)| *hit == craft_ui::docking::Hit::Tab(panel.into())).map(|(_, r)| r)
+        hits(h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Tab(panel.into())).map(|(_, r)| r)
     };
     let layers = tab(&h, "layers").expect("the Layers tab");
     drag(&mut h, layers.center(), egui::pos2(500.0, 400.0));
@@ -1138,7 +1138,7 @@ fn tabs_dropped_on_the_canvas_float_and_at_the_far_edge_make_a_dock() {
     assert!(layout.floating.iter().any(|w| w.contains(&"layers".to_string())), "{layout:?}");
     // A new dock takes a panel that is alone in its group: the floating Layers, by its title bar.
     // The harness's area starts 8 pt in from the window edge.
-    let title = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui::docking::Hit::Title("layers".into())).expect("the title bar").1;
+    let title = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Title("layers".into())).expect("the title bar").1;
     drag(&mut h, title.center(), egui::pos2(12.0, 400.0));
     let layout = h.state().ui.docking.clone().unwrap();
     assert!(valid(&layout));
@@ -1180,10 +1180,10 @@ fn ui_docking_reports_hit_rects() {
 #[test]
 fn clicking_an_iconic_column_icon_opens_its_flyout() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
+    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
     click(&mut h, icon.center(), PointerButton::Primary);
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
-    let tab = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui::docking::Hit::Tab("swatches".into())).expect("the flyout's tab").1;
+    let tab = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Tab("swatches".into())).expect("the flyout's tab").1;
     assert!(tab.right() <= icon.left() + 1.0, "the flyout is beside the column, on the canvas side: {tab:?} {icon:?}");
     assert!(showing(h.state(), "swatches"));
     click(&mut h, icon.center(), PointerButton::Primary);
@@ -1196,7 +1196,7 @@ fn clicking_an_iconic_column_icon_opens_its_flyout() {
 fn a_canvas_click_leaves_an_open_flyout_open() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
     assert!(!h.state().ui.dock_auto_collapse);
-    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
+    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
     click(&mut h, icon.center(), PointerButton::Primary);
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
     click(&mut h, egui::pos2(400.0, 400.0), PointerButton::Primary);
@@ -1218,7 +1218,7 @@ fn panel_icons_are_painted_in_code() {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.ctx().layer_painter(egui::LayerId::background());
             let rect = egui::Rect::from_min_size(Pos2::ZERO, vec2(20.0, 20.0));
-            painted = craft_ui::docking::DockContent::paint_icon(&mut content, &painter, rect, &panel.to_string(), egui::Color32::RED);
+            painted = craft_ui_legacy::docking::DockContent::paint_icon(&mut content, &painter, rect, &panel.to_string(), egui::Color32::RED);
         });
         output.textures_delta.clear();
         (painted, output.shapes.len())
@@ -1261,7 +1261,7 @@ fn a_split_inside_a_floating_window_resizes_and_is_saved() {
     app.run("window.panel.move", json!({"panel":"color", "anchor":"swatches", "zone":"bottom"})).unwrap();
     let window = |app: &DesignApp| app.ui.docking.as_ref().unwrap().floating.iter().find(|w| w.contains("swatches")).cloned().unwrap();
     let ratio = |window: &Floating<String>| match window.root {
-        Node::Split { size: craft_ui::layout::SplitSize::Ratio(r), .. } => r,
+        Node::Split { size: craft_ui_legacy::layout::SplitSize::Ratio(r), .. } => r,
         ref root => panic!("expected a split window: {root:?}"),
     };
     assert_eq!(window_groups(&window(&app)).into_iter().map(|g| g.panels).collect::<Vec<_>>(), [["swatches"], ["color"]]);
@@ -1270,7 +1270,7 @@ fn a_split_inside_a_floating_window_resizes_and_is_saved() {
     let divider = hits(&h)
         .into_iter()
         .find_map(|(hit, rect)| {
-            matches!(&hit, craft_ui::docking::Hit::Divider(craft_ui::docking::Divider::WindowSplit(_, path)) if path.is_empty()).then_some(rect)
+            matches!(&hit, craft_ui_legacy::docking::Hit::Divider(craft_ui_legacy::docking::Divider::WindowSplit(_, path)) if path.is_empty()).then_some(rect)
         })
         .expect("the window's divider");
     drag(&mut h, divider.center(), divider.center() + vec2(0.0, 60.0));
@@ -1331,7 +1331,7 @@ fn a_document_dropped_on_a_floating_panel_window_opens() {
 
     let mut app = app();
     assert!(app.session.documents().is_empty());
-    let files = craft_ui::docking::WindowFiles {
+    let files = craft_ui_legacy::docking::WindowFiles {
         window: 1,
         viewport: egui::ViewportId::from_hash_of("float"),
         panel: "layers".to_owned(),

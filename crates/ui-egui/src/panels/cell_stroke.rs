@@ -240,7 +240,7 @@ fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom:
     let _ = app;
     let mut picked = None;
     let shown = type_label(lang, &v["type"]);
-    let combo = craft_ui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+    let combo = craft_ui_legacy::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
         for kind in TYPES {
             let text = tr(&lang, builtin(kind).label());
             if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {

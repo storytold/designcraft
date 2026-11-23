@@ -45,7 +45,7 @@ fn page_preset_and_orientation(
     let landscape = size.0 > size.1;
     ui.vertical(|ui| {
         let cur = panels::properties::preset_name(size.0, size.1);
-        craft_ui::ComboBox::from_id_salt("ctl_page_preset")
+        craft_ui_legacy::ComboBox::from_id_salt("ctl_page_preset")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, cur)))
             .width(130.0)
             .show_ui(ui, |ui| {
@@ -122,7 +122,7 @@ pub(super) fn control_page(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.add_enabled_ui(n.is_some(), |ui| {
         caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
         let label = panels::interactive::liquid_rule_label(pg.liquid);
-        craft_ui::ComboBox::from_id_salt("ctl_page_rule")
+        craft_ui_legacy::ComboBox::from_id_salt("ctl_page_rule")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&lang, label)))
             .width(150.0)
             .show_ui(ui, |ui| {
@@ -392,7 +392,7 @@ fn control_character(
         let cs = attrs.as_ref().and_then(|a| a["characterStyle"].as_str()).unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_string();
         let names: Vec<String> = app.session.active().map(|d| d.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
         let mut pick = None;
-        craft_ui::ComboBox::from_id_salt("ctl_char_style")
+        craft_ui_legacy::ComboBox::from_id_salt("ctl_char_style")
             .selected_text(crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, &cs)))
             .width(150.0)
             .show_ui(ui, |ui| {
@@ -406,7 +406,7 @@ fn control_character(
             let _ = app.run("style.character.apply", json!({"name": n}));
         }
         let lang = chars["language"].as_str().unwrap_or("English: USA").to_string();
-        craft_ui::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
+        craft_ui_legacy::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| crate::panels::properties::language_menu(app, ui, &lang));
         }).response.accessible_name(tr("Language"));
     });

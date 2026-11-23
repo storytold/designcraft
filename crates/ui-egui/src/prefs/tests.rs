@@ -1,6 +1,6 @@
 use super::*;
 use crate::DesignApp;
-use craft_ui::docking::{Column, Node, Side};
+use craft_ui_legacy::docking::{Column, Node, Side};
 use serde_json::json;
 
 fn populated() -> UiState {
@@ -255,7 +255,7 @@ fn floating_stacks_of_groups_load_as_split_windows() {
     assert!(read.intact);
     let layout = read.ui.docking.clone().unwrap();
     dock(&layout);
-    let Node::Split { axis: craft_ui::layout::SplitAxis::Vertical, size: craft_ui::layout::SplitSize::Ratio(ratio), first, second } =
+    let Node::Split { axis: craft_ui_legacy::layout::SplitAxis::Vertical, size: craft_ui_legacy::layout::SplitSize::Ratio(ratio), first, second } =
         &layout.floating[0].root
     else {
         panic!("expected a vertical split: {:?}", layout.floating[0]);
@@ -295,7 +295,7 @@ fn hidden_panels_keyed_by_panel_load_as_the_workspace_list() {
     assert_eq!(ui.custom_workspaces[0].docking_hidden.keys().collect::<Vec<_>>(), ["stroke"]);
     let written = serde_json::to_value(&ui).unwrap();
     assert_eq!(written["dockingHidden"][0][0], "color");
-    let workspace: craft_ui::docking::Workspace<String> =
+    let workspace: craft_ui_legacy::docking::Workspace<String> =
         serde_json::from_value(json!({"layout": {"root": null, "floating": []}, "hidden": written["dockingHidden"]})).unwrap();
     assert_eq!(workspace.hidden, ui.docking_hidden.0, "the same shape as craft-ui's Workspace::hidden");
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());

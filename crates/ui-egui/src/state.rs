@@ -20,15 +20,15 @@ pub struct ImportedFile {
 /// Files from before this shape hold an object keyed by panel; it still loads.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct HiddenPanels(pub Vec<(String, craft_ui::docking::Location<String>)>);
+pub struct HiddenPanels(pub Vec<(String, craft_ui_legacy::docking::Location<String>)>);
 
 impl<'de> Deserialize<'de> for HiddenPanels {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Shape {
-            List(Vec<(String, craft_ui::docking::Location<String>)>),
-            Keyed(std::collections::BTreeMap<String, craft_ui::docking::Location<String>>),
+            List(Vec<(String, craft_ui_legacy::docking::Location<String>)>),
+            Keyed(std::collections::BTreeMap<String, craft_ui_legacy::docking::Location<String>>),
         }
         let entries = match Shape::deserialize(deserializer)? {
             Shape::List(entries) => entries,
@@ -49,11 +49,11 @@ impl HiddenPanels {
     pub fn contains_key(&self, panel: &str) -> bool {
         self.0.iter().any(|(p, _)| p == panel)
     }
-    pub fn get(&self, panel: &str) -> Option<&craft_ui::docking::Location<String>> {
+    pub fn get(&self, panel: &str) -> Option<&craft_ui_legacy::docking::Location<String>> {
         self.0.iter().find(|(p, _)| p == panel).map(|(_, location)| location)
     }
     /// Record where `panel` goes back, replacing an earlier entry.
-    pub fn insert(&mut self, panel: String, location: craft_ui::docking::Location<String>) {
+    pub fn insert(&mut self, panel: String, location: craft_ui_legacy::docking::Location<String>) {
         self.remove(&panel);
         self.0.push((panel, location));
     }
@@ -94,7 +94,7 @@ pub struct SavedWorkspace {
     pub floating: Vec<(String, [f32; 2])>,
     /// Custom panel membership and placement; absent in older workspace files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub docking: Option<craft_ui::docking::Layout<String>>,
+    pub docking: Option<craft_ui_legacy::docking::Layout<String>>,
     #[serde(default, skip_serializing_if = "HiddenPanels::is_empty")]
     pub docking_hidden: HiddenPanels,
     /// The workspace's own iconic column (see [`UiState::icon_groups`]).
@@ -285,7 +285,7 @@ pub struct UiState {
     /// The panel layout once the user customizes it; `None` is the workspace's default layout
     /// (`panel_docking::default_layout`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub docking: Option<craft_ui::docking::Layout<String>>,
+    pub docking: Option<craft_ui_legacy::docking::Layout<String>>,
     #[serde(default, skip_serializing_if = "HiddenPanels::is_empty")]
     pub docking_hidden: HiddenPanels,
     /// The panel (or the canvas) last clicked or selected in the docking layout, while the panel

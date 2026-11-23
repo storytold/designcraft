@@ -142,7 +142,7 @@ impl DesignApp {
                 shot.reserved_bytes = bytes;
             }
             let shot = &mut self.pending_shots[index];
-            let (slot, callback) = craft_ui::capture::CaptureSlot::new(ctx, shot.viewport, SCREENSHOT_MAX_IMAGE_BYTES);
+            let (slot, callback) = craft_ui_legacy::capture::CaptureSlot::new(ctx, shot.viewport, SCREENSHOT_MAX_IMAGE_BYTES);
             shot.slot = Some(slot);
             // The callback holds only a weak slot: it never captures the app, writes a file, runs a
             // command or wakes the context itself (the slot's live request does that).

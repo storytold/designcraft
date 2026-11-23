@@ -1212,6 +1212,14 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
 
 [[package]]
+name = "craft-cloud-ui"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "craft-cms"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
@@ -1499,7 +1507,7 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
 dependencies = [
  "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-ui",
+ "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
  "egui",
  "serde",
  "serde_json",
@@ -1820,6 +1828,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-ui"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
+dependencies = [
+ "craft-cloud-ui",
+ "craft-ui-canvas",
+ "craft-ui-contract",
+ "craft-ui-panels",
+ "craft-ui-patterns",
+ "craft-ui-shell",
+ "craft-ui-widgets",
+]
+
+[[package]]
+name = "craft-ui-canvas"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
+dependencies = [
+ "craft-behavior",
+ "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "craft-keymap 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "craft-theme",
+ "craft-ui-macros",
+ "craft-ui-panels",
+ "egui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "craft-ui-contract"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
@@ -1883,6 +1921,47 @@ dependencies = [
  "egui",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "craft-ui-patterns"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
+dependencies = [
+ "craft-behavior",
+ "craft-host",
+ "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "craft-keymap 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "craft-pdf",
+ "craft-theme",
+ "craft-ui-macros",
+ "craft-ui-panels",
+ "egui",
+ "serde",
+ "serde_json",
+ "toml",
+ "toml_edit",
+ "zeroize",
+]
+
+[[package]]
+name = "craft-ui-shell"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3#a4e08cdaf2439014f10e517840cd0dc347db59e3"
+dependencies = [
+ "craft-behavior",
+ "craft-host",
+ "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "craft-platform",
+ "craft-svg",
+ "craft-theme",
+ "craft-ui-macros",
+ "craft-ui-panels",
+ "craft-window 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
+ "egui",
+ "raw-window-handle",
+ "serde",
+ "web-time",
 ]
 
 [[package]]
@@ -2506,7 +2585,8 @@ dependencies = [
  "craft-keymap 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
  "craft-prepress",
  "craft-theme",
- "craft-ui",
+ "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
+ "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=a4e08cdaf2439014f10e517840cd0dc347db59e3)",
  "craft-ui-panels",
  "craft-ui-widgets",
  "craft-update",

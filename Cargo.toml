@@ -125,7 +125,10 @@ craft-behavior = { git = "https://github.com/storytold/craft-libs", rev = "a4e08
 craft-host = { git = "https://github.com/storytold/craft-libs", rev = "a4e08cdaf2439014f10e517840cd0dc347db59e3" }
 craft-window-sdk = { package = "craft-window", git = "https://github.com/storytold/craft-libs", rev = "a4e08cdaf2439014f10e517840cd0dc347db59e3" }
 # Shared frontend components; keep this dependency above the engine boundary.
-craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
+# The legacy egui kit (docking, ComboBox, splits) from the main-line pin, until the port waves replace its uses.
+craft-ui-legacy = { package = "craft-ui", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["serde"] }
+# The craft UI framework umbrella (contract, widgets, panels, patterns, shell) on next.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a4e08cdaf2439014f10e517840cd0dc347db59e3" }
 # The application bar as the window's title bar (craft-libs).
 craft-window = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d", features = ["egui"] }
 egui = "0.37"

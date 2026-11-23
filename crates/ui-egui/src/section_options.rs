@@ -249,7 +249,7 @@ fn style_menu(ui: &mut Ui, d: &mut Dialog, key: &str, framework: bool, label: &s
     #[cfg(target_arch = "wasm32")]
     let _ = (framework, label);
     let shown = STYLES.iter().find(|(s, _)| *s == current).map_or(STYLES[0].1, |(_, l)| l);
-    let response = craft_ui::ComboBox::from_id_salt(("section_style", key))
+    let response = craft_ui_legacy::ComboBox::from_id_salt(("section_style", key))
         .selected_text(shown)
         .width(150.0)
         .show_ui(ui, |ui| {

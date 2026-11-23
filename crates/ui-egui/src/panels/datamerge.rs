@@ -431,7 +431,7 @@ fn select_source(app: &mut DesignApp) {
 fn choice(ui: &mut egui::Ui, id: &str, current: &str, options: &[(&str, &str)], lang: &str, name: &str) -> Option<String> {
     let label = options.iter().find(|(value, _)| *value == current).map(|(_, text)| tr(lang, text)).unwrap_or(current);
     let mut picked = None;
-    let combo = craft_ui::ComboBox::from_id_salt(id).selected_text(label).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
+    let combo = craft_ui_legacy::ComboBox::from_id_salt(id).selected_text(label).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
         for (value, text) in options {
             if ui.selectable_label(*value == current, tr(lang, text)).clicked() {
                 picked = Some((*value).to_string());

@@ -223,7 +223,7 @@ fn controls(ui: &mut egui::Ui, v: &mut View, lang: &str) {
         }
         ui.separator();
         ui.label(tr(lang, "Sort"));
-        craft_ui::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
+        craft_ui_legacy::ComboBox::from_id_salt("credits_sort").selected_text(tr(lang, v.key.label().0)).show_ui(ui, |ui| {
             for k in SortKey::ALL {
                 if ui.selectable_label(v.key == k, tr(lang, k.label().0)).clicked() {
                     v.key = k;

@@ -10,7 +10,8 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
-craft-ui = { workspace = true, features = ["native-windows"] }
+craft-ui-legacy = { workspace = true, features = ["native-windows"] }
+craft-ui = { workspace = true }
 craft-window = { workspace = true }
 craft-window-sdk = { workspace = true }
 craft-keymap = { workspace = true }

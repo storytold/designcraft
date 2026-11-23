@@ -194,7 +194,7 @@ impl ExportControls {
         }
         let mut picked = None;
         let shown = entries.get(current).map_or(placeholder, String::as_str);
-        let response = craft_ui::ComboBox::from_id_salt(id)
+        let response = craft_ui_legacy::ComboBox::from_id_salt(id)
             .selected_text(shown)
             .width(width)
             .show_ui(ui, |ui| {

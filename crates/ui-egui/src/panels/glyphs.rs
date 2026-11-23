@@ -36,7 +36,7 @@ fn panel_style(ui: &mut egui::Ui, language: &str, framework: bool, family: &str,
     }
     #[cfg(target_arch = "wasm32")]
     let _ = (framework, family);
-    let combo = craft_ui::ComboBox::from_id_salt("glyph_style").selected_text(&*current).width(80.0).show_ui(ui, |ui| {
+    let combo = craft_ui_legacy::ComboBox::from_id_salt("glyph_style").selected_text(&*current).width(80.0).show_ui(ui, |ui| {
         for style in styles {
             if ui.selectable_label(style == *current, &style).clicked() {
                 *current = style;

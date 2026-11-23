@@ -130,7 +130,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 if kind == "color" {
                     caption(ui, lang, "Color Type:");
                     let cur = d.s("colorType");
-                    let combo = craft_ui::ComboBox::from_id_salt("swatch_color_type")
+                    let combo = craft_ui_legacy::ComboBox::from_id_salt("swatch_color_type")
                         .selected_text(crate::rtl::widget(ui, tr(lang, if cur == "spot" { "Spot" } else { "Process" })))
                         .show_ui(ui, |ui| {
                             for (v, l) in [("process", "Process"), ("spot", "Spot")] {
@@ -149,7 +149,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     "gray" => "Gray",
                     _ => "CMYK",
                 };
-                let combo = craft_ui::ComboBox::from_id_salt("swatch_color_mode")
+                let combo = craft_ui_legacy::ComboBox::from_id_salt("swatch_color_mode")
                     .selected_text(crate::rtl::widget(ui, tr(lang, label(&cur))))
                     .show_ui(ui, |ui| {
                         for m in ["cmyk", "rgb", "gray"] {
@@ -282,7 +282,7 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.end_row();
         caption(ui, lang, "Color:");
         ui.horizontal(|ui| {
-            let combo = craft_ui::ComboBox::from_id_salt("layer_color")
+            let combo = craft_ui_legacy::ComboBox::from_id_salt("layer_color")
                 .selected_text(crate::rtl::widget(ui, tr(lang, named.unwrap_or("Custom"))))
                 .width(140.0)
                 .show_ui(ui, |ui| {
