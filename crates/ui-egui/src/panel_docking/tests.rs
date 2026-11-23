@@ -1289,7 +1289,7 @@ fn a_canvas_click_leaves_an_open_flyout_open() {
 #[test]
 fn panel_icons_are_painted_in_code() {
     use super::PanelSpecs as _;
-    let specs = super::Specs { language: "en".into() };
+    let specs = super::Specs { language: "en".into(), titles: Vec::new() };
     assert!(specs.spec(&"pages".to_string()).icon.is_some(), "Pages has an icon");
     assert!(specs.spec(&CANVAS.to_string()).icon.is_none(), "the canvas has none");
     let ctx = egui::Context::default();
@@ -1460,4 +1460,22 @@ fn a_saved_float_only_entry_joins_a_customized_layout() {
     assert!(h.state().ui.floating.is_empty());
     let rect = super::floating_rect(h.state(), "tabs").expect("Tabs joined the layout");
     assert_eq!([rect.min.x, rect.min.y], [10.0, 20.0]);
+}
+
+/// A panel's title can change while it is open (the Story Editor's word count): the spec model shows the changing title
+/// in place of the panel's name, and the dock gets a new model only when the language or a title changed.
+#[test]
+fn a_changing_panel_title_makes_a_new_spec_model_only_when_it_changes() {
+    use super::PanelSpecs as _;
+    let titles = vec![("tabs".to_string(), "Tabs · 3 stops".to_string())];
+    let specs = super::specs("en", titles.clone());
+    assert!(format!("{:?}", specs.spec(&"tabs".to_string()).label).contains("Tabs · 3 stops"), "the changing title shows");
+    assert!(format!("{:?}", specs.spec(&"pages".to_string()).label).contains("Pages"), "other panels keep their names");
+    assert!(std::sync::Arc::ptr_eq(&specs, &super::specs("en", titles)), "the same titles keep the same model");
+    let changed = super::specs("en", vec![("tabs".to_string(), "Tabs · 4 stops".to_string())]);
+    assert!(!std::sync::Arc::ptr_eq(&specs, &changed), "a changed title makes a new model");
+    assert!(format!("{:?}", changed.spec(&"tabs".to_string()).label).contains("Tabs · 4 stops"));
+    let plain = super::specs("en", Vec::new());
+    assert!(!std::sync::Arc::ptr_eq(&changed, &plain), "and so does a title that ends");
+    assert!(format!("{:?}", plain.spec(&"tabs".to_string()).label).contains("Tabs"));
 }

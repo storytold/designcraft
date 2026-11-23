@@ -64,6 +64,19 @@ pub fn panel_label(id: &str) -> &'static str {
     all_panels().find(|p| p.0 == id).map_or("Panel", |p| p.1)
 }
 
+/// The title panel `id` shows in place of its name while it says something that changes, such as a count; `None`
+/// shows the panel's translated name. The dock reads the titles each frame and builds its panel specs again only when
+/// one of them changed.
+pub fn panel_title(app: &DesignApp, id: &str) -> Option<String> {
+    let _ = (app, id);
+    None
+}
+
+/// The panels showing a changing title ([`panel_title`]), with that title.
+pub fn panel_titles(app: &DesignApp) -> Vec<(String, String)> {
+    all_panels().filter_map(|(id, _, _)| panel_title(app, id).map(|title| ((*id).to_owned(), title))).collect()
+}
+
 /// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer).
 pub fn scrolls_itself(id: &str) -> bool {
     id == "pages"
