@@ -13,12 +13,12 @@
 //! the element whose access node is the field's text part (the record's hit area), never a guessed percentage of the
 //! panel.
 
-use egui_kittest::kittest::Queryable as _;
 use crate::DesignApp;
 use crate::panels::sel_info;
 use designcraft_geom::Rect;
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
 use serde_json::json;
 
 /// The frame the tests transform.
@@ -164,7 +164,8 @@ fn a_unit_the_number_field_cannot_name_is_typed_in_the_apps_own_spelling() {
     let mut h = properties_harness(app);
     assert_eq!(h.state().framework_fields.len(), 4, "the framework draws the four fields for ciceros too: {:?}", h.state().framework_fields);
     // A cicero has no kind in the framework's number field: the width is the framework's text field instead.
-    assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::SpinButton, "W").count(), 0, "no number field for ciceros");
+    // `query_all`, not `get_all`: kittest's `get_all` panics when nothing matches, which is the outcome checked here.
+    assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::SpinButton, "W").count(), 0, "no number field for ciceros");
     assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::TextInput, "W").count(), 1, "the width is a framework text field");
     let steps = undo_steps(&h);
     let field = field_rect(&h, "width");

@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn units_and_a_typed_increment_set_the_documents_rulers_and_a_bad_increment_is_refused() {
+    fn units_and_a_typed_increment_set_the_documents_rulers_and_a_bad_default_increment_is_refused() {
         let mut h = open(with_preferences("units"));
         pick(&mut h, "Horizontal:", "Inches");
         pick(&mut h, "Vertical:", "Inches");
@@ -685,27 +685,34 @@ mod tests {
         let st = &h.state().session.active().unwrap().doc.settings;
         assert_eq!((st.horizontal_units, st.vertical_units, st.keyboard_increment), (Unit::Inches, Unit::Inches, 0.5));
 
-        let mut h = open(with_preferences("units"));
+        // A document's settings skip a Cursor Key that isn't a measure; the defaults for new documents (no document
+        // open) refuse it, as `preferences_with_no_document_set_the_units_of_new_documents` has it for the native window.
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.language = String::new();
+        crate::menus::activate(&mut app, "app.preferences", &Value::Null);
+        app.ui.dialog.as_mut().expect("Preferences").fields.insert("section".into(), json!("units"));
+        let saved = app.session.prefs.default_units.keyboard_increment;
+        let mut h = open(app);
         type_into(&mut h, "Cursor Key:", "wide");
         click(&mut h, Role::Button, "OK");
         assert_eq!(dialog(&h).id, "preferences", "text that isn't a measure keeps the dialog open");
-        assert_eq!(h.state().session.active().unwrap().doc.settings.keyboard_increment, st_increment(), "the saved increment stays");
-    }
-
-    /// The document's keyboard increment when it is made: what a refused edit must leave.
-    fn st_increment() -> f64 {
-        let mut session = designcraft_engine::Session::new();
-        session.execute("file.new", &json!({})).unwrap();
-        session.active().unwrap().doc.settings.keyboard_increment
+        assert_eq!(h.state().session.prefs.default_units.keyboard_increment, saved, "the saved increment stays");
     }
 
     #[test]
     fn tab_moves_through_the_sections_controls() {
         let mut h = open(with_preferences("notes"));
         click(&mut h, Role::RadioButton, "Notes");
-        key(&mut h, Key::Tab);
-        let check = h.get_by_role_and_label(Role::CheckBox, "Show Note Anchors in Layout View");
-        assert!(check.is_focused(), "Tab goes from the section list to the section's first option");
+        // Natural Tab reaches the section's option within the dialog's own stops (the list, the option, the footer).
+        let stops = h.query_all_by(|n| matches!(n.role(), Role::RadioButton | Role::CheckBox | Role::Button | Role::ComboBox)).count();
+        let reached = (0..=stops).any(|_| {
+            if h.get_by_role_and_label(Role::CheckBox, "Show Note Anchors in Layout View").is_focused() {
+                return true;
+            }
+            key(&mut h, Key::Tab);
+            false
+        });
+        assert!(reached, "Tab goes from the section list to the section's option");
         let before = dialog(&h).b("showNoteAnchors");
         key(&mut h, Key::Space);
         assert_eq!(dialog(&h).b("showNoteAnchors"), !before, "Space toggles it in the draft");

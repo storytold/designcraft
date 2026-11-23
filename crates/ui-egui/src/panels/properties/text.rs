@@ -1446,7 +1446,9 @@ mod framework_tests {
     #[test]
     fn the_alignment_buttons_and_stroke_behind_fill_run_their_commands() {
         let mut app = document();
-        text_frame(&mut app, "Hello");
+        let (_, story) = text_frame(&mut app, "Hello");
+        // Text Appearance is the text selection's section.
+        select_text(&mut app, story, 5);
         let mut h = open(app, properties);
         let center = designcraft_doc::Align::Center.label();
         click(&mut h, Role::Button, center);
@@ -1460,7 +1462,9 @@ mod framework_tests {
     #[test]
     fn the_bulleted_list_button_turns_bullets_on() {
         let mut app = document();
-        text_frame(&mut app, "One");
+        let (_, story) = text_frame(&mut app, "One");
+        // Bullets and Numbering is the text selection's section.
+        select_text(&mut app, story, 3);
         let mut h = open(app, properties);
         click(&mut h, Role::Button, "Bulleted List");
         assert_eq!(journal(&h, "list.bullets").last(), Some(&json!({"on": true})));
@@ -1470,7 +1474,10 @@ mod framework_tests {
     #[test]
     fn the_text_frame_columns_field_sets_the_columns() {
         let mut app = document();
-        let (id, _) = text_frame(&mut app, "Columns");
+        let (id, story) = text_frame(&mut app, "Columns");
+        // With the text selected the Text Frame section is near the top of the panel, not under Transform, Align and
+        // Flex Layout.
+        select_text(&mut app, story, 3);
         let mut h = open(app, properties);
         type_into(&mut h, "Number of Columns", "3");
         assert_eq!(journal(&h, "object.textFrameOptions").last(), Some(&json!({"columns": 3})));
