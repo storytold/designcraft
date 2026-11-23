@@ -824,6 +824,27 @@ pub(crate) mod framework {
         pick
     }
 
+    /// The Font menu in a popover that hangs from `field`, a font field the caller draws itself (a click on it opens and closes
+    /// the popover). Returns the font picked.
+    pub(crate) fn popup(app: &mut DesignApp, ui: &mut Ui, field: &egui::Response, menu: &[FamilyInfo], current: &str) -> Option<FontPick> {
+        let label = crate::i18n::tr(&app.ui.language, "Font Family").to_owned();
+        let id = field.id.with("font_popup_open");
+        let mut open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
+        if field.clicked() {
+            open = !open;
+        }
+        let width = field.rect.width();
+        let mut pick = None;
+        let _ = Popover::new(label, Bind::bound(&mut open)).id(field.id.with("font_popover")).opened_by(field).show(ui, |ui, _| {
+            pick = body(app, ui, menu, current, width);
+        });
+        if pick.is_some() {
+            open = false;
+        }
+        ui.data_mut(|d| d.insert_temp(id, open));
+        pick
+    }
+
     /// What a pass of the menu's header asks of the app, applied once its components are shown.
     #[derive(Default)]
     struct Asks {

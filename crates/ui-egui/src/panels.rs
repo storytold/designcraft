@@ -441,11 +441,23 @@ pub fn font_combo(
 /// the font picked.
 pub fn font_popup(
     app: &mut DesignApp,
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     field: &egui::Response,
     menu: &[designcraft_fonts::FamilyInfo],
     current: &str,
 ) -> Option<FontPick> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
+        field.widget_info(|| {
+            let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
+            info.enabled = true;
+            info.current_text_value = Some(shown.clone());
+            info.label = Some(crate::i18n::tr(&app.ui.language, "Font Family").to_owned());
+            info
+        });
+        return font_menu::framework::popup(app, ui, field, menu, current);
+    }
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
     field.widget_info(|| {
         let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
