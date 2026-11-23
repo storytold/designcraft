@@ -15,16 +15,17 @@
 
 use crate::DesignApp;
 use crate::panels::SelInfo;
-use craft_behavior::{Codec, NotAValue};
+use craft_behavior::{Codec, IconId, NotAValue};
+use craft_ui_widgets::buttons::IconButton;
 use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-use craft_ui_widgets::display::Text;
-use craft_ui_widgets::primitives::Glyph;
+use craft_ui_widgets::display::{Icon, Text};
+use craft_ui_widgets::primitives::{Glyph, IconSpec};
 use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
 use craft_ui_widgets::style::UiTokens;
 use craft_ui_widgets::text::{NumberField, TextField};
 use designcraft_geom::Unit;
 use designcraft_geom::units::{format_measure, parse_measure};
-use egui::{Rect, vec2};
+use egui::{Rect, pos2, vec2};
 use serde_json::{Map, Value, json};
 use std::ops::RangeInclusive;
 
@@ -55,6 +56,37 @@ impl Glyph for Artwork {
     fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
         crate::icons::paint(painter, rect, self.0, color);
     }
+}
+
+/// An icon button at `at` showing the app's artwork `icon`, named and tipped `label`, in its on look while
+/// `selected`: whether it was clicked this pass.
+pub(crate) fn icon_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str, selected: bool) -> bool {
+    IconButton::new(IconSpec::glyph(&Artwork(icon)))
+        .id(id)
+        .label(label.to_owned())
+        .tooltip(label.to_owned())
+        .selected(selected)
+        .show_at(ui, at)
+        .clicked()
+}
+
+/// The app's artwork `icon` at `at`, named `label` (its tooltip) when it has one.
+pub(crate) fn icon(ui: &mut egui::Ui, at: Rect, icon: &'static str, label: Option<&str>, enabled: bool) {
+    let artwork = Artwork(icon);
+    let shown = Icon::new(IconSpec::glyph(&artwork)).enabled(enabled);
+    match label {
+        Some(label) => shown.label(label.to_owned()).show_at(ui, at),
+        None => shown.show_at(ui, at),
+    };
+}
+
+/// The `•••` button at the end of its own row under a panel section, with the id `id`: whether it was clicked this
+/// pass.
+pub(crate) fn more_options(ui: &mut egui::Ui, language: &str, id: egui::Id) -> bool {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), egui::Sense::hover());
+    let at = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
+    let label = crate::i18n::tr(language, "More Options");
+    IconButton::new(IconSpec::svg(IconId::new("more"))).id(id).label(label.to_owned()).tooltip(label.to_owned()).show_at(ui, at).clicked()
 }
 
 /// The framework's unit for a document unit, or `None` when its number field cannot show it as the app does.

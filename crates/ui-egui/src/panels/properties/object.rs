@@ -1002,8 +1002,8 @@ fn group_or_lock(i: &SelInfo) -> (&'static str, &'static str) {
 #[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::*;
-    use crate::framework_transform::{Artwork, Length, length_field};
-    use craft_behavior::{Anchor9, IconId, Mixed, Selection};
+    use crate::framework_transform::{Artwork, Length, icon, icon_button, length_field};
+    use craft_behavior::{Anchor9, Mixed, Selection};
     use craft_theme::Srgba;
     use craft_theme::variant::Tone;
     use craft_ui_widgets::buttons::{Button, ButtonOutput, IconButton, Link};
@@ -1045,44 +1045,15 @@ mod framework {
         ui.id().with(("properties-object", key))
     }
 
-    /// An icon button at `at` showing the app's artwork `icon`, named and tipped `label`, in its on look while
-    /// `selected`: whether it was clicked this pass.
-    fn icon_button(ui: &mut Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str, selected: bool) -> bool {
-        IconButton::new(IconSpec::glyph(&Artwork(icon)))
-            .id(id)
-            .label(label.to_owned())
-            .tooltip(label.to_owned())
-            .selected(selected)
-            .show_at(ui, at)
-            .clicked()
-    }
-
-    /// The app's artwork `icon` at `at`, named `label` (its tooltip) when it has one.
-    fn icon(ui: &mut Ui, at: Rect, icon: &'static str, label: Option<&str>, enabled: bool) {
-        let artwork = Artwork(icon);
-        let shown = Icon::new(IconSpec::glyph(&artwork)).enabled(enabled);
-        match label {
-            Some(label) => shown.label(label.to_owned()).show_at(ui, at),
-            None => shown.show_at(ui, at),
-        };
-    }
-
     /// A link to another panel at `at`: whether it was clicked this pass.
     fn link(ui: &mut Ui, at: Rect, id: egui::Id, label: &str) -> bool {
         Link::new(label.to_owned()).id(id).show_at(ui, at).clicked()
     }
 
-    /// The `•••` button at the end of its own row under a section: whether it was clicked this pass.
+    /// The `•••` button at the end of its own row under the section `section`: whether it was clicked this pass.
     fn more_options(app: &DesignApp, ui: &mut Ui, section: &'static str) -> bool {
-        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
-        let at = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
-        let label = crate::i18n::tr(&app.ui.language, "More Options");
-        IconButton::new(IconSpec::svg(IconId::new("more")))
-            .id(control_id(ui, ("more-options", section)))
-            .label(label.to_owned())
-            .tooltip(label.to_owned())
-            .show_at(ui, at)
-            .clicked()
+        let id = control_id(ui, ("more-options", section));
+        crate::framework_transform::more_options(ui, &app.ui.language, id)
     }
 
     /// The reference-point picker at `at` over the panel's point `current` (0..8, row-major): the point picked this
