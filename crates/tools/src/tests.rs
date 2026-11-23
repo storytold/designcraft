@@ -2640,6 +2640,10 @@ fn a_turned_objects_handles_turn_with_it() {
     let mut t = create("selection");
     let br = m * Point::new(200.0, 150.0);
     assert_eq!(t.pointer(&cx, &PointerEvent::new(PointerKind::Down, br.x, br.y)), vec![Action::Begin("Resize".into())]);
+    // Turned 30°, the right side handle points down-right on the canvas, and so does its cursor;
+    // upright it would be the across one.
+    let right = m * Point::new(200.0, 125.0);
+    assert_eq!(create("selection").cursor(&cx, right, Mods::default()), Cursor::ResizeNwSe);
     // Dragged 50 pt further along its own x axis: 50 pt wider, the same height.
     let to = m * Point::new(250.0, 150.0);
     match &t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.x, to.y))[0] {

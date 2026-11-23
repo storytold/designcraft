@@ -1565,7 +1565,8 @@ impl Tool for SelectionTool {
         }
         match self.drag {
             Drag::Move { .. } => return Cursor::Move,
-            Drag::Resize { handle, .. } | Drag::ResizeTurned { handle, .. } => return handle_cursor(handle),
+            Drag::Resize { handle, .. } => return handle_cursor(handle),
+            Drag::ResizeTurned { handle, .. } => return turned_handle_cursor(cx, handle),
             Drag::Rotate { .. } => return Cursor::Rotate,
             Drag::Corner { .. } => return Cursor::Arrow,
             _ => {}
@@ -1574,7 +1575,7 @@ impl Tool for SelectionTool {
             return Cursor::Arrow;
         }
         match handle_at(cx, p) {
-            Some(h) => handle_cursor(h),
+            Some(h) => turned_handle_cursor(cx, h),
             None if rotate_zone(cx, p).is_some() => Cursor::Rotate,
             None if grabber_at(cx, p).is_some() || on_selected_content(cx, p) => Cursor::Hand,
             None => Cursor::Arrow,
@@ -1613,6 +1614,22 @@ fn handle_cursor(h: usize) -> Cursor {
         2 | 6 => Cursor::ResizeNeSw,
         1 | 5 => Cursor::ResizeV,
         _ => Cursor::ResizeH,
+    }
+}
+
+/// The resize cursor for handle `h`; on a turned object, the one of the four that lies closest
+/// to the direction the handle points on the canvas.
+fn turned_handle_cursor(cx: &ToolContext, h: usize) -> Cursor {
+    let Some((_, r, m)) = selected_turned(cx) else { return handle_cursor(h) };
+    let Some(&at) = handles(r).get(h) else { return handle_cursor(h) };
+    let d = m * at - m * r.center();
+    // Canvas y runs down: 0° is across, 45° down-right, 90° down, 135° down-left.
+    let deg = d.y.atan2(d.x).to_degrees().rem_euclid(180.0);
+    match ((deg + 22.5) / 45.0).floor() as u8 % 4 {
+        0 => Cursor::ResizeH,
+        1 => Cursor::ResizeNwSe,
+        2 => Cursor::ResizeV,
+        _ => Cursor::ResizeNeSw,
     }
 }
 
