@@ -898,7 +898,7 @@ mod framework {
         let entries: Vec<Entry<&'static str>> =
             choices.iter().map(|(l, v)| Entry::new(*v, crate::i18n::tr(&app.ui.language, l).to_owned())).collect();
         let held = current.map_or(Mixed::Mixed, Mixed::Same);
-        Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied().flatten()
+        Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied()
     }
 
     pub(super) fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -942,7 +942,8 @@ mod framework {
         }
         let at = labelled(ui, &tr("Miter Limit:"), label_w, 60.0);
         let id = cid(ui, "miter");
-        let n = Number::new(&tr("Miter Limit:"), Some(st.miter_limit), Quantity::Plain { decimals: 0 });
+        let miter = tr("Miter Limit:");
+        let n = Number::new(&miter, Some(st.miter_limit), Quantity::Plain { decimals: 0 });
         if let Some(Some(v)) = number_field(ui, Some(at), id, n) {
             let _ = app.run("object.stroke", json!({"miterLimit": v.clamp(1.0, 500.0)}));
         }
@@ -1222,7 +1223,8 @@ mod framework {
         }
         text(ui, Some(sub(b, 138.0, 0.0, 50.0, FIELD_H)), &tr("Opacity"));
         let id = cid(ui, "opacity");
-        let n = Number::new(&tr("Opacity"), Some(f64::from(it.opacity) * 100.0), Quantity::Percent).range(0.0, 100.0);
+        let opacity = tr("Opacity");
+        let n = Number::new(&opacity, Some(f64::from(it.opacity) * 100.0), Quantity::Percent).range(0.0, 100.0);
         if let Some(Some(v)) = number_field(ui, Some(sub(b, 192.0, 0.0, 52.0, FIELD_H)), id, n) {
             let _ = app.run("object.opacity", json!({"opacity": (v / 100.0).clamp(0.0, 1.0)}));
         }
@@ -1267,7 +1269,8 @@ mod framework {
             }
             text(ui, Some(cell(0.0, 2.0 * row, 52.0)), &tr("Opacity"));
             let id = cid(ui, "shadow-opacity");
-            let n = Number::new(&tr("Opacity"), Some(f64::from(ds.opacity) * 100.0), Quantity::Percent);
+            let opacity = tr("Opacity");
+            let n = Number::new(&opacity, Some(f64::from(ds.opacity) * 100.0), Quantity::Percent);
             if let Some(Some(v)) = number_field(ui, Some(cell(56.0, 2.0 * row, 56.0)), id, n) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
