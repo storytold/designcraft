@@ -3398,6 +3398,11 @@ pub(crate) fn footer_labels(app: &DesignApp, d: &Dialog) -> (String, &'static st
 
 /// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    show_in(app, ctx, true);
+}
+
+/// [`show`] for an app whose Ui is `enabled` or not: a framework dialog of a disabled app takes no input.
+pub fn show_in(app: &mut DesignApp, ctx: &egui::Context, enabled: bool) {
     let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
     if shortcuts || app.shortcut_dialog.is_some() {
         // Also the frames after the dialog was closed from outside, and after another dialog took its place (its edits are
@@ -3416,9 +3421,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if app.framework_installed
         && let Some(form) = app.ui.dialog.as_ref().and_then(|d| framework::form(&d.id))
     {
-        framework::show(app, ctx, form);
+        framework::show(app, ctx, form, enabled);
         return;
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = enabled;
     let Some(mut d) = app.ui.dialog.clone() else { return };
     // Enter and Escape belong to an open popup (a menu, a name field) or to Find/Change's Change
     // Format Settings rather than the dialog. Read before the dialog draws: a popup closed by this

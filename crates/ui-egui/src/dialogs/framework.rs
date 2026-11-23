@@ -26,11 +26,13 @@ pub(crate) struct Form {
     /// Extra footer buttons after accept and cancel: their labels (i18n keys) and the field each sets to `true` before
     /// accepting (Close Document's Don't Save sets `discard`).
     pub(crate) extra: &'static [(&'static str, &'static str)],
+    /// Draws the footer's own content before the buttons over the draft (New Document's Preview and status line).
+    pub(crate) footer: Option<fn(&mut DesignApp, &mut Ui, &mut Dialog)>,
 }
 
 impl Form {
     pub(crate) const fn new(show: fn(&mut DesignApp, &mut Ui, &mut Dialog) -> Option<bool>) -> Self {
-        Form { show, width: 640.0, extra: &[] }
+        Form { show, width: 640.0, extra: &[], footer: None }
     }
 
     pub(crate) const fn width(mut self, width: f32) -> Self {
@@ -40,6 +42,11 @@ impl Form {
 
     pub(crate) const fn extra(mut self, extra: &'static [(&'static str, &'static str)]) -> Self {
         self.extra = extra;
+        self
+    }
+
+    pub(crate) const fn footer(mut self, footer: fn(&mut DesignApp, &mut Ui, &mut Dialog)) -> Self {
+        self.footer = Some(footer);
         self
     }
 }
@@ -103,32 +110,42 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "loadStyles" => Some(style_forms::LOAD_STYLES),
         "ruby" => Some(style_forms::RUBY),
         id if super::command_form::is_generic(id) => Some(super::command_form::COMMAND_FORM),
+        crate::package_dialog::ID => Some(crate::package_dialog::FORM),
+        crate::export_batch_dialog::ID => Some(crate::export_batch_dialog::FORM),
+        "newDocument" => Some(crate::new_document::FORM),
+        crate::package_dialog::INSTRUCTIONS => Some(crate::package_dialog::INSTRUCTIONS_FORM),
         _ => None,
     }
 }
 
 /// Shows the active dialog in the framework's modal with `form` as its body, then confirms or cancels it as the native
-/// window does.
-pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form) {
+/// window does. `enabled` is the enabled state of the app's Ui the dialog belongs to: a disabled app takes no accept,
+/// cancel or edit through its dialog.
+pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled: bool) {
     use craft_ui_panels::dialog::Dialog as FrameworkDialog;
     use craft_ui_panels::sections::{DialogRole, FooterButton};
     use craft_ui_widgets::contract::{Bind, LeastWidth, Props as _, ShowContainer as _};
     use craft_ui_widgets::runtime::overlay::Backdrop;
+    use std::cell::RefCell;
 
-    let Some(mut d) = app.ui.dialog.clone() else { return };
+    let Some(d) = app.ui.dialog.clone() else { return };
+    let dialog_id = d.id.clone();
     let title = super::dialog_title(app, &d);
     let (ok, cancel) = super::footer_labels(app, &d);
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).trim().to_owned();
-    let mut buttons = vec![FooterButton::new(tr(&ok), DialogRole::Accept).stays_open(true)];
+    let mut buttons = vec![FooterButton::new(tr(&ok), DialogRole::Accept).enabled(enabled).stays_open(true)];
     if d.id != "alert" {
-        buttons.push(FooterButton::new(tr(cancel), DialogRole::Cancel));
+        buttons.push(FooterButton::new(tr(cancel), DialogRole::Cancel).enabled(enabled));
     }
     for (label, _) in form.extra {
-        buttons.push(FooterButton::new(tr(label), DialogRole::Other).stays_open(true));
+        buttons.push(FooterButton::new(tr(label), DialogRole::Other).enabled(enabled).stays_open(true));
     }
     let mut opened = true;
     let mut from_form = None;
+    // The body and the footer content both edit the app and the draft; the dialog runs them one after the other.
+    let state = RefCell::new((app, d));
+    let cell = &state;
     // The area only gives the dialog a parent: the framework mounts its own modal layer.
     let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str()))).order(egui::Order::Foreground).show(ctx, |ui| {
         FrameworkDialog::new(title)
@@ -145,6 +162,37 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form) {
             .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
             .output
     });
+    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", dialog_id.as_str())))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let dialog = FrameworkDialog::new(title)
+                .id_salt(("framework_dialog", dialog_id.clone()))
+                .opened(Bind::bound(&mut opened))
+                .enabled(enabled)
+                // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
+                .backdrop(Backdrop::None)
+                .closable(false)
+                .outer_gesture(false)
+                .close_on_enter(enabled)
+                .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
+                .buttons(buttons);
+            let dialog = match form.footer {
+                Some(footer) => dialog.footer(move |ui, _| {
+                    let mut held = cell.borrow_mut();
+                    let (app, d) = &mut *held;
+                    footer(app, ui, d);
+                }),
+                None => dialog,
+            };
+            dialog
+                .show(ui, |ui, _| {
+                    let mut held = cell.borrow_mut();
+                    let (app, d) = &mut *held;
+                    from_form = (form.show)(app, ui, d);
+                })
+                .output
+        });
+    let (app, mut d) = state.into_inner();
     let out = shown.inner;
     let picked_extra = out.picked.and_then(|picked| picked.checked_sub(if d.id == "alert" { 1 } else { 2 }));
     if let Some((_, field)) = picked_extra.and_then(|at| form.extra.get(at)) {
@@ -152,6 +200,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form) {
     }
     app.ui.dialog = Some(d);
     let result = match (out.picked, from_form) {
+        _ if !enabled => None,
         (_, Some(result)) => Some(result),
         (Some(0), _) => Some(true),
         (Some(_), _) if picked_extra.is_some() => Some(true),
