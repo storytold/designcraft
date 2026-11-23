@@ -11,7 +11,13 @@ use crate::app::file_dialogs::{Bound, with_path};
 use crate::theme::semibold;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod char_sections;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod find_forms;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod frame_forms;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod import_forms;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework;
 #[cfg(not(target_arch = "wasm32"))]
