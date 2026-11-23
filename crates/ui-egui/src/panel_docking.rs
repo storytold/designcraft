@@ -1035,16 +1035,22 @@ pub(crate) fn set_iconic(app: &mut DesignApp, iconic: bool) -> Result<Value, Str
 }
 
 /// The panels' names, icons, sizes and rights, in the interface language: the spec model the dock reads, kept in a
-/// `Tracked` so the dock reads it again only when the language changes.
+/// `Tracked` so the dock reads it again only when the language or a panel's changing title changes.
 #[derive(Clone, Debug, PartialEq, PlainData)]
 struct Specs {
     language: String,
+    /// The titles panels show in place of their names while they say something that changes (`dock::panel_titles`).
+    titles: Vec<(String, String)>,
 }
 
 impl PanelSpecs<String> for Specs {
     fn spec(&self, panel: &String) -> PanelSpec {
         let english = crate::dock::all_panels().find(|p| p.0 == panel).map_or(panel.as_str(), |p| p.1);
-        let spec = PanelSpec::new(crate::i18n::tr(&self.language, english).to_owned());
+        let title = match self.titles.iter().find(|(id, _)| id == panel) {
+            Some((_, title)) => title.clone(),
+            None => crate::i18n::tr(&self.language, english).to_owned(),
+        };
+        let spec = PanelSpec::new(title);
         if panel == CANVAS {
             return spec.canvas().limits(craft_ui::contract::SizeLimits::at_least(vec2(200.0, 120.0)));
         }
@@ -1097,14 +1103,15 @@ fn shown_workspace(app: &DesignApp) -> Result<Arc<Workspace<String>>, String> {
     Ok(workspace)
 }
 
-/// The spec model in `language`, the same one while the language stays.
-fn specs(language: &str) -> Arc<Tracked<Specs>> {
+/// The spec model in `language` with the panels' changing `titles`, the same one while they stay: a title that changes
+/// (the Story Editor's word count) makes a new one, which the dock reads again.
+fn specs(language: &str, titles: Vec<(String, String)>) -> Arc<Tracked<Specs>> {
     SPECS.with(|specs| {
         let mut specs = specs.borrow_mut();
-        match specs.as_ref().filter(|kept| kept.language == language) {
+        match specs.as_ref().filter(|kept| kept.language == language && kept.titles == titles) {
             Some(kept) => Arc::clone(kept),
             None => {
-                let made = Arc::new(Tracked::new(Specs { language: language.to_owned() }));
+                let made = Arc::new(Tracked::new(Specs { language: language.to_owned(), titles }));
                 *specs = Some(Arc::clone(&made));
                 made
             }
@@ -1170,7 +1177,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             cancel_gesture(&ctx);
         }
     }
-    let specs = specs(&app.ui.language);
+    let specs = specs(&app.ui.language, crate::dock::panel_titles(app));
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
     let offered = flyout.clone();
     let opened_before = app.ui.docking_opened.clone();
