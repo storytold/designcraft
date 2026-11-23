@@ -2147,13 +2147,15 @@ mod framework_tests {
     fn a_layer_dropped_on_create_new_layer_is_duplicated() {
         let (app, _, _) = two_layers();
         let mut h = open(app);
-        let (from, to) = (center(&h, "Layer 1"), center(&h, "Create New Layer"));
+        let from = center(&h, "Layer 1");
         let start = h.state().session.journal.len();
-        // The drag by hand, to see what the framework holds before the release.
+        // The drag by hand: the target is measured after the press, once the panel has settled.
         event(&mut h, Event::PointerMoved(from));
         steps(&mut h, 2);
         event(&mut h, button(from, PointerButton::Primary, true, Modifiers::NONE));
-        steps(&mut h, 1);
+        steps(&mut h, 3);
+        // The press activates Layer 1, which opens and shows its object: the footer has moved down since it was measured.
+        let to = center(&h, "Create New Layer");
         for k in 1..=8 {
             event(&mut h, Event::PointerMoved(from.lerp(to, k as f32 / 8.0)));
         }
