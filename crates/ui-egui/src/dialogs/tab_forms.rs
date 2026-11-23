@@ -340,7 +340,7 @@ impl craft_ui_widgets::primitives::Glyph for AlignGlyph {
 /// Tabs: the style's stops on a ruler as wide as the first page's column, edited in `p.tabs` (and the indents in
 /// `p.leftIndent` and the others) until OK.
 pub(crate) fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value, doc: &designcraft_doc::Document) {
-    use super::style_kit::{committed_text, measure, push};
+    use crate::dialogs::text_forms::{committed_text, measure_edit, push};
     use designcraft_engine::cmd::tabs as engine;
     let lang = app.ui.language.as_str();
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
@@ -370,7 +370,7 @@ pub(crate) fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value, doc
                     }
                 }
             }
-            if let Some(x) = measure(ui, d, "tabs_x", &tr("X:"), stop.as_ref().map(|s| s.position), unit, true) {
+            if let Some(x) = measure_edit(ui, "tabs_x", &tr("X:"), stop.as_ref().map(|s| s.position), unit, (0.0, MAX_POSITION), true) {
                 result = Some(match sel {
                     Some(i) => engine::move_to(&mut list, i, x),
                     None => engine::add(&mut list, TabStop { position: x, align, leader: String::new(), align_on: String::new() }),

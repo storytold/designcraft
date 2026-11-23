@@ -6,7 +6,7 @@
 use super::Dialog;
 use super::framework::Form;
 use super::text_forms::{
-    Attrs, Spec, captioned, check, choice, field, measure, measure_edit, message, number, number_edit, select_at, select_attr, tabs, text,
+    Attrs, Spec, Swatches, captioned, check, choice, field, measure, measure_edit, message, number, number_edit, select_at, swatch_choice, tabs, text,
 };
 use crate::DesignApp;
 use craft_ui_panels::sections::GroupBox;
@@ -63,7 +63,7 @@ fn paragraph_local(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<b
 
 /// Lines kept with the next paragraph, the paragraph's lines kept together (all of them, or its first and last lines), and
 /// where it starts.
-fn keep_options(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs) {
+pub(super) fn keep_options(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let starts = captioned(
         lang,
@@ -112,7 +112,7 @@ fn keep_options(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs) {
 
 /// One column, spanning columns (0 = all), or split into sub-columns with inside and outside gutters; the least space
 /// before and after a spanning or split paragraph.
-fn span_columns(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document) {
+pub(super) fn span_columns(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document) {
     use designcraft_doc::SpanColumns;
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let current: SpanColumns = serde_json::from_value(a.get(d, "spanColumns")).unwrap_or_default();
@@ -174,7 +174,7 @@ fn span_columns(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &design
 // Drop Caps and Nested Styles
 
 /// The drop cap, nested styles and nested line styles.
-fn nested_styles(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, char_styles: &[String]) {
+pub(super) fn nested_styles(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, char_styles: &[String]) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let style = a.get(d, "dropCapStyle").as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::NO_CHAR_STYLE).to_owned();
     let captions: Vec<String> = char_styles.iter().map(|c| crate::i18n::style_name(lang, c).to_string()).collect();
@@ -335,7 +335,7 @@ fn line_style_row(lang: &str, ui: &mut Ui, line: &mut Value, i: usize, char_styl
 // GREP Styles
 
 /// A character style applied to text matching each pattern.
-fn grep_styles(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, char_styles: &[String]) {
+pub(super) fn grep_styles(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, char_styles: &[String]) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let mut list: Vec<Value> = a.get(d, "grepStyles").as_array().cloned().unwrap_or_default();
     let mut changed = false;
@@ -381,13 +381,13 @@ fn grep_styles(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, char_styles: 
 
 /// What the Bullets and Numbering section offers besides the paragraph's attributes: the document's character styles, the
 /// font families for the bullet, the fonts, and the paragraph's font (the bullet's when it has none of its own).
-struct Bullets<'a> {
-    char_styles: &'a [String],
-    families: &'a [String],
-    fonts: &'a designcraft_fonts::ScopedFonts<'static>,
-    scope: u32,
-    family: &'a str,
-    style: &'a str,
+pub(super) struct Bullets<'a> {
+    pub(super) char_styles: &'a [String],
+    pub(super) families: &'a [String],
+    pub(super) fonts: &'a designcraft_fonts::ScopedFonts<'static>,
+    pub(super) scope: u32,
+    pub(super) family: &'a str,
+    pub(super) style: &'a str,
 }
 
 /// The most glyphs the bullet's glyph picker shows.
@@ -396,7 +396,7 @@ const GLYPHS_SHOWN: usize = 96;
 /// The list type and level; the bullet, its font and the text after it, or the list, number style, number text and where
 /// numbering starts and restarts; the label's character style; then where the label goes (alignment, indents and the tab
 /// position of the text after it).
-fn bullets_and_numbering(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document, bullets: &Bullets) {
+pub(super) fn bullets_and_numbering(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document, bullets: &Bullets) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let units = doc.settings.horizontal_units;
     let kind = a.get(d, "listType").as_str().unwrap_or("none").to_owned();
@@ -734,14 +734,14 @@ fn color_tint(
     ui: &mut Ui,
     d: &mut Dialog,
     a: &Attrs,
-    swatches: &[(Value, String)],
+    swatches: &Swatches,
     keys: (&str, &str, &str),
     labels: (&str, &str, &str),
     enabled: bool,
 ) {
     let (color_key, tint_key, overprint_key) = keys;
     field(ui, labels.0, color_key, |ui| {
-        if let Some(picked) = select_attr(ui, d, a, color_key, labels.0, swatches, enabled) {
+        if let Some(picked) = swatch_choice(ui, d, a, color_key, labels.0, swatches, enabled) {
             a.set(d, color_key, picked);
         }
     });
@@ -787,13 +787,13 @@ fn border_type(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designc
 
 /// On or off, the stroke (border) or colour (shading), corners, offsets, the edges and width the box follows, and the options
 /// for split and consecutive paragraphs.
-fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document, border: bool) {
+pub(super) fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &designcraft_doc::Document, border: bool) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let key = |name: &str| format!("{}{name}", if border { "border" } else { "shading" });
     let on_key = key("On");
     let on = a.get(d, &on_key).as_bool().unwrap_or(false);
     let units = doc.settings.horizontal_units;
-    let swatches: Vec<(Value, String)> = doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone())).collect();
+    let swatches = Swatches::new(Some(doc), None);
     let solid = a.get(d, "borderType").get("kind").and_then(Value::as_str).is_none_or(|k| k == "solid");
     let caps = captioned(lang, &[("butt", "Butt"), ("round", "Round"), ("projecting", "Projecting")]);
     let joins = captioned(lang, &[("miter", "Miter"), ("round", "Round"), ("bevel", "Bevel")]);

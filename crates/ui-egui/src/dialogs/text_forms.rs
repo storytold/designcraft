@@ -90,22 +90,35 @@ pub(super) struct Spec {
     scale: f64,
     whole: bool,
     unit: Option<String>,
+    /// Emptying the field is an edit (an attribute that may be unset).
+    clearable: bool,
 }
 
 impl Spec {
     /// Whole numbers from `least` to `most`.
     pub(super) fn whole(least: f64, most: f64) -> Self {
-        Spec { range: (least, most), scale: 1.0, whole: true, unit: None }
+        Spec { range: (least, most), scale: 1.0, whole: true, unit: None, clearable: false }
     }
 
     /// Numbers from `least` to `most`.
     pub(super) fn real(least: f64, most: f64) -> Self {
-        Spec { range: (least, most), scale: 1.0, whole: false, unit: None }
+        Spec { range: (least, most), scale: 1.0, whole: false, unit: None, clearable: false }
     }
 
     /// Shown `scale` times the stored value.
     pub(super) fn scaled(mut self, scale: f64) -> Self {
         self.scale = scale;
+        self
+    }
+
+    /// Whether the field takes whole numbers only.
+    pub(super) fn is_whole(&self) -> bool {
+        self.whole
+    }
+
+    /// An emptied field reports an edit (`Some(None)`) instead of none.
+    pub(super) fn clearable(mut self) -> Self {
+        self.clearable = true;
         self
     }
 
@@ -144,6 +157,7 @@ pub(super) fn number_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f6
             let value = if spec.whole { value.round() + 0.0 } else { value };
             scaled.is_none_or(|before| (before - value).abs() > 1e-9).then_some(Some(value / spec.scale))
         }
+        None if spec.clearable && scaled.is_some() => Some(None),
         _ => None,
     }
 }
@@ -258,6 +272,68 @@ pub(super) fn choice(ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, label: &
     }
 }
 
+/// The swatches a colour menu offers: the document's, after the text's own colour where the attribute has one, each shown
+/// with its colour chip.
+pub(super) struct Swatches<'a> {
+    options: Vec<(Value, String)>,
+    doc: Option<&'a designcraft_doc::Document>,
+}
+
+impl<'a> Swatches<'a> {
+    /// The visible swatches of `doc`; `text_color` names the entry for the text's own colour when there is one.
+    pub(super) fn new(doc: Option<&'a designcraft_doc::Document>, text_color: Option<String>) -> Self {
+        let mut options = Vec::new();
+        if let Some(caption) = text_color {
+            options.push((json!(designcraft_doc::TEXT_COLOR), caption));
+        }
+        options.extend(doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))));
+        Swatches { options, doc }
+    }
+}
+
+impl<'a> Swatches<'a> {
+    /// The visible swatches of `doc` after `first`, entries of the menu's own (a blank one, the text's own colour).
+    pub(super) fn with_entries(doc: Option<&'a designcraft_doc::Document>, first: Vec<(Value, String)>) -> Self {
+        let mut menu = Swatches::new(doc, None);
+        menu.options.splice(0..0, first);
+        menu
+    }
+}
+
+/// A picker over the swatches of `menu` for the draft attribute `key`: the value picked in this pass.
+pub(super) fn swatch_choice(ui: &mut Ui, d: &Dialog, a: &Attrs, key: &str, label: &str, menu: &Swatches, enabled: bool) -> Option<Value> {
+    swatch_value(ui, &a.field(key), label, menu, &a.get(d, key), enabled)
+}
+
+/// A picker over the swatches of `menu` for `current`: the value picked in this pass.
+pub(super) fn swatch_value(ui: &mut Ui, salt: &str, label: &str, menu: &Swatches, current: &Value, enabled: bool) -> Option<Value> {
+    let current = current.clone();
+    let at = menu.options.iter().position(|(value, _)| *value == current);
+    let entries: Vec<Entry<usize>> = menu.options.iter().enumerate().map(|(i, (_, caption))| Entry::new(i, caption.clone())).collect();
+    let chips: Vec<Option<(Option<egui::Color32>, Option<(egui::Color32, egui::Color32)>)>> = menu
+        .options
+        .iter()
+        .map(|(value, _)| {
+            let name = value.as_str().filter(|name| *name != designcraft_doc::TEXT_COLOR)?;
+            menu.doc.map(|doc| crate::widgets::swatch_colors(doc, name, 1.0))
+        })
+        .collect();
+    let mut picker = Select::new(label.to_owned(), Bind::given(at.map_or(Mixed::Mixed, Mixed::Same)), &entries)
+        .keeps_name(true)
+        .id_salt(("text_form_swatch", salt.to_owned()))
+        .enabled(enabled)
+        .picture(move |index: &usize, cx: &craft_ui_widgets::primitives::ContentPainterCx, rect: egui::Rect| {
+            if let Some(Some((color, gradient))) = chips.get(*index) {
+                crate::widgets::paint_chip(&cx.painter, rect, *color, *gradient);
+            }
+        });
+    if let Some(name) = current.as_str().filter(|name| at.is_none() && !name.is_empty()) {
+        picker = picker.placeholder(name.to_owned());
+    }
+    let picked = picker.show(ui).events.committed().copied().filter(|picked| Some(*picked) != at)?;
+    menu.options.get(picked).map(|(value, _)| value.clone())
+}
+
 /// `options` as (stored value, caption in the interface language).
 pub(super) fn captioned(lang: &str, options: &[(&str, &str)]) -> Vec<(Value, String)> {
     options.iter().map(|(value, caption)| (json!(value), crate::i18n::tr(lang, caption).to_string())).collect()
@@ -278,6 +354,48 @@ pub(super) fn message(ui: &mut Ui, text: &str, bad: bool) {
     } else {
         text.shade(Shade::Muted).show(ui)
     };
+}
+
+/// A line of text.
+pub(super) fn line(ui: &mut Ui, text: &str) {
+    Text::new(text.to_owned()).show(ui);
+}
+
+/// A bold heading over a group of controls.
+pub(super) fn heading(ui: &mut Ui, text: &str) {
+    Text::new(text.to_owned()).role(craft_ui_widgets::style::TypeRole::BodyStrong).show(ui);
+}
+
+/// A push button; whether it was clicked.
+pub(super) fn push(ui: &mut Ui, salt: &str, label: &str, enabled: bool) -> bool {
+    craft_ui_widgets::buttons::Button::new(label.to_owned()).id_salt(("text_form_button", salt.to_owned())).enabled(enabled).show(ui).clicked()
+}
+
+/// A picker over `options` as (value, caption) for the current `value`; the value picked in this pass. A value none of them
+/// has shows as the placeholder.
+pub(super) fn pick(ui: &mut Ui, salt: &str, label: &str, value: &str, options: &[(String, String)], enabled: bool) -> Option<String> {
+    let captions: Vec<String> = options.iter().map(|(_, caption)| caption.clone()).collect();
+    let at = options.iter().position(|(v, _)| v == value);
+    let placeholder = at.is_none().then(|| value.to_owned());
+    let picked = select_at(ui, salt, label, &captions, at, placeholder, enabled)?;
+    options.get(picked).map(|(v, _)| v.clone())
+}
+
+/// A check box over a flag that may be unset or mixed (`None`: it shows mixed, and a click sets it on): the state clicked to.
+pub(super) fn toggle(ui: &mut Ui, salt: &str, label: &str, value: Option<bool>, enabled: bool) -> Option<bool> {
+    let shown = value.map_or(Mixed::Mixed, Mixed::Same);
+    let out = Checkbox::new(Bind::given(shown)).label(label.to_owned()).id_salt(("text_form_toggle", salt.to_owned())).enabled(enabled).show(ui);
+    out.events.committed().copied().filter(|next| Some(*next) != value)
+}
+
+/// A short text that is committed, not typed through: its value when committed.
+pub(super) fn committed_text(ui: &mut Ui, salt: &str, label: &str, current: &str, enabled: bool) -> Option<String> {
+    let out = TextField::new(label.to_owned(), Bind::given(current.to_owned()))
+        .id_salt(("text_form_commit", salt.to_owned()))
+        .limit(None::<usize>)
+        .enabled(enabled)
+        .show(ui);
+    out.events.committed().cloned().filter(|next| next != current)
 }
 
 /// The rows of a pick list: their captions.
@@ -490,11 +608,8 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
         .iter()
         .position(|k| std::mem::discriminant(k) == std::mem::discriminant(&kind) && !matches!(k, StrokeType::Style { .. }))
         .or_else(|| types.iter().position(|k| *k == kind));
-    let colors: Vec<(Value, String)> = std::iter::once((json!(designcraft_doc::TEXT_COLOR), tr("Text Color")))
-        .chain(doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))))
-        .collect();
-    let swatches: Vec<(Value, String)> =
-        doc.into_iter().flat_map(|doc| doc.swatches.iter().filter(|w| !w.hidden).map(|w| (json!(w.name), w.name.clone()))).collect();
+    let colors = Swatches::new(doc.map(|d| &**d), Some(tr("Text Color")));
+    let swatches = Swatches::new(doc.map(|d| &**d), None);
     let gaps = !matches!(kind, StrokeType::Solid);
     let gap_color = a.get(d, "gapColor").as_str().unwrap_or(designcraft_color::swatch::NONE).to_owned();
     let widths = vec![(json!(true), tr("Column")), (json!(false), tr("Text"))];
@@ -519,7 +634,11 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
                     a.set(d, "type", serde_json::to_value(kind).unwrap_or_default());
                 }
             });
-            field(ui, &tr("Color:"), "color", |ui| choice(ui, d, &a, "color", &tr("Color:"), &colors, on));
+            field(ui, &tr("Color:"), "color", |ui| {
+                if let Some(picked) = swatch_choice(ui, d, &a, "color", &tr("Color:"), &colors, on) {
+                    a.set(d, "color", picked);
+                }
+            });
             field(ui, &tr("Tint:"), "tint", |ui| {
                 let shown = tint(a.get(d, "tint"));
                 if let Some(Some(v)) = number_edit(ui, &a.field("tint"), &tr("Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), on) {
@@ -527,7 +646,11 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
                 }
             });
             // A solid rule has no gaps.
-            field(ui, &tr("Gap Color:"), "gapColor", |ui| choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps));
+            field(ui, &tr("Gap Color:"), "gapColor", |ui| {
+                if let Some(picked) = swatch_choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps) {
+                    a.set(d, "gapColor", picked);
+                }
+            });
             field(ui, &tr("Gap Tint:"), "gapTint", |ui| {
                 // A full gap tint is left out of the rule's JSON: it reads 100%.
                 let shown = Some(a.get(d, "gapTint").as_f64().unwrap_or(1.0));
@@ -690,6 +813,7 @@ pub(crate) fn hyphenation_form(lang: &str, ui: &mut Ui, d: &mut Dialog, prefix: 
             let value = step.map_or(Mixed::Mixed, Mixed::Same);
             let out = Slider::new(Bind::given(value), 0.0..=10.0)
                 .step(1.0)
+                .ticks(10)
                 .label(tr("Hyphenation Weight"))
                 .id_salt(("hyphenation_slider", prefix.to_owned()))
                 .show(ui);
