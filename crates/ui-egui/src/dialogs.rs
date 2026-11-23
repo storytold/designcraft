@@ -5180,10 +5180,8 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.pdf_export.preset = d.s("preset");
             app.ui.pdf_export.standard = d.s("standard");
             app.ui.pdf_export.compress_images = d.b("compressImages");
-            let flatten = d.s("flatten");
-            app.ui.pdf_export.flatten = flatten.clone();
+            app.ui.pdf_export.flatten = d.s("flatten");
             app.ui.pdf_export.flatten_chosen = true;
-            app.ui.flattener = flatten;
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");
             app.ui.pdf_export.marks_crop = d.b("marksCrop");

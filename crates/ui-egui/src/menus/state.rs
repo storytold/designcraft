@@ -153,7 +153,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         },
         "edit.dynamicSpelling" => app.ui.dynamic_spelling,
         "app.language" => app.ui.language == params.get("lang").and_then(Value::as_str).unwrap_or(""),
-        "app.flattener" => app.ui.flattener == params.get("preset").and_then(Value::as_str).unwrap_or(""),
+        "app.flattener" => app.ui.pdf_export.resolved_flatten(&app.ui.flattener) == params.get("preset").and_then(Value::as_str).unwrap_or(""),
         "window.taskBar" => app.ui.task_bar,
         "window.taskBarPin" => app.ui.task_bar_pin.is_some(),
         "window.toolsDoubleColumn" => app.ui.tools_double_column,

@@ -168,12 +168,19 @@ impl Default for PdfExportSettings {
 }
 
 impl PdfExportSettings {
-    /// The flattener preset to seed the Export PDF dialog and Separations Preview with (`""` =
-    /// live transparency, `"high"`, `"medium"`, or `"low"`). An unchosen empty value (`""` with
+    /// Whether the Export PDF dialog has not overridden the global flattener preset
+    /// (`UiState.flattener`).
+    pub fn uses_global_flatten(&self) -> bool {
+        !self.flatten_chosen && self.flatten.is_empty()
+    }
+
+    /// The flattener preset to seed the Export PDF dialog, Separations Preview, and the
+    /// `Edit › Transparency Flattener Presets` menu checkmark with (`""` = live transparency,
+    /// `"high"`, `"medium"`, or `"low"`). An unchosen empty value (`""` with
     /// `flatten_chosen == false`) falls back to `global` (`UiState.flattener`); once explicitly
     /// chosen (or non-empty), the saved `flatten` value is kept.
     pub fn resolved_flatten<'a>(&'a self, global: &'a str) -> &'a str {
-        if self.flatten_chosen || !self.flatten.is_empty() { &self.flatten } else { global }
+        if self.uses_global_flatten() { global } else { &self.flatten }
     }
 }
 

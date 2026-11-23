@@ -174,7 +174,7 @@ pub(crate) fn export_pdf(app: &mut DesignApp, p: &Value) -> Result<Value, String
         o.remove("path");
         o.entry("bleed").or_insert(json!(true));
         o.entry("tagged").or_insert(json!(true));
-        if !app.ui.flattener.is_empty() {
+        if app.ui.pdf_export.uses_global_flatten() && !app.ui.flattener.is_empty() {
             o.entry("flatten").or_insert(json!(app.ui.flattener));
         }
     }

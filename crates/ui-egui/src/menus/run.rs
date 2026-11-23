@@ -328,12 +328,12 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             if !["", "high", "medium", "low"].contains(&v) {
                 return Some(Err(format!("unknown preset `{v}`")));
             }
-            app.ui.flattener = v.to_string();
-            if app.ui.pdf_export.flatten != v {
-                app.ui.pdf_export.flatten = v.to_string();
+            if app.ui.pdf_export.resolved_flatten(&app.ui.flattener) != v {
                 app.ui.pdf_export.preset = "Custom".into();
             }
-            app.ui.pdf_export.flatten_chosen = true;
+            app.ui.flattener = v.to_string();
+            app.ui.pdf_export.flatten.clear();
+            app.ui.pdf_export.flatten_chosen = false;
             Ok(json!(v))
         }
         "app.graphicCell" => match p.get("path").and_then(Value::as_str) {

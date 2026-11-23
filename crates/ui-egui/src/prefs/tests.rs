@@ -354,9 +354,40 @@ fn read_preferences_migrates_named_pdf_preset_flatten_and_keeps_custom() {
     }
 
     let saved_custom = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "Custom", "flatten": "" }
+    });
+    let ui_custom_global = UiState::read_preferences(&serde_json::to_vec(&saved_custom).unwrap()).unwrap().ui;
+    assert_eq!(ui_custom_global.pdf_export.flatten, "");
+    assert!(!ui_custom_global.pdf_export.flatten_chosen);
+    assert_eq!(ui_custom_global.pdf_export.resolved_flatten(&ui_custom_global.flattener), "low");
+
+    let saved_custom_medium = json!({
         "pdfExport": { "preset": "Custom", "flatten": "medium" }
     });
-    let ui_custom = UiState::read_preferences(&serde_json::to_vec(&saved_custom).unwrap()).unwrap().ui;
+    let ui_custom = UiState::read_preferences(&serde_json::to_vec(&saved_custom_medium).unwrap()).unwrap().ui;
     assert_eq!(ui_custom.pdf_export.flatten, "medium");
     assert!(!ui_custom.pdf_export.flatten_chosen);
+
+    // Loading preferences syncs the Edit › Transparency Flattener Presets menu checkmark immediately.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+    let old_desktop = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "Desktop Printing", "flatten": "" }
+    });
+    app.ui = UiState::read_preferences(&serde_json::to_vec(&old_desktop).unwrap()).unwrap().ui;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
+
+    let old_x1a = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "PDF/X-1a:2003", "flatten": "" }
+    });
+    app.ui = UiState::read_preferences(&serde_json::to_vec(&old_x1a).unwrap()).unwrap().ui;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
+
+    app.ui = ui_custom_global;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(false));
 }

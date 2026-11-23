@@ -3649,11 +3649,15 @@ fn open_pdf_export_seeds_fields_from_settings() {
     let d = app.ui.dialog.as_ref().unwrap();
     assert_eq!(d.s("flatten"), "");
 
-    // Choosing a flattener via Edit › Transparency Flattener Presets updates both app.ui.flattener and app.ui.pdf_export.
+    // Choosing a flattener via Edit › Transparency Flattener Presets updates app.ui.flattener,
+    // switches pdf_export to follow it (marking preset Custom), and updates the menu checkmark.
     app.run("app.flattener", json!({"preset": "high"})).unwrap();
     assert_eq!(app.ui.flattener, "high");
-    assert_eq!(app.ui.pdf_export.flatten, "high");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(app.ui.pdf_export.resolved_flatten(&app.ui.flattener), "high");
     assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(false));
     open_pdf_export(&mut app);
     let d = app.ui.dialog.as_ref().unwrap();
     assert_eq!(d.s("flatten"), "high");
@@ -3761,11 +3765,12 @@ fn pdf_export_presets_keep_full_png_resolution_with_effects_and_blending() {
     assert_eq!(app.ui.pdf_export.preset, "Screen and Email");
     assert_eq!(app.ui.pdf_export.flatten, "");
     assert!(app.ui.pdf_export.flatten_chosen);
-    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
 
     // 2. Switching away from a prior "low" choice (via Edit › Transparency Flattener Presets) must not re-flatten at 72 ppi.
     app.run("app.flattener", json!({"preset": "low"})).unwrap();
     assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
     open_pdf_export(&mut app);
     {
         let d = app.ui.dialog.as_mut().unwrap();
@@ -3778,7 +3783,8 @@ fn pdf_export_presets_keep_full_png_resolution_with_effects_and_blending() {
     assert_eq!(app.ui.pdf_export.preset, "Desktop Printing");
     assert_eq!(app.ui.pdf_export.flatten, "");
     assert!(app.ui.pdf_export.flatten_chosen);
-    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
 
     // 3. Reopening the dialog without re-selecting the preset must keep flatten = "" (not fall back to "low").
     open_pdf_export(&mut app);
@@ -3819,7 +3825,7 @@ fn pdf_export_interactive_keeps_transparency_after_print_export() {
     }));
     app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/interactive-transparency-test.pdf".into())));
 
-    // 1. Confirm Print PDF with PDF/X-1a:2003 (sets global flattener = "high") -> flattens print export.
+    // 1. Confirm Print PDF with PDF/X-1a:2003 -> flattens print export without mutating app.ui.flattener.
     open_pdf_export(&mut app);
     {
         let d = app.ui.dialog.as_mut().unwrap();
@@ -3829,14 +3835,15 @@ fn pdf_export_interactive_keeps_transparency_after_print_export() {
     confirm(&mut app).unwrap();
     app.settle_dialogs();
     assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
-    assert_eq!(app.ui.flattener, "high");
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
 
     // 2. Interactive PDF export must keep live transparency instead of inheriting "high".
     app.run("app.exportInteractivePdf", json!({})).unwrap();
     app.settle_dialogs();
-    assert_eq!(app.ui.flattener, "high", "interactive export should not clobber the global flattener");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
 
-    // 3. Confirm Print PDF with Custom + Low (non-X-1a; sets global flattener = "low") -> flattens print export.
+    // 3. Confirm Print PDF with Custom + Low (non-X-1a) -> flattens print export without mutating app.ui.flattener.
     open_pdf_export(&mut app);
     {
         let d = app.ui.dialog.as_mut().unwrap();
@@ -3846,25 +3853,108 @@ fn pdf_export_interactive_keeps_transparency_after_print_export() {
     }
     confirm(&mut app).unwrap();
     app.settle_dialogs();
-    assert_eq!(app.ui.flattener, "low");
+    assert_eq!(app.ui.flattener, "");
     assert_eq!(app.ui.pdf_export.standard, "none");
     assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
 
     // 4. Subsequent Interactive PDF export must still keep live transparency instead of inheriting "low".
     app.run("app.exportInteractivePdf", json!({})).unwrap();
     app.settle_dialogs();
 
-    // 5. Explicit flattener override passed directly by a caller still works.
+    // 5. Explicit global flattener via Edit › Transparency Flattener Presets must also not flatten Interactive PDF.
+    app.run("app.flattener", json!({"preset": "low"})).unwrap();
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "low", "interactive export should not clobber the global flattener");
+
+    // 6. Explicit flattener override passed directly by a caller still works.
     app.run("app.exportInteractivePdf", json!({"path": "/tmp/interactive-explicit-low.pdf", "flatten": "low"})).unwrap();
 
     let pdfs = writes.lock().unwrap();
-    assert_eq!(pdfs.len(), 5);
+    assert_eq!(pdfs.len(), 6);
     let as_text: Vec<_> = pdfs.iter().map(|b| String::from_utf8_lossy(b)).collect();
     assert!(!as_text[0].contains("/Width 400"), "PDF/X-1a print export should flatten blended image");
     assert!(as_text[1].contains("/Width 400"), "Interactive PDF after PDF/X-1a must keep 400px blended PNG unflattened");
     assert!(!as_text[2].contains("/Width 400"), "Custom+Low print export should flatten blended image");
     assert!(as_text[3].contains("/Width 400"), "Interactive PDF after Custom+Low must keep 400px blended PNG unflattened");
-    assert!(!as_text[4].contains("/Width 400"), "Explicit flatten override on Interactive PDF should still flatten");
+    assert!(as_text[4].contains("/Width 400"), "Interactive PDF after app.flattener low must keep 400px blended PNG unflattened");
+    assert!(!as_text[5].contains("/Width 400"), "Explicit flatten override on Interactive PDF should still flatten");
+}
+
+#[test]
+fn pdf_export_scripted_does_not_inherit_dialog_flattener() {
+    use std::sync::{Arc, Mutex};
+    let b64_blend = make_checker_png_b64(400);
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let blended = app.run("file.place", json!({"base64": &b64_blend, "name": "blend.png", "x": 36, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.effects", json!({"ids": [blended], "blend": "Multiply"})).unwrap();
+
+    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = writes.clone();
+    app.services.write = Some(Box::new(move |_path: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/scripted-transparency-test.pdf".into())));
+
+    // 1. Scripted app.exportPdf keeps live transparency by default.
+    app.run("app.exportPdf", json!({"path": "/tmp/a.pdf"})).unwrap();
+
+    // 2. Confirming File › Export PDF with PDF/X-1a:2003 flattens that export, not subsequent scripted exports.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "PDF/X-1a:2003");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+
+    app.run("app.exportPdf", json!({"path": "/tmp/b.pdf"})).unwrap();
+
+    // 3. Confirming File › Export PDF with Custom + Low flattens that export, not subsequent scripted exports.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        select_pdf_preset(d, "Custom");
+        d.fields.insert("standard".into(), json!("none"));
+        d.fields.insert("flatten".into(), json!("low"));
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+
+    app.run("app.exportPdf", json!({"path": "/tmp/c.pdf"})).unwrap();
+
+    // 4. Choosing Edit › Transparency Flattener Presets explicitly applies to scripted app.exportPdf.
+    app.run("app.flattener", json!({"preset": "low"})).unwrap();
+    app.run("app.exportPdf", json!({"path": "/tmp/d.pdf"})).unwrap();
+
+    // 5. Confirming Desktop Printing in the dialog clears flattening for menu, dialog, and scripted export.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "Desktop Printing");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/e.pdf"})).unwrap();
+
+    // 6. Explicit flatten parameter on scripted app.exportPdf still flattens.
+    app.run("app.exportPdf", json!({"path": "/tmp/f.pdf", "flatten": "low"})).unwrap();
+
+    let pdfs = writes.lock().unwrap();
+    assert_eq!(pdfs.len(), 9);
+    let as_text: Vec<_> = pdfs.iter().map(|b| String::from_utf8_lossy(b)).collect();
+    assert!(as_text[0].contains("/Width 400"), "initial scripted export keeps 400px PNG unflattened");
+    assert!(!as_text[1].contains("/Width 400"), "PDF/X-1a dialog export flattens");
+    assert!(as_text[2].contains("/Width 400"), "scripted export after PDF/X-1a keeps 400px PNG unflattened");
+    assert!(!as_text[3].contains("/Width 400"), "Custom+Low dialog export flattens");
+    assert!(as_text[4].contains("/Width 400"), "scripted export after Custom+Low keeps 400px PNG unflattened");
+    assert!(!as_text[5].contains("/Width 400"), "scripted export after explicit app.flattener low flattens");
+    assert!(as_text[6].contains("/Width 400"), "Desktop Printing dialog export keeps 400px PNG unflattened");
+    assert!(as_text[7].contains("/Width 400"), "scripted export after Desktop Printing keeps 400px PNG unflattened");
+    assert!(!as_text[8].contains("/Width 400"), "scripted export with explicit flatten=low flattens");
 }
 
 #[test]
