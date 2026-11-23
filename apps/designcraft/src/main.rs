@@ -233,6 +233,7 @@ fn services() -> Services {
         clipboard_change: Some(Box::new(clipboard_image::change_count)),
         #[cfg(target_os = "macos")]
         pointer: Some(Box::new(pointer::screen_position)),
+        open_in_background: true,
         ..Default::default()
     }
 }

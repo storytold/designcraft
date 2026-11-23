@@ -150,12 +150,16 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         },
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
-            let name = index
-                .as_u64()
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| app.session.prefs.recent_files.get(i))
-                .map(|path| recent_label(path))
-                .unwrap_or_default();
+            let path = index.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| app.session.prefs.recent_files.get(i)).cloned();
+            // Read in the background, a file still there opens as File › Open opens it;
+            // `file.openRecent` explains a missing one.
+            #[cfg(not(target_arch = "wasm32"))]
+            if app.opens_in_background()
+                && let Some(path) = path.as_ref().filter(|p| designcraft_engine::io::is_file(p))
+            {
+                return Some(app.open_document(path.clone()));
+            }
+            let name = path.as_deref().map(recent_label).unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
         "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {
@@ -244,6 +248,7 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.cellOptionsDialog" => crate::dialogs::open_cell_options(app),
+        "app.diagonalLinesDialog" => crate::dialogs::open_diagonal_lines(app),
         "window.hideMenuItem" => {
             let Some(item) = p.get("item").and_then(Value::as_str) else { return Some(Err("missing item".into())) };
             let hide = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);
@@ -767,6 +772,24 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "view.textThreads" => flag(&mut app.ui.text_threads),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorStyleColumn" => {
+            let on = p.get("on");
+            let width = p.get("width");
+            if on.is_some_and(|v| !v.is_boolean()) || width.is_some_and(|v| !v.is_number()) {
+                return Some(Err(format!("{id}: `on` is a bool and `width` a number")));
+            }
+            match (on.and_then(Value::as_bool), width.and_then(Value::as_f64)) {
+                (None, None) => app.ui.story_editor_style_column = !app.ui.story_editor_style_column,
+                (on, width) => {
+                    app.ui.story_editor_style_column = on.unwrap_or(app.ui.story_editor_style_column);
+                    if let Some(w) = width {
+                        app.ui.story_editor_style_width =
+                            crate::story_editor::style_column_width(w.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32);
+                    }
+                }
+            }
+            Ok(json!({"on": app.ui.story_editor_style_column, "width": app.ui.story_editor_style_width}))
+        }
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };

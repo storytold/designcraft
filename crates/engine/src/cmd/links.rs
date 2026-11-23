@@ -236,13 +236,12 @@ pub(crate) fn give_bytes(a: &mut Asset, bytes: impl Into<Arc<Vec<u8>>>, file: Op
 }
 
 /// [`give_bytes`] for a graphic being placed, leaving out the work that grows with the file: the
-/// graphic links to its file at once, with the file's size and time as its fingerprint and the
-/// bytes just read kept in memory for drawing, and its content hash and proxy are made in the
-/// background ([`super::native_links::prepare`] the returned work once the asset is in the
-/// document; [`add_prepared`] adds them). A link without a hash is complete: its status goes by
-/// size and time until the hash is in. Placing many press-size images would otherwise decode and
-/// hash each one before the app responds again. Embedded placements, bytes without a file and
-/// the web (no threads) are [`give_bytes`].
+/// graphic links to its file at once, with the bytes just read kept in memory for drawing.
+/// A reliable size and time can identify those bytes until the worker makes the hash. If
+/// there is no reliable time, record a hash of the bytes already read before the link can
+/// be saved. The worker still makes any deferred hash and the proxy ([`super::native_links::prepare`];
+/// [`add_prepared`] adds the results). Embedded placements, bytes without a file and the web
+/// (no threads) are [`give_bytes`].
 #[must_use = "the hash and proxy are made only once the returned work is queued"]
 pub(crate) fn give_placed(
     a: &mut Asset,
@@ -260,7 +259,7 @@ pub(crate) fn give_placed(
         }
     };
     record_file(a, &bytes, file, document);
-    a.link_hash = None;
+    a.link_hash = a.link_fingerprint.is_none().then(|| crate::asset_io::content_hash(&bytes));
     link_recorded(a, Arc::clone(&bytes), designcraft_doc::SourceKey::fresh(), document, |_, _| None);
     Some(super::native_links::Pending::of(a, bytes))
 }
