@@ -937,7 +937,6 @@ fn embedded_documents_keep_their_older_version_and_version_5_loads() {
     assert_eq!(loaded.assets.len(), d.assets.len());
 }
 
-
 /// A document nested deeper than the reader accepts is refused before anything is written,
 /// while a moderately nested one still saves and reopens.
 #[test]
