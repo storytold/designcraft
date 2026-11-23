@@ -343,6 +343,19 @@ fn convert_table_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
+/// A count field's value as the commands read it: a whole number is an integer (`as_u64` refuses `2.0`, which is how the
+/// spinner stores it), anything else goes through unchanged for the command to refuse. One when unset.
+fn whole_number(value: Option<&Value>) -> Value {
+    match value {
+        None => json!(1),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(f) if f >= 0.0 && f.fract() == 0.0 && f < u64::MAX as f64 => json!(f as u64),
+            _ => Value::Number(n.clone()),
+        },
+        Some(other) => other.clone(),
+    }
+}
+
 /// The dialog's chosen table style: none when unset, null or empty (a new table's [Basic Table]).
 fn table_style_field(d: &Dialog) -> Option<String> {
     d.fields.get("tableStyle").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
@@ -5066,7 +5079,7 @@ fn confirm_part1(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 app.run(
                     "table.convertFromText",
                     json!({"columnSeparator": d.s("columnSeparator"), "rowSeparator": d.s("rowSeparator"),
-                        "columns": if same { d.fields.get("columns").cloned().unwrap_or(json!(1)) } else { Value::Null }, "tableStyle": style}),
+                        "columns": if same { whole_number(d.fields.get("columns")) } else { Value::Null }, "tableStyle": style}),
                 )
             } else {
                 app.run("table.convertToText", json!({"columnSeparator": d.s("columnSeparator"), "rowSeparator": d.s("rowSeparator")}))

@@ -63,6 +63,27 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
     crate::canvas::forwarded_keys(app, input.events, modifiers);
 }
 
+/// The Escape the craft UI runtime kept from egui for itself and no component took this pass (read last in the UI, as the
+/// runtime asks): with nothing focused and no egui widget or popup of the app's holding focus, the key stage strips Escape
+/// and routes it to the window. It does what Escape does in the app: cancels the open dialog, closes Quick Apply, leaves
+/// Presentation, and goes back to the Selection tool.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn window_escape(app: &mut DesignApp, ctx: &egui::Context) {
+    use craft_ui_widgets::runtime::keys::{Intent, with_window_intents};
+    if !with_window_intents(ctx, false, |window| window.take(Intent::Cancel)) {
+        return;
+    }
+    if app.ui.dialog.is_some() {
+        crate::dialogs::cancel(app);
+    } else if app.ui.palette.is_some() {
+        app.ui.palette = None;
+    } else if app.ui.screen_mode == ScreenMode::Presentation {
+        let _ = app.run("view.togglePresentation", json!({}));
+    } else if !app.session.wants_text() && app.session.tool_id() != "selection" && !app.session.tool_busy() && app.ui.flyout.is_none() {
+        app.select_tool("selection");
+    }
+}
+
 /// Whether something other than the shortcuts has the keyboard: a dialog or Quick Apply, an input
 /// method composing at the text caret, an open canvas context menu (Escape closes it, as a
 /// native menu would) or the menu search.

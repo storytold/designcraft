@@ -1326,22 +1326,34 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
     let style = app.session.doc().unwrap().doc.styles.resolve_para_style(designcraft_doc::story::BASIC_PARAGRAPH).0.word_space_desired;
     assert_eq!(style, 1.0, "the paragraph style keeps its value");
 
-    // Cancel (Escape) leaves the paragraph alone.
+    // Cancel (Escape) leaves the paragraph alone. The shipping window runs the framework's forms on the installed runtime,
+    // which takes the Escape for the dialog; the runtime strips it from egui's input for the legacy form.
+    app.framework_opacity = true;
+    app.install_framework(&ctx);
+    assert!(app.framework_installed);
+    let installed = |app: &mut DesignApp, events: Vec<egui::Event>| {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        app.raw_input_hook(&ctx, &mut input);
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
     app.run("app.justificationDialog", json!({})).unwrap();
+    for _ in 0..3 {
+        installed(&mut app, vec![]);
+    }
     app.ui.dialog.as_mut().unwrap().fields.insert("wordSpaceDesired".into(), json!(1.2));
+    installed(&mut app, vec![]);
     let before = undo_steps(&app);
     let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
-        events: vec![escape],
-        ..Default::default()
-    };
-    let mut out = ctx.run_ui(input, |ui| {
-        app.logic(&ui.ctx().clone());
-        app.ui(ui);
-    });
-    out.textures_delta.clear();
+    installed(&mut app, vec![escape]);
     assert!(app.ui.dialog.is_none(), "cancelled");
     assert_eq!(undo_steps(&app), before);
     assert_eq!(para_attr(&mut app, &story, 0, "wordSpaceDesired"), 1.1);
