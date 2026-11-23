@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 //! The pilot's focused tests: a genuine craft `NumberField` in the real Properties › Transform
 //! section of a real document, driven with real pointer and key events.
 //!

@@ -317,6 +317,110 @@ pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, fir
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct PageFooterIcon(&'static str);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl craft_ui_widgets::primitives::Glyph for PageFooterIcon {
+    fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
+        icons::paint(painter, rect, self.0, color);
+    }
+}
+
+/// The SDK owns ordinary input; its public response retains the app's existing drag/popup bindings.
+fn page_footer_button(app: &DesignApp, ui: &mut egui::Ui, icon: &'static str, selected: bool, label: &str, id: egui::Id) -> egui::Response {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::buttons::IconButton;
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::primitives::IconSpec;
+        use craft_ui_widgets::style::{ControlSize, Variant};
+        let glyph = PageFooterIcon(icon);
+        return IconButton::new(IconSpec::glyph(&glyph))
+            .label(label.to_owned())
+            .id(id)
+            .size(ControlSize::Sm)
+            .variant(Variant::GHOST)
+            .selected(selected)
+            .tooltip(label.to_owned())
+            .show(ui)
+            .response;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (app, id);
+    icons::button(ui, icon, 20.0, selected, label)
+}
+
+fn pages_footer(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::runtime::env::{Direction, with_env};
+        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+        with_env(ui, |scope| scope.direction = Some(direction), |ui| pages_footer_contents(app, ui, doc, cur, t, dragging));
+        return;
+    }
+    pages_footer_contents(app, ui, doc, cur, t, dragging);
+}
+
+fn pages_footer_contents(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
+    // A page has an absolute index: retire held input when its document, revision or current-page target changes.
+    let target = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision, st.editing_parents));
+    let footer_id = ui.scope_id().with(("pages-footer", target, cur));
+    ui.horizontal(|ui| {
+        ui.set_min_height(FOOTER_H - 4.0);
+        crate::rtl::label(
+            ui,
+            egui::RichText::new(
+                crate::i18n::tr(&app.ui.language, "{pages} Pages in {spreads} Spreads")
+                    .replace("{pages}", &doc.page_count().to_string())
+                    .replace("{spreads}", &doc.spreads.len().to_string()),
+            )
+            .size(11.0)
+            .color(t.text_dim),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if page_footer_button(app, ui, "trash", false, crate::i18n::tr(&app.ui.language, "Delete selected pages"), footer_id.with("trash"))
+                .clicked()
+            {
+                let _ = crate::dialogs::delete_pages(app, vec![cur]);
+            }
+            // Create new page; a page dropped on it is duplicated at the end of the document.
+            let plus = page_footer_button(app, ui, "plus", dragging, crate::i18n::tr(&app.ui.language, "Create new page"), footer_id.with("plus"));
+            if let Some(payload) = plus.dnd_release_payload::<PageDrag>() {
+                if let PageDrag::Page(from) = *payload
+                    && let Some((si, _)) = doc.page_loc(from)
+                {
+                    let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "atEnd": true}));
+                }
+            } else if plus.clicked() {
+                let _ = app.run("layout.pages.insert", json!({"after": cur, "count": 1}));
+            }
+            // Edit page size: InDesign's presets for the current page, or Custom Page Size….
+            let size =
+                page_footer_button(app, ui, "panel-pages", false, crate::i18n::tr(&app.ui.language, "Edit page size"), footer_id.with("panel-pages"));
+            egui::Popup::menu(&size).show(|ui| {
+                let Some((si, pi)) = doc.page_loc(cur) else { return };
+                let pg = &doc.spreads[si].pages[pi];
+                let landscape = pg.width > pg.height;
+                let current = crate::panels::properties::preset_name(pg.width, pg.height);
+                for (name, w, h) in crate::panels::properties::PAGE_PRESETS {
+                    let (w, h) = if landscape { (h, w) } else { (w, h) };
+                    if ui.selectable_label(current == *name, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, name))).clicked() {
+                        let _ = app.run("layout.pageSize", json!({"pages": [cur + 1], "width": w, "height": h}));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Custom Page Size…"))).clicked() {
+                    app.ui.dialog =
+                        Some(crate::dialogs::Dialog::new("cmd:layout.pageSize", json!({"pages": [cur + 1], "width": pg.width, "height": pg.height})));
+                    ui.close();
+                }
+            });
+        });
+    });
+}
+
 /// A row of the Pages panel's parents list: [None] (`parent` = `None`) or a parent.
 struct ParentRow {
     label: String,
@@ -742,56 +846,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         pages_part(app, ui);
     }
     ui.spacing_mut().item_spacing.y = 4.0;
-    ui.horizontal(|ui| {
-        ui.set_min_height(FOOTER_H - 4.0);
-        crate::rtl::label(
-            ui,
-            egui::RichText::new(
-                crate::i18n::tr(&app.ui.language, "{pages} Pages in {spreads} Spreads")
-                    .replace("{pages}", &doc.page_count().to_string())
-                    .replace("{spreads}", &doc.spreads.len().to_string()),
-            )
-            .size(11.0)
-            .color(t.text_dim),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete selected pages")).clicked() {
-                let _ = crate::dialogs::delete_pages(app, vec![cur]);
-            }
-            // Create new page; a page dropped on it is duplicated at the end of the document.
-            let plus = icons::button(ui, "plus", 20.0, dragging, crate::i18n::tr(&app.ui.language, "Create new page"));
-            if let Some(payload) = plus.dnd_release_payload::<PageDrag>() {
-                if let PageDrag::Page(from) = *payload
-                    && let Some((si, _)) = doc.page_loc(from)
-                {
-                    let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "atEnd": true}));
-                }
-            } else if plus.clicked() {
-                let _ = app.run("layout.pages.insert", json!({"after": cur, "count": 1}));
-            }
-            // Edit page size: InDesign's presets for the current page, or Custom Page Size….
-            let size = icons::button(ui, "panel-pages", 20.0, false, crate::i18n::tr(&app.ui.language, "Edit page size"));
-            egui::Popup::menu(&size).show(|ui| {
-                let Some((si, pi)) = doc.page_loc(cur) else { return };
-                let pg = &doc.spreads[si].pages[pi];
-                let landscape = pg.width > pg.height;
-                let current = crate::panels::properties::preset_name(pg.width, pg.height);
-                for (name, w, h) in crate::panels::properties::PAGE_PRESETS {
-                    let (w, h) = if landscape { (h, w) } else { (w, h) };
-                    if ui.selectable_label(current == *name, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, name))).clicked() {
-                        let _ = app.run("layout.pageSize", json!({"pages": [cur + 1], "width": w, "height": h}));
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Custom Page Size…"))).clicked() {
-                    app.ui.dialog =
-                        Some(crate::dialogs::Dialog::new("cmd:layout.pageSize", json!({"pages": [cur + 1], "width": pg.width, "height": pg.height})));
-                    ui.close();
-                }
-            });
-        });
-    });
+    pages_footer(app, ui, &doc, cur, &t, dragging);
     // Alt-drag copies a page that is a spread of its own to where it's dropped, in one undo
     // step; a page from a larger spread moves as usual.
     let alt = ui.input(|i| i.modifiers.alt);
@@ -1369,5 +1424,586 @@ mod spread_label_tests {
         assert!(!h.state().session.doc().unwrap().editing_parents);
         assert!(!h.state().view().unwrap().fitted);
         assert_eq!(h.state().session.doc().unwrap().doc.page_loc(crate::canvas::current_page(h.state()).unwrap()).unwrap().0, 2);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pages_footer_workflow_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
+    use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    use std::{collections::HashSet, sync::Arc};
+
+    const ACTIONS: [&str; 3] = ["Delete selected pages", "Create new page", "Edit page size"];
+    struct Rig {
+        app: DesignApp,
+        controls: Option<Arc<Recorded>>,
+        enabled: bool,
+        sizing: bool,
+        full_panel: bool,
+    }
+    type Mark = (Arc<designcraft_doc::Document>, String, (usize, usize));
+    fn step(h: &mut Harness<'_, Rig>) {
+        let mut raw = std::mem::take(h.input_mut());
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, Rig>, frames: usize) {
+        for _ in 0..frames {
+            step(h);
+        }
+    }
+    fn event(h: &mut Harness<'_, Rig>, event: Event) {
+        h.input_mut().events.push(event);
+        step(h);
+    }
+    fn key(h: &mut Harness<'_, Rig>, key: Key) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+    }
+    fn pointer(h: &mut Harness<'_, Rig>, pos: egui::Pos2, pressed: bool) {
+        event(h, Event::PointerMoved(pos));
+        event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+    }
+    /// Genuine already-installed native face, using the protected current47 Interactive fixture contract.
+    /// This is a strict test precondition; it does not change the production/default font input.
+    fn install_arabic_fixture(ctx: &egui::Context, language: &str) {
+        #[cfg(target_os = "macos")]
+        let family = "Geeza Pro";
+        #[cfg(target_os = "windows")]
+        let family = "Segoe UI";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let family = "DejaVu Sans";
+        let db = designcraft_fonts::FontDb::global();
+        assert!(db.has_family(family), "the native Arabic fixture requires the already-installed {family}; do not skip Arabic or substitute tofu");
+        let face = db.face(family, "Regular");
+        assert!(face.family.eq_ignore_ascii_case(family), "the named fixture must resolve to {family}, not {}", face.family);
+        assert!(
+            !face.is_placeholder() && face.covers('\u{0627}') && face.covers('\u{0625}') && face.covers('\u{0637}') && face.covers('\u{0639}'),
+            "the real existing face must contain U+0627/U+0625 and both actual failed U+0637/U+0639 glyphs"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(face.index(), 0, "the observed existing Geeza Pro Regular fixture is TTC face0");
+        assert!(face.style.eq_ignore_ascii_case("Regular"), "the genuine fixture requires the requested regular face");
+        for key in ACTIONS.into_iter().chain(crate::panels::properties::PAGE_PRESETS.iter().map(|preset| preset.0)).chain(["Custom Page Size…"]) {
+            for c in crate::i18n::tr(language, key).chars().filter(|c| designcraft_fonts::is_rtl(*c)) {
+                assert!(face.covers(c), "{family} lacks the real glyph U+{:04X} from {key}", u32::from(c));
+            }
+        }
+        let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
+        let fallback = crate::theme::SystemFont::new("Arab", face.family.clone(), face.data().to_vec(), face.index());
+        crate::theme::add_system_fallbacks(&mut definitions, &[fallback], language);
+        ctx.set_fonts(definitions);
+        eprintln!(
+            "Pages footer Arabic fixture: real existing {} {}, face {}, {} font bytes, full original Pages footer Arabic-string glyph coverage checked",
+            face.family,
+            face.style,
+            face.index(),
+            face.data().len()
+        );
+    }
+
+    fn harness(mut app: DesignApp, installed: bool, full_panel: bool) -> Harness<'static, Rig> {
+        app.framework_opacity = true;
+        let ctx = egui::Context::default();
+        if installed {
+            app.install_framework(&ctx);
+        }
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut ready = false;
+        let mut locale_fonts_ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(680.0, 640.0)).build_ui_state(
+            move |ui, state: &mut Rig| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), &state.app.ui.language);
+                    ready = true;
+                    return;
+                }
+                if !locale_fonts_ready {
+                    locale_fonts_ready = true;
+                    if state.app.ui.language == "ar" {
+                        install_arabic_fixture(ui.ctx(), &state.app.ui.language);
+                        return;
+                    }
+                }
+                let builder = if state.sizing { UiBuilder::new().sizing_pass() } else { UiBuilder::new() };
+                ui.scope_builder(builder, |ui| {
+                    ui.add_enabled_ui(state.enabled, |ui| {
+                        state.controls = record(ui, egui::Id::unique("pages-footer-workflow"), |ui| {
+                            if state.full_panel {
+                                show(&mut state.app, ui);
+                                return;
+                            }
+                            let Some(st) = state.app.session.active() else { return };
+                            let doc = st.doc.clone();
+                            let cur = crate::canvas::current_page(&state.app).unwrap_or(0);
+                            let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
+                            let t = Tokens::get(ui.ctx());
+                            pages_footer(&mut state.app, ui, &doc, cur, &t, dragging);
+                        })
+                        .1;
+                    })
+                });
+            },
+            Rig { app, controls: None, enabled: true, sizing: false, full_panel },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 4);
+        h
+    }
+    fn fixture() -> DesignApp {
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &json!({"pages":3,"facingPages":true})).unwrap();
+        session.execute("layout.pageSize", &json!({"pages":[1],"width":605,"height":805})).unwrap();
+        session.execute("layout.pageSize", &json!({"pages":[1],"width":615,"height":815})).unwrap();
+        session.execute("edit.undo", &json!({})).unwrap();
+        assert!(!session.active().unwrap().history.undo.is_empty());
+        assert_eq!(session.active().unwrap().history.redo.len(), 1);
+        let mut app = DesignApp::new_for_panel_tests(session, crate::Services::default());
+        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
+        crate::canvas::go_to_page(&mut app, 0);
+        assert_eq!(crate::canvas::current_page(&app), Some(0));
+        app
+    }
+    fn mark(h: &Harness<'_, Rig>) -> Mark {
+        let st = h.state().app.session.active().unwrap();
+        (
+            st.doc.clone(),
+            format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
+            (st.history.undo.len(), st.history.redo.len()),
+        )
+    }
+    fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
+        let now = mark(h);
+        assert!(Arc::ptr_eq(&now.0, &before.0), "rendering/refused input does not COW the document");
+        assert_eq!((now.1, now.2), (before.1.clone(), before.2));
+    }
+    fn name(h: &Harness<'_, Rig>, caption: &str) -> String {
+        crate::i18n::tr(&h.state().app.ui.language, caption).to_owned()
+    }
+    fn element(h: &Harness<'_, Rig>, caption: &str) -> Element {
+        let label = name(h, caption);
+        let found: Vec<_> = h
+            .state()
+            .controls
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|e| {
+                e.component == "IconButton" && e.part.is_none() && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(label.as_str()))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(found.len(), 1, "one actual named footer IconButton: {label}");
+        let field = found.into_iter().next().unwrap();
+        assert_eq!(field.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::Button));
+        let rect = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label.as_str())).rect();
+        assert!(rect.width() > 0.0 && rect.height() > 0.0 && field.rect.contains(rect.center()), "real AX hit target");
+        assert!(field.rect.height() <= FOOTER_H, "footer controls fit the unchanged footer allocation");
+        field
+    }
+    fn pos(h: &Harness<'_, Rig>, caption: &str) -> egui::Pos2 {
+        let label = name(h, caption);
+        h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label.as_str())).rect().center()
+    }
+    fn click(h: &mut Harness<'_, Rig>, caption: &str) {
+        element(h, caption);
+        let p = pos(h, caption);
+        pointer(h, p, true);
+        pointer(h, p, false);
+        idle(h, 2);
+    }
+    fn native_click(h: &mut Harness<'_, Rig>, caption: &str) {
+        let label = name(h, caption);
+        let p = h.get_by_label(&label).rect().center();
+        pointer(h, p, true);
+        pointer(h, p, false);
+        idle(h, 2);
+    }
+    fn tab_to(h: &mut Harness<'_, Rig>, caption: &str) {
+        let field = element(h, caption);
+        let label = name(h, caption);
+        let mut seen = HashSet::new();
+        loop {
+            let focused = {
+                let current = element(h, caption);
+                assert_eq!(current.id, field.id, "the actual target IconButton remains current");
+                assert!(!current.facts.as_ref().unwrap().disabled, "the current IconButton target must be enabled");
+                let control = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label.as_str()));
+                let access = control.accesskit_node();
+                assert!(!access.is_disabled(), "the actual named Button AX member must be enabled");
+                access.is_focused()
+            };
+            if focused {
+                return;
+            }
+            // Native focus can belong to an arena root; cycle identities must be actual AX members.
+            let focused_members: Vec<_> = {
+                let root = h.queryable_node();
+                std::iter::once(root.clone())
+                    .chain(root.children_recursive())
+                    .filter_map(|node| {
+                        let access = node.accesskit_node();
+                        access.is_focused().then(|| format!("{:?}", access.id()))
+                    })
+                    .collect()
+            };
+            assert!(seen.insert(focused_members.clone()), "natural Tab reaches {label}; repeated AX focus {focused_members:?}");
+            key(h, Key::Tab);
+        }
+    }
+    fn journal_one(h: &Harness<'_, Rig>, start: usize, cmd: &str, params: serde_json::Value) {
+        assert_eq!(&h.state().app.session.journal[start..], &[(cmd.to_owned(), params)]);
+    }
+    fn count(h: &Harness<'_, Rig>) -> usize {
+        h.state().app.session.active().unwrap().doc.page_count()
+    }
+    fn sizes(h: &Harness<'_, Rig>) -> Vec<(f64, f64)> {
+        h.state().app.session.active().unwrap().doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| (p.width, p.height))).collect()
+    }
+    fn preset() -> (f64, f64) {
+        let p = crate::panels::properties::PAGE_PRESETS.iter().find(|p| p.0 == "A4").unwrap();
+        (p.1, p.2)
+    }
+
+    #[test]
+    fn installed_pages_footer_idle_keeps_model_identity_nonempty_undo_redo_and_three_ids() {
+        let mut h = harness(fixture(), true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        let ids: Vec<_> = ACTIONS.iter().map(|c| element(&h, c).id).collect();
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), 3);
+        idle(&mut h, 8);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        assert_eq!(ids, ACTIONS.iter().map(|c| element(&h, c).id).collect::<Vec<_>>());
+    }
+    #[test]
+    fn installed_pages_footer_create_pointer_has_exact_payload_one_undo_and_real_redo() {
+        let mut h = harness(fixture(), true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        let cur = crate::canvas::current_page(&h.state().app).unwrap();
+        click(&mut h, "Create new page");
+        journal_one(&h, start, "layout.pages.insert", json!({"after":cur,"count":1}));
+        assert_eq!(count(&h), 4);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        let after = mark(&h).0;
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+        assert_eq!(mark(&h).2, (before.2.0, 1));
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), after.as_ref());
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+    }
+    #[test]
+    fn installed_pages_footer_natural_tab_space_and_enter_activate_once() {
+        let mut h = harness(fixture(), true, false);
+        for caption in ACTIONS {
+            let before = mark(&h);
+            tab_to(&mut h, caption);
+            unchanged(&h, &before);
+        }
+        for k in [Key::Space, Key::Enter] {
+            tab_to(&mut h, "Create new page");
+            let cur = crate::canvas::current_page(&h.state().app).unwrap();
+            let old = count(&h);
+            let start = h.state().app.session.journal.len();
+            key(&mut h, k);
+            idle(&mut h, 3);
+            journal_one(&h, start, "layout.pages.insert", json!({"after":cur,"count":1}));
+            assert_eq!(count(&h), old + 1);
+        }
+    }
+    #[test]
+    fn installed_pages_footer_delete_empty_current_page_has_real_undo_redo() {
+        let mut h = harness(fixture(), true, false);
+        crate::canvas::go_to_page(&mut h.state_mut().app, 1);
+        idle(&mut h, 2);
+        assert_eq!(crate::canvas::current_page(&h.state().app), Some(1));
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Delete selected pages");
+        journal_one(&h, start, "layout.pages.delete", json!({"pages":[1]}));
+        assert_eq!(count(&h), 2);
+        assert!(h.state().app.ui.dialog.is_none());
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        let after = mark(&h).0;
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), after.as_ref());
+    }
+    #[test]
+    fn installed_pages_footer_last_page_delete_keeps_real_engine_refusal_and_history() {
+        let mut app = fixture();
+        app.run("layout.pages.delete", json!({"pages":[1,2]})).unwrap();
+        crate::canvas::go_to_page(&mut app, 0);
+        let mut h = harness(app, true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Delete selected pages");
+        assert_eq!(count(&h), 1);
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+        assert_eq!((mark(&h).1, mark(&h).2), (before.1.clone(), before.2));
+        assert_eq!(h.state().app.session.journal.len(), start);
+        let error = h.state_mut().app.run("layout.pages.delete", json!({"pages":[0]})).unwrap_err();
+        assert!(error.contains("at least one page"), "{error}");
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+        assert_eq!(mark(&h).2, before.2);
+    }
+
+    #[test]
+    fn installed_pages_footer_populated_delete_opens_original_warning_without_mutation() {
+        let mut app = fixture();
+        let item = app.run("frame.create", json!({"rect":[10,10,40,40]})).unwrap()["id"].as_u64().unwrap();
+        assert!(app.session.active().unwrap().doc.page_has_items(0));
+        let mut h = harness(app, true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Delete selected pages");
+        let dialog = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.id, "deletePages");
+        assert_eq!(dialog.fields.get("pages"), Some(&json!([0])));
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        crate::dialogs::cancel(&mut h.state_mut().app);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert!(h.state().app.ui.dialog.is_none());
+        assert!(h.state().app.session.active().unwrap().doc.item(designcraft_doc::ItemId(item)).is_some());
+    }
+    #[test]
+    fn installed_pages_footer_size_popup_uses_current_one_based_page_and_keeps_landscape() {
+        let mut app = fixture();
+        app.run("layout.pageSize", json!({"pages":[2],"width":900,"height":600})).unwrap();
+        crate::canvas::go_to_page(&mut app, 1);
+        let mut h = harness(app, true, false);
+        let before = mark(&h);
+        let old_sizes = sizes(&h);
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Edit page size");
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        native_click(&mut h, "A4");
+        let (w, hh) = preset();
+        journal_one(&h, start, "layout.pageSize", json!({"pages":[2],"width":hh,"height":w}));
+        assert_eq!(sizes(&h), vec![old_sizes[0], (hh, w), old_sizes[2]]);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(sizes(&h)[1], (hh, w));
+    }
+    #[test]
+    fn installed_pages_footer_native_size_menu_escape_and_custom_boundary_keep_history() {
+        let mut h = harness(fixture(), true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        tab_to(&mut h, "Edit page size");
+        key(&mut h, Key::Enter);
+        idle(&mut h, 2);
+        assert_eq!(h.get_all_by_label("A4").count(), 1);
+        key(&mut h, Key::Escape);
+        idle(&mut h, 2);
+        assert_eq!(h.query_all_by_label("A4").count(), 0);
+        unchanged(&h, &before);
+        click(&mut h, "Edit page size");
+        native_click(&mut h, "Custom Page Size…");
+        let dialog = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!(dialog.id, "cmd:layout.pageSize");
+        assert_eq!(dialog.fields.get("pages"), Some(&json!([1])));
+        assert_eq!(dialog.fields.get("width"), Some(&json!(605.0)));
+        assert_eq!(dialog.fields.get("height"), Some(&json!(805.0)));
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+    }
+    #[test]
+    fn installed_pages_footer_real_thumbnail_drag_duplicates_the_whole_spread_not_an_insert() {
+        let mut h = harness(fixture(), true, true);
+        let before = mark(&h);
+        let label = format!("Page {}", h.state().app.session.page_label(1));
+        let from = h.get_by_label(&label).rect().center();
+        let to = pos(&h, "Create new page");
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, from, true);
+        event(&mut h, Event::PointerMoved(from + vec2(10.0, 0.0)));
+        idle(&mut h, 2);
+        assert!(matches!(egui::DragAndDrop::payload::<PageDrag>(&h.ctx).as_deref(), Some(PageDrag::Page(1))), "actual app thumbnail drag source");
+        for n in 1..=5 {
+            event(&mut h, Event::PointerMoved(from + (to - from) * (n as f32 / 5.0)));
+        }
+        pointer(&mut h, to, false);
+        idle(&mut h, 3);
+        journal_one(&h, start, "layout.pages.duplicateSpread", json!({"spread":1,"atEnd":true}));
+        assert_eq!(count(&h), 5);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
+    }
+    #[test]
+    fn installed_pages_footer_held_press_retires_on_current_page_or_document_revision_change() {
+        let mut h = harness(fixture(), true, false);
+        for navigation in [true, false] {
+            let old = element(&h, "Create new page").id;
+            let p = pos(&h, "Create new page");
+            pointer(&mut h, p, true);
+            if navigation {
+                crate::canvas::go_to_page(&mut h.state_mut().app, 1);
+            } else {
+                let next = {
+                    let st = h.state().app.session.active().unwrap();
+                    let (si, pi) = st.doc.page_loc(1).unwrap();
+                    !st.doc.spreads[si].pages[pi].show_parent_overlay
+                };
+                h.state_mut().app.run("layout.pageOptions", json!({"pages":[2],"showParentOverlay":next})).unwrap();
+            }
+            idle(&mut h, 2);
+            assert_ne!(element(&h, "Create new page").id, old);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            pointer(&mut h, p, false);
+            idle(&mut h, 2);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+        }
+        let cur = crate::canvas::current_page(&h.state().app).unwrap();
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Create new page");
+        journal_one(&h, start, "layout.pages.insert", json!({"after":cur,"count":1}));
+    }
+    #[test]
+    fn installed_pages_footer_held_press_cannot_cross_documents_with_the_same_local_page_index() {
+        let mut h = harness(fixture(), true, false);
+        let original = mark(&h);
+        let old = element(&h, "Create new page").id;
+        let p = pos(&h, "Create new page");
+        pointer(&mut h, p, true);
+        h.state_mut().app.run("file.new", json!({"pages":3,"facingPages":true})).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        h.state_mut().app.run("file.saveAs", json!({"path":dir.path().join("Other.designcraft")})).unwrap();
+        crate::canvas::go_to_page(&mut h.state_mut().app, 0);
+        idle(&mut h, 2);
+        assert_eq!(crate::canvas::current_page(&h.state().app), Some(0));
+        assert_ne!(element(&h, "Create new page").id, old);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, p, false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        h.state_mut().app.run("file.close", json!({})).unwrap();
+        idle(&mut h, 2);
+        unchanged(&h, &original);
+    }
+    #[test]
+    fn installed_pages_footer_disabled_sizing_and_no_document_cannot_commit() {
+        let mut h = harness(fixture(), true, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        let p = pos(&h, "Create new page");
+        pointer(&mut h, p, true);
+        h.state_mut().enabled = false;
+        idle(&mut h, 2);
+        for caption in ACTIONS {
+            assert!(element(&h, caption).facts.as_ref().unwrap().disabled);
+            let label = name(&h, caption);
+            assert!(h.get_by_label(&label).accesskit_node().is_disabled());
+        }
+        pointer(&mut h, p, false);
+        key(&mut h, Key::Space);
+        key(&mut h, Key::Enter);
+        unchanged(&h, &before);
+        h.state_mut().enabled = true;
+        h.state_mut().sizing = true;
+        idle(&mut h, 2);
+        pointer(&mut h, p, true);
+        pointer(&mut h, p, false);
+        key(&mut h, Key::Space);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        h.state_mut().sizing = false;
+        idle(&mut h, 2);
+        click(&mut h, "Create new page");
+        assert_eq!(count(&h), 4);
+        let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        let mut empty = harness(app, true, false);
+        let start = empty.state().app.session.journal.len();
+        assert_eq!(empty.query_all_by_role(egui::accesskit::Role::Button).count(), 0);
+        key(&mut empty, Key::Tab);
+        key(&mut empty, Key::Space);
+        key(&mut empty, Key::Enter);
+        idle(&mut empty, 3);
+        assert!(empty.state().app.session.active().is_none());
+        assert_eq!(empty.state().app.session.journal.len(), start);
+        assert!(empty.state_mut().app.run("layout.pages.insert", json!({"after":0,"count":1})).is_err());
+        assert!(empty.state().app.session.active().is_none());
+    }
+    #[test]
+    fn installed_pages_footer_german_arabic_names_input_and_real_save_reopen() {
+        for language in ["de", "ar"] {
+            let mut app = fixture();
+            app.ui.language = language.to_owned();
+            let mut h = harness(app, true, false);
+            let before = mark(&h);
+            let mut ids = HashSet::new();
+            for caption in ACTIONS {
+                assert!(ids.insert(element(&h, caption).id));
+            }
+            unchanged(&h, &before);
+            tab_to(&mut h, "Create new page");
+            key(&mut h, Key::Space);
+            idle(&mut h, 2);
+            assert_eq!(count(&h), 4);
+            click(&mut h, "Edit page size");
+            native_click(&mut h, "A4");
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("صفحات & Seiten.designcraft");
+            h.state_mut().app.run("file.saveAs", json!({"path":path})).unwrap();
+            let expected = sizes(&h);
+            let saved = mark(&h).0;
+            h.state_mut().app.run("file.open", json!({"path":path})).unwrap();
+            idle(&mut h, 3);
+            assert_eq!(sizes(&h), expected);
+            assert_eq!(count(&h), 4);
+            assert_eq!(h.state().app.session.active().unwrap().doc.spreads, saved.spreads);
+            assert!(path.is_file());
+            for caption in ACTIONS {
+                element(&h, caption);
+            }
+        }
+    }
+    #[test]
+    fn uninstalled_native_pages_footer_keeps_original_icons_and_actions_without_sdk_records() {
+        let mut h = harness(fixture(), false, false);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        assert!(h.state().controls.as_ref().is_none_or(|r| r.elements.iter().all(|e| e.component != "IconButton")));
+        for caption in ACTIONS {
+            let label = name(&h, caption);
+            assert_eq!(h.get_all_by_label(&label).count(), 1);
+        }
+        unchanged(&h, &before);
+        native_click(&mut h, "Create new page");
+        journal_one(&h, start, "layout.pages.insert", json!({"after":0,"count":1}));
+        assert_eq!(count(&h), 4);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        native_click(&mut h, "Edit page size");
+        assert_eq!(h.get_all_by_label("A4").count(), 1);
     }
 }

@@ -401,14 +401,14 @@ fn control_character(
                         pick = Some(n.clone());
                     }
                 }
-            });
+            }).response.accessible_name(tr("Character Style"));
         if let Some(n) = pick {
             let _ = app.run("style.character.apply", json!({"name": n}));
         }
         let lang = chars["language"].as_str().unwrap_or("English: USA").to_string();
         craft_ui::ComboBox::from_id_salt("ctl_language").selected_text(crate::rtl::widget(ui, tr(&lang))).width(150.0).show_ui(ui, |ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| crate::panels::properties::language_menu(app, ui, &lang));
-        });
+        }).response.accessible_name(tr("Language"));
     });
 }
 

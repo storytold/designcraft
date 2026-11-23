@@ -37,7 +37,7 @@ impl DesignApp {
     /// modifiers stay exactly what they were.
     pub fn install_framework(&mut self, ctx: &egui::Context) {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.framework_transform {
+        if self.framework_transform || self.framework_opacity {
             crate::framework_transform::install(ctx);
             // A context that already had the runtime is fine; the fields draw either way. Without it they
             // would paint and take no input, so the panel keeps the bespoke fields instead.
@@ -51,6 +51,17 @@ impl DesignApp {
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.
         designcraft_fonts::FontDb::global().scan_in_background();
+        Self::new_state(session, services)
+    }
+
+    /// Construct the same app state for panel interactions without starting font discovery.
+    /// Services, dialog state and timing initialization are otherwise the shipping initializer.
+    #[cfg(test)]
+    pub(crate) fn new_for_panel_tests(session: Session, services: Services) -> Self {
+        Self::new_state(session, services)
+    }
+
+    fn new_state(session: Session, services: Services) -> Self {
         // The app owns the monotonic origin for recovery timing and frame pacing; `now_ms` itself
         // is process-global so screenshot deadlines stay comparable across hosts.
         let now = now_ms() / 1000.0;
@@ -122,6 +133,12 @@ impl DesignApp {
             framework_transform: false,
             framework_installed: false,
             framework_fields: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            framework_opacity: crate::framework_opacity::enabled(),
+            #[cfg(target_arch = "wasm32")]
+            framework_opacity: false,
+            framework_opacity_fields: Vec::new(),
+            framework_opacity_component_stops: Vec::new(),
             fonts_lang: String::new(),
             fonts_system: false,
             restyle: false,
@@ -223,6 +240,8 @@ impl DesignApp {
         // The Transform pilot's field rects are this frame's only: a frame that draws no pilot field
         // (bespoke units, no selection, Properties hidden) reports none rather than the last ones.
         self.framework_fields.clear();
+        self.framework_opacity_fields.clear();
+        self.framework_opacity_component_stops.clear();
         self.canvas_ime = false;
         self.ime_canvas = None;
         self.ime_interrupt = false;
@@ -238,6 +257,7 @@ impl DesignApp {
             ctx.request_repaint();
             return;
         }
+        crate::control::object_style_witness::begin(&ctx, self.ui.dialog.as_ref().is_some_and(|dialog| dialog.id == crate::object_style_dialog::ID));
         self.settle_live_preview();
         // Input consumers run once, in the live first UI pass, before layout. Hidden logic ticks
         // must not replay shortcuts or dropped files from stale input.
@@ -327,6 +347,15 @@ impl DesignApp {
             dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.framework_installed && self.ui.dialog.as_ref().is_some_and(|d| d.id == crate::package_dialog::INSTRUCTIONS) {
+                crate::package_dialog::show_framework_instructions(self, ui);
+            } else {
+                dialogs::show(self, &ctx);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
         dialogs::show(self, &ctx);
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
@@ -340,6 +369,7 @@ impl DesignApp {
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
+        crate::control::object_style_witness::finish(&ctx, self.ui.dialog.as_ref().is_some_and(|dialog| dialog.id == crate::object_style_dialog::ID));
         if !ctx.will_discard() {
             // A settled UI pass has taken the injected step (a discarded pass has not). Keep
             // `injected_private` until the next raw-input hook, so this pass's end-pass clipboard

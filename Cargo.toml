@@ -110,7 +110,17 @@ craft-cms = { version = "0.1.0", git = "https://github.com/storytold/craft-libs"
 # services its runtime install asks for). The Transform pilot (`DESIGNCRAFT_FRAMEWORK_TRANSFORM`)
 # draws Properties > Transform's X/Y/W/H with its own `NumberField`. Native only: the browser build
 # keeps the bespoke fields.
-craft = { git = "https://github.com/storytold/craft-libs", rev = "9df7f30d9554535c36a08dc5e874db62f1f73e06", default-features = false, features = ["ui", "window"] }
+# The craft UI framework's own components (Properties > Transform's pilot rows), from the SDK crates the
+# components name rather than the `craft` facade: the facade's `ui` feature pulls `craft-ui-patterns`,
+# which depends on craft-pdf at that rev and so resolves a second `craft-pdf` beside the app's pinned one
+# (xtask's pdf-deps gate allows exactly one). These five crates pull none of that. Native only: the browser
+# build keeps the bespoke fields.
+craft-ui-widgets = { git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694" }
+craft-ui-panels = { git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694" }
+craft-theme = { git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694", default-features = false }
+craft-behavior = { git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694" }
+craft-host = { git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694" }
+craft-window-sdk = { package = "craft-window", git = "https://github.com/storytold/craft-libs", rev = "9860f5775d42d7dfbd2607381e31fc5d513ce694" }
 # Shared frontend components; keep this dependency above the engine boundary.
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", features = ["serde"] }
 # The application bar as the window's title bar (craft-libs).

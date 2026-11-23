@@ -68,8 +68,18 @@ pub use prefs::ReadPreferences;
 mod app;
 mod clock;
 #[cfg(not(target_arch = "wasm32"))]
+mod framework_opacity;
+#[cfg(test)]
+mod framework_keys_tests;
+#[cfg(test)]
+mod framework_tab_diagnostic_tests;
+#[cfg(test)]
+mod framework_tab_sdk_tests;
+#[cfg(test)]
+mod framework_opacity_tests;
+#[cfg(not(target_arch = "wasm32"))]
 mod framework_transform;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod framework_transform_tests;
 mod key_names;
 mod services;
@@ -332,6 +342,15 @@ pub struct DesignApp {
     pub(crate) framework_installed: bool,
     /// The pilot's field rects from the last pass, as the framework laid them out (tests and `ui.inspect`).
     pub(crate) framework_fields: Vec<(String, egui::Rect)>,
+    /// Properties > Appearance's Opacity on the framework's own `NumberField` and `SliderField`
+    /// (`DESIGNCRAFT_FRAMEWORK_OPACITY=1`, see [`framework_opacity`]). Off, the row keeps what it had.
+    pub framework_opacity: bool,
+    /// The Opacity pilot's row rects from the last pass (`opacity`, `more`, `slider`), for the tests and
+    /// `ui.inspect`.
+    pub(crate) framework_opacity_fields: Vec<(String, egui::Rect)>,
+    /// The Opacity pilot field's Tab stops from the last pass, as the framework recorded them (index, rect):
+    /// the geometry a test needs to say whether the keyboard landed on the component or beside it.
+    pub(crate) framework_opacity_component_stops: Vec<(usize, egui::Rect)>,
     pub(crate) updates_rt: updates_ui::Runtime,
 }
 

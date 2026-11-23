@@ -69,6 +69,20 @@ impl DesignApp {
         }
     }
 
+    /// Abandon the live preview, if one is open: the page goes back to the state the document had before
+    /// it (`edit.cancelPreview`) and no undo step is pushed, and nothing is left open for a later frame's
+    /// settle or a release to commit.
+    pub fn cancel_live_preview(&mut self) {
+        if std::mem::take(&mut self.live_preview).open {
+            let _ = self.run("edit.cancelPreview", json!({}));
+        }
+    }
+
+    /// Whether a panel's live preview is open: a drag in progress, or one whose control went away.
+    pub(crate) fn live_preview_open(&self) -> bool {
+        self.live_preview.open
+    }
+
     /// Start of a frame: a live preview no panel held last frame (its control was let go, or the
     /// panel closed) is committed, so it never swallows later edits' undo steps.
     pub(crate) fn settle_live_preview(&mut self) {

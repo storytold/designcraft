@@ -90,7 +90,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                                     Some(s) => format!("{name} ({s})"),
                                     None => name.to_string(),
                                 };
-                                let resp = tool_button(ui, shown.icon, active, &tip);
+                                // The standalone Line slot does not adopt the grouped flyout behavior.
+                                let resp = if g.len() == 1 && shown.id == "line" {
+                                    line_tool_button(app, ui, shown.icon, active, &tip)
+                                } else {
+                                    tool_button(ui, shown.icon, active, &tip)
+                                };
                                 if g.len() > 1 {
                                     // Flyout triangle.
                                     let r = resp.rect;
@@ -616,6 +621,42 @@ fn separator(ui: &mut egui::Ui, t: &Tokens) {
     ui.add_space(5.0);
 }
 
+/// The Line Tool is a standalone slot: leave every grouped tool's flyout lifecycle alone.
+fn line_tool_button(app: &DesignApp, ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
+    let target = app.session.active().map(|st| {
+        format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells))
+    });
+    let id = ui.scope_id().with(("tools-line", target));
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::primitives::{Glyph, IconSpec};
+        use craft_ui_widgets::style::UiTokens;
+        use craft_ui_widgets::buttons::IconButton;
+        use craft_theme::ControlSize;
+
+        struct LineGlyph;
+        impl Glyph for LineGlyph {
+            fn paint(&self, painter: &egui::Painter, _: &UiTokens, rect: egui::Rect, color: Color32, _: bool) {
+                let artwork = egui::Rect::from_center_size(rect.center(), vec2(17.0, 17.0));
+                icons::paint(painter, artwork, "tool-line", color);
+            }
+        }
+        static LINE: LineGlyph = LineGlyph;
+        let (rect, _) = ui.allocate_exact_size(vec2(BTN, BTN), Sense::hover());
+        return IconButton::new(IconSpec::glyph(&LINE))
+            .id(id)
+            .label(tip.to_owned())
+            .selected(active)
+            .size(ControlSize::Sm)
+            .show_at_with_tip(ui, rect, |ui| {
+                crate::rtl::label(ui, tip);
+            })
+            .response;
+    }
+    ui.push_id(id, |ui| tool_button(ui, icon, active, tip)).inner
+}
+
 /// A Tools-panel button: 24 pt pitch; the active tool sits in a 28×20 pt `#303030` well with a rim.
 fn tool_button(ui: &mut egui::Ui, icon: &str, active: bool, tip: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
@@ -773,5 +814,630 @@ mod text_color_tests {
         let doc = &h.state().session.doc().unwrap().doc;
         assert_eq!(doc.item(ItemId(f["id"].as_u64().unwrap())).unwrap().fill, before);
         assert!(doc.story(StoryId(f["story"].as_u64().unwrap())).unwrap().format_after(0).over.fill.is_some());
+    }
+}
+
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod line_workflow_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
+    use designcraft_doc::{Document, Item, ItemId, Shape};
+    use designcraft_geom::Point;
+    use egui::{Event, Key, Modifiers, PointerButton, Rect, UiBuilder};
+    use egui_kittest::{Harness, kittest::{NodeT, Queryable}};
+    use std::{collections::HashSet, sync::Arc};
+
+    struct Rig {
+        app: DesignApp,
+        controls: Option<Arc<Recorded>>,
+        parent: Option<Rect>,
+        enabled: bool,
+        sizing: bool,
+        anchor: u64,
+    }
+    type Mark = (Arc<Document>, String, (usize, usize));
+
+    fn step(h: &mut Harness<'_, Rig>) {
+        let mut raw = std::mem::take(h.input_mut());
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, Rig>, count: usize) {
+        for _ in 0..count { step(h); }
+    }
+    fn event(h: &mut Harness<'_, Rig>, event: Event) {
+        h.input_mut().events.push(event);
+        step(h);
+    }
+    fn key(h: &mut Harness<'_, Rig>, key: Key) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+        idle(h, 2);
+    }
+    fn pointer(h: &mut Harness<'_, Rig>, pos: egui::Pos2, pressed: bool) {
+        event(h, Event::PointerMoved(pos));
+        event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+    }
+    fn click(h: &mut Harness<'_, Rig>, pos: egui::Pos2) {
+        pointer(h, pos, true);
+        pointer(h, pos, false);
+        idle(h, 2);
+    }
+    fn fixture() -> (DesignApp, u64) {
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let anchor = session.execute("frame.create", &json!({"rect":[80,80,160,150],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap();
+        session.execute("frame.create", &json!({"rect":[10,10,30,30]})).unwrap();
+        session.execute("edit.undo", &json!({})).unwrap();
+        session.execute("selection.set", &json!({"ids":[anchor]})).unwrap();
+        let app = DesignApp::new_for_panel_tests(session, crate::Services::default());
+        (app, anchor)
+    }
+    fn harness(mut app: DesignApp, anchor: u64, installed: bool, size: egui::Vec2) -> Harness<'static, Rig> {
+        app.run("window.workspace", json!({"name":"Advanced"})).unwrap();
+        app.framework_opacity = true;
+        let ctx = egui::Context::default();
+        if installed { app.install_framework(&ctx); }
+        assert_eq!(app.framework_installed, installed);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(size).build_ui_state(
+            |ui, state: &mut Rig| {
+                let ctx = ui.ctx().clone();
+                state.app.logic(&ctx);
+                let builder = if state.sizing { UiBuilder::new().sizing_pass() } else { UiBuilder::new() };
+                ui.scope_builder(builder, |ui| {
+                    ui.add_enabled_ui(state.enabled, |ui| {
+                        let parent_id = ui.scope_id().with("tools");
+                        // The full shipping UI owns setup, fonts/theme, shortcuts, toolbar, panels, Canvas and dialogs.
+                        let controls = record(ui, egui::Id::unique("line-tool-full-application"), |ui| state.app.ui(ui)).1;
+                        state.controls = controls;
+                        state.parent = egui::containers::panel::PanelState::load(ui.ctx(), parent_id).map(|panel| panel.outer_rect);
+                    });
+                });
+            },
+            Rig { app, controls: None, parent: None, enabled: true, sizing: false, anchor },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 6);
+        h
+    }
+    fn ordinary(installed: bool) -> Harness<'static, Rig> {
+        let (app, anchor) = fixture();
+        harness(app, anchor, installed, vec2(1800.0, 1000.0))
+    }
+    fn mark(h: &Harness<'_, Rig>) -> Mark {
+        let st = h.state().app.session.active().unwrap();
+        (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
+            (st.history.undo.len(), st.history.redo.len()))
+    }
+    fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
+        assert_eq!(mark(h), *before, "document, incarnation, complete selection and both real history stacks remain unchanged");
+    }
+    fn item(h: &Harness<'_, Rig>, id: u64) -> Item {
+        h.state().app.session.active().unwrap().doc.item(ItemId(id)).unwrap().clone()
+    }
+    fn label(h: &Harness<'_, Rig>) -> String {
+        let app = &h.state().app;
+        let name = crate::i18n::tr(&app.ui.language, "Line Tool");
+        crate::menus::tool_shortcut_label(app, "line").map_or_else(|| name.to_string(), |s| format!("{name} ({s})"))
+    }
+    fn line_elements(h: &Harness<'_, Rig>) -> Vec<Element> {
+        let label = label(h);
+        h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements)
+            .filter(|e| e.component == "IconButton" && e.part.is_none()
+                && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(label.as_str())))
+            .cloned().collect()
+    }
+    fn native(h: &Harness<'_, Rig>) -> Element {
+        let mut elements = line_elements(h);
+        assert_eq!(elements.len(), 1, "exactly the standalone Line slot uses the installed SDK IconButton");
+        let element = elements.remove(0);
+        assert_eq!(element.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::Button));
+        element
+    }
+    fn line_rect(h: &Harness<'_, Rig>) -> Rect {
+        // The rich tooltip has the same text, but it is a Label, never this Button.
+        let rect = h.get_by_role_and_label(egui::accesskit::Role::Button, &label(h)).rect();
+        if h.state().app.framework_installed {
+            let element = native(h);
+            assert!(rect.expand(0.5).contains_rect(element.rect) && element.rect.expand(0.5).contains_rect(rect),
+                "the unique named Button is the actual recorded Line cell, not tooltip text");
+            let controls = h.state().controls.as_ref().unwrap();
+            assert!(controls.hits.iter().any(|hit| hit.owner == element.id && hit.part.is_none() && hit.rect.contains(rect.center())),
+                "the named Button has the installed Line control's physical hit owner");
+        }
+        rect
+    }
+    fn choose_line(h: &mut Harness<'_, Rig>) {
+        let start = h.state().app.session.journal.len();
+        let before = mark(h);
+        let pos = line_rect(h).center();
+        click(h, pos);
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        assert!(h.state().app.ui.flyout.is_none());
+        unchanged(h, &before);
+    }
+    fn tab_to_line(h: &mut Harness<'_, Rig>) {
+        let mut visited = HashSet::new();
+        loop {
+            if h.get_by_role_and_label(egui::accesskit::Role::Button, &label(h)).is_focused() {
+                if h.state().app.framework_installed { assert_eq!(h.ctx.memory(|m| m.focused()), Some(native(h).id)); }
+                return;
+            }
+            assert!(visited.insert(h.ctx.memory(|m| m.focused())), "natural Tab traversal reaches the real Line slot without forced focus");
+            key(h, Key::Tab);
+        }
+    }
+    fn canvas_point(h: &Harness<'_, Rig>, x: f64, y: f64) -> egui::Pos2 {
+        let st = h.state().app.session.active().unwrap();
+        let layout = h.state().app.session.layout();
+        let (spread_to_canvas, _) = crate::canvas::item_canvas_xf(&st.doc, &layout, ItemId(h.state().anchor)).unwrap();
+        let xf = crate::canvas::Xf::new(h.state().app.canvas_rect.unwrap(), h.state().app.view().unwrap());
+        let pos = xf.to_screen(spread_to_canvas * Point::new(x, y));
+        assert!(h.state().app.canvas_rect.unwrap().shrink(5.0).contains(pos), "the gesture really lands inside the live Canvas");
+        pos
+    }
+    fn begin_line(h: &mut Harness<'_, Rig>, a: [f64; 2], b: [f64; 2]) -> egui::Pos2 {
+        let from = canvas_point(h, a[0], a[1]);
+        let to = canvas_point(h, b[0], b[1]);
+        pointer(h, from, true);
+        for fraction in [0.25, 0.5, 0.75, 1.0] {
+            event(h, Event::PointerMoved(from + (to - from) * fraction));
+        }
+        assert!(h.state().app.session.tool_busy(), "a real FrameTool line gesture, not a click-size dialog or direct create command");
+        assert!(h.state().app.session.active().unwrap().interaction.is_some());
+        to
+    }
+    fn draw_line(h: &mut Harness<'_, Rig>) -> u64 {
+        let before = mark(h);
+        let untouched = item(h, h.state().anchor);
+        let start = h.state().app.session.journal.len();
+        let to = begin_line(h, [250.0,300.0], [370.0,365.0]);
+        assert_eq!(mark(h).2, before.2, "previews add no independent Undo entries");
+        pointer(h, to, false);
+        idle(h, 3);
+        let commands = &h.state().app.session.journal[start..];
+        assert_eq!(commands.len(), 1, "a genuine multi-pass Canvas drag journals only its committed line");
+        assert_eq!(commands[0].0, "line.create");
+        for (name, expected) in [("a", [250.0,300.0]), ("b", [370.0,365.0])] {
+            for (axis, expected) in expected.into_iter().enumerate() {
+                assert!((commands[0].1[name][axis].as_f64().unwrap() - expected).abs() < 1e-3);
+            }
+        }
+        let st = h.state().app.session.active().unwrap();
+        assert_eq!(st.selection.items.len(), 1);
+        let id = st.selection.items[0].0;
+        assert_ne!(id, h.state().anchor);
+        let line = item(h, id);
+        assert_eq!(line.shape, Shape::GraphicLine);
+        assert!((line.bounds().width() - 120.0).abs() < 1e-3 && (line.bounds().height() - 65.0).abs() < 1e-3);
+        assert_eq!(item(h, h.state().anchor), untouched);
+        assert_eq!(h.state().app.session.tool_id(), "line", "creation retains the chosen tool for subsequent drawing");
+        assert!(st.interaction.is_none() && !h.state().app.session.tool_busy());
+        assert_eq!(mark(h).2, (before.2.0 + 1, 0));
+        id
+    }
+
+    #[test]
+    fn installed_line_real_canvas_creation_retains_selection_and_has_independent_undo_redo() {
+        let mut h = ordinary(true);
+        choose_line(&mut h);
+        let before = mark(&h);
+        let id = draw_line(&mut h);
+        let after = mark(&h);
+        let created = item(&h, id);
+        idle(&mut h, 4);
+        unchanged(&h, &after);
+        h.state_mut().app.ui.tools_double_column = true;
+        idle(&mut h, 3);
+        unchanged(&h, &after);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 3);
+        assert_eq!(mark(&h).0, before.0);
+        assert_eq!(mark(&h).1, before.1);
+        assert_eq!(mark(&h).2, (before.2.0, 1));
+        assert!(h.state().app.session.active().unwrap().doc.item(ItemId(id)).is_none());
+        assert_eq!(h.state().app.session.tool_id(), "line", "Undo belongs to creation, not palette selection");
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(&mut h, 3);
+        unchanged(&h, &after);
+        assert_eq!(item(&h, id), created);
+    }
+
+    #[test]
+    fn installed_line_genuine_escape_and_second_gesture_release_preserve_actual_legacy_behavior() {
+        // Line's current key handler returns no actions. Do not invent a cancellation policy:
+        // compare the real app's installed and legacy Canvas traces, including ordinary Escape.
+        let (mut saved, anchor) = fixture();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("LineEscapeParity.designcraft");
+        saved.run("file.saveAs", json!({"path":path})).unwrap();
+        let reopen = |installed| {
+            let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+            app.run("file.open", json!({"path":path})).unwrap();
+            app.run("selection.set", json!({"ids":[anchor]})).unwrap();
+            harness(app, anchor, installed, vec2(1800.0,1000.0))
+        };
+        let mut installed = reopen(true);
+        let mut legacy = reopen(false);
+        choose_line(&mut installed);
+        choose_line(&mut legacy);
+        let installed_id = draw_line(&mut installed);
+        let legacy_id = draw_line(&mut legacy);
+        assert_eq!(installed_id, legacy_id);
+        let first = item(&installed, installed_id);
+        let committed = mark(&installed);
+        let installed_start = installed.state().app.session.journal.len();
+        let legacy_start = legacy.state().app.session.journal.len();
+        let installed_to = begin_line(&mut installed, [270.0,420.0], [390.0,465.0]);
+        let legacy_to = begin_line(&mut legacy, [270.0,420.0], [390.0,465.0]);
+        assert_ne!(mark(&installed).0, committed.0, "the second real gesture has a document preview");
+        for (a, b) in [(true, false), (false, false)] {
+            event(&mut installed, Event::Key { key:Key::Escape, physical_key:None, pressed:a, repeat:b, modifiers:Modifiers::NONE });
+            event(&mut legacy, Event::Key { key:Key::Escape, physical_key:None, pressed:a, repeat:b, modifiers:Modifiers::NONE });
+            assert_eq!(mark(&installed).0, mark(&legacy).0);
+            assert_eq!(mark(&installed).2, mark(&legacy).2);
+            let installed_state = installed.state().app.session.active().unwrap();
+            let legacy_state = legacy.state().app.session.active().unwrap();
+            assert_eq!(format!("{:?}", installed_state.selection), format!("{:?}", legacy_state.selection));
+            assert_eq!(installed_state.interaction.is_some(), legacy_state.interaction.is_some());
+            assert_eq!(installed.state().app.session.tool_busy(), legacy.state().app.session.tool_busy());
+            assert_eq!(installed.state().app.session.tool_id(), legacy.state().app.session.tool_id());
+        }
+        pointer(&mut installed, installed_to, false);
+        pointer(&mut legacy, legacy_to, false);
+        idle(&mut installed, 3);
+        idle(&mut legacy, 3);
+        assert_eq!(mark(&installed).0, mark(&legacy).0, "ordinary release after Escape preserves actual native document behavior");
+        assert_eq!(mark(&installed).2, mark(&legacy).2);
+        assert_eq!(&installed.state().app.session.journal[installed_start..], &legacy.state().app.session.journal[legacy_start..]);
+        assert_eq!(item(&installed, installed_id), first, "the first committed line is unchanged");
+        assert_eq!(item(&legacy, legacy_id), first);
+        let after = mark(&installed).0;
+        for app in [&mut installed, &mut legacy] {
+            app.state_mut().app.run("edit.undo", json!({})).unwrap();
+            idle(app, 2);
+        }
+        assert_eq!(mark(&installed).0, mark(&legacy).0);
+        assert_eq!(mark(&installed).2, mark(&legacy).2);
+        for app in [&mut installed, &mut legacy] {
+            app.state_mut().app.run("edit.redo", json!({})).unwrap();
+            idle(app, 2);
+        }
+        assert_eq!(mark(&installed).0, after);
+        assert_eq!(mark(&installed).0, mark(&legacy).0);
+        assert_eq!(mark(&installed).2, mark(&legacy).2);
+    }
+
+    #[test]
+    fn installed_line_actual_save_open_preserves_the_created_document_and_line_artwork_data() {
+        let mut h = ordinary(true);
+        choose_line(&mut h);
+        let id = draw_line(&mut h);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("LineWorkflow.designcraft");
+        let history = mark(&h).2;
+        h.state_mut().app.run("file.saveAs", json!({"path":path})).unwrap();
+        let saved = mark(&h).0;
+        let line = item(&h, id);
+        assert_eq!(mark(&h).2, history, "saving is separate from the creation Undo assertion");
+        let mut reopened = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        reopened.run("file.open", json!({"path":path})).unwrap();
+        assert_eq!(reopened.session.active().unwrap().doc, saved, "a real file open reads the actual saved document");
+        assert_eq!(reopened.session.active().unwrap().doc.item(ItemId(id)), Some(&line));
+        assert_eq!(line.shape, Shape::GraphicLine);
+    }
+
+    #[test]
+    fn installed_line_real_parent_geometry_idle_and_adaptive_columns_are_preserved() {
+        for (double, size) in [(false,vec2(1800.0,1000.0)), (true,vec2(1800.0,1000.0)), (false,vec2(1800.0,600.0))] {
+            let (mut app, anchor) = fixture();
+            app.ui.tools_double_column = double;
+            let mut h = harness(app, anchor, true, size);
+            let before = mark(&h);
+            let status = h.state().app.ui.status.clone();
+            let element = native(&h);
+            let cell = line_rect(&h);
+            assert_eq!(element.rect.size(), vec2(BTN, BTN));
+            assert!(cell.expand(0.5).contains_rect(element.rect) && element.rect.expand(0.5).contains_rect(cell));
+            let parent = h.state().parent.expect("actual shipping left Tools Panel state");
+            assert!(parent.expand(0.5).contains_rect(element.rect));
+            let hits: Vec<_> = h.state().controls.as_ref().unwrap().hits.iter().filter(|hit| hit.owner == element.id && hit.part.is_none()).collect();
+            assert!(!hits.is_empty() && hits.iter().all(|hit| cell.expand(0.5).contains_rect(hit.rect)));
+            assert!(hits.iter().any(|hit| hit.rect.contains(cell.center())));
+            idle(&mut h, 4);
+            unchanged(&h, &before);
+            assert_eq!(native(&h).id, element.id);
+            assert_eq!(h.state().app.ui.tools_double_column, double, "crowding never rewrites the saved column preference");
+            assert_eq!(h.state().app.ui.status, status);
+        }
+    }
+
+    #[test]
+    fn installed_line_natural_space_enter_and_reselect_keep_the_original_one_command_noop_policy() {
+        for key_code in [Key::Space, Key::Enter] {
+            let mut h = ordinary(true);
+            tab_to_line(&mut h);
+            let before = mark(&h);
+            for _ in 0..2 {
+                let start = h.state().app.session.journal.len();
+                key(&mut h, key_code);
+                assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+                assert_eq!(h.state().app.session.tool_id(), "line");
+                unchanged(&h, &before);
+                assert!(h.get_by_role_and_label(egui::accesskit::Role::Button, &label(&h)).is_focused());
+                assert_eq!(h.ctx.memory(|m| m.focused()), Some(native(&h).id), "keyboard focus belongs to the recorded physical Line owner");
+            }
+            choose_line(&mut h);
+        }
+    }
+
+    #[test]
+    fn installed_line_held_pointer_retires_across_selection_targets_and_layout_disappearance() {
+        let mut h = ordinary(true);
+        let other = h.state_mut().app.run("frame.create", json!({"rect":[430,90,500,160]})).unwrap()["id"].as_u64().unwrap();
+        let anchor = h.state().anchor;
+        for selected in [vec![anchor], vec![anchor,other], vec![other,anchor], vec![other]] {
+            idle(&mut h, 2);
+            let old = native(&h);
+            pointer(&mut h, old.rect.center(), true);
+            h.state_mut().app.run("selection.set", json!({"ids":selected})).unwrap();
+            idle(&mut h, 2);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            assert_ne!(native(&h).id, old.id);
+            pointer(&mut h, old.rect.center(), false);
+            idle(&mut h, 2);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+            assert_eq!(h.state().app.session.tool_id(), "selection");
+        }
+        let old = native(&h);
+        pointer(&mut h, old.rect.center(), true);
+        h.state_mut().app.ui.hidden_panels = 1;
+        idle(&mut h, 2);
+        assert!(line_elements(&h).is_empty(), "only this Line route is absent, not necessarily all SDK controls");
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, old.rect.center(), false);
+        h.state_mut().app.ui.hidden_panels = 0;
+        idle(&mut h, 3);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        choose_line(&mut h);
+    }
+
+    #[test]
+    fn installed_line_held_pointer_cannot_cross_real_documents_reusing_item_ids() {
+        let mut h = ordinary(true);
+        let original = mark(&h);
+        let old = native(&h);
+        pointer(&mut h, old.rect.center(), true);
+        h.state_mut().app.run("file.new", json!({})).unwrap();
+        let reused = h.state_mut().app.run("frame.create", json!({"rect":[80,80,160,150]})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(reused, h.state().anchor);
+        idle(&mut h, 2);
+        assert_ne!(native(&h).id, old.id);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, old.rect.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        assert_eq!(h.state().app.session.tool_id(), "selection");
+        h.state_mut().app.session.execute("file.close", &json!({})).unwrap();
+        idle(&mut h, 3);
+        unchanged(&h, &original);
+        choose_line(&mut h);
+    }
+
+    #[test]
+    fn installed_line_held_pointer_retires_on_real_revert_with_same_uid_and_item_ids() {
+        let (mut app, anchor) = fixture();
+        let directory = tempfile::tempdir().unwrap();
+        app.run("file.saveAs", json!({"path":directory.path().join("LineRevert.designcraft")})).unwrap();
+        app.run("transform.move", json!({"dx":7.0,"dy":9.0})).unwrap();
+        let mut h = harness(app, anchor, true, vec2(1800.0,1000.0));
+        let uid = h.state().app.session.active().unwrap().uid;
+        let epoch = h.state().app.session.active().unwrap().identity_epoch;
+        let old = native(&h);
+        pointer(&mut h, old.rect.center(), true);
+        h.state_mut().app.session.execute("file.revert", &json!({})).unwrap();
+        h.state_mut().app.run("selection.set", json!({"ids":[anchor]})).unwrap();
+        idle(&mut h, 3);
+        assert_eq!(h.state().app.session.active().unwrap().uid, uid);
+        assert_ne!(h.state().app.session.active().unwrap().identity_epoch, epoch);
+        assert_ne!(native(&h).id, old.id);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, old.rect.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        choose_line(&mut h);
+    }
+
+    #[test]
+    fn installed_line_disabled_or_sizing_parent_cannot_commit_held_input_then_recovers() {
+        for sizing in [false, true] {
+            let mut h = ordinary(true);
+            let old = native(&h);
+            pointer(&mut h, old.rect.center(), true);
+            h.state_mut().enabled = sizing;
+            h.state_mut().sizing = sizing;
+            idle(&mut h, 2);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            pointer(&mut h, old.rect.center(), false);
+            h.state_mut().enabled = true;
+            h.state_mut().sizing = false;
+            idle(&mut h, 3);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+            choose_line(&mut h);
+        }
+    }
+
+    #[test]
+    fn uninstalled_line_keeps_legacy_pointer_natural_keys_canvas_creation_and_undo() {
+        let mut h = ordinary(false);
+        assert!(!h.state().app.framework_installed);
+        assert!(line_elements(&h).is_empty(), "no SDK Line IconButton; unrelated full-app SDK records are not a fallback oracle");
+        // With no SDK runtime, bare Tab is the app's Show/Hide Panels shortcut, not SDK traversal.
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        assert_eq!(h.state().app.ui.hidden_panels, 0);
+        assert!(h.state().parent.unwrap().contains_rect(line_rect(&h)));
+        key(&mut h, Key::Tab);
+        assert_eq!(h.state().app.ui.hidden_panels, 1, "retain the real native Tab policy");
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, &label(&h)).is_none(),
+            "the exact Line Button disappears with the Tools panel; it does not change role or caption");
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start, "hiding chrome submits no engine command");
+        key(&mut h, Key::Tab);
+        assert_eq!(h.state().app.ui.hidden_panels, 0);
+        assert!(h.state().parent.unwrap().contains_rect(line_rect(&h)), "the same uniquely named native Button returns");
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start, "restoring chrome submits no engine command");
+
+        // The native tool shortcut still selects Line through the shipping menu/keymap path.
+        let start = h.state().app.session.journal.len();
+        key(&mut h, Key::Backslash);
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        unchanged(&h, &before);
+        // This custom native Sense::click response does not acquire keyboard focus on a pointer click.
+        // Observe its real primary-click owner before idle erases the release-frame interaction snapshot.
+        let start = h.state().app.session.journal.len();
+        let pos = line_rect(&h).center();
+        pointer(&mut h, pos, true);
+        pointer(&mut h, pos, false);
+        let owner = h.ctx.interaction_snapshot(|snapshot| snapshot.clicked)
+            .expect("the ordinary pointer release has an actual clicked egui owner");
+        let response = h.ctx.read_response(owner).expect("the pointer-clicked native response is live");
+        assert!(response.clicked_by(PointerButton::Primary), "the observed owner received the real primary-pointer click");
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        assert!(h.state().app.ui.flyout.is_none());
+        unchanged(&h, &before);
+        let native_pointer_owner = |h: &Harness<'_, Rig>, owner: egui::Id| {
+            assert!(!h.state().app.framework_installed);
+            assert!(line_elements(h).is_empty(), "no SDK Line owner substitutes for the native response");
+            let caption = label(h);
+            let node = h.get_by_role_and_label(egui::accesskit::Role::Button, &caption);
+            assert!(!node.is_focused(), "ordinary pointer selection retains the native Button's non-focus policy");
+            assert_ne!(h.ctx.memory(|m| m.focused()), Some(owner), "the pointer owner does not acquire egui keyboard focus");
+            // The retained consumer's public u128 conversion puts the local AX NodeId in its high half.
+            assert_eq!(u128::from(node.accesskit_node().id()) >> 64, u128::from(owner.value()),
+                "the unique full-caption AX Button is the actual pointer-clicked physical owner, not tooltip text");
+            let response = h.ctx.read_response(owner).expect("the same native pointer response remains live");
+            let rect = node.rect();
+            assert!(rect.expand(0.5).contains_rect(response.rect) && response.rect.expand(0.5).contains_rect(rect));
+            assert!(response.enabled() && response.sense.senses_click() && h.state().parent.unwrap().contains_rect(rect));
+        };
+        native_pointer_owner(&h, owner);
+        idle(&mut h, 2);
+        native_pointer_owner(&h, owner);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        assert!(h.state().app.ui.flyout.is_none());
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+        unchanged(&h, &before);
+        // Context synthesizes Space/Enter clicks only for an already-focused response. These real idle
+        // keys must not reselect the unfocused native Button; Backslash above is the app's tool shortcut.
+        for input in [Key::Space, Key::Enter] {
+            let start = h.state().app.session.journal.len();
+            key(&mut h, input);
+            assert_eq!(h.state().app.session.journal.len(), start, "unfocused native Space/Enter submits no engine command");
+            assert_eq!(h.state().app.session.tool_id(), "line");
+            native_pointer_owner(&h, owner);
+            unchanged(&h, &before);
+        }
+        choose_line(&mut h);
+        let id = draw_line(&mut h);
+        let after = mark(&h);
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0, before.0);
+        assert!(h.state().app.session.active().unwrap().doc.item(ItemId(id)).is_none());
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(&mut h, 2);
+        unchanged(&h, &after);
+    }
+
+    #[test]
+    fn uninstalled_line_held_pointer_retires_before_a_replacement_target_receives_it() {
+        let mut h = ordinary(false);
+        let rect = line_rect(&h);
+        pointer(&mut h, rect.center(), true);
+        h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
+        idle(&mut h, 2);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, rect.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        assert!(line_elements(&h).is_empty());
+        choose_line(&mut h);
+    }
+
+    #[test]
+    fn installed_line_no_document_retains_the_original_enabled_tool_choice_without_editing() {
+        let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        let mut h = harness(app, 0, true, vec2(1800.0,1000.0));
+        assert!(h.state().app.session.active().is_none());
+        let start = h.state().app.session.journal.len();
+        let pos = native(&h).rect.center();
+        click(&mut h, pos);
+        assert_eq!(h.state().app.session.tool_id(), "line");
+        assert!(h.state().app.session.active().is_none());
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+    }
+
+    #[test]
+    fn installed_line_held_key_release_and_repeat_cannot_follow_a_new_document_target() {
+        let mut h = ordinary(true);
+        tab_to_line(&mut h);
+        let old = native(&h);
+        let start = h.state().app.session.journal.len();
+        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:true, repeat:false, modifiers:Modifiers::NONE });
+        assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
+        h.state_mut().app.run("file.new", json!({})).unwrap();
+        h.state_mut().app.run("frame.create", json!({"rect":[80,80,160,150]})).unwrap();
+        idle(&mut h, 3);
+        assert_ne!(native(&h).id, old.id);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:true, repeat:true, modifiers:Modifiers::NONE });
+        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:false, repeat:false, modifiers:Modifiers::NONE });
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start, "neither a held repeat nor its release activates the replacement slot");
+        choose_line(&mut h);
+    }
+
+    #[test]
+    fn installed_line_held_pointer_cannot_activate_at_its_old_single_column_position_after_reflow() {
+        let mut h = ordinary(true);
+        let old = native(&h);
+        pointer(&mut h, old.rect.center(), true);
+        h.state_mut().app.ui.tools_double_column = true;
+        idle(&mut h, 3);
+        let moved = native(&h);
+        assert!(!moved.rect.contains(old.rect.center()), "the real column reflow moved the Line slot");
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, old.rect.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        assert_eq!(h.state().app.session.tool_id(), "selection");
+        choose_line(&mut h);
     }
 }

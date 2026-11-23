@@ -630,17 +630,45 @@ impl Session {
     /// Run command `id`. A panic inside it becomes [`EngineError::Internal`] and leaves the
     /// document as it was (see [`guard`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
+        let spec = find_command(id);
+        if let Some(spec) = spec
+            && let cmd::SuccessPasses::IfDocumentChanged(unchanged) = spec.success_passes
+        {
+            let mut result = None;
+            // Only this opt-in's pure probe runs before generic lifecycle work. Keep the
+            // ordinary panic boundary. Failed admission/validation and false probes fall
+            // through unchanged; they do not return an early error or retain a stale plan.
+            self.guarded(id, |s| {
+                #[cfg(test)]
+                let valid_params = check_params(id, params).is_ok();
+                #[cfg(not(test))]
+                let valid_params = true;
+                if valid_params && s.check_enabled(spec, id, params).is_ok() {
+                    result = unchanged(s, params);
+                    if result.is_some() {
+                        if spec.journal {
+                            s.journal.push((id.to_string(), params.clone()));
+                        }
+                        s.discard_stale_find_scope();
+                    }
+                }
+                Ok(Value::Null)
+            })?;
+            if let Some(result) = result {
+                return Ok(result);
+            }
+        }
         // A command from outside the IME ends its composition first, keeping the marked text as
         // typed: Undo then takes back that typing, and nothing runs on top of the preview the
         // composition would drop. Queries and recovery saves leave it alone.
-        if self.tool.composing() && id != "file.recovery.save" && find_command(id).is_some_and(|c| c.journal || c.undoable) {
+        if self.tool.composing() && id != "file.recovery.save" && spec.is_some_and(|c| c.journal || c.undoable) {
             self.end_composition()?;
         }
-        self.guarded(id, |s| s.execute_unguarded(id, params))
+        self.guarded(id, |s| s.execute_unguarded(id, params, spec))
     }
 
-    fn execute_unguarded(&mut self, id: &str, params: &Value) -> Result<Value> {
-        let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
+    fn execute_unguarded(&mut self, id: &str, params: &Value, spec: Option<&CommandSpec>) -> Result<Value> {
+        let spec = spec.ok_or_else(|| EngineError::UnknownCommand(id.into()))?;
         // The crate's own tests are the audit of the params descriptions (#776): a key a test
         // passes that its command's description doesn't name fails the test.
         #[cfg(test)]
@@ -669,33 +697,44 @@ impl Session {
                 return Err(e);
             }
         };
-        // Undo, redo or deleting layers can take the active layer away: new objects would land on
-        // a layer that isn't there (invisible, not exported). Fall back to the top layer.
-        if let Some(st) = self.active_mut()
-            && st.doc.layer(st.active_layer).is_none()
-        {
-            st.active_layer = st.doc.working_layer();
-        }
-        self.record_transform(id, params);
-        if self.prefs.smart_text_reflow && spec.undoable {
-            self.smart_reflow();
-        }
-        // Live captions follow their sources.
-        if spec.undoable
-            && let Some(st) = self.active_mut()
-            && st.interaction.is_none()
-            && cmd::captions::has_live(&st.doc)
-        {
-            let mut d = (*st.doc).clone();
-            if cmd::captions::refresh_live(&mut d) {
-                cmd::captions::clamp_text_selection(&d, &mut st.selection);
-                st.doc = Arc::new(d);
-                st.bump_revision();
+        // Most commands retain all existing success passes. The typed opt-in is used only
+        // by combined numbering: a genuine handler edit still runs EVERY pass in order,
+        // while a true no-op cannot accidentally settle unrelated pending document work.
+        let run_success_passes = match spec.success_passes {
+            cmd::SuccessPasses::Always => true,
+            cmd::SuccessPasses::IfDocumentChanged(_) => !before.as_ref().is_some_and(|(uid, doc, _)| {
+                self.active().is_some_and(|st| st.uid == *uid && Arc::ptr_eq(doc, &st.doc))
+            }),
+        };
+        if run_success_passes {
+            // Undo, redo or deleting layers can take the active layer away: new objects would land on
+            // a layer that isn't there (invisible, not exported). Fall back to the top layer.
+            if let Some(st) = self.active_mut()
+                && st.doc.layer(st.active_layer).is_none()
+            {
+                st.active_layer = st.doc.working_layer();
             }
+            self.record_transform(id, params);
+            if self.prefs.smart_text_reflow && spec.undoable {
+                self.smart_reflow();
+            }
+            // Live captions follow their sources.
+            if spec.undoable
+                && let Some(st) = self.active_mut()
+                && st.interaction.is_none()
+                && cmd::captions::has_live(&st.doc)
+            {
+                let mut d = (*st.doc).clone();
+                if cmd::captions::refresh_live(&mut d) {
+                    cmd::captions::clamp_text_selection(&d, &mut st.selection);
+                    st.doc = Arc::new(d);
+                    st.bump_revision();
+                }
+            }
+            self.autosize_changed(spec, before.as_ref());
+            self.keep_guide_selection_valid(before.as_ref(), id);
+            self.record_undo_step(spec, before, nested);
         }
-        self.autosize_changed(spec, before.as_ref());
-        self.keep_guide_selection_valid(before.as_ref(), id);
-        self.record_undo_step(spec, before, nested);
         if spec.journal {
             self.journal.push((id.to_string(), params.clone()));
         }

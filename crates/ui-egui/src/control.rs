@@ -85,6 +85,18 @@ fn framework_transform(app: &DesignApp) -> Value {
     }
 }
 
+fn framework_opacity(app: &DesignApp) -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::framework_opacity::inspect(app)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        Value::Null
+    }
+}
+
 pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     json!({
@@ -113,6 +125,8 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
         // The Transform pilot's own field rects, as the craft UI framework laid them out (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`).
         "frameworkTransform": framework_transform(app),
+        // The Opacity pilot's row rects (`DESIGNCRAFT_FRAMEWORK_OPACITY=1`): the field, the chevron and the slider.
+        "frameworkOpacity": framework_opacity(app),
     })
 }
 
@@ -265,6 +279,7 @@ fn handle_request(app: &mut DesignApp, ctx: &egui::Context, req: &ControlRequest
         "engine.commands" => ok(all_commands(app)),
         "document.inspect" => wrap(app.run("document.inspect", json!({}))),
         "ui.inspect" => ok(inspect(app, ctx)),
+        "ui.objectStyleWitness" => wrap(object_style_witness::control(ctx, p)),
         "ui.docking" => ok(crate::panel_docking::inspect(app, ctx)),
         "ui.menu.list" => ok(serde_json::to_value(menus::MENUS).unwrap_or_default()),
         "ui.tool.select" => wrap(app.run("tool.select", json!({"tool": s("tool").unwrap_or("")}))),
@@ -991,5 +1006,370 @@ mod deferred_clipboard_tests {
             })
             .collect();
         assert_eq!(kinds, ["ime", "key", "key", "paste"]);
+    }
+}
+
+/// Passive, root-viewport diagnostics for the Object Styles GUI transition. Off unless explicitly enabled.
+pub(crate) mod object_style_witness {
+    use std::collections::VecDeque;
+    use egui::{Context, Event, Id, Key, Response, Ui, ViewportId};
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    const RECORD_CAP: usize = 64;
+    const EVENT_SCAN_CAP: usize = 64;
+    const KEY_CAP: usize = 8;
+    const AX_SCAN_CAP: usize = 2048;
+    fn enabled_key() -> Id {
+        Id::unique("design-object-style-witness-enabled")
+    }
+    fn state_key() -> Id {
+        Id::unique("design-object-style-witness-state")
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct KeyFact {
+        key: u8, // 1 Down, 2 Up, 3 Left, 4 Right, 5 Escape, 6 Enter, 7 Space, 8 Tab.
+        pressed: bool,
+        repeat: bool,
+        shift: bool,
+        alt: bool,
+        ctrl: bool,
+        command: bool,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct Chooser {
+        id: u64,
+        ax_node_in_output: bool,
+        combo_role: Option<bool>,
+        expanded: Option<bool>,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct Pass {
+        pass: u64,
+        frame: u64,
+        keys: Vec<KeyFact>,
+        truncated: bool,
+        focus_start: Option<u64>,
+        focus_end: Option<u64>,
+        host_open_start: bool,
+        host_open_end: bool,
+        chooser: Option<Chooser>,
+        app_ui_completed: bool,
+        ax_focus: Option<u64>,
+        ax_scan_truncated: bool,
+        discard_requested: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct State {
+        pending: Option<Pass>,
+        records: VecDeque<Pass>,
+        dropped: u64,
+    }
+
+    pub(crate) fn enabled(ctx: &Context) -> bool {
+        ctx.viewport_id() == ViewportId::ROOT && ctx.data(|data| data.get_temp::<bool>(enabled_key()).unwrap_or(false))
+    }
+
+    /// This endpoint only changes diagnostics. Reading never advances a frame or mutates app/input state.
+    pub(crate) fn control(ctx: &Context, params: &Value) -> Result<Value, String> {
+        for name in ["enable", "reset"] {
+            if params.get(name).is_some_and(|value| !value.is_boolean()) {
+                return Err(format!("`{name}` must be a boolean"));
+            }
+        }
+        ctx.data_mut(|data| {
+            if params.get("enable").and_then(Value::as_bool) == Some(false) {
+                data.remove::<bool>(enabled_key());
+                data.remove::<State>(state_key());
+            } else {
+                if params.get("reset").and_then(Value::as_bool) == Some(true) {
+                    data.remove::<State>(state_key());
+                }
+                if params.get("enable").and_then(Value::as_bool) == Some(true) {
+                    data.insert_temp(enabled_key(), true);
+                }
+            }
+        });
+        // Installed only after explicit opt-in. This plugin never mutates its output argument.
+        if params.get("enable").and_then(Value::as_bool) == Some(true) && ctx.plugin_opt::<OutputWitness>().is_none() {
+            ctx.add_plugin(OutputWitness);
+        }
+        let on = enabled(ctx);
+        let state = ctx.data(|data| data.get_temp::<State>(state_key())).unwrap_or_default();
+        Ok(json!({"enabled": on, "recordCap": RECORD_CAP, "eventScanCap": EVENT_SCAN_CAP,
+            "keyCap": KEY_CAP, "axScanCap": AX_SCAN_CAP, "dropped": state.dropped, "records": state.records}))
+    }
+
+    /// Observe only the public original raw batch after the font gate, before app UI consumers.
+    /// SDK-withdrawn events may be absent from InputState::events, so do not use that mutable list.
+    pub(crate) fn begin(ctx: &Context, host_open: bool) {
+        if !enabled(ctx) {
+            return;
+        } // No event, focus or node scan on the default production path.
+        let (keys, truncated) = ctx.input(|input| {
+            let mut keys = Vec::with_capacity(KEY_CAP);
+            let mut truncated = input.raw.events.len() > EVENT_SCAN_CAP;
+            for event in input.raw.events.iter().take(EVENT_SCAN_CAP) {
+                let Event::Key { key, pressed, repeat, modifiers, .. } = event else { continue };
+                let key = match key {
+                    Key::ArrowDown => 1,
+                    Key::ArrowUp => 2,
+                    Key::ArrowLeft => 3,
+                    Key::ArrowRight => 4,
+                    Key::Escape => 5,
+                    Key::Enter => 6,
+                    Key::Space => 7,
+                    Key::Tab => 8,
+                    _ => continue,
+                };
+                if keys.len() == KEY_CAP {
+                    truncated = true;
+                    continue;
+                }
+                keys.push(KeyFact {
+                    key,
+                    pressed: *pressed,
+                    repeat: *repeat,
+                    shift: modifiers.shift,
+                    alt: modifiers.alt,
+                    ctrl: modifiers.ctrl,
+                    command: modifiers.command,
+                });
+            }
+            (keys, truncated)
+        });
+        let pass = Pass {
+            pass: ctx.cumulative_pass_nr(),
+            frame: ctx.cumulative_frame_nr(),
+            keys,
+            truncated,
+            focus_start: ctx.memory(|memory| memory.focused()).map(|id| id.value()),
+            focus_end: None,
+            host_open_start: host_open,
+            host_open_end: false,
+            chooser: None,
+            app_ui_completed: false,
+            ax_focus: None,
+            ax_scan_truncated: false,
+            discard_requested: false,
+        };
+        ctx.data_mut(|data| data.get_temp_mut_or_default::<State>(state_key()).pending = Some(pass));
+    }
+
+    /// Keep only the actual returned chooser id; its finished AX facts are read from FullOutput.
+    /// No AX node is created, patched, inferred, or scanned during ordinary chooser layout.
+    pub(crate) fn chooser(ui: &Ui, response: &Response) {
+        let ctx = ui.ctx();
+        if !enabled(ctx) || ui.is_sizing_pass() || !ui.is_visible() {
+            return;
+        }
+        let chooser = Chooser { id: response.id.value(), ax_node_in_output: false, combo_role: None, expanded: None };
+        let pass_nr = ctx.cumulative_pass_nr();
+        ctx.data_mut(|data| {
+            if let Some(pass) = &mut data.get_temp_mut_or_default::<State>(state_key()).pending
+                && pass.pass == pass_nr
+            {
+                pass.chooser = Some(chooser);
+            }
+        });
+    }
+
+    /// Mark ordinary app layout/commands complete. SDK end hooks still get their original turn.
+    pub(crate) fn finish(ctx: &Context, host_open: bool) {
+        if !enabled(ctx) {
+            return;
+        }
+        let pass_nr = ctx.cumulative_pass_nr();
+        ctx.data_mut(|data| {
+            if let Some(pass) = &mut data.get_temp_mut_or_default::<State>(state_key()).pending
+                && pass.pass == pass_nr
+            {
+                pass.host_open_end = host_open;
+                pass.app_ui_completed = true;
+            }
+        });
+    }
+
+    struct OutputWitness;
+    impl egui::Plugin for OutputWitness {
+        fn debug_name(&self) -> &'static str {
+            "passive Object Styles witness"
+        }
+
+        // Called after all end-pass hooks and Context::end_pass have produced the real AX update.
+        // No input/output field, focus, layer, or frame request is written by this hook.
+        fn output_hook(&mut self, ctx: &Context, output: &mut egui::FullOutput) {
+            if !enabled(ctx) {
+                return;
+            }
+            let completed = ctx.cumulative_pass_nr_for(ViewportId::ROOT);
+            let mut pass = ctx.data_mut(|data| {
+                let state = data.get_temp_mut_or_default::<State>(state_key());
+                let ready = state.pending.as_ref().is_some_and(|pass| pass.app_ui_completed && pass.pass.checked_add(1) == Some(completed));
+                if ready {
+                    state.pending.take()
+                } else {
+                    None
+                }
+            });
+            let Some(mut pass) = pass.take() else { return };
+            pass.focus_end = ctx.memory(|memory| memory.focused()).map(|id| id.value());
+            pass.discard_requested = !output.platform_output.request_discard_reasons.is_empty();
+            if let Some(tree) = &output.platform_output.accesskit_update {
+                pass.ax_focus = Some(tree.focus.0);
+                pass.ax_scan_truncated = tree.nodes.len() > AX_SCAN_CAP;
+                if let Some(chooser) = &mut pass.chooser
+                    && let Some((_, node)) = tree.nodes.iter().take(AX_SCAN_CAP).find(|(id, _)| id.0 == chooser.id)
+                {
+                    chooser.ax_node_in_output = true;
+                    chooser.combo_role = Some(node.role() == egui::accesskit::Role::ComboBox);
+                    chooser.expanded = node.is_expanded();
+                }
+            }
+            ctx.data_mut(|data| {
+                let state = data.get_temp_mut_or_default::<State>(state_key());
+                if state.records.len() == RECORD_CAP {
+                    state.records.pop_front();
+                    state.dropped = state.dropped.saturating_add(1);
+                }
+                state.records.push_back(pass);
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod object_style_witness_tests {
+    use super::object_style_witness as witness;
+    use egui::{Context, Event, Id, Key, Modifiers, RawInput, Sense};
+    use serde_json::json;
+
+    fn key(key: Key, pressed: bool) -> Event {
+        Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn default_off_does_not_observe_input_or_create_an_accessibility_node() {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        let mut output = ctx.run_ui(RawInput { events: vec![key(Key::Enter, true)], ..Default::default() }, |ui| {
+            let response = ui.interact(ui.available_rect_before_wrap(), Id::unique("witness-off-no-ax"), Sense::hover());
+            let events = ctx.input(|input| input.events.clone());
+            let focus = ctx.memory(|memory| memory.focused());
+            let popup = egui::Popup::is_any_open(&ctx);
+            assert!(!ctx.has_accesskit_node(response.id));
+            witness::begin(&ctx, true);
+            witness::chooser(ui, &response);
+            witness::finish(&ctx, true);
+            assert_eq!(ctx.input(|input| input.events.clone()), events);
+            assert_eq!(ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(egui::Popup::is_any_open(&ctx), popup);
+            assert!(!ctx.has_accesskit_node(response.id));
+        });
+        output.textures_delta.clear();
+        let report = witness::control(&ctx, &json!({})).unwrap();
+        assert_eq!(report["enabled"], false);
+        assert_eq!(report["records"], json!([]));
+    }
+
+    #[test]
+    fn enabled_reads_the_real_existing_combo_node_without_input_focus_popup_or_node_changes() {
+        let ctx = Context::default();
+        ctx.enable_accesskit();
+        let final_owner = Id::unique("existing-host-end-pass-focus");
+        ctx.on_end_pass(
+            "test host end-pass focus",
+            std::sync::Arc::new(move |ui| {
+                ui.memory_mut(|memory| memory.request_focus(final_owner));
+            }),
+        );
+        let before = ctx.cumulative_pass_nr();
+        witness::control(&ctx, &json!({"enable": true, "reset": true})).unwrap();
+        assert_eq!(ctx.cumulative_pass_nr(), before);
+        let raw = RawInput {
+            events: vec![key(Key::ArrowDown, true), key(Key::ArrowDown, false), Event::Text("private-text-not-retained-by-witness".to_owned())],
+            ..Default::default()
+        };
+        let mut chooser_id = None;
+        let mut output = ctx.run_ui(raw, |ui| {
+            witness::begin(&ctx, true);
+            ui.interact(ui.min_rect(), final_owner, Sense::click());
+            // An actual response with no AX node must not gain one merely by being observed.
+            let absent = ui.interact(ui.min_rect(), Id::unique("witness-enabled-no-ax"), Sense::hover());
+            assert!(!ctx.has_accesskit_node(absent.id));
+            witness::chooser(ui, &absent);
+            assert!(!ctx.has_accesskit_node(absent.id));
+            let combo = egui::ComboBox::from_id_salt("witness-real-combo").selected_text("Kept style").show_ui(ui, |_| {});
+            assert!(ctx.has_accesskit_node(combo.response.id));
+            chooser_id = Some(combo.response.id);
+            let node = ctx.accesskit_node_builder(combo.response.id, |node| node.clone());
+            // Native ComboBox publishes a role/value, but no expanded property in this pinned egui.
+            assert_eq!(node.as_ref().unwrap().is_expanded(), None, "absence must remain unknown, not inferred collapsed");
+            let events = ctx.input(|input| input.events.clone());
+            let focus = ctx.memory(|memory| memory.focused());
+            let popup = egui::Popup::is_any_open(&ctx);
+            witness::chooser(ui, &combo.response);
+            witness::finish(&ctx, true);
+            assert_eq!(ctx.input(|input| input.events.clone()), events);
+            assert_eq!(ctx.memory(|memory| memory.focused()), focus);
+            assert_eq!(egui::Popup::is_any_open(&ctx), popup);
+            assert_eq!(ctx.accesskit_node_builder(combo.response.id, |node| node.clone()), node, "observer keeps the entire existing node unchanged");
+        });
+        output.textures_delta.clear();
+        let before = ctx.cumulative_pass_nr();
+        let report = witness::control(&ctx, &json!({})).unwrap();
+        assert_eq!(ctx.cumulative_pass_nr(), before, "read endpoint never advances input");
+        let records = report["records"].as_array().unwrap();
+        assert!(!records.is_empty());
+        let record = records.last().unwrap();
+        assert_eq!(record["keys"].as_array().unwrap().len(), 2);
+        assert_eq!(record["keys"][0]["key"], 1);
+        assert_eq!(record["keys"][0]["pressed"], true);
+        assert_eq!(record["keys"][1]["pressed"], false);
+        assert_eq!(record["chooser"]["ax_node_in_output"], true);
+        assert_eq!(record["chooser"]["combo_role"], true);
+        let chooser_id = chooser_id.unwrap().accesskit_id();
+        let tree = output.platform_output.accesskit_update.as_ref().expect("actual native AX output");
+        let (_, native_node) = tree.nodes.iter().find(|(id, _)| *id == chooser_id).expect("actual existing chooser node");
+        assert_eq!(native_node.role(), egui::accesskit::Role::ComboBox);
+        assert_eq!(native_node.is_expanded(), None, "this native widget does not publish expansion");
+        assert!(record["chooser"].as_object().unwrap().contains_key("expanded"), "unknown must be explicit, not an omitted field");
+        assert_eq!(record["chooser"]["expanded"], json!(native_node.is_expanded()), "report the actual published known/unknown fact");
+        assert_eq!(record["host_open_start"], true);
+        assert_eq!(record["host_open_end"], true);
+        assert_eq!(record["focus_end"], json!(final_owner.value()), "observe final host focus AFTER end hooks");
+        assert_eq!(record["app_ui_completed"], true);
+        assert!(!report.to_string().contains("private-text-not-retained-by-witness"));
+        assert!(!report.to_string().contains("Kept style"));
+    }
+
+    #[test]
+    fn event_key_and_record_caps_reset_and_disable_are_explicit_and_bounded() {
+        let ctx = Context::default();
+        assert!(witness::control(&ctx, &json!({"enable": "yes"})).is_err());
+        witness::control(&ctx, &json!({"enable": true, "reset": true})).unwrap();
+        for _ in 0..73 {
+            let raw = RawInput { events: (0..65).map(|_| key(Key::ArrowDown, true)).collect(), ..Default::default() };
+            let mut output = ctx.run_ui(raw, |_| {
+                witness::begin(&ctx, true);
+                witness::finish(&ctx, true);
+            });
+            output.textures_delta.clear();
+        }
+        let report = witness::control(&ctx, &json!({})).unwrap();
+        let records = report["records"].as_array().unwrap();
+        assert_eq!(records.len(), 64);
+        assert!(report["dropped"].as_u64().unwrap() >= 9);
+        assert!(records.iter().all(|record| record["keys"].as_array().unwrap().len() <= 8 && record["truncated"] == true));
+        let reset = witness::control(&ctx, &json!({"reset": true})).unwrap();
+        assert_eq!(reset["enabled"], true);
+        assert_eq!(reset["records"], json!([]));
+        let disabled = witness::control(&ctx, &json!({"enable": false})).unwrap();
+        assert_eq!(disabled["enabled"], false);
+        assert_eq!(disabled["records"], json!([]));
     }
 }

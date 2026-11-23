@@ -52,6 +52,67 @@ fn framework_fields(app: &DesignApp, i: &SelInfo) -> bool {
     }
 }
 
+/// Whether the Appearance row's Opacity field and slider are the craft UI framework's own
+/// (`DESIGNCRAFT_FRAMEWORK_OPACITY=1`, see [`crate::framework_opacity`]). Otherwise the row keeps the
+/// bespoke field and its egui slider.
+fn framework_opacity(app: &DesignApp) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::framework_opacity::available(app)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// The Opacity percentage field at `at` (the framework's own when the pilot is on), as the ratio
+/// `object.opacity` takes when it committed a value this pass.
+fn opacity_field(app: &mut DesignApp, ui: &mut Ui, at: Rect, label: &str, opacity: f64) -> Option<f64> {
+    let typed = if framework_opacity(app) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // The field takes the ratio and shows whole percents itself; scaling here too would read 100
+            // for every document value (0.4 -> 40 -> 4000 -> the range's end).
+            crate::framework_opacity::field(app, ui, at, label, opacity)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (ui, at, label);
+            None
+        }
+    } else {
+        place(ui, at, |ui| NumField::number("opacity", Some((opacity * 100.0).round()), "%", 0).width(at.width()).range(0.0, 100.0).show(ui))
+    };
+    // The percent either field reports becomes the ratio `object.opacity` takes, at the row's one boundary.
+    typed.and_then(|percent| {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::framework_opacity::committed(percent)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The browser build keeps the bespoke field, so its percent is scaled here alone.
+            Some((percent / 100.0).clamp(0.0, 1.0))
+        }
+    })
+}
+
+/// The chevron's popup: the framework's slider field when the pilot is on, the bespoke egui slider
+/// otherwise. Both go through the panel's live preview, so a drag shows on the page and commits once.
+fn opacity_more(app: &mut DesignApp, resp: &egui::Response, more: Rect, opacity: f64) {
+    if framework_opacity(app) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.framework_opacity_fields.push(("more".to_string(), more));
+            crate::framework_opacity::slider_popup(app, resp, opacity);
+        }
+    } else {
+        opacity_slider(app, resp, opacity);
+    }
+}
+
 pub(super) fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
     let u = units(app);
     let rp = app.ui.ref_point;
@@ -507,17 +568,16 @@ pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) 
     if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), 56.0)).clicked() {
         show_panel(app, "effects");
     }
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), |ui| {
-        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(51.0).range(0.0, 100.0).show(ui)
-    }) {
-        let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
+    let opacity_label = crate::i18n::tr(&app.ui.language, "Opacity");
+    if let Some(v) = opacity_field(app, ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), &opacity_label, i.opacity) {
+        let _ = app.run("object.opacity", json!({"opacity": v}));
     }
     let more = sub(b, 147.0, 0.0, 18.0, FIELD_H);
     let mresp = ui.interact(more, ui.scope_id().with("opmore"), Sense::click());
     ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
     mresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr(&app.ui.language, "Opacity")));
-    opacity_slider(app, &mresp, i.opacity);
+    opacity_more(app, &mresp, more, i.opacity);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;

@@ -56,6 +56,28 @@ fn toggle(ui: &mut Ui, group: Rect, x: f32, key: &str, tip: &str) -> bool {
     }
 }
 
+/// Auto-Fit is an ordinary bool proposal; the engine owns fitting and Undo.
+fn auto_fit_checkbox(app: &DesignApp, ui: &mut Ui, value: &mut bool, label: &str) -> bool {
+    // A held activation belongs to this exact document incarnation and ordered selection.
+    // Do not let its release apply to a replacement document or a different set of frames.
+    let target = app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
+    let id = ui.scope_id().with(("object-control-auto-fit", target));
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::choice::Checkbox;
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+        use craft_theme::ControlSize;
+
+        let output = Checkbox::new(Bind::given(*value)).id(id).label(label.to_owned()).size(ControlSize::Sm).show(ui);
+        if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
+            *value = next;
+            return true;
+        }
+        return false;
+    }
+    ui.push_id(id, |ui| widgets::checkbox(ui, value, label).changed()).inner
+}
+
 /// Lay out the fixed two-row control groups for reference, geometry, transform, rotate/flip, appearance, wrap, corners, fitting, alignment and conditional columns.
 pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     let language = app.ui.language.clone();
@@ -265,13 +287,14 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
                 let _ = app.run("object.fit", json!({"mode": mode}));
             }
         }
+        // The displayed state intentionally follows the first selected graphic, not a new mixed-state policy.
         let mut auto = app
             .session
             .active()
             .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
             .and_then(|it| it.graphic())
             .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
-        if cell(ui, rect, 0.0, 1, 116.0, graphic, |ui| widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit"))).changed() {
+        if cell(ui, rect, 0.0, 1, 116.0, graphic, |ui| auto_fit_checkbox(app, ui, &mut auto, &tr("Auto-Fit"))) {
             let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
         }
     });
@@ -409,5 +432,539 @@ mod tests {
         }
         let after = ctx.read_response(id).unwrap().rect;
         assert!(after.left() < before.left() && after.right() <= 900.0, "scrolling reaches the last group: {before:?} -> {after:?}");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod auto_fit_workflow_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
+    use designcraft_doc::{Document, Fitting, Item, ItemId};
+    use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
+    use egui_kittest::{Harness, kittest::{NodeT, Queryable}};
+    use std::{collections::HashSet, sync::Arc};
+
+    struct Rig {
+        app: DesignApp,
+        controls: Option<Arc<Recorded>>,
+        enabled: bool,
+        sizing: bool,
+        canvas: bool,
+        toolbar: Option<Rect>,
+    }
+    type Mark = (Arc<Document>, String, (usize, usize));
+
+    fn step(h: &mut Harness<'_, Rig>) {
+        let mut raw = std::mem::take(h.input_mut());
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, Rig>, frames: usize) {
+        for _ in 0..frames { step(h); }
+    }
+    fn event(h: &mut Harness<'_, Rig>, event: Event) {
+        h.input_mut().events.push(event);
+        step(h);
+    }
+    fn key(h: &mut Harness<'_, Rig>, key: Key) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+    }
+    fn pointer(h: &mut Harness<'_, Rig>, pos: egui::Pos2, pressed: bool) {
+        event(h, Event::PointerMoved(pos));
+        event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+    }
+    fn click_at(h: &mut Harness<'_, Rig>, pos: egui::Pos2) {
+        pointer(h, pos, true);
+        pointer(h, pos, false);
+        idle(h, 2);
+    }
+    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Rig> {
+        app.run("window.workspace", json!({"name":"Advanced"})).unwrap();
+        assert!(app.ui.control_bar);
+        app.framework_opacity = true;
+        let ctx = egui::Context::default();
+        if installed { app.install_framework(&ctx); }
+        assert_eq!(app.framework_installed, installed);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(1800.0, 900.0)).build_ui_state(
+            move |ui, state: &mut Rig| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), &state.app.ui.language);
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(state.app.ui.brightness));
+                    ready = true;
+                    return;
+                }
+                crate::canvas::begin_frame(ui.ctx());
+                let builder = if state.sizing { UiBuilder::new().sizing_pass() } else { UiBuilder::new() };
+                ui.scope_builder(builder, |ui| {
+                    ui.add_enabled_ui(state.enabled, |ui| {
+                        // The shipping parent, its top Panel, horizontal scroller and fixed cells all run.
+                        let parent_id = ui.scope_id().with("control_bar");
+                        state.controls = record(ui, egui::Id::unique("object-auto-fit-workflow"), |ui| crate::chrome::control_bar(&mut state.app, ui)).1;
+                        state.toolbar = egui::containers::panel::PanelState::load(ui.ctx(), parent_id).map(|panel| panel.outer_rect);
+                        if state.canvas {
+                            egui::CentralPanel::default().show(ui, |ui| crate::canvas::show(&mut state.app, ui));
+                        }
+                    });
+                });
+            },
+            Rig { app, controls: None, enabled: true, sizing: false, canvas: false, toolbar: None },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 4);
+        h
+    }
+    fn fixture() -> (DesignApp, [u64; 3]) {
+        let mut session = designcraft_engine::Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+        let mut ids = Vec::new();
+        for x in [100, 400, 700] {
+            let id = session.execute("frame.create", &json!({"rect":[x,100,x+200,300]})).unwrap()["id"].as_u64().unwrap();
+            session.execute("file.place", &json!({"base64":designcraft_engine::cmd::base64_encode(&png), "name":"auto-fit.png", "frame":id})).unwrap();
+            ids.push(id);
+        }
+        // Keep both real history stacks populated, so an idle draw cannot hide a stray edit.
+        session.execute("frame.create", &json!({"rect":[20,400,40,420]})).unwrap();
+        session.execute("edit.undo", &json!({})).unwrap();
+        session.execute("selection.set", &json!({"ids":[ids[0]]})).unwrap();
+        assert!(!session.active().unwrap().history.undo.is_empty());
+        assert_eq!(session.active().unwrap().history.redo.len(), 1);
+        (DesignApp::new_for_panel_tests(session, crate::Services::default()), ids.try_into().unwrap())
+    }
+    fn mark(h: &Harness<'_, Rig>) -> Mark {
+        let st = h.state().app.session.active().unwrap();
+        (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
+            (st.history.undo.len(), st.history.redo.len()))
+    }
+    fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
+        assert_eq!(mark(h), *before, "document, identity, selection and both real history stacks remain unchanged");
+    }
+    fn item(h: &Harness<'_, Rig>, id: u64) -> Item {
+        h.state().app.session.active().unwrap().doc.item(ItemId(id)).unwrap().clone()
+    }
+    fn checkbox(h: &Harness<'_, Rig>) -> Element {
+        let controls = h.state().controls.as_ref().unwrap();
+        let found: Vec<_> = controls.elements.iter().filter(|e| e.component == "Checkbox" && e.part.is_none()
+            && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some("Auto-Fit"))).cloned().collect();
+        assert_eq!(found.len(), 1, "one actual installed SDK Auto-Fit Checkbox in the complete toolbar");
+        let field = found.into_iter().next().unwrap();
+        assert_eq!(field.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::CheckBox));
+        field
+    }
+    fn checked(h: &Harness<'_, Rig>, expected: bool) {
+        let node = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some("Auto-Fit"));
+        assert_eq!(node.accesskit_node().toggled(), Some(if expected { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False }));
+    }
+    fn fitting_cell(h: &Harness<'_, Rig>) -> Rect {
+        let group = h.ctx.read_response(egui::Id::unique(("object_control", "fitting"))).unwrap().rect;
+        assert_eq!(group.size(), vec2(116.0, HEIGHT));
+        let cell = Rect::from_min_size(group.min + vec2(0.0, ROW_PITCH), vec2(116.0, FIELD_H));
+        assert_eq!(cell.height(), 21.0);
+        let parent = h.state().toolbar.expect("the shipping top Panel persisted its actual outer rectangle");
+        assert!((parent.height() - 59.0).abs() < 1e-6, "measure the shipping parent, not a test-owned substitute: {parent:?}");
+        assert!(group.contains_rect(cell) && parent.contains_rect(group) && parent.contains_rect(cell),
+            "actual second-row cell stays inside the unchanged parent toolbar: {cell:?}, {parent:?}");
+        cell
+    }
+    fn painted_label(h: &Harness<'_, Rig>) -> Rect {
+        fn collect(shape: &egui::Shape, clip: Rect, labels: &mut Vec<(Rect, Rect)>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.job.text == "Auto-Fit" => labels.push((t.visual_bounding_rect(), clip)),
+                egui::Shape::Vec(shapes) => for shape in shapes { collect(shape, clip, labels); },
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in &h.output().shapes { collect(&shape.shape, shape.clip_rect, &mut labels); }
+        assert_eq!(labels.len(), 1, "measure the real full painted caption, not an assumed checkbox width");
+        let (label, clip) = labels[0];
+        assert!(label.is_finite() && label.width() > 0.0 && label.height() > 0.0);
+        assert!(fitting_cell(h).expand(0.5).contains_rect(label) && clip.expand(0.5).contains_rect(label),
+            "the complete caption is inside its real cell and paint clip, not merely a clipped taller row: {label:?}, {clip:?}");
+        label
+    }
+    fn native_geometry(h: &Harness<'_, Rig>) -> (Element, Rect) {
+        let field = checkbox(h);
+        let cell = fitting_cell(h);
+        assert!(cell.expand(0.5).contains_rect(field.rect), "the real SDK control fits the original 21-point cell: {:?}", field.rect);
+        let label = painted_label(h);
+        let controls = h.state().controls.as_ref().unwrap();
+        let hits: Vec<_> = controls.hits.iter().filter(|hit| hit.owner == field.id && hit.part.is_none()).collect();
+        assert!(!hits.is_empty(), "the SDK registered its real pointer hit target");
+        assert!(hits.iter().all(|hit| cell.expand(0.5).contains_rect(hit.rect)), "hit targets do not intrude into the fitting actions above or outside the cell");
+        assert!(hits.iter().any(|hit| hit.rect.contains(label.center())), "the visible caption is genuinely clickable");
+        let node = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some("Auto-Fit"));
+        assert!(cell.expand(0.5).contains_rect(node.rect()) && field.rect.contains(node.rect().center()),
+            "the SDK's named indicator AX node stays inside its real cell; the separate label claim is checked above");
+        (field, label)
+    }
+    fn tab_to_checkbox(h: &mut Harness<'_, Rig>) {
+        let mut visited = HashSet::new();
+        loop {
+            if h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some("Auto-Fit")).is_focused() {
+                if h.state().app.framework_installed { assert_eq!(h.ctx.memory(|m| m.focused()), Some(checkbox(h).id)); }
+                return;
+            }
+            assert!(visited.insert(h.ctx.memory(|m| m.focused())), "natural Tab traversal of the real toolbar reaches Auto-Fit");
+            key(h, Key::Tab);
+        }
+    }
+    fn journal_one(h: &Harness<'_, Rig>, start: usize, value: bool) {
+        assert_eq!(&h.state().app.session.journal[start..], &[("object.fittingOptions".to_owned(), json!({"autoFit":value}))]);
+    }
+    fn click_auto_fit(h: &mut Harness<'_, Rig>) {
+        let label = painted_label(h);
+        click_at(h, label.center());
+    }
+
+    #[test]
+    fn installed_auto_fit_enable_resize_move_disable_and_each_real_undo_redo() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        let before = mark(&h);
+        let untouched = [item(&h, ids[1]), item(&h, ids[2])];
+        native_geometry(&h);
+        checked(&h, false);
+        let mut documents = vec![before.0.clone()];
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+        checked(&h, true);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::FillProportionally);
+        documents.push(mark(&h).0);
+
+        // The real Selection-tool handle reaches transform.resize, which owns downstream refitting.
+        // The unchanged W/H numeric path is transform.set and is deliberately not substituted for it.
+        h.state_mut().canvas = true;
+        idle(&mut h, 3);
+        let frame_before = item(&h, ids[0]).bounds();
+        let content_before_resize = item(&h, ids[0]).graphic().unwrap().xf;
+        let st = h.state().app.session.active().unwrap();
+        let layout = h.state().app.session.layout();
+        let (spread_to_canvas, _) = crate::canvas::item_canvas_xf(&st.doc, &layout, ItemId(ids[0])).unwrap();
+        let xf = crate::canvas::Xf::new(h.state().app.canvas_rect.unwrap(), h.state().app.view().unwrap());
+        let from = xf.to_screen(spread_to_canvas * designcraft_geom::Point::new(frame_before.x1, frame_before.center().y));
+        let to = from + vec2(80.0 * xf.zoom as f32, 0.0);
+        assert!(h.state().app.canvas_rect.unwrap().contains(from) && h.state().app.canvas_rect.unwrap().contains(to));
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, from, true);
+        for fraction in [0.25, 0.5, 0.75, 1.0] {
+            event(&mut h, Event::PointerMoved(from + (to - from) * fraction));
+        }
+        pointer(&mut h, to, false);
+        idle(&mut h, 3);
+        let frame_after = item(&h, ids[0]).bounds();
+        assert!((frame_after.width() - frame_before.width() - 80.0).abs() < 1e-3,
+            "the actual frame handle resizes, rather than moving or scaling its content: {frame_before:?} -> {frame_after:?}");
+        assert!((frame_after.height() - frame_before.height()).abs() < 1e-6);
+        let commands = &h.state().app.session.journal[start..];
+        assert_eq!(commands.len(), 1, "one committed command from the genuine multi-pass handle gesture");
+        assert_eq!(commands[0], ("transform.resize".to_owned(), json!({
+            "from":[frame_before.x0,frame_before.y0,frame_before.x1,frame_before.y1],
+            "to":[frame_after.x0,frame_after.y0,frame_after.x1,frame_after.y1], "content":false,"distribute":false
+        })));
+        let resized = item(&h, ids[0]);
+        let graphic = resized.graphic().unwrap();
+        assert_eq!(graphic.xf, graphic.fitted(resized.inner_bounds(), graphic.auto_fit).unwrap(), "the real frame resize refits the graphic downstream");
+        assert_ne!(graphic.xf, content_before_resize, "proves a changed graphic transform, not just the Auto-Fit flag");
+        documents.push(mark(&h).0);
+
+        // A real content-move command establishes the moved picture that turning Auto-Fit off must preserve.
+        h.state_mut().app.run("transform.move", json!({"dx":7.0,"dy":9.0,"content":true})).unwrap();
+        idle(&mut h, 2);
+        let moved = item(&h, ids[0]).graphic().unwrap().xf;
+        assert_ne!(moved, graphic.xf);
+        documents.push(mark(&h).0);
+        // The resize focused the real Canvas, whose native Tab lock intentionally keeps Tab.
+        // Re-enter a different real toolbar editor by pointer before testing toolbar traversal.
+        assert_eq!(h.state().app.session.tool_id(), "selection");
+        let canvas_owner = h.ctx.memory(|m| m.focused()).expect("the completed Canvas gesture owns focus");
+        let canvas_response = h.ctx.read_response(canvas_owner).expect("the focused Canvas response remains live");
+        assert!(canvas_response.rect.contains_rect(h.state().app.canvas_rect.unwrap()),
+            "Canvas focus covers the real view, including its ruler margin");
+        let traversal_before = mark(&h);
+        let traversal_start = h.state().app.session.journal.len();
+        let entry = h.get_by_role_and_label(egui::accesskit::Role::TextInput, "cx").rect();
+        assert!(h.state().toolbar.unwrap().contains_rect(entry), "the unique cx editor is in the actual toolbar");
+        click_at(&mut h, entry.center());
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::TextInput, "cx").is_focused());
+        assert!(h.ctx.text_edit_focused(), "ordinary pointer input entered the real numeric TextEdit");
+        let entry_owner = h.ctx.memory(|m| m.focused()).expect("the toolbar editor owns actual focus");
+        assert_ne!(entry_owner, canvas_owner);
+        let entry_response = h.ctx.read_response(entry_owner).expect("the focused toolbar editor response is live");
+        assert!(entry.expand(0.5).contains_rect(entry_response.rect) && entry_response.rect.expand(0.5).contains_rect(entry),
+            "AX focus and egui focus identify the same inner editor, not its spinner or full field slot");
+        unchanged(&h, &traversal_before);
+        assert_eq!(h.state().app.session.journal.len(), traversal_start, "toolbar entry alone submits no command");
+        tab_to_checkbox(&mut h);
+        unchanged(&h, &traversal_before);
+        assert_eq!(h.state().app.session.journal.len(), traversal_start, "natural toolbar traversal submits no command");
+        let start = h.state().app.session.journal.len();
+        key(&mut h, Key::Space);
+        idle(&mut h, 2);
+        journal_one(&h, start, false);
+        checked(&h, false);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().xf, moved, "disable alone must not recenter or refit moved content");
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::None);
+        documents.push(mark(&h).0);
+        assert_eq!(mark(&h).2, (before.2.0 + 4, 0), "enable, resize, move and disable are four independent real edits");
+        assert_eq!([item(&h, ids[1]), item(&h, ids[2])], untouched);
+        for i in (0..4).rev() {
+            h.state_mut().app.run("edit.undo", json!({})).unwrap();
+            idle(&mut h, 2);
+            assert_eq!(mark(&h).0, documents[i], "one real Undo restores precisely operation {i}'s preimage");
+            assert_eq!(mark(&h).2, (before.2.0 + i, 4 - i));
+        }
+        for i in 1..=4 {
+            h.state_mut().app.run("edit.redo", json!({})).unwrap();
+            idle(&mut h, 2);
+            assert_eq!(mark(&h).0, documents[i]);
+            assert_eq!(mark(&h).2, (before.2.0 + i, 4 - i));
+        }
+        assert_eq!([item(&h, ids[1]), item(&h, ids[2])], untouched);
+    }
+
+    #[test]
+    fn installed_auto_fit_real_parent_geometry_idle_label_and_hit_bounds() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        let before = mark(&h);
+        let status = h.state().app.ui.status.clone();
+        let start = h.state().app.session.journal.len();
+        let old = native_geometry(&h).0.id;
+        idle(&mut h, 8);
+        assert_eq!(native_geometry(&h).0.id, old);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.ui.status, status);
+        assert_eq!(h.state().app.session.journal.len(), start);
+    }
+
+    #[test]
+    fn installed_auto_fit_keeps_first_selected_display_and_exact_selected_graphic_targets() {
+        let (mut app, ids) = fixture();
+        app.run("object.fittingOptions", json!({"ids":[ids[1]],"autoFit":true,"fitting":"fitProportionally"})).unwrap();
+        app.run("selection.set", json!({"ids":[ids[0],ids[1]]})).unwrap();
+        let mut h = harness(app, true);
+        checked(&h, false); // Not mixed: the original first-selected-graphic policy.
+        let untouched = item(&h, ids[2]);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::FillProportionally);
+        assert_eq!(item(&h, ids[1]).graphic().unwrap().auto_fit, Fitting::FitProportionally, "keep an existing fitting mode");
+        assert_eq!(item(&h, ids[2]), untouched);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0, before.0);
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[1],ids[0]]})).unwrap();
+        idle(&mut h, 2);
+        checked(&h, true);
+    }
+
+    #[test]
+    fn installed_auto_fit_natural_space_and_enter_each_submit_once() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        for (key_name, value) in [(Key::Space, true), (Key::Enter, false)] {
+            tab_to_checkbox(&mut h);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            key(&mut h, key_name);
+            idle(&mut h, 4);
+            journal_one(&h, start, value);
+            checked(&h, value);
+            assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+            assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit != Fitting::None, value);
+        }
+    }
+
+    #[test]
+    fn installed_auto_fit_held_pointer_retires_on_selection_expansion_reorder_and_replacement() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        for selected in [vec![ids[0],ids[1]], vec![ids[1],ids[0]], vec![ids[2]]] {
+            let (old, label) = native_geometry(&h);
+            let start = h.state().app.session.journal.len();
+            pointer(&mut h, label.center(), true);
+            assert_eq!(h.state().app.session.journal.len(), start, "activation waits for the release");
+            h.state_mut().app.run("selection.set", json!({"ids":selected})).unwrap();
+            idle(&mut h, 2);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            assert_ne!(checkbox(&h).id, old.id);
+            pointer(&mut h, label.center(), false);
+            idle(&mut h, 2);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+        }
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+        assert_eq!(item(&h, ids[2]).graphic().unwrap().auto_fit, Fitting::FillProportionally);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::None);
+    }
+
+    #[test]
+    fn installed_auto_fit_held_pointer_cannot_cross_documents_reusing_item_ids() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        let original = mark(&h);
+        let (old, label) = native_geometry(&h);
+        pointer(&mut h, label.center(), true);
+        h.state_mut().app.run("file.new", json!({})).unwrap();
+        let other = h.state_mut().app.run("frame.create", json!({"rect":[100,100,300,300]})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(other, ids[0], "real new documents reuse document-local IDs");
+        let png = designcraft_render::Rendered { width:40, height:20, pixels:vec![200;40*20*4] }.to_png();
+        h.state_mut().app.run("file.place", json!({"base64":designcraft_engine::cmd::base64_encode(&png),"name":"other.png","frame":other})).unwrap();
+        idle(&mut h, 2);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        assert_ne!(checkbox(&h).id, old.id);
+        pointer(&mut h, label.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        h.state_mut().app.session.execute("file.close", &json!({})).unwrap();
+        idle(&mut h, 2);
+        unchanged(&h, &original);
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+    }
+
+    #[test]
+    fn installed_auto_fit_held_pointer_cannot_cross_revert_with_same_uid_and_item_ids() {
+        let (mut app, ids) = fixture();
+        let dir = tempfile::tempdir().unwrap();
+        app.run("file.saveAs", json!({"path":dir.path().join("AutoFit.designcraft")})).unwrap();
+        app.run("transform.move", json!({"dx":7.0,"dy":9.0,"content":true})).unwrap();
+        let mut h = harness(app, true);
+        let uid = h.state().app.session.active().unwrap().uid;
+        let epoch = h.state().app.session.active().unwrap().identity_epoch;
+        let (old, label) = native_geometry(&h);
+        pointer(&mut h, label.center(), true);
+        h.state_mut().app.session.execute("file.revert", &json!({})).unwrap();
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[0]]})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(h.state().app.session.active().unwrap().uid, uid);
+        assert_ne!(h.state().app.session.active().unwrap().identity_epoch, epoch);
+        assert_ne!(checkbox(&h).id, old.id, "the new incarnation must not inherit a held activation merely because uid/items match");
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, label.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+    }
+
+    #[test]
+    fn installed_auto_fit_disabled_empty_non_graphic_and_no_document_never_submit() {
+        let (mut app, _) = fixture();
+        let text = app.run("frame.create", json!({"rect":[100,400,200,500],"content":"text","text":"Body"})).unwrap()["id"].as_u64().unwrap();
+        let mut h = harness(app, true);
+        for selected in [vec![], vec![text]] {
+            h.state_mut().app.run("selection.set", json!({"ids":selected})).unwrap();
+            idle(&mut h, 2);
+            assert!(!panels::sel_info(&h.state().app).is_some_and(|info| info.is_graphic));
+            assert!(checkbox(&h).facts.unwrap().disabled);
+            let label = painted_label(&h);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            click_at(&mut h, label.center());
+            idle(&mut h, 4);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+        }
+        let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        let mut empty = harness(app, true);
+        assert!(checkbox(&empty).facts.unwrap().disabled);
+        let label = painted_label(&empty);
+        let start = empty.state().app.session.journal.len();
+        click_at(&mut empty, label.center());
+        key(&mut empty, Key::Tab);
+        key(&mut empty, Key::Space);
+        key(&mut empty, Key::Enter);
+        assert!(empty.state().app.session.active().is_none());
+        assert_eq!(empty.state().app.session.journal.len(), start);
+    }
+
+    #[test]
+    fn installed_auto_fit_disabled_or_sizing_parent_cannot_commit_then_recovers() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        for sizing in [false, true] {
+            let label = painted_label(&h);
+            pointer(&mut h, label.center(), true);
+            h.state_mut().enabled = sizing;
+            h.state_mut().sizing = sizing;
+            idle(&mut h, 2);
+            let before = mark(&h);
+            let start = h.state().app.session.journal.len();
+            pointer(&mut h, label.center(), false);
+            idle(&mut h, 2);
+            unchanged(&h, &before);
+            assert_eq!(h.state().app.session.journal.len(), start);
+            h.state_mut().enabled = true;
+            h.state_mut().sizing = false;
+            idle(&mut h, 3);
+        }
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+    }
+
+    #[test]
+    fn uninstalled_auto_fit_keeps_legacy_checkbox_pointer_keyboard_command_and_undo() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, false);
+        assert!(h.state().controls.as_ref().unwrap().elements.iter().all(|e| e.component != "Checkbox"), "no uninstalled SDK control is drawn");
+        let before = mark(&h);
+        painted_label(&h);
+        let start = h.state().app.session.journal.len();
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+        checked(&h, true);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::FillProportionally);
+        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(mark(&h).0, before.0);
+        tab_to_checkbox(&mut h);
+        let start = h.state().app.session.journal.len();
+        key(&mut h, Key::Space);
+        idle(&mut h, 2);
+        journal_one(&h, start, true);
+        checked(&h, true);
+        assert!(!h.state().app.framework_installed);
+    }
+
+    #[test]
+    fn uninstalled_auto_fit_held_pointer_retires_before_a_new_selected_frame_can_receive_it() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, false);
+        let label = painted_label(&h);
+        pointer(&mut h, label.center(), true);
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[1]]})).unwrap();
+        idle(&mut h, 2);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        pointer(&mut h, label.center(), false);
+        idle(&mut h, 2);
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
+        click_auto_fit(&mut h);
+        journal_one(&h, start, true);
+        assert_eq!(item(&h, ids[0]).graphic().unwrap().auto_fit, Fitting::None);
+        assert_eq!(item(&h, ids[1]).graphic().unwrap().auto_fit, Fitting::FillProportionally);
     }
 }

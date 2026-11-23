@@ -29,10 +29,10 @@
 
 use crate::DesignApp;
 use crate::panels::SelInfo;
-use craft::behavior::EditEvent;
-use craft::ui::contract::{Bind, Props as _, Show as _};
-use craft::ui::runtime::env::{LengthUnits, UnitKind};
-use craft::ui::text::NumberField;
+use craft_behavior::EditEvent;
+use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
+use craft_ui_widgets::text::NumberField;
 use designcraft_geom::Unit;
 use egui::{Rect, vec2};
 use serde_json::{Map, Value, json};
@@ -47,13 +47,13 @@ pub(crate) fn enabled() -> bool {
 
 /// Installs the framework's runtime on `ctx`, once, before its first pass.
 ///
-/// It refuses to install inside a pass ([`craft::ui::InstallError::DuringPass`]), so a host calls this
+/// It refuses to install inside a pass ([`craft_ui_widgets::InstallError::DuringPass`]), so a host calls this
 /// where it made the context: the desktop shell's eframe creation context, or a test's own context. A
 /// second call on the same context is not an error.
 pub(crate) fn install(ctx: &egui::Context) {
-    let spec = craft::ui::InstallSpec::new(craft::host::target::ShellInfo::default(), std::sync::Arc::new(craft::window::system::NoWindows));
-    match craft::ui::install(ctx, spec) {
-        Ok(()) | Err(craft::ui::InstallError::AlreadyInstalled) => {}
+    let spec = craft_ui_widgets::InstallSpec::new(craft_host::target::ShellInfo::default(), std::sync::Arc::new(craft_window_sdk::system::NoWindows));
+    match craft_ui_widgets::install(ctx, spec) {
+        Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => {}
         Err(error) => log::warn!("the craft UI runtime was not installed; the Transform fields stay bespoke: {error}"),
     }
 }
@@ -131,6 +131,9 @@ pub(crate) fn rows(app: &mut DesignApp, ui: &mut egui::Ui, block: Rect, i: &SelI
 /// The field is drawn inside the framework's own inspection record, so the rect kept for the tests and
 /// the control channel is the one the framework laid out (the element whose node is the spin button),
 /// never a guess about where a field's text sits.
+// The row's nine inputs are the panel's own shape: the app and its ui, the cell's rect, key and
+// accessible label, the value, the document's units, the step and whether the person may edit it.
+#[allow(clippy::too_many_arguments)]
 fn field(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
@@ -144,7 +147,7 @@ fn field(
 ) -> Option<f64> {
     let region = ui.scope_id().with(("framework-transform", key));
     let mut rect = at;
-    let (out, recorded) = craft::ui::runtime::inspect::record(ui, region, |ui| {
+    let (out, recorded) = craft_ui_widgets::runtime::inspect::record(ui, region, |ui| {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(at).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let field = NumberField::length(label.to_string(), Bind::given(Some(value)), lengths).step(step).enabled(enabled);
         field.show(&mut child)

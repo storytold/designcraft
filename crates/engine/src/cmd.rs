@@ -85,6 +85,13 @@ use crate::{EngineError, Result, Session};
 pub type Run = fn(&mut Session, &Value) -> Result<Value>;
 pub type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
+/// Internal success-postpass policy; no command-info/serialized API change.
+#[derive(Clone, Copy)]
+pub(crate) enum SuccessPasses {
+    Always,
+    IfDocumentChanged(fn(&Session, &Value) -> Option<Value>),
+}
+
 pub struct CommandSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -97,6 +104,8 @@ pub struct CommandSpec {
     pub journal: bool,
     /// Record an undo step when the document changes.
     pub undoable: bool,
+    /// Opt-in only: an unchanged handler must not trigger unrelated pending layout work.
+    pub(crate) success_passes: SuccessPasses,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,14 +170,20 @@ pub fn has_text_or_frames(s: &Session) -> std::result::Result<(), String> {
 }
 
 macro_rules! cmd {
+    (on_document_change($noop:expr) $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+        $crate::cmd::CommandSpec {
+            success_passes: $crate::cmd::SuccessPasses::IfDocumentChanged($noop),
+            ..$crate::cmd::cmd!($id, $label, [$($m),*], $sc, $params, $en, $run)
+        }
+    };
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true, success_passes: $crate::cmd::SuccessPasses::Always }
     };
     (query $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false, success_passes: $crate::cmd::SuccessPasses::Always }
     };
     (noundo $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false, success_passes: $crate::cmd::SuccessPasses::Always }
     };
 }
 pub(crate) use cmd;

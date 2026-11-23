@@ -176,6 +176,91 @@ fn type_label(lang: &str, v: &Value) -> String {
     }
 }
 
+// CELL_STROKE_TYPE_APPLICATION_BEGIN
+fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[String], lang: &str) -> Option<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+        // Values are serialized type identities, never translated captions or row ordinals.
+        // A built-in and a named style may legitimately have the same displayed name.
+        let choices: Vec<(String, String, Value)> = TYPES
+            .iter()
+            .map(|kind| (json!(builtin(kind)).to_string(), tr(lang, builtin(kind).label()).to_owned(), json!(kind)))
+            .chain(custom.iter().map(|name| {
+                let payload = json!({"kind": "style", "name": name});
+                (payload.to_string(), name.clone(), payload)
+            }))
+            .collect();
+        let mut entries: Vec<_> = choices[..TYPES.len()].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())).collect();
+        if !custom.is_empty() {
+            entries.push(Entry::separator());
+            entries.extend(choices[TYPES.len()..].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())));
+        }
+        let target = app.session.active().and_then(|st| {
+            let (story, table, range) = if let Some(cells) = st.selection.cells {
+                (cells.story, cells.table, cells.range)
+            } else {
+                let text = st.selection.text?;
+                let cell = text.cell?;
+                (text.story, cell.table, designcraft_doc::CellRange::cell(cell.row, cell.col))
+            };
+            let grid = st.doc.story(story)?.tables.get(&table)?;
+            (range.r0 <= range.r1 && range.c0 <= range.c1 && range.r1 < grid.rows.len() && range.c1 < grid.columns.len())
+                .then_some((story.0, table, range.r0, range.r1, range.c0, range.c1))
+        });
+        let edges = if id == "csp" {
+            ui.data(|data| data.get_temp::<Edges>(egui::Id::unique("cell_stroke_edges"))).unwrap_or([true; 6])
+        } else {
+            edges_from(&v["edges"])
+        };
+        let valid = target.is_some() && edges.iter().any(|on| *on);
+        let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision));
+        // Native Type selects by builtin kind even when a dashed value carries an explicit
+        // pattern. Activating that same popup row still commits the original scalar payload,
+        // so the native command can restore its weight-scaled dash pattern.
+        let current = v["type"]["kind"]
+            .as_str()
+            .filter(|kind| TYPES.contains(kind))
+            .map_or_else(|| v["type"].to_string(), |kind| json!(builtin(kind)).to_string());
+        let identity = ui.make_persistent_id(("cell-stroke-type", id, owner, target, edges, custom, &current, lang));
+        let binding = if v["type"].is_null() { craft_behavior::Mixed::Mixed } else { craft_behavior::Mixed::Same(current) };
+        let (rect, _) = ui.allocate_exact_size(vec2(140.0, 20.0), Sense::hover());
+        return craft_ui_widgets::pickers::Select::new(tr(lang, "Type").to_owned(), Bind::given(binding), &entries)
+            .id(identity)
+            .enabled(valid)
+            .size(craft_ui_widgets::style::ControlSize::Sm)
+            // An orphan is shown verbatim but is never synthesized as an enabled catalog row.
+            .placeholder(type_label(lang, &v["type"]))
+            .show_at(ui, rect)
+            .events
+            .committed()
+            .and_then(|key| choices.iter().find(|(actual, _, _)| actual == key).map(|(_, _, payload)| payload.clone()));
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = app;
+    let mut picked = None;
+    let shown = type_label(lang, &v["type"]);
+    let combo = craft_ui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
+        for kind in TYPES {
+            let text = tr(&lang, builtin(kind).label());
+            if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
+                picked = Some(json!(kind));
+            }
+        }
+        if !custom.is_empty() {
+            ui.separator();
+        }
+        for n in custom {
+            if ui.selectable_label(shown == *n, n).clicked() {
+                picked = Some(json!({"kind": "style", "name": n}));
+            }
+        }
+    });
+    let _ = crate::widgets::name_combo(combo, tr(&lang, "Type"));
+    picked
+}
+// CELL_STROKE_TYPE_APPLICATION_END
+
 /// Weight, type, colour, tint, gap colour and gap tint for the stroke attributes in `v`
 /// (`table.getCellStroke` keys; null shows as mixed). Returns the attribute the user changed.
 pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> Option<(&'static str, Value)> {
@@ -191,24 +276,9 @@ pub fn stroke_fields(app: &mut DesignApp, ui: &mut Ui, id: &str, v: &Value) -> O
         }
         ui.end_row();
         caption(ui, tr(&lang, "Type:"));
-        let shown = type_label(&lang, &v["type"]);
-        let combo = craft_ui::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
-            for kind in TYPES {
-                let text = tr(&lang, builtin(kind).label());
-                if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
-                    out = Some(("type", json!(kind)));
-                }
-            }
-            if !custom.is_empty() {
-                ui.separator();
-            }
-            for n in &custom {
-                if ui.selectable_label(shown == *n, n).clicked() {
-                    out = Some(("type", json!({"kind": "style", "name": n})));
-                }
-            }
-        });
-        let _ = crate::widgets::name_combo(combo, tr(&lang, "Type"));
+        if let Some(value) = stroke_type_choice(app, ui, id, v, &custom, &lang) {
+            out = Some(("type", value));
+        }
         ui.end_row();
         for (label, key, tint_label, tint_key) in [("Color:", "color", "Tint:", "tint"), ("Gap Color:", "gapColor", "Gap Tint:", "gapTint")] {
             caption(ui, tr(&lang, label));
@@ -318,5 +388,933 @@ mod tests {
         let w = |r: usize, c: usize, side: usize| t.cell(r, c).unwrap().strokes[side].weight;
         assert_eq!([w(0, 0, 2), w(0, 1, 2), w(1, 0, 0), w(1, 1, 0)], [4.0; 4], "inner horizontal edges");
         assert_eq!([w(0, 0, 0), w(0, 0, 1), w(0, 0, 3), w(0, 1, 1), w(1, 1, 2), w(1, 1, 3)], [1.0; 6], "the other edges keep their weight");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod type_style_sdk_tests {
+    use super::*;
+    use designcraft_engine::{DocState, HistoryEntry};
+    use egui::{Event, Key, Modifiers, PointerButton};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    use std::sync::Arc;
+
+    const STYLE: &str = "Cell rule Café–α with a complete, deliberately long catalog name";
+    const REGION: &str = "cell_stroke_type_style_application_region";
+    #[derive(Clone, Copy)]
+    enum Parent {
+        Stroke,
+        Dialog,
+    }
+    struct State {
+        app: DesignApp,
+        parent: Parent,
+        disabled: bool,
+        visible: bool,
+        sizing: bool,
+    }
+    struct Made {
+        story: u64,
+        table: u64,
+        other_story: u64,
+        other_table: u64,
+    }
+    fn select(app: &mut DesignApp, story: u64, table: u64, rows: [usize; 2], cols: [usize; 2]) {
+        app.run("table.select", json!({"story": story, "table": table, "rows": rows, "cols": cols})).unwrap();
+    }
+    fn fixture() -> (DesignApp, Made) {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let mut ids = Vec::new();
+        for y in [72, 420] {
+            app.run("frame.create", json!({"rect": [72, y, 500, y + 280], "content": "text", "caret": true})).unwrap();
+            let table = app.run("table.insert", json!({"rows": 4, "cols": 4})).unwrap();
+            let story = table["story"].as_u64().unwrap();
+            let tid = table["table"].as_u64().unwrap();
+            select(&mut app, story, tid, [0, 3], [0, 3]);
+            app.run(
+                "table.setCell",
+                json!({"text": "Independent cell text", "fill": "[Paper]", "stroke": {
+                    "weight": 2.375, "tint": 0.625, "gapTint": 0.375,
+                    "type": {"kind": "dashed", "pattern": [3.0, 1.0]}, "edges": "all"
+                }}),
+            )
+            .unwrap();
+            ids.push((story, tid));
+        }
+        app.run("strokeStyle.new", json!({"name": STYLE, "type": "dash", "pattern": [5, 2]})).unwrap();
+        app.run("strokeStyle.new", json!({"name": "Solid", "type": "dot"})).unwrap();
+        // A genuine inactive document is protected by every complete-domain oracle.
+        app.run("file.new", json!({})).unwrap();
+        app.session.set_active(0);
+        let made = Made { story: ids[0].0, table: ids[0].1, other_story: ids[1].0, other_table: ids[1].1 };
+        select(&mut app, made.story, made.table, [1, 2], [1, 2]);
+        app.run("table.setCell", json!({"fill": "[None]"})).unwrap();
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().history.redo.len(), 1);
+        (app, made)
+    }
+    fn harness(mut app: DesignApp, installed: bool, parent: Parent, width: f32) -> Harness<'static, State> {
+        let ctx = egui::Context::default();
+        if installed {
+            app.framework_opacity = true;
+            app.install_framework(&ctx);
+        }
+        assert_eq!(app.framework_installed, installed);
+        let mut ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(width, 720.0)).build_ui_state(
+            move |ui, state: &mut State| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), &state.app.ui.language);
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                let _ = craft_ui_widgets::runtime::inspect::record(ui, egui::Id::NULL.with(REGION), |ui| {
+                    if !state.visible {
+                        return;
+                    }
+                    match state.parent {
+                        Parent::Dialog => crate::dialogs::show(&mut state.app, ui.ctx()),
+                        Parent::Stroke => {
+                            ui.add_enabled_ui(!state.disabled, |ui| {
+                                let builder = egui::UiBuilder::new().id_salt("actual_stroke_parent");
+                                let builder = if state.sizing { builder.sizing_pass() } else { builder };
+                                ui.scope_builder(builder, |ui| {
+                                    if state.sizing {
+                                        assert!(ui.is_sizing_pass());
+                                    }
+                                    crate::panels::properties::stroke_panel(&mut state.app, ui);
+                                });
+                            });
+                        }
+                    }
+                });
+            },
+            State { app, parent, disabled: false, visible: true, sizing: false },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 3);
+        h
+    }
+    fn frame(h: &mut Harness<'_, State>, event: Option<Event>) {
+        let mut raw = std::mem::take(h.input_mut());
+        if let Some(event) = event {
+            raw.events.push(event);
+        }
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, State>, count: usize) {
+        for _ in 0..count {
+            frame(h, None);
+        }
+    }
+    fn key(h: &mut Harness<'_, State>, key: Key) {
+        for pressed in [true, false] {
+            frame(h, Some(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }));
+        }
+        idle(h, 2);
+    }
+    fn pointer(h: &mut Harness<'_, State>, at: Pos2, pressed: bool) {
+        frame(h, Some(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }));
+    }
+    fn click_at(h: &mut Harness<'_, State>, at: Pos2) {
+        frame(h, Some(Event::PointerMoved(at)));
+        pointer(h, at, true);
+        pointer(h, at, false);
+        idle(h, 2);
+    }
+    fn click(h: &mut Harness<'_, State>, role: egui::accesskit::Role, label: &str) {
+        let at = h.get_by_role_and_label(role, label).rect().center();
+        click_at(h, at);
+    }
+    fn name(h: &Harness<'_, State>) -> String {
+        tr(&h.state().app.ui.language, "Type").to_owned()
+    }
+    fn control(h: &Harness<'_, State>) -> craft_ui_widgets::runtime::inspect::Element {
+        let name = name(h);
+        let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, egui::Id::NULL.with(REGION)).unwrap();
+        let elements: Vec<_> = record
+            .elements
+            .iter()
+            .filter(|e| e.component == "Select" && e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name.as_str()))
+            .collect();
+        assert_eq!(elements.len(), 1, "one real SDK Select with the complete translated Type name");
+        assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::ComboBox, &name).count(), 1);
+        elements[0].clone()
+    }
+    fn tab_to(h: &mut Harness<'_, State>) {
+        let label = name(h);
+        let count = h
+            .query_all_by(|n| {
+                matches!(
+                    n.role(),
+                    egui::accesskit::Role::Button
+                        | egui::accesskit::Role::ComboBox
+                        | egui::accesskit::Role::TextInput
+                        | egui::accesskit::Role::CheckBox
+                )
+            })
+            .count();
+        for _ in 0..=count {
+            if h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &label).is_focused() {
+                let id = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &label).accesskit_node().id();
+                let focused: Vec<_> = h.query_all_by(|n| n.is_focused()).map(|n| n.accesskit_node().id()).collect();
+                assert_eq!(focused, vec![id]);
+                return;
+            }
+            key(h, Key::Tab);
+        }
+        panic!("natural Tab did not reach the current Type owner");
+    }
+    fn assert_popup_physical_owner(h: &Harness<'_, State>) {
+        let label = name(h);
+        let owner = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &label).accesskit_node();
+        let roots: Vec<_> = owner.controls().collect();
+        assert_eq!(roots.len(), 1, "strict actual controls root; no portal exception for Work408");
+        let list = h.get_by_role_and_label(egui::accesskit::Role::ListBox, &label).accesskit_node();
+        // Consumer parent() is the literal physical edge, including otherwise-uninteresting Ui nodes.
+        let mut cursor = Some(list);
+        let mut seen = Vec::new();
+        let mut found = false;
+        while let Some(node) = cursor {
+            assert!(!seen.contains(&node.id()), "actual physical tree must be acyclic");
+            seen.push(node.id());
+            if node.id() == roots[0].id() {
+                found = true;
+                break;
+            }
+            cursor = node.parent();
+        }
+        assert!(found, "the exact controls root must physically contain the unique ListBox, full IDs unchanged");
+        assert!(list.bounding_box().is_some(), "the actual popup has real geometry");
+    }
+    fn open(h: &mut Harness<'_, State>) {
+        let name = name(h);
+        click(h, egui::accesskit::Role::ComboBox, &name);
+        assert_popup_physical_owner(h);
+    }
+    #[derive(Clone, Debug)]
+    struct PopupOption {
+        position: usize,
+        id: u128,
+        label: String,
+        rect: Rect,
+    }
+    fn popup_bound(h: &Harness<'_, State>) -> usize {
+        TYPES.len() + h.state().app.session.active().unwrap().doc.stroke_styles.len() + 2
+    }
+    fn visible_popup_options(h: &Harness<'_, State>) -> Vec<PopupOption> {
+        assert_popup_physical_owner(h);
+        let label = name(h);
+        let list = h.get_by_role_and_label(egui::accesskit::Role::ListBox, &label);
+        let view = list.rect();
+        let list_id = list.accesskit_node().id();
+        assert!(view.is_finite() && view.is_positive());
+        let mut rows = Vec::new();
+        for row in h.query_all_by_role(egui::accesskit::Role::ListBoxOption) {
+            let node = row.accesskit_node();
+            let mut cursor = node.parent();
+            let mut inside = false;
+            while let Some(parent) = cursor {
+                if parent.id() == list_id {
+                    inside = true;
+                    break;
+                }
+                cursor = parent.parent();
+            }
+            assert!(inside, "every actual option physically belongs to this unique real ListBox");
+            let rect = row.rect();
+            // A virtualized lead/anchor may be kept alive offscreen. It is not a clickable row.
+            if view.contains(rect.center()) {
+                assert!(rect.is_finite() && rect.is_positive());
+                rows.push(PopupOption {
+                    position: node.position_in_set().expect("real SDK option ordinal"),
+                    id: u128::from(node.id()),
+                    label: node.label().expect("complete real option name"),
+                    rect,
+                });
+            }
+        }
+        rows.sort_by_key(|row| row.position);
+        assert!(!rows.is_empty(), "the real popup must expose physical rows");
+        assert!(rows.windows(2).all(|pair| pair[0].position < pair[1].position));
+        rows
+    }
+    fn scroll_popup(h: &mut Harness<'_, State>, down: bool) {
+        let before = quiet(&h.state().app);
+        let owner = control(h).id;
+        let label = name(h);
+        let view = h.get_by_role_and_label(egui::accesskit::Role::ListBox, &label).rect();
+        frame(h, Some(Event::PointerMoved(view.center())));
+        // Half a real viewport preserves overlap. No guessed option coordinates, direct offset,
+        // fabricated AX rows or provider visibility override is used.
+        let delta = vec2(0.0, view.height() * if down { -0.5 } else { 0.5 });
+        for phase in [egui::TouchPhase::Start, egui::TouchPhase::Move, egui::TouchPhase::End] {
+            frame(
+                h,
+                Some(Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: if phase == egui::TouchPhase::Move { delta } else { egui::Vec2::ZERO },
+                    phase,
+                    modifiers: Modifiers::NONE,
+                    source: egui::MouseWheelSource::Wheel,
+                }),
+            );
+            assert_quiet(&h.state().app, &before);
+        }
+        idle(h, 2);
+        assert_popup_physical_owner(h);
+        assert_eq!(control(h).id, owner, "physical scrolling cannot replace the real Type owner");
+        assert_quiet(&h.state().app, &before);
+    }
+    fn observe_popup_catalog(h: &mut Harness<'_, State>) -> Vec<PopupOption> {
+        let count = popup_bound(h) - 2;
+        let mut seen = std::collections::BTreeMap::<usize, PopupOption>::new();
+        let mut previous = None;
+        let mut down = false;
+        for _ in 0..2 * popup_bound(h) {
+            let rows = visible_popup_options(h);
+            let signature: Vec<_> = rows.iter().map(|row| (row.position, row.id)).collect();
+            for row in rows {
+                if let Some(old) = seen.get(&row.position) {
+                    assert_eq!((row.id, &row.label), (old.id, &old.label), "same real ordinal retains its distinct identity and full name");
+                } else {
+                    seen.insert(row.position, row);
+                }
+            }
+            assert!(seen.len() <= count, "no extra enabled options may be silently discarded");
+            if seen.len() == count {
+                let catalog: Vec<_> = seen.into_values().collect();
+                for (i, row) in catalog.iter().enumerate() {
+                    assert!(catalog[..i].iter().all(|old| old.id != row.id), "distinct option ordinals need distinct real AX identities");
+                }
+                return catalog;
+            }
+            if previous.as_ref() == Some(&signature) {
+                assert!(!down, "physical scrolling stopped before the complete catalog was observed");
+                down = true;
+            }
+            previous = Some(signature);
+            scroll_popup(h, down);
+        }
+        panic!("the finite real catalog was not exposed by physical scrolling");
+    }
+    fn reveal_popup_option(h: &mut Harness<'_, State>, label: &str, identity: Option<&PopupOption>) -> PopupOption {
+        let mut previous = None;
+        let mut down = false;
+        for _ in 0..2 * popup_bound(h) {
+            let rows = visible_popup_options(h);
+            let matches: Vec<_> = rows.iter().filter(|row| row.label == label && identity.is_none_or(|wanted| row.id == wanted.id)).collect();
+            match matches.as_slice() {
+                [] => {}
+                [row] => {
+                    if let Some(wanted) = identity {
+                        assert_eq!((row.position, row.id, &row.label), (wanted.position, wanted.id, &wanted.label));
+                    }
+                    return (**row).clone();
+                }
+                _ => panic!("never choose the first of ambiguous same-caption visible options"),
+            }
+            let signature: Vec<_> = rows.iter().map(|row| (row.position, row.id)).collect();
+            if previous.as_ref() == Some(&signature) {
+                assert!(identity.is_none() && !down, "physical scrolling cannot reveal the requested complete option");
+                down = true;
+            }
+            previous = Some(signature);
+            let direction = identity.map_or(down, |wanted| wanted.position > rows[0].position);
+            scroll_popup(h, direction);
+        }
+        panic!("the exact real option was not physically reachable");
+    }
+    fn click_popup_option(h: &mut Harness<'_, State>, label: &str, identity: Option<&PopupOption>) {
+        let row = reveal_popup_option(h, label, identity);
+        click_at(h, row.rect.center());
+    }
+    fn pick(h: &mut Harness<'_, State>, label: &str) {
+        open(h);
+        click_popup_option(h, label, None);
+    }
+    #[derive(Clone)]
+    struct Quiet {
+        docs: Vec<DocState>,
+        active: Option<usize>,
+        prefs: Value,
+        journal: Vec<(String, Value)>,
+    }
+    fn quiet(app: &DesignApp) -> Quiet {
+        Quiet {
+            docs: app.session.documents().to_vec(),
+            active: app.session.active_index(),
+            prefs: serde_json::to_value(&app.session.prefs).unwrap(),
+            journal: app.session.journal.clone(),
+        }
+    }
+    fn same_entries(now: &[HistoryEntry], before: &[HistoryEntry]) {
+        assert_eq!(now.len(), before.len());
+        for (now, before) in now.iter().zip(before) {
+            assert_eq!(now.label, before.label);
+            assert_eq!(now.selection, before.selection);
+            assert_eq!(now.doc.as_ref(), before.doc.as_ref());
+            assert!(Arc::ptr_eq(&now.doc, &before.doc));
+        }
+    }
+    fn same_doc(now: &DocState, before: &DocState) {
+        assert_eq!(format!("{now:?}"), format!("{before:?}"), "complete authoritative DocState, not just the type");
+        assert!(Arc::ptr_eq(&now.doc, &before.doc));
+        assert!(Arc::ptr_eq(&now.saved_doc, &before.saved_doc));
+        same_entries(&now.history.undo, &before.history.undo);
+        same_entries(&now.history.redo, &before.history.redo);
+        assert_eq!(now.is_dirty(), before.is_dirty());
+    }
+    fn assert_quiet(app: &DesignApp, before: &Quiet) {
+        assert_eq!(app.session.active_index(), before.active);
+        assert_eq!(app.session.documents().len(), before.docs.len());
+        for (now, before) in app.session.documents().iter().zip(&before.docs) {
+            same_doc(now, before);
+        }
+        assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), before.prefs);
+        assert_eq!(app.session.journal, before.journal, "no added command journal entries, including after idle");
+    }
+
+    fn assert_edit(app: &DesignApp, before: &Quiet, payload: Value) {
+        assert_eq!(app.session.active_index(), before.active);
+        assert_eq!(app.session.documents().len(), before.docs.len());
+        assert_eq!(serde_json::to_value(&app.session.prefs).unwrap(), before.prefs);
+        assert_eq!(&app.session.journal[..before.journal.len()], before.journal.as_slice());
+        assert_eq!(&app.session.journal[before.journal.len()..], &[("table.setCell".to_owned(), payload.clone())]);
+        let active = before.active.unwrap();
+        let mut oracle = designcraft_engine::Session::new();
+        oracle.add_document(before.docs[active].clone());
+        oracle.execute("table.setCell", &payload).unwrap();
+        let mut expected = oracle.active().unwrap().clone();
+        let now = app.session.active().unwrap();
+        assert_ne!(expected.doc.as_ref(), before.docs[active].doc.as_ref(), "fixture must genuinely change a stroke");
+        assert_eq!(
+            now.doc.as_ref(),
+            expected.doc.as_ref(),
+            "complete document equals the independent authoritative native command, not a hand-picked field"
+        );
+        assert!(now.revision > before.docs[active].revision, "process-global revisions are not +1 counters");
+        expected.revision = now.revision;
+        assert_eq!(format!("{now:?}"), format!("{expected:?}"), "full DocState and exactly one normal Cell Options undo step");
+        assert_eq!(now.history.undo.len(), before.docs[active].history.undo.len() + 1);
+        assert_eq!(now.history.undo.last().unwrap().label, "Cell Options");
+        same_entries(&now.history.undo[..before.docs[active].history.undo.len()], &before.docs[active].history.undo);
+        assert!(Arc::ptr_eq(&now.history.undo.last().unwrap().doc, &before.docs[active].doc));
+        assert!(Arc::ptr_eq(&now.saved_doc, &before.docs[active].saved_doc));
+        assert!(now.history.redo.is_empty());
+        for (index, state) in app.session.documents().iter().enumerate() {
+            if index != active {
+                same_doc(state, &before.docs[index]);
+            }
+        }
+    }
+    fn payload(kind: Value, edges: Edges) -> Value {
+        json!({"stroke": {"type": kind, "edges": edges_param(&edges)}})
+    }
+    fn undo_redo(h: &mut Harness<'_, State>, before: &Quiet) {
+        let active = before.active.unwrap();
+        let after = quiet(&h.state().app);
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(h, 2);
+        let now = h.state().app.session.active().unwrap();
+        assert_eq!(now.doc.as_ref(), before.docs[active].doc.as_ref());
+        assert!(Arc::ptr_eq(&now.doc, &before.docs[active].doc));
+        assert_eq!(now.selection, before.docs[active].selection);
+        same_entries(&now.history.undo, &before.docs[active].history.undo);
+        assert_eq!(now.history.redo.len(), 1);
+        assert!(Arc::ptr_eq(&now.history.redo[0].doc, &after.docs[active].doc));
+        assert!(Arc::ptr_eq(&now.saved_doc, &before.docs[active].saved_doc));
+        let mut expected_undo = before.docs[active].clone();
+        expected_undo.revision = now.revision;
+        expected_undo.history.redo =
+            vec![HistoryEntry { label: "Cell Options".into(), doc: after.docs[active].doc.clone(), selection: after.docs[active].selection.clone() }];
+        assert_eq!(format!("{now:?}"), format!("{expected_undo:?}"), "complete Undo state, including unrelated metadata and exact redo contents");
+        h.state_mut().app.run("edit.redo", json!({})).unwrap();
+        idle(h, 2);
+        let now = h.state().app.session.active().unwrap();
+        assert!(Arc::ptr_eq(&now.doc, &after.docs[active].doc));
+        assert_eq!(now.doc.as_ref(), after.docs[active].doc.as_ref());
+        assert_eq!(now.selection, after.docs[active].selection);
+        same_entries(&now.history.undo, &after.docs[active].history.undo);
+        assert!(now.history.redo.is_empty());
+        let mut expected_redo = after.docs[active].clone();
+        expected_redo.revision = now.revision;
+        assert_eq!(format!("{now:?}"), format!("{expected_redo:?}"), "complete Redo state and preserved metadata");
+        assert_eq!(h.state().app.session.active_index(), before.active);
+        assert_eq!(serde_json::to_value(&h.state().app.session.prefs).unwrap(), before.prefs);
+        assert_eq!(&h.state().app.session.journal[..after.journal.len()], after.journal.as_slice());
+        assert_eq!(
+            &h.state().app.session.journal[after.journal.len()..],
+            &[("edit.undo".to_owned(), json!({})), ("edit.redo".to_owned(), json!({}))]
+        );
+        for (index, doc) in h.state().app.session.documents().iter().enumerate() {
+            if index != active {
+                same_doc(doc, &before.docs[index]);
+            }
+        }
+        let stable = quiet(&h.state().app);
+        idle(h, 3);
+        assert_quiet(&h.state().app, &stable);
+    }
+
+    #[test]
+    fn cell_stroke_all_eleven_builtin_pointer_choices_keep_exact_payload_domain_and_undo_from_the_real_stroke_parent() {
+        for kind in TYPES {
+            let (app, _) = fixture();
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            assert!(!control(&h).facts.unwrap().disabled);
+            let before = quiet(&h.state().app);
+            let label = tr(&h.state().app.ui.language, builtin(kind).label()).to_owned();
+            // Reselecting the current Dashed popup row must still dispatch the original
+            // scalar grammar and restore its native weight-scaled pattern, not silently no-op.
+            pick(&mut h, &label);
+            assert_edit(&h.state().app, &before, payload(json!(kind), [true; 6]));
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_custom_names_distinct_from_identical_builtin_captions_keep_object_payload_and_complete_catalog() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true, Parent::Stroke, 400.0);
+        let before = quiet(&h.state().app);
+        open(&mut h);
+        let catalog = observe_popup_catalog(&mut h);
+        let labels: Vec<_> = catalog.iter().map(|row| row.label.clone()).collect();
+        let mut expected: Vec<_> = TYPES.iter().map(|kind| tr("", builtin(kind).label()).to_owned()).collect();
+        expected.extend([STYLE.to_owned(), "Solid".to_owned()]);
+        assert_eq!(labels, expected, "all eleven builtins followed by the real ordered custom catalog, with no elided names");
+        assert_quiet(&h.state().app, &before);
+        let duplicates: Vec<_> = catalog.iter().filter(|row| row.label == "Solid").collect();
+        assert_eq!(duplicates.len(), 2, "a legitimate named style may share a builtin's displayed caption");
+        assert_ne!(duplicates[0].id, duplicates[1].id, "builtin Solid and the named Solid are distinct real choices");
+        click_popup_option(&mut h, "Solid", Some(duplicates[1]));
+        assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": "Solid"}), [true; 6]));
+        undo_redo(&mut h, &before);
+        let before = quiet(&h.state().app);
+        pick(&mut h, STYLE);
+        assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), [true; 6]));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_natural_tab_popup_preview_escape_and_enter_commit_only_one_authoritative_edit() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true, Parent::Stroke, 400.0);
+        let before = quiet(&h.state().app);
+        let owner = control(&h).id;
+        tab_to(&mut h);
+        key(&mut h, Key::Enter);
+        assert_popup_physical_owner(&h);
+        key(&mut h, Key::End);
+        assert_eq!(control(&h).id, owner, "keyboard proposals never become authoritative type changes");
+        assert_quiet(&h.state().app, &before);
+        key(&mut h, Key::Escape);
+        assert_eq!(h.query_all_by_role(egui::accesskit::Role::ListBoxOption).count(), 0);
+        assert_quiet(&h.state().app, &before);
+        tab_to(&mut h);
+        key(&mut h, Key::Enter);
+        assert_popup_physical_owner(&h);
+        key(&mut h, Key::End);
+        assert_quiet(&h.state().app, &before);
+        key(&mut h, Key::Enter);
+        assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": "Solid"}), [true; 6]));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_actual_mixed_and_imported_orphan_types_never_invent_solid_or_an_enabled_orphan_catalog_entry() {
+        for orphan in [false, true] {
+            let (mut app, made) = fixture();
+            if orphan {
+                // A genuine imported unresolved style is document data, not a forged SDK flag.
+                let st = app.session.active_mut().unwrap();
+                let doc = Arc::make_mut(&mut st.doc);
+                let story = doc.story_mut(designcraft_doc::StoryId(made.story)).unwrap();
+                let table = Arc::make_mut(story.tables.get_mut(&made.table).unwrap());
+                for cell in &mut table.cells {
+                    for stroke in &mut cell.strokes {
+                        stroke.kind = StrokeType::Style { name: "Missing imported rule".into() };
+                    }
+                }
+                story.rev = story.rev.wrapping_add(1);
+                st.bump_revision();
+            } else {
+                app.run("table.setCell", json!({"row": 1, "col": 1, "stroke": {"type": "dotted", "edges": ["top"]}})).unwrap();
+                assert!(current(&mut app, &[true; 6])["type"].is_null(), "genuine disagreement among the selected cell edges");
+            }
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let before = quiet(&h.state().app);
+            if orphan {
+                let actual = current(&mut h.state_mut().app, &[true; 6]);
+                assert_eq!(actual["type"], json!({"kind": "style", "name": "Missing imported rule"}));
+                assert_eq!(type_label("", &actual["type"]), "Missing imported rule", "the complete orphan is the actual placeholder, never Solid");
+                assert!(
+                    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h)).value().is_none_or(|v| v.is_empty()),
+                    "public Select honestly reports no catalog ordinal/value for an orphan"
+                );
+            }
+            open(&mut h);
+            assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Missing imported rule").count(), 0);
+            assert_quiet(&h.state().app, &before);
+            let label = tr(&h.state().app.ui.language, builtin("hashed").label()).to_owned();
+            click(&mut h, egui::accesskit::Role::ListBoxOption, &label);
+            assert_edit(&h.state().app, &before, payload(json!("hashed"), [true; 6]));
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_unchanged_real_edge_proxy_limits_type_to_inner_boundaries_and_cell_caret_targets_only_its_cell() {
+        for caret in [false, true] {
+            let (mut app, _) = fixture();
+            if caret {
+                app.run("table.toggleSelection", json!({})).unwrap();
+                assert!(app.session.active().unwrap().selection.cells.is_none());
+                assert!(app.session.active().unwrap().selection.text.unwrap().cell.is_some());
+            }
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let edges = if caret {
+                [true; 6]
+            } else {
+                let lines = proxy_lines(h.get_by_label("Cell edges").rect());
+                for index in [0, 1, 2, 3, 5] {
+                    let (a, b) = lines[index];
+                    click_at(&mut h, a + (b - a) * 0.3);
+                }
+                let chosen = h.ctx.data(|data| data.get_temp::<Edges>(egui::Id::unique("cell_stroke_edges"))).unwrap();
+                assert_eq!(chosen, [false, false, false, false, true, false]);
+                chosen
+            };
+            let before = quiet(&h.state().app);
+            pick(&mut h, STYLE);
+            assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), edges));
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_real_cell_options_drafts_cancel_without_domain_effect_then_confirm_one_exact_type_only_edit() {
+        let (mut app, _) = fixture();
+        crate::dialogs::open_cell_options(&mut app).unwrap();
+        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let before = quiet(&h.state().app);
+        let original = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+        pick(&mut h, STYLE);
+        assert_quiet(&h.state().app, &before);
+        let draft = &h.state().app.ui.dialog.as_ref().unwrap().fields;
+        let mut expected = original.clone();
+        expected.insert("type".into(), json!({"kind": "style", "name": STYLE}));
+        assert_eq!(draft, &expected, "the real Cell Options caller retains every other seed, edge, numeric and color field");
+        click(&mut h, egui::accesskit::Role::Button, "Cancel");
+        assert!(h.state().app.ui.dialog.is_none());
+        assert_quiet(&h.state().app, &before);
+        crate::dialogs::open_cell_options(&mut h.state_mut().app).unwrap();
+        idle(&mut h, 3);
+        pick(&mut h, "Dotted");
+        assert_quiet(&h.state().app, &before);
+        assert!(h.state().app.ui.dialog.is_some(), "picking a row is not dialog confirmation");
+        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        assert!(h.state().app.ui.dialog.is_none());
+        assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_real_cell_options_refusal_preserves_the_deleted_style_draft_and_all_document_history_until_recovery() {
+        let (mut app, _) = fixture();
+        crate::dialogs::open_cell_options(&mut app).unwrap();
+        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        pick(&mut h, STYLE);
+        h.state_mut().app.run("strokeStyle.delete", json!({"name": STYLE})).unwrap();
+        idle(&mut h, 2);
+        let before = quiet(&h.state().app);
+        let draft = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        assert_quiet(&h.state().app, &before);
+        let retained = h.state().app.ui.dialog.as_ref().unwrap();
+        assert_eq!(retained.id, "cellOptions");
+        assert_eq!(retained.fields, draft, "real rejected confirmation preserves the complete correction draft");
+        pick(&mut h, "Dotted");
+        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_held_popup_choice_retires_catalog_range_table_document_epoch_edges_and_disabled_or_absent_owners() {
+        for change in ["range", "table", "document", "epoch", "catalog", "definition", "edges", "parent-disabled", "hidden", "no-selection"] {
+            let (app, made) = fixture();
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let old_owner = control(&h).id;
+            open(&mut h);
+            let held = reveal_popup_option(&mut h, STYLE, None).rect.center();
+            frame(&mut h, Some(Event::PointerMoved(held)));
+            pointer(&mut h, held, true);
+            match change {
+                "range" => select(&mut h.state_mut().app, made.story, made.table, [0, 0], [0, 1]),
+                "table" => select(&mut h.state_mut().app, made.other_story, made.other_table, [1, 2], [1, 2]),
+                "document" => {
+                    h.state_mut().app.run("file.new", json!({})).unwrap();
+                }
+                "epoch" => {
+                    let old = h.state().app.session.active().unwrap();
+                    let mut replacement = DocState::new((*old.doc).clone(), old.path.clone());
+                    replacement.uid = old.uid;
+                    replacement.selection = old.selection.clone();
+                    assert_ne!(replacement.identity_epoch, old.identity_epoch);
+                    *h.state_mut().app.session.active_mut().unwrap() = replacement;
+                }
+                "catalog" => {
+                    h.state_mut().app.run("strokeStyle.delete", json!({"name": STYLE})).unwrap();
+                }
+                "definition" => {
+                    h.state_mut().app.run("strokeStyle.new", json!({"name": STYLE, "type": "dot"})).unwrap();
+                }
+                "edges" => {
+                    h.ctx.data_mut(|data| data.insert_temp(egui::Id::unique("cell_stroke_edges"), [true, false, false, false, false, false]));
+                }
+                "parent-disabled" => h.state_mut().disabled = true,
+                "hidden" => h.state_mut().visible = false,
+                "no-selection" => {
+                    h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let retired = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &retired);
+            assert_eq!(
+                h.query_all_by_role(egui::accesskit::Role::ListBoxOption).count(),
+                0,
+                "old popup retires before release or refocusing after {change}"
+            );
+            if !matches!(change, "document" | "hidden" | "no-selection" | "parent-disabled") {
+                assert_ne!(control(&h).id, old_owner, "actual target/catalog/edge owner changes after {change}");
+            }
+            pointer(&mut h, held, false);
+            key(&mut h, Key::Enter);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &retired);
+            h.state_mut().visible = true;
+            h.state_mut().disabled = false;
+            h.state_mut().app.session.set_active(0);
+            select(&mut h.state_mut().app, made.story, made.table, [1, 2], [1, 2]);
+            h.ctx.data_mut(|data| data.insert_temp(egui::Id::unique("cell_stroke_edges"), [true; 6]));
+            idle(&mut h, 2);
+            let before = quiet(&h.state().app);
+            tab_to(&mut h);
+            key(&mut h, Key::Enter);
+            assert_popup_physical_owner(&h);
+            key(&mut h, Key::Home);
+            assert_quiet(&h.state().app, &before);
+            key(&mut h, Key::Enter);
+            assert_edit(&h.state().app, &before, payload(json!("solid"), [true; 6]));
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_genuine_missing_document_selection_and_disabled_parent_are_quiet_and_uninstalled_native_fallback_recovers() {
+        for missing in ["document", "selection", "parent", "edges"] {
+            let (mut app, _) = fixture();
+            if missing == "document" {
+                while !app.session.documents().is_empty() {
+                    app.session.close_document(0);
+                }
+            }
+            if missing == "selection" {
+                app.run("selection.set", json!({"ids": []})).unwrap();
+            }
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            h.state_mut().disabled = missing == "parent";
+            if missing == "edges" {
+                h.ctx.data_mut(|data| data.insert_temp(egui::Id::unique("cell_stroke_edges"), [false; 6]));
+            }
+            idle(&mut h, 2);
+            let before = quiet(&h.state().app);
+            if matches!(missing, "parent" | "edges") {
+                assert!(control(&h).facts.unwrap().disabled);
+                let label = name(&h);
+                click(&mut h, egui::accesskit::Role::ComboBox, &label);
+            } else {
+                let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, egui::Id::NULL.with(REGION)).unwrap();
+                assert!(!record.elements.iter().any(|e| e.component == "Select"));
+            }
+            key(&mut h, Key::Space);
+            key(&mut h, Key::Enter);
+            assert_eq!(h.query_all_by_role(egui::accesskit::Role::ListBoxOption).count(), 0);
+            assert_quiet(&h.state().app, &before);
+            if matches!(missing, "parent" | "edges") {
+                h.state_mut().disabled = false;
+                h.ctx.data_mut(|data| data.insert_temp(egui::Id::unique("cell_stroke_edges"), [true; 6]));
+                idle(&mut h, 2);
+                let before = quiet(&h.state().app);
+                pick(&mut h, "Dotted");
+                assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
+                undo_redo(&mut h, &before);
+            }
+        }
+        let (app, _) = fixture();
+        let mut h = harness(app, false, Parent::Stroke, 400.0);
+        assert!(!h.state().app.framework_installed, "genuinely uninstalled native route");
+        let before = quiet(&h.state().app);
+        click(&mut h, egui::accesskit::Role::ComboBox, "Type");
+        let at = h.get_by_label(STYLE).rect().center();
+        click_at(&mut h, at);
+        assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), [true; 6]));
+        undo_redo(&mut h, &before);
+        let ctx = h.ctx.clone();
+        h.state_mut().app.framework_opacity = true;
+        h.state_mut().app.install_framework(&ctx);
+        assert!(h.state().app.framework_installed);
+        idle(&mut h, 3);
+        let before = quiet(&h.state().app);
+        pick(&mut h, "Dotted");
+        assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_real_sizing_and_hidden_parent_register_no_live_owner_hits_focus_stop_or_delayed_edit() {
+        for sizing in [false, true] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let label = name(&h);
+            let at = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &label).rect().center();
+            frame(&mut h, Some(Event::PointerMoved(at)));
+            pointer(&mut h, at, true);
+            h.state_mut().sizing = sizing;
+            h.state_mut().visible = sizing;
+            let before = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_eq!(h.query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.label().as_deref() == Some(label.as_str())).count(), 0);
+            let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, egui::Id::NULL.with(REGION)).unwrap();
+            assert!(!record.elements.iter().any(|e| e.component == "Select"));
+            assert!(record.hits.is_empty());
+            assert!(record.elements.iter().all(|e| e.stop.is_none()));
+            pointer(&mut h, at, false);
+            key(&mut h, Key::Enter);
+            assert_quiet(&h.state().app, &before);
+            h.state_mut().sizing = false;
+            h.state_mut().visible = true;
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &before);
+            pick(&mut h, "Dotted");
+            assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_authoritative_refresh_complete_localized_names_narrow_parent_and_native_numeric_fields_stay_honest() {
+        for language in ["en", "de"] {
+            let (mut app, _) = fixture();
+            app.ui.language = language.to_owned();
+            let mut h = harness(app, true, Parent::Stroke, 190.0);
+            let before = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &before);
+            assert!(control(&h).rect.is_finite());
+            assert_eq!(control(&h).facts.unwrap().name.as_deref(), Some(tr(language, "Type")));
+            assert_eq!(
+                h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("2.375 pt")).count(),
+                1,
+                "the untouched real native point field retains its precision"
+            );
+            h.state_mut().app.run("table.setCell", json!({"stroke": {"type": "wavy", "edges": "all"}})).unwrap();
+            let before = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &before);
+            assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h)).value().as_deref(), Some(tr(language, "Wavy")));
+            pick(&mut h, STYLE);
+            assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), [true; 6]));
+            assert_eq!(
+                h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h)).value().as_deref(),
+                Some(STYLE),
+                "full accessible value, not an elided display fragment"
+            );
+            undo_redo(&mut h, &before);
+        }
+    }
+
+    #[test]
+    fn cell_stroke_real_cell_options_keyboard_popup_cancel_commit_and_outer_escape_keep_the_actual_modal_transaction() {
+        let (mut app, _) = fixture();
+        crate::dialogs::open_cell_options(&mut app).unwrap();
+        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let before = quiet(&h.state().app);
+        let original = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+        tab_to(&mut h);
+        key(&mut h, Key::Enter);
+        assert_popup_physical_owner(&h);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().fields, original);
+        key(&mut h, Key::End);
+        assert_quiet(&h.state().app, &before);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().fields, original, "popup proposal is not a dialog draft edit");
+        key(&mut h, Key::Escape);
+        assert_eq!(h.query_all_by_role(egui::accesskit::Role::ListBoxOption).count(), 0);
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().fields, original, "inner Escape closes only the popup");
+        assert_quiet(&h.state().app, &before);
+        tab_to(&mut h);
+        key(&mut h, Key::Enter);
+        assert_popup_physical_owner(&h);
+        key(&mut h, Key::End);
+        key(&mut h, Key::Enter);
+        let mut expected = original;
+        expected.insert("type".into(), json!({"kind": "style", "name": "Solid"}));
+        assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().fields, expected, "Enter selects exactly one draft field without confirming the modal");
+        assert_quiet(&h.state().app, &before);
+        key(&mut h, Key::Escape);
+        assert!(h.state().app.ui.dialog.is_none(), "outer Escape must still cancel the genuine Cell Options modal after an SDK child was used");
+        assert_quiet(&h.state().app, &before);
+    }
+
+    #[test]
+    fn cell_stroke_real_cell_options_held_choice_retires_target_catalog_and_document_before_touching_its_draft() {
+        for change in ["range", "catalog", "document"] {
+            let (mut app, made) = fixture();
+            crate::dialogs::open_cell_options(&mut app).unwrap();
+            let mut h = harness(app, true, Parent::Dialog, 640.0);
+            let draft = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+            open(&mut h);
+            let at = reveal_popup_option(&mut h, STYLE, None).rect.center();
+            frame(&mut h, Some(Event::PointerMoved(at)));
+            pointer(&mut h, at, true);
+            match change {
+                "range" => select(&mut h.state_mut().app, made.story, made.table, [0, 0], [0, 1]),
+                "catalog" => {
+                    h.state_mut().app.run("strokeStyle.delete", json!({"name": STYLE})).unwrap();
+                }
+                "document" => {
+                    while !h.state().app.session.documents().is_empty() {
+                        h.state_mut().app.session.close_document(0);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let before = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_eq!(
+                h.query_all_by_role(egui::accesskit::Role::ListBoxOption).count(),
+                0,
+                "old popup disappears before input release after {change}"
+            );
+            pointer(&mut h, at, false);
+            idle(&mut h, 2);
+            assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().fields, draft, "stale popup cannot write a new target's modal draft after {change}");
+            assert_quiet(&h.state().app, &before);
+            click(&mut h, egui::accesskit::Role::Button, "Cancel");
+            assert!(h.state().app.ui.dialog.is_none());
+            assert_quiet(&h.state().app, &before);
+        }
     }
 }

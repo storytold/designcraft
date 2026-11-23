@@ -7,6 +7,30 @@ use super::parents::{
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
 
+fn numbering_edit(s: &crate::Session, p: &Value) -> Result<(SectionEdit, Option<ChapterEdit>)> {
+    let section = SectionEdit::parse("layout.numberingOptions", s, p)?;
+    let chapter = match p.get("chapter") {
+        Some(c) => Some(ChapterEdit::parse("layout.numberingOptions", c)?),
+        None => None,
+    };
+    Ok((section, chapter))
+}
+
+fn numbering_is_unchanged(d: &designcraft_doc::Document, section: &SectionEdit, chapter: Option<&ChapterEdit>) -> bool {
+    section.planned_sections(&d.sections) == d.sections && chapter.is_none_or(|chapter| !chapter.changes(d))
+}
+
+fn numbering_result(d: &designcraft_doc::Document) -> Value {
+    json!({"names": (0..d.page_count()).map(|i| d.page_name(i)).collect::<Vec<_>>(), "chapter": d.chapter_label()})
+}
+
+/// Pure, validated no-op probe. Errors and real changes MUST use the original execution path.
+fn numbering_noop(s: &crate::Session, p: &Value) -> Option<Value> {
+    let (section, chapter) = numbering_edit(s, p).ok()?;
+    let d = &s.doc().ok()?.doc;
+    numbering_is_unchanged(d, &section, chapter.as_ref()).then(|| numbering_result(d))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -655,24 +679,25 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
-            "layout.numberingOptions",
+            on_document_change(numbering_noop) "layout.numberingOptions",
             "Apply Numbering & Section Options",
             [],
             None,
             "{page, …the settings as layout.section, chapter?: {…the settings as layout.chapterNumbering}} — the section and the document's chapter numbering in one undo step; if either is refused nothing changes",
             has_doc,
             |s, p| {
-                let section = SectionEdit::parse("layout.numberingOptions", s, p)?;
-                let chapter = match p.get("chapter") {
-                    Some(c) => Some(ChapterEdit::parse("layout.numberingOptions", c)?),
-                    None => None,
-                };
+                // Re-parse after the original lifecycle prelude; never reuse a preflight plan.
+                let (section, chapter) = numbering_edit(s, p)?;
+                let current = &s.doc()?.doc;
+                if numbering_is_unchanged(current, &section, chapter.as_ref()) {
+                    return Ok(numbering_result(current));
+                }
                 s.edit(|d, _| {
                     section.apply(d);
                     if let Some(chapter) = &chapter {
                         chapter.apply(d);
                     }
-                    Ok(json!({"names": (0..d.page_count()).map(|i| d.page_name(i)).collect::<Vec<_>>(), "chapter": d.chapter_label()}))
+                    Ok(numbering_result(d))
                 })
             }
         ),

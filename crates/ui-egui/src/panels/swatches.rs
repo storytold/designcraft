@@ -7,14 +7,77 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
+#[derive(Clone, Copy)]
+enum FooterAction {
+    Group,
+    New,
+    Delete,
+}
+
+impl FooterAction {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Group => "new-group",
+            Self::New => "new-swatch",
+            Self::Delete => "delete-swatch",
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl craft_ui_widgets::primitives::Glyph for FooterAction {
+    fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
+        match self {
+            Self::Group => {
+                // The existing folder artwork, not a replacement symbol or icon provider.
+                let f = egui::Rect::from_center_size(rect.center(), vec2(14.0, 10.0));
+                painter.rect_stroke(f, 1.5, egui::Stroke::new(1.2, color), egui::StrokeKind::Inside);
+                painter.line_segment([f.left_top() + vec2(1.0, 3.0), f.right_top() + vec2(-1.0, 3.0)], egui::Stroke::new(1.0, color));
+            }
+            Self::New => icons::paint(painter, rect, "plus", color),
+            Self::Delete => icons::paint(painter, rect, "trash", color),
+        }
+    }
+}
+
+fn footer_action(
+    app: &DesignApp,
+    ui: &mut egui::Ui,
+    action: FooterAction,
+    target: Option<&str>,
+    label: &str,
+    enabled: bool,
+    legacy: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::buttons::IconButton;
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::primitives::IconSpec;
+
+        let identity = app.session.active().map(|st| (st.uid, st.identity_epoch));
+        return IconButton::new(IconSpec::glyph(&action))
+            .id_salt(("swatches-footer", identity, action.key(), target))
+            .label(label.to_owned())
+            .tooltip(label.to_owned())
+            .enabled(enabled)
+            .show(ui)
+            .clicked();
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (app, action.key(), target, label, enabled);
+    legacy(ui).clicked()
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    prepare_rename(app, ui);
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
     // Another document (switched to, or moved to this one's place by a close) drops a rename in
     // place: a swatch of the same name there isn't the one being renamed.
-    let uid = st.uid;
-    if ui.data(|d| d.get_temp::<u64>(egui::Id::unique(RENAME_DOC))) != Some(uid) {
+    let uid = (st.uid, st.identity_epoch);
+    if ui.data(|d| d.get_temp::<(u64, u64)>(egui::Id::unique(RENAME_DOC))) != Some(uid) {
         ui.data_mut(|d| {
             d.remove_temp::<(String, String)>(egui::Id::unique(RENAMING));
             d.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK));
@@ -97,10 +160,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED))).filter(|n: &String| doc.swatch(n).is_some_and(|w| !w.locked));
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let del = ui
-                .add_enabled_ui(picked.is_some(), |ui| icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Swatch")))
-                .inner;
-            if del.clicked()
+            let del = footer_action(
+                app,
+                ui,
+                FooterAction::Delete,
+                picked.as_deref(),
+                crate::i18n::tr(&app.ui.language, "Delete Swatch"),
+                picked.is_some(),
+                |ui| {
+                    ui.add_enabled_ui(picked.is_some(), |ui| {
+                        icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Swatch"))
+                    })
+                    .inner
+                },
+            );
+            if del
                 && let Some(name) = &picked
                 && app.run("swatch.delete", json!({"name": name})).is_ok()
             {
@@ -108,11 +182,21 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             // The selection's fill or stroke (whichever is in front) becomes a swatch; with nothing
             // selected, a new colour.
-            if icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "New Swatch")).clicked() {
+            if footer_action(
+                app,
+                ui,
+                FooterAction::New,
+                Some(if app.ui.stroke_front { "stroke" } else { "fill" }),
+                crate::i18n::tr(&app.ui.language, "New Swatch"),
+                true,
+                |ui| icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "New Swatch")),
+            ) {
                 let target = if app.ui.stroke_front { "stroke" } else { "fill" };
                 let _ = app.run("swatch.new", json!({"target": target}));
             }
-            if folder_button(ui, crate::i18n::tr(&app.ui.language, "New Color Group")).clicked() {
+            if footer_action(app, ui, FooterAction::Group, None, crate::i18n::tr(&app.ui.language, "New Color Group"), true, |ui| {
+                folder_button(ui, crate::i18n::tr(&app.ui.language, "New Color Group"))
+            }) {
                 let _ = app.run("swatch.newColorGroup", json!({}));
             }
             crate::menus::menu_button(ui, "☰", |ui| {
@@ -266,28 +350,137 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
     })
 }
 
+/// The editor belongs to one document incarnation and one actual source name, not object selection.
+#[derive(Clone, Default)]
+struct RenameInput {
+    document: (u64, u64),
+    source: String,
+    generation: u64,
+    last_frame: u64,
+    focus_pending: bool,
+}
+
+const RENAME_INPUT: &str = "swatches_rename_input";
+const RENAME_GENERATION: &str = "swatches_rename_generation";
+
+fn retire_rename(ui: &egui::Ui) {
+    ui.data_mut(|data| {
+        data.remove_temp::<(String, String)>(egui::Id::unique(RENAMING));
+        data.remove_temp::<(String, f64)>(egui::Id::unique(RENAME_CLICK));
+        data.remove_temp::<RenameInput>(egui::Id::unique(RENAME_INPUT));
+    });
+}
+
+/// An observed missing/locked/hidden source or inert parent cannot later replay its old field input.
+fn prepare_rename(app: &DesignApp, ui: &egui::Ui) {
+    let Some(st) = app.session.active() else {
+        retire_rename(ui);
+        return;
+    };
+    // A measurement within a live frame is not a new lifetime. It must not edit or retire the draft.
+    if ui.is_sizing_pass() {
+        return;
+    }
+    if !ui.is_enabled() || !ui.is_visible() {
+        retire_rename(ui);
+        return;
+    }
+    let Some((name, _)) = ui.data(|data| data.get_temp::<(String, String)>(egui::Id::unique(RENAMING))) else {
+        ui.data_mut(|data| data.remove_temp::<RenameInput>(egui::Id::unique(RENAME_INPUT)));
+        return;
+    };
+    let source_live = st.doc.swatch(&name).is_some_and(|sw| !sw.locked && !sw.hidden);
+    let groups: Vec<_> = st.doc.color_groups.iter().filter(|group| group.swatches.contains(&name)).collect();
+    let row_live = groups.is_empty()
+        || groups.iter().any(|group| ui.data(|data| data.get_temp::<bool>(egui::Id::unique(("color_group_open", &group.name)))).unwrap_or(true));
+    let frame = ui.ctx().cumulative_frame_nr();
+    let owner_live = ui.data(|data| data.get_temp::<RenameInput>(egui::Id::unique(RENAME_INPUT))).is_none_or(|owner| {
+        owner.document == (st.uid, st.identity_epoch)
+            && owner.source == name
+            && (owner.last_frame == frame || owner.last_frame.checked_add(1) == Some(frame))
+    });
+    if !source_live || !row_live || !owner_live {
+        retire_rename(ui);
+    }
+}
+
+/// Only public component focus and text events are used; whole text loss is not a pointer-cause flag.
+fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut String, rect: egui::Rect) -> Option<(bool, bool)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+        use craft_ui_widgets::runtime::focus::{self, FocusTarget};
+        let key = egui::Id::unique(RENAME_INPUT);
+        let mut owner = ui.data(|data| data.get_temp::<RenameInput>(key)).expect("live rename owner prepared by its row");
+        let id = ui.scope_id().with(("swatches-rename", owner.document, name, owner.generation));
+        let label = format!("{}: {name}", crate::i18n::tr(&app.ui.language, "Name"));
+        let output = craft_ui_widgets::text::TextField::new(label, Bind::bound(text))
+            .id(id)
+            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .limit(None)
+            .select_on_focus()
+            .submits()
+            .show_at(ui, rect);
+        if owner.focus_pending && focus::request(ui.ctx(), FocusTarget::Id(id)) {
+            owner.focus_pending = false;
+            ui.data_mut(|data| data.insert_temp(key, owner));
+        }
+        // Enter, Tab and Escape have their own public facts even when no changed value exists.
+        return Some((output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some(), output.escaped));
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (app, ui, name, text, rect);
+    None
+}
+
 /// The name field of a swatch being renamed in place, over `rect`; false when `sw` isn't. Enter or
 /// a click elsewhere renames it (`swatch.options`), Escape leaves it as it was.
 fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::swatch::Swatch, rect: egui::Rect) -> bool {
     let key = egui::Id::unique(RENAMING);
     let Some((name, mut text)) = ui.data(|d| d.get_temp::<(String, String)>(key)).filter(|(n, _)| *n == sw.name) else { return false };
-    let id = egui::Id::unique(("swatch_rename", &sw.name));
-    let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
-    let resp = ui.put(rect, edit);
-    if !resp.has_focus() && !resp.lost_focus() {
-        // The field opens with the name selected.
-        resp.request_focus();
-        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
-            state
-                .cursor
-                .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
-            state.store(ui.ctx(), id);
-        }
+    if ui.is_sizing_pass() {
+        return true;
     }
-    if resp.lost_focus() {
-        ui.data_mut(|d| d.remove_temp::<(String, String)>(key));
+    let Some(st) = app.session.active() else {
+        retire_rename(ui);
+        return false;
+    };
+    let document = (st.uid, st.identity_epoch);
+    let owner_key = egui::Id::unique(RENAME_INPUT);
+    let frame = ui.ctx().cumulative_frame_nr();
+    let mut owner = ui.data(|data| data.get_temp::<RenameInput>(owner_key)).unwrap_or_else(|| {
+        let generation_key = egui::Id::unique(RENAME_GENERATION);
+        let generation = ui.data(|data| data.get_temp::<u64>(generation_key)).unwrap_or(0).wrapping_add(1);
+        ui.data_mut(|data| data.insert_temp(generation_key, generation));
+        RenameInput { document, source: name.clone(), generation, last_frame: frame, focus_pending: true }
+    });
+    owner.last_frame = frame;
+    ui.data_mut(|data| data.insert_temp(owner_key, owner));
+    let (finished, escaped) = if let Some(facts) = sdk_rename_field(app, ui, &name, &mut text, rect) {
+        facts
+    } else {
+        let id = egui::Id::unique(("swatch_rename", &sw.name));
+        let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
+        let resp = ui.put(rect, edit);
+        if !resp.has_focus() && !resp.lost_focus() {
+            // The field opens with the name selected.
+            resp.request_focus();
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                state.store(ui.ctx(), id);
+            }
+        }
+        (resp.lost_focus(), ui.input(|i| i.key_pressed(egui::Key::Escape)))
+    };
+    if finished {
+        ui.data_mut(|d| {
+            d.remove_temp::<(String, String)>(key);
+            d.remove_temp::<RenameInput>(egui::Id::unique(RENAME_INPUT));
+        });
         let to = text.trim();
-        if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && !to.is_empty() && to != name {
+        if !escaped && !to.is_empty() && to != name {
             match app.run("swatch.options", json!({"name": name, "to": to})) {
                 // Still picked under its new name, unless the click that ended the rename picked
                 // another swatch.
@@ -1917,5 +2110,1053 @@ mod row_mark_tests {
         let paper = all.iter().find(|s| s.name == designcraft_color::swatch::PAPER).unwrap();
         let renamed = designcraft_color::swatch::Swatch { name: "Papier".into(), ..paper.clone() };
         assert!(!row_marks(&renamed).not_editable);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod footer_action_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded};
+    use egui::{Event, Key, Modifiers, PointerButton};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    struct State {
+        app: DesignApp,
+        recorded: Option<Arc<Recorded>>,
+    }
+
+    fn app_with_swatches() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "unassigned"})).unwrap();
+        app.run("swatch.create", json!({"name": "Port Fill", "color": "#108080"})).unwrap();
+        app.run("swatch.create", json!({"name": "Port Stroke", "color": "#c03060"})).unwrap();
+        app
+    }
+
+    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, State> {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "");
+        if installed {
+            app.framework_opacity = true;
+            app.install_framework(&ctx);
+            assert!(app.framework_installed);
+        }
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(360.0, 900.0)).build_ui_state(
+            |ui, state: &mut State| {
+                let region = ui.scope_id();
+                let (_, recorded) = craft_ui_widgets::runtime::inspect::record(ui, region, |ui| show(&mut state.app, ui));
+                if recorded.is_some() {
+                    state.recorded = recorded;
+                }
+            },
+            State { app, recorded: None },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        steps(&mut h, 3);
+        h
+    }
+
+    fn steps(h: &mut Harness<'_, State>, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    fn event(h: &mut Harness<'_, State>, event: Event) {
+        h.input_mut().events.push(event);
+        steps(h, 1);
+    }
+
+    fn key(h: &mut Harness<'_, State>, key: Key) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+        steps(h, 2);
+    }
+
+    fn click_at(h: &mut Harness<'_, State>, pos: egui::Pos2) {
+        event(h, Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+        steps(h, 2);
+    }
+
+    fn toolbar(h: &Harness<'_, State>, label: &str) -> Element {
+        let name = crate::i18n::tr(&h.state().app.ui.language, label);
+        let found: Vec<_> = h
+            .state()
+            .recorded
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|element| element.component == "IconButton" && element.facts.as_ref().is_some_and(|facts| facts.name.as_deref() == Some(name)))
+            .cloned()
+            .collect();
+        assert_eq!(found.len(), 1, "one actual compact IconButton named {name}");
+        found[0].clone()
+    }
+
+    fn click_toolbar(h: &mut Harness<'_, State>, label: &str) {
+        let target = toolbar(h, label);
+        let rect = h.state().recorded.as_ref().unwrap().hits.iter().find(|hit| hit.owner == target.id).map_or(target.rect, |hit| hit.rect);
+        click_at(h, rect.center());
+    }
+
+    fn pick_row(h: &mut Harness<'_, State>, name: &str) {
+        let rect = h.get_by(|node| node.label().is_some_and(|label| names_swatch(&label, name))).rect();
+        // The chip is part of the real row; choosing it cannot start the name's slow-click rename.
+        click_at(h, egui::pos2(rect.left() + 10.0, rect.center().y));
+        assert_eq!(picked(h).as_deref(), Some(name));
+    }
+
+    fn picked(h: &Harness<'_, State>) -> Option<String> {
+        h.ctx.data(|d| d.get_temp(egui::Id::unique(PICKED)))
+    }
+
+    fn tab_to(h: &mut Harness<'_, State>, label: &str) {
+        let name = crate::i18n::tr(&h.state().app.ui.language, label).to_owned();
+        let native = h.state().recorded.as_ref().unwrap().elements.iter().filter(|element| element.stop.is_some()).count();
+        let fields = h.query_all_by(|node| matches!(node.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::ComboBox)).count();
+        for _ in 0..=native + fields {
+            if h.query_by(|node| node.role() == egui::accesskit::Role::Button && node.label().as_deref() == Some(name.as_str()))
+                .is_some_and(|node| node.is_focused())
+            {
+                return;
+            }
+            key(h, Key::Tab);
+        }
+        panic!("natural Tab did not reach {name} in one current control cycle");
+    }
+
+    fn calls(h: &Harness<'_, State>, from: usize, command: &str) -> Vec<Value> {
+        h.state().app.session.journal[from..].iter().filter(|(id, _)| id == command).map(|(_, params)| params.clone()).collect()
+    }
+
+    fn undo_len(h: &Harness<'_, State>) -> usize {
+        h.state().app.session.active().unwrap().history.undo.len()
+    }
+
+    fn undo_once(h: &mut Harness<'_, State>) {
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        steps(h, 2);
+    }
+
+    #[test]
+    fn installed_new_swatch_uses_real_row_fill_or_stroke_and_one_undo_without_replay() {
+        let mut h = harness(app_with_swatches(), true);
+        pick_row(&mut h, "Port Fill");
+        let before = h.state().app.session.active().unwrap().doc.swatches.clone();
+        let undo = undo_len(&h);
+        let journal = h.state().app.session.journal.len();
+        click_toolbar(&mut h, "New Swatch");
+        let doc = &h.state().app.session.active().unwrap().doc;
+        assert_eq!(doc.swatch("Port Fill copy").unwrap().value, doc.swatch("Port Fill").unwrap().value);
+        assert_eq!(calls(&h, journal, "swatch.new"), [json!({"target": "fill"})]);
+        assert_eq!(undo_len(&h), undo + 1);
+        steps(&mut h, 3);
+        assert_eq!(calls(&h, journal, "swatch.new").len(), 1);
+        undo_once(&mut h);
+        assert_eq!(h.state().app.session.active().unwrap().doc.swatches, before);
+        let proxy = h.get_by_label("Fill").rect();
+        click_at(&mut h, proxy.center());
+        assert!(h.state().app.ui.stroke_front);
+        pick_row(&mut h, "Port Stroke");
+        let before = h.state().app.session.active().unwrap().doc.swatches.clone();
+        let undo = undo_len(&h);
+        let journal = h.state().app.session.journal.len();
+        tab_to(&mut h, "New Swatch");
+        key(&mut h, Key::Enter);
+        let doc = &h.state().app.session.active().unwrap().doc;
+        assert_eq!(doc.swatch("Port Stroke copy").unwrap().value, doc.swatch("Port Stroke").unwrap().value);
+        assert_eq!(calls(&h, journal, "swatch.new"), [json!({"target": "stroke"})]);
+        assert_eq!(undo_len(&h), undo + 1);
+        undo_once(&mut h);
+        assert_eq!(h.state().app.session.active().unwrap().doc.swatches, before);
+    }
+
+    #[test]
+    fn installed_group_is_compact_localized_and_keyboard_creation_is_one_undo() {
+        let mut app = app_with_swatches();
+        app.ui.language = "de".into();
+        let mut h = harness(app, true);
+        let controls: Vec<_> = ["New Color Group", "New Swatch", "Delete Swatch"].iter().map(|label| toolbar(&h, label)).collect();
+        for control in &controls {
+            assert!(control.rect.width() <= control.rect.height() * 2.0, "localized accessible text is not painted as a wide toolbar label");
+            assert!((control.rect.width() - controls[0].rect.width()).abs() < 1.0, "all three remain icon-sized controls");
+        }
+        let before = h.state().app.session.active().unwrap().doc.color_groups.clone();
+        let swatches = h.state().app.session.active().unwrap().doc.swatches.clone();
+        let undo = undo_len(&h);
+        let journal = h.state().app.session.journal.len();
+        tab_to(&mut h, "New Color Group");
+        key(&mut h, Key::Space);
+        assert_eq!(calls(&h, journal, "swatch.newColorGroup"), [json!({})]);
+        assert_eq!(h.state().app.session.active().unwrap().doc.color_groups.len(), before.len() + 1);
+        assert_eq!(h.state().app.session.active().unwrap().doc.swatches, swatches);
+        assert_eq!(undo_len(&h), undo + 1);
+        steps(&mut h, 3);
+        assert_eq!(calls(&h, journal, "swatch.newColorGroup").len(), 1);
+        undo_once(&mut h);
+        assert_eq!(h.state().app.session.active().unwrap().doc.color_groups, before);
+    }
+
+    #[test]
+    fn installed_delete_uses_the_picked_row_and_only_success_clears_it() {
+        let mut h = harness(app_with_swatches(), true);
+        assert!(toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        click_toolbar(&mut h, "Delete Swatch");
+        assert!(calls(&h, journal, "swatch.delete").is_empty());
+        assert_eq!(undo_len(&h), undo);
+        assert!(picked(&h).is_none());
+        pick_row(&mut h, "Port Stroke");
+        let before = h.state().app.session.active().unwrap().doc.swatches.clone();
+        let undo = undo_len(&h);
+        let journal = h.state().app.session.journal.len();
+        assert!(!toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        tab_to(&mut h, "Delete Swatch");
+        key(&mut h, Key::Space);
+        assert_eq!(calls(&h, journal, "swatch.delete"), [json!({"name": "Port Stroke"})]);
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Port Stroke").is_none());
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Port Fill").is_some());
+        assert!(picked(&h).is_none());
+        assert!(toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        assert_eq!(undo_len(&h), undo + 1);
+        steps(&mut h, 3);
+        assert_eq!(calls(&h, journal, "swatch.delete").len(), 1);
+        undo_once(&mut h);
+        assert_eq!(h.state().app.session.active().unwrap().doc.swatches, before);
+        assert!(picked(&h).is_none(), "Undo restores the swatch, not a new Delete intent");
+    }
+
+    #[test]
+    fn installed_locked_and_absent_picks_stay_gated_and_new_swatch_refusal_is_inert() {
+        let mut h = harness(app_with_swatches(), true);
+        pick_row(&mut h, "[Black]");
+        let doc = h.state().app.session.active().unwrap().doc.clone();
+        let undo = undo_len(&h);
+        let journal = h.state().app.session.journal.len();
+        assert!(toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        click_toolbar(&mut h, "Delete Swatch");
+        assert_eq!(picked(&h).as_deref(), Some("[Black]"));
+        assert!(calls(&h, journal, "swatch.delete").is_empty());
+        assert_eq!(undo_len(&h), undo);
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &doc));
+        pick_row(&mut h, "[None]");
+        let doc = h.state().app.session.active().unwrap().doc.clone();
+        let undo = undo_len(&h);
+        let status = h.state().app.ui.status.clone();
+        click_toolbar(&mut h, "New Swatch");
+        assert!(calls(&h, journal, "swatch.new").is_empty(), "the real engine refuses copying [None]");
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &doc));
+        assert_eq!(undo_len(&h), undo);
+        assert_ne!(h.state().app.ui.status, status, "the original app.run error still reaches the status bar");
+        assert!(h.state().app.ui.status.contains("[None]"));
+        assert_eq!(picked(&h).as_deref(), Some("[None]"));
+        pick_row(&mut h, "Port Fill");
+        h.state_mut().app.run("swatch.delete", json!({"name": "Port Fill"})).unwrap();
+        steps(&mut h, 2);
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        assert!(toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        click_toolbar(&mut h, "Delete Swatch");
+        assert!(calls(&h, journal, "swatch.delete").is_empty());
+        assert_eq!(undo_len(&h), undo);
+        assert_eq!(picked(&h).as_deref(), Some("Port Fill"), "a gated absent pick is not a successful footer deletion");
+    }
+
+    #[test]
+    fn installed_held_footer_actions_cannot_cross_documents_with_identically_named_swatches() {
+        let mut app = app_with_swatches();
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "unassigned"})).unwrap();
+        app.run("swatch.create", json!({"name": "Port Fill", "color": "#cc0088"})).unwrap();
+        app.session.set_active(0);
+        let mut h = harness(app, true);
+        pick_row(&mut h, "Port Fill");
+        for (label, command) in [("Delete Swatch", "swatch.delete"), ("New Swatch", "swatch.new"), ("New Color Group", "swatch.newColorGroup")] {
+            h.state_mut().app.session.set_active(0);
+            steps(&mut h, 2);
+            let journal = h.state().app.session.journal.len();
+            let original = h.state().app.session.documents()[0].doc.clone();
+            let target = toolbar(&h, label);
+            let pos = target.rect.center();
+            event(&mut h, Event::PointerMoved(pos));
+            event(&mut h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+            h.state_mut().app.session.set_active(1);
+            steps(&mut h, 2);
+            assert_ne!(toolbar(&h, label).id, target.id);
+            let next = h.state().app.session.active().unwrap().doc.clone();
+            let undo = undo_len(&h);
+            event(&mut h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+            steps(&mut h, 2);
+            assert!(calls(&h, journal, command).is_empty(), "a previous document's press cannot invoke {command}");
+            assert!(Arc::ptr_eq(&h.state().app.session.documents()[0].doc, &original));
+            assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &next));
+            assert_eq!(undo_len(&h), undo);
+        }
+        // The original global picked-name policy is retained: a fresh action in document two can
+        // delete its same-named swatch, but must never mutate document one's swatch.
+        let original = h.state().app.session.documents()[0].doc.clone();
+        let before = h.state().app.session.active().unwrap().doc.swatches.clone();
+        let journal = h.state().app.session.journal.len();
+        click_toolbar(&mut h, "Delete Swatch");
+        assert_eq!(calls(&h, journal, "swatch.delete"), [json!({"name": "Port Fill"})]);
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Port Fill").is_none());
+        assert!(Arc::ptr_eq(&h.state().app.session.documents()[0].doc, &original));
+        undo_once(&mut h);
+        assert_eq!(h.state().app.session.active().unwrap().doc.swatches, before);
+    }
+
+    #[test]
+    fn installed_delete_press_cannot_retarget_to_a_different_picked_swatch() {
+        let mut h = harness(app_with_swatches(), true);
+        pick_row(&mut h, "Port Fill");
+        let target = toolbar(&h, "Delete Swatch");
+        let pos = target.rect.center();
+        event(&mut h, Event::PointerMoved(pos));
+        event(&mut h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        // A legal external command changes the picked swatch's name while the real pointer is held.
+        h.state_mut().app.run("swatch.options", json!({"name": "Port Fill", "to": "Renamed Fill"})).unwrap();
+        steps(&mut h, 2);
+        assert!(toolbar(&h, "Delete Swatch").facts.as_ref().unwrap().disabled);
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        event(&mut h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        steps(&mut h, 2);
+        assert!(calls(&h, journal, "swatch.delete").is_empty());
+        assert_eq!(undo_len(&h), undo);
+        assert_eq!(picked(&h).as_deref(), Some("Port Fill"));
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Renamed Fill").is_some());
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Port Stroke").is_some());
+    }
+
+    #[test]
+    fn uninstalled_footer_preserves_real_row_pick_and_existing_icon_delete() {
+        let mut h = harness(app_with_swatches(), false);
+        assert!(!h.state().app.framework_installed);
+        pick_row(&mut h, "Port Fill");
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        let rect = h.get_by_label("Delete Swatch").rect();
+        click_at(&mut h, rect.center());
+        assert_eq!(calls(&h, journal, "swatch.delete"), [json!({"name": "Port Fill"})]);
+        assert!(h.state().app.session.active().unwrap().doc.swatch("Port Fill").is_none());
+        assert_eq!(undo_len(&h), undo + 1);
+        assert!(picked(&h).is_none());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod ui223_swatches_rename_apply_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
+    use designcraft_doc::{Document, ItemId};
+    use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    use serde_json::Value;
+    use std::sync::Arc;
+
+    struct Rig {
+        app: DesignApp,
+        controls: Option<Arc<Recorded>>,
+        enabled: bool,
+        sizing: bool,
+        visible: bool,
+        height: f32,
+        viewport: egui::Rect,
+        offset: egui::Vec2,
+        outside: egui::Rect,
+    }
+    struct Snapshot {
+        doc: Arc<Document>,
+        saved: Arc<Document>,
+        owner: (u64, u64),
+        revisions: (u64, u64),
+        selection: String,
+        history: (usize, usize),
+        journal: usize,
+    }
+    fn frame(h: &mut Harness<'_, Rig>, event: Option<Event>) {
+        let mut raw = std::mem::take(h.input_mut());
+        if let Some(event) = event {
+            raw.events.push(event);
+        }
+        let ctx = h.ctx.clone();
+        h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn idle(h: &mut Harness<'_, Rig>, count: usize) {
+        for _ in 0..count {
+            frame(h, None);
+        }
+    }
+    fn key(h: &mut Harness<'_, Rig>, key: Key) {
+        for pressed in [true, false] {
+            frame(h, Some(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }));
+        }
+        idle(h, 2);
+    }
+    fn press(h: &mut Harness<'_, Rig>, at: egui::Pos2, pressed: bool) {
+        frame(h, Some(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }));
+    }
+    fn click(h: &mut Harness<'_, Rig>, at: egui::Pos2) {
+        frame(h, Some(Event::PointerMoved(at)));
+        press(h, at, true);
+        press(h, at, false);
+        idle(h, 2);
+    }
+    fn wait_click_interval(h: &mut Harness<'_, Rig>) {
+        let seconds = h.ctx.options(|o| o.input_options.max_double_click_delay);
+        idle(h, (seconds / 0.05).ceil() as usize + 2);
+    }
+    fn row(h: &Harness<'_, Rig>, name: &str) -> egui::Rect {
+        h.get_by(|node| {
+            let access = node;
+            access.role() == egui::accesskit::Role::Button && access.label().is_some_and(|label| names_swatch(&label, name))
+        })
+        .rect()
+    }
+    fn reveal(h: &mut Harness<'_, Rig>, name: &str) -> egui::Pos2 {
+        let mut rect = row(h, name);
+        if !h.state().viewport.contains(rect.center()) {
+            let viewport = h.state().viewport;
+            frame(h, Some(Event::PointerMoved(viewport.center())));
+            let delta = vec2(0.0, viewport.center().y - rect.center().y);
+            for phase in [egui::TouchPhase::Start, egui::TouchPhase::Move, egui::TouchPhase::End] {
+                frame(
+                    h,
+                    Some(Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: if phase == egui::TouchPhase::Move { delta } else { egui::Vec2::ZERO },
+                        phase,
+                        modifiers: Modifiers::NONE,
+                        source: egui::MouseWheelSource::Wheel,
+                    }),
+                );
+            }
+            idle(h, 2);
+            rect = row(h, name);
+        }
+        let at = rect.left_center() + vec2(64.0, 0.0);
+        assert!(h.state().viewport.contains(at), "the same real row must be physically visible");
+        at
+    }
+    fn editor_name(h: &Harness<'_, Rig>, source: &str) -> String {
+        format!("{}: {source}", crate::i18n::tr(&h.state().app.ui.language, "Name"))
+    }
+    fn editor(h: &Harness<'_, Rig>, source: &str) -> Element {
+        let name = editor_name(h, source);
+        let fields: Vec<_> = h
+            .state()
+            .controls
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|element| {
+                element.component == "TextField" && element.facts.as_ref().is_some_and(|facts| facts.name.as_deref() == Some(name.as_str()))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(fields.len(), 1, "the real installed name editor, not a header field");
+        let field = fields[0].clone();
+        assert!(h.state().viewport.contains_rect(field.rect));
+        assert!(row(h, source).contains_rect(field.rect), "the original row's actual name allocation");
+        field
+    }
+    fn draft(h: &Harness<'_, Rig>) -> Option<(String, String)> {
+        h.ctx.data(|data| data.get_temp(egui::Id::unique(RENAMING)))
+    }
+    fn open(h: &mut Harness<'_, Rig>, source: &str) {
+        let picked = h.ctx.data(|data| data.get_temp::<String>(egui::Id::unique(PICKED)));
+        if picked.as_deref() != Some(source) {
+            let at = reveal(h, source);
+            click(h, at);
+            wait_click_interval(h);
+        }
+        let at = reveal(h, source);
+        click(h, at);
+        wait_click_interval(h);
+        assert_eq!(draft(h).as_ref().map(|value| value.0.as_str()), Some(source));
+        if h.state().app.framework_installed {
+            editor(h, source);
+        } else {
+            let rect = row(h, source);
+            assert!(h.query_all_by_role(egui::accesskit::Role::TextInput).any(|node| rect.contains(node.rect().center())));
+        }
+    }
+    fn type_name(h: &mut Harness<'_, Rig>, name: &str) {
+        frame(h, Some(Event::Text(name.to_owned())));
+        idle(h, 2);
+        assert_eq!(draft(h).unwrap().1, name, "normal one-time select-on-focus replaced the full original name");
+    }
+    fn snapshot(h: &Harness<'_, Rig>) -> Snapshot {
+        let st = h.state().app.session.active().unwrap();
+        Snapshot {
+            doc: st.doc.clone(),
+            saved: st.saved_doc.clone(),
+            owner: (st.uid, st.identity_epoch),
+            revisions: (st.revision, st.saved_revision),
+            selection: format!("{:?}", st.selection),
+            history: (st.history.undo.len(), st.history.redo.len()),
+            journal: h.state().app.session.journal.len(),
+        }
+    }
+    fn unchanged(h: &Harness<'_, Rig>, before: &Snapshot) {
+        let now = snapshot(h);
+        assert!(Arc::ptr_eq(&now.doc, &before.doc));
+        assert!(Arc::ptr_eq(&now.saved, &before.saved));
+        assert_eq!(
+            (now.owner, now.revisions, now.selection, now.history, now.journal),
+            (before.owner, before.revisions, before.selection.clone(), before.history, before.journal)
+        );
+    }
+    fn renamed(before: &Document, from: &str, to: &str) -> Document {
+        let mut expected = before.clone();
+        let swatch = expected.swatches.iter_mut().find(|swatch| swatch.name == from).unwrap();
+        swatch.name = to.to_owned();
+        swatch.named = true;
+        expected.rename_swatch_refs(from, to);
+        expected.refresh_gradient_stops();
+        expected
+    }
+    fn rename_calls(h: &Harness<'_, Rig>, start: usize) -> Vec<Value> {
+        h.state().app.session.journal[start..].iter().filter(|(command, _)| command == "swatch.options").map(|(_, args)| args.clone()).collect()
+    }
+    fn fixture() -> (DesignApp, [u64; 2]) {
+        let mut s = designcraft_engine::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        for (name, color) in [("Brand", "#d03010"), ("Other", "#108080")] {
+            s.execute("swatch.create", &json!({"name":name,"color":color})).unwrap();
+        }
+        let made = s.execute("frame.create", &json!({"rect":[30,30,180,130],"content":"text","text":"Hello"})).unwrap();
+        let first = made["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids":[first],"swatch":"Brand"})).unwrap();
+        s.execute("object.stroke", &json!({"ids":[first],"swatch":"Brand"})).unwrap();
+        s.execute("text.select", &json!({"story":made["story"],"anchor":0,"focus":3})).unwrap();
+        s.execute("type.char", &json!({"attrs":{"fill":"Brand"}})).unwrap();
+        s.execute("swatch.newColorGroup", &json!({"name":"Brand Colors","swatches":["Brand"]})).unwrap();
+        s.execute("style.character.create", &json!({"name":"Accent"})).unwrap();
+        s.edit(|doc, _| {
+            doc.styles_mut().char_style_mut("Accent").unwrap().chars.fill = Some("Brand".into());
+            doc.styles_mut().para_mut(designcraft_doc::BASIC_PARAGRAPH).unwrap().para.shading_color = Some("Brand".into());
+            doc.swatches.push(designcraft_color::Swatch {
+                name: "Brand Half".into(),
+                value: SwatchValue::Tint { base: "Brand".into(), tint: 0.5 },
+                locked: false,
+                named: true,
+                hidden: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let second = s.execute("frame.create", &json!({"rect":[200,30,270,110],"content":"unassigned"})).unwrap()["id"].as_u64().unwrap();
+        s.execute("object.fill", &json!({"ids":[second],"swatch":"Other"})).unwrap();
+        s.execute("selection.set", &json!({"ids":[first]})).unwrap();
+        s.execute("frame.create", &json!({"rect":[300,30,340,80]})).unwrap();
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(!s.active().unwrap().history.undo.is_empty());
+        assert_eq!(s.active().unwrap().history.redo.len(), 1);
+        (DesignApp::new_for_panel_tests(s, crate::Services::default()), [first, second])
+    }
+    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Rig> {
+        app.framework_transform = false;
+        app.framework_opacity = installed;
+        let ctx = egui::Context::default();
+        if installed {
+            app.install_framework(&ctx);
+        }
+        assert_eq!(app.framework_installed, installed);
+        app.egui_ctx = Some(ctx.clone());
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut fonts = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(380.0, 720.0)).with_step_dt(0.05).build_ui_state(
+            move |ui, state: &mut Rig| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &state.app.ui.language);
+                    fonts = true;
+                    return;
+                }
+                state.controls = None;
+                if !state.visible {
+                    return;
+                }
+                let builder = if state.sizing { UiBuilder::new().sizing_pass() } else { UiBuilder::new() };
+                ui.scope_builder(builder, |ui| {
+                    ui.add_enabled_ui(state.enabled, |ui| {
+                        state.controls = record(ui, egui::Id::unique("swatches-rename-apply-workflow"), |ui| {
+                            egui::Frame::NONE.inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                                let output = egui::ScrollArea::vertical()
+                                    .id_salt(("shared-panel-body", "swatches"))
+                                    .max_height(state.height)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| crate::dock::panel_body(&mut state.app, ui, "swatches"));
+                                state.viewport = output.inner_rect;
+                                state.offset = output.state.offset();
+                            });
+                        })
+                        .1;
+                        state.outside = ui.button("Next native control").rect;
+                    });
+                });
+            },
+            Rig {
+                app,
+                controls: None,
+                enabled: true,
+                sizing: false,
+                visible: true,
+                height: 600.0,
+                viewport: egui::Rect::NOTHING,
+                offset: egui::Vec2::ZERO,
+                outside: egui::Rect::NOTHING,
+            },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        idle(&mut h, 4);
+        h
+    }
+
+    #[test]
+    fn installed_rename_then_live_row_apply_two_undos_and_redos_preserve_the_complete_document() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        let before = snapshot(&h);
+        let name = "  Signal & α  ";
+        type_name(&mut h, name);
+        unchanged(&h, &before);
+        key(&mut h, Key::Enter);
+        assert!(draft(&h).is_none());
+        assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":"Signal & α"})]);
+        let expected = renamed(&before.doc, "Brand", "Signal & α");
+        let after = snapshot(&h);
+        assert_eq!(after.doc.as_ref(), &expected);
+        assert_eq!(after.history, (before.history.0 + 1, 0));
+        assert_eq!(after.owner, before.owner);
+        assert!(Arc::ptr_eq(&after.saved, &before.saved));
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[1]]})).unwrap();
+        idle(&mut h, 2);
+        let apply_before = snapshot(&h);
+        let at = reveal(&mut h, "Signal & α");
+        click(&mut h, at);
+        let mut applied = expected.clone();
+        applied.item_mut(ItemId(ids[1])).unwrap().fill.swatch = "Signal & α".into();
+        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &applied);
+        assert_eq!(&h.state().app.session.journal[apply_before.journal..], &[("object.fill".to_owned(), json!({"swatch":"Signal & α"}))]);
+        assert_eq!(snapshot(&h).history, (before.history.0 + 2, 0));
+        for document in [&expected, before.doc.as_ref()] {
+            h.state_mut().app.run("edit.undo", json!({})).unwrap();
+            idle(&mut h, 2);
+            assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), document);
+        }
+        for document in [&expected, &applied] {
+            h.state_mut().app.run("edit.redo", json!({})).unwrap();
+            idle(&mut h, 2);
+            assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), document);
+        }
+        let settled = snapshot(&h);
+        idle(&mut h, 8);
+        unchanged(&h, &settled);
+    }
+
+    #[test]
+    fn installed_clean_pointer_loss_closes_the_actual_editor_without_a_command_or_model_edit() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        let before = snapshot(&h);
+        let at = h.state().outside.center();
+        click(&mut h, at);
+        assert!(draft(&h).is_none());
+        unchanged(&h, &before);
+        assert!(rename_calls(&h, before.journal).is_empty());
+        idle(&mut h, 5);
+        unchanged(&h, &before);
+    }
+
+    #[test]
+    fn installed_dirty_pointer_loss_renames_once_and_preserves_the_other_row_picked_and_applied() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        let before = snapshot(&h);
+        type_name(&mut h, "  New Brand  ");
+        let at = reveal(&mut h, "Other");
+        click(&mut h, at);
+        idle(&mut h, 2);
+        assert!(draft(&h).is_none());
+        assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":"New Brand"})]);
+        let mut expected = renamed(&before.doc, "Brand", "New Brand");
+        expected.item_mut(ItemId(ids[0])).unwrap().fill.swatch = "Other".into();
+        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &expected);
+        assert_eq!(h.ctx.data(|data| data.get_temp::<String>(egui::Id::unique(PICKED))).as_deref(), Some("Other"));
+        let after = snapshot(&h);
+        idle(&mut h, 5);
+        unchanged(&h, &after);
+    }
+
+    #[test]
+    fn installed_blank_or_trim_unchanged_enter_closes_without_rename_history_or_retry() {
+        for name in ["Brand", "  Brand  ", " \u{2003} "] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true);
+            open(&mut h, "Brand");
+            let before = snapshot(&h);
+            type_name(&mut h, name);
+            unchanged(&h, &before);
+            key(&mut h, Key::Enter);
+            assert!(draft(&h).is_none());
+            unchanged(&h, &before);
+            idle(&mut h, 5);
+            unchanged(&h, &before);
+        }
+    }
+
+    #[test]
+    fn installed_duplicate_name_refusal_closes_once_without_document_identity_or_history_changes() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        let before = snapshot(&h);
+        type_name(&mut h, "Other");
+        key(&mut h, Key::Enter);
+        assert!(draft(&h).is_none());
+        unchanged(&h, &before);
+        assert!(h.state().app.ui.status.contains("exists"));
+        idle(&mut h, 6);
+        unchanged(&h, &before);
+    }
+
+    #[test]
+    fn installed_dirty_escape_cancels_and_clean_idle_escape_matches_the_actual_native_route() {
+        for installed in [false, true] {
+            let (app, _) = fixture();
+            let mut h = harness(app, installed);
+            open(&mut h, "Brand");
+            let before = snapshot(&h);
+            type_name(&mut h, "Abandoned");
+            key(&mut h, Key::Escape);
+            assert!(draft(&h).is_none());
+            unchanged(&h, &before);
+        }
+        let mut outcomes = Vec::new();
+        for installed in [false, true] {
+            let (app, _) = fixture();
+            let mut h = harness(app, installed);
+            open(&mut h, "Brand");
+            let before = snapshot(&h);
+            key(&mut h, Key::Escape);
+            unchanged(&h, &before);
+            outcomes.push(draft(&h).is_none());
+        }
+        assert_eq!(outcomes[0], outcomes[1], "actual clean-Escape app/native comparison, not a resolver or false/false inference");
+    }
+
+    #[test]
+    fn installed_tab_closes_clean_text_and_commits_dirty_text_once_without_pointer_cause_inference() {
+        for to in ["Brand", "Tabbed Brand"] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true);
+            open(&mut h, "Brand");
+            let before = snapshot(&h);
+            if to != "Brand" {
+                type_name(&mut h, to);
+            }
+            key(&mut h, Key::Tab);
+            assert!(draft(&h).is_none());
+            if to == "Brand" {
+                unchanged(&h, &before);
+            } else {
+                assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":to})]);
+                assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &renamed(&before.doc, "Brand", to));
+                assert_eq!(snapshot(&h).history, (before.history.0 + 1, 0));
+            }
+            let settled = snapshot(&h);
+            idle(&mut h, 5);
+            unchanged(&h, &settled);
+        }
+    }
+
+    #[test]
+    fn installed_global_rename_survives_live_object_selection_changes_with_the_same_editor_identity() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        let field = editor(&h, "Brand");
+        type_name(&mut h, "Global Brand");
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[1]]})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(editor(&h, "Brand").id, field.id, "object selection is not the named swatch's lifetime");
+        let before = snapshot(&h);
+        key(&mut h, Key::Enter);
+        let after = snapshot(&h);
+        assert_eq!(after.selection, before.selection);
+        assert_eq!(after.doc.as_ref(), &renamed(&before.doc, "Brand", "Global Brand"));
+        assert_eq!(after.doc.item(ItemId(ids[1])).unwrap().fill.swatch, "Other");
+        assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":"Global Brand"})]);
+        let at = reveal(&mut h, "Global Brand");
+        click(&mut h, at);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(ItemId(ids[1])).unwrap().fill.swatch, "Global Brand");
+    }
+
+    #[test]
+    fn installed_held_editor_input_retires_after_observed_disabled_sizing_and_absent_parent_lifetimes() {
+        for change in ["disabled", "sizing", "absent"] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true);
+            open(&mut h, "Brand");
+            type_name(&mut h, "Retired");
+            let at = editor(&h, "Brand").rect.center();
+            frame(&mut h, Some(Event::PointerMoved(at)));
+            press(&mut h, at, true);
+            match change {
+                "disabled" => h.state_mut().enabled = false,
+                "sizing" => h.state_mut().sizing = true,
+                _ => h.state_mut().visible = false,
+            }
+            let before = snapshot(&h);
+            idle(&mut h, 3);
+            unchanged(&h, &before);
+            press(&mut h, at, false);
+            h.state_mut().enabled = true;
+            h.state_mut().sizing = false;
+            h.state_mut().visible = true;
+            idle(&mut h, 3);
+            key(&mut h, Key::Enter);
+            key(&mut h, Key::Space);
+            assert!(draft(&h).is_none(), "{change} must retire the old editor");
+            unchanged(&h, &before);
+            open(&mut h, "Brand");
+            type_name(&mut h, "Fresh");
+            let fresh = snapshot(&h);
+            key(&mut h, Key::Enter);
+            assert_eq!(rename_calls(&h, fresh.journal), vec![json!({"name":"Brand","to":"Fresh"})]);
+        }
+    }
+
+    #[test]
+    fn installed_held_editor_input_retires_after_observed_hidden_locked_removed_or_externally_renamed_sources() {
+        for change in ["hidden", "locked", "removed", "renamed"] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true);
+            open(&mut h, "Brand");
+            type_name(&mut h, "Retired");
+            let at = editor(&h, "Brand").rect.center();
+            frame(&mut h, Some(Event::PointerMoved(at)));
+            press(&mut h, at, true);
+            match change {
+                "removed" => {
+                    h.state_mut().app.run("swatch.delete", json!({"name":"Brand"})).unwrap();
+                }
+                "renamed" => {
+                    h.state_mut().app.run("swatch.options", json!({"name":"Brand","to":"External"})).unwrap();
+                }
+                _ => {
+                    h.state_mut()
+                        .app
+                        .session
+                        .edit(|doc, _| {
+                            let swatch = doc.swatches.iter_mut().find(|swatch| swatch.name == "Brand").unwrap();
+                            if change == "hidden" {
+                                swatch.hidden = true;
+                            } else {
+                                swatch.locked = true;
+                            }
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+            }
+            let before = snapshot(&h);
+            idle(&mut h, 2);
+            press(&mut h, at, false);
+            key(&mut h, Key::Enter);
+            key(&mut h, Key::Space);
+            assert!(draft(&h).is_none(), "{change} must retire the observed source");
+            unchanged(&h, &before);
+            assert!(rename_calls(&h, before.journal).is_empty());
+        }
+    }
+
+    #[test]
+    fn installed_physical_group_collapse_retires_the_editor_before_a_later_return_can_apply_its_old_draft() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        open(&mut h, "Brand");
+        type_name(&mut h, "Retired");
+        let before = snapshot(&h);
+        let group = h.get_by_label("Brand Colors").rect().center();
+        click(&mut h, group);
+        idle(&mut h, 2);
+        assert!(draft(&h).is_none());
+        unchanged(&h, &before);
+        wait_click_interval(&mut h);
+        click(&mut h, group);
+        key(&mut h, Key::Enter);
+        unchanged(&h, &before);
+        open(&mut h, "Brand");
+        type_name(&mut h, "Returned");
+        let fresh = snapshot(&h);
+        key(&mut h, Key::Enter);
+        assert_eq!(rename_calls(&h, fresh.journal), vec![json!({"name":"Brand","to":"Returned"})]);
+    }
+
+    #[test]
+    fn installed_held_editor_input_retires_on_document_swap_same_uid_epoch_replacement_and_close() {
+        for change in ["document", "epoch", "close"] {
+            let (app, _) = fixture();
+            let mut h = harness(app, true);
+            open(&mut h, "Brand");
+            type_name(&mut h, "Retired");
+            let at = editor(&h, "Brand").rect.center();
+            frame(&mut h, Some(Event::PointerMoved(at)));
+            press(&mut h, at, true);
+            match change {
+                "document" => {
+                    h.state_mut().app.run("file.new", json!({})).unwrap();
+                    h.state_mut().app.run("swatch.create", json!({"name":"Brand","color":"#00aabb"})).unwrap();
+                }
+                "epoch" => {
+                    let old = h.state().app.session.active().unwrap();
+                    let mut replacement = designcraft_engine::DocState::new((*old.doc).clone(), old.path.clone());
+                    replacement.uid = old.uid;
+                    replacement.selection = old.selection.clone();
+                    assert_ne!(replacement.identity_epoch, old.identity_epoch);
+                    *h.state_mut().app.session.active_mut().unwrap() = replacement;
+                }
+                _ => {
+                    h.state_mut().app.run("file.close", json!({})).unwrap();
+                    assert!(h.state().app.session.active().is_none());
+                }
+            }
+            if change == "close" {
+                let journal = h.state().app.session.journal.len();
+                idle(&mut h, 2);
+                press(&mut h, at, false);
+                key(&mut h, Key::Enter);
+                assert_eq!(h.state().app.session.journal.len(), journal);
+                assert!(draft(&h).is_none());
+                h.state_mut().app.run("file.new", json!({})).unwrap();
+                h.state_mut().app.run("swatch.create", json!({"name":"Brand","color":"#00aabb"})).unwrap();
+                let before = snapshot(&h);
+                idle(&mut h, 3);
+                key(&mut h, Key::Enter);
+                unchanged(&h, &before);
+            } else {
+                let before = snapshot(&h);
+                idle(&mut h, 2);
+                press(&mut h, at, false);
+                key(&mut h, Key::Enter);
+                key(&mut h, Key::Space);
+                assert!(draft(&h).is_none());
+                unchanged(&h, &before);
+            }
+        }
+    }
+
+    #[test]
+    fn installed_real_double_click_still_opens_options_and_locked_names_never_start_an_editor() {
+        let (app, _) = fixture();
+        let mut h = harness(app, true);
+        let at = reveal(&mut h, "Brand");
+        click(&mut h, at);
+        wait_click_interval(&mut h);
+        let start = h.state().app.session.journal.len();
+        frame(&mut h, Some(Event::PointerMoved(at)));
+        for _ in 0..2 {
+            press(&mut h, at, true);
+            press(&mut h, at, false);
+        }
+        idle(&mut h, 3);
+        assert_eq!(h.state().app.ui.dialog.as_ref().map(|dialog| dialog.id.as_str()), Some("swatchOptions"));
+        assert!(draft(&h).is_none());
+        assert!(rename_calls(&h, start).is_empty());
+        h.state_mut().app.ui.dialog = None;
+        wait_click_interval(&mut h);
+        let at = reveal(&mut h, "[Black]");
+        click(&mut h, at);
+        wait_click_interval(&mut h);
+        click(&mut h, at);
+        wait_click_interval(&mut h);
+        assert!(draft(&h).is_none());
+        assert!(h.state().app.session.active().unwrap().doc.swatch("[Black]").unwrap().locked);
+    }
+
+    #[test]
+    fn installed_real_scroll_host_and_full_unicode_names_have_no_sdk_default_length_truncation_in_german_and_rtl() {
+        for language in ["de", "ar"] {
+            let (mut app, _) = fixture();
+            app.ui.language = language.into();
+            let mut h = harness(app, true);
+            h.state_mut().height = 220.0;
+            idle(&mut h, 3);
+            open(&mut h, "Brand");
+            assert!(h.state().offset.y > 0.0, "real wheel revealed the grouped row");
+            let before = snapshot(&h);
+            let full = format!("{} & α آخر", "Long名".repeat(230));
+            assert!(full.chars().count() > 1024);
+            type_name(&mut h, &full);
+            unchanged(&h, &before);
+            assert!(
+                h.query_all_by_role(egui::accesskit::Role::TextInput).any(|node| node.accesskit_node().value().as_deref() == Some(full.as_str())),
+                "full public text value, not clipped paint or a fallback label"
+            );
+            key(&mut h, Key::Enter);
+            assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":full})]);
+            assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &renamed(&before.doc, "Brand", &full));
+            open(&mut h, &full);
+            type_name(&mut h, "Short");
+            let replace = snapshot(&h);
+            key(&mut h, Key::Enter);
+            assert_eq!(
+                rename_calls(&h, replace.journal),
+                vec![json!({"name":full,"to":"Short"})],
+                "full Unicode source identity and one-shot replacement selection"
+            );
+        }
+    }
+
+    #[test]
+    fn uninstalled_native_rename_apply_undo_fallback_remains_a_genuine_input_workflow() {
+        let (app, ids) = fixture();
+        let mut h = harness(app, false);
+        open(&mut h, "Brand");
+        let before = snapshot(&h);
+        assert!(h.state().controls.as_ref().is_none_or(|recorded| recorded.elements.iter().all(|element| element.component != "TextField")));
+        type_name(&mut h, "Native Brand");
+        key(&mut h, Key::Enter);
+        assert!(draft(&h).is_none());
+        let expected = renamed(&before.doc, "Brand", "Native Brand");
+        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &expected);
+        assert_eq!(rename_calls(&h, before.journal), vec![json!({"name":"Brand","to":"Native Brand"})]);
+        h.state_mut().app.run("selection.set", json!({"ids":[ids[1]]})).unwrap();
+        idle(&mut h, 2);
+        let at = reveal(&mut h, "Native Brand");
+        click(&mut h, at);
+        assert_eq!(h.state().app.session.active().unwrap().doc.item(ItemId(ids[1])).unwrap().fill.swatch, "Native Brand");
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), &expected);
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        idle(&mut h, 2);
+        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), before.doc.as_ref());
     }
 }

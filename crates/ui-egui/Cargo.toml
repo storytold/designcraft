@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 craft-ui = { workspace = true, features = ["native-windows"] }
 craft-window = { workspace = true }
+craft-window-sdk = { workspace = true }
 craft-keymap = { workspace = true }
 craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
@@ -54,7 +55,12 @@ toml = "1"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The craft UI framework's own components (Properties > Transform's pilot rows). The browser build
 # keeps the bespoke fields, so the framework is not a wasm dependency.
-craft = { workspace = true }
+craft-ui-widgets = { workspace = true }
+craft-ui-panels = { workspace = true }
+craft-theme = { workspace = true }
+craft-behavior = { workspace = true }
+craft-host = { workspace = true }
+craft-window-sdk = { workspace = true }
 craft-update = { workspace = true }
 # File and message dialogs that never block the frame; the browser build uses its own path.
 craft-dialogs = { workspace = true }

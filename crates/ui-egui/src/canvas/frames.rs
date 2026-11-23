@@ -8,7 +8,7 @@ use super::{
 };
 
 /// Spread-space → canvas transform for an item at `loc`.
-pub(super) fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
+pub(crate) fn item_canvas_xf(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId) -> Option<(Affine, &'static str)> {
     let loc = doc.find(id)?;
     // Items on spreads that aren't laid out (document pages while parents are being edited, or
     // the reverse) have no place on the canvas.

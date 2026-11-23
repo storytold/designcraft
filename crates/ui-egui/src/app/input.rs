@@ -23,6 +23,20 @@ impl DesignApp {
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // The runtime's documented per-frame step (`runtime::frame::set_input`, "before the pass, from eframe's
+        // `App::raw_input_hook`"): it is what gives the framework's focus/key services their `RootEnv` and host
+        // for the coming pass. Without it `install` still takes the window's keys (docs, "Host the runtime from
+        // your own eframe `App`"), but the services have no frame to route them in.
+        //
+        // The app keeps every native authority: the framework's fired commands are taken and dropped, not
+        // re-dispatched into the engine, and neither the close path nor window fitting is taken over.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.framework_installed {
+            use craft_ui_widgets::runtime::env::RootEnv;
+            use craft_ui_widgets::runtime::frame::{FrameInput, set_input, take_output};
+            let _fired = take_output(ctx);
+            set_input(ctx, FrameInput::new(RootEnv::new()));
+        }
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#1295).
         if let Some(window_frame) = self.services.window_frame.as_mut() {

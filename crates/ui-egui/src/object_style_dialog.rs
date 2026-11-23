@@ -284,9 +284,55 @@ fn get<'a>(d: &'a Dialog, path: &[&str]) -> &'a Value {
     v
 }
 
+/// Native controls consume SDK events into this dialog's existing draft only.
+fn framework(app: &DesignApp) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    { app.framework_installed }
+    #[cfg(target_arch = "wasm32")]
+    { let _ = app; false }
+}
+
+fn draft_check(ui: &mut egui::Ui, native: bool, label: &str, key: &str, value: &mut bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if native {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+        let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(*value))
+            .label(label.to_owned()).id_salt(("object_style_check", key)).show(ui);
+        for event in out.events { event.apply(value); }
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (native, key);
+    ui.checkbox(value, crate::rtl::widget(ui, label));
+}
+
 /// A row of the left-hand lists: a checkbox (when `check` is given) and the label, which shows
 /// `page`.
-fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: Option<bool>) -> Option<bool> {
+fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: Option<bool>, native: bool) -> Option<bool> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if native {
+        use craft_ui_widgets::contract::{Bind, LabelKind, Props as _, Show as _, ShowContainer as _, SideLabel, Sizing};
+        use craft_ui_widgets::choice::{Checkbox, Radio};
+        use craft_ui_widgets::form::Field;
+        use craft_ui_widgets::layout_components::Row;
+        let mut result = None;
+        Row::new().id_salt(("object_style_row", page)).show(ui, |ui, _| {
+            if let Some(before) = check {
+                // The hidden Field label names the mark without duplicating the visible page caption.
+                Field::new(label.to_owned()).side(SideLabel::new().kind(LabelKind::Hidden))
+                    .sizing(Sizing::Content).id_salt(("object_style_include", page)).show(ui, |ui, _| {
+                        let mut next = before;
+                        let out = Checkbox::new(Bind::given(before)).show(ui);
+                        for event in out.events { event.apply(&mut next); }
+                        if next != before { result = Some(next); }
+                    });
+            } else { ui.add_space(24.0); }
+            Radio::new(page.to_owned()).label(label.to_owned()).id_salt(("object_style_page", page)).show(ui);
+        });
+        return result;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = native;
     let mut out = None;
     ui.horizontal(|ui| {
         match check {
@@ -382,6 +428,16 @@ fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
         out.push(format!("{}: {}", tr("Effects"), if on.is_empty() { tr("(no effects)") } else { on.join(", ") }));
     }
     out
+}
+
+fn legacy_paragraph_menu(ui: &mut egui::Ui, lang: &str, styles: &[designcraft_doc::ParagraphStyle], cur: &str, shown: &str, picked: &mut Option<String>) {
+    craft_ui::ComboBox::from_id_salt("os_paragraph_style").selected_text(shown).width(240.0).show_ui(ui, |ui| {
+        for s in styles {
+            if ui.selectable_label(s.name == cur, crate::i18n::style_name(lang, &s.name)).clicked() {
+                *picked = Some(s.name.clone());
+            }
+        }
+    });
 }
 
 /// The settings of the attribute shown.
@@ -481,21 +537,30 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     let cur = d.s("paragraphStyle");
                     let shown = if cur.is_empty() { String::new() } else { crate::i18n::style_name(&app.ui.language, &cur).to_string() };
                     let mut picked = None;
-                    craft_ui::ComboBox::from_id_salt("os_paragraph_style").selected_text(shown).width(240.0).show_ui(ui, |ui| {
-                        for s in &doc.styles.paragraph {
-                            if ui.selectable_label(s.name == cur, crate::i18n::style_name(&app.ui.language, &s.name)).clicked() {
-                                picked = Some(s.name.clone());
-                            }
-                        }
-                    });
-                    if let Some(name) = picked {
-                        d.fields.insert("paragraphStyle".into(), json!(name));
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if framework(app) {
+                        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+                        let entries: Vec<_> = doc.styles.paragraph.iter().map(|s| {
+                            Entry::new(s.name.clone(), crate::i18n::style_name(&app.ui.language, &s.name).to_owned())
+                        }).collect();
+                        let mut next = cur.clone();
+                        let out = ui.allocate_ui(egui::vec2(240.0, 0.0), |ui| {
+                            craft_ui_widgets::pickers::Select::new(tr("Paragraph Style:"), Bind::given(cur.clone()), &entries)
+                                .id_salt("os_paragraph_style").sizing(craft_ui_widgets::contract::Sizing::FillWidth).show(ui)
+                        }).inner;
+                        crate::control::object_style_witness::chooser(ui, &out.response);
+                        for event in out.events { event.apply(&mut next); }
+                        if next != cur { picked = Some(next); }
+                    } else {
+                        legacy_paragraph_menu(ui, &app.ui.language, &doc.styles.paragraph, &cur, &shown, &mut picked);
                     }
+                    #[cfg(target_arch = "wasm32")]
+                    legacy_paragraph_menu(ui, &app.ui.language, &doc.styles.paragraph, &cur, &shown, &mut picked);
+                    if let Some(name) = picked { d.fields.insert("paragraphStyle".into(), json!(name)); }
                 });
                 let mut next = d.b("applyNext");
-                if ui.checkbox(&mut next, crate::rtl::widget(ui, tr("Apply Next Style"))).changed() {
-                    d.fields.insert("applyNext".into(), json!(next));
-                }
+                draft_check(ui, framework(app), &tr("Apply Next Style"), "applyNext", &mut next);
+                if next != d.b("applyNext") { d.fields.insert("applyNext".into(), json!(next)); }
             });
         }
         "textFrame" => {
@@ -505,6 +570,59 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
     }
 }
 
+fn navigation_contents(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, native: bool) {
+    let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
+    crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
+    for (key, label) in ATTRIBUTES {
+        let check = (key != "general").then(|| included(d, key));
+        if let Some(on) = list_row(ui, d, key, &tr(label), check, native) {
+            set(d, &["inc", key], json!(on));
+        }
+    }
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        crate::rtl::label(ui, tr("Effects for:"));
+        // Stroke, Fill and Text levels aren't in the document model yet: the object only.
+        ui.add_enabled_ui(false, |ui| {
+            craft_ui::ComboBox::from_id_salt("os_fx_level").selected_text(tr("Object")).width(100.0).show_ui(ui, |_| {});
+        });
+    });
+    for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
+        let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
+        if let Some(on) = list_row(ui, d, key, &tr(label), Some(crate::effects_dialog::is_on(&fx, key)), native)
+            && let Some(f) = d.fields.get_mut("fx")
+        {
+            if on {
+                crate::effects_dialog::turn_on(f, key);
+            } else if *key == "feather" {
+                f["feather"] = json!(0.0);
+            } else {
+                f[*key]["on"] = json!(false);
+            }
+        }
+    }
+}
+
+fn navigation(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
+    let native = framework(app);
+    #[cfg(not(target_arch = "wasm32"))]
+    if native {
+        use craft_ui_widgets::contract::{Bind, Props as _, ShowContainer as _};
+        let before = d.s("page");
+        let mut page = before.clone();
+        let shown = craft_ui_widgets::choice::RadioGroup::new(
+            crate::i18n::tr(&app.ui.language, "Basic Attributes").to_owned(), Bind::given(before.clone()),
+        ).id_salt("object_style_pages").show(ui, |ui, _| {
+            // RadioGroup owns navigation; Stack preserves the existing vertical page list.
+            craft_ui_widgets::layout_components::Stack::new().show(ui, |ui, _| navigation_contents(app, ui, d, true));
+        });
+        for event in shown.output.events { event.apply(&mut page); }
+        if page != before { d.fields.insert("page".into(), json!(page)); }
+        return;
+    }
+    navigation_contents(app, ui, d, native);
+}
+
 /// The dialog's body.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
@@ -512,7 +630,25 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, tr("Style Name:"));
         let mut name = d.s("name");
-        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0)).changed() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if app.framework_installed {
+            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+            let out = ui.allocate_ui(egui::vec2(300.0, 0.0), |ui| {
+                craft_ui_widgets::text::TextField::new(tr("Style Name:"), Bind::given(name.clone()))
+                    .id_salt("object_style_name")
+                    .sizing(craft_ui_widgets::contract::Sizing::FillWidth)
+                    .limit(None::<usize>)
+                    .show(ui)
+            }).inner;
+            for event in out.events {
+                event.apply(&mut name);
+            }
+        } else {
+            ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
+        }
+        #[cfg(target_arch = "wasm32")]
+        ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
+        if name != d.s("name") {
             d.fields.insert("name".into(), json!(name));
         }
     });
@@ -526,35 +662,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(230.0);
-            crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
-            for (key, label) in ATTRIBUTES {
-                let check = (key != "general").then(|| included(d, key));
-                if let Some(on) = list_row(ui, d, key, &tr(label), check) {
-                    set(d, &["inc", key], json!(on));
-                }
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                crate::rtl::label(ui, tr("Effects for:"));
-                // Stroke, Fill and Text levels aren't in the document model yet: the object only.
-                ui.add_enabled_ui(false, |ui| {
-                    craft_ui::ComboBox::from_id_salt("os_fx_level").selected_text(tr("Object")).width(100.0).show_ui(ui, |_| {});
-                });
-            });
-            for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
-                let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
-                if let Some(on) = list_row(ui, d, key, &tr(label), Some(crate::effects_dialog::is_on(&fx, key)))
-                    && let Some(f) = d.fields.get_mut("fx")
-                {
-                    if on {
-                        crate::effects_dialog::turn_on(f, key);
-                    } else if *key == "feather" {
-                        f["feather"] = json!(0.0);
-                    } else {
-                        f[*key]["on"] = json!(false);
-                    }
-                }
-            }
+            navigation(app, ui, d);
         });
         ui.add_space(16.0);
         ui.vertical(|ui| {
@@ -565,9 +673,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.add_space(10.0);
     if d.b("new") {
         let mut apply = d.b("apply");
-        if ui.checkbox(&mut apply, crate::rtl::widget(ui, tr("Apply Style to Selection"))).changed() {
-            d.fields.insert("apply".into(), json!(apply));
-        }
+        draft_check(ui, framework(app), &tr("Apply Style to Selection"), "apply", &mut apply);
+        if apply != d.b("apply") { d.fields.insert("apply".into(), json!(apply)); }
     }
 }
 
@@ -593,7 +700,7 @@ mod tests {
     }
 
     fn app_with_frame() -> (DesignApp, u64) {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let id = app.run("frame.create", json!({"rect": [72, 72, 172, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
         app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -607,7 +714,6 @@ mod tests {
             let input =
                 egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
             let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
-            out.textures_delta.clear();
             fn walk(s: egui::epaint::Shape, texts: &mut Vec<String>) {
                 match s {
                     egui::epaint::Shape::Text(t) => texts.push(t.galley.text().to_string()),
@@ -616,9 +722,9 @@ mod tests {
                 }
             }
             texts.clear();
-            for c in out.shapes {
-                walk(c.shape, &mut texts);
-            }
+            let shapes = std::mem::take(&mut out.shapes);
+            out.drop_without_applying_deltas();
+            for c in shapes { walk(c.shape, &mut texts); }
         }
         texts
     }
@@ -685,7 +791,7 @@ mod tests {
     /// Options › Text Frame General Options then gives the style's frames insets and two columns.
     #[test]
     fn an_object_style_nests_a_paragraph_style_and_sets_text_frame_options() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app.run("style.paragraph.create", json!({"name": "Body Text"})).unwrap();
         app.run("style.paragraph.create", json!({"name": "Drop Cap First Paragraph", "nextStyle": "Body Text", "para": {"dropCapLines": 3}}))
@@ -764,7 +870,7 @@ mod tests {
     /// sets both on the style and its frame, and the frame keeps its auto-size setting.
     #[test]
     fn the_general_options_page_sets_the_paragraph_spacing_limit() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
         let id = r["id"].as_u64().unwrap();
@@ -839,7 +945,7 @@ mod tests {
     }
 
     fn app_with_text_frame(units: &str) -> DesignApp {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app.run("document.preferences", json!({"horizontalUnits": units, "verticalUnits": units})).unwrap();
         let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "caret": false})).unwrap();
@@ -908,7 +1014,7 @@ mod tests {
                 set(d, &["stroke", "weight"], json!(9.0));
             }
         };
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({"title": "A"})).unwrap();
         app.run("file.new", json!({"title": "B"})).unwrap();
         app.session.set_active(0);
@@ -971,5 +1077,588 @@ mod tests {
         let style = |id: u64| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().object_style.clone();
         assert_eq!(style(a), "Picked");
         assert_ne!(style(b), "Picked");
+    }
+
+    /// Real installed controls, fed through the shipping raw-input owner and dialog dispatcher.
+    /// These source-authored scenarios are not a native execution receipt.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod framework_workflow {
+        use super::*;
+        use craft_ui_widgets::runtime::inspect::{Recorded, record};
+        use egui::accesskit::{NodeId, Role, TreeUpdate};
+        use egui::{Event, Key, Modifiers, PointerButton};
+        use std::sync::Arc;
+
+        type History = Vec<(String, Arc<designcraft_doc::Document>, designcraft_doc::Selection)>;
+        #[derive(Clone, Debug, PartialEq)]
+        struct DocumentState {
+            uid: u64,
+            epoch: u64,
+            revision: u64,
+            doc: Arc<designcraft_doc::Document>,
+            saved: Arc<designcraft_doc::Document>,
+            selected: designcraft_doc::Selection,
+            undo: History,
+            redo: History,
+        }
+        #[derive(Clone, Debug, PartialEq)]
+        struct Effects {
+            documents: Vec<DocumentState>,
+            active: Option<u64>,
+            journal: Vec<(String, Value)>,
+        }
+        fn effects(app: &DesignApp) -> Effects {
+            let history = |entries: &[designcraft_engine::HistoryEntry]| -> History {
+                entries.iter().map(|e| (e.label.clone(), e.doc.clone(), e.selection.clone())).collect()
+            };
+            Effects {
+                documents: app.session.documents().iter().map(|st| DocumentState {
+                    uid: st.uid, epoch: st.identity_epoch, revision: st.revision, doc: st.doc.clone(),
+                    saved: st.saved_doc.clone(), selected: st.selection.clone(),
+                    undo: history(&st.history.undo), redo: history(&st.history.redo),
+                }).collect(),
+                active: app.session.active().map(|st| st.uid),
+                journal: app.session.journal.clone(),
+            }
+        }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Pass { Host, Body, Measure, Sizing, Disabled }
+        struct Workflow {
+            app: DesignApp,
+            ctx: egui::Context,
+            recorded: Option<Arc<Recorded>>,
+            ax: Option<TreeUpdate>,
+            time: f64,
+            pass: Pass,
+            guarded: usize,
+        }
+        impl Workflow {
+            fn new(mut app: DesignApp) -> Self {
+                app.ui.language = "en".into();
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                app.framework_opacity = true;
+                app.install_framework(&ctx);
+                app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+                assert!(app.framework_installed);
+                // Initialize fonts in an actual headless frame and explicitly dispose its GPU deltas.
+                let out = ctx.run_ui(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),
+                    max_texture_side: Some(8192), ..Default::default()
+                }, |ui| { crate::theme::install_fonts(ui.ctx(), ""); });
+                out.drop_without_applying_deltas();
+                let mut w = Self { app, ctx, recorded: None, ax: None, time: 1.0, pass: Pass::Host, guarded: 0 };
+                w.idle();
+                w
+            }
+            fn frame(&mut self, events: Vec<Event>) {
+                self.time += 0.05;
+                let mut input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),
+                    max_texture_side: Some(8192), time: Some(self.time), events, ..Default::default()
+                };
+                self.app.raw_input_hook(&self.ctx, &mut input);
+                let ctx = self.ctx.clone();
+                let mut out = ctx.run_ui(input, |ui| {
+                    self.recorded = record(ui, egui::Id::unique("object-style-workflow"), |ui| {
+                        if self.pass == Pass::Host {
+                            crate::dialogs::show(&mut self.app, &ctx);
+                        } else {
+                            let builder = if matches!(self.pass, Pass::Measure | Pass::Sizing) { egui::UiBuilder::new().sizing_pass() } else { egui::UiBuilder::new() };
+                            ui.scope_builder(builder, |ui| {
+                                ui.add_enabled_ui(self.pass != Pass::Disabled, |ui| {
+                                    let mut d = self.app.ui.dialog.clone().unwrap();
+                                    let before = effects(&self.app);
+                                    let fields = d.fields.clone();
+                                    let guarded = matches!(self.pass, Pass::Measure | Pass::Sizing | Pass::Disabled);
+                                    if self.pass == Pass::Measure {
+                                        craft_ui_widgets::runtime::measure::run(&ctx, || {
+                                            assert!(craft_ui_widgets::runtime::measure::active(&ctx));
+                                            assert!(ui.is_sizing_pass(), "SDK measurement pairs its context guard with a sizing Ui");
+                                            show(&mut self.app, ui, &mut d);
+                                            assert_eq!(d.fields, fields, "measurement must not consume draft events inside the guarded callback");
+                                            assert_eq!(effects(&self.app), before, "measurement callback must not mutate any document/history/journal");
+                                            self.guarded += 1;
+                                        });
+                                    } else {
+                                        if self.pass == Pass::Sizing { assert!(ui.is_sizing_pass()); }
+                                        if self.pass == Pass::Disabled { assert!(!ui.is_enabled()); }
+                                        show(&mut self.app, ui, &mut d);
+                                        if guarded {
+                                            assert_eq!(d.fields, fields, "{:#?}: guard must refuse edits during the callback", self.pass);
+                                            assert_eq!(effects(&self.app), before);
+                                            self.guarded += 1;
+                                        }
+                                    }
+                                    self.app.ui.dialog = Some(d);
+                                });
+                            });
+                        }
+                    }).1;
+                });
+                self.ax = out.platform_output.accesskit_update.take();
+                out.drop_without_applying_deltas();
+            }
+            fn idle(&mut self) { for _ in 0..8 { self.frame(Vec::new()); } }
+            fn key_with(&mut self, key: Key, modifiers: Modifiers) {
+                for pressed in [true, false] {
+                    self.frame(vec![Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }]);
+                }
+                self.frame(Vec::new());
+            }
+            fn key(&mut self, key: Key) { self.key_with(key, Modifiers::NONE); }
+            fn sdk(&self, role: Role, name: &str) -> (egui::Id, egui::Rect) {
+                let (ax_id, _) = self.ax_control(role, name);
+                let role = format!("{role:?}");
+                let matches: Vec<_> = self.recorded.as_ref().unwrap().elements.iter().filter(|e| {
+                    // Hidden Field labels name the actual AX node, not the flat recorded facts.
+                    e.facts.as_ref().is_some_and(|f| f.role == role) && e.id.accesskit_id() == ax_id
+                }).collect();
+                assert_eq!(matches.len(), 1, "exactly one real SDK owner for {role} / {name}");
+                (matches[0].id, matches[0].rect)
+            }
+            fn ax_control(&self, role: Role, name: &str) -> (NodeId, egui::Rect) {
+                let matches: Vec<_> = self.ax.as_ref().unwrap().nodes.iter().filter(|(_, n)| n.role() == role && n.label() == Some(name)).collect();
+                assert_eq!(matches.len(), 1, "exactly one real AX owner for {role:?} / {name}");
+                let bounds = matches[0].1.bounds().unwrap();
+                (matches[0].0, egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32), egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                ))
+            }
+            fn pointer(&mut self, at: egui::Pos2, pressed: bool) {
+                self.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }]);
+            }
+            fn click_at(&mut self, at: egui::Pos2) {
+                self.frame(vec![Event::PointerMoved(at)]);
+                self.pointer(at, true);
+                self.pointer(at, false);
+                self.idle();
+            }
+            fn click(&mut self, role: Role, name: &str) {
+                let (id, rect) = self.sdk(role, name);
+                let (_, ax_rect) = self.ax_control(role, name);
+                assert!(rect.intersects(ax_rect), "recorded and actual AX bounds must refer to the same visible owner");
+                self.click_at(rect.center());
+                if self.app.ui.dialog.is_some() {
+                    assert_eq!(self.sdk(role, name).0, id, "ordinary interaction keeps the control's identity");
+                }
+            }
+            fn footer(&mut self, name: &str) {
+                let caption = if name == "OK" { "  OK  " } else { name };
+                let (_, rect) = self.ax_control(Role::Button, caption);
+                self.click_at(rect.center());
+            }
+            fn tab_to(&mut self, role: Role, name: &str) {
+                let id = self.ax_control(role, name).0;
+                let mut visited = std::collections::HashSet::new();
+                while self.ax.as_ref().unwrap().focus != id {
+                    assert!(visited.insert(self.ax.as_ref().unwrap().focus), "natural Tab must reach {role:?} / {name}; no forced focus");
+                    self.key(Key::Tab);
+                }
+            }
+            fn name(&mut self, text: &str) {
+                self.click(Role::TextInput, "Style Name:");
+                self.key_with(Key::A, Modifiers::COMMAND);
+                self.key(Key::Backspace);
+                if !text.is_empty() { self.frame(vec![Event::Text(text.into())]); }
+                self.idle();
+                assert_eq!(self.app.ui.dialog.as_ref().unwrap().s("name"), text, "the real text owner updates only the draft");
+            }
+            fn open(&mut self, name: Option<&str>) {
+                let p = name.map_or(json!({}), |name| json!({"name": name}));
+                self.app.run("objectStyle.dialog", p).unwrap();
+                self.pass = Pass::Host;
+                self.idle();
+            }
+            fn quiet(&mut self, before: &Effects) {
+                self.idle();
+                assert_eq!(&effects(&self.app), before, "no deferred command or document/history change on ordinary idle");
+            }
+        }
+        fn object_style(app: &DesignApp, name: &str) -> designcraft_doc::ObjectStyle {
+            app.session.active().unwrap().doc.styles.object_style(name).unwrap().clone()
+        }
+        fn item_style(app: &DesignApp, id: u64) -> String {
+            app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().object_style.clone()
+        }
+
+        #[test]
+        fn create_apply_and_rename_use_the_real_controls_captured_targets_and_two_undo_steps() {
+            let (mut app, a) = app_with_frame();
+            let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+            app.run("selection.set", json!({"ids": [a]})).unwrap();
+            let mut w = Workflow::new(app);
+            w.open(None);
+            let before = effects(&w.app);
+            let base = w.app.session.active().unwrap().doc.clone();
+            let old_saved = w.app.session.active().unwrap().saved_doc.clone();
+            let undo = w.app.session.active().unwrap().history.undo.len();
+            let journal = w.app.session.journal.len();
+            w.name("Workflow");
+            w.tab_to(Role::CheckBox, "Fill");
+            w.key(Key::Space);
+            assert!(!included(w.app.ui.dialog.as_ref().unwrap(), "fill"));
+            w.click(Role::RadioButton, "Stroke");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("page"), "stroke");
+            w.tab_to(Role::RadioButton, "Stroke");
+            w.key(Key::Enter);
+            assert!(w.app.ui.dialog.is_some(), "the page radio, not the footer, owns Enter");
+            w.click(Role::CheckBox, "Drop Shadow");
+            assert!(crate::effects_dialog::is_on(&w.app.ui.dialog.as_ref().unwrap().fields["fx"], "dropShadow"));
+            w.click(Role::RadioButton, "General");
+            assert_eq!(effects(&w.app), before, "name/includes/navigation are strictly draft-only");
+            w.click(Role::CheckBox, "Apply Style to Selection");
+            assert!(!w.app.ui.dialog.as_ref().unwrap().b("apply"));
+            w.tab_to(Role::CheckBox, "Apply Style to Selection");
+            w.key(Key::Space);
+            assert!(w.app.ui.dialog.as_ref().unwrap().b("apply"));
+            assert_eq!(effects(&w.app), before);
+            // A new selection while the dialog is open is deliberately not an apply target.
+            w.app.run("selection.set", json!({"ids": [b]})).unwrap();
+            let applying = effects(&w.app);
+            w.quiet(&applying);
+            w.footer("OK");
+            assert!(w.app.ui.dialog.is_none());
+            let os = object_style(&w.app, "Workflow");
+            assert!(os.fill.is_none() && os.stroke.is_some() && os.effects.as_ref().unwrap().drop_shadow.on);
+            assert_eq!(item_style(&w.app, a), "Workflow");
+            assert_ne!(item_style(&w.app, b), "Workflow");
+            let st = w.app.session.active().unwrap();
+            assert_eq!(st.history.undo.len(), undo + 2, "create and optional apply remain two real engine commands");
+            assert!(st.history.redo.is_empty());
+            assert_eq!(st.saved_doc.as_ref(), old_saved.as_ref());
+            assert!(st.revision > applying.documents[0].revision);
+            let commands: Vec<_> = w.app.session.journal[journal..].iter().map(|(id, _)| id.as_str()).collect();
+            assert_eq!(commands, ["selection.set", "style.object.create", "style.object.apply"]);
+            assert_eq!(w.app.session.journal.last().unwrap().1["ids"], json!([a]));
+            let made = w.app.session.active().unwrap().doc.clone();
+            let settled = effects(&w.app);
+            w.quiet(&settled);
+            w.app.run("edit.undo", json!({})).unwrap();
+            assert!(w.app.session.active().unwrap().doc.styles.object_style("Workflow").is_some());
+            assert_eq!(item_style(&w.app, a), base.item(designcraft_doc::ItemId(a)).unwrap().object_style);
+            assert_eq!(w.app.session.active().unwrap().history.redo.len(), 1);
+            w.app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), base.as_ref());
+            assert_eq!(w.app.session.active().unwrap().history.redo.len(), 2);
+            for _ in 0..2 { w.app.run("edit.redo", json!({})).unwrap(); }
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), made.as_ref());
+            w.open(Some("Workflow"));
+            let edit_before = effects(&w.app);
+            w.name("Renamed Workflow");
+            assert_eq!(effects(&w.app), edit_before);
+            w.key(Key::Enter); // A field submit goes through the existing host/controller.
+            assert!(w.app.ui.dialog.is_none());
+            assert!(w.app.session.active().unwrap().doc.styles.object_style("Workflow").is_none());
+            assert_eq!(item_style(&w.app, a), "Renamed Workflow");
+            assert_eq!(w.app.session.active().unwrap().history.undo.len(), edit_before.documents[0].undo.len() + 1);
+            let renamed = w.app.session.active().unwrap().doc.clone();
+            w.app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), made.as_ref());
+            w.app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), renamed.as_ref());
+            assert_eq!(w.app.session.active().unwrap().saved_doc.as_ref(), old_saved.as_ref());
+            let final_state = effects(&w.app);
+            w.quiet(&final_state);
+        }
+
+        #[test]
+        fn empty_duplicate_names_and_pointer_and_keyboard_cancel_leave_documents_and_history_untouched() {
+            let (mut app, _) = app_with_frame();
+            app.run("style.object.create", json!({"name": "Taken", "fromSelection": false})).unwrap();
+            app.run("style.object.create", json!({"name": "Mine", "fromSelection": false})).unwrap();
+            let mut w = Workflow::new(app);
+            w.open(None);
+            let before = effects(&w.app);
+            w.name("");
+            w.footer("OK");
+            let d = w.app.ui.dialog.as_ref().unwrap();
+            assert_eq!(d.s("name"), "");
+            assert_eq!(d.s("status"), "Enter a style name.");
+            w.quiet(&before);
+            w.name("Taken");
+            w.click(Role::CheckBox, "Stroke");
+            let draft = w.app.ui.dialog.as_ref().unwrap().fields.clone();
+            // The checkbox still owns Enter; submit through the visible footer instead.
+            w.footer("OK");
+            let d = w.app.ui.dialog.as_ref().unwrap();
+            assert!(d.s("status").contains("already named"));
+            assert_eq!(d.fields["inc"], draft["inc"]);
+            assert_eq!(d.s("name"), "Taken");
+            w.quiet(&before);
+            w.footer("Cancel");
+            assert!(w.app.ui.dialog.is_none());
+            w.quiet(&before);
+            w.open(None);
+            w.name("Canceled by keyboard");
+            w.tab_to(Role::Button, "Cancel");
+            w.key(Key::Space);
+            assert!(w.app.ui.dialog.is_none());
+            w.quiet(&before);
+            w.open(None);
+            let original_name = w.app.ui.dialog.as_ref().unwrap().s("name");
+            w.name("Canceled field draft");
+            w.key(Key::Escape);
+            assert!(w.app.ui.dialog.is_some(), "the active SDK text draft owns the first Escape");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("name"), original_name);
+            w.quiet(&before);
+            w.key(Key::Escape);
+            assert!(w.app.ui.dialog.is_none(), "after its draft is canceled, the host owns Escape");
+            w.quiet(&before);
+            w.open(None);
+            w.click(Role::TextInput, "Style Name:");
+            w.key(Key::Escape);
+            assert!(w.app.ui.dialog.is_none(), "an idle naturally focused SDK field passes one Escape to its host");
+            w.quiet(&before);
+            // An edit rename collision follows the same retained-status/draft path.
+            w.open(Some("Mine"));
+            w.name("Taken");
+            w.footer("OK");
+            assert!(w.app.ui.dialog.as_ref().unwrap().s("status").contains("already named"));
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("name"), "Taken");
+            w.quiet(&before);
+            w.footer("Cancel");
+            w.quiet(&before);
+        }
+
+        #[test]
+        fn switched_and_reverted_documents_refuse_ok_and_surviving_open_targets_ignore_a_later_selection() {
+            let (mut app, a) = app_with_frame();
+            app.run("file.new", json!({"title": "Other document"})).unwrap();
+            app.session.set_active(0);
+            let mut w = Workflow::new(app);
+            w.open(None);
+            w.name("Stale uid");
+            w.app.session.set_active(1);
+            let switched = effects(&w.app);
+            w.idle();
+            w.footer("OK");
+            assert!(w.app.ui.dialog.as_ref().unwrap().s("status").contains("active document changed"));
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("name"), "Stale uid");
+            w.quiet(&switched);
+            w.footer("Cancel");
+            w.app.session.set_active(0);
+            let dir = tempfile::tempdir().unwrap();
+            w.app.run("file.saveAs", json!({"path": dir.path().join("object-style-identity.designcraft")})).unwrap();
+            // Real Revert requires a saved dirty document; dialog drafts do not dirty it.
+            w.app.run("frame.create", json!({"rect": [500, 72, 600, 172], "content": "graphic"})).unwrap();
+            assert!(w.app.session.active().unwrap().is_dirty());
+            w.open(None);
+            w.name("Stale epoch");
+            let opened = w.app.ui.dialog.as_ref().unwrap().fields["doc"].clone();
+            w.app.run("file.revert", json!({})).unwrap();
+            assert_ne!(document_key(&w.app), opened, "real revert changes the captured identity epoch");
+            let reverted = effects(&w.app);
+            w.idle();
+            w.footer("OK");
+            assert!(w.app.ui.dialog.as_ref().unwrap().s("status").contains("active document changed"));
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("name"), "Stale epoch");
+            w.quiet(&reverted);
+            w.footer("Cancel");
+            let b = w.app.run("frame.create", json!({"rect": [200, 72, 300, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+            let c = w.app.run("frame.create", json!({"rect": [350, 72, 450, 172], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
+            w.app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+            w.open(None);
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields["targets"], json!([a, b]));
+            w.name("Surviving targets");
+            w.app.run("edit.clear", json!({"ids": [b]})).unwrap();
+            w.app.run("selection.set", json!({"ids": [c]})).unwrap();
+            let before_apply = w.app.session.active().unwrap().doc.clone();
+            let undo = w.app.session.active().unwrap().history.undo.len();
+            w.idle();
+            w.footer("OK");
+            assert!(w.app.ui.dialog.is_none());
+            assert_eq!(item_style(&w.app, a), "Surviving targets");
+            assert_ne!(item_style(&w.app, c), "Surviving targets");
+            assert!(w.app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).is_none());
+            assert_eq!(w.app.session.journal.last().unwrap().1["ids"], json!([a]));
+            assert_eq!(w.app.session.active().unwrap().history.undo.len(), undo + 2);
+            assert_eq!(w.app.session.active().unwrap().selection.items, vec![designcraft_doc::ItemId(c)]);
+            for _ in 0..2 { w.app.run("edit.undo", json!({})).unwrap(); }
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), before_apply.as_ref(), "undoing create/apply never resurrects a target deleted before OK");
+        }
+
+        #[test]
+        fn locked_open_target_characterizes_the_existing_public_apply_path_without_recreating_on_idle() {
+            let (app, a) = app_with_frame();
+            let mut w = Workflow::new(app);
+            w.open(None);
+            w.name("Locked target characterization");
+            w.app.run("object.lock", json!({"ids": [a]})).unwrap();
+            assert!(w.app.session.active().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().locked);
+            let undo = w.app.session.active().unwrap().history.undo.len();
+            let journal = w.app.session.journal.len();
+            w.idle();
+            w.footer("OK");
+            assert!(w.app.ui.dialog.is_none());
+            // Source-derived baseline behavior, not a new lock policy: apply_object uses explicit
+            // targets and Session::edit has no lock rejection. The historical dialog comment is
+            // not evidence of a refusal. This scenario still needs actual native execution.
+            assert_eq!(item_style(&w.app, a), "Locked target characterization");
+            assert!(w.app.session.active().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().locked);
+            assert_eq!(w.app.session.active().unwrap().history.undo.len(), undo + 2);
+            assert_eq!(w.app.session.journal[journal..].iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["style.object.create", "style.object.apply"]);
+            assert_eq!(w.app.session.active().unwrap().doc.styles.object.iter().filter(|s| s.name == "Locked target characterization").count(), 1);
+            let settled = effects(&w.app);
+            w.quiet(&settled);
+            w.key(Key::Enter);
+            w.quiet(&settled);
+        }
+
+        #[test]
+        fn real_press_measurement_native_sizing_and_disabled_release_are_inert_then_same_owner_works() {
+            let (app, _) = app_with_frame();
+            let mut w = Workflow::new(app);
+            w.open(None);
+            w.name("Guarded draft");
+            w.pass = Pass::Body;
+            w.idle();
+            for guard in [Pass::Measure, Pass::Sizing, Pass::Disabled] {
+                let before = effects(&w.app);
+                let fields = w.app.ui.dialog.as_ref().unwrap().fields.clone();
+                let (owner, rect) = w.sdk(Role::CheckBox, "Fill");
+                let callbacks = w.guarded;
+                w.frame(vec![Event::PointerMoved(rect.center())]);
+                w.pointer(rect.center(), true); // A real ordinary press on this same owner.
+                assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "press alone does not toggle");
+                w.pass = guard;
+                w.pointer(rect.center(), false); // Release is delivered during the actual public guard.
+                assert!(w.guarded > callbacks, "the guarded body really ran");
+                assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields);
+                assert_eq!(effects(&w.app), before);
+                w.pass = Pass::Body;
+                w.quiet(&before);
+                assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "guarded release cannot replay on an ordinary idle frame");
+                assert_eq!(w.sdk(Role::CheckBox, "Fill").0, owner);
+                w.click(Role::CheckBox, "Fill");
+                assert_eq!(included(w.app.ui.dialog.as_ref().unwrap(), "fill"), !fields["inc"]["fill"].as_bool().unwrap());
+                assert_eq!(effects(&w.app), before, "same-owner positive changes only the draft");
+                w.click(Role::CheckBox, "Fill");
+                assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "the ordinary positive can restore the exact draft");
+            }
+            w.pass = Pass::Host;
+            w.idle();
+            let before = effects(&w.app);
+            let fields = w.app.ui.dialog.as_ref().unwrap().fields.clone();
+            let at = w.sdk(Role::CheckBox, "Fill").1.center();
+            w.frame(vec![Event::PointerMoved(at)]);
+            w.pointer(at, true);
+            let away = egui::pos2(at.x + 300.0, at.y + 70.0);
+            w.frame(vec![Event::PointerMoved(away)]);
+            w.pointer(away, false);
+            w.quiet(&before);
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "dragging a press away cancels inclusion");
+            w.click(Role::CheckBox, "Fill");
+            assert_ne!(w.app.ui.dialog.as_ref().unwrap().fields["inc"]["fill"], fields["inc"]["fill"]);
+            w.footer("Cancel");
+            assert!(w.app.ui.dialog.is_none());
+            w.quiet(&before);
+        }
+
+        #[test]
+        fn closing_dropdown_returns_anchor_enter_before_its_exit_fade() {
+            let mut app = app_with_text_frame("points");
+            app.run("style.paragraph.create", json!({"name": "Workflow Body", "fromSelection": false})).unwrap();
+            let mut w = Workflow::new(app);
+            w.open(None);
+            w.click(Role::RadioButton, "Paragraph Styles");
+            assert!(included(w.app.ui.dialog.as_ref().unwrap(), "paragraph"));
+            let before = effects(&w.app);
+            let initial_style = w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle");
+            w.click(Role::ComboBox, "Paragraph Style:");
+            w.key(Key::ArrowDown);
+            w.key(Key::Escape);
+            assert!(w.app.ui.dialog.is_some(), "the popup owns Escape, not its host");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
+            assert_eq!(effects(&w.app), before);
+            let combo_id = w.ax_control(Role::ComboBox, "Paragraph Style:").0;
+            assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(false));
+            // No idle, recovery Tab, synthetic focus, or second opening click before Enter.
+            w.key(Key::Enter);
+            assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(true), "a closing dropdown must yield fresh Enter to its own anchor immediately");
+            assert!(w.app.ui.dialog.is_some());
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
+            assert_eq!(effects(&w.app), before);
+            w.key(Key::Escape);
+            w.idle();
+            assert!(!w.ax.as_ref().unwrap().nodes.iter().any(|(_, n)| n.role() == Role::ListBox));
+            w.footer("Cancel");
+            assert!(w.app.ui.dialog.is_none());
+            w.quiet(&before);
+        }
+
+        #[test]
+        fn paragraph_popup_apply_next_disabled_inclusion_and_precise_omitted_options_survive_the_workflow() {
+            let mut app = app_with_text_frame("points");
+            app.run("style.paragraph.create", json!({"name": "Workflow Body", "fromSelection": false})).unwrap();
+            let tf = json!({"gutter": 2.123456, "inset": [1.23456, 2.34567, 3.45678, 4.56789]});
+            app.run("style.object.create", json!({"name": "Precise", "fromSelection": false, "applyNextStyle": true, "textFrame": tf})).unwrap();
+            let original = object_style(&app, "Precise");
+            assert!(original.effects.is_none() && original.paragraph_style.is_none() && original.apply_next_style);
+            let mut w = Workflow::new(app);
+            w.open(None);
+            w.name("Paragraph workflow");
+            let before = effects(&w.app);
+            w.click(Role::RadioButton, "Paragraph Styles");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("page"), "paragraph");
+            w.click(Role::CheckBox, "Paragraph Styles");
+            assert!(!included(w.app.ui.dialog.as_ref().unwrap(), "paragraph"));
+            let fields = w.app.ui.dialog.as_ref().unwrap().fields.clone();
+            let next_node = w.ax_control(Role::CheckBox, "Apply Next Style").0;
+            assert!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == next_node).unwrap().1.is_disabled());
+            w.click(Role::CheckBox, "Apply Next Style");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "a visible disabled editor cannot change any draft");
+            w.quiet(&before);
+            w.click(Role::CheckBox, "Paragraph Styles");
+            assert!(included(w.app.ui.dialog.as_ref().unwrap(), "paragraph"));
+            let initial_style = w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle");
+            w.click(Role::ComboBox, "Paragraph Style:");
+            assert!(w.ax.as_ref().unwrap().nodes.iter().any(|(_, n)| n.role() == Role::ListBox));
+            w.key(Key::ArrowDown);
+            w.key(Key::Escape);
+            assert!(w.app.ui.dialog.is_some(), "the popup owns Escape before the host");
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
+            assert_eq!(effects(&w.app), before);
+            let combo_id = w.ax_control(Role::ComboBox, "Paragraph Style:").0;
+            assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(false), "Escape logically collapses the combo before its paint fade ends");
+            // A closed layer retains hidden raw AX descendants during its exit fade.
+            w.idle();
+            assert!(!w.ax.as_ref().unwrap().nodes.iter().any(|(_, n)| n.role() == Role::ListBox));
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
+            w.quiet(&before);
+            w.click(Role::ComboBox, "Paragraph Style:");
+            let option = w.ax_control(Role::ListBoxOption, "Workflow Body").1.center();
+            w.click_at(option);
+            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), "Workflow Body");
+            w.tab_to(Role::CheckBox, "Apply Next Style");
+            w.key(Key::Space);
+            assert!(w.app.ui.dialog.as_ref().unwrap().b("applyNext"));
+            assert_eq!(effects(&w.app), before);
+            w.footer("OK");
+            let created = object_style(&w.app, "Paragraph workflow");
+            assert_eq!(created.paragraph_style.as_deref(), Some("Workflow Body"));
+            assert!(created.apply_next_style);
+            w.open(Some("Precise"));
+            let before_rename = effects(&w.app);
+            w.click(Role::RadioButton, "Text Frame General Options");
+            w.idle();
+            w.click(Role::RadioButton, "General");
+            w.name("Precise renamed");
+            assert_eq!(effects(&w.app), before_rename);
+            w.footer("OK");
+            assert!(w.app.ui.dialog.is_none());
+            let mut expected = original;
+            expected.name = "Precise renamed".into();
+            let actual = object_style(&w.app, "Precise renamed");
+            assert_eq!(actual, expected, "rename preserves omitted effects/paragraph/apply-next and every exact text-frame value");
+            assert_eq!(w.app.session.active().unwrap().history.undo.len(), before_rename.documents[0].undo.len() + 1);
+            let renamed = w.app.session.active().unwrap().doc.clone();
+            w.app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), before_rename.documents[0].doc.as_ref());
+            w.app.run("edit.redo", json!({})).unwrap();
+            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), renamed.as_ref());
+            let settled = effects(&w.app);
+            w.quiet(&settled);
+        }
     }
 }

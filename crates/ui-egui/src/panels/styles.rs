@@ -67,15 +67,7 @@ fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
             .color(t.text_disabled),
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(
-                ui,
-                "plus",
-                20.0,
-                false,
-                crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Create New Style from Selection")),
-            )
-            .clicked()
-            {
+            if text_style_create_button(app, ui, para) {
                 let cmd = if para { "style.paragraph.create" } else { "style.character.create" };
                 let base = if para { "Paragraph Style 1" } else { "Character Style 1" };
                 let _ = app.run(cmd, json!({"name": base, "fromSelection": true}));
@@ -103,6 +95,31 @@ pub fn paragraph(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
     list(app, ui, false);
+}
+
+/// The compact text-style create action; commands and list/row behavior stay with the app.
+fn text_style_create_button(app: &DesignApp, ui: &mut egui::Ui, para: bool) -> bool {
+    let label = crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Create New Style from Selection"));
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::buttons::Button;
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::style::Variant;
+
+        let identity = app.session.active().map(|st| (st.uid, st.identity_epoch));
+        // `painted` keeps the localized accessible name while showing only the existing plus action.
+        // Do not install a runtime here: the host owns it, and an uninstalled native/web UI falls back.
+        return Button::new(label)
+            .id_salt(("text-style-create", para, identity))
+            .painted("+")
+            .variant(Variant::GHOST)
+            .tooltip(label)
+            .show(ui)
+            .clicked();
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = para;
+    icons::button(ui, "plus", 20.0, false, label).clicked()
 }
 
 /// The selected object's style, and whether the object differs from it (an override: `+`): its
@@ -533,5 +550,346 @@ mod tests {
         app.run("text.select", json!({"story": frame["story"], "anchor": 6, "focus": 10})).unwrap();
         app.run("style.character.apply", json!({"name": "Character Style 1"})).unwrap();
         assert_eq!(app.run("type.selectionAttrs", json!({})).unwrap()["chars"]["underline"], true);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use egui_kittest::kittest::NodeT as _;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_harness(mut app: DesignApp, para: bool, sdk: bool, enabled: bool) -> Harness<'static, DesignApp> {
+        let ctx = egui::Context::default();
+        app.framework_transform = sdk;
+        app.framework_opacity = false;
+        app.install_framework(&ctx);
+        assert_eq!(app.framework_installed, sdk, "the harness must exercise the requested SDK or fallback branch");
+        let mut ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(380.0, 520.0)).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                ui.add_enabled_ui(enabled, |ui| if para { paragraph(app, ui) } else { character(app, ui) });
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        text_style_steps(&mut h, 3);
+        h
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_event(h: &mut Harness<'_, DesignApp>, event: egui::Event) {
+        let mut raw = std::mem::take(h.input_mut());
+        raw.events.push(event);
+        let ctx = h.ctx.clone();
+        h.state_mut().raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_steps(h: &mut Harness<'_, DesignApp>, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_pointer(h: &mut Harness<'_, DesignApp>, at: egui::Pos2, pressed: bool) {
+        text_style_event(h, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_click(h: &mut Harness<'_, DesignApp>, label: &str) {
+        let at = h.get_by_role_and_label(egui::accesskit::Role::Button, label).rect().center();
+        text_style_event(h, egui::Event::PointerMoved(at));
+        text_style_pointer(h, at, true);
+        text_style_pointer(h, at, false);
+        text_style_steps(h, 3);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_space(h: &mut Harness<'_, DesignApp>) {
+        for pressed in [true, false] {
+            text_style_event(
+                h,
+                egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE },
+            );
+        }
+        text_style_steps(h, 3);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_commands(h: &Harness<'_, DesignApp>) -> Vec<(String, serde_json::Value)> {
+        h.state().session.journal.iter().filter(|(id, _)| id.starts_with("style.")).cloned().collect()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_undo_len(h: &Harness<'_, DesignApp>) -> usize {
+        h.state().session.doc().unwrap().history.undo.len()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_select(app: &mut DesignApp, story: designcraft_doc::StoryId, anchor: usize, focus: usize) {
+        app.run("text.select", json!({"story": story.0, "anchor": anchor, "focus": focus})).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_fixture(para: bool) -> (DesignApp, designcraft_doc::StoryId, designcraft_doc::StoryId) {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let source = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "source\nunchanged"})).unwrap();
+        let target = app.run("frame.create", json!({"rect": [36, 220, 300, 400], "content": "text", "text": "zero béta tail\nother"})).unwrap();
+        let source = designcraft_doc::StoryId(source["story"].as_u64().unwrap());
+        let target = designcraft_doc::StoryId(target["story"].as_u64().unwrap());
+        text_style_select(&mut app, source, 0, 6);
+        if para {
+            app.run("type.char", json!({"size": 23, "tracking": 42, "underline": true})).unwrap();
+            app.run("type.para", json!({"align": "center", "spaceAfter": 9})).unwrap();
+        } else {
+            // A character style must capture local character attributes, not the paragraph's size/spacing.
+            app.run("style.paragraph.create", json!({"name": "Source base", "chars": {"size": 29}, "para": {"spaceAfter": 17}})).unwrap();
+            app.run("style.paragraph.apply", json!({"name": "Source base"})).unwrap();
+            app.run("type.char", json!({"tracking": 37, "underline": true})).unwrap();
+        }
+        (app, source, target)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn text_style_create_apply_journey(para: bool) {
+        let (app, source, target) = text_style_fixture(para);
+        let source_selection = app.session.doc().unwrap().selection.clone();
+        let source_before = app.session.doc().unwrap().doc.story(source).unwrap().clone();
+        let target_before = app.session.doc().unwrap().doc.story(target).unwrap().clone();
+        let mut h = text_style_harness(app, para, true, true);
+        let before = text_style_undo_len(&h);
+        let create = if para { "style.paragraph.create" } else { "style.character.create" };
+        let apply = if para { "style.paragraph.apply" } else { "style.character.apply" };
+        let name = if para { "Paragraph Style 1" } else { "Character Style 1" };
+        text_style_click(&mut h, "Create New Style from Selection");
+        assert_eq!(text_style_commands(&h).last().unwrap(), &(create.into(), json!({"name": name, "fromSelection": true})));
+        assert_eq!(text_style_undo_len(&h), before + 1);
+        assert_eq!(h.state().session.doc().unwrap().selection, source_selection, "creation must not apply or retarget the selection");
+        assert_eq!(h.state().session.doc().unwrap().doc.story(source).unwrap(), &source_before);
+        assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), &target_before);
+        if para {
+            let style = h.state().session.doc().unwrap().doc.styles.para(name).unwrap();
+            assert_eq!((style.chars.size, style.chars.tracking, style.chars.underline), (Some(23.0), Some(42.0), Some(true)));
+            assert_eq!(style.para.space_after, Some(9.0));
+        } else {
+            let style = h.state().session.doc().unwrap().doc.styles.char_style(name).unwrap();
+            assert_eq!(style.chars, designcraft_doc::CharAttrs { tracking: Some(37.0), underline: Some(true), ..Default::default() });
+        }
+        let commands = text_style_commands(&h);
+        text_style_steps(&mut h, 3);
+        assert_eq!(text_style_commands(&h), commands, "an idle pass must not replay creation");
+        text_style_select(h.state_mut(), target, 5, "zero béta".len());
+        let selection = h.state().session.doc().unwrap().selection.clone();
+        let target_attrs = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        text_style_steps(&mut h, 3);
+        // This is the existing production style_row, not a replacement apply button or direct apply setter.
+        text_style_click(&mut h, name);
+        assert_eq!(text_style_commands(&h).last().unwrap(), &(apply.into(), json!({"name": name, "clearOverrides": false})));
+        assert_eq!(text_style_undo_len(&h), before + 2, "create and apply are independent Undo steps");
+        assert_eq!(h.state().session.doc().unwrap().selection, selection);
+        let attrs = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+        let story = h.state().session.doc().unwrap().doc.story(target).unwrap();
+        assert_eq!(story.text, target_before.text);
+        if para {
+            assert_eq!(story.paras[0].style, name);
+            assert_eq!(story.paras[1], target_before.paras[1], "the other paragraph is unchanged");
+            assert_eq!(attrs["paragraphStyle"], name);
+            assert_eq!(attrs["chars"]["size"], 23.0);
+            assert_eq!(attrs["chars"]["tracking"], 42.0);
+            assert_eq!(attrs["para"]["spaceAfter"], 9.0);
+            assert_eq!(attrs["para"]["align"], "center");
+        } else {
+            assert_eq!(story.paras, target_before.paras, "a character style must not freeze source paragraph formatting");
+            assert_eq!(attrs["characterStyle"], name);
+            assert_eq!(attrs["chars"]["size"], target_attrs["chars"]["size"], "size stays inherited from the target");
+            assert_eq!(attrs["chars"]["tracking"], 37.0);
+            assert_eq!(attrs["chars"]["underline"], true);
+            for (pos, _) in story.text.char_indices() {
+                assert_eq!(story.char_format_of(pos).style == name, (5.."zero béta".len()).contains(&pos), "exact byte {pos}");
+            }
+        }
+        assert_eq!(h.state().session.doc().unwrap().doc.story(source).unwrap(), &source_before);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        text_style_steps(&mut h, 3);
+        assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), &target_before);
+        assert_eq!(text_style_undo_len(&h), before + 1);
+        let styles = &h.state().session.doc().unwrap().doc.styles;
+        assert!(if para { styles.para(name).is_some() } else { styles.char_style(name).is_some() });
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        text_style_steps(&mut h, 3);
+        let styles = &h.state().session.doc().unwrap().doc.styles;
+        assert!(if para { styles.para(name).is_none() } else { styles.char_style(name).is_none() });
+        assert_eq!(text_style_undo_len(&h), before);
+        assert_eq!(h.state().session.doc().unwrap().selection, source_selection);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_paragraph_create_from_selection_applies_through_real_row_and_undo() {
+        text_style_create_apply_journey(true);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_character_create_from_selection_applies_through_real_row_and_undo() {
+        text_style_create_apply_journey(false);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_text_style_create_no_selection_unique_names_keyboard_and_no_replay() {
+        for para in [true, false] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({})).unwrap();
+            let mut h = text_style_harness(app, para, true, true);
+            let before = text_style_undo_len(&h);
+            let name = if para { "Paragraph Style 1" } else { "Character Style 1" };
+            let command = if para { "style.paragraph.create" } else { "style.character.create" };
+            assert!(!h.get_by_label("Create New Style from Selection").accesskit_node().is_disabled(), "no new no-selection gate");
+            text_style_click(&mut h, "Create New Style from Selection");
+            // SDK Button has a keyboard stop but no TAKE_FOCUS sense: its pointer click must not
+            // be treated as keyboard focus. Reach the actual control with an ordinary Tab before
+            // Space, keeping the same unique-name, command, Undo-count and no-replay assertions.
+            assert!(
+                !h.get_by_label("Create New Style from Selection").is_focused(),
+                "the pointer click alone must not be mistaken for keyboard focus"
+            );
+            for pressed in [true, false] {
+                text_style_event(
+                    &mut h,
+                    egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE },
+                );
+            }
+            text_style_steps(&mut h, 3);
+            assert!(
+                h.get_by_role_and_label(egui::accesskit::Role::Button, "Create New Style from Selection").is_focused(),
+                "natural Tab reaches the create control before Space; focused widget: {:?}",
+                h.ctx.memory(|m| m.focused())
+            );
+            text_style_space(&mut h);
+            assert_eq!(text_style_undo_len(&h), before + 2);
+            assert_eq!(
+                text_style_commands(&h),
+                vec![(command.into(), json!({"name": name, "fromSelection": true})), (command.into(), json!({"name": name, "fromSelection": true})),]
+            );
+            let styles = &h.state().session.doc().unwrap().doc.styles;
+            if para {
+                assert_eq!(styles.para(name).unwrap().chars, designcraft_doc::CharAttrs::default());
+                assert!(styles.para(&format!("{name} 2")).is_some());
+            } else {
+                assert_eq!(styles.char_style(name).unwrap().chars, designcraft_doc::CharAttrs::default());
+                assert!(styles.char_style(&format!("{name} 2")).is_some());
+            }
+            let commands = text_style_commands(&h);
+            text_style_steps(&mut h, 3);
+            assert_eq!(text_style_commands(&h), commands);
+            assert_eq!(text_style_undo_len(&h), before + 2);
+            for remaining in [before + 1, before] {
+                h.state_mut().run("edit.undo", json!({})).unwrap();
+                text_style_steps(&mut h, 3);
+                assert_eq!(text_style_undo_len(&h), remaining);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_text_style_create_captured_invalid_paragraph_is_refused_without_edit() {
+        let (mut app, source, target) = text_style_fixture(true);
+        // Synthetic imported-document fixture: unlike a UI edit, imported formatting can be invalid.
+        // Only fixture setup writes it directly; the refusal is exercised through the real create control.
+        let doc = std::sync::Arc::make_mut(&mut app.session.doc_mut().unwrap().doc);
+        let story = std::sync::Arc::make_mut(doc.stories.get_mut(&source).unwrap());
+        story.paras[0].para.left_indent = Some(-1.0);
+        let original = app.session.doc().unwrap().doc.clone();
+        let selection = app.session.doc().unwrap().selection.clone();
+        let mut h = text_style_harness(app, true, true, true);
+        let before = text_style_undo_len(&h);
+        let commands = text_style_commands(&h);
+        text_style_click(&mut h, "Create New Style from Selection");
+        assert!(h.state().ui.status.contains("style.paragraph.create"));
+        assert!(h.state().ui.status.contains("leftIndent"));
+        assert_eq!(h.state().session.doc().unwrap().doc, original);
+        assert_eq!(h.state().session.doc().unwrap().selection, selection);
+        assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), original.story(target).unwrap());
+        assert_eq!(text_style_undo_len(&h), before);
+        assert_eq!(text_style_commands(&h), commands, "a refusal is not journaled as a successful create");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_text_style_create_compact_localized_disabled_and_uninstalled_fallback() {
+        for para in [true, false] {
+            for sdk in [true, false] {
+                for enabled in [true, false] {
+                    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+                    app.run("file.new", json!({})).unwrap();
+                    app.ui.language = "ja".into();
+                    let mut h = text_style_harness(app, para, sdk, enabled);
+                    let label = crate::i18n::tr("ja", "Create New Style from Selection");
+                    let control = h.get_by_role_and_label(egui::accesskit::Role::Button, label);
+                    let size = control.rect().size();
+                    if sdk {
+                        assert!(
+                            size.x > 0.0 && size.x <= 64.0 && size.y > 0.0 && size.y <= 48.0,
+                            "the plus stays compact at the SDK default footprint: {size:?}"
+                        );
+                    } else {
+                        assert_eq!(size, vec2(20.0, 20.0), "the existing fallback footprint is unchanged");
+                    }
+                    assert!(control.rect().right() <= 380.0, "the action fits the actual panel parent");
+                    assert_eq!(control.accesskit_node().is_disabled(), !enabled);
+                    let before = text_style_undo_len(&h);
+                    text_style_click(&mut h, label);
+                    assert_eq!(text_style_undo_len(&h), before + usize::from(enabled));
+                    assert_eq!(text_style_commands(&h).len(), usize::from(enabled));
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sdk_text_style_create_document_identity_rejects_old_pointer_release() {
+        for para in [true, false] {
+            let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({})).unwrap();
+            app.run("file.new", json!({})).unwrap();
+            app.run("file.activate", json!({"index": 0})).unwrap();
+            let first = app.session.doc().unwrap().uid;
+            let mut h = text_style_harness(app, para, true, true);
+            let label = "Create New Style from Selection";
+            let at = h.get_by_role_and_label(egui::accesskit::Role::Button, label).rect().center();
+            text_style_event(&mut h, egui::Event::PointerMoved(at));
+            text_style_pointer(&mut h, at, true);
+            h.state_mut().run("file.activate", json!({"index": 1})).unwrap();
+            text_style_steps(&mut h, 3);
+            assert_ne!(h.state().session.doc().unwrap().uid, first);
+            text_style_pointer(&mut h, at, false);
+            text_style_steps(&mut h, 3);
+            assert!(text_style_commands(&h).is_empty(), "a pressed control from another document cannot create here");
+            assert_eq!(text_style_undo_len(&h), 0);
+            text_style_click(&mut h, label);
+            assert_eq!(text_style_commands(&h).len(), 1, "positive control on the current document");
+            assert_eq!(text_style_undo_len(&h), 1);
+            h.state_mut().run("file.activate", json!({"index": 0})).unwrap();
+            text_style_steps(&mut h, 3);
+            assert_eq!(h.state().session.doc().unwrap().uid, first);
+            assert_eq!(text_style_undo_len(&h), 0);
+            let styles = &h.state().session.doc().unwrap().doc.styles;
+            assert!(if para { styles.para("Paragraph Style 1").is_none() } else { styles.char_style("Character Style 1").is_none() });
+        }
     }
 }
