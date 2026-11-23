@@ -92,6 +92,8 @@ pub(crate) struct TabRuler {
     width: f64,
     unit: Unit,
     selected: Option<usize>,
+    /// Points to pixels; `None` fits the column into the width offered.
+    scale: Option<f32>,
     edit: Option<RulerEdit>,
     drag: Option<Drag>,
 }
@@ -99,7 +101,13 @@ pub(crate) struct TabRuler {
 impl TabRuler {
     /// A ruler named `label` over `tabs` and the three indents, `width` points wide, its scale in `unit`.
     pub(crate) fn new(label: impl Into<Label>, tabs: Vec<TabStop>, indents: (f64, f64, f64), width: f64, unit: Unit, selected: Option<usize>) -> Self {
-        TabRuler { common: Common::new(), tabs, left: indents.0, first: indents.1, right: indents.2, width, unit, selected, edit: None, drag: None }.label(label)
+        TabRuler { common: Common::new(), tabs, left: indents.0, first: indents.1, right: indents.2, width, unit, selected, scale: None, edit: None, drag: None }.label(label)
+    }
+
+    /// The ruler's scale in pixels to the point, when the panel keeps it at the view's zoom (over its text frame).
+    pub(crate) fn scale(mut self, scale: Option<f32>) -> Self {
+        self.scale = scale;
+        self
     }
 
     fn width_pt(&self) -> f64 {
@@ -108,7 +116,7 @@ impl TabRuler {
 
     fn geometry(&self, rect: Rect) -> Geometry {
         let width_pt = self.width_pt();
-        let scale = ((rect.width() - 2.0 * PAD) / width_pt as f32).max(0.01);
+        let scale = self.scale.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(((rect.width() - 2.0 * PAD) / width_pt as f32).max(0.01));
         let strip = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + STRIP));
         let bar = Rect::from_min_max(pos2(strip.min.x, strip.max.y), rect.max);
         Geometry { rect, x0: rect.min.x + PAD, scale, width_pt, strip, bar }

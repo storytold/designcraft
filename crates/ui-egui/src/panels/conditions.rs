@@ -112,14 +112,19 @@ fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// App-owned mapping only: the SDK supplies input and focus; the engine still owns eligibility,
+/// App-owned mapping only: the framework supplies input and focus; the engine still owns eligibility,
 /// text-range interpretation, refusals and Undo. Condition names are identities, never row indices.
 #[cfg(not(target_arch = "wasm32"))]
 fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::buttons::Button;
     use craft_ui_widgets::choice::Checkbox;
-    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Picture, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::menu::{Menu, MenuItem};
     use craft_ui_widgets::primitives::HAlign;
+    use craft_ui_widgets::style::TypeRole;
     use craft_ui_widgets::text::TextField;
 
     let t = Tokens::get(ui.ctx());
@@ -130,107 +135,100 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     let applied: Vec<String> = super::text_attrs(app)
         .and_then(|a| a["chars"]["conditions"].as_array().map(|v| v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
         .unwrap_or_default();
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let name_label = tr("New condition name");
+    let mut commands: Vec<(&'static str, serde_json::Value)> = Vec::new();
+    let mut apply: Option<String> = None;
+    // The new-condition draft lives with the document it is typed in, so another document never shows or creates it.
+    let draft_id = ui.make_persistent_id(("framework-conditions", identity, "new_condition_name"));
+    let mut draft: String = ui.data(|d| d.get_temp(draft_id)).unwrap_or_default();
+    let mut create = false;
     // Document-scoped ids keep a draft and focused control from becoming another document's control.
     ui.push_id(("framework-conditions", identity), |ui| {
-        if conditions.is_empty() {
-            ui.label(crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No conditions. Create one, then select text and click it to apply."))
-                    .size(11.0)
-                    .color(t.text_dim),
-            ));
-        }
-        for c in &conditions {
-            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-            let eye = egui::Rect::from_min_size(row.min + vec2(2.0, 3.0), vec2(16.0, 16.0));
-            let visibility_label = crate::i18n::tr(&app.ui.language, "Show / hide text with this condition");
-            let visibility = Checkbox::new(Bind::given(c.visible))
-                .id_salt(("cond_eye", &c.name))
-                .label(c.name.clone())
-                .description(visibility_label)
-                .tooltip(visibility_label)
-                .show_at(ui, eye);
-            if let Some(&visible) = visibility.events.committed().filter(|&&v| v != c.visible) {
-                let _ = app.run("condition.options", json!({"name": c.name, "visible": visible}));
+        Stack::new().id_salt("conditions").fill_width().show(ui, |ui, _| {
+            if conditions.is_empty() {
+                Text::new(tr("No conditions. Create one, then select text and click it to apply."))
+                    .role(TypeRole::Caption)
+                    .shade(Shade::Muted)
+                    .sizing(Sizing::FillWidth)
+                    .show(ui);
             }
-            // This is the existing applied-state indicator, not a second activation target.
-            let bx = egui::Rect::from_min_size(row.min + vec2(24.0, 5.0), vec2(12.0, 12.0));
-            ui.painter().rect_stroke(bx, 2.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
-            if applied.contains(&c.name) {
-                ui.painter()
-                    .line_segment([bx.left_center() + vec2(2.0, 0.0), bx.center_bottom() - vec2(0.0, 3.0)], egui::Stroke::new(1.5, t.text_strong));
-                ui.painter()
-                    .line_segment([bx.center_bottom() - vec2(0.0, 3.0), bx.right_top() + vec2(-2.0, 3.0)], egui::Stroke::new(1.5, t.text_strong));
+            for c in &conditions {
+                let marked = applied.contains(&c.name);
+                let (dim, strong, chip) = (t.text_dim, t.text_strong, egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
+                Row::new().id_salt(("cond_row", &c.name)).fill_width().show(ui, |ui, _| {
+                    let visibility_label = tr("Show / hide text with this condition");
+                    // The box alone: the row's name button carries the condition's name, so the checkbox's own label
+                    // (its accessible name) has no room to show.
+                    let (_, slot) = ui.allocate_space(egui::vec2(20.0, 22.0));
+                    let visibility = Checkbox::new(Bind::given(c.visible))
+                        .id_salt(("cond_eye", &c.name))
+                        .label(c.name.clone())
+                        .description(visibility_label.clone())
+                        .tooltip(visibility_label)
+                        .show_at(ui, egui::Rect::from_center_size(slot.center(), egui::vec2(16.0, 16.0)));
+                    if let Some(&visible) = visibility.events.committed().filter(|&&v| v != c.visible) {
+                        commands.push(("condition.options", json!({"name": c.name, "visible": visible})));
+                    }
+                    // The existing applied-state indicator, not a second activation target.
+                    Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                        let bx = rect.shrink(rect.height() * 0.2);
+                        cx.painter.rect_stroke(bx, 2.0, egui::Stroke::new(1.0, dim), egui::StrokeKind::Inside);
+                        if marked {
+                            let down = egui::vec2(0.0, bx.height() * 0.25);
+                            cx.painter
+                                .line_segment([bx.left_center() + egui::vec2(2.0, 0.0), bx.center_bottom() - down], egui::Stroke::new(1.5, strong));
+                            cx.painter
+                                .line_segment([bx.center_bottom() - down, bx.right_top() + egui::vec2(-2.0, 3.0)], egui::Stroke::new(1.5, strong));
+                        }
+                    })
+                    .id_salt(("cond_applied", &c.name))
+                    .show(ui);
+                    let name = Button::new(c.name.clone()).id_salt(("cond_name", &c.name)).align(HAlign::Start).sizing(Sizing::FillWidth).show(ui);
+                    if name.clicked() {
+                        apply = Some(c.name.clone());
+                    }
+                    let _ = Menu::context(tr("Conditional Text"), &name.response).id_salt(("cond_menu", &c.name)).show(ui, |ui, _| {
+                        if MenuItem::new(tr("Delete Condition")).id_salt("delete_condition").show(ui).ran {
+                            commands.push(("condition.delete", json!({"name": c.name})));
+                        }
+                    });
+                    Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                        cx.painter.rect_filled(egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 12.0)), 2.0, chip);
+                    })
+                    .id_salt(("cond_chip", &c.name))
+                    .show(ui);
+                });
             }
-            let name_r = egui::Rect::from_min_max(row.min + vec2(42.0, 0.0), row.max - vec2(24.0, 0.0));
-            let name = Button::new(c.name.clone()).id_salt(("cond_name", &c.name)).align(HAlign::Start).show_at(ui, name_r);
-            if name.clicked() {
-                apply_condition(app, &c.name, has_text, &applied);
-            }
-            // The SDK response rewrites click flags from its primary-only press lifecycle, so egui's
-            // secondary_clicked() cannot open this menu. Feed the real secondary release over this
-            // enabled hit area to the existing egui popup; do not fabricate a response click/SDK intent.
-            let context_press = name.response.id.with("secondary_context_press");
-            let mut owns_secondary = ui.data(|d| d.get_temp::<bool>(context_press)).unwrap_or(false);
-            let (pressed, released, clicked) = ui.input(|i| {
-                let pointer = &i.pointer;
-                (
-                    pointer.button_pressed(egui::PointerButton::Secondary),
-                    pointer.button_released(egui::PointerButton::Secondary),
-                    pointer.button_clicked(egui::PointerButton::Secondary),
-                )
-            });
-            if pressed {
-                owns_secondary = name.response.enabled() && name.response.contains_pointer();
-            }
-            let open_context = owns_secondary && clicked && name.response.enabled() && name.response.contains_pointer();
-            if released {
-                owns_secondary = false;
-            }
-            ui.data_mut(|d| d.insert_temp(context_press, owns_secondary));
-            let context_open = if open_context {
-                Some(egui::SetOpenCommand::Bool(true))
-            } else if name.clicked() {
-                Some(egui::SetOpenCommand::Bool(false))
-            } else {
-                None
-            };
-            egui::Popup::context_menu(&name.response).open_memory(context_open).show(|ui| {
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Condition"))).clicked() {
-                    let _ = app.run("condition.delete", json!({"name": c.name}));
-                    ui.close();
-                }
-            });
-            let chip = egui::Rect::from_min_size(egui::pos2(row.max.x - 20.0, row.min.y + 5.0), vec2(14.0, 12.0));
-            ui.painter().rect_filled(chip, 2.0, egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
-        }
-        ui.add_space(6.0);
-        let id = ui.scope_id().with("new_condition_name");
-        let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-        ui.horizontal(|ui| {
-            let label = crate::i18n::tr(&app.ui.language, "New condition name");
-            let (field, _) = ui.allocate_exact_size(vec2(150.0, 24.0), Sense::hover());
-            TextField::new(label, Bind::bound(&mut name))
-                .id_salt("new_condition_name")
-                .placeholder(label)
+            Row::new().id_salt("new_condition").fill_width().show(ui, |ui, _| {
                 // The old single-line editor has no 1024-character name limit.
-                .limit(None)
-                .show_at(ui, field);
-            if Button::new(crate::i18n::tr(&app.ui.language, "New")).id_salt("new_condition").show(ui).clicked() && !name.trim().is_empty() {
-                match app.run("condition.new", json!({"name": name.trim()})) {
-                    Ok(_) => name.clear(),
-                    Err(e) => app.status_error("Conditional Text", e),
-                }
+                TextField::new(name_label.clone(), Bind::bound(&mut draft))
+                    .id_salt("new_condition_name")
+                    .placeholder(name_label.clone())
+                    .limit(None)
+                    .show(ui);
+                create = Button::new(tr("New")).id_salt("new_condition").show(ui).clicked();
+            });
+            if has_text && !applied.is_empty() && Button::new(tr("Remove Conditions from Selection")).id_salt("remove_conditions").show(ui).clicked()
+            {
+                commands.push(("condition.apply", json!({"name": null, "only": true})));
             }
         });
-        ui.data_mut(|d| d.insert_temp(id, name));
-        if has_text
-            && !applied.is_empty()
-            && Button::new(crate::i18n::tr(&app.ui.language, "Remove Conditions from Selection")).id_salt("remove_conditions").show(ui).clicked()
-        {
-            let _ = app.run("condition.apply", json!({"name": null, "only": true}));
-        }
     });
+    if let Some(name) = apply {
+        apply_condition(app, &name, has_text, &applied);
+    }
+    for (id, params) in commands {
+        let _ = app.run(id, params);
+    }
+    if create && !draft.trim().is_empty() {
+        match app.run("condition.new", json!({"name": draft.trim()})) {
+            Ok(_) => draft.clear(),
+            Err(e) => app.status_error("Conditional Text", e),
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(draft_id, draft));
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -530,7 +528,8 @@ mod tests {
         let before = undo_steps(&h);
         let at = h.get_by_role_and_label(Role::Button, "EU").rect().center();
         click_at(&mut h, at, PointerButton::Secondary);
-        click(&mut h, Role::Button, "Delete Condition");
+        // The framework's context menu rows are menu items, not buttons.
+        click(&mut h, Role::MenuItem, "Delete Condition");
         assert_eq!(h.state().session.doc().unwrap().doc.conditions, vec![conditions[1].clone()]);
         assert_range(&h, story, &[]);
         assert_eq!(undo_steps(&h), before + 1);

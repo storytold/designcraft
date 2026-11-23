@@ -308,7 +308,7 @@ fn column_on_screen(app: &DesignApp, frame: u64, col: [f64; 4]) -> Option<(Pos2,
 // remain unchanged; their separate migration is not implied by this installed-native branch.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
-struct TabGlyph(&'static str);
+pub(crate) struct TabGlyph(pub(crate) &'static str);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for TabGlyph {
@@ -413,6 +413,15 @@ fn panel_menu(ui: &mut Ui, lang: &str, framework: bool, target: &Option<String>,
     });
 }
 
+/// The X field: a measure in the document's unit, committed with Enter or when the field is left. Points in, points out.
+#[cfg(not(target_arch = "wasm32"))]
+fn measure_points(ui: &mut Ui, label: &str, points: Option<f64>, unit: Unit) -> Option<f64> {
+    use crate::dialogs::framework::style_forms::style_kit;
+    let shown = points.filter(|v| v.is_finite()).map(|v| designcraft_geom::format_measure(v, unit)).unwrap_or_default();
+    let text = style_kit::committed_text(ui, "tabs_x", label, &shown, true)?;
+    designcraft_geom::units::parse_measure(&text, unit).ok().filter(|v| v.is_finite())
+}
+
 /// The Tabs panel. Numeric fields, draft text and the shared ruler remain future migration work.
 pub fn show(app: &mut DesignApp, ui: &mut Ui) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -480,49 +489,116 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
     let mut cmds: Vec<(&'static str, Value)> = Vec::new();
     let mut snap_now = false;
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if let Some(a) = panel_alignments(ui, &lang, framework, &target, current_align) {
-            app.ui.tabs_panel.align = a;
-            if let Some(i) = selected {
-                cmds.push(("type.tabs.change", json!({"index": i, "align": a})));
+    #[cfg(not(target_arch = "wasm32"))]
+    let edit = if framework {
+        use crate::dialogs::framework::style_forms::{style_kit, tab_forms::TabRuler};
+        use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+        use craft_ui_widgets::form::Field;
+        use craft_ui_widgets::layout_components::{Row, Stack};
+
+        let mut edit = None;
+        let snap_scale = app.ui.tabs_panel.snap;
+        Stack::new().id_salt("tabs_panel").fill_width().show(ui, |ui, _| {
+            Row::new().id_salt("tabs_controls").wrap(true).show(ui, |ui, _| {
+                if let Some(a) = panel_alignments(ui, &lang, true, &target, current_align) {
+                    app.ui.tabs_panel.align = a;
+                    if let Some(i) = selected {
+                        cmds.push(("type.tabs.change", json!({"index": i, "align": a})));
+                    }
+                }
+                Field::new(tr("X:")).id_salt("tabs_x").sizing(Sizing::Content).show(ui, |ui, _| {
+                    if let Some(x) = measure_points(ui, tr("X:"), sel.map(|s| s.position), unit) {
+                        match selected {
+                            Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+                            None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
+                        }
+                    }
+                });
+                Field::new(tr("Leader:")).id_salt("tabs_leader").sizing(Sizing::Content).show(ui, |ui, _| {
+                    let leader = style_kit::committed_text(ui, "tabs_leader", tr("Leader:"), sel.map_or("", |s| s.leader.as_str()), sel.is_some());
+                    if let (Some(l), Some(i)) = (leader, selected) {
+                        cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
+                    }
+                });
+                Field::new(tr("Align On:")).id_salt("tabs_align_on").sizing(Sizing::Content).show(ui, |ui, _| {
+                    let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
+                    let align_on = style_kit::committed_text(ui, "tabs_align_on", tr("Align On:"), sel.map_or("", |s| s.align_on.as_str()), char_tab);
+                    if let (Some(c), Some(i)) = (align_on, selected) {
+                        cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
+                    }
+                });
+                if panel_snap(ui, true, &target, tr("Position panel above text frame"), screen.is_some()) {
+                    snap_now = true;
+                }
+                panel_menu(ui, &lang, true, &target, selected, &mut cmds);
+            });
+            let out = TabRuler::new(tr("Tabs"), tabs.clone(), (left, first, right), width, unit, selected)
+                .scale(snap_scale)
+                .id_salt("tabs_ruler")
+                .sizing(Sizing::FillWidth)
+                .show(ui);
+            edit = out.edit;
+        });
+        edit
+    } else {
+        None
+    };
+    #[cfg(target_arch = "wasm32")]
+    let edit = None;
+    if framework {
+        match edit {
+            Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
+            Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
+            Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+            Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
+            Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
+            None => {}
+        }
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if let Some(a) = panel_alignments(ui, &lang, framework, &target, current_align) {
+                app.ui.tabs_panel.align = a;
+                if let Some(i) = selected {
+                    cmds.push(("type.tabs.change", json!({"index": i, "align": a})));
+                }
             }
-        }
-        ui.add_space(6.0);
-        crate::rtl::label(ui, tr("X:"));
-        if let Some(x) = crate::widgets::measure(ui, "tabs_x", sel.map(|s| s.position), unit, 72.0) {
-            match selected {
-                Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-                None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
+            ui.add_space(6.0);
+            crate::rtl::label(ui, tr("X:"));
+            if let Some(x) = crate::widgets::measure(ui, "tabs_x", sel.map(|s| s.position), unit, 72.0) {
+                match selected {
+                    Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+                    None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
+                }
             }
+            crate::rtl::label(ui, tr("Leader:"));
+            let leader = text_commit(ui, "leader", sel.map_or("", |s| s.leader.as_str()), 36.0, sel.is_some(), tr("Leader:"));
+            if let (Some(l), Some(i)) = (leader, selected) {
+                cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
+            }
+            crate::rtl::label(ui, tr("Align On:"));
+            let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
+            let align_on = text_commit(ui, "alignOn", sel.map_or("", |s| s.align_on.as_str()), 18.0, char_tab, tr("Align On:"));
+            if let (Some(c), Some(i)) = (align_on, selected) {
+                cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
+            }
+            ui.add_space(6.0);
+            let snap_tip = tr("Position panel above text frame");
+            if panel_snap(ui, framework, &target, snap_tip, screen.is_some()) {
+                snap_now = true;
+            }
+            panel_menu(ui, &lang, framework, &target, selected, &mut cmds);
+        });
+        ui.add_space(4.0);
+        let r = Ruler { tabs: &tabs, left, first, right, width, unit, selected, scale: app.ui.tabs_panel.snap };
+        match ruler(ui, "panel", &r) {
+            Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
+            Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
+            Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+            Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
+            Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
+            None => {}
         }
-        crate::rtl::label(ui, tr("Leader:"));
-        let leader = text_commit(ui, "leader", sel.map_or("", |s| s.leader.as_str()), 36.0, sel.is_some(), tr("Leader:"));
-        if let (Some(l), Some(i)) = (leader, selected) {
-            cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
-        }
-        crate::rtl::label(ui, tr("Align On:"));
-        let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
-        let align_on = text_commit(ui, "alignOn", sel.map_or("", |s| s.align_on.as_str()), 18.0, char_tab, tr("Align On:"));
-        if let (Some(c), Some(i)) = (align_on, selected) {
-            cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
-        }
-        ui.add_space(6.0);
-        let snap_tip = tr("Position panel above text frame");
-        if panel_snap(ui, framework, &target, snap_tip, screen.is_some()) {
-            snap_now = true;
-        }
-        panel_menu(ui, &lang, framework, &target, selected, &mut cmds);
-    });
-    ui.add_space(4.0);
-    let r = Ruler { tabs: &tabs, left, first, right, width, unit, selected, scale: app.ui.tabs_panel.snap };
-    match ruler(ui, "panel", &r) {
-        Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
-        Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
-        Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-        Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
-        Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
-        None => {}
     }
     if snap_now {
         app.ui.tabs_panel.snap_request = 2;

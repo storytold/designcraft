@@ -6,52 +6,143 @@ use serde_json::json;
 use crate::DesignApp;
 use crate::theme::Tokens;
 
-fn action(
-    ui: &mut egui::Ui,
-    framework: bool,
-    identity: (Option<u64>, Option<u64>, &'static str),
-    label: &str,
-    enabled: bool,
-    small: bool,
-    legacy: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::buttons::Button;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::Variant;
-
-        return Button::new(label.to_owned())
-            .id_salt(("notes-action", identity))
-            .enabled(enabled)
-            .variant(if small { Variant::GHOST } else { Variant::SECONDARY })
-            .show(ui)
-            .clicked();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, identity, label, enabled, small);
-    legacy(ui).clicked()
+/// A button of the native notes list.
+fn legacy_action(ui: &mut egui::Ui, label: &str, enabled: bool, small: bool) -> bool {
+    let button = if small { egui::Button::new(crate::rtl::widget(ui, label)).small() } else { egui::Button::new(crate::rtl::widget(ui, label)) };
+    ui.add_enabled(enabled, button).clicked()
 }
 
-/// The draft remains the existing temporary UI string; creating a note is still only the New action's command.
-fn draft_field(ui: &mut egui::Ui, framework: bool, id: egui::Id, language: &str, draft: &mut String) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
-        let label = crate::i18n::tr(language, "Note text");
-        craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::bound(draft))
+/// What a note's buttons ask for.
+#[cfg(not(target_arch = "wasm32"))]
+enum NoteAction {
+    GoTo { story: serde_json::Value, at: u64 },
+    Convert { story: serde_json::Value, id: serde_json::Value },
+    Split { story: serde_json::Value, id: serde_json::Value, at: usize },
+    Delete { story: serde_json::Value, id: serde_json::Value },
+}
+
+/// The notes list on the framework: the draft, New Note at Cursor, and a card per note with its text (read-only, with the
+/// caret Split Note splits at) and its Go To, Convert to Text, Split Note and Delete buttons. A note is its story and id,
+/// never its place in the list.
+#[cfg(not(target_arch = "wasm32"))]
+fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_panels::sections::GroupBox;
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::{TypeRole, Variant};
+    use craft_ui_widgets::text::TextField;
+
+    let Ok(list) = app.session.execute("note.list", &json!({})) else { return };
+    let notes = list.as_array().cloned().unwrap_or_default();
+    let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some());
+    let story_id = app.session.active().and_then(|d| d.selection.text.as_ref().map(|s| s.story.0));
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let id = egui::Id::unique("new_note_text");
+    let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let mut create = false;
+    let mut actions: Vec<NoteAction> = Vec::new();
+    Stack::new().id_salt("notes").fill_width().show(ui, |ui, _| {
+        let label = tr("Note text");
+        // The draft remains the existing temporary UI string; creating a note is still only the New action's command.
+        TextField::new(label.clone(), Bind::bound(&mut draft))
             .id(id.with("editor"))
-            .placeholder(label.to_owned())
+            .placeholder(label)
             .lines(2)
             .limit(None)
             .tab_inserts(false)
             .keeps_on_escape()
             .sizing(Sizing::FillWidth)
             .show(ui);
-        return;
+        create = Button::new(tr("New Note at Cursor"))
+            .id_salt(("notes-action", (story_id, None::<u64>, "new")))
+            .enabled(has_text && !draft.trim().is_empty())
+            .variant(Variant::SECONDARY)
+            .show(ui)
+            .clicked();
+        Divider::horizontal().show(ui);
+        if notes.is_empty() {
+            Text::new(tr("No notes in this document.")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        }
+        for n in &notes {
+            let (story, nid, at) = (n["story"].clone(), n["id"].clone(), n["at"].as_u64().unwrap_or(0));
+            let identity = (story.as_u64(), nid.as_u64());
+            let text = n["text"].as_str().unwrap_or("").to_owned();
+            let author = n["author"].as_str().unwrap_or("").to_owned();
+            // The caret Split Note splits at is the text field's own, kept with the note.
+            let caret_id = ui.make_persistent_id(("notes-caret", identity));
+            let mut caret: usize = ui.data(|d| d.get_temp(caret_id)).unwrap_or(0);
+            GroupBox::new(author, None).id_salt(("notes-row", identity)).show(ui, |ui, _| {
+                TextField::new(tr("Note text"), Bind::given(text.clone()))
+                    .id_salt(("note_text", identity))
+                    .read_only(true)
+                    .lines(2)
+                    .max_lines(6)
+                    .limit(None)
+                    .caret(Bind::bound(&mut caret))
+                    .sizing(Sizing::FillWidth)
+                    .show(ui);
+                // Strictly inside the text: a caret at either end splits nothing.
+                let split_at = (caret > 0 && caret < text.len() && text.is_char_boundary(caret)).then_some(caret);
+                Row::new().id_salt(("notes-actions", identity)).show(ui, |ui, _| {
+                    let button = |ui: &mut egui::Ui, key: &'static str, label: &str, enabled: bool| {
+                        Button::new(label.to_owned())
+                            .id_salt(("notes-action", (identity.0, identity.1, key)))
+                            .enabled(enabled)
+                            .variant(Variant::GHOST)
+                            .show(ui)
+                            .clicked()
+                    };
+                    if button(ui, "go-to", &tr("Go To"), true) {
+                        actions.push(NoteAction::GoTo { story: story.clone(), at });
+                    }
+                    if button(ui, "convert", &tr("Convert to Text"), true) {
+                        actions.push(NoteAction::Convert { story: story.clone(), id: nid.clone() });
+                    }
+                    if button(ui, "split", &tr("Split Note"), split_at.is_some())
+                        && let Some(at) = split_at
+                    {
+                        actions.push(NoteAction::Split { story: story.clone(), id: nid.clone(), at });
+                    }
+                    if button(ui, "delete", &tr("Delete"), true) {
+                        actions.push(NoteAction::Delete { story: story.clone(), id: nid.clone() });
+                    }
+                });
+            });
+            ui.data_mut(|d| d.insert_temp(caret_id, caret));
+        }
+    });
+    if create {
+        match app.run("note.new", json!({"text": draft.trim()})) {
+            Ok(_) => draft.clear(),
+            Err(e) => app.status_error("Notes", e),
+        }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, id);
+    ui.data_mut(|d| d.insert_temp(id, draft));
+    for action in actions {
+        match action {
+            NoteAction::GoTo { story, at } => {
+                let _ = app.run("text.select", json!({"story": story, "anchor": at, "focus": at + 3}));
+            }
+            NoteAction::Convert { story, id } => {
+                let _ = app.run("note.convertToText", json!({"story": story, "id": id}));
+            }
+            NoteAction::Split { story, id, at } => {
+                if let Err(e) = app.run("note.split", json!({"story": story, "id": id, "at": at})) {
+                    app.status_error("Notes", e);
+                }
+            }
+            NoteAction::Delete { story, id } => {
+                let _ = app.run("note.delete", json!({"story": story, "id": id}));
+            }
+        }
+    }
+}
+
+/// The draft of a new note in the native list.
+fn legacy_draft_field(ui: &mut egui::Ui, language: &str, draft: &mut String) {
     ui.add(
         egui::TextEdit::multiline(draft)
             .hint_text(crate::rtl::widget(ui, crate::i18n::tr(language, "Note text")))
@@ -62,21 +153,19 @@ fn draft_field(ui: &mut egui::Ui, framework: bool, id: egui::Id, language: &str,
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
+    if app.framework_installed {
+        show_framework(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let Ok(list) = app.session.execute("note.list", &json!({})) else { return };
     let notes = list.as_array().cloned().unwrap_or_default();
     let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some());
     let id = egui::Id::unique("new_note_text");
     let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    draft_field(ui, framework, id, &app.ui.language, &mut draft);
+    legacy_draft_field(ui, &app.ui.language, &mut draft);
     let new_label = crate::i18n::tr(&app.ui.language, "New Note at Cursor");
-    let story_id = app.session.active().and_then(|d| d.selection.text.as_ref().map(|s| s.story.0));
-    if action(ui, framework, (story_id, None, "new"), new_label, has_text && !draft.trim().is_empty(), false, |ui| {
-        ui.add_enabled(has_text && !draft.trim().is_empty(), egui::Button::new(crate::rtl::widget(ui, new_label)))
-    }) {
+    if legacy_action(ui, new_label, has_text && !draft.trim().is_empty(), false) {
         match app.run("note.new", json!({"text": draft.trim()})) {
             Ok(_) => draft.clear(),
             Err(e) => app.status_error("Notes", e),
@@ -92,53 +181,33 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     for n in notes {
         let (story, nid, at) = (n["story"].clone(), n["id"].clone(), n["at"].as_u64().unwrap_or(0));
-        let identity = (story.as_u64(), nid.as_u64());
-        let mut draw = |ui: &mut egui::Ui| {
-            ui.group(|ui| {
-                let author = n["author"].as_str().unwrap_or("");
-                if !author.is_empty() {
-                    ui.label(egui::RichText::new(author).size(10.5).color(t.text_dim));
+        ui.group(|ui| {
+            let author = n["author"].as_str().unwrap_or("");
+            if !author.is_empty() {
+                ui.label(egui::RichText::new(author).size(10.5).color(t.text_dim));
+            }
+            let mut text = n["text"].as_str().unwrap_or("");
+            let text_id = egui::Id::unique(("note_text", story.as_u64(), nid.as_u64()));
+            ui.add(egui::TextEdit::multiline(&mut text).id(text_id).frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
+            let split_at = split_point(ui.ctx(), text_id, text);
+            ui.horizontal(|ui| {
+                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Go To"), true, true) {
+                    let _ = app.run("text.select", json!({"story": story, "anchor": at, "focus": at + 3}));
                 }
-                let mut text = n["text"].as_str().unwrap_or("");
-                let text_id = egui::Id::unique(("note_text", story.as_u64(), nid.as_u64()));
-                ui.add(egui::TextEdit::multiline(&mut text).id(text_id).frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
-                let split_at = split_point(ui.ctx(), text_id, text);
-                ui.horizontal(|ui| {
-                    let label = crate::i18n::tr(&app.ui.language, "Go To");
-                    if action(ui, framework, (story.as_u64(), nid.as_u64(), "go-to"), label, true, true, |ui| {
-                        ui.small_button(crate::rtl::widget(ui, label))
-                    }) {
-                        let _ = app.run("text.select", json!({"story": story, "anchor": at, "focus": at + 3}));
-                    }
-                    let label = crate::i18n::tr(&app.ui.language, "Convert to Text");
-                    if action(ui, framework, (story.as_u64(), nid.as_u64(), "convert"), label, true, true, |ui| {
-                        ui.small_button(crate::rtl::widget(ui, label))
-                    }) {
-                        let _ = app.run("note.convertToText", json!({"story": story, "id": nid}));
-                    }
-                    let label = crate::i18n::tr(&app.ui.language, "Split Note");
-                    if action(ui, framework, (story.as_u64(), nid.as_u64(), "split"), label, split_at.is_some(), true, |ui| {
-                        let split = egui::Button::new(crate::rtl::widget(ui, label)).small();
-                        ui.add_enabled(split_at.is_some(), split)
-                    }) && let Some(at) = split_at
-                        && let Err(e) = app.run("note.split", json!({"story": story, "id": nid, "at": at}))
-                    {
-                        app.status_error("Notes", e);
-                    }
-                    let label = crate::i18n::tr(&app.ui.language, "Delete");
-                    if action(ui, framework, (story.as_u64(), nid.as_u64(), "delete"), label, true, true, |ui| {
-                        ui.small_button(crate::rtl::widget(ui, label))
-                    }) {
-                        let _ = app.run("note.delete", json!({"story": story, "id": nid}));
-                    }
-                });
-            })
-        };
-        if framework {
-            ui.push_id(("notes-row", identity), draw);
-        } else {
-            draw(ui);
-        }
+                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Convert to Text"), true, true) {
+                    let _ = app.run("note.convertToText", json!({"story": story, "id": nid}));
+                }
+                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Split Note"), split_at.is_some(), true)
+                    && let Some(at) = split_at
+                    && let Err(e) = app.run("note.split", json!({"story": story, "id": nid, "at": at}))
+                {
+                    app.status_error("Notes", e);
+                }
+                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Delete"), true, true) {
+                    let _ = app.run("note.delete", json!({"story": story, "id": nid}));
+                }
+            });
+        });
     }
 }
 
@@ -454,7 +523,6 @@ mod installed_action_tests {
         assert_eq!(list(&mut h), notes);
     }
 }
-
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod draft_composition_tests {

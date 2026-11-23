@@ -191,38 +191,84 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     show_contents(app, ui);
 }
 
+/// A line of the panel's own text: a message, or the panel's title when `strong`.
+fn note(controls: &Controls, ui: &mut egui::Ui, text: &str, strong: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if controls.framework {
+        use craft_ui_widgets::contract::{Props as _, Show as _, Sizing};
+        use craft_ui_widgets::display::Text;
+        use craft_ui_widgets::style::TypeRole;
+
+        let text = Text::new(text.to_owned()).sizing(Sizing::FillWidth);
+        if strong {
+            text.role(TypeRole::BodyStrong).show(ui);
+        } else {
+            text.show(ui);
+        }
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = controls;
+    if strong {
+        crate::rtl::label(ui, egui::RichText::new(text).strong());
+    } else {
+        crate::rtl::label(ui, text);
+    }
+}
+
 fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let controls = Controls::new(app);
+    let lang = app.ui.language.clone();
     if super::text_attrs(app).is_none() {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
+        note(&controls, ui, crate::i18n::tr(&lang, "Select text or a text frame."), false);
         return;
     }
     let offered = offered(app);
     if offered.features.is_empty() && offered.sets.is_empty() {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "The selected fonts have no OpenType features."));
+        note(&controls, ui, crate::i18n::tr(&lang, "The selected fonts have no OpenType features."), false);
         return;
     }
-    let controls = Controls::new(app);
-    let lang = app.ui.language.clone();
     let mut changes = Changes::default();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Typography")).strong());
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        section(ui, &lang, "Ligatures", |ui| switches(&controls, ui, &lang, &offered, LIGATURES, &mut changes));
-        section(ui, &lang, "Alternates", |ui| switches(&controls, ui, &lang, &offered, ALTERNATES, &mut changes));
-        section(ui, &lang, "Stylistic Sets", |ui| stylistic_sets(&controls, ui, &lang, &offered, &mut changes));
-        section(ui, &lang, "Figure Style", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_STYLE, &FIGURE_WIDTH, &mut changes));
-        section(ui, &lang, "Figure Width", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_WIDTH, &FIGURE_STYLE, &mut changes));
-        section(ui, &lang, "Figure Position", |ui| {
-            choices(&controls, ui, &lang, &offered, FIGURE_POSITION, &mut changes);
-            switches(&controls, ui, &lang, &offered, FRACTION_AND_ORDINAL, &mut changes);
+    note(&controls, ui, crate::i18n::tr(&lang, "Typography"), true);
+    let sections = |ui: &mut egui::Ui, changes: &mut Changes| {
+        section(&controls, ui, &lang, "Ligatures", |ui| switches(&controls, ui, &lang, &offered, LIGATURES, changes));
+        section(&controls, ui, &lang, "Alternates", |ui| switches(&controls, ui, &lang, &offered, ALTERNATES, changes));
+        section(&controls, ui, &lang, "Stylistic Sets", |ui| stylistic_sets(&controls, ui, &lang, &offered, changes));
+        section(&controls, ui, &lang, "Figure Style", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_STYLE, &FIGURE_WIDTH, changes));
+        section(&controls, ui, &lang, "Figure Width", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_WIDTH, &FIGURE_STYLE, changes));
+        section(&controls, ui, &lang, "Figure Position", |ui| {
+            choices(&controls, ui, &lang, &offered, FIGURE_POSITION, changes);
+            switches(&controls, ui, &lang, &offered, FRACTION_AND_ORDINAL, changes);
         });
-        section(ui, &lang, "Capitals", |ui| choices(&controls, ui, &lang, &offered, CAPITALS, &mut changes));
-        section(ui, &lang, "Other Features", |ui| switches(&controls, ui, &lang, &offered, &other_toggles(), &mut changes));
-    });
+        section(&controls, ui, &lang, "Capitals", |ui| choices(&controls, ui, &lang, &offered, CAPITALS, changes));
+        section(&controls, ui, &lang, "Other Features", |ui| switches(&controls, ui, &lang, &offered, &other_toggles(), changes));
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if controls.framework {
+        use craft_ui_widgets::contract::{Props as _, Scroll, ShowContainer as _};
+        use craft_ui_widgets::layout_components::Stack;
+
+        let room = ui.available_height();
+        Stack::new().id_salt("typography").fill_width().scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| sections(ui, &mut changes));
+        changes.apply(app);
+        return;
+    }
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| sections(ui, &mut changes));
     changes.apply(app);
 }
 
 /// A collapsible section, open at first. Its body runs only when it has something to show.
-fn section(ui: &mut egui::Ui, lang: &str, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+fn section(controls: &Controls, ui: &mut egui::Ui, lang: &str, title: &str, mut body: impl FnMut(&mut egui::Ui)) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if controls.framework {
+        use craft_ui_panels::sections::Section;
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+
+        Section::new(crate::i18n::tr(lang, title).to_owned()).id_salt(("typography-section", title)).show(ui, |ui, _| body(ui));
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = controls;
     egui::CollapsingHeader::new(crate::i18n::tr(lang, title)).id_salt(title).default_open(true).show(ui, body);
 }
 
