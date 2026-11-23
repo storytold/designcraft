@@ -490,6 +490,7 @@ mod tests {
     use super::*;
     use crate::theme::Brightness;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
+    use egui_kittest::kittest::NodeT as _;
     use egui_kittest::{Harness, kittest::Queryable};
 
     type Window = Harness<'static, DesignApp>;
