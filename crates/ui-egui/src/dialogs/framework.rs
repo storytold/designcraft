@@ -44,6 +44,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
     #[allow(clippy::match_single_binding)]
     match id {
         // Ported dialogs: one arm each, `"id" => Some(module::FORM),`.
+        "cellOptions" | "diagonalLines" => Some(super::cell_options_form::FORM),
         _ => None,
     }
 }

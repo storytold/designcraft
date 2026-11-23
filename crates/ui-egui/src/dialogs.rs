@@ -11,6 +11,8 @@ use crate::app::file_dialogs::{Bound, with_path};
 use crate::theme::semibold;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod cell_options_form;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework;
 mod options;
 mod style_cjk;
