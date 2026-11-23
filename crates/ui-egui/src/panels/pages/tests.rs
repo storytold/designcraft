@@ -1082,4 +1082,43 @@ mod framework_path {
         assert_eq!(crate::canvas::current_page(h.state()), Some(2));
         assert!(selected(&h, "Page 3"));
     }
+
+    /// The pages area is the framework's scroll region: the wheel over it scrolls the spreads, and pages out of view are
+    /// not built until they scroll in.
+    #[test]
+    fn the_pages_area_scrolls_with_the_wheel() {
+        let mut h = open(app_with(60, false), vec2(280.0, 520.0));
+        assert!(h.query_by_label("Page 50").is_none(), "Page 50 starts out of view");
+        let over = pos_of(&h, "Page 1");
+        event(&mut h, Event::PointerMoved(over), Modifiers::NONE);
+        for _ in 0..40 {
+            event(
+                &mut h,
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -400.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                    source: egui::MouseWheelSource::Wheel,
+                },
+                Modifiers::NONE,
+            );
+        }
+        steps(&mut h, 4);
+        assert!(h.query_by_label("Page 50").is_some(), "Page 50 scrolled into view");
+        assert!(h.query_by_label("Page 1").is_none(), "Page 1 scrolled out of it");
+    }
+
+    /// The area follows the current page: going to a page far down brings its spread into view, once.
+    #[test]
+    fn the_pages_area_follows_the_current_page() {
+        let mut h = open(app_with(60, false), vec2(280.0, 520.0));
+        assert!(h.query_by_label("Page 45").is_none(), "Page 45 starts out of view");
+        let canvas = h.state().canvas_rect;
+        assert!(canvas.is_some());
+        crate::canvas::go_to_page(h.state_mut(), 44);
+        steps(&mut h, 12);
+        let page = h.query_by_label("Page 45").expect("the current page's spread was scrolled into view").rect();
+        assert!(page.min.y >= 0.0 && page.max.y <= 520.0, "the page lies inside the panel: {page:?}");
+    }
 }
