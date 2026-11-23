@@ -2773,3 +2773,29 @@ fn preflight_hebrew_page_number_range() {
         assert!(result["issues"].as_array().unwrap().iter().all(|i| i["kind"] != "hebrewNumberRange"));
     }
 }
+
+#[test]
+fn preflight_hebrew_list_number_range() {
+    for style in ["hebrew", "hebrewPlain"] {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "First\nSecond"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 12})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"listType": "numbers", "numberStyle": style}})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"startAt": 999}})).unwrap();
+        let ranges = |s: &mut Session| -> Vec<String> {
+            let result = s.execute("preflight.run", &json!({})).unwrap();
+            result["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["kind"] == "hebrewNumberRange")
+                .map(|i| i["message"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ranges(&mut s), ["List 1000: Hebrew numbers stop at 999, so it and later items print in Arabic digits"]);
+        s.execute("type.para", &json!({"attrs": {"startAt": 1}})).unwrap();
+        assert!(ranges(&mut s).is_empty(), "items 1 and 2 stay within 1-999");
+    }
+}

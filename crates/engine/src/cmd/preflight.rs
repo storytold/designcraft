@@ -293,7 +293,7 @@ fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<
 }
 
 /// Warns once per Hebrew-numbered section at its first page numbered past 999, and when Hebrew
-/// footnote or endnote numbering reaches past 999: those numbers print in Arabic digits
+/// footnote, endnote or list numbering reaches past 999: those numbers print in Arabic digits
 /// (`NumberStyle::format`'s fallback).
 fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
     use designcraft_doc::NumberStyle::{Hebrew, HebrewPlain};
@@ -342,6 +342,60 @@ fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
                 page: None,
             });
         }
+    }
+    let mut stories: Vec<_> = d.stories.values().collect();
+    stories.sort_by_key(|st| st.id.0);
+    for st in stories {
+        let item = st.frames.first().map(|f| f.0);
+        let page = st.frames.first().and_then(|f| d.page_of_item(*f));
+        hebrew_list_range(d, st, item, page, 0, out);
+    }
+}
+
+fn hebrew_list_range(d: &Document, story: &designcraft_doc::Story, item: Option<u64>, page: Option<usize>, depth: usize, out: &mut Vec<Issue>) {
+    use designcraft_doc::{
+        ListCounter, ListType,
+        NumberStyle::{Hebrew, HebrewPlain},
+    };
+    use std::collections::HashMap;
+    if depth > 16 {
+        return;
+    }
+    let mut unnamed = ListCounter::default();
+    let mut named: HashMap<String, ListCounter> = HashMap::new();
+    let mut warned = false;
+    for (p, r) in story.paras.iter().zip(story.para_ranges()) {
+        let (pp, _) = d.styles.resolve_para(p);
+        let n = match pp.list_type {
+            ListType::Numbers if r.is_empty() => continue,
+            ListType::Numbers if !pp.list_name.is_empty() => {
+                named.entry(pp.list_name.clone()).or_insert_with(|| d.list_start(story.id, &pp.list_name)).advance(&pp)
+            }
+            ListType::Numbers => unnamed.advance(&pp),
+            ListType::None => {
+                unnamed = ListCounter::default();
+                continue;
+            }
+            ListType::Bullets => continue,
+        };
+        if !warned && matches!(pp.number_style, Hebrew | HebrewPlain) && n > 999 {
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("List {n}: Hebrew numbers stop at 999, so it and later items print in Arabic digits"),
+                item,
+                page,
+            });
+            warned = true;
+        }
+    }
+    for table in story.tables.values() {
+        for cell in &table.cells {
+            hebrew_list_range(d, &cell.text, item, page, depth + 1, out);
+        }
+    }
+    for note in story.notes.iter().chain(&story.endnotes) {
+        hebrew_list_range(d, &note.text, item, page, depth + 1, out);
     }
 }
 
