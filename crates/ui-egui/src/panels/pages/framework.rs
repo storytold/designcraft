@@ -15,7 +15,8 @@ use craft_ui_panels::sections::DropAction;
 use craft_ui_widgets::buttons::{Button, IconButton};
 use craft_ui_widgets::contract::overlay::Anchor;
 use craft_ui_widgets::contract::{
-    Access, Bind, CollectionEvent, Common, Component, Cx, DisabledLook, DropMark, DropOperation, DropTarget, LeadSource, ListDrag, MeasureCx,
+    Access, Bind, CollectionEvent, Common, Component, Cx, DisabledLook, DropMark, DropOperation, DropTarget, Focus as _, LeadSource, ListDrag,
+    MeasureCx,
     NoValue, Outcome, PaintUi, Pointer as _, PopupKind, Props as _, Role, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
     Sizing, Trigger,
 };
