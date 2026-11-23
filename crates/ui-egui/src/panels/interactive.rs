@@ -538,7 +538,7 @@ mod framework {
 
     /// The hint an empty list shows.
     fn empty(ui: &mut egui::Ui, text: String) {
-        Text::new(text).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        Text::new(text).id_salt("interactive_empty").role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
     }
 
     fn list(app: &mut DesignApp, command: &str) -> Vec<Value> {
@@ -572,7 +572,7 @@ mod framework {
                 }
                 create = primary(app, ui, "hyperlink.create", "New", has_target, Some("Hyperlink from the selected text or frames"));
             });
-            Divider::horizontal().show(ui);
+            Divider::horizontal().id_salt(("interactive_divider", 0)).show(ui);
             if links.is_empty() {
                 empty(ui, tr(&lang, "No hyperlinks. Select text or a frame, type a URL and click New."));
             }
@@ -605,7 +605,7 @@ mod framework {
         let (mut add, mut go, mut delete) = (false, None, None);
         Stack::new().id_salt(("bookmarks", document(app))).fill_width().show(ui, |ui, _| {
             add = primary(app, ui, "bookmark.add", "New Bookmark for This Page", true, None);
-            Divider::horizontal().show(ui);
+            Divider::horizontal().id_salt(("interactive_divider", 1)).show(ui);
             if marks.is_empty() {
                 empty(ui, tr(&lang, "No bookmarks. They become the PDF outline."));
             }
@@ -646,7 +646,7 @@ mod framework {
         let mut commands = Commands::new();
         Stack::new().id_salt(("articles", document(app))).fill_width().show(ui, |ui, _| {
             new = primary(app, ui, "article.new", "New Article from Selection", has_sel, None);
-            Divider::horizontal().show(ui);
+            Divider::horizontal().id_salt(("interactive_divider", 2)).show(ui);
             if all.is_empty() {
                 empty(ui, tr(&lang, "No articles: exports follow page order."));
             }
@@ -662,9 +662,9 @@ mod framework {
                     if let Some(&on) = out.events.committed().filter(|on| **on != export) {
                         commands.push(("article.options", json!({"name": name, "export": on})));
                     }
-                    Text::new(name.clone()).role(TypeRole::BodyStrong).show(ui);
+                    Text::new(name.clone()).id_salt("article_name").role(TypeRole::BodyStrong).show(ui);
                     let count = crate::i18n::count_label(&lang, "objects", article["items"].as_array().map_or(0, Vec::len));
-                    Text::new(count).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+                    Text::new(count).id_salt("article_count").role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
                     if row_action(app, ui, ("article", &name), "article.add", "Add", has_sel, Some("Add the selection")) {
                         commands.push(("article.add", json!({"name": name})));
                     }
@@ -788,10 +788,14 @@ mod framework {
             {
                 let _ = app.run("view.tagMarkers", json!({"on": on}));
             }
-            Divider::horizontal().show(ui);
-            Text::new(tr(&lang, "Structure")).role(TypeRole::BodyStrong).show(ui);
+            Divider::horizontal().id_salt("tags_divider_structure").show(ui);
+            Text::new(tr(&lang, "Structure")).id_salt("tags_structure_heading").role(TypeRole::BodyStrong).show(ui);
             let structure = app.session.execute("xml.structure", &json!({})).unwrap_or_default();
-            Text::new(structure["root"].as_str().unwrap_or("Root").to_owned()).role(TypeRole::Caption).shade(Shade::Muted).show(ui);
+            Text::new(structure["root"].as_str().unwrap_or("Root").to_owned())
+                .id_salt("tags_structure_root")
+                .role(TypeRole::Caption)
+                .shade(Shade::Muted)
+                .show(ui);
             let structure_id = actions.with(("structure", structure.to_string()));
             for el in structure["elements"].as_array().cloned().unwrap_or_default() {
                 let text: String = el["text"].as_str().unwrap_or("").chars().take(40).collect();
@@ -846,16 +850,16 @@ mod framework {
             });
             match &draft.problems {
                 Some(problems) if problems.is_empty() => {
-                    Text::new(tr(&lang, "The structure is valid.")).role(TypeRole::Caption).shade(Shade::Muted).show(ui);
+                    Text::new(tr(&lang, "The structure is valid.")).id_salt("tags_valid").role(TypeRole::Caption).shade(Shade::Muted).show(ui);
                 }
                 Some(problems) => {
-                    for p in problems {
-                        Text::new(format!("⚠ {p}")).role(TypeRole::Caption).sizing(Sizing::FillWidth).show(ui);
+                    for (at, p) in problems.iter().enumerate() {
+                        Text::new(format!("⚠ {p}")).id_salt(("tags_problem", at)).role(TypeRole::Caption).sizing(Sizing::FillWidth).show(ui);
                     }
                 }
                 None => {}
             }
-            Divider::horizontal().show(ui);
+            Divider::horizontal().id_salt("tags_divider_xml").show(ui);
             Row::new().id_salt("tags_xml").fill_width().wrap(true).show(ui, |ui, _| {
                 for (key, label) in [("export-xml", "Export XML…"), ("import-xml", "Import XML…")] {
                     let label = tr(&lang, label);

@@ -501,10 +501,16 @@ mod tests {
         h.state().ui.dialog.as_ref().expect("New Document is open")
     }
 
-    /// The centre of the preset card named `name`: its tile, not the details' text of the same words.
+    /// The centre of the preset card named `name`: its tile, whose accessible name is the name then its size
+    /// (`{name}, {details}`), not the details' text of the same words.
     fn card(h: &Harness<'_, DesignApp>, name: &str) -> egui::Pos2 {
-        let tile =
-            h.query_all_by_label(name).find(|node| !matches!(node.accesskit_node().role(), Role::Label | Role::Tab)).expect("a card of that name");
+        let joined = format!("{name}, ");
+        let tile = h
+            .query_all_by(|node| {
+                !matches!(node.role(), Role::Label | Role::Tab) && node.label().is_some_and(|label| label == name || label.starts_with(&joined))
+            })
+            .next()
+            .expect("a card of that name");
         tile.rect().center()
     }
 
