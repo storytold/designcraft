@@ -1169,12 +1169,17 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             _ => {}
         }
     }
+    // The panel last opened follows the panel the person picks or moves the focus into; a focus that stays in a panel
+    // pass after pass, and a pass in which a body opened a panel itself (the Properties panel's Stroke link runs
+    // `window.panel`), leave it alone.
+    let moved_in = output.focused.clone().filter(|panel| app.ui.docking_focused.as_ref() != Some(panel));
+    if let Some(panel) = output.picked.clone().or(moved_in)
+        && panel != CANVAS
+        && app.ui.docking_opened == opened_before
+    {
+        app.ui.docking_opened = Some(panel);
+    }
     if let Some(panel) = output.focused.or(output.picked) {
-        // A panel a body opened this pass (the Properties panel's Stroke link runs `window.panel`) stays the one last
-        // opened; the press that ran it focused the body's own panel.
-        if panel != CANVAS && app.ui.docking_opened == opened_before {
-            app.ui.docking_opened = Some(panel.clone());
-        }
         app.ui.docking_focused = Some(panel);
     }
     if let Some(error) = output.error {

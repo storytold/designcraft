@@ -671,7 +671,8 @@ fn dock_menu_button_opens_the_active_panel_menu() {
     h.get_by_label("Duplicate Spread").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
-    assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu");
+    let open = h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("designcraft-pages-panel-menu-open")));
+    assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu (its open state: {open:?})");
 }
 
 /// InDesign's panel tab menu (Learn Skills Daily's InDesign course, 6:20): Close, Close Tab Group,
@@ -887,7 +888,8 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
         assert!(shown(&h, item), "{item}");
     }
     assert!(!shown(&h, "Close Panel"));
-    assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu");
+    let open = h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("designcraft-pages-panel-menu-open")));
+    assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu (its open state: {open:?})");
 }
 
 fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize) {
