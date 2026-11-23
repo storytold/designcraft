@@ -1443,3 +1443,6 @@ mod ui223_datamerge_workflow_tests {
         no_idle_replay(&mut h);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;

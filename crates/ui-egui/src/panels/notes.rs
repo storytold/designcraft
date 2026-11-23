@@ -1070,3 +1070,6 @@ mod draft_composition_tests {
         assert_draft(&h, "keep through sizing αβ😀");
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
