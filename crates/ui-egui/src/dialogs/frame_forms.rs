@@ -44,13 +44,13 @@ const SIDES: [&str; 4] = ["insetTop", "insetLeft", "insetBottom", "insetRight"];
 // Controls over the draft
 
 /// `body` under the side label `label`, which names it.
-fn field(ui: &mut Ui, label: &str, salt: &str, mut body: impl FnMut(&mut Ui)) {
+pub(super) fn field(ui: &mut Ui, label: &str, salt: &str, mut body: impl FnMut(&mut Ui)) {
     Field::new(label.to_owned()).id_salt(("frame_form_field", salt.to_owned())).show(ui, |ui, _| body(ui));
 }
 
 /// A text field over the draft text of `key`. Every edit is written to the draft as it is typed, so OK always sees what
 /// is on screen. Returns the text before and after an edit that ended in this pass.
-fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) -> Option<(Option<String>, String)> {
+pub(super) fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) -> Option<(Option<String>, String)> {
     let out =
         TextField::new(label.to_owned(), Bind::given(d.s(key))).id_salt(("frame_form_text", key)).limit(None::<usize>).enabled(enabled).show(ui);
     if let Some(next) = out.events.landed().filter(|next| **next != d.s(key)).cloned() {
@@ -67,7 +67,7 @@ fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) -> O
 /// A measure field: the committed text is worked out (typed arithmetic, any unit spelling) and written back in the
 /// document's unit, kept inside `range` when there is one; a text that is no measure goes back to what the field had.
 /// Returns the text it committed.
-fn resolved(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool, range: Option<(f64, f64)>) -> Option<String> {
+pub(super) fn resolved(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool, range: Option<(f64, f64)>) -> Option<String> {
     let (before, after) = text(ui, d, key, label, enabled)?;
     let Some(measure) = parse_measure(&after, d.unit).ok().filter(|v| v.is_finite()) else {
         if let Some(before) = before {
@@ -87,7 +87,7 @@ pub(crate) fn measure(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabl
 }
 
 /// A number field over the draft of `key`: the value it holds after an edit, kept inside `range`.
-fn number(ui: &mut Ui, d: &Dialog, key: &str, label: &str, range: (f64, f64), whole: bool, unit: Option<&'static str>) -> Option<f64> {
+pub(super) fn number(ui: &mut Ui, d: &Dialog, key: &str, label: &str, range: (f64, f64), whole: bool, unit: Option<&'static str>) -> Option<f64> {
     let field = NumberField::new(label.to_owned(), Bind::given(d.n(key).filter(|v| v.is_finite())))
         .id_salt(("frame_form_number", key))
         .range(range.0..=range.1)
@@ -102,7 +102,7 @@ fn number(ui: &mut Ui, d: &Dialog, key: &str, label: &str, range: (f64, f64), wh
 }
 
 /// A check box over the draft flag `key`.
-fn check(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) {
+pub(super) fn check(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) {
     let out = Checkbox::new(Bind::given(d.b(key))).label(label.to_owned()).id_salt(("frame_form_check", key)).enabled(enabled).show(ui);
     if let Some(on) = out.events.committed().copied().filter(|on| *on != d.b(key)) {
         d.fields.insert(key.into(), json!(on));
@@ -111,7 +111,7 @@ fn check(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) {
 
 /// A picker over the draft string of `key`, from `options` as (value, caption). A value none of them has shows as the
 /// picker's placeholder.
-fn select(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, options: &[(String, String)], enabled: bool) {
+pub(super) fn select(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, options: &[(String, String)], enabled: bool) {
     let current = d.s(key);
     let entries: Vec<Entry<String>> = options.iter().map(|(value, caption)| Entry::new(value.clone(), caption.clone())).collect();
     let mut picker =
@@ -125,18 +125,18 @@ fn select(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, options: &[(Strin
 }
 
 /// `options` captioned in the interface language.
-fn captioned(lang: &str, options: &[(&str, &str)]) -> Vec<(String, String)> {
+pub(super) fn captioned(lang: &str, options: &[(&str, &str)]) -> Vec<(String, String)> {
     options.iter().map(|(value, caption)| ((*value).to_owned(), crate::i18n::tr(lang, caption).to_string())).collect()
 }
 
 /// The nine-point picker over `current`; the point the user picked in this pass.
-fn points(ui: &mut Ui, label: &str, salt: &str, current: Option<Anchor9>) -> Option<Anchor9> {
+pub(super) fn points(ui: &mut Ui, label: &str, salt: &str, current: Option<Anchor9>) -> Option<Anchor9> {
     let out = ReferencePoint::new(label.to_owned(), Bind::given(current)).id_salt(("frame_form_points", salt.to_owned())).show(ui);
     out.events.committed().copied().flatten().filter(|picked| Some(*picked) != current)
 }
 
 /// A message under the form.
-fn message(ui: &mut Ui, text: &str) {
+pub(super) fn message(ui: &mut Ui, text: &str) {
     Text::new(text.to_owned()).shade(Shade::Muted).show(ui);
 }
 
