@@ -1,15 +1,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-//! The Opacity pilot's focused tests: the craft framework's own percent field and slider in the real
-//! Properties › Appearance row of a real document, driven with real pointer and key events.
+//! Properties › Appearance on the craft UI framework: the Opacity row's percent field, its chevron and the slider
+//! popover the chevron opens, and the section's other framework controls, in the real section of a real document,
+//! driven with real pointer and key events.
 //!
 //! Three scenarios matter. A person types a percentage into the framework's field, `object.opacity` runs,
 //! the object's opacity in the document is that ratio, and `edit.undo` puts it back in one step; a step key
 //! on the focused field is the same one step. A person drags the slider the chevron opens: the page follows
 //! the drag without a new undo step, and the release is one step. Escape during that drag goes back through
-//! the engine's own `edit.cancelPreview`. The rest are the guards the slice needs: a cancel from this row
+//! the engine's own `edit.cancelPreview`. The rest are the guards the section needs: a cancel from this row
 //! never takes another panel's preview back, the field's rect is this frame's and goes with the selection,
-//! and with the flag off the row keeps the bespoke field.
+//! without the framework's runtime the row keeps the native field, and the stroke weight field and the effects
+//! button run their engine commands as one undo step each.
 //!
 //! Geometry is the framework's own: the field and the slider are drawn inside `inspect::record`, and the
 //! rects these tests press are the hit areas the framework recorded, never a guessed percentage of the
@@ -71,7 +73,7 @@ fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     h
 }
 
-/// The rect the framework recorded for `key` in the last pass.
+/// The rect the Opacity row recorded for `key` in the last pass.
 fn rect_of(h: &Harness<'_, DesignApp>, key: &str) -> egui::Rect {
     h.state()
         .framework_opacity_fields
@@ -115,15 +117,18 @@ fn press(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
     h.run_steps(2);
 }
 
-/// A click at `at`: press and release in one go.
+/// A click at `at`, as a mouse makes it: the pointer arrives, the button goes down in the next frame and up in the
+/// one after.
 fn click(h: &mut Harness<'_, DesignApp>, at: egui::Pos2) {
     h.event(Event::PointerMoved(at));
+    h.run_steps(1);
     h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
     h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(4);
 }
 
-/// The chevron beside the field opens the framework's slider, whose track rect it returns.
+/// The chevron beside the field opens the slider popover, whose track rect it returns.
 fn open_slider(h: &mut Harness<'_, DesignApp>) -> egui::Rect {
     let more = rect_of(h, "more");
     let at = more.center();
@@ -287,7 +292,12 @@ fn the_field_rect_is_this_frames_and_goes_with_the_selection() {
     let mut h = window_harness(app);
     // The field, the framework component's own box and the row's chevron: the set the pilot records each pass.
     let keys: Vec<&str> = h.state().framework_opacity_fields.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(keys, ["opacity", "component", "more"], "the pilot's field, component and chevron are on screen: {:?}", h.state().framework_opacity_fields);
+    assert_eq!(
+        keys,
+        ["opacity", "component", "more"],
+        "the pilot's field, component and chevron are on screen: {:?}",
+        h.state().framework_opacity_fields
+    );
     h.state_mut().run("edit.deselectAll", json!({})).expect("deselect");
     h.run_steps(3);
     assert!(h.state().framework_opacity_fields.is_empty(), "stale rect with no selection: {:?}", h.state().framework_opacity_fields);
@@ -308,4 +318,28 @@ fn the_row_stays_bespoke_without_the_framework_runtime() {
     h.state_mut().run("object.opacity", json!({"opacity": 0.25})).expect("object.opacity");
     assert!((opacity(&h, id) - 0.25).abs() < 1e-12, "the bespoke row's command still runs: {}", opacity(&h, id));
     assert_eq!(undo_steps(&h) - steps, 1, "and is one undo step");
+}
+
+#[test]
+fn typing_a_stroke_weight_runs_one_stroke_step() {
+    let (app, _id) = app_with_frame();
+    let mut h = properties_harness(app, true);
+    let steps = undo_steps(&h);
+    let field = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Stroke Weight").rect();
+    type_value(&mut h, field, "3");
+    let weight = crate::panels::sel_info(h.state()).expect("the frame is selected").stroke_weight;
+    assert!((weight - 3.0).abs() < 1e-9, "the typed weight reached the document: {weight}");
+    assert_eq!(undo_steps(&h) - steps, 1, "one gesture, one undo step ({steps} → {})", undo_steps(&h));
+}
+
+#[test]
+fn the_effects_button_turns_the_drop_shadow_on_in_one_step() {
+    let (app, _id) = app_with_frame();
+    let mut h = properties_harness(app, true);
+    assert!(!crate::panels::sel_info(h.state()).expect("the frame is selected").shadow, "the frame starts without a shadow");
+    let steps = undo_steps(&h);
+    let at = h.get_by_role_and_label(egui::accesskit::Role::Button, "Effects: Drop Shadow").rect().center();
+    click(&mut h, at);
+    assert!(crate::panels::sel_info(h.state()).expect("the frame is selected").shadow, "the button turned the drop shadow on");
+    assert_eq!(undo_steps(&h) - steps, 1, "one click, one undo step ({steps} → {})", undo_steps(&h));
 }

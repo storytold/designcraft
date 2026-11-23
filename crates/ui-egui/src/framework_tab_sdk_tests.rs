@@ -1,12 +1,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-//! One bounded falsifier for the Tab diagnosis: does Tab move and commit between two FRAMEWORK stops in the same
-//! corrected host setup (event-bearing raw hook + public `set_input`)? The Transform pilot's X/Y/W/H fields are
-//! enabled alongside the Opacity field, so both stops are framework components in the same panel.
-//!
-//! If this passes, a framework-to-framework route exists and the mixed-host failure is specifically about a
-//! handoff to the host's own stops. If it fails, no such route is proven and the mixed-host failure cannot yet be
-//! attributed to a handoff gap.
+//! Tab between two FRAMEWORK stops in the app's real host setup (event-bearing raw hook + public `set_input`): from the
+//! typed Opacity field, Tab commits the draft as one undo step and moves to the next framework stop of the panel, the
+//! Opacity row's own chevron, with the Transform section's X/Y/W/H framework fields on screen in the same panel.
 
 use crate::DesignApp;
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
@@ -75,28 +71,29 @@ fn field_rect(h: &Harness<'_, DesignApp>, key: &str) -> Option<egui::Rect> {
     h.state().framework_fields.iter().rev().find(|(k, _)| k == key).map(|(_, r)| *r)
 }
 
-fn opacity_rect(h: &Harness<'_, DesignApp>) -> egui::Rect {
+/// The rect of the Opacity row's control `key` this pass: the field (`opacity`) or its chevron (`more`).
+fn opacity_rect(h: &Harness<'_, DesignApp>, key: &str) -> egui::Rect {
     h.state()
         .framework_opacity_fields
         .iter()
         .rev()
-        .find(|(k, _)| k == "opacity")
+        .find(|(k, _)| k == key)
         .map(|(_, r)| *r)
-        .expect("the Opacity pilot field is on screen")
+        .unwrap_or_else(|| panic!("the Opacity row's {key} is on screen: {:?}", h.state().framework_opacity_fields))
 }
 
 #[test]
 fn tab_between_two_framework_stops_commits_and_moves_to_the_next_framework_stop() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"title": "Two stops"})).expect("a new document");
-    // Points, so the Transform pilot really draws its framework fields (picas keep the bespoke ones).
+    // Points, so the Transform fields are the framework's number fields.
     app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).expect("points");
     let id = designcraft_doc::ItemId(app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).expect("a frame")["id"].as_u64().expect("an id"));
     app.run("selection.set", json!({"ids": [id.0]})).expect("the frame is selected");
     let mut h = window_harness(app);
-    // Both pilots must really be on screen: the Opacity field and the Transform fields.
-    let opacity = opacity_rect(&h);
-    let width = field_rect(&h, "x").expect("the Transform pilot's X field is on screen beside Opacity");
+    // Both sections must really be on screen: the Opacity field and the Transform fields.
+    let opacity = opacity_rect(&h, "opacity");
+    let width = field_rect(&h, "x").expect("the Transform section's X field is on screen beside Opacity");
     assert!(opacity.width() > 0.0 && width.width() > 0.0, "both framework stops are laid out: {opacity:?} {width:?}");
     // Type a draft into the Opacity field.
     let at = opacity.center();
@@ -123,24 +120,16 @@ fn tab_between_two_framework_stops_commits_and_moves_to_the_next_framework_stop(
     let value = f64::from(h.state().session.doc().expect("doc").doc.item(id).expect("frame").opacity);
     let next = focused(&h);
     let next_rect = next.and_then(|id| h.ctx.read_response(id).map(|r| r.rect));
-    let next_stop = field_rect(&h, "x");
-    eprintln!(
-        "SDK->SDK: in_opacity={in_opacity:?} next={next:?} next_rect={next_rect:?} x_field={next_stop:?} opacity={value} undo={} (before {steps_before})",
-        h.state().session.doc().expect("doc").history.undo.len()
-    );
     assert!((value - f64::from(0.4_f32)).abs() < 1e-12, "Tab committed the typed percentage between framework stops: {value}");
     assert_eq!(h.state().session.doc().expect("doc").history.undo.len() - steps_before, 1, "and it is one undo step");
     assert_ne!(next, Some(in_opacity), "the keyboard left the Opacity stop");
-    // The stop it landed on must be an IDENTIFIED framework stop, not merely a different id: the Transform
-    // pilot's X field — the first framework stop in the panel, which Tab wraps round to from Opacity — at the
-    // rect that pilot recorded this pass.
-    let next_stop = next_stop.expect("the Transform X field is still on screen after the move");
+    // The stop it landed on must be an IDENTIFIED framework stop, not merely a different id: the Opacity row's chevron,
+    // the framework button the row draws right after its field, at the rect the row recorded this pass.
     let landed = next_rect.expect("the stop that took the keyboard has a response rect");
-    // Its text part is narrower than the field's box, so the stop is identified by lying inside exactly one of
-    // the framework fields this pass recorded — and that one must be the Transform pilot's X field.
-    let inside: Vec<&str> = ["x", "y", "width", "height"]
-        .into_iter()
-        .filter(|key| field_rect(&h, key).is_some_and(|r| r.contains_rect(landed)))
-        .collect();
-    assert_eq!(inside, ["x"], "the keyboard landed inside the Transform X framework stop {next_stop:?}, inside {inside:?} (landed {landed:?})");
+    let more = opacity_rect(&h, "more");
+    assert!((landed.center() - more.center()).length() < 1.5, "the keyboard landed on the Opacity row's chevron {more:?}, not {landed:?}");
+    // And not on any Transform field, which are framework stops of the same panel.
+    let inside: Vec<&str> =
+        ["x", "y", "width", "height"].into_iter().filter(|key| field_rect(&h, key).is_some_and(|r| r.intersects(landed))).collect();
+    assert!(inside.is_empty(), "the chevron is none of the Transform fields: {inside:?} (landed {landed:?})");
 }

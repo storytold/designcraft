@@ -1,16 +1,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-//! The pilot's focused tests: a genuine craft `NumberField` in the real Properties › Transform
-//! section of a real document, driven with real pointer and key events.
+//! Properties › Transform's X/Y/W/H on the craft UI framework, in the real section of a real document, driven with
+//! real pointer and key events.
 //!
-//! One scenario matters here: a person types a width into the framework's field, the panel's own
-//! `transform.set` runs, the frame in the document is that wide, and `edit.undo` puts it back in one
-//! step. The others are the guards the same slice needs: a locked frame's fields take no edit, and a
-//! document unit the framework has no kind for keeps the bespoke fields.
+//! One scenario matters here: a person types a width into the framework's field, the panel's own `transform.set` runs,
+//! the frame in the document is that wide, and `edit.undo` puts it back in one step. The others are the guards the
+//! same section needs: a locked frame's fields take no edit, a document unit the framework's number field cannot name
+//! (picas as `1p6`, ciceros) is still typed in a framework field in the app's own spelling, and the field rects are
+//! this frame's only.
 //!
-//! Geometry is the framework's own: every field is drawn inside `inspect::record`, and the rect these
-//! tests press is the element whose access node is the spin button (the record's hit area), never a
-//! guessed percentage of the panel.
+//! Geometry is the framework's own: every field is drawn inside `inspect::record`, and the rect these tests press is
+//! the element whose access node is the field's text part (the record's hit area), never a guessed percentage of the
+//! panel.
 
 use crate::DesignApp;
 use crate::panels::sel_info;
@@ -38,11 +39,10 @@ fn app_with_frame() -> (DesignApp, designcraft_doc::ItemId) {
     (app, id)
 }
 
-/// The Properties panel on a context that has the framework's runtime, with the pilot switched on.
+/// The Properties panel on a context that has the framework's runtime.
 ///
-/// The runtime goes in before the harness's first pass (it refuses to install inside one), and the
-/// pilot's switch goes on the app before the panel draws (`DESIGNCRAFT_FRAMEWORK_TRANSFORM`'s in-app
-/// field), exactly as the desktop shell does it.
+/// The runtime goes in before the harness's first pass (it refuses to install inside one), exactly as the desktop
+/// shell does it.
 fn properties_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
     app.framework_transform = true;
@@ -65,7 +65,7 @@ fn properties_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     h
 }
 
-/// The rect of the pilot's field `key` from the last pass, as the framework laid it out.
+/// The rect of the transform field `key` from the last pass, as the framework laid it out.
 fn field_rect(h: &Harness<'_, DesignApp>, key: &str) -> egui::Rect {
     h.state()
         .framework_fields
@@ -112,6 +112,8 @@ fn typing_a_width_moves_the_frame_and_one_undo_puts_it_back() {
         let r = field_rect(&h, key);
         assert!(r.width() > 0.0 && r.height() > 0.0, "{key}: {r:?}");
     }
+    // Points are a unit the framework's number field names: the width is that field, with its own step keys.
+    assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::SpinButton, "W").count(), 1, "the width is a framework number field");
     let before = bounds(&h, id);
     assert!((before.width() - 200.0).abs() < 1e-3, "the frame starts 200 pt wide: {before:?}");
     let steps = undo_steps(&h);
@@ -148,20 +150,48 @@ fn a_locked_frames_fields_take_no_edit() {
     assert!((bounds(&h, id).width() - 150.0).abs() < 1e-3, "transform.set moves a locked frame, so the UI guard is what held");
 }
 
+/// Successor of the test that kept the native fields for such a unit: the framework's text field over the app's own
+/// measure spelling now draws them, and what is typed there is read as the rest of the app reads it.
 #[test]
-fn a_unit_the_framework_cannot_show_keeps_the_bespoke_fields() {
-    let (mut app, _id) = app_with_frame();
-    assert!(crate::framework_transform::unit_supported(designcraft_geom::Unit::Points));
-    assert!(!crate::framework_transform::unit_supported(designcraft_geom::Unit::Ciceros), "a cicero has no kind in the framework");
-    assert!(!crate::framework_transform::unit_supported(designcraft_geom::Unit::Picas), "picas keep the bespoke `1p6` fields");
+fn a_unit_the_number_field_cannot_name_is_typed_in_the_apps_own_spelling() {
+    let (mut app, id) = app_with_frame();
     {
         let st = app.session.doc_mut().expect("a document");
         let doc = std::sync::Arc::make_mut(&mut st.doc);
         doc.settings.horizontal_units = designcraft_geom::Unit::Ciceros;
     }
-    let h = properties_harness(app);
-    assert!(h.state().framework_fields.is_empty(), "the bespoke fields drew instead: {:?}", h.state().framework_fields);
-    assert!(sel_info(h.state()).is_some(), "the selection is still the frame");
+    let mut h = properties_harness(app);
+    assert_eq!(h.state().framework_fields.len(), 4, "the framework draws the four fields for ciceros too: {:?}", h.state().framework_fields);
+    // A cicero has no kind in the framework's number field: the width is the framework's text field instead.
+    assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::SpinButton, "W").count(), 0, "no number field for ciceros");
+    assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::TextInput, "W").count(), 1, "the width is a framework text field");
+    let steps = undo_steps(&h);
+    let field = field_rect(&h, "width");
+    type_value(&mut h, field, "10");
+    let expected = designcraft_geom::units::parse_measure("10", designcraft_geom::Unit::Ciceros).expect("ten ciceros");
+    let after = bounds(&h, id);
+    assert!((after.width() - expected).abs() < 1e-3, "a bare number is ciceros, as the app reads it: {after:?} (want {expected} pt)");
+    assert_eq!(undo_steps(&h) - steps, 1, "one gesture, one undo step ({steps} → {})", undo_steps(&h));
+}
+
+#[test]
+fn a_pica_document_reads_the_apps_pica_spelling() {
+    let (mut app, id) = app_with_frame();
+    {
+        let st = app.session.doc_mut().expect("a document");
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        (doc.settings.horizontal_units, doc.settings.vertical_units) = (designcraft_geom::Unit::Picas, designcraft_geom::Unit::Picas);
+    }
+    let mut h = properties_harness(app);
+    let before = bounds(&h, id);
+    let steps = undo_steps(&h);
+    let field = field_rect(&h, "width");
+    // One pica and six points: 18 pt, as every measurement field of the app reads it.
+    type_value(&mut h, field, "1p6");
+    let after = bounds(&h, id);
+    assert!((after.width() - 18.0).abs() < 1e-3, "`1p6` is 18 pt: {after:?}");
+    assert!((after.x0 - before.x0).abs() < 1e-6, "the left edge stays, about the reference point: {before:?} → {after:?}");
+    assert_eq!(undo_steps(&h) - steps, 1, "one gesture, one undo step ({steps} → {})", undo_steps(&h));
 }
 
 #[test]
@@ -188,7 +218,7 @@ fn constrain_links_width_and_height_but_not_x_or_y() {
     assert!((scaled.width() - 100.0).abs() < 1e-3 && (scaled.height() - 50.0).abs() < 1e-3, "the link scaled the height: {scaled:?}");
 }
 
-/// The whole window, as the desktop shell runs it each frame (`logic` then `ui`), with the pilot on.
+/// The whole window, as the desktop shell runs it each frame (`logic` then `ui`), with the framework's runtime.
 fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
     app.framework_transform = true;
@@ -210,15 +240,16 @@ fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
 fn the_field_rects_are_this_frames_and_go_when_the_fields_do() {
     let (app, _id) = app_with_frame();
     let mut h = window_harness(app);
-    assert_eq!(h.state().framework_fields.len(), 4, "the pilot's four fields are on screen: {:?}", h.state().framework_fields);
-    // A unit the pilot hands back to the bespoke fields: no rect from an earlier frame stays behind.
+    assert_eq!(h.state().framework_fields.len(), 4, "the four fields are on screen: {:?}", h.state().framework_fields);
+    // Picas: the fields change from number fields to text fields over the app's spelling, and no rect from the frames
+    // before stays beside this frame's four.
     h.state_mut().run("document.preferences", json!({"horizontalUnits": "picas", "verticalUnits": "picas"})).expect("picas");
     h.run_steps(3);
-    assert!(h.state().framework_fields.is_empty(), "stale rects after the fallback: {:?}", h.state().framework_fields);
+    assert_eq!(h.state().framework_fields.len(), 4, "this frame's four fields only, after the change of field: {:?}", h.state().framework_fields);
     // Back to points, then nothing selected: the Transform section is gone, and so are the rects.
     h.state_mut().run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).expect("points");
     h.run_steps(3);
-    assert_eq!(h.state().framework_fields.len(), 4, "the fields came back with points");
+    assert_eq!(h.state().framework_fields.len(), 4, "the fields are there with points");
     h.state_mut().run("edit.deselectAll", json!({})).expect("deselect");
     h.run_steps(3);
     assert!(h.state().framework_fields.is_empty(), "stale rects with no selection: {:?}", h.state().framework_fields);
