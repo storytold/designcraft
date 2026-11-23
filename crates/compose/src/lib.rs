@@ -395,7 +395,8 @@ pub struct Contour {
     /// even-odd ([`designcraft_doc::Graphic::clip_region`]).
     pub graphic_clip: Vec<Vec<Point>>,
     pub graphic_clip_even_odd: bool,
-    pub offset: f64,
+    /// Horizontal and vertical reach in the text frame's inner space.
+    pub offset: [f64; 2],
 }
 
 /// A filled shape: closed polylines and their fill rule (non-zero, or even-odd).
@@ -425,14 +426,14 @@ const MAX_CLIPPED_WORK: usize = 1 << 20;
 
 impl Contour {
     /// The outline of `path` (after `to_inner`), flattened; None if it is empty or too detailed.
-    fn of(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::Affine, offset: f64) -> Option<Contour> {
+    fn of(path: &designcraft_geom::BezPath, to_inner: designcraft_geom::Affine, offset: [f64; 2]) -> Option<Contour> {
         let rings = flatten_rings(path, to_inner)?;
-        offset.is_finite().then_some(Contour {
+        offset.iter().all(|o| o.is_finite()).then_some(Contour {
             rings,
             clip: Vec::new(),
             graphic_clip: Vec::new(),
             graphic_clip_even_odd: false,
-            offset: offset.max(0.0),
+            offset: offset.map(|o| o.max(0.0)),
         })
     }
 
@@ -457,12 +458,14 @@ impl Contour {
     /// The outline mapped by `a`.
     fn transformed(self, a: designcraft_geom::Affine) -> Contour {
         let map = |rings: Vec<Vec<Point>>| rings.into_iter().map(|r| r.into_iter().map(|p| a * p).collect()).collect();
+        let [x, y] = self.offset;
+        let [xx, yx, xy, yy, ..] = a.as_coeffs();
         Contour {
             rings: map(self.rings),
             clip: map(self.clip),
             graphic_clip: map(self.graphic_clip),
             graphic_clip_even_odd: self.graphic_clip_even_odd,
-            offset: self.offset,
+            offset: [xx.abs() * x + xy.abs() * y, yx.abs() * x + yy.abs() * y],
         }
     }
 
@@ -480,27 +483,29 @@ impl Contour {
                 r = r.intersect(b);
             }
         }
-        r.inflate(self.offset, self.offset)
+        r.inflate(self.offset[0], self.offset[1])
     }
 
     /// Horizontal extent of the outline (offset included) within the band `y0..y1`: the band is
     /// widened by the offset, the outline's x-range there is limited to the clip's x-range there,
     /// then widened by the offset too.
     fn band_extent(&self, y0: f64, y1: f64) -> Option<(f64, f64)> {
-        let (y0, y1) = (y0 - self.offset, y1 + self.offset);
+        let [x_offset, y_offset] = self.offset;
+        let (y0, y1) = (y0 - y_offset, y1 + y_offset);
         let (mut lo, mut hi) = rings_band_extent(&self.rings, y0, y1)?;
         for c in self.clips() {
             let (a, b) = rings_band_extent(c.rings, y0, y1)?;
             (lo, hi) = (lo.max(a), hi.min(b));
         }
-        (lo <= hi).then_some((lo - self.offset, hi + self.offset))
+        (lo <= hi).then_some((lo - x_offset, hi + x_offset))
     }
 
     /// Occupied intervals across the whole line band, preserving gaps between parts of a
     /// concave or compound outline. Project boundary edges and the filled middle slice: any
     /// area that starts or ends inside the band is bounded by those projected edges.
     fn band_spans(&self, y0: f64, y1: f64) -> Vec<(f64, f64)> {
-        let (low, high) = (y0 - self.offset, y1 + self.offset);
+        let [x_offset, y_offset] = self.offset;
+        let (low, high) = (y0 - y_offset, y1 + y_offset);
         if !low.is_finite() || !high.is_finite() || high < low {
             return self.band_extent(y0, y1).into_iter().collect();
         }
@@ -520,7 +525,7 @@ impl Contour {
             let exact = if projected.iter().any(|p| p.len() > 128) { None } else { clipped_band_spans(&shapes, low, high) };
             spans = exact.unwrap_or_else(|| projected.iter().fold(spans, |s, p| intersect_spans(&s, p)));
         }
-        merge_spans(spans.into_iter().map(|(a, b)| (a - self.offset, b + self.offset)).collect())
+        merge_spans(spans.into_iter().map(|(a, b)| (a - x_offset, b + x_offset)).collect())
     }
 }
 
@@ -901,13 +906,16 @@ fn wrap_exclusion(
         s => s,
     };
     // A custom boundary already includes the offsets.
-    if let Some(custom) = wrap.path.as_ref().and_then(|p| Contour::of(&p.to_bezpath(), inv * xf, 0.0)) {
+    if let Some(custom) = wrap.path.as_ref().and_then(|p| Contour::of(&p.to_bezpath(), inv * xf, [0.0; 2])) {
         let rect = custom.bounds();
         let contour = matches!(wrap.mode, WrapMode::BoundingBox | WrapMode::Contour).then_some(custom);
         return Exclusion { rect, mode: wrap.mode, side, contour, after: None, anchor_baseline: None };
     }
     let contour = if wrap.mode == WrapMode::Contour { outline() } else { None }.and_then(|src| {
-        let mut c = Contour::of(&src.path, inv * xf, o[0])?;
+        // The offset is measured on the spread. Project its reach onto each inner axis.
+        let [xx, yx, xy, yy, ..] = inv.as_coeffs();
+        let offset = [o[0] * xx.hypot(xy), o[0] * yx.hypot(yy)];
+        let mut c = Contour::of(&src.path, inv * xf, offset)?;
         if let Some(frame) = &src.frame {
             c = c.within(frame, inv * xf);
         }

@@ -186,6 +186,21 @@ fn wrap_pushes_text_aside() {
     assert!(below.x0 < 1.0);
 }
 
+#[test]
+fn scaled_text_frame_keeps_a_contour_wrap_offset_in_page_units() {
+    let first_line_x = |mode| {
+        let (mut d, sid, frame) = doc_with(LOREM, Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
+        let xf = Affine::scale_non_uniform(2.0, 3.0);
+        d.item_mut(frame).unwrap().xf = xf;
+        add_wrap_objects(&mut d, &[(Rect::new(0.0, 0.0, 120.0, 60.0), [6.0; 4], mode)]);
+        let story = compose_story(&d, sid, &ComposeOptions::default());
+        (xf * Point::new(story.frames[0].lines[0].x0, 0.0)).x
+    };
+    let contour = first_line_x(WrapMode::Contour);
+    let bounds = first_line_x(WrapMode::BoundingBox);
+    assert!((contour - bounds).abs() < 1e-6, "contour starts at {contour}, bounding box at {bounds}");
+}
+
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
 /// a 10.5 pt box), in a paragraph whose style is 14 pt, with a text-wrap object on the spread at
 /// `wrap`.
@@ -9969,7 +9984,7 @@ fn contour_intervals_preserve_the_gap_between_legs() {
         path.line_to(p);
     }
     path.close_path();
-    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, 3.0).unwrap();
+    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, [3.0; 2]).unwrap();
     assert_eq!(c.band_spans(50.0, 60.0), vec![(-3.0, 13.0), (27.0, 43.0)]);
     assert_eq!(c.band_spans(5.0, 15.0), vec![(-3.0, 43.0)]);
     let frame = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 35.0, 100.0)).to_bezpath();
@@ -9984,7 +9999,7 @@ fn contour_intervals_cover_the_whole_slanted_line_band() {
         path.line_to(p);
     }
     path.close_path();
-    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, 0.0).unwrap();
+    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, [0.0; 2]).unwrap();
     assert_eq!(c.band_spans(0.0, 10.0), vec![(0.0, 12.0)]);
 }
 
@@ -9995,11 +10010,11 @@ fn a_vertical_open_path_keeps_its_offset() {
     let mut path = designcraft_geom::BezPath::new();
     path.move_to((10.0, 0.0));
     path.line_to((10.0, 100.0));
-    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, 3.0).unwrap();
+    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, [3.0; 2]).unwrap();
     assert_eq!(c.band_spans(40.0, 50.0), vec![(7.0, 13.0)]);
     let frame = designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 20.0, 100.0)).to_bezpath();
     assert_eq!(c.within(&frame, designcraft_geom::Affine::IDENTITY).band_spans(40.0, 50.0), vec![(7.0, 13.0)]);
-    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, 0.0).unwrap();
+    let c = Contour::of(&path, designcraft_geom::Affine::IDENTITY, [0.0; 2]).unwrap();
     assert_eq!(c.band_spans(40.0, 50.0), vec![(10.0, 10.0)]);
 }
 
@@ -10020,14 +10035,14 @@ fn a_clipped_contour_blocks_only_what_its_frame_shows() {
     // An L-shaped frame with a notch at x 10..40 above y = 6.
     let frame = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 6.0), (40.0, 6.0), (40.0, 10.0), (0.0, 10.0)]);
     // An outline in the notch only.
-    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, 0.0).unwrap();
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, [0.0; 2]).unwrap();
     assert_eq!(c.band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
     assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), Vec::<(f64, f64)>::new(), "the frame shows none of it");
     // Reaching below the notch, where the frame shows it from y = 6 to 8.
-    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 8.0), (20.0, 8.0)]), id, 0.0).unwrap();
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 8.0), (20.0, 8.0)]), id, [0.0; 2]).unwrap();
     assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
     // A band that crosses both shapes whole keeps their common part, widened by the offset.
-    let c = Contour::of(&poly(&[(5.0, -10.0), (30.0, -10.0), (30.0, 20.0), (5.0, 20.0)]), id, 2.0).unwrap();
+    let c = Contour::of(&poly(&[(5.0, -10.0), (30.0, -10.0), (30.0, 20.0), (5.0, 20.0)]), id, [2.0; 2]).unwrap();
     assert_eq!(c.within(&frame, id).band_spans(7.0, 9.0), vec![(3.0, 32.0)]);
     // A frame in more than 128 pieces across the band takes the common part of the projections.
     let mut fragmented = frame.clone();
@@ -10035,7 +10050,7 @@ fn a_clipped_contour_blocks_only_what_its_frame_shows() {
         let x = 1000.0 + 2.0 * f64::from(i);
         fragmented.extend(poly(&[(x, 0.0), (x + 1.0, 0.0), (x + 1.0, 10.0), (x, 10.0)]).elements().iter().copied());
     }
-    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, 0.0).unwrap();
+    let c = Contour::of(&poly(&[(20.0, 0.0), (40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]), id, [0.0; 2]).unwrap();
     assert_eq!(c.within(&fragmented, id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
     // So does a frame and an outline too detailed to compare within a line's budget: here 2,000
     // points on the frame's bottom edge and on the outline's top edge.
@@ -10044,7 +10059,7 @@ fn a_clipped_contour_blocks_only_what_its_frame_shows() {
     detailed.push((0.0, 10.0));
     let mut notch: Vec<(f64, f64)> = (0..2000).map(|i| (20.0 + 0.01 * f64::from(i), 0.0)).collect();
     notch.extend([(40.0, 0.0), (40.0, 4.0), (20.0, 4.0)]);
-    let c = Contour::of(&poly(&notch), id, 0.0).unwrap();
+    let c = Contour::of(&poly(&notch), id, [0.0; 2]).unwrap();
     assert_eq!(c.within(&poly(&detailed), id).band_spans(0.0, 10.0), vec![(20.0, 40.0)]);
 }
 
@@ -10074,7 +10089,7 @@ fn a_clipped_contours_budget_counts_only_edges_in_the_band() {
     pts.push((60.0, 0.0));
     pts.extend((0..7000).map(|i| (60.0 - 10.0 * f64::from(i) / 6999.0, if i % 2 == 0 { 200.0 } else { 201.0 })));
     pts.extend([(50.0, 4.0), (20.0, 4.0)]);
-    let c = Contour::of(&poly(&pts), id, 0.0).unwrap();
+    let c = Contour::of(&poly(&pts), id, [0.0; 2]).unwrap();
     assert_eq!(c.within(&frame, id).band_spans(0.0, 10.0), Vec::<(f64, f64)>::new(), "the frame shows none of it");
 }
 
