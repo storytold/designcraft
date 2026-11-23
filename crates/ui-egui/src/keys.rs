@@ -658,6 +658,9 @@ mod tests {
         web.insert(1, egui::Event::Copy);
         for (form, events) in [("desktop", vec![egui::Event::Copy]), ("web", web)] {
             let (mut app, _, mut frame) = typing_in_a_text_frame();
+            // The first frame installs the fonts; the canvas takes egui focus at the end of the second, as in the shipping
+            // window, where the keyboard is used after many frames.
+            frame(&mut app, Default::default(), vec![]);
             frame(&mut app, Default::default(), vec![]);
             frame(&mut app, cmd_shift, events);
             let align = crate::panels::text_attrs(&mut app).unwrap()["para"]["align"].clone();

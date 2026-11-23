@@ -354,6 +354,9 @@ impl DesignApp {
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);
+        // Nothing else holds egui focus: the canvas does, so the runtime leaves Escape, Tab and the clipboard to the app.
+        #[cfg(not(target_arch = "wasm32"))]
+        canvas::take_key_focus(self, &ctx);
         // The Escape the runtime's key stage kept from egui and nothing in this pass took.
         #[cfg(not(target_arch = "wasm32"))]
         menus::window_escape(self, &ctx);
