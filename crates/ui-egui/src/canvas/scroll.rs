@@ -189,7 +189,7 @@ pub(super) fn scrollbars(app: &mut DesignApp, ui: &mut egui::Ui, outer: Rect, sc
     for (n, vertical) in [true, false].into_iter().enumerate() {
         let (track, thumb, k) = scrollbar_rects(outer, screen, cb, vertical);
         let id = egui::Id::unique(("canvas_scrollbar", app.pane, vertical));
-        let resp = ui.interact(track, id, Sense::click_and_drag());
+        let resp = ui.interact(track, id, Sense::CLICK | Sense::DRAG);
         let grab_id = id.with("grab");
         if resp.drag_started() {
             let on_thumb = press.is_some_and(|p| thumb.contains(p));
