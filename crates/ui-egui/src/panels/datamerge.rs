@@ -879,14 +879,14 @@ mod ui223_datamerge_workflow_tests {
         click(&mut h, "Checkbox", "Preview");
         let st = h.state().app.session.active().unwrap();
         assert_eq!(st.preview_record, Some(1));
-        assert_eq!(st.revision, before.documents[0].revision + 1);
+        assert!(st.revision > before.documents[0].revision, "the preview applied (revisions are process-wide)");
         assert_eq!(st.history.undo.len(), before.documents[0].undo);
         assert_eq!(st.doc.as_ref(), before.documents[0].document.as_ref());
         assert_eq!(h.state().app.session.journal, before.journal);
         let before_number = effects(&h);
         number(&mut h, "Record", 0, "3");
         assert_eq!(h.state().app.session.active().unwrap().preview_record, Some(3));
-        assert_eq!(h.state().app.session.active().unwrap().revision, before_number.documents[0].revision + 1);
+        assert!(h.state().app.session.active().unwrap().revision > before_number.documents[0].revision, "the record preview applied");
         assert_eq!(h.state().app.session.journal, before_number.journal);
         no_idle_replay(&mut h);
         let before_bad = effects(&h);

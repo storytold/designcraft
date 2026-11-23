@@ -983,27 +983,34 @@ mod tests {
             assert_quiet(&h, &quiet);
             type_draft(&mut h, "Start Page Numbering at:", "9");
             assert!(!h.state().0.ui.dialog.as_ref().unwrap().b("automatic"), "Update selects explicit page numbering");
+            // craft's dialogs, like InDesign's, cancel on one Escape: the typed draft and the mode it chose go with it.
             for pressed in [true, false] {
                 event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
             }
-            let d = h.state().0.ui.dialog.as_ref().unwrap();
-            assert!(d.b("automatic"), "Cancel restores the page mode from before Update");
-            assert_eq!(d.s("startNumber"), page_draft);
-            assert_eq!(d.fields, opening.fields, "page Escape restores the complete draft and both modes");
+            assert!(h.state().0.ui.dialog.is_none(), "page Escape cancels the dialog with its draft");
             assert_quiet(&h, &quiet);
+            open(&mut h.state_mut().0);
+            let d = h.state().0.ui.dialog.as_ref().unwrap();
+            assert!(d.b("automatic"), "reopened, the page mode is the one from before Update");
+            assert_eq!(d.s("startNumber"), page_draft);
+            assert_eq!(d.fields, opening.fields, "reopening after the page Escape shows the complete unchanged settings");
+            step(&mut h);
             type_draft(&mut h, "Start Chapter Numbering at:", "8");
             assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields["chapterSource"], json!(ChapterSource::UserDefined));
             for pressed in [true, false] {
                 event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
             }
-            let app = &mut h.state_mut().0;
-            let d = app.ui.dialog.as_ref().unwrap();
-            assert_eq!(d.fields["chapterSource"], json!(source), "Cancel restores automatic or SameAsPrevious, not UserDefined");
-            assert_eq!(d.s("chapterStart"), chapter_draft);
+            assert!(h.state().0.ui.dialog.is_none(), "chapter Escape cancels the dialog with its draft");
+            let app = &h.state().0;
             assert_eq!(app.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "canceled drafts never edit the document");
             assert_eq!(app.session.active().unwrap().history.undo.len(), history, "no undo step before dialog confirmation");
-            assert_eq!(d.fields, opening.fields, "chapter Escape restores the entire opening draft");
             assert_quiet(&h, &quiet);
+            open(&mut h.state_mut().0);
+            let d = h.state().0.ui.dialog.as_ref().unwrap();
+            assert_eq!(d.fields["chapterSource"], json!(source), "reopened, the source is automatic or SameAsPrevious, not UserDefined");
+            assert_eq!(d.s("chapterStart"), chapter_draft);
+            assert_eq!(d.fields, opening.fields, "reopening after the chapter Escape shows the complete unchanged settings");
+            step(&mut h);
             // The independent existing controller receives the PRE-INPUT opening DTO.
             // The shared guard must make accepting these unchanged settings a true model no-op.
             let native = expected_confirm(&h.state().0, &opening);
@@ -1643,15 +1650,12 @@ mod tests {
         let mut h = installed_harness(app, true);
         let undo = numbering_undo(&h);
         let opening_fields = section_dialog(&h).fields.clone();
+        assert!(!opening_fields.is_empty());
         section_type(&mut h, "Section Marker:", "Draft to cancel");
+        // craft's dialogs, like InDesign's, cancel on one Escape: the field's typing goes with the dialog.
         section_key(&mut h, Key::Escape, Modifiers::NONE);
-        assert_eq!(section_dialog(&h).fields, opening_fields, "field Escape restores the complete opening draft without closing the native modal");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
-        assert_eq!(h.state().session.doc().unwrap().doc, before);
-        assert_eq!(numbering_undo(&h), undo);
-        assert!(numbering_commands(&h).is_empty());
-        section_key(&mut h, Key::Escape, Modifiers::NONE);
-        assert!(h.state().ui.dialog.is_none(), "the second real Escape cancels the existing SDK modal");
+        assert!(h.state().ui.dialog.is_none(), "one real Escape over a field draft cancels the SDK modal");
+        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().session.doc().unwrap().doc, before);
         assert_eq!(numbering_undo(&h), undo);
         assert!(numbering_commands(&h).is_empty());
