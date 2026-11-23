@@ -281,6 +281,24 @@ fn a_gradient_on_text_in_a_later_threaded_frame_is_in_that_frames_space() {
     assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{v:?} vs {p:?}");
 }
 
+/// Overset text past the last threaded frame takes the drag in the last frame's text space, so
+/// it sits right when the text later flows into that frame.
+#[test]
+fn a_gradient_on_overset_text_is_in_the_last_frames_space() {
+    let (mut s, sid, _, b, _) = threaded_pair();
+    let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+    s.execute("text.select", &json!({"story": sid, "anchor": len, "focus": len})).unwrap();
+    s.execute("text.insert", &json!({"text": "word ".repeat(400)})).unwrap();
+    let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+    let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
+    let shown = cs.frames.last().map(|f| f.range.end).unwrap();
+    assert!(shown + 20 < len, "the story is overset");
+    s.execute("text.select", &json!({"story": sid, "anchor": len - 12, "focus": len - 2})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    let (p, v) = drag_start_in(&mut s, b, sid, len - 8);
+    assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{v:?} vs {p:?}");
+}
+
 /// With the first of two threaded frames selected, the characters drawn in the second take the
 /// drag in the second frame's text space.
 #[test]

@@ -303,7 +303,11 @@ pub(super) fn text_gradient(s: &mut Session, p: &Value) -> Result<Value> {
             let at = t.focus;
             let cs = s.cache.get(d, t.story, None);
             (t.cell.is_none())
-                .then(|| cs.frames.iter().find(|f| f.range.contains(&at) || f.range.end == at).map(|f| f.frame))
+                .then(|| {
+                    // A caret past the last frame (overset) goes with the last frame, as
+                    // `frame_parts` puts overset characters.
+                    cs.frames.iter().find(|f| f.range.contains(&at) || f.range.end == at).or(cs.frames.last()).map(|f| f.frame)
+                })
                 .flatten()
                 .or_else(|| d.story(t.story).and_then(|story| story.frames.first().copied()))
         })),
@@ -345,8 +349,13 @@ fn frame_parts(s: &Session, story: StoryId, range: std::ops::Range<usize>, overs
         .filter(|(r, _)| !r.is_empty())
         .map(|(range, frame)| (Target { story, cell: None, range }, frame))
         .collect();
-    if overset && let Some((last, _)) = parts.last_mut() {
-        last.range.end = range.end;
+    if overset {
+        if let Some((last, _)) = parts.last_mut() {
+            last.range.end = range.end;
+        } else if let Some(last) = cs.frames.last().filter(|f| !range.is_empty() && range.start >= f.range.end) {
+            // Wholly past the last frame: overset text, in the last frame's text space.
+            parts.push((Target { story, cell: None, range }, last.frame));
+        }
     }
     parts
 }
