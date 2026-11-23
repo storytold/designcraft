@@ -2442,6 +2442,9 @@ fn a_table_starts_its_space_before_below_the_baseline_above_it() {
     let gap = |size: f64, space_after: f64| {
         let mut t = filled(2, 1, 0, 100.0);
         t.options.space_before = 4.0;
+        // No border: a border moves a table half its weight inside the frame (see
+        // `a_table_starts_half_its_outer_strokes_inside_the_frame`), which is not what this measures.
+        t.options.border.weight = 0.0;
         let (mut d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), t);
         d.story_mut(sid).unwrap().format_chars(0.."Intro".len(), |f| f.over.size = Some(size));
         d.story_mut(sid).unwrap().format_paras(0.."Intro".len(), |p| p.para.space_after = Some(space_after));
@@ -2463,10 +2466,12 @@ fn a_table_directly_above_another_leaves_only_the_lower_ones_space_before() {
         let mut first = filled(2, 1, 0, 100.0);
         first.options.space_before = 0.0;
         first.options.space_after = after_first;
+        first.options.border.weight = 0.0;
         let mut second = filled(2, 1, 0, 100.0);
         second.id = 78;
         second.options.space_before = before_second;
         second.options.space_after = 0.0;
+        second.options.border.weight = 0.0;
         let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 300.0, 1000.0), ParaAttrs::default());
         let st = d.story_mut(sid).unwrap();
         st.insert_table(0, first);
