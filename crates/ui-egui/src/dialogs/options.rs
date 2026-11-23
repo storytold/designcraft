@@ -43,7 +43,7 @@ pub fn open_swatch_options(app: &mut DesignApp, name: &str) -> Result<(), String
 }
 
 /// Write `c`'s channels in `mode` (default: the colour's own model).
-fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
+pub(super) fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
     let mode = mode.unwrap_or(match c {
         Color::Cmyk { .. } => "cmyk",
         Color::Rgb { .. } => "rgb",
@@ -72,7 +72,7 @@ fn set_color(f: &mut Map<String, Value>, c: Color, mode: Option<&str>) {
 }
 
 /// The colour the dialog's channels describe.
-fn dialog_color(f: &Map<String, Value>) -> Option<Color> {
+pub(super) fn dialog_color(f: &Map<String, Value>) -> Option<Color> {
     let n = |k: &str, max: f64| f.get(k).and_then(Value::as_f64).map(|v| (v.clamp(0.0, max) / max) as f32);
     match f.get("mode").and_then(Value::as_str)? {
         "rgb" => Some(Color::rgb(n("r", 255.0)?, n("g", 255.0)?, n("b", 255.0)?)),

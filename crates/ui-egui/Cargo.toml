@@ -58,6 +58,7 @@ toml = "1"
 # keeps the bespoke fields, so the framework is not a wasm dependency.
 craft-ui-widgets = { workspace = true }
 craft-ui-panels = { workspace = true }
+craft-color-ui = { workspace = true }
 craft-theme = { workspace = true }
 craft-behavior = { workspace = true }
 craft-host = { workspace = true }
