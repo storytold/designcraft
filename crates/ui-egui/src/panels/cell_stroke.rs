@@ -257,11 +257,14 @@ fn type_select(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[Stri
     // so the native command can restore its weight-scaled dash pattern.
     let current =
         v["type"]["kind"].as_str().filter(|kind| TYPES.contains(kind)).map_or_else(|| v["type"].to_string(), |kind| json!(builtin(kind)).to_string());
-    let identity = ui.make_persistent_id(("cell-stroke-type", id, owner, target, edges, custom, &current, lang));
+    // The parent's enabled state is part of the identity: the framework keeps an open popup when only the parent
+    // Ui turns disabled, so the owner changes there and its popup retires with it.
+    let enabled = ui.is_enabled();
+    let identity = ui.make_persistent_id(("cell-stroke-type", id, owner, target, edges, custom, &current, lang, enabled));
     let binding = if v["type"].is_null() { craft_behavior::Mixed::Mixed } else { craft_behavior::Mixed::Same(current) };
     let select = craft_ui_widgets::pickers::Select::new(tr(lang, "Type").to_owned(), Bind::given(binding), &entries)
         .id(identity)
-        .enabled(valid)
+        .enabled(valid && enabled)
         // An orphan is shown verbatim but is never synthesized as an enabled catalog row.
         .placeholder(type_label(lang, &v["type"]));
     let shown = match at {
@@ -610,25 +613,24 @@ pub(crate) mod framework {
         let custom: Vec<String> = app.session.active().map(|d| d.doc.stroke_styles.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
         let mut out = None;
         FieldGroup::new(tr(&lang, "Stroke").to_owned()).id_salt((id, "stroke_fields")).enabled(enabled).show(ui, |ui, _| {
-            Field::new(tr(&lang, "Weight:").to_owned()).id_salt((id, "weight_field")).show(ui, |ui, _| {
+            Field::new(tr(&lang, "Weight").to_owned()).id_salt((id, "weight_field")).show(ui, |ui, _| {
                 if let Some(w) = weight_field(ui, id, tr(&lang, "Weight"), v["weight"].as_f64()) {
                     out = Some(("weight", json!(w)));
                 }
             });
-            Field::new(tr(&lang, "Type:").to_owned()).id_salt((id, "type_field")).show(ui, |ui, _| {
+            Field::new(tr(&lang, "Type").to_owned()).id_salt((id, "type_field")).show(ui, |ui, _| {
                 if let Some(value) = super::type_select(app, ui, id, v, &custom, &lang, None) {
                     out = Some(("type", value));
                 }
             });
-            for (caption, name, key, tint_caption, tint_name, tint_key) in
-                [("Color:", "Color", "color", "Tint:", "Tint", "tint"), ("Gap Color:", "Gap Color", "gapColor", "Gap Tint:", "Gap Tint", "gapTint")]
-            {
-                Field::new(tr(&lang, caption).to_owned()).id_salt((id, key)).show(ui, |ui, _| {
+            // A field names its control with its label and adds the colon itself: the labels are the controls' names.
+            for (name, key, tint_name, tint_key) in [("Color", "color", "Tint", "tint"), ("Gap Color", "gapColor", "Gap Tint", "gapTint")] {
+                Field::new(tr(&lang, name).to_owned()).id_salt((id, key)).show(ui, |ui, _| {
                     if let Some(swatch) = swatch_select(app, ui, &format!("{id}_{key}"), tr(&lang, name), v[key].as_str()) {
                         out = Some((key, json!(swatch)));
                     }
                 });
-                Field::new(tr(&lang, tint_caption).to_owned()).id_salt((id, tint_key)).show(ui, |ui, _| {
+                Field::new(tr(&lang, tint_name).to_owned()).id_salt((id, tint_key)).show(ui, |ui, _| {
                     if let Some(t) = percent_field(ui, &format!("{id}_{tint_key}"), tr(&lang, tint_name), v[tint_key].as_f64()) {
                         out = Some((tint_key, json!(t / 100.0)));
                     }
