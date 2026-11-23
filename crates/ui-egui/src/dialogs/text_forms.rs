@@ -90,22 +90,35 @@ pub(super) struct Spec {
     scale: f64,
     whole: bool,
     unit: Option<String>,
+    /// Emptying the field is an edit (an attribute that may be unset).
+    clearable: bool,
 }
 
 impl Spec {
     /// Whole numbers from `least` to `most`.
     pub(super) fn whole(least: f64, most: f64) -> Self {
-        Spec { range: (least, most), scale: 1.0, whole: true, unit: None }
+        Spec { range: (least, most), scale: 1.0, whole: true, unit: None, clearable: false }
     }
 
     /// Numbers from `least` to `most`.
     pub(super) fn real(least: f64, most: f64) -> Self {
-        Spec { range: (least, most), scale: 1.0, whole: false, unit: None }
+        Spec { range: (least, most), scale: 1.0, whole: false, unit: None, clearable: false }
     }
 
     /// Shown `scale` times the stored value.
     pub(super) fn scaled(mut self, scale: f64) -> Self {
         self.scale = scale;
+        self
+    }
+
+    /// Whether the field takes whole numbers only.
+    pub(super) fn is_whole(&self) -> bool {
+        self.whole
+    }
+
+    /// An emptied field reports an edit (`Some(None)`) instead of none.
+    pub(super) fn clearable(mut self) -> Self {
+        self.clearable = true;
         self
     }
 
@@ -144,6 +157,7 @@ pub(super) fn number_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f6
             let value = if spec.whole { value.round() + 0.0 } else { value };
             scaled.is_none_or(|before| (before - value).abs() > 1e-9).then_some(Some(value / spec.scale))
         }
+        None if spec.clearable && scaled.is_some() => Some(None),
         _ => None,
     }
 }
@@ -277,9 +291,23 @@ impl<'a> Swatches<'a> {
     }
 }
 
+impl<'a> Swatches<'a> {
+    /// The visible swatches of `doc` after `first`, entries of the menu's own (a blank one, the text's own colour).
+    pub(super) fn with_entries(doc: Option<&'a designcraft_doc::Document>, first: Vec<(Value, String)>) -> Self {
+        let mut menu = Swatches::new(doc, None);
+        menu.options.splice(0..0, first);
+        menu
+    }
+}
+
 /// A picker over the swatches of `menu` for the draft attribute `key`: the value picked in this pass.
 pub(super) fn swatch_choice(ui: &mut Ui, d: &Dialog, a: &Attrs, key: &str, label: &str, menu: &Swatches, enabled: bool) -> Option<Value> {
-    let current = a.get(d, key);
+    swatch_value(ui, &a.field(key), label, menu, &a.get(d, key), enabled)
+}
+
+/// A picker over the swatches of `menu` for `current`: the value picked in this pass.
+pub(super) fn swatch_value(ui: &mut Ui, salt: &str, label: &str, menu: &Swatches, current: &Value, enabled: bool) -> Option<Value> {
+    let current = current.clone();
     let at = menu.options.iter().position(|(value, _)| *value == current);
     let entries: Vec<Entry<usize>> = menu.options.iter().enumerate().map(|(i, (_, caption))| Entry::new(i, caption.clone())).collect();
     let chips: Vec<Option<(Option<egui::Color32>, Option<(egui::Color32, egui::Color32)>)>> = menu
@@ -292,7 +320,7 @@ pub(super) fn swatch_choice(ui: &mut Ui, d: &Dialog, a: &Attrs, key: &str, label
         .collect();
     let mut picker = Select::new(label.to_owned(), Bind::given(at.map_or(Mixed::Mixed, Mixed::Same)), &entries)
         .keeps_name(true)
-        .id_salt(("text_form_swatch", a.field(key)))
+        .id_salt(("text_form_swatch", salt.to_owned()))
         .enabled(enabled)
         .picture(move |index: &usize, cx: &craft_ui_widgets::primitives::ContentPainterCx, rect: egui::Rect| {
             if let Some(Some((color, gradient))) = chips.get(*index) {
@@ -326,6 +354,48 @@ pub(super) fn message(ui: &mut Ui, text: &str, bad: bool) {
     } else {
         text.shade(Shade::Muted).show(ui)
     };
+}
+
+/// A line of text.
+pub(super) fn line(ui: &mut Ui, text: &str) {
+    Text::new(text.to_owned()).show(ui);
+}
+
+/// A bold heading over a group of controls.
+pub(super) fn heading(ui: &mut Ui, text: &str) {
+    Text::new(text.to_owned()).role(craft_ui_widgets::style::TypeRole::BodyStrong).show(ui);
+}
+
+/// A push button; whether it was clicked.
+pub(super) fn push(ui: &mut Ui, salt: &str, label: &str, enabled: bool) -> bool {
+    craft_ui_widgets::buttons::Button::new(label.to_owned()).id_salt(("text_form_button", salt.to_owned())).enabled(enabled).show(ui).clicked()
+}
+
+/// A picker over `options` as (value, caption) for the current `value`; the value picked in this pass. A value none of them
+/// has shows as the placeholder.
+pub(super) fn pick(ui: &mut Ui, salt: &str, label: &str, value: &str, options: &[(String, String)], enabled: bool) -> Option<String> {
+    let captions: Vec<String> = options.iter().map(|(_, caption)| caption.clone()).collect();
+    let at = options.iter().position(|(v, _)| v == value);
+    let placeholder = at.is_none().then(|| value.to_owned());
+    let picked = select_at(ui, salt, label, &captions, at, placeholder, enabled)?;
+    options.get(picked).map(|(v, _)| v.clone())
+}
+
+/// A check box over a flag that may be unset or mixed (`None`: it shows mixed, and a click sets it on): the state clicked to.
+pub(super) fn toggle(ui: &mut Ui, salt: &str, label: &str, value: Option<bool>, enabled: bool) -> Option<bool> {
+    let shown = value.map_or(Mixed::Mixed, Mixed::Same);
+    let out = Checkbox::new(Bind::given(shown)).label(label.to_owned()).id_salt(("text_form_toggle", salt.to_owned())).enabled(enabled).show(ui);
+    out.events.committed().copied().filter(|next| Some(*next) != value)
+}
+
+/// A short text that is committed, not typed through: its value when committed.
+pub(super) fn committed_text(ui: &mut Ui, salt: &str, label: &str, current: &str, enabled: bool) -> Option<String> {
+    let out = TextField::new(label.to_owned(), Bind::given(current.to_owned()))
+        .id_salt(("text_form_commit", salt.to_owned()))
+        .limit(None::<usize>)
+        .enabled(enabled)
+        .show(ui);
+    out.events.committed().cloned().filter(|next| next != current)
 }
 
 /// The rows of a pick list: their captions.

@@ -5,8 +5,6 @@
 
 #[path = "cjk_forms.rs"]
 pub(crate) mod cjk_forms;
-#[path = "style_kit.rs"]
-pub(crate) mod style_kit;
 #[path = "tab_forms.rs"]
 pub(crate) mod tab_forms;
 
@@ -20,7 +18,7 @@ use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use egui::Ui;
 use serde_json::{Value, json};
-use style_kit::{field, heading, line, note, pick, push, text, toggle};
+use text_forms::{field, heading, line, message, pick, push, toggle};
 
 /// Paragraph Style Options, with its live preview.
 pub(crate) const PARAGRAPH_STYLE_OPTIONS: Form = Form::new(paragraph_style_options).width(760.0);
@@ -72,7 +70,7 @@ fn section_nav(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, sections: &[(&str, 
 
 /// The summary of what OK would leave a style setting: its Based On, then each setting.
 fn summary(ui: &mut Ui, text: &str) {
-    Stack::new().id_salt("style_summary").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| note(ui, text));
+    Stack::new().id_salt("style_summary").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| message(ui, text, false));
 }
 
 /// A status line: why OK did not apply.
@@ -202,6 +200,8 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
 
 /// Paragraph Style Options › General: name, Based On, Next Style, Reset To Base and the settings the style has.
 fn paragraph_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, doc: &designcraft_doc::Document, style: &designcraft_doc::ParagraphStyle, names: &[String], based_name: &str) {
+    let none = Value::Null;
+    let plain = Attrs::new("", &none);
     let (name, new) = (d.s("name"), d.b("new"));
     let lang = app.ui.language.as_str();
     if !d.fields.contains_key("rename") {
@@ -220,7 +220,7 @@ fn paragraph_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, doc: &designc
     let (name_label, based_label, next_label) = (tr(app, "Style Name:"), tr(app, "Based On:"), tr(app, "Next Style:"));
     Stack::new().id_salt("paragraph_general").fill_width().show(ui, |ui, _| {
         FieldGroup::new(tr(app, "General")).id_salt("paragraph_general_fields").show(ui, |ui, _| {
-            field(ui, &name_label, "rename", |ui| text(ui, d, "rename", "style_rename", &name_label, true));
+            field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
             field(ui, &based_label, "basedOn", |ui| {
                 if let Some(picked) = pick(ui, "style_based_on", &based_label, &based, &entries, true) {
                     d.fields.insert("basedOn".into(), json!(picked));
@@ -274,6 +274,8 @@ fn indents(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, units: designcraf
 
 /// Export Tagging: the tag and class a style exports with, and whether it splits the document (EPUB and HTML).
 fn export_tagging(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, name: &str) {
+    let none = Value::Null;
+    let plain = Attrs::new("", &none);
     let lang = app.ui.language.as_str();
     let et = app.session.active().and_then(|s| s.doc.styles.export_tag(name, false).cloned()).unwrap_or_default();
     if !d.fields.contains_key("x.tag") {
@@ -294,7 +296,7 @@ fn export_tagging(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, name: &str) {
                     d.fields.insert("x.tag".into(), json!(next));
                 }
             });
-            field(ui, &class_label, "x_class", |ui| text(ui, d, "x.class", "style_export_class", &class_label, true));
+            field(ui, &class_label, "x_class", |ui| text_forms::text(ui, d, &plain, "x.class", &class_label, true));
         });
         if let Some(on) = toggle(ui, "style_export_split", &tr(app, "Split Document (EPUB only)"), Some(d.b("x.split")), true) {
             d.fields.insert("x.split".into(), json!(on));
@@ -381,6 +383,8 @@ fn character_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
 
 /// Character Style Options › General: name, Based On, and a summary of the style's settings.
 fn character_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, styles: &designcraft_doc::Styles, style: &designcraft_doc::CharacterStyle, based: &str) {
+    let none = Value::Null;
+    let plain = Attrs::new("", &none);
     let lang = app.ui.language.as_str();
     let (name, new) = (d.s("name"), d.b("new"));
     let entries: Vec<(String, String)> = styles
@@ -406,7 +410,7 @@ fn character_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, styles: &desi
     let (name_label, based_label) = (tr(app, "Style Name:"), tr(app, "Based On:"));
     Stack::new().id_salt("character_general").fill_width().show(ui, |ui, _| {
         FieldGroup::new(tr(app, "General")).id_salt("character_general_fields").show(ui, |ui, _| {
-            field(ui, &name_label, "rename", |ui| text(ui, d, "rename", "style_rename", &name_label, true));
+            field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
             field(ui, &based_label, "basedOn", |ui| {
                 if let Some(picked) = pick(ui, "style_based_on", &based_label, based, &entries, true) {
                     d.fields.insert("basedOn".into(), json!(picked));
@@ -415,7 +419,7 @@ fn character_general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, styles: &desi
         });
         status_line(ui, d);
         heading(ui, &tr(app, "Style Settings:"));
-        note(ui, &parts.join(" + "));
+        message(ui, &parts.join(" + "), false);
     });
 }
 
@@ -450,7 +454,7 @@ fn delete_style(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog, paragraph: boo
     let prompt = crate::i18n::tr(&lang, if in_use { "This style is in use. Text using it will be reassigned to:" } else { "Replace with:" }).to_string();
     Stack::new().id_salt(("delete_style", kind)).fill_width().show(ui, |ui, _| {
         line(ui, &question);
-        note(ui, &prompt);
+        message(ui, &prompt, false);
         if let Some(next) = pick(ui, &format!("delete_{kind}_replace"), &prompt, &replace, &entries, true) {
             d.fields.insert("replaceWith".into(), json!(next));
         }
@@ -500,7 +504,7 @@ fn load_styles(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
     ];
     let mut chosen = None;
     Stack::new().id_salt("load_styles").fill_width().show(ui, |ui, _| {
-        note(ui, &d.s("path"));
+        message(ui, &d.s("path"), false);
         Row::new().id_salt("load_styles_buttons").show(ui, |ui, _| {
             if push(ui, "load_select_all", &select_all, true) {
                 set_all = Some(true);
@@ -522,7 +526,7 @@ fn load_styles(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
                             toggled.push((*key, at, next));
                         }
                         if *conflict {
-                            note(ui, &differs);
+                            message(ui, &differs, false);
                         }
                     });
                 }

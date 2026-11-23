@@ -3,15 +3,14 @@
 //! Composition, Grid and Warichu settings. They edit `c.<attr>` and `p.<attr>` draft fields like the other sections;
 //! the section list and the commands stay `style_cjk`'s and the controller's.
 
-use super::style_kit::{Counts, Extra, Num, captioned, field, heading, line, note, number, pick, swatch_pick, text, toggle};
 use crate::DesignApp;
 use crate::dialogs::style_cjk::{RUBY_SECTIONS, kinsoku_sets, mojikumi_sets, pick_kenten};
+use crate::dialogs::text_forms::{self, Spec, Swatches, field, heading, line, message, number_edit, pick, swatch_value, toggle};
 use crate::dialogs::{CharFields, Dialog};
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _};
 use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
-use craft_ui_widgets::runtime::env::UnitKind;
 use designcraft_doc::cjk_settings::KentenKind;
 use egui::Ui;
 use serde_json::{Value, json};
@@ -23,50 +22,35 @@ fn tr(app: &DesignApp, s: &str) -> String {
     crate::i18n::tr(&app.ui.language, s).to_string()
 }
 
-/// How a number attribute is shown and kept.
-struct Spec {
-    /// The shown number is the attribute times this (100 for a ratio shown as a percentage).
-    scale: f64,
-    range: (f64, f64),
-    counts: Counts,
-    /// Stored as a whole number.
-    whole: bool,
-    /// Emptying the field unsets the attribute (always for a character style; for an automatic value in either).
-    auto: bool,
+/// A length in points, shown in points.
+fn points(range: (f64, f64)) -> Spec {
+    Spec::real(range.0, range.1).unit("pt")
 }
 
-impl Spec {
-    fn points(range: (f64, f64)) -> Self {
-        Spec { scale: 1.0, range, counts: Counts::Kind(UnitKind::Points), whole: false, auto: false }
-    }
-
-    fn percent(range: (f64, f64), scale: f64) -> Self {
-        Spec { scale, range, counts: Counts::Kind(UnitKind::Percent), whole: false, auto: false }
-    }
-
-    fn degrees(range: (f64, f64)) -> Self {
-        Spec { scale: 1.0, range, counts: Counts::Kind(UnitKind::Degrees), whole: false, auto: false }
-    }
-
-    fn count(range: (f64, f64)) -> Self {
-        Spec { scale: 1.0, range, counts: Counts::Plain, whole: true, auto: false }
-    }
-
-    fn automatic(mut self) -> Self {
-        self.auto = true;
-        self
-    }
+/// A ratio shown as percents (`scale` 100), or a number of percent kept as it is (`scale` 1).
+fn percent(range: (f64, f64), scale: f64) -> Spec {
+    Spec::real(range.0, range.1).scaled(scale).unit("%")
 }
 
-/// A number attribute.
+/// An angle in degrees.
+fn degrees(range: (f64, f64)) -> Spec {
+    Spec::real(range.0, range.1).unit("\u{b0}")
+}
+
+/// A whole number.
+fn count(range: (f64, f64)) -> Spec {
+    Spec::whole(range.0, range.1)
+}
+
+/// A number attribute. Emptying the field unsets the attribute in a character style, and for an automatic value (a spec
+/// that is `clearable`) in either.
 fn cnum(ui: &mut Ui, d: &mut Dialog, cf: &CharFields, key: &str, label: &str, spec: &Spec) {
-    let shown = cf.get(d, key).as_f64().map(|x| x * spec.scale);
-    let num = Num { range: spec.range, whole: spec.whole, counts: spec.counts.clone() };
-    let Some(next) = number(ui, &format!("c.{key}"), label, shown, &num, true) else { return };
-    match next.filter(|n| n.is_finite()) {
-        Some(n) if spec.whole => cf.set(d, key, json!(n.round().clamp(spec.range.0, spec.range.1) as u64)),
-        Some(n) => cf.set(d, key, json!(n / spec.scale)),
-        None if cf.sparse || spec.auto => cf.set(d, key, Value::Null),
+    let spec = if cf.sparse { spec.clone().clearable() } else { spec.clone() };
+    let shown = cf.get(d, key).as_f64();
+    match number_edit(ui, &format!("c.{key}"), label, shown, &spec, true) {
+        Some(Some(n)) if spec.is_whole() => cf.set(d, key, json!(n as u64)),
+        Some(Some(n)) => cf.set(d, key, json!(n)),
+        Some(None) => cf.set(d, key, Value::Null),
         None => {}
     }
 }
@@ -104,12 +88,15 @@ fn ccheck(ui: &mut Ui, d: &mut Dialog, cf: &CharFields, key: &str, label: &str, 
 /// A swatch attribute; "" is the text's own colour.
 fn cswatch(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields, doc: &designcraft_doc::Document, key: &str, label: &str) {
     let current = cf.get(d, key);
-    let text_color = tr(app, "Text Color");
-    let blank = "\u{2014}";
-    let extra = Extra { text: Some(("", text_color.as_str())), blank: cf.sparse.then_some((UNSET, blank)) };
-    let shown = if current.is_null() && cf.sparse { UNSET.to_owned() } else { current.as_str().unwrap_or("").to_owned() };
-    if let Some(next) = swatch_pick(ui, &format!("c.{key}"), label, doc, &shown, &extra, true) {
-        cf.set(d, key, if next == UNSET { Value::Null } else { json!(next) });
+    let mut first = Vec::new();
+    if cf.sparse {
+        first.push((json!(UNSET), "\u{2014}".to_owned()));
+    }
+    first.push((json!(""), tr(app, "Text Color")));
+    let menu = Swatches::with_entries(Some(doc), first);
+    let shown = if current.is_null() && cf.sparse { json!(UNSET) } else { json!(current.as_str().unwrap_or("")) };
+    if let Some(next) = swatch_value(ui, &format!("c.{key}"), label, &menu, &shown, true) {
+        cf.set(d, key, if next == json!(UNSET) { Value::Null } else { next });
     }
 }
 
@@ -201,8 +188,8 @@ fn cfield(ui: &mut Ui, app: &DesignApp, d: &mut Dialog, cf: &CharFields, caption
 fn tate_chu_yoko(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     ccheck(ui, d, cf, "tateChuYoko", &tr(app, "Tate-Chu-Yoko"), true);
     FieldGroup::new(tr(app, "Tate-chu-yoko Settings")).id_salt("cjk_tcy").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Up/Down Position:", "tateChuYokoYOffset", &Spec::points((-1000.0, 1000.0)));
-        nfield(ui, app, d, cf, "Left/Right Position:", "tateChuYokoXOffset", &Spec::points((-1000.0, 1000.0)));
+        nfield(ui, app, d, cf, "Up/Down Position:", "tateChuYokoYOffset", &points((-1000.0, 1000.0)));
+        nfield(ui, app, d, cf, "Left/Right Position:", "tateChuYokoXOffset", &points((-1000.0, 1000.0)));
     });
 }
 
@@ -230,8 +217,8 @@ fn ruby_placement(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields)
         cfield(ui, app, d, cf, "Position:", "rubyPosition", &[(json!("aboveRight"), "Above/Right"), (json!("belowLeft"), "Below/Left")]);
     });
     GroupBox::new(tr(app, "Offset from Parent"), None).id_salt("cjk_ruby_offset").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Across the Line:", "rubyYOffset", &Spec::points((-1000.0, 1000.0)));
-        nfield(ui, app, d, cf, "Along the Line:", "rubyXOffset", &Spec::points((-1000.0, 1000.0)));
+        nfield(ui, app, d, cf, "Across the Line:", "rubyYOffset", &points((-1000.0, 1000.0)));
+        nfield(ui, app, d, cf, "Along the Line:", "rubyXOffset", &points((-1000.0, 1000.0)));
     });
 }
 
@@ -240,13 +227,13 @@ fn ruby_placement(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields)
 fn ruby_font(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     FieldGroup::new(tr(app, "Ruby Font and Size")).id_salt("cjk_ruby_font").show(ui, |ui, _| {
         font_fields(app, ui, d, cf, ("rubyFont", "rubyFontStyle"), true);
-        nfield(ui, app, d, cf, "Size:", "rubyFontSize", &Spec::points((0.1, 1296.0)).automatic());
-        nfield(ui, app, d, cf, "Horizontal Scale:", "rubyXScale", &Spec::percent((1.0, 1000.0), 100.0));
-        nfield(ui, app, d, cf, "Vertical Scale:", "rubyYScale", &Spec::percent((1.0, 1000.0), 100.0));
+        nfield(ui, app, d, cf, "Size:", "rubyFontSize", &points((0.1, 1296.0)).clearable());
+        nfield(ui, app, d, cf, "Horizontal Scale:", "rubyXScale", &percent((1.0, 1000.0), 100.0));
+        nfield(ui, app, d, cf, "Vertical Scale:", "rubyYScale", &percent((1.0, 1000.0), 100.0));
     });
     ccheck(ui, d, cf, "rubyOpenTypePro", &tr(app, "Use OpenType Pro Ruby Glyphs"), true);
     FieldGroup::new(tr(app, "Tate-chu-yoko Digits:")).id_salt("cjk_ruby_tcy").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Tate-chu-yoko Digits:", "rubyAutoTcyDigits", &Spec::count((0.0, 9.0)));
+        nfield(ui, app, d, cf, "Tate-chu-yoko Digits:", "rubyAutoTcyDigits", &count((0.0, 9.0)));
     });
     ccheck(ui, d, cf, "rubyAutoTcyIncludeRoman", &tr(app, "Include Roman Characters"), true);
     ccheck(ui, d, cf, "rubyAutoTcyAutoScale", &tr(app, "Fit to Width"), true);
@@ -293,10 +280,10 @@ fn ruby_longer(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     let label = tr(app, "Minimum Scale:");
     field(ui, &label, "rubyScalingMin", |ui| {
         if on {
-            cnum(ui, d, cf, "rubyScalingMin", &label, &Spec::percent((10.0, 100.0), 100.0));
+            cnum(ui, d, cf, "rubyScalingMin", &label, &percent((10.0, 100.0), 100.0));
         } else {
             // Dimmed while shrinking is off.
-            let _ = number(ui, "c.rubyScalingMinOff", &label, cf.get(d, "rubyScalingMin").as_f64().map(|v| v * 100.0), &Num::decimal(10.0, 100.0).counting(Counts::Kind(UnitKind::Percent)), false);
+            let _ = number_edit(ui, "c.rubyScalingMinOff", &label, cf.get(d, "rubyScalingMin").as_f64(), &percent((10.0, 100.0), 100.0), false);
         }
     });
     ccheck(ui, d, cf, "rubyAutoAlign", &tr(app, "Auto Align at Line Start/End"), true);
@@ -324,8 +311,8 @@ fn adornment_color(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields
         }
         field(ui, &swatch_label, &key, |ui| cswatch(app, ui, d, cf, doc, &key, &swatch_label));
         FieldGroup::new(tr(app, "Color")).id_salt(("cjk_color_fields", prefix.to_owned())).show(ui, |ui, _| {
-            nfield(ui, app, d, cf, "Tint:", &format!("{prefix}{part}Tint"), &Spec::percent((0.0, 100.0), 100.0).automatic());
-            nfield(ui, app, d, cf, "Weight:", &format!("{prefix}StrokeWeight"), &Spec::points((0.0, 800.0)).automatic());
+            nfield(ui, app, d, cf, "Tint:", &format!("{prefix}{part}Tint"), &percent((0.0, 100.0), 100.0).clearable());
+            nfield(ui, app, d, cf, "Weight:", &format!("{prefix}StrokeWeight"), &points((0.0, 800.0)).clearable());
         });
         overprint(ui, d, cf, &format!("{prefix}OverprintFill"), &tr(app, "Overprint Fill"));
         overprint(ui, d, cf, &format!("{prefix}OverprintStroke"), &tr(app, "Overprint Stroke"));
@@ -381,12 +368,12 @@ fn kenten(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     };
     let (type_label, mark_label) = (tr(app, "Kenten Type:"), tr(app, "Character:"));
     FieldGroup::new(tr(app, "Kenten Settings")).id_salt("cjk_kenten").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Distance from Parent:", "kentenDistance", &Spec::points((-1296.0, 1296.0)));
+        nfield(ui, app, d, cf, "Distance from Parent:", "kentenDistance", &points((-1296.0, 1296.0)));
         cfield(ui, app, d, cf, "Position:", "kentenPosition", &[(json!("aboveRight"), "Above/Right"), (json!("belowLeft"), "Below/Left")]);
-        nfield(ui, app, d, cf, "Size:", "kentenSize", &Spec::points((0.1, 1296.0)).automatic());
+        nfield(ui, app, d, cf, "Size:", "kentenSize", &points((0.1, 1296.0)).clearable());
         cfield(ui, app, d, cf, "Alignment:", "kentenAlignment", &[(json!("center"), "Centered"), (json!("start"), "Left/Top")]);
-        nfield(ui, app, d, cf, "Horizontal Scale:", "kentenXScale", &Spec::percent((1.0, 1000.0), 100.0));
-        nfield(ui, app, d, cf, "Vertical Scale:", "kentenYScale", &Spec::percent((1.0, 1000.0), 100.0));
+        nfield(ui, app, d, cf, "Horizontal Scale:", "kentenXScale", &percent((1.0, 1000.0), 100.0));
+        nfield(ui, app, d, cf, "Vertical Scale:", "kentenYScale", &percent((1.0, 1000.0), 100.0));
         field(ui, &type_label, "kentenType", |ui| {
             if let Some(next) = pick(ui, "cjkkententype", &type_label, &shown, &types, true) {
                 if next == UNSET {
@@ -420,8 +407,8 @@ fn kenten(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
 /// Shatai: magnification, angle, and the rotation and tsume adjustments.
 fn shatai(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     FieldGroup::new(tr(app, "Shatai")).id_salt("cjk_shatai").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Magnification:", "shataiMagnification", &Spec::percent((0.0, 90.0), 1.0));
-        nfield(ui, app, d, cf, "Angle:", "shataiAngle", &Spec::degrees((0.0, 180.0)).automatic());
+        nfield(ui, app, d, cf, "Magnification:", "shataiMagnification", &percent((0.0, 90.0), 1.0));
+        nfield(ui, app, d, cf, "Angle:", "shataiAngle", &degrees((0.0, 180.0)).clearable());
     });
     ccheck(ui, d, cf, "shataiAdjustRotation", &tr(app, "Adjust Rotation"), true);
     ccheck(ui, d, cf, "shataiAdjustTsume", &tr(app, "Adjust Tsume"), true);
@@ -434,7 +421,7 @@ fn pval(d: &Dialog, pv: &Value, key: &str) -> Value {
 
 /// A paragraph attribute chosen from `options` (value, label); `current` is the value shown.
 fn pchoice(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, current: &str, options: &[(&str, &str)]) {
-    let entries = captioned(&app.ui.language, options);
+    let entries: Vec<(String, String)> = options.iter().map(|(value, caption)| ((*value).to_owned(), tr(app, caption))).collect();
     if let Some(next) = pick(ui, &format!("cjkp.{key}"), label, current, &entries, true) {
         d.fields.insert(format!("p.{key}"), json!(next));
     }
@@ -452,7 +439,7 @@ fn auto_tate_chu_yoko(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value) 
     FieldGroup::new(tr(app, "Auto Tate-chu-yoko Settings")).id_salt("cjk_auto_tcy").show(ui, |ui, _| {
         field(ui, &label, "autoTcy", |ui| {
             let max = f64::from(designcraft_compose::shape::AUTO_TCY_MAX);
-            if let Some(Some(n)) = number(ui, "p.autoTcy", &label, pval(d, pv, "autoTcy").as_f64(), &Num::whole(0.0, max), true) {
+            if let Some(Some(n)) = number_edit(ui, "p.autoTcy", &label, pval(d, pv, "autoTcy").as_f64(), &Spec::whole(0.0, max), true) {
                 d.fields.insert("p.autoTcy".into(), json!(n.round().clamp(0.0, max) as u64));
             }
         });
@@ -464,9 +451,9 @@ fn auto_tate_chu_yoko(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value) 
 fn warichu(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
     ccheck(ui, d, cf, "warichu", &tr(app, "Warichu"), true);
     FieldGroup::new(tr(app, "Warichu Settings")).id_salt("cjk_warichu").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Lines:", "warichuLines", &Spec::count((2.0, 16.0)));
-        nfield(ui, app, d, cf, "Warichu Size:", "warichuSize", &Spec::percent((1.0, 1000.0), 1.0));
-        nfield(ui, app, d, cf, "Line Spacing:", "warichuLineSpacing", &Spec::points((-1000.0, 1000.0)));
+        nfield(ui, app, d, cf, "Lines:", "warichuLines", &count((2.0, 16.0)));
+        nfield(ui, app, d, cf, "Warichu Size:", "warichuSize", &percent((1.0, 1000.0), 1.0));
+        nfield(ui, app, d, cf, "Line Spacing:", "warichuLineSpacing", &points((-1000.0, 1000.0)));
         cfield(
             ui,
             app,
@@ -478,8 +465,8 @@ fn warichu(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
         );
     });
     GroupBox::new(tr(app, "Line Break Options"), None).id_salt("cjk_warichu_break").show(ui, |ui, _| {
-        nfield(ui, app, d, cf, "Characters Before Break:", "warichuCharsBeforeBreak", &Spec::count((0.0, 100.0)));
-        nfield(ui, app, d, cf, "Characters After Break:", "warichuCharsAfterBreak", &Spec::count((0.0, 100.0)));
+        nfield(ui, app, d, cf, "Characters Before Break:", "warichuCharsBeforeBreak", &count((0.0, 100.0)));
+        nfield(ui, app, d, cf, "Characters After Break:", "warichuCharsAfterBreak", &count((0.0, 100.0)));
     });
 }
 
@@ -633,7 +620,7 @@ fn grid_settings(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value) {
                 Row::new().id_salt("cjk_gyoudori").show(ui, |ui, _| {
                     // Empty or 0: automatic (as many grid lines as the leading needs).
                     let value = (lines > 0).then_some(lines as f64);
-                    if let Some(n) = number(ui, "p.gridGyoudori", &gyoudori_label, value, &Num::whole(0.0, 100.0), true) {
+                    if let Some(n) = number_edit(ui, "p.gridGyoudori", &gyoudori_label, value, &Spec::whole(0.0, 100.0).clearable(), true) {
                         d.fields.insert("p.gridGyoudori".into(), json!(n.map_or(0, |n| n.round().clamp(0.0, 100.0) as u64)));
                     }
                     if lines == 0 {
@@ -662,9 +649,11 @@ pub(crate) fn ruby(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<b
     let cf = CharFields { base: &base, sparse: false };
     let (ruby_label, hint, title) = (tr(app, "Ruby:"), tr(app, "Set over the selected text; empty removes it."), tr(app, "Ruby"));
     let section = d.s("section");
+    let none = Value::Null;
+    let ruby_reading = text_forms::Attrs::new("", &none);
     Stack::new().id_salt("ruby_dialog").fill_width().show(ui, |ui, _| {
-        field(ui, &ruby_label, "ruby_text", |ui| text(ui, d, "text", "ruby_text", &ruby_label, true));
-        note(ui, &hint);
+        field(ui, &ruby_label, "ruby_text", |ui| text_forms::text(ui, d, &ruby_reading, "text", &ruby_label, true));
+        message(ui, &hint, false);
         heading(ui, &title);
         Row::new().id_salt("ruby_layout").fill_width().show(ui, |ui, _| {
             super::section_nav(app, ui, d, RUBY_SECTIONS, &title);
