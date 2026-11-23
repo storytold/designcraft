@@ -6,19 +6,20 @@ use super::tree::recent_label;
 use super::{DesignApp, ScreenMode, Value, json};
 use crate::app::file_dialogs::{Bound, with_path};
 
-/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
+/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it. It is a floating window of
+/// the docking layout that never docks.
 fn toggle_tabs_panel(app: &mut DesignApp) {
-    if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
+    if crate::panel_docking::floating_panels(app).iter().any(|p| p == "tabs") {
         if app.ui.hidden_panels != 0 {
             app.ui.hidden_panels = 0;
             app.ui.tabs_panel.snap_request = 2;
         } else {
-            app.ui.floating.retain(|(p, _)| p != "tabs");
+            // Dock Panel closes a float-only panel: it has no dock place to go back to.
+            let _ = crate::panel_docking::command(app, "window.panel.dock", &json!({"panel": "tabs"}));
         }
     } else {
-        app.ui.hidden_panels = 0;
         let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
-        app.ui.floating.push(("tabs".into(), [at.x, at.y]));
+        let _ = crate::panel_docking::command(app, "window.panel.float", &json!({"panel": "tabs", "x": at.x, "y": at.y}));
         app.ui.tabs_panel.snap_request = 2;
     }
 }

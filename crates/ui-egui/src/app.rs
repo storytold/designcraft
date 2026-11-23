@@ -6,8 +6,7 @@ use super::state::{CanvasCache, ImportRequest, ImportedFile, Perf, ScreenMode, U
 use super::{
     ControlRequest, ControlResponse, DesignApp, HashMap, InputGeneration, LivePreview, QuitState, Receiver, SCREENSHOT_MAX_AGGREGATE_BYTES,
     SCREENSHOT_MAX_IMAGE_BYTES, SCREENSHOT_MAX_REQUESTS, ScreenshotGeometry, Sender, Session, ShotRequest, UiRequest, Value, ViewInfo, about, canvas,
-    chrome, cursors, dialogs, dock, json, menus, new_document, page_history, panel_docking, shortcut_import, story_editor, theme, toolbar,
-    updates_ui,
+    chrome, cursors, dialogs, json, menus, new_document, page_history, panel_docking, shortcut_import, story_editor, theme, toolbar, updates_ui,
 };
 
 mod clipboard;
@@ -344,10 +343,6 @@ impl DesignApp {
             // title): its pass counter stops advancing, so treat it as gone and let the tracker
             // start a fresh context when the window is shown again.
             self.end_second_ime_viewport();
-        }
-        // Tab, Shift+Tab and Presentation hide the floating panels with the docked ones.
-        if !presenting && self.ui.hidden_panels == 0 {
-            dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
         dialogs::show_in(self, &ctx, ui.is_enabled());

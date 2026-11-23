@@ -454,7 +454,8 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
     let zoom = app.view().map(|v| v.zoom as f32);
 
     // Panel position above the frame: on request (the magnet, or opening the panel).
-    let win = ui.ctx().memory(|m| m.area_rect(egui::Id::unique(("floating_panel", "tabs"))));
+    // The panel's floating window in the docking layout.
+    let win = crate::panel_docking::floating_rect(app, "tabs");
     let state = &mut app.ui.tabs_panel;
     if state.selected.is_some_and(|i| i >= tabs.len()) {
         state.selected = None;
@@ -634,7 +635,7 @@ mod tests {
         let mut h = test_window::open(app, egui::vec2(1400.0, 900.0));
         h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::T);
         h.run_steps(6);
-        assert!(h.state().app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Cmd+Shift+T floats the Tabs panel");
+        assert!(crate::panel_docking::floating_panels(&h.state().app).iter().any(|p| p == "tabs"), "Cmd+Shift+T floats the Tabs panel");
         // The ruler's strip lies just below the row of alignment buttons.
         let b = h.get_by_label("Left-aligned tab").rect();
         test_window::click_at(&mut h, egui::pos2(b.min.x + super::PAD + 60.0, b.max.y + 14.0));
@@ -644,7 +645,7 @@ mod tests {
         assert_eq!(h.state().app.ui.tabs_panel.selected, Some(0));
         // The menu item (Type › Tabs) closes it again.
         h.state_mut().app.run("app.tabsPanel", json!({})).unwrap();
-        assert!(!h.state().app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+        assert!(!crate::panel_docking::floating_panels(&h.state().app).iter().any(|p| p == "tabs"));
     }
 }
 
