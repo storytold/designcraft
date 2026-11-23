@@ -127,8 +127,7 @@ impl DesignApp {
             #[cfg(test)]
             input_ticks: 0,
             styled: false,
-            // the third-track pilot's framework-drawn Transform fields: off unless asked for, so the
-            // shipping app keeps the bespoke numeric fields and its own context options
+            // the framework draws the Transform and Opacity fields on the desktop
             #[cfg(not(target_arch = "wasm32"))]
             framework_transform: crate::framework_transform::enabled(),
             #[cfg(target_arch = "wasm32")]

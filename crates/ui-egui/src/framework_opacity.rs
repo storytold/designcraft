@@ -32,12 +32,9 @@ use craft_ui_widgets::text::NumberField;
 use egui::{Rect, vec2};
 use serde_json::{Value, json};
 
-/// The flag that puts the Opacity row on the framework: `DESIGNCRAFT_FRAMEWORK_OPACITY=1`.
-pub(crate) const FLAG: &str = "DESIGNCRAFT_FRAMEWORK_OPACITY";
-
-/// Whether the pilot is asked for in the environment.
+/// Whether the Opacity row is the framework's: always on the desktop, where the framework is the UI.
 pub(crate) fn enabled() -> bool {
-    std::env::var(FLAG).is_ok_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
+    true
 }
 
 /// Whether the framework draws the row: the pilot is on and its runtime is on this context. Without the

@@ -37,12 +37,9 @@ use designcraft_geom::Unit;
 use egui::{Rect, vec2};
 use serde_json::{Map, Value, json};
 
-/// The flag that puts the transform fields on the framework: `DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`.
-pub(crate) const FLAG: &str = "DESIGNCRAFT_FRAMEWORK_TRANSFORM";
-
-/// Whether the pilot is asked for in the environment.
+/// Whether the transform fields are the framework's: always on the desktop, where the framework is the UI.
 pub(crate) fn enabled() -> bool {
-    std::env::var(FLAG).is_ok_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes"))
+    true
 }
 
 /// Installs the framework's runtime on `ctx`, once, before its first pass.
