@@ -1,7 +1,6 @@
 //! Conditional Text panel: conditions with their visibility and indicator colour; click a name to
 //! apply it to the selected text (the box shows whether the selection has it).
 
-use egui::{Sense, vec2};
 use serde_json::json;
 
 use crate::DesignApp;
@@ -20,101 +19,11 @@ fn apply_condition(app: &mut DesignApp, name: &str, has_text: bool, applied: &[S
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    // The host installs the SDK before the first pass. Web and native contexts without that
-    // runtime keep working controls rather than drawing SDK controls that cannot take input.
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        show_framework(app, ui);
-        return;
-    }
-    show_fallback(app, ui);
-}
-
-fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Some(st) = app.session.active() else { return };
-    let conditions = st.doc.conditions.clone();
-    let has_text = st.selection.text.is_some();
-    // Conditions at the selection start (all runs share them for a "checked" box).
-    let applied: Vec<String> = super::text_attrs(app)
-        .and_then(|a| a["chars"]["conditions"].as_array().map(|v| v.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
-        .unwrap_or_default();
-    if conditions.is_empty() {
-        ui.label(crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "No conditions. Create one, then select text and click it to apply."))
-                .size(11.0)
-                .color(t.text_dim),
-        ));
-    }
-    for c in &conditions {
-        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-        // Visibility (eye).
-        let eye = egui::Rect::from_min_size(row.min + vec2(2.0, 3.0), vec2(16.0, 16.0));
-        let er = ui.interact(eye, ui.scope_id().with(("cond_eye", &c.name)), Sense::click()).on_hover_ui(|ui| {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show / hide text with this condition"));
-        });
-        if c.visible {
-            crate::icons::paint(ui.painter(), eye, "eye", t.text_dim);
-        }
-        if er.clicked() {
-            let _ = app.run("condition.options", json!({"name": c.name, "visible": !c.visible}));
-        }
-        // Applied box.
-        let bx = egui::Rect::from_min_size(row.min + vec2(24.0, 5.0), vec2(12.0, 12.0));
-        ui.painter().rect_stroke(bx, 2.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
-        if applied.contains(&c.name) {
-            ui.painter()
-                .line_segment([bx.left_center() + vec2(2.0, 0.0), bx.center_bottom() - vec2(0.0, 3.0)], egui::Stroke::new(1.5, t.text_strong));
-            ui.painter().line_segment([bx.center_bottom() - vec2(0.0, 3.0), bx.right_top() + vec2(-2.0, 3.0)], egui::Stroke::new(1.5, t.text_strong));
-        }
-        // Name (click: toggle on the selected text) and indicator colour.
-        let name_r = egui::Rect::from_min_max(row.min + vec2(42.0, 0.0), row.max - vec2(24.0, 0.0));
-        let nr = ui.interact(name_r, ui.scope_id().with(("cond_name", &c.name)), Sense::click());
-        if nr.hovered() {
-            ui.painter().rect_filled(name_r, 0.0, t.hover);
-        }
-        ui.painter().text(name_r.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, &c.name, egui::FontId::proportional(12.5), t.text);
-        let chip = egui::Rect::from_min_size(egui::pos2(row.max.x - 20.0, row.min.y + 5.0), vec2(14.0, 12.0));
-        ui.painter().rect_filled(chip, 2.0, egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
-        if nr.clicked() {
-            apply_condition(app, &c.name, has_text, &applied);
-        }
-        nr.context_menu(|ui| {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Condition"))).clicked() {
-                let _ = app.run("condition.delete", json!({"name": c.name}));
-                ui.close();
-            }
-        });
-    }
-    ui.add_space(6.0);
-    let id = egui::Id::unique("new_condition_name");
-    let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut name)
-                .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New condition name")))
-                .desired_width(150.0),
-        );
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "New"))).clicked() && !name.trim().is_empty() {
-            match app.run("condition.new", json!({"name": name.trim()})) {
-                Ok(_) => name.clear(),
-                Err(e) => app.status_error("Conditional Text", e),
-            }
-        }
-    });
-    ui.data_mut(|d| d.insert_temp(id, name));
-    if has_text
-        && !applied.is_empty()
-        && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Remove Conditions from Selection"))).clicked()
-    {
-        let _ = app.run("condition.apply", json!({"name": null, "only": true}));
-    }
+    show_framework(app, ui);
 }
 
 /// App-owned mapping only: the framework supplies input and focus; the engine still owns eligibility,
 /// text-range interpretation, refusals and Undo. Condition names are identities, never row indices.
-#[cfg(not(target_arch = "wasm32"))]
 fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::buttons::Button;
     use craft_ui_widgets::choice::Checkbox;
@@ -231,9 +140,10 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(draft_id, draft));
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use egui::vec2;
     use designcraft_doc::StoryId;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
@@ -267,10 +177,8 @@ mod tests {
         app.run("text.select", json!({"story": story.0, "anchor": anchor, "focus": focus})).unwrap();
     }
 
-    fn harness(mut app: DesignApp, sdk: bool, enabled: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp, enabled: bool) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        app.framework_transform = sdk;
-        app.framework_opacity = false;
         app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(380.0, 440.0)).build_ui_state(
@@ -336,13 +244,8 @@ mod tests {
     }
 
     fn type_draft(h: &mut Harness<'_, DesignApp>, text: &str) {
-        // The installed SDK also exposes an unnamed IME proxy. Target the actual named field,
-        // while the uninstalled fallback has only its original egui text editor.
-        let at = if h.state().framework_installed {
-            h.get_by_role_and_label(Role::TextInput, crate::i18n::tr(&h.state().ui.language, "New condition name")).rect().center()
-        } else {
-            h.get_by_role(Role::TextInput).rect().center()
-        };
+        // The SDK also exposes an unnamed IME proxy. Target the actual named field.
+        let at = h.get_by_role_and_label(Role::TextInput, crate::i18n::tr(&h.state().ui.language, "New condition name")).rect().center();
         click_at(h, at, PointerButton::Primary);
         key(h, Key::A, Modifiers::COMMAND);
         for ch in text.chars() {
@@ -352,11 +255,7 @@ mod tests {
     }
 
     fn draft(h: &Harness<'_, DesignApp>) -> String {
-        if h.state().framework_installed {
-            h.get_by_role_and_label(Role::TextInput, crate::i18n::tr(&h.state().ui.language, "New condition name")).value().unwrap_or_default()
-        } else {
-            h.get_by_role(Role::TextInput).value().unwrap_or_default()
-        }
+        h.get_by_role_and_label(Role::TextInput, crate::i18n::tr(&h.state().ui.language, "New condition name")).value().unwrap_or_default()
     }
 
     fn undo_steps(h: &Harness<'_, DesignApp>) -> usize {
@@ -384,7 +283,7 @@ mod tests {
 
     #[test]
     fn sdk_conditions_create_duplicate_blank_and_undo() {
-        let mut h = harness(app(), true, true);
+        let mut h = harness(app(), true);
         let before = undo_steps(&h);
         let commands = condition_commands(&h);
         click(&mut h, Role::Button, "New");
@@ -416,7 +315,7 @@ mod tests {
         let (app, story, other) = text_app();
         let selection = app.session.doc().unwrap().selection.clone();
         let untouched = app.session.doc().unwrap().doc.story(other).unwrap().clone();
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         let before = undo_steps(&h);
         click(&mut h, Role::Button, "EU");
         assert_range(&h, story, &["EU"]);
@@ -445,7 +344,7 @@ mod tests {
     fn sdk_conditions_visibility_and_keyboard_are_independent_and_undoable() {
         let (app, story, _) = text_app();
         let original_conditions = app.session.doc().unwrap().doc.conditions.clone();
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         click(&mut h, Role::Button, "EU");
         let before = undo_steps(&h);
         click(&mut h, Role::CheckBox, "EU");
@@ -498,7 +397,7 @@ mod tests {
     fn sdk_conditions_no_text_feedback_and_caret_keep_existing_command_semantics() {
         let (mut app, story, _) = text_app();
         app.run("selection.set", json!({"ids": []})).unwrap();
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         let before = undo_steps(&h);
         let commands = condition_commands(&h);
         click(&mut h, Role::Button, "EU");
@@ -522,7 +421,7 @@ mod tests {
     #[test]
     fn sdk_conditions_context_delete_preserves_text_and_undo_restores_identity() {
         let (app, story, _) = text_app();
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         click(&mut h, Role::Button, "EU");
         let conditions = h.state().session.doc().unwrap().doc.conditions.clone();
         let before = undo_steps(&h);
@@ -548,7 +447,7 @@ mod tests {
         app.run("condition.new", json!({"name": "EU"})).unwrap();
         select(&mut app, second, 1, "AéBC".len());
         app.run("file.activate", json!({"index": 0})).unwrap();
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         type_draft(&mut h, "First draft");
         let at = h.get_by_role_and_label(Role::Button, "EU").rect().center();
         event(&mut h, Event::PointerMoved(at));
@@ -573,7 +472,7 @@ mod tests {
     #[test]
     fn sdk_conditions_inherited_disabled_state_prevents_commands() {
         let (app, story, _) = text_app();
-        let mut h = harness(app, true, false);
+        let mut h = harness(app, false);
         let commands = condition_commands(&h);
         let before = undo_steps(&h);
         assert!(h.get_by_role_and_label(Role::Button, "EU").accesskit_node().is_disabled());
@@ -588,18 +487,16 @@ mod tests {
     }
 
     #[test]
-    fn sdk_conditions_localized_create_and_uninstalled_fallback_remain_usable() {
-        for sdk in [true, false] {
-            let mut app = app();
-            app.ui.language = "ja".into();
-            let mut h = harness(app, sdk, true);
-            type_draft(&mut h, "日本語");
-            click(&mut h, Role::Button, crate::i18n::tr("ja", "New"));
-            assert_eq!(h.state().session.doc().unwrap().doc.conditions[0].name, "日本語");
-            assert_eq!(draft(&h), "");
-            assert_eq!(condition_commands(&h).last().unwrap(), &("condition.new".into(), json!({"name": "日本語"})));
-            undo(&mut h);
-            assert!(h.state().session.doc().unwrap().doc.conditions.is_empty());
-        }
+    fn sdk_conditions_localized_create_remains_usable() {
+        let mut app = app();
+        app.ui.language = "ja".into();
+        let mut h = harness(app, true);
+        type_draft(&mut h, "日本語");
+        click(&mut h, Role::Button, crate::i18n::tr("ja", "New"));
+        assert_eq!(h.state().session.doc().unwrap().doc.conditions[0].name, "日本語");
+        assert_eq!(draft(&h), "");
+        assert_eq!(condition_commands(&h).last().unwrap(), &("condition.new".into(), json!({"name": "日本語"})));
+        undo(&mut h);
+        assert!(h.state().session.doc().unwrap().doc.conditions.is_empty());
     }
 }

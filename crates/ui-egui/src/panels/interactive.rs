@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
-use crate::theme::Tokens;
 
 fn dest_text(lang: &str, d: &Value) -> String {
     if let Some(u) = d.get("url").and_then(Value::as_str) {
@@ -19,228 +18,25 @@ fn dest_text(lang: &str, d: &Value) -> String {
     d.to_string()
 }
 
-/// The browser's and an uninstalled runtime's action buttons: real egui controls rather than inert framework
-/// components. The desktop's are in [`framework`].
-struct InteractiveButton {
-    response: egui::Response,
-    clicked: bool,
-}
-
-fn interactive_button(app: &DesignApp, ui: &mut egui::Ui, target: &str, action: &str, label: &str, enabled: bool) -> InteractiveButton {
-    let uid = app.session.active().map(|st| st.uid);
-    let id = ui.make_persistent_id(("interactive_action", uid, action, target));
-    let label = crate::i18n::tr(&app.ui.language, label);
-    let response = ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, label)))).inner;
-    let clicked = response.clicked();
-    InteractiveButton { response, clicked }
-}
-
-/// A small row action, its id bound to the document state and the row's target.
-fn interactive_compact_button(
-    app: &DesignApp,
-    ui: &mut egui::Ui,
-    target: impl std::hash::Hash + std::fmt::Debug,
-    action: &str,
-    label: &str,
-    enabled: bool,
-) -> InteractiveButton {
-    // Revert may preserve uid while replacing the document; a held press must not follow it.
-    let document = app.session.active().map(|st| (st.uid, st.identity_epoch));
-    let id = ui.make_persistent_id(("interactive_compact_action", document, action, target));
-    let label = crate::i18n::tr(&app.ui.language, label);
-    let response = ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, label)).small())).inner;
-    let clicked = response.clicked();
-    InteractiveButton { response, clicked }
-}
-
-fn hyperlink_url(app: &DesignApp, ui: &mut egui::Ui, url: &mut String) {
-    let name = crate::i18n::tr(&app.ui.language, "URL");
-    let response = ui.add(egui::TextEdit::singleline(url).desired_width(170.0));
-    // Name the real fallback editor, not a test-only label or a replacement control. Updating
-    // only its semantic name preserves the editor's existing value, role and selection data.
-    response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-}
-
-fn article_export(app: &DesignApp, ui: &mut egui::Ui, export: &mut bool) -> bool {
-    ui.checkbox(export, "")
-        .on_hover_ui(|ui| {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Include when exporting"));
-        })
-        .changed()
-}
-
 /// Window › Interactive › Hyperlinks: a URL and New over the document's hyperlinks; a name goes to its source.
 pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::hyperlinks(app, ui);
-        return;
-    }
-    hyperlinks_fallback(app, ui);
+    framework::hyperlinks(app, ui);
 }
 
 /// Window › Interactive › Bookmarks: the PDF outline; a name goes to its page.
 pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::bookmarks(app, ui);
-        return;
-    }
-    bookmarks_fallback(app, ui);
+    framework::bookmarks(app, ui);
 }
 
 /// Articles panel: reading-order lists for EPUB / HTML export.
 pub fn articles(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::articles(app, ui);
-        return;
-    }
-    articles_fallback(app, ui);
+    framework::articles(app, ui);
 }
 
 /// Tags panel and structure: tags (click to tag the selection), the structure in reading order,
 /// XML export/import.
 pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::tags(app, ui);
-        return;
-    }
-    tags_fallback(app, ui);
-}
-
-fn hyperlinks_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let id = egui::Id::unique("new_hyperlink_url");
-    let mut url: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| "https://".into());
-    let has_target = app.session.active().is_some_and(|d| d.selection.text.is_some_and(|t| !t.is_caret()) || !d.selection.items.is_empty());
-    ui.horizontal(|ui| {
-        hyperlink_url(app, ui, &mut url);
-        let new = interactive_button(app, ui, "new", "hyperlink.create", "New", has_target);
-        new.response.on_hover_ui(|ui| {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Hyperlink from the selected text or frames"));
-        });
-        if new.clicked {
-            let p = if let Some(m) = url.strip_prefix("mailto:") { json!({"email": m}) } else { json!({"url": url}) };
-            if let Err(e) = app.run("hyperlink.create", p) {
-                app.status_error("Hyperlinks", e);
-            }
-        }
-    });
-    ui.data_mut(|d| d.insert_temp(id, url));
-    ui.separator();
-    let list = app.session.execute("hyperlink.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    if list.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No hyperlinks. Select text or a frame, type a URL and click New."))
-                    .size(11.0)
-                    .color(t.text_dim),
-            ),
-        );
-    }
-    for h in list {
-        let hid = h["id"].clone();
-        ui.horizontal(|ui| {
-            let r = ui.selectable_label(false, h["name"].as_str().unwrap_or("")).on_hover_text(dest_text(&app.ui.language, &h["dest"]));
-            if r.clicked() {
-                let _ = app.run("hyperlink.goToSource", json!({"id": hid}));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if interactive_compact_button(app, ui, ("hyperlink", hid.to_string()), "hyperlink.delete", "Delete", true).clicked {
-                    let _ = app.run("hyperlink.delete", json!({"id": hid}));
-                }
-            });
-        });
-    }
-}
-
-fn bookmarks_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    if interactive_button(app, ui, "new", "bookmark.add", "New Bookmark for This Page", true).clicked {
-        let page = crate::canvas::current_page(app).unwrap_or(0) + 1;
-        let _ = app.run("bookmark.add", json!({"page": page}));
-    }
-    ui.separator();
-    let list = app.session.execute("bookmark.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    if list.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No bookmarks. They become the PDF outline.")).size(11.0).color(t.text_dim),
-            ),
-        );
-    }
-    for (i, b) in list.iter().enumerate() {
-        let page = b["page"].as_u64().unwrap_or(0) as usize;
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(false, b["name"].as_str().unwrap_or(""))
-                .on_hover_text(format!("{} {}", crate::i18n::tr(&app.ui.language, "Page"), app.session.page_label(page)))
-                .clicked()
-            {
-                crate::canvas::go_to_page(app, page);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Bookmarks are still deleted by their current displayed index. Name/page bind
-                // a held row action to the target available in that existing policy.
-                if interactive_compact_button(app, ui, ("bookmark", i, b["name"].as_str(), page), "bookmark.delete", "Delete", true).clicked {
-                    let _ = app.run("bookmark.delete", json!({"index": i}));
-                }
-            });
-        });
-    }
-}
-
-fn articles_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let has_sel = app.session.active().is_some_and(|d| !d.selection.items.is_empty());
-    if interactive_button(app, ui, "new", "article.new", "New Article from Selection", has_sel).clicked {
-        let _ = app.run("article.new", json!({}));
-    }
-    ui.separator();
-    let list = app.session.execute("article.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    if list.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "No articles: exports follow page order.")).size(11.0).color(t.text_dim),
-            ),
-        );
-    }
-    for a in list {
-        let name = a["name"].as_str().unwrap_or("").to_string();
-        let mut export = a["export"].as_bool().unwrap_or(true);
-        ui.horizontal(|ui| {
-            if article_export(app, ui, &mut export) {
-                let _ = app.run("article.options", json!({"name": name, "export": export}));
-            }
-            crate::rtl::label(ui, egui::RichText::new(&name).strong());
-            crate::rtl::label(
-                ui,
-                egui::RichText::new(crate::i18n::count_label(&app.ui.language, "objects", a["items"].as_array().map_or(0, Vec::len)))
-                    .size(10.5)
-                    .color(t.text_dim),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if interactive_compact_button(app, ui, ("article", &name), "article.delete", "Delete", true).clicked {
-                    let _ = app.run("article.delete", json!({"name": name}));
-                }
-                let add = interactive_compact_button(app, ui, ("article", &name), "article.add", "Add", has_sel);
-                add.response.on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Add the selection"));
-                });
-                if add.clicked {
-                    let _ = app.run("article.add", json!({"name": name}));
-                }
-            });
-        });
-    }
+    framework::tags(app, ui);
 }
 
 /// Independent Tags/XML controls use actual parent/input-measurement readiness.
@@ -248,7 +44,6 @@ fn tags_editable(ui: &egui::Ui) -> bool {
     if ui.is_sizing_pass() {
         return false;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     if craft_ui_widgets::runtime::measure::active(ui.ctx()) {
         return false;
     }
@@ -279,197 +74,8 @@ fn tags_targets(app: &DesignApp) -> String {
         .unwrap_or_default()
 }
 
-fn tags_action(ui: &mut egui::Ui, id: egui::Id, name: &str, painted: &str, enabled: bool) -> bool {
-    let enabled = enabled && tags_editable(ui);
-    let response = ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, painted)).small())).inner;
-    response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-    response.on_hover_text(name).clicked() && enabled
-}
-
-/// A wrapping navigation action: no single-line elision.
-fn tags_structure_action(ui: &mut egui::Ui, id: egui::Id, name: &str, painted: &str, enabled: bool) -> bool {
-    let enabled = enabled && tags_editable(ui);
-    let response =
-        ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::selectable(false, egui::RichText::new(painted).size(11.0)).wrap())).inner;
-    response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-    response.clicked() && enabled
-}
-
-fn tags_name_field(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, draft: &mut String) {
-    let enabled = tags_editable(ui);
-    let name = crate::i18n::tr(&app.ui.language, "New tag");
-    let response = ui.add_enabled(enabled, egui::TextEdit::singleline(draft).id(id).hint_text(crate::rtl::widget(ui, name)).desired_width(140.0));
-    response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-}
-
-fn tags_markers(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, on: &mut bool, enabled: bool) -> bool {
-    let enabled = enabled && tags_editable(ui);
-    let name = crate::i18n::tr(&app.ui.language, "Show Tag Markers");
-    ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Checkbox::new(on, crate::rtl::widget(ui, name)))).inner.changed() && enabled
-}
-
-fn tags_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let memory = ui.make_persistent_id("tags-workflow-current-draft");
-    let snapshot = tags_identity(app);
-    let document = snapshot.map(|(uid, epoch, _)| (uid, epoch));
-    let Some(document_key) = document else {
-        if tags_editable(ui) {
-            ui.data_mut(|d| d.remove::<TagsWorkflowDraft>(memory));
-        }
-        return;
-    };
-    let Ok(info) = app.session.execute("xml.tags", &json!({})) else { return };
-    let lang = app.ui.language.clone();
-    let editable = tags_editable(ui);
-    let root = ui.make_persistent_id(("tags-workflow", document_key));
-    let targets = tags_targets(app);
-    let actions = root.with((snapshot, targets.clone(), info.to_string()));
-    let has_sel = app.session.active().is_some_and(|d| !d.selection.items.is_empty());
-    // Selected text is tagged inline instead of its frame; a caret alone is not a text range.
-    let text_sel = app.session.active().and_then(|d| d.selection.text).is_some_and(|t| !t.range().is_empty());
-    let mut draft = ui
-        .data(|d| d.get_temp::<TagsWorkflowDraft>(memory))
-        .filter(|d| d.document == document)
-        .unwrap_or_else(|| TagsWorkflowDraft { document, ..Default::default() });
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(egui::vec2(140.0, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            tags_name_field(app, ui, root.with("new-name"), &mut draft.name);
-        });
-        if tags_action(ui, actions.with(("new", draft.name.clone())), crate::i18n::tr(&lang, "New"), crate::i18n::tr(&lang, "New"), editable)
-            && !draft.name.trim().is_empty()
-            && tags_identity(app) == snapshot
-        {
-            match app.run("xml.newTag", json!({"name": draft.name.trim()})) {
-                Ok(_) => draft.name.clear(),
-                Err(e) => app.status_error("Tags", e),
-            }
-        }
-    });
-    for tag in info["tags"].as_array().cloned().unwrap_or_default() {
-        let n = tag["name"].as_str().unwrap_or("").to_owned();
-        let c = tag["color"].as_array().map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect::<Vec<_>>()).unwrap_or_default();
-        let row = actions.with(("tag", tag.to_string()));
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-            if c.len() == 3 {
-                ui.painter().rect_filled(r, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-            }
-            let name = format!("{} <{}>", crate::i18n::tr(&lang, "Tag the selection"), n);
-            if ui
-                .allocate_ui_with_layout(
-                    egui::vec2((ui.available_width() - 80.0 - ui.spacing().item_spacing.x).max(0.0), ui.spacing().interact_size.y),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| tags_action(ui, row.with("apply"), &name, &n, editable && (has_sel || text_sel) && tags_identity(app) == snapshot),
-                )
-                .inner
-                && tags_identity(app) == snapshot
-                && tags_targets(app) == targets
-            {
-                let _ = if text_sel { app.run("xml.tagText", json!({"tag": n})) } else { app.run("xml.tag", json!({"tag": n})) };
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let name = format!("{} <{}>", crate::i18n::tr(&lang, "Delete"), n);
-                if tags_action(ui, row.with("delete"), &name, crate::i18n::tr(&lang, "Delete"), editable && tags_identity(app) == snapshot)
-                    && tags_identity(app) == snapshot
-                {
-                    let _ = app.run("xml.deleteTag", json!({"name": n}));
-                }
-            });
-        });
-    }
-    if has_sel || text_sel {
-        let label = crate::i18n::tr(&lang, "Untag Selection");
-        if tags_action(ui, actions.with("untag"), label, label, editable && tags_identity(app) == snapshot)
-            && tags_identity(app) == snapshot
-            && tags_targets(app) == targets
-        {
-            let _ = if text_sel { app.run("xml.tagText", json!({"tag": null})) } else { app.run("xml.tag", json!({"tag": null})) };
-        }
-    }
-    let mut markers = app.ui.tag_markers;
-    if tags_markers(app, ui, root.with("markers"), &mut markers, editable && tags_identity(app) == snapshot) && tags_identity(app) == snapshot {
-        let _ = app.run("view.tagMarkers", json!({"on": markers}));
-    }
-    ui.separator();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Structure")).strong());
-    let structure = app.session.execute("xml.structure", &json!({})).unwrap_or_default();
-    crate::rtl::label(ui, egui::RichText::new(structure["root"].as_str().unwrap_or("Root")).size(11.0).color(t.text_dim));
-    let structure_id = actions.with(("structure", structure.to_string()));
-    for el in structure["elements"].as_array().cloned().unwrap_or_default() {
-        let text: String = el["text"].as_str().unwrap_or("").chars().take(40).collect();
-        let painted = format!("  <{}> {}", el["tag"].as_str().unwrap_or(""), text);
-        let name = format!("{} {} (Object {})", crate::i18n::tr(&lang, "Structure"), painted.trim_start(), el["id"]);
-        if tags_structure_action(ui, structure_id.with(el.to_string()), &name, &painted, editable && tags_identity(app) == snapshot)
-            && tags_identity(app) == snapshot
-        {
-            let _ = app.run("selection.set", json!({"ids": [el["id"]]}));
-        }
-    }
-    // Real validation results persist until validation or the original explicit Load/Delete actions.
-    ui.horizontal(|ui| {
-        let label = crate::i18n::tr(&lang, "Load DTD…");
-        if tags_action(ui, actions.with("load-dtd"), label, label, editable && tags_identity(app) == snapshot) && tags_identity(app) == snapshot {
-            draft.problems = None;
-            ask_then_run(app, "dtd", "Load DTD", |path| ("xml.loadDtd", json!({"path": path})));
-        }
-        let has_dtd = info["dtd"].as_bool().unwrap_or(false);
-        let label = crate::i18n::tr(&lang, "Validate");
-        if tags_action(ui, actions.with("validate"), label, label, editable && has_dtd && tags_identity(app) == snapshot)
-            && tags_identity(app) == snapshot
-            && let Ok(v) = app.session.execute("xml.validate", &json!({}))
-        {
-            draft.problems = Some(
-                v["problems"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|p| format!("{}: {}", p["path"].as_str().unwrap_or(""), p["message"].as_str().unwrap_or("")))
-                    .collect(),
-            );
-        }
-        if has_dtd {
-            let label = crate::i18n::tr(&lang, "Delete DTD");
-            if tags_action(ui, actions.with("delete-dtd"), label, label, editable && tags_identity(app) == snapshot) && tags_identity(app) == snapshot
-            {
-                let _ = app.run("xml.deleteDtd", json!({}));
-                draft.problems = None;
-            }
-        }
-    });
-    match &draft.problems {
-        Some(list) if list.is_empty() => {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "The structure is valid.")).size(11.0).color(t.text_dim));
-        }
-        Some(list) => {
-            for p in list {
-                crate::rtl::label(ui, egui::RichText::new(format!("⚠ {p}")).size(11.0));
-            }
-        }
-        None => {}
-    }
-    ui.separator();
-    ui.horizontal(|ui| {
-        for (key, label) in [("export-xml", "Export XML…"), ("import-xml", "Import XML…")] {
-            let label = crate::i18n::tr(&lang, label);
-            if tags_action(ui, actions.with(key), label, label, editable && tags_identity(app) == snapshot) && tags_identity(app) == snapshot {
-                if key == "export-xml" {
-                    let _ = app.run("app.exportXml", json!({}));
-                } else {
-                    ask_then_run(app, "xml", "Import XML", |path| ("file.importXml", json!({"path": path})));
-                }
-            }
-        }
-    });
-    if editable && tags_identity(app).map(|(uid, epoch, _)| (uid, epoch)) == document {
-        ui.data_mut(|d| d.insert_temp(memory, draft));
-    }
-}
-
-/// Hyperlinks, Bookmarks, Articles and Tags on the craft framework: the same commands, guards and drafts as the
-/// fallbacks above, drawn with framework components only. Ids are scoped by the document state, so a press held
-/// over one document's control never lands on another's.
-#[cfg(not(target_arch = "wasm32"))]
+/// Hyperlinks, Bookmarks, Articles and Tags on the craft framework, drawn with framework components only. Ids are
+/// scoped by the document state, so a press held over one document's control never lands on another's.
 mod framework {
     use super::{TagsWorkflowDraft, ask_then_run, dest_text, tags_editable, tags_identity, tags_targets};
     use crate::DesignApp;
@@ -917,52 +523,10 @@ impl InteractiveFields {
         if ui.is_sizing_pass() {
             return false;
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if craft_ui_widgets::runtime::measure::active(ui.ctx()) {
             return false;
         }
         ui.is_enabled()
-    }
-
-    fn button(&self, ui: &mut egui::Ui, key: &str, label: &str, enabled: bool, small: bool) -> bool {
-        let enabled = enabled && Self::editable(ui);
-        ui.push_id(self.id(key), |ui| {
-            ui.add_enabled(
-                enabled,
-                if small { egui::Button::new(crate::rtl::widget(ui, label)).small() } else { egui::Button::new(crate::rtl::widget(ui, label)) },
-            )
-            .clicked()
-        })
-        .inner
-            && enabled
-    }
-
-    fn choice(&self, ui: &mut egui::Ui, key: &str, name: &str, current: usize, options: &[String]) -> Option<usize> {
-        let enabled = Self::editable(ui);
-        let mut picked = None;
-        let combo = craft_ui_legacy::ComboBox::from_id_salt(self.id(key))
-            .selected_text(crate::rtl::widget(ui, options.get(current).map_or("", String::as_str)))
-            .show_ui(ui, |ui| {
-                for (i, label) in options.iter().enumerate() {
-                    if ui.selectable_label(i == current, crate::rtl::widget(ui, label)).clicked() && enabled {
-                        picked = Some(i);
-                    }
-                }
-            });
-        let _ = crate::widgets::name_combo(combo, name);
-        picked
-    }
-
-    fn text(&self, ui: &mut egui::Ui, key: &str, name: &str, draft: &mut String) -> bool {
-        let enabled = Self::editable(ui);
-        let response = ui.add_enabled(enabled, egui::TextEdit::singleline(draft).id(self.id(key)).desired_width(ui.available_width()));
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-        response.lost_focus() && enabled
-    }
-
-    fn check(&self, ui: &mut egui::Ui, key: &str, name: &str, value: &mut bool) -> bool {
-        let enabled = Self::editable(ui);
-        ui.push_id(self.id(key), |ui| ui.add_enabled(enabled, egui::Checkbox::new(value, crate::rtl::widget(ui, name)))).inner.changed() && enabled
     }
 }
 
@@ -983,235 +547,18 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> InteractiveDraft<T> {
     }
 }
 
-/// The framework forms of the panels below, for a runtime that is installed on a native build.
-#[cfg(not(target_arch = "wasm32"))]
+/// The framework forms of the panels below.
 #[path = "interactive_b.rs"]
 mod framework_b;
 
 /// Object States panel: the selected multi-state object's states (click to show one).
 pub fn states(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::states(app, ui);
-    }
-    states_fallback(app, ui);
-}
-
-fn states_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let n = app.session.active().map_or(0, |d| d.selection.items.len());
-    let info = app.session.execute("states.list", &json!({})).ok();
-    let list = info.as_ref().and_then(|i| i["states"].as_array().cloned()).unwrap_or_default();
-    let controls = InteractiveFields::new(app, ui, ("states", list.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>()));
-    if list.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select two or more objects (or a group) to make a multi-state object."))
-                    .size(11.0)
-                    .color(t.text_dim),
-            ),
-        );
-        if controls.button(ui, "create", crate::i18n::tr(&app.ui.language, "Convert Selection to Multi-State Object"), n > 0, false)
-            && let Err(e) = app.run("states.create", json!({}))
-        {
-            app.status_error("Object States", e);
-        }
-        return;
-    }
-    let active = info.as_ref().and_then(|i| i["active"].as_u64()).unwrap_or(0) as usize;
-    let mut picked = None;
-    for (i, st) in list.iter().enumerate() {
-        let response = ui.push_id(controls.id("state").with(i), |ui| ui.selectable_label(i == active, st.as_str().unwrap_or(""))).inner;
-        let name = format!("{}: {} ({})", crate::i18n::tr(&app.ui.language, "Object States"), st.as_str().unwrap_or(""), i + 1);
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name));
-        if response.clicked() {
-            picked = Some(i);
-        }
-    }
-    if let Some(i) = picked.filter(|i| *i < list.len() && InteractiveFields::editable(ui)) {
-        let _ = app.run("states.show", json!({"index": i}));
-    }
-    ui.separator();
-    if controls.button(ui, "release", crate::i18n::tr(&app.ui.language, "Release to Objects"), true, true) {
-        let _ = app.run("states.release", json!({}));
-    }
+    framework_b::states(app, ui);
 }
 
 /// Buttons and Forms panel: the selected objects' On Release action.
 pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::buttons(app, ui);
-    }
-    buttons_fallback(app, ui);
-}
-
-fn buttons_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let url_key = ui.make_persistent_id("interactive-button-url-draft");
-    let form_key = ui.make_persistent_id("interactive-form-draft");
-    let Some(id) = app.session.active().and_then(|d| d.selection.items.first().copied()) else {
-        if InteractiveFields::editable(ui) {
-            ui.data_mut(|data| {
-                data.remove::<InteractiveDraft<String>>(url_key);
-                data.remove::<InteractiveDraft<(String, String, String)>>(form_key);
-            });
-        }
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select an object to make it a button.")).size(11.0).color(t.text_dim),
-            ),
-        );
-        return;
-    };
-    let cur = app.session.active().and_then(|d| d.doc.item(id)).and_then(|it| it.button.clone());
-    use designcraft_doc::ButtonAction as B;
-    let (kind, page, url) = match &cur {
-        None => ("none", 0, String::new()),
-        Some(B::GoToPage { page }) => ("page", *page, String::new()),
-        Some(B::GoToFirstPage) => ("firstPage", 0, String::new()),
-        Some(B::GoToLastPage) => ("lastPage", 0, String::new()),
-        Some(B::GoToNextPage) => ("nextPage", 0, String::new()),
-        Some(B::GoToPreviousPage) => ("previousPage", 0, String::new()),
-        Some(B::GoToUrl { url }) => ("url", 0, url.clone()),
-    };
-    let controls = InteractiveFields::new(app, ui, ("button", kind));
-    let labels = [
-        ("none", "Not a button"),
-        ("nextPage", "Go To Next Page"),
-        ("previousPage", "Go To Previous Page"),
-        ("firstPage", "Go To First Page"),
-        ("lastPage", "Go To Last Page"),
-        ("page", "Go To Page"),
-        ("url", "Go To URL"),
-    ];
-    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "On Release"));
-    let options: Vec<_> = labels.iter().map(|(_, label)| crate::i18n::tr(&app.ui.language, label).to_owned()).collect();
-    let pick = controls.choice(
-        ui,
-        "action",
-        crate::i18n::tr(&app.ui.language, "On Release Action"),
-        labels.iter().position(|l| l.0 == kind).unwrap_or(0),
-        &options,
-    );
-    let mut params =
-        pick.and_then(|i| labels.get(i)).map(|(k, _)| json!({"action": k, "page": page, "url": if url.is_empty() { "https://" } else { &url }}));
-    if kind == "page" {
-        let total = app.session.active().map_or(1, |d| d.doc.page_count());
-        let mut n = page + 1;
-        ui.horizontal(|ui| {
-            let label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Page"));
-            // Retain the genuine lossless usize page domain and its live DragValue edits.
-            let response = ui
-                .push_id(controls.id("page"), |ui| ui.add_enabled(InteractiveFields::editable(ui), egui::DragValue::new(&mut n).range(1..=total)))
-                .inner;
-            response.clone().labelled_by(label.id);
-            response
-                .ctx
-                .accesskit_node_builder(response.id, |node| node.set_label(crate::i18n::tr(&app.ui.language, "Button target page").to_owned()));
-            if response.changed() && InteractiveFields::editable(ui) {
-                params = Some(json!({"action": "page", "page": n - 1}));
-            }
-        });
-    }
-    if kind == "url" {
-        let mut draft = InteractiveDraft::read(ui, url_key, controls.identity, url.clone());
-        if controls.text(ui, "url", crate::i18n::tr(&app.ui.language, "Button URL"), &mut draft.value) && draft.value != url && pick.is_none() {
-            params = Some(json!({"action": "url", "url": draft.value.clone()}));
-        }
-        if InteractiveFields::editable(ui) {
-            ui.data_mut(|data| data.insert_temp(url_key, draft));
-        }
-    } else if InteractiveFields::editable(ui) {
-        ui.data_mut(|data| data.remove::<InteractiveDraft<String>>(url_key));
-    }
-    if let Some(p) = params
-        && let Err(e) = app.run("button.set", p)
-    {
-        app.status_error("Buttons", e);
-    }
-    crate::rtl::label(
-        ui,
-        crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Buttons act in interactive PDF export.")).size(10.5).color(t.text_dim),
-        ),
-    );
-    ui.separator();
-    let ff = app.session.active().and_then(|d| d.doc.item(id)).and_then(|it| it.form_field.clone());
-    use designcraft_doc::FieldKind as K;
-    let kinds = [
-        (None, "Not a form field"),
-        (Some(K::TextField), "Text Field"),
-        (Some(K::CheckBox), "Check Box"),
-        (Some(K::ComboBox), "Combo Box"),
-        (Some(K::ListBox), "List Box"),
-        (Some(K::Signature), "Signature Field"),
-    ];
-    let cur = ff.as_ref().map(|f| f.kind);
-    let controls = InteractiveFields::new(app, ui, ("form", cur.map(|kind| kind as u8)));
-    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Form Field"));
-    let options: Vec<_> = kinds.iter().map(|(_, label)| crate::i18n::tr(&app.ui.language, label).to_owned()).collect();
-    if let Some(i) = controls.choice(
-        ui,
-        "kind",
-        crate::i18n::tr(&app.ui.language, "Form Field Type"),
-        kinds.iter().position(|k| k.0 == cur).unwrap_or(0),
-        &options,
-    ) && let Some((k, _)) = kinds.get(i)
-    {
-        let _ = match k {
-            Some(k) => app.run("form.set", json!({"kind": k})),
-            None => app.run("form.clear", json!({})),
-        };
-        // The old fields may lose focus while the kind is picked. Their pending
-        // transaction belongs to the old kind and must not turn the new one back.
-        ui.data_mut(|data| data.remove::<InteractiveDraft<(String, String, String)>>(form_key));
-        return;
-    }
-    if let Some(f) = ff {
-        let mut draft = InteractiveDraft::read(ui, form_key, controls.identity, (f.name.clone(), f.value.clone(), f.options.join(", ")));
-        let (name, value, opts) = &mut draft.value;
-        let mut commit = false;
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Name"));
-        commit |= controls.text(ui, "name", crate::i18n::tr(&app.ui.language, "Form field name"), name);
-        if f.kind == K::CheckBox {
-            let mut on = !f.value.is_empty() && f.value != "Off";
-            if controls.check(ui, "checked", crate::i18n::tr(&app.ui.language, "Checked by default"), &mut on) {
-                let _ = app.run("form.set", json!({"kind": f.kind, "value": if on { "On" } else { "" }}));
-            }
-        } else if f.kind != K::Signature {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Default"));
-            commit |= controls.text(ui, "default", crate::i18n::tr(&app.ui.language, "Form field default value"), value);
-        }
-        if matches!(f.kind, K::ComboBox | K::ListBox) {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Choices"));
-            commit |= controls.text(ui, "choices", crate::i18n::tr(&app.ui.language, "Form field choices (separated by commas)"), opts);
-        }
-        let mut req = f.required;
-        if controls.check(ui, "required", crate::i18n::tr(&app.ui.language, "Required"), &mut req) {
-            let _ = app.run("form.set", json!({"kind": f.kind, "required": req}));
-        }
-        if f.kind == K::TextField {
-            let mut ml = f.multiline;
-            if controls.check(ui, "multiline", crate::i18n::tr(&app.ui.language, "Multiline"), &mut ml) {
-                let _ = app.run("form.set", json!({"kind": f.kind, "multiline": ml}));
-            }
-        }
-        if commit {
-            let options: Vec<String> = opts.split(',').map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect();
-            let _ = app.run("form.set", json!({"kind": f.kind, "name": name, "value": value, "options": options}));
-            ui.data_mut(|data| data.remove::<InteractiveDraft<(String, String, String)>>(form_key));
-        } else if InteractiveFields::editable(ui) {
-            ui.data_mut(|data| data.insert_temp(form_key, draft));
-        }
-    } else if InteractiveFields::editable(ui) {
-        ui.data_mut(|data| data.remove::<InteractiveDraft<(String, String, String)>>(form_key));
-    }
+    framework_b::buttons(app, ui);
 }
 
 /// Liquid page rules in InDesign's order, with their menu labels.
@@ -1241,269 +588,26 @@ fn object_based(d: &designcraft_doc::Document, abs: usize) -> bool {
     }
 }
 
-fn liquid_check(ui: &mut egui::Ui, id: egui::Id, name: &str, value: &mut bool, enabled: bool) -> bool {
-    let enabled = enabled && InteractiveFields::editable(ui);
-    ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Checkbox::new(value, crate::rtl::widget(ui, name)))).inner.changed() && enabled
-}
-
-fn liquid_choice(ui: &mut egui::Ui, id: egui::Id, rule: designcraft_doc::LiquidRule, lang: &str) -> Option<designcraft_doc::LiquidRule> {
-    let enabled = InteractiveFields::editable(ui);
-    let mut pick = None;
-    let combo = craft_ui_legacy::ComboBox::from_id_salt(id)
-        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(lang, liquid_rule_label(rule))))
-        .width(190.0)
-        .show_ui(ui, |ui| {
-            for (r, label) in LIQUID_RULES {
-                if ui.selectable_label(rule == r, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() && enabled && r != rule {
-                    pick = Some(r);
-                }
-            }
-        });
-    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(lang, "Liquid Page Rule"));
-    pick
-}
-
 /// Liquid Layout panel, laid out as InDesign's: the page's Liquid Page Rule (with "Page: n"),
 /// Content › Auto-Fit, and Object Constraints › Resize with Page (Height, Width) and Pin (Top,
 /// Left, Bottom, Right) for the selected object on an object-based page. The page's liquid
 /// guides follow (Create Alternate Layout is in the Layout menu).
 pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::liquid(app, ui);
-    }
-    liquid_fallback(app, ui);
-}
-
-fn liquid_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    // The Page tool's page, the page in view, or (before the canvas lays out) the first.
-    let Some(page) = app.session.active().map(|s| s.selection.page.or_else(|| crate::canvas::current_page(app)).unwrap_or(0)) else {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "No document.")).size(11.0).color(t.text_dim));
-        return;
-    };
-    let Some(d) = app.session.active().map(|d| d.doc.clone()) else { return };
-    let Some((si, pi)) = d.page_loc(page) else { return };
-    let pg = d.spreads[si].pages[pi].clone();
-    ui.horizontal(|ui| {
-        crate::widgets::caption(ui, crate::i18n::tr(&lang, "Liquid Page Rule:"));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::widgets::caption(ui, &format!("{} {}", crate::i18n::tr(&lang, "Page:"), d.page_name(page)));
-        });
-    });
-    let document = app.session.active().map(|st| (st.uid, st.identity_epoch));
-    let targets = app.session.active().map(|st| st.selection.items.iter().map(|id| id.0).collect::<Vec<_>>());
-    let inherited = d.parent_page_for(page).and_then(|(si, pi)| d.parents.get(si)?.pages.get(pi).map(|pg| (pg.id.0, pg.liquid as u8)));
-    // Page IDs survive reordering; indices still bind the exact existing command payload.
-    let identity = ui.make_persistent_id(("liquid-workflow", document, (page, si, pi, pg.id.0), targets, pg.liquid as u8, inherited));
-    if let Some(rule) = liquid_choice(ui, identity.with("rule"), pg.liquid, &lang) {
-        let _ = app.run("liquid.pageRule", json!({"rule": rule, "pages": [page + 1]}));
-    }
-    ui.separator();
-    // The selected object (one on this page).
-    let item = app
-        .session
-        .active()
-        .and_then(|s| s.selection.items.first().copied())
-        .and_then(|id| d.item(id))
-        .filter(|it| d.page_of_item(it.id) == Some(page));
-    // Content: Auto-Fit (graphic frames).
-    crate::widgets::caption(ui, crate::i18n::tr(&lang, "Content:"));
-    let graphic = item.and_then(|it| if let designcraft_doc::Content::Graphic(g) = &it.content { Some(g.auto_fit) } else { None });
-    let mut auto = graphic.is_some_and(|f| f != designcraft_doc::Fitting::None);
-    ui.indent("liquid_content", |ui| {
-        if liquid_check(ui, identity.with("auto-fit"), crate::i18n::tr(&lang, "Auto-Fit"), &mut auto, graphic.is_some()) {
-            let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
-        }
-    });
-    // Object Constraints: for an object on an object-based page.
-    crate::widgets::caption(ui, crate::i18n::tr(&lang, "Object Constraints:"));
-    let on = item.is_some() && object_based(&d, page);
-    let l = item
-        .filter(|_| on)
-        .map(|it| it.liquid.unwrap_or(designcraft_doc::ObjectLiquid { resize_width: true, resize_height: true, ..Default::default() }))
-        .unwrap_or_default();
-    ui.indent("liquid_constraints", |ui| {
-        ui.add_enabled_ui(on, |ui| {
-            let rows: [(&str, [(&str, &str, bool); 2]); 2] = [
-                ("Resize with Page:", [("Height", "resizeHeight", l.resize_height), ("Width", "resizeWidth", l.resize_width)]),
-                ("Pin:", [("Top", "pinTop", l.pin_top), ("Left", "pinLeft", l.pin_left)]),
-            ];
-            for (title, boxes) in rows {
-                crate::widgets::caption(ui, crate::i18n::tr(&lang, title));
-                let mut grid_boxes = vec![boxes.to_vec()];
-                if title == "Pin:" {
-                    grid_boxes.push(vec![("Bottom", "pinBottom", l.pin_bottom), ("Right", "pinRight", l.pin_right)]);
-                }
-                egui::Grid::new(("liquid_grid", title)).num_columns(2).min_col_width(90.0).show(ui, |ui| {
-                    for row in grid_boxes {
-                        for (label, key, value) in row {
-                            let mut v = value;
-                            if liquid_check(ui, identity.with(("constraint", key)), crate::i18n::tr(&lang, label), &mut v, on) {
-                                let _ = app.run("liquid.object", json!({key: v}));
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
-            }
-        });
-    });
-    if !pg.guides.is_empty() {
-        ui.separator();
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Liquid guides")).size(11.0).color(t.text_dim));
-        // Guides have no persistent ID. Bind to the complete structural row sequence,
-        // raw coordinates and page identity, not a rounded caption or a shifted index.
-        let rows: Vec<_> =
-            pg.guides.iter().map(|g| (g.orientation as u8, g.position.to_bits(), g.spread, g.locked, g.layer.map(|id| id.0))).collect();
-        let guide_identity = identity.with(("guides", rows));
-        for (gi, g) in pg.guides.iter().enumerate() {
-            let mut on = g.liquid;
-            let label = format!(
-                "{} {}: {:?} at {} ({} {})",
-                crate::i18n::tr(&lang, "Liquid guide"),
-                gi + 1,
-                g.orientation,
-                g.position,
-                crate::i18n::tr(&lang, "Page"),
-                d.page_name(page)
-            );
-            if liquid_check(ui, guide_identity.with(gi), &label, &mut on, true) {
-                let _ = app.run("guide.liquid", json!({"spread": si, "page": pi, "index": gi, "on": on}));
-            }
-        }
-    }
+    framework_b::liquid(app, ui);
 }
 
 /// Media panel: the selected video or sound's playback options and poster.
 pub fn media(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::media(app, ui);
-    }
-    media_fallback(app, ui);
-}
-
-fn media_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Ok(m) = app.session.execute("media.get", &json!({})) else {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "Select a placed video or sound (File › Place a .mp4, .mov, .mp3, .wav …)."))
-                    .size(11.0)
-                    .color(t.text_dim),
-            ),
-        );
-        return;
-    };
-    crate::rtl::label(ui, egui::RichText::new(format!("{} — {}", m["kind"].as_str().unwrap_or(""), m["name"].as_str().unwrap_or(""))).strong());
-    for (key, label) in [("playOnPageLoad", "Play on Page Load"), ("loop", "Loop"), ("controls", "Show Controls")] {
-        let mut on = m[key].as_bool().unwrap_or(false);
-        if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).changed() {
-            let _ = app.run("media.options", json!({key: on}));
-        }
-    }
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Poster"));
-        if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Choose Image…"))).clicked() {
-            ask_then_run(app, "place", "Media", |path| ("media.options", json!({"poster": {"path": path}})));
-        }
-        if !m["poster"].is_null() && ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None"))).clicked() {
-            let _ = app.run("media.options", json!({"poster": null}));
-        }
-    });
-    crate::rtl::label(
-        ui,
-        crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Plays in EPUB export; print and PDF show the poster."))
-                .size(10.5)
-                .color(t.text_dim),
-        ),
-    );
+    framework_b::media(app, ui);
 }
 
 /// Page Transitions panel: the current spread's transition for interactive PDF.
 pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::transitions(app, ui);
-    }
-    transitions_fallback(app, ui);
-}
-
-fn transitions_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Some(page) = crate::canvas::current_page(app) else { return };
-    let Some(d) = app.session.active().map(|d| d.doc.clone()) else { return };
-    let Some((si, _)) = d.page_loc(page) else { return };
-    let cur = d.spreads[si].pages.first().and_then(|p| p.transition);
-    use designcraft_doc::TransitionKind as K;
-    crate::rtl::label(ui, egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Spread"), si + 1)).strong());
-    let mut kind = cur.map(|c| c.kind);
-    let combo = craft_ui_legacy::ComboBox::from_id_salt("transition_kind")
-        .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, kind.map_or("None", K::label))))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut kind, None, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "None")));
-            for k in K::ALL {
-                ui.selectable_value(&mut kind, Some(k), crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, k.label())));
-            }
-        });
-    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Transition"));
-    let mut duration = cur.map_or(1.0, |c| c.duration);
-    let mut horizontal = cur.is_some_and(|c| c.horizontal);
-    let mut changed = kind != cur.map(|c| c.kind);
-    if kind.is_some() {
-        ui.horizontal(|ui| {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Speed"));
-            changed |= ui.add(egui::DragValue::new(&mut duration).range(0.1..=10.0).speed(0.1).suffix(" s")).changed();
-        });
-        if matches!(kind, Some(K::Blinds | K::Box | K::Split)) {
-            changed |= ui
-                .checkbox(
-                    &mut horizontal,
-                    crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, if kind == Some(K::Box) { "Inward" } else { "Horizontal" })),
-                )
-                .changed();
-        }
-    }
-    let params = |all: bool| {
-        let k = kind.map_or(json!("none"), |k| json!(k));
-        if all {
-            json!({"all": true, "kind": k, "duration": duration, "horizontal": horizontal})
-        } else {
-            json!({"spread": si, "kind": k, "duration": duration, "horizontal": horizontal})
-        }
-    };
-    if changed {
-        let _ = app.run("page.transition", params(false));
-    }
-    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Apply to All Spreads"))).clicked() {
-        let _ = app.run("page.transition", params(true));
-    }
-    crate::rtl::label(
-        ui,
-        crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Transitions play in interactive PDF (full-screen mode)."))
-                .size(10.5)
-                .color(t.text_dim),
-        ),
-    );
+    framework_b::transitions(app, ui);
 }
 
 fn track_identity(app: &DesignApp) -> Option<(u64, u64, u64)> {
     app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision))
-}
-
-fn track_action(ui: &mut egui::Ui, id: egui::Id, name: &str, painted: &str, enabled: bool) -> bool {
-    let enabled = enabled && InteractiveFields::editable(ui);
-    let response = ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, painted)).small())).inner;
-    response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-    response.clicked() && enabled
 }
 
 fn track_row_name(action: &str, change: &Value) -> String {
@@ -1521,104 +625,16 @@ fn track_row_name(action: &str, change: &Value) -> String {
 
 /// Track Changes panel: tracking on/off and each change with Accept / Reject.
 pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework_b::track_changes(app, ui);
-    }
-    track_changes_fallback(app, ui);
+    framework_b::track_changes(app, ui);
 }
 
-fn track_changes_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Some(on) = app.session.active().map(|d| d.doc.settings.track_changes) else { return };
-    let lang = app.ui.language.clone();
-    let identity = track_identity(app);
-    let root = ui.make_persistent_id(("track-changes-workflow", identity));
-    let mut track = on;
-    let editable = InteractiveFields::editable(ui);
-    let changed = ui
-        .push_id(root.with("track"), |ui| {
-            ui.add_enabled(editable, egui::Checkbox::new(&mut track, crate::rtl::widget(ui, crate::i18n::tr(&lang, "Track Changes in All Stories"))))
-        })
-        .inner
-        .changed()
-        && editable;
-    if changed && track_identity(app) == identity {
-        let _ = app.run("changes.track", json!({"on": track}));
-    }
-    let list = app.session.execute("changes.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    let current = track_identity(app);
-    let collection = Value::Array(list.clone()).to_string();
-    // Full collection + document/replacement/revision, never a preview or row index.
-    let actions = ui.make_persistent_id(("track-changes-actions", current, collection));
-    ui.separator();
-    if list.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "No changes.")).size(11.0).color(t.text_dim));
-        return;
-    }
-    egui::ScrollArea::vertical()
-        .id_salt(ui.make_persistent_id(("track-scroll", current.map(|(uid, epoch, _)| (uid, epoch)))))
-        .max_height(260.0)
-        .show(ui, |ui| {
-            for c in &list {
-                let (story, start) = (c["story"].clone(), c["start"].clone());
-                let kind = c["kind"].as_str().unwrap_or("");
-                let text: String = c["text"].as_str().unwrap_or("").chars().take(40).collect();
-                let row = actions.with(("change", c.to_string()));
-                let label = egui::RichText::new(format!(
-                    "{} “{}”",
-                    crate::i18n::tr(&lang, if kind == "inserted" { "Added" } else { "Deleted" }),
-                    text.replace('\n', "¶")
-                ))
-                .size(11.0);
-                let label = if kind == "deleted" { label.strikethrough() } else { label };
-                let ready = editable && track_identity(app) == current;
-                let excerpt = ui.push_id(row.with("show"), |ui| ui.add_enabled(ready, egui::Button::selectable(false, label).wrap())).inner;
-                excerpt.ctx.accesskit_node_builder(excerpt.id, |node| node.set_label(track_row_name(crate::i18n::tr(&lang, "Show in the text"), c)));
-                let excerpt = excerpt.on_hover_text(crate::i18n::tr(&lang, "Show in the text"));
-                if excerpt.clicked() && ready && track_identity(app) == current {
-                    let _ = app.run("text.select", json!({"story": story, "anchor": start, "focus": c["end"].clone()}));
-                }
-                // Keep all three actions inside the narrow parent instead of overflowing
-                // its right edge with a forty-scalar excerpt plus two button labels.
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (command, label, key) in [("changes.reject", "Reject", "reject"), ("changes.accept", "Accept", "accept")] {
-                            let enabled = editable && track_identity(app) == current;
-                            if track_action(
-                                ui,
-                                row.with(key),
-                                &track_row_name(crate::i18n::tr(&lang, label), c),
-                                crate::i18n::tr(&lang, label),
-                                enabled,
-                            ) && track_identity(app) == current
-                            {
-                                let _ = app.run(command, json!({"story": story, "start": start}));
-                            }
-                        }
-                    });
-                });
-            }
-        });
-    ui.separator();
-    ui.horizontal(|ui| {
-        for (command, label, key) in [("changes.acceptAll", "Accept All", "accept-all"), ("changes.rejectAll", "Reject All", "reject-all")] {
-            let enabled = editable && track_identity(app) == current;
-            if track_action(ui, actions.with(key), crate::i18n::tr(&lang, label), crate::i18n::tr(&lang, label), enabled)
-                && track_identity(app) == current
-            {
-                let _ = app.run(command, json!({}));
-            }
-        }
-    });
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 #[path = "interactive_tests_b.rs"]
 mod framework_tests_b;
 
 #[cfg(test)]
 mod liquid_panel_tests {
+    use crate::theme::Tokens;
     use egui_kittest::{Harness, kittest::Queryable};
     use serde_json::json;
 
@@ -1629,11 +645,14 @@ mod liquid_panel_tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-        let mut h = Harness::builder().with_size(egui::vec2(260.0, 420.0)).build_ui_state(
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(260.0, 420.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
                     ui.data_mut(|d| d.insert_temp(key, true));
                     return;
                 }
@@ -1659,9 +678,10 @@ mod liquid_panel_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_interactive_actions_tests {
     use super::*;
+    use crate::theme::Tokens;
     use designcraft_doc::{HyperlinkDest, HyperlinkSource, ItemId, StoryId};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::{Harness, kittest::Queryable};
@@ -1733,13 +753,9 @@ mod ui223_interactive_actions_tests {
         );
     }
 
-    fn harness(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui), sdk: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if sdk {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(500.0, 700.0)).build_ui_state(
@@ -1863,7 +879,7 @@ mod ui223_interactive_actions_tests {
         let mut app = app();
         let item = frame_item(&mut app, 72);
         app.run("selection.set", json!({"ids": [item.0]})).unwrap();
-        let mut h = harness(app, hyperlinks, true);
+        let mut h = harness(app, hyperlinks);
         let steps = undo(h.state());
         type_url(&mut h, "https://example.com/layout?q=a%20b#part");
         assert_eq!(undo(h.state()), steps, "typing edits only the UI draft");
@@ -1903,7 +919,7 @@ mod ui223_interactive_actions_tests {
         let made = app.run("frame.create", json!({"rect": [72, 72, 300, 140], "content": "text", "text": "Read this text"})).unwrap();
         let story = StoryId(made["story"].as_u64().unwrap());
         app.run("text.select", json!({"story": story.0, "anchor": 0, "focus": 4})).unwrap();
-        let mut h = harness(app, hyperlinks, true);
+        let mut h = harness(app, hyperlinks);
         type_url(&mut h, "mailto:Case+layout@example.com?subject=Hello%20there");
         let new = sdk_button(&h, "New");
         for _ in 0..8 {
@@ -1930,7 +946,7 @@ mod ui223_interactive_actions_tests {
 
     #[test]
     fn ui223_interactive_hyperlink_disabled_and_refused_url_do_not_edit() {
-        let mut h = harness(app(), hyperlinks, true);
+        let mut h = harness(app(), hyperlinks);
         let new = sdk_button(&h, "New");
         assert!(new.facts.as_ref().unwrap().disabled);
         let journal = h.state().session.journal.clone();
@@ -1954,7 +970,7 @@ mod ui223_interactive_actions_tests {
     fn ui223_interactive_url_draft_escape_and_long_address_are_preserved() {
         let mut app = app();
         frame_item(&mut app, 72);
-        let mut h = harness(app, hyperlinks, true);
+        let mut h = harness(app, hyperlinks);
         let value = format!("https://example.com/{}", "a".repeat(1200));
         type_url(&mut h, &value);
         let steps = undo(h.state());
@@ -1972,7 +988,7 @@ mod ui223_interactive_actions_tests {
         let mut app = app();
         crate::canvas::go_to_page(&mut app, 1);
         assert_eq!(crate::canvas::current_page(&app), Some(1));
-        let mut h = harness(app, bookmarks, true);
+        let mut h = harness(app, bookmarks);
         let steps = undo(h.state());
         let new = sdk_button(&h, "New Bookmark for This Page");
         click_rect(&mut h, new.rect);
@@ -2003,7 +1019,7 @@ mod ui223_interactive_actions_tests {
         let a = frame_item(&mut app, 72);
         let b = frame_item(&mut app, 180);
         app.run("selection.set", json!({"ids": [a.0]})).unwrap();
-        let mut h = harness(app, articles, true);
+        let mut h = harness(app, articles);
         let steps = undo(h.state());
         let new = sdk_button(&h, "New Article from Selection");
         click_rect(&mut h, new.rect);
@@ -2043,7 +1059,7 @@ mod ui223_interactive_actions_tests {
 
     #[test]
     fn ui223_interactive_article_natural_tab_space_toggles_once_and_selection_guards() {
-        let mut h = harness(app(), articles, true);
+        let mut h = harness(app(), articles);
         let new = sdk_button(&h, "New Article from Selection");
         assert!(new.facts.as_ref().unwrap().disabled);
         let steps = undo(h.state());
@@ -2084,7 +1100,7 @@ mod ui223_interactive_actions_tests {
     fn ui223_interactive_new_document_does_not_reuse_previous_article_toggle_state() {
         let mut app = app();
         frame_item(&mut app, 72);
-        let mut h = harness(app, articles, true);
+        let mut h = harness(app, articles);
         click(&mut h, "New Article from Selection");
         let export = export_checkbox(&h, "Article 1");
         click_rect(&mut h, export.rect);
@@ -2101,26 +1117,12 @@ mod ui223_interactive_actions_tests {
     }
 
     #[test]
-    fn ui223_interactive_uninstalled_native_fallback_remains_operable() {
-        let mut app = app();
-        frame_item(&mut app, 72);
-        let mut h = harness(app, hyperlinks, false);
-        type_url(&mut h, "mailto:layout@example.com");
-        click(&mut h, "New");
-        last(h.state(), "hyperlink.create", json!({"email": "layout@example.com"}));
-        assert_eq!(h.state().session.active().unwrap().doc.hyperlinks.len(), 1);
-        assert!(!h.state().framework_installed);
-        let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, region()).unwrap();
-        assert!(record.elements.iter().all(|e| e.component != "Button" && e.component != "Checkbox"));
-        no_idle_replay(&mut h);
-    }
-    #[test]
     fn ui223_interactive_localized_bookmark_action_keeps_command_and_page_base() {
         for language in ["fr", "ar"] {
             let mut app = app();
             app.ui.language = language.into();
             let label = crate::i18n::tr(language, "New Bookmark for This Page").to_owned();
-            let mut h = harness(app, bookmarks, true);
+            let mut h = harness(app, bookmarks);
             let page = crate::canvas::current_page(h.state()).unwrap_or(0);
             let new = sdk_button(&h, &label);
             click_rect(&mut h, new.rect);
@@ -2171,7 +1173,7 @@ mod ui223_interactive_actions_tests {
             frame_item(&mut app, 72);
             let made = app.run("hyperlink.create", json!({"url": "https://example.com/target", "name": "Target"})).unwrap();
             let target = made["ids"][0].as_u64().unwrap();
-            let mut h = harness(app, hyperlinks, true);
+            let mut h = harness(app, hyperlinks);
             let original = compact_row_button(&h, "Target", "Delete", "New");
             let before = h.state().session.active().unwrap();
             let original_document = (before.uid, before.identity_epoch);
@@ -2218,7 +1220,7 @@ mod ui223_interactive_actions_tests {
         for (name, page) in [("First", 1), ("Held", 2), ("Replacement", 3)] {
             app.run("bookmark.add", json!({"name": name, "page": page})).unwrap();
         }
-        let mut h = harness(app, bookmarks, true);
+        let mut h = harness(app, bookmarks);
         let held = compact_row_button(&h, "Held", "Delete", "New Bookmark for This Page");
         let before = h.state().session.active().unwrap();
         let identity = (before.uid, before.identity_epoch);
@@ -2255,7 +1257,7 @@ mod ui223_interactive_actions_tests {
         app.run("article.new", json!({"name": "Main", "ids": [a.0]})).unwrap();
         app.run("article.new", json!({"name": "Sidebar", "ids": [b.0]})).unwrap();
         app.run("selection.set", json!({"ids": [c.0]})).unwrap();
-        let mut h = harness(app, articles, true);
+        let mut h = harness(app, articles);
         // The real Article export checkboxes retain compact paint but must have useful,
         // distinguishable names in the actual AccessKit tree, not just descriptions.
         let _ = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Include when exporting: Main");
@@ -2302,24 +1304,6 @@ mod ui223_interactive_actions_tests {
     }
 
     #[test]
-    fn future_compact_uninstalled_runtime_keeps_small_native_callback() {
-        let mut app = app();
-        frame_item(&mut app, 72);
-        let target = app.run("hyperlink.create", json!({"url": "https://example.com", "name": "Native target"})).unwrap()["ids"][0].as_u64().unwrap();
-        let mut h = harness(app, hyperlinks, false);
-        let delete = h.get_by_label("Delete").rect();
-        assert!(delete.height() < h.get_by_label("New").rect().height(), "the fallback keeps native small-button sizing");
-        let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, region()).unwrap();
-        assert!(record.elements.iter().all(|element| element.component != "Button"), "a same-label native button is not SDK evidence");
-        let steps = undo(h.state());
-        click_rect(&mut h, delete);
-        last(h.state(), "hyperlink.delete", json!({"id": target}));
-        assert!(h.state().session.active().unwrap().doc.hyperlinks.is_empty());
-        assert_eq!(undo(h.state()), steps + 1);
-        no_idle_replay(&mut h);
-    }
-
-    #[test]
     fn public_control_size_reaches_existing_component_builders() {
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::choice::Checkbox;
@@ -2337,9 +1321,10 @@ mod ui223_interactive_actions_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_object_states_forms_tests {
     use super::*;
+    use crate::theme::Tokens;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use designcraft_doc::{ButtonAction, FieldKind, FormField, ItemId};
     use egui::{Event, Key, Modifiers, PointerButton};
@@ -2367,12 +1352,9 @@ mod ui223_object_states_forms_tests {
     fn select(app: &mut DesignApp, ids: &[ItemId]) {
         app.run("selection.set", json!({"ids": ids.iter().map(|id| id.0).collect::<Vec<_>>()})).unwrap();
     }
-    fn fixture(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui), sdk: bool) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
+    fn fixture(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
-        assert_eq!(app.framework_installed, sdk);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(320.0, 720.0)).build_ui_state(
             move |ui, state: &mut Window| {
@@ -2519,7 +1501,7 @@ mod ui223_object_states_forms_tests {
         let a = item(&mut app, 72);
         let b = item(&mut app, 172);
         select(&mut app, &[a, b]);
-        let mut h = fixture(app, states, true);
+        let mut h = fixture(app, states);
         let before = undo(&h);
         let before_journal = journal(&h).len();
         let before_doc = h.state().app.session.active().unwrap().doc.clone();
@@ -2632,7 +1614,7 @@ mod ui223_object_states_forms_tests {
         let b = item(&mut app, 172);
         select(&mut app, &[a, b]);
         let gid = ItemId(app.run("object.group", json!({})).unwrap()["id"].as_u64().unwrap());
-        let mut h = fixture(app, states, true);
+        let mut h = fixture(app, states);
         let before = undo(&h);
         click(&mut h, "Convert Selection to Multi-State Object");
         assert_eq!(undo(&h), before + 1);
@@ -2654,7 +1636,7 @@ mod ui223_object_states_forms_tests {
     fn ui223_states_empty_selection_disabled_and_single_object_refusal_are_retained() {
         let mut app = app();
         select(&mut app, &[]);
-        let mut h = fixture(app, states, true);
+        let mut h = fixture(app, states);
         let create = node(&h, "Button", "Convert Selection to Multi-State Object");
         assert!(create.facts.unwrap().disabled);
         let before = (journal(&h), undo(&h));
@@ -2753,7 +1735,7 @@ mod ui223_object_states_forms_tests {
         let a = item(&mut app, 72);
         let b = item(&mut app, 172);
         select(&mut app, &[a, b]);
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         for (caption, action_name) in [
             ("Go To Next Page", "nextPage"),
             ("Go To Previous Page", "previousPage"),
@@ -2790,7 +1772,7 @@ mod ui223_object_states_forms_tests {
         let mut app = app();
         let id = item(&mut app, 72);
         select(&mut app, &[id]);
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let action = node(&h, "Select", "On Release Action");
         assert_eq!(action.facts.as_ref().unwrap().role, "ComboBox");
         tab_to(&mut h, action.id);
@@ -2815,7 +1797,7 @@ mod ui223_object_states_forms_tests {
         let id = item(&mut app, 72);
         select(&mut app, &[id]);
         app.run("button.set", json!({"action": "url", "url": "https://example.com/original"})).unwrap();
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let before = (journal(&h), undo(&h));
         type_text(&mut h, "Button URL", "javascript:alert(1)");
         assert_eq!((journal(&h), undo(&h)), before);
@@ -2841,7 +1823,7 @@ mod ui223_object_states_forms_tests {
         let a = item(&mut app, 72);
         let b = item(&mut app, 172);
         select(&mut app, &[a, b]);
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         for (caption, kind) in [
             ("Text Field", FieldKind::TextField),
             ("Check Box", FieldKind::CheckBox),
@@ -2879,7 +1861,7 @@ mod ui223_object_states_forms_tests {
     #[test]
     fn ui223_forms_name_default_choices_blur_payload_trim_filter_and_immediate_flags() {
         let (app, id) = prepared_form("comboBox");
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let before = undo(&h);
         type_text(&mut h, "Form field name", "Order choice");
         assert_eq!(field(&h, id).name, "Original");
@@ -2915,7 +1897,7 @@ mod ui223_object_states_forms_tests {
         let b = item(&mut app, 172);
         app.run("form.set", json!({"ids": [b.0], "kind": "textField", "name": "Second", "value": "Other"})).unwrap();
         select(&mut app, &[a]);
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let original = node(&h, "TextField", "Form field name");
         type_text(&mut h, "Form field name", "Stale");
         select(&mut h.state_mut().app, &[b]);
@@ -2946,7 +1928,7 @@ mod ui223_object_states_forms_tests {
     fn ui223_forms_replaced_document_and_same_uid_revert_do_not_inherit_pending_edits() {
         for preserve_uid in [false, true] {
             let (app, id) = prepared_form("textField");
-            let mut h = fixture(app, buttons, true);
+            let mut h = fixture(app, buttons);
             let original = node(&h, "TextField", "Form field name");
             type_text(&mut h, "Form field name", "Stale replacement draft");
             let state = h.state().app.session.active().unwrap();
@@ -2983,7 +1965,7 @@ mod ui223_object_states_forms_tests {
         let b = item(&mut app, 172);
         select(&mut app, &[a, b]);
         let gid = ItemId(app.run("states.create", json!({})).unwrap()["id"].as_u64().unwrap());
-        let mut h = fixture(app, states, true);
+        let mut h = fixture(app, states);
         let held = node(&h, "Button", "Release to Objects");
         pointer(&mut h, held.rect, true);
         let state = h.state().app.session.active().unwrap();
@@ -3005,7 +1987,7 @@ mod ui223_object_states_forms_tests {
         let (mut app, a) = prepared_form("textField");
         let b = item(&mut app, 172);
         select(&mut app, &[a]);
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let held = node(&h, "Checkbox", "Required");
         pointer(&mut h, held.rect, true);
         select(&mut h.state_mut().app, &[a, b]);
@@ -3024,7 +2006,7 @@ mod ui223_object_states_forms_tests {
     #[test]
     fn ui223_forms_disabled_parent_measurement_and_narrow_real_parent_do_not_mutate_or_escape_bounds() {
         let (app, id) = prepared_form("comboBox");
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         for name in ["On Release Action", "Form Field Type"] {
             let element = node(&h, "Select", name);
             assert!(h.state().parent.expand(0.5).contains_rect(element.rect));
@@ -3056,73 +2038,10 @@ mod ui223_object_states_forms_tests {
     }
 
     #[test]
-    fn ui223_states_and_forms_real_native_fallback_retains_complete_command_workflow() {
-        fn click_rect(h: &mut Harness<'_, Window>, rect: egui::Rect) {
-            let pos = rect.center();
-            event(h, Event::PointerMoved(pos));
-            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-            let pressed_at = h.ctx.input(|i| i.time);
-            event(h, Event::PointerMoved(pos));
-            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-            let held_for = h.ctx.input(|i| i.time) - pressed_at;
-            let native_limit = h.ctx.options(|o| o.input_options.max_click_duration);
-            assert!(held_for > 0.0 && held_for <= native_limit, "native fallback click: {held_for}s > {native_limit}s");
-            assert!(h.ctx.input(|i| i.pointer.any_click()), "the native fallback must report a real click before looking for effects");
-            idle(h, 2);
-        }
-        fn click(h: &mut Harness<'_, Window>, name: &str) {
-            // Full-name lookup is intentionally unique; never select a same-label sibling by index.
-            let rect = h.get_by_label(name).rect();
-            click_rect(h, rect);
-        }
-        fn choose(h: &mut Harness<'_, Window>, name: &str, value: &str) {
-            click(h, name);
-            click(h, value);
-        }
-        fn type_text(h: &mut Harness<'_, Window>, name: &str, value: &str) {
-            let rect = h.get_by_role_and_label(egui::accesskit::Role::TextInput, name).rect();
-            click_rect(h, rect);
-            key_mod(h, Key::A, Modifiers::COMMAND);
-            event(h, Event::Text(value.to_owned()));
-            idle(h, 2);
-        }
-        fn commit(h: &mut Harness<'_, Window>, name: &str, value: &str) {
-            type_text(h, name, value);
-            key(h, Key::Tab);
-        }
-        let mut app = app();
-        let a = item(&mut app, 72);
-        let b = item(&mut app, 172);
-        select(&mut app, &[a, b]);
-        let mut h = fixture(app, states, false);
-        click(&mut h, "Convert Selection to Multi-State Object");
-        let gid = h.state().app.session.active().unwrap().selection.items[0];
-        click(&mut h, "Object States: State 2 (2)");
-        assert_eq!(h.state().app.session.active().unwrap().doc.item(gid).unwrap().active_state, 1);
-        click(&mut h, "Release to Objects");
-        assert!(h.state().app.session.active().unwrap().doc.item(gid).unwrap().states.is_empty());
-        no_replay(&mut h);
-        let (app, id) = prepared_form("textField");
-        let mut h = fixture(app, buttons, false);
-        choose(&mut h, "On Release Action", "Go To URL");
-        commit(&mut h, "Button URL", "https://example.com/native");
-        assert_eq!(action(&h, id), Some(ButtonAction::GoToUrl { url: "https://example.com/native".into() }));
-        commit(&mut h, "Form field name", "Native field");
-        click(&mut h, "Required");
-        click(&mut h, "Multiline");
-        assert_eq!(field(&h, id).name, "Native field");
-        assert!(field(&h, id).required && field(&h, id).multiline);
-        choose(&mut h, "Form Field Type", "Combo Box");
-        commit(&mut h, "Form field choices (separated by commas)", " One, ,Two ");
-        assert_eq!(field(&h, id).options, vec!["One", "Two"]);
-        no_replay(&mut h);
-    }
-
-    #[test]
     fn ui223_forms_kind_change_and_button_action_change_cannot_recommit_the_old_editor() {
         let (mut app, id) = prepared_form("textField");
         app.run("button.set", json!({"action": "url", "url": "https://example.com/original"})).unwrap();
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         type_text(&mut h, "Button URL", "https://example.com/pending");
         choose(&mut h, "On Release Action", "Go To Next Page");
         assert_eq!(action(&h, id), Some(ButtonAction::GoToNextPage));
@@ -3142,7 +2061,7 @@ mod ui223_object_states_forms_tests {
     #[test]
     fn ui223_forms_unlimited_unicode_draft_enter_then_undo_restores_authoritative_source() {
         let (app, id) = prepared_form("textField");
-        let mut h = fixture(app, buttons, true);
+        let mut h = fixture(app, buttons);
         let text = format!("{} café", "Design field ".repeat(180));
         let before = undo(&h);
         type_text(&mut h, "Form field default value", &text);
@@ -3159,9 +2078,10 @@ mod ui223_object_states_forms_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_liquid_workflow_tests {
     use super::*;
+    use crate::theme::Tokens;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use designcraft_doc::{Fitting, ItemId, LiquidRule, ObjectLiquid};
     use egui::{Event, Key, Modifiers, PointerButton};
@@ -3217,12 +2137,9 @@ mod ui223_liquid_workflow_tests {
         let g = guide(app, page, index);
         format!("Liquid guide {}: {:?} at {} (Page {})", index + 1, g.orientation, g.position, app.session.active().unwrap().doc.page_name(page))
     }
-    fn fixture(mut app: DesignApp, sdk: bool) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
+    fn fixture(mut app: DesignApp) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
-        assert_eq!(app.framework_installed, sdk);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(320.0, 720.0)).build_ui_state(
             move |ui, state: &mut Window| {
@@ -3346,7 +2263,7 @@ mod ui223_liquid_workflow_tests {
     fn ui223_liquid_all_existing_page_rules_target_only_the_actual_page_and_undo() {
         let mut app = app();
         select(&mut app, &[], 1);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         for (expected, caption) in [
             (LiquidRule::Scale, "Scale"),
             (LiquidRule::ReCenter, "Re-center"),
@@ -3375,7 +2292,7 @@ mod ui223_liquid_workflow_tests {
     fn ui223_liquid_real_select_natural_tab_preview_escape_and_enter_commit_once() {
         let mut app = app();
         select(&mut app, &[], 0);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let field = node(&h, "Select", "Liquid Page Rule");
         assert_eq!(field.facts.unwrap().role, "ComboBox");
         tab_to(&mut h, field.id);
@@ -3398,7 +2315,7 @@ mod ui223_liquid_workflow_tests {
     #[test]
     fn ui223_liquid_all_six_constraint_defaults_payloads_full_selection_and_undo() {
         let (app, a, b) = object_fixture();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         assert_eq!(constraints(&h.state().app, a), None);
         for (name, payload) in [
             ("Height", json!({"resizeHeight":false})),
@@ -3439,7 +2356,7 @@ mod ui223_liquid_workflow_tests {
             Arc::make_mut(&mut doc.parents[ps]).pages[pp].liquid = LiquidRule::ObjectBased;
         }
         app.after_engine();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         assert!(object_based(&h.state().app.session.active().unwrap().doc, 0));
         assert!(!node(&h, "Checkbox", "Right").facts.unwrap().disabled);
         click(&mut h, "Right");
@@ -3477,7 +2394,7 @@ mod ui223_liquid_workflow_tests {
         }
         select(&mut app, &[a, b], 0);
         assert_eq!(graphic(&app, a).auto_fit, Fitting::None, "real file.place-to-frame leaves Auto-Fit off, unlike grid placement");
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         assert!(!node(&h, "Checkbox", "Auto-Fit").facts.unwrap().disabled);
         let before = undo(&h);
         click(&mut h, "Auto-Fit");
@@ -3504,7 +2421,7 @@ mod ui223_liquid_workflow_tests {
         add_guide(&mut app, 0, "vertical", 123.41);
         let names: Vec<_> = (0..3).map(|i| guide_name(&app, 0, i)).collect();
         assert_eq!(names.iter().collect::<HashSet<_>>().len(), 3);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = undo(&h);
         for name in &names {
             let _ = node(&h, "Checkbox", name);
@@ -3528,7 +2445,7 @@ mod ui223_liquid_workflow_tests {
         add_guide(&mut app, 0, "vertical", 200.0);
         add_guide(&mut app, 0, "vertical", 300.0);
         let held_name = guide_name(&app, 0, 1);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let held = node(&h, "Checkbox", &held_name);
         pointer(&mut h, held.rect, true);
         h.state_mut().app.run("guide.delete", json!({"spread":0,"page":0,"index":0})).unwrap();
@@ -3550,7 +2467,7 @@ mod ui223_liquid_workflow_tests {
     #[test]
     fn ui223_liquid_held_constraint_cancels_on_full_selection_and_page_change() {
         let (app, a, b) = object_fixture();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         select(&mut h.state_mut().app, &[a], 0);
         idle(&mut h, 3);
         let held = node(&h, "Checkbox", "Right");
@@ -3586,7 +2503,7 @@ mod ui223_liquid_workflow_tests {
     fn ui223_liquid_same_uid_revert_and_new_document_cancel_held_input_with_fresh_recovery() {
         for preserve_uid in [false, true] {
             let (app, a, _) = object_fixture();
-            let mut h = fixture(app, true);
+            let mut h = fixture(app);
             let held = node(&h, "Checkbox", "Width");
             pointer(&mut h, held.rect, true);
             let state = h.state().app.session.active().unwrap();
@@ -3620,7 +2537,7 @@ mod ui223_liquid_workflow_tests {
     #[test]
     fn ui223_liquid_disabled_measurement_bounds_absence_and_positive_recovery() {
         let (app, a, _) = object_fixture();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         for (component, name) in [
             ("Select", "Liquid Page Rule"),
             ("Checkbox", "Auto-Fit"),
@@ -3661,52 +2578,6 @@ mod ui223_liquid_workflow_tests {
         idle(&mut h, 3);
         click(&mut h, "Left");
         assert!(constraints(&h.state().app, a).unwrap().pin_left);
-        no_replay(&mut h);
-    }
-
-    #[test]
-    fn ui223_liquid_real_native_fallback_retains_page_constraints_guides_and_undo() {
-        // Harness defaults to 0.25 seconds per frame. The shared SDK pointer
-        // helper holds for four frames (1.0 s), outside native's 0.8 s click
-        // limit. Keep that helper and every passed SDK case unchanged; use a
-        // genuine short native gesture here, with no input-policy/focus edits.
-        fn native_click(h: &mut Harness<'_, Window>, name: &str) {
-            let rect = h.get_by_label(name).rect();
-            let pos = rect.center();
-            event(h, Event::PointerMoved(pos));
-            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-            let pressed_at = h.ctx.input(|i| i.time);
-            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-            let held_for = h.ctx.input(|i| i.time) - pressed_at;
-            let native_limit = h.ctx.options(|o| o.input_options.max_click_duration);
-            assert!(held_for > 0.0 && held_for <= native_limit, "the actual native gesture must remain a click: {held_for}s > {native_limit}s");
-            assert!(h.ctx.input(|i| i.pointer.any_click()), "the real egui input path must report a click before looking for effects");
-            idle(h, 2);
-        }
-        let mut app = app();
-        let id = item(&mut app, 0, 72);
-        add_guide(&mut app, 0, "horizontal", 180.0);
-        select(&mut app, &[id], 0);
-        let name = guide_name(&app, 0, 0);
-        let mut h = fixture(app, false);
-        native_click(&mut h, "Liquid Page Rule");
-        assert_eq!(
-            h.query_all_by_role(egui::accesskit::Role::ListBox).count(),
-            1,
-            "the real native ComboBox popup must be present before choosing a real option"
-        );
-        native_click(&mut h, "Object-based");
-        last(&h, "liquid.pageRule", json!({"rule":"objectBased","pages":[1]}));
-        native_click(&mut h, "Right");
-        native_click(&mut h, "Width");
-        let actual = constraints(&h.state().app, id).unwrap();
-        assert!(actual.pin_right && !actual.resize_width && actual.resize_height);
-        native_click(&mut h, &name);
-        last(&h, "guide.liquid", json!({"spread":0,"page":0,"index":0,"on":true}));
-        assert!(guide(&h.state().app, 0, 0).liquid);
-        h.state_mut().app.run("edit.undo", json!({})).unwrap();
-        idle(&mut h, 3);
-        assert!(!guide(&h.state().app, 0, 0).liquid);
         no_replay(&mut h);
     }
 
@@ -3761,7 +2632,7 @@ mod ui223_liquid_workflow_tests {
         }
         let mut app = app();
         select(&mut app, &[], 0);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let first = node(&h, "Select", "Liquid Page Rule");
         click(&mut h, "Liquid Page Rule");
         key(&mut h, Key::ArrowDown);
@@ -3783,7 +2654,7 @@ mod ui223_liquid_workflow_tests {
     #[test]
     fn ui223_liquid_no_document_has_no_actions_and_new_document_recovers_normally() {
         let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         assert_eq!(h.query_all_by_label("Liquid Page Rule").count(), 0);
         // The notice is framework text; no control or action stands beside it.
         assert!(h.state().controls.as_ref().unwrap().elements.iter().all(|e| e.component == "Text"));
@@ -3801,9 +2672,10 @@ mod ui223_liquid_workflow_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_track_workflow_tests {
     use super::*;
+    use crate::theme::Tokens;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use designcraft_doc::StoryId;
     use egui::{Event, Key, Modifiers, PointerButton};
@@ -3854,12 +2726,9 @@ mod ui223_track_workflow_tests {
             _ => {}
         }
     }
-    fn fixture(mut app: DesignApp, sdk: bool) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
+    fn fixture(mut app: DesignApp) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
-        assert_eq!(app.framework_installed, sdk);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(320.0, 720.0)).build_ui_state(
             move |ui, state: &mut Window| {
@@ -3986,7 +2855,7 @@ mod ui223_track_workflow_tests {
     fn ui223_track_checkbox_default_pointer_payload_undo_and_no_idle_edit() {
         let app = app();
         assert!(!app.session.active().unwrap().doc.settings.track_changes);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let control = node(&h, "Checkbox", "Track Changes in All Stories");
         assert_eq!(control.facts.unwrap().role, "CheckBox");
         let before = undo(&h);
@@ -4012,7 +2881,7 @@ mod ui223_track_workflow_tests {
         app.after_engine();
         let other_doc = serde_json::to_value(app.session.documents()[1].doc.as_ref()).unwrap();
         let other_selection = app.session.documents()[1].selection.clone();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before_doc = doc(&h.state().app);
         let before = undo(&h);
         track_native_click(&mut h, &track_row_name("Show in the text", &change));
@@ -4038,7 +2907,7 @@ mod ui223_track_workflow_tests {
         ] {
             let (mut app, sid) = tracked();
             let change = list(&mut app).into_iter().find(|c| c["kind"] == kind).unwrap();
-            let mut h = fixture(app, true);
+            let mut h = fixture(app);
             let before_doc = doc(&h.state().app);
             let before = undo(&h);
             let name = track_row_name(action, &change);
@@ -4073,7 +2942,7 @@ mod ui223_track_workflow_tests {
             app.after_engine();
             let protected_doc = serde_json::to_value(app.session.documents()[1].doc.as_ref()).unwrap();
             let protected_history = app.session.documents()[1].history.undo.len();
-            let mut h = fixture(app, true);
+            let mut h = fixture(app);
             let before_doc = doc(&h.state().app);
             let before = undo(&h);
             click(&mut h, action);
@@ -4093,47 +2962,41 @@ mod ui223_track_workflow_tests {
 
     #[test]
     fn ui223_track_excerpt_preserves_forty_unicode_scalars_newline_marker_and_deleted_strike() {
-        // The framework draws the excerpt as its own component (ChangeExcerpt), which paints the same struck caption
-        // the native remainder does; only whether the excerpt is a framework element differs between the two.
-        for sdk in [false, true] {
-            let mut app = app();
-            let original = format!("{}TAIL MUST NOT APPEAR", "é\n".repeat(25));
-            let sid = frame(&mut app, &original);
-            app.run("changes.track", json!({"on":true})).unwrap();
-            app.run("text.select", json!({"story":sid.0,"anchor":0,"focus":original.len()})).unwrap();
-            app.run("text.delete", json!({})).unwrap();
-            let change = list(&mut app).into_iter().next().unwrap();
-            assert_eq!(change["text"], original);
-            let preview = original.chars().take(40).collect::<String>().replace('\n', "¶");
-            let mut h = fixture(app, sdk);
-            let name = track_row_name("Show in the text", &change);
-            let _ = h.get_by_label(&name);
-            assert!(!name.contains("TAIL MUST NOT APPEAR"));
-            let reported =
-                h.state().controls.as_ref().unwrap().elements.iter().any(|e| e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name.as_str()));
-            assert_eq!(
-                reported, sdk,
-                "the excerpt is a framework action exactly when the framework draws it; the native remainder is never reported as one"
-            );
-            let mut painted = Vec::new();
-            for clipped in &h.output().shapes {
-                paint(&clipped.shape, &mut painted);
-            }
-            assert!(
-                painted.iter().any(|(text, struck)| text == &format!("Deleted “{preview}”") && *struck),
-                "actual paint must preserve all caption/preview strike-through, not just an accessibility string: {painted:?}"
-            );
-            track_native_click(&mut h, &name);
-            last(&h, "text.select", json!({"story":sid.0,"anchor":0,"focus":original.len()}));
-            no_replay(&mut h);
+        // The framework draws the excerpt as its own component (ChangeExcerpt), which paints the struck caption.
+        let mut app = app();
+        let original = format!("{}TAIL MUST NOT APPEAR", "é\n".repeat(25));
+        let sid = frame(&mut app, &original);
+        app.run("changes.track", json!({"on":true})).unwrap();
+        app.run("text.select", json!({"story":sid.0,"anchor":0,"focus":original.len()})).unwrap();
+        app.run("text.delete", json!({})).unwrap();
+        let change = list(&mut app).into_iter().next().unwrap();
+        assert_eq!(change["text"], original);
+        let preview = original.chars().take(40).collect::<String>().replace('\n', "¶");
+        let mut h = fixture(app);
+        let name = track_row_name("Show in the text", &change);
+        let _ = h.get_by_label(&name);
+        assert!(!name.contains("TAIL MUST NOT APPEAR"));
+        let reported =
+            h.state().controls.as_ref().unwrap().elements.iter().any(|e| e.facts.as_ref().and_then(|f| f.name.as_deref()) == Some(name.as_str()));
+        assert!(reported, "the excerpt is a framework action");
+        let mut painted = Vec::new();
+        for clipped in &h.output().shapes {
+            paint(&clipped.shape, &mut painted);
         }
+        assert!(
+            painted.iter().any(|(text, struck)| text == &format!("Deleted “{preview}”") && *struck),
+            "actual paint must preserve all caption/preview strike-through, not just an accessibility string: {painted:?}"
+        );
+        track_native_click(&mut h, &name);
+        last(&h, "text.select", json!({"story":sid.0,"anchor":0,"focus":original.len()}));
+        no_replay(&mut h);
     }
 
     #[test]
     fn ui223_track_natural_tab_enter_space_ready_actions_commit_once() {
         let (mut app, _) = tracked();
         let change = list(&mut app).into_iter().find(|c| c["kind"] == "inserted").unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let name = track_row_name("Accept", &change);
         let control = node(&h, "Button", &name);
         tab_to(&mut h, control.id);
@@ -4161,7 +3024,7 @@ mod ui223_track_workflow_tests {
         app.run("text.insert", json!({"text":first})).unwrap();
         let old = list(&mut app).remove(0);
         let name = track_row_name("Accept", &old);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let held = node(&h, "Button", &name);
         pointer(&mut h, held.rect, true);
         h.state_mut().app.run("text.select", json!({"story":sid.0,"anchor":0,"focus":41})).unwrap();
@@ -4188,7 +3051,7 @@ mod ui223_track_workflow_tests {
     fn ui223_track_held_bulk_collection_change_cancels_instead_of_resolving_new_snapshot() {
         let (mut app, _) = tracked();
         let deleted = list(&mut app).into_iter().find(|c| c["kind"] == "deleted").unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let held = node(&h, "Button", "Accept All");
         pointer(&mut h, held.rect, true);
         h.state_mut().app.run("changes.reject", json!({"story":deleted["story"],"start":deleted["start"]})).unwrap();
@@ -4211,7 +3074,7 @@ mod ui223_track_workflow_tests {
             let (mut app, _) = tracked();
             let change = list(&mut app).remove(0);
             let name = track_row_name("Reject", &change);
-            let mut h = fixture(app, true);
+            let mut h = fixture(app);
             let held = node(&h, "Button", &name);
             pointer(&mut h, held.rect, true);
             let old = h.state().app.session.active().unwrap();
@@ -4257,7 +3120,7 @@ mod ui223_track_workflow_tests {
         let (mut app, _) = tracked();
         let change = list(&mut app).remove(0);
         let name = track_row_name("Accept", &change);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         for element in h.state().controls.as_ref().unwrap().elements.iter().filter(|e| e.part.is_none()) {
             assert!(h.state().parent.expand(0.5).contains_rect(element.rect), "{} {:?}", element.component, element.rect);
         }
@@ -4282,32 +3145,22 @@ mod ui223_track_workflow_tests {
     }
 
     #[test]
-    fn ui223_track_no_document_empty_uninstalled_and_real_native_fallback() {
+    fn ui223_track_no_document_is_empty_and_inert() {
         let empty = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let mut h = fixture(empty, true);
+        let mut h = fixture(empty);
         assert_eq!(h.query_all_by_label("Track Changes in All Stories").count(), 0);
         assert!(h.state().controls.as_ref().unwrap().elements.is_empty());
         let before = journal(&h);
         key(&mut h, Key::Tab);
         key(&mut h, Key::Enter);
         assert_eq!(journal(&h), before);
-        let (mut app, sid) = tracked();
-        let change = list(&mut app).into_iter().find(|c| c["kind"] == "deleted").unwrap();
-        let mut h = fixture(app, false);
-        let name = track_row_name("Reject", &change);
-        track_native_click(&mut h, &name);
-        last(&h, "changes.reject", json!({"story":change["story"],"start":change["start"]}));
-        track_native_click(&mut h, "Accept All");
-        last(&h, "changes.acceptAll", json!({}));
-        assert_eq!(text(&h.state().app, sid), "The catdog sat");
-        assert!(list(&mut h.state_mut().app).is_empty());
-        no_replay(&mut h);
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_tags_xml_workflow_tests {
     use super::*;
+    use crate::theme::Tokens;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use designcraft_doc::{ItemId, StoryId};
     use egui::{Event, Key, Modifiers, PointerButton};
@@ -4385,12 +3238,9 @@ mod ui223_tags_xml_workflow_tests {
         }
         out
     }
-    fn fixture(mut app: DesignApp, sdk: bool) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
+    fn fixture(mut app: DesignApp) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
-        assert_eq!(app.framework_installed, sdk);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(320.0, 720.0)).build_ui_state(
             move |ui, state: &mut Window| {
@@ -4541,7 +3391,7 @@ mod ui223_tags_xml_workflow_tests {
 
     #[test]
     fn real_parent_new_tag_is_explicit_trimmed_and_has_one_atomic_undo_step() {
-        let mut h = fixture(app(), true);
+        let mut h = fixture(app());
         let original = h.state().app.session.active().unwrap().doc.clone();
         let field = node(&h, "TextField", "New tag");
         let before = (journal(&h), undo(&h));
@@ -4585,7 +3435,7 @@ mod ui223_tags_xml_workflow_tests {
             };
             click_rect(h, rect);
         }
-        let mut h = fixture(app(), true);
+        let mut h = fixture(app());
         let long = format!("Tag{}", "a".repeat(280));
         let field = node(&h, "TextField", "New tag");
         tab_to(&mut h, field.id);
@@ -4622,7 +3472,7 @@ mod ui223_tags_xml_workflow_tests {
         let (_, b) = frame(&mut app, "Beta", 200.0);
         app.run("xml.newTag", json!({"name":"Body"})).unwrap();
         app.run("selection.set", json!({"ids":[b.0,a.0]})).unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo(&h);
         click(&mut h, &apply_name("Body"));
@@ -4662,7 +3512,7 @@ mod ui223_tags_xml_workflow_tests {
         let (mut app, sid, id) = body();
         app.run("xml.newTag", json!({"name":"Em"})).unwrap();
         app.run("text.select", json!({"story":sid.0,"anchor":4,"focus":7})).unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let selection = h.state().app.session.active().unwrap().selection.clone();
         let history = undo(&h);
@@ -4700,7 +3550,7 @@ mod ui223_tags_xml_workflow_tests {
         let a = structure_name(&mut app, upper);
         let b = structure_name(&mut app, lower);
         assert_ne!(a, b);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let an = node(&h, "Link", &a);
         let bn = node(&h, "Link", &b);
         assert_ne!(an.id, bn.id);
@@ -4733,7 +3583,7 @@ mod ui223_tags_xml_workflow_tests {
         let (mut app, _, id) = body();
         app.run("xml.tag", json!({"tag":"ZBody", "ids":[id.0]})).unwrap();
         app.answer_dialogs(answer_with(Some(path.to_string_lossy().into_owned())));
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let history = undo(&h);
         click(&mut h, "Load DTD…");
         assert!(h.state().app.file_dialogs_pending());
@@ -4767,7 +3617,7 @@ mod ui223_tags_xml_workflow_tests {
         app.run("xml.loadDtd", json!({"text":"<!ELEMENT Root (Missing)>\n<!ELEMENT Missing EMPTY>"})).unwrap();
         let actual = app.session.execute("xml.validate", &json!({})).unwrap();
         assert!(!actual["problems"].as_array().unwrap().is_empty());
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = (journal(&h), undo(&h));
         click(&mut h, "Validate");
         assert_eq!((journal(&h), undo(&h)), before);
@@ -4805,7 +3655,7 @@ mod ui223_tags_xml_workflow_tests {
         let original = app.session.active().unwrap().doc.clone();
         let owner = app.session.active().unwrap().uid;
         app.answer_dialogs(answer_with(Some(input.to_string_lossy().into_owned())));
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let history = undo(&h);
         click(&mut h, "Import XML…");
         assert!(h.state().app.file_dialogs_pending());
@@ -4849,7 +3699,7 @@ mod ui223_tags_xml_workflow_tests {
         use crate::app::file_dialogs::testing::answer_with;
         let (mut app, _, _) = body();
         app.answer_dialogs(answer_with(None));
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         for label in ["Load DTD…", "Import XML…", "Export XML…"] {
             let before = (journal(&h), undo(&h), h.state().app.session.active().unwrap().doc.clone());
             click(&mut h, label);
@@ -4890,7 +3740,7 @@ mod ui223_tags_xml_workflow_tests {
         let (mut app, _, a) = body();
         let (_, b) = frame(&mut app, "Other", 240.0);
         app.run("selection.set", json!({"ids":[a.0]})).unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let held = node(&h, "Button", &apply_name("Body"));
         pointer(&mut h, held.rect, true);
         h.state_mut().app.run("selection.set", json!({"ids":[b.0,a.0]})).unwrap();
@@ -4917,7 +3767,7 @@ mod ui223_tags_xml_workflow_tests {
         app.run("xml.tag", json!({"tag":"Body","ids":[id.0]})).unwrap();
         app.run("selection.set", json!({"ids":[]})).unwrap();
         let name = structure_name(&mut app, id);
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let held = node(&h, "Link", &name);
         pointer(&mut h, held.rect, true);
         h.state_mut().app.run("text.select", json!({"story":sid.0,"anchor":40,"focus":43})).unwrap();
@@ -4953,7 +3803,7 @@ mod ui223_tags_xml_workflow_tests {
             click_rect(h, rect);
         }
         for same_uid in [false, true] {
-            let mut h = fixture(app(), true);
+            let mut h = fixture(app());
             let f = node(&h, "TextField", "New tag");
             tab_to(&mut h, f.id);
             event(&mut h, Event::Text("OldDraft".into()));
@@ -4991,9 +3841,9 @@ mod ui223_tags_xml_workflow_tests {
     }
 
     #[test]
-    fn narrow_parent_disabled_sdk_measurement_empty_document_and_genuine_native_fallback_remain_honest() {
+    fn narrow_parent_disabled_sdk_measurement_and_empty_document_remain_honest() {
         let (app, _, _) = body();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = (journal(&h), undo(&h), h.state().app.session.active().unwrap().doc.clone());
         let delete_rect = h.get_by_label("Delete <Body>").rect();
         let markers_rect = h.get_by_label("Show Tag Markers").rect();
@@ -5024,14 +3874,5 @@ mod ui223_tags_xml_workflow_tests {
         h.state_mut().app.run("file.close", json!({"force":true})).unwrap();
         idle(&mut h, 2);
         assert!(h.state().controls.as_ref().is_none_or(|c| c.elements.is_empty()));
-        let (app, _, native_id) = body();
-        let mut native = fixture(app, false);
-        assert!(native.state().controls.as_ref().is_none_or(|c| c.elements.is_empty()));
-        click(&mut native, &apply_name("Body"));
-        last(&native, "xml.tag", json!({"tag":"Body"}));
-        let label = structure_name(&mut native.state_mut().app, native_id);
-        click(&mut native, &label);
-        last(&native, "selection.set", json!({"ids":[native_id.0]}));
-        no_replay(&mut native);
     }
 }

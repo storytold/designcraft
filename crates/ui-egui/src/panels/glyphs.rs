@@ -21,100 +21,62 @@ struct State {
 
 // Only this panel's style, query and recent action faces. The exported grid and shared family
 // chooser remain unchanged and retain their own future SDK migration boundary.
-fn panel_style(ui: &mut egui::Ui, language: &str, framework: bool, family: &str, current: &mut String, styles: Vec<String>) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-        use craft_ui_widgets::pickers::Select;
+fn panel_style(ui: &mut egui::Ui, language: &str, family: &str, current: &mut String, styles: Vec<String>) {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::pickers::Select;
 
-        let label = crate::i18n::tr(language, "Font Style");
-        let entries: Vec<_> = styles.into_iter().map(|style| Entry::new(style.clone(), style)).collect();
-        let (rect, _) = ui.allocate_exact_size(vec2(80.0, 24.0), Sense::hover());
-        let placeholder = current.clone();
-        Select::new(label, Bind::bound(current), &entries).id_salt(("glyph_style", family)).placeholder(placeholder).tooltip(label).show_at(ui, rect);
-        return;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, family);
-    let combo = craft_ui_legacy::ComboBox::from_id_salt("glyph_style").selected_text(&*current).width(80.0).show_ui(ui, |ui| {
-        for style in styles {
-            if ui.selectable_label(style == *current, &style).clicked() {
-                *current = style;
-            }
-        }
-    });
-    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(language, "Font Style"));
+    let label = crate::i18n::tr(language, "Font Style");
+    let entries: Vec<_> = styles.into_iter().map(|style| Entry::new(style.clone(), style)).collect();
+    let (rect, _) = ui.allocate_exact_size(vec2(80.0, 24.0), Sense::hover());
+    let placeholder = current.clone();
+    Select::new(label, Bind::bound(current), &entries).id_salt(("glyph_style", family)).placeholder(placeholder).tooltip(label).show_at(ui, rect);
 }
 
-fn panel_query(ui: &mut egui::Ui, language: &str, framework: bool, query: &mut String) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        use craft_ui_widgets::text::TextField;
+fn panel_query(ui: &mut egui::Ui, language: &str, query: &mut String) {
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    use craft_ui_widgets::text::TextField;
 
-        let label = crate::i18n::tr(language, "Search: character or U+code");
-        TextField::new(label, Bind::bound(query))
-            .keeps_on_escape()
-            .limit(None)
-            .id_salt("glyph_query")
-            .placeholder(label)
-            .tooltip(label)
-            .size(ControlSize::Sm)
-            .sizing(craft_ui_widgets::contract::Sizing::FillWidth)
-            .show(ui);
-        return;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = framework;
-    ui.add(
-        egui::TextEdit::singleline(query)
-            .hint_text(crate::rtl::widget(ui, crate::i18n::tr(language, "Search: character or U+code")))
-            .desired_width(f32::INFINITY),
-    );
+    let label = crate::i18n::tr(language, "Search: character or U+code");
+    TextField::new(label, Bind::bound(query))
+        .keeps_on_escape()
+        .limit(None)
+        .id_salt("glyph_query")
+        .placeholder(label)
+        .tooltip(label)
+        .size(ControlSize::Sm)
+        .sizing(craft_ui_widgets::contract::Sizing::FillWidth)
+        .show(ui);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn recent_name(language: &str, c: char) -> String {
     format!("{}: {c} (U+{:04X})", crate::i18n::tr(language, "Insert"), u32::from(c))
 }
 
-fn panel_recent(ui: &mut egui::Ui, language: &str, framework: bool, target: &Option<String>, c: char) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::buttons::Button;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
+fn panel_recent(ui: &mut egui::Ui, language: &str, target: &Option<String>, c: char) -> bool {
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
 
-        return Button::new(recent_name(language, c))
-            .painted(c.to_string())
-            .tooltip(format!("U+{:04X}", u32::from(c)))
-            .id_salt(("glyph_recent", target, c))
-            .size(ControlSize::Sm)
-            .show(ui)
-            .clicked();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (language, framework, target);
-    ui.small_button(c.to_string()).on_hover_text(format!("U+{:04X}", c as u32)).clicked()
+    Button::new(recent_name(language, c))
+        .painted(c.to_string())
+        .tooltip(format!("U+{:04X}", u32::from(c)))
+        .id_salt(("glyph_recent", target, c))
+        .size(ControlSize::Sm)
+        .show(ui)
+        .clicked()
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
+    use craft_ui_widgets::runtime::env::{Direction, with_env};
 
-        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
-        with_env(ui, |scope| scope.direction = Some(direction), |ui| show_contents(app, ui));
-        return;
-    }
-    show_contents(app, ui);
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+    with_env(ui, |scope| scope.direction = Some(direction), |ui| show_contents(app, ui));
 }
 
 /// The panel on the framework: the font and style choosers in a row, the search field, the recently used characters,
 /// and the glyph grid in a framework scroll area.
-#[cfg(not(target_arch = "wasm32"))]
-fn show_framework_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Shade, Text};
     use craft_ui_widgets::layout_components::{Row, Stack};
@@ -134,15 +96,15 @@ fn show_framework_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
                 st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
                 st.family = f.family;
             }
-            panel_style(ui, &lang, true, &st.family, &mut st.style, db.styles(&st.family));
+            panel_style(ui, &lang, &st.family, &mut st.style, db.styles(&st.family));
         });
-        panel_query(ui, &lang, true, &mut st.query);
+        panel_query(ui, &lang, &mut st.query);
         let q = st.query.trim().to_string();
         if !st.recent.is_empty() {
             Row::new().id_salt("glyph_recent").wrap(true).show(ui, |ui, _| {
                 Text::new(crate::i18n::tr(&lang, "Recently Used").to_owned()).role(TypeRole::Caption).shade(Shade::Muted).show(ui);
                 for c in st.recent.clone() {
-                    if panel_recent(ui, &lang, true, &target, c) {
+                    if panel_recent(ui, &lang, &target, c) {
                         insert = Some(c);
                     }
                 }
@@ -181,66 +143,6 @@ fn default_font(app: &mut DesignApp, st: &mut State) {
             .unwrap_or_else(|| designcraft_fonts::DEFAULT_FAMILY.into());
         st.style = a.as_ref().and_then(|a| a["chars"]["fontStyle"].as_str().map(str::to_string)).unwrap_or_else(|| "Regular".into());
     }
-}
-
-fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        show_framework_contents(app, ui);
-        return;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
-    let target = app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.text, &st.selection.cells)));
-    let t = Tokens::get(ui.ctx());
-    let id = egui::Id::unique("glyphs_panel");
-    let mut st: State = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    // Default to the font at the text cursor.
-    default_font(app, &mut st);
-    let (db, scope) = (super::fonts(app), super::font_scope(app));
-    ui.horizontal(|ui| {
-        if let Some(f) = super::font_combo(app, ui, "glyph_family", &st.family, 140.0) {
-            st.style = f.style.clone().or_else(|| db.styles(&f.family).into_iter().next()).unwrap_or_else(|| "Regular".into());
-            st.family = f.family;
-        }
-        panel_style(ui, &app.ui.language, framework, &st.family, &mut st.style, db.styles(&st.family));
-    });
-    panel_query(ui, &app.ui.language, framework, &mut st.query);
-    let q = st.query.trim().to_string();
-    let mut insert: Option<char> = None;
-    if !st.recent.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Recently Used")).size(10.5).color(t.text_dim));
-            for c in st.recent.clone() {
-                if panel_recent(ui, &app.ui.language, framework, &target, c) {
-                    insert = Some(c);
-                }
-            }
-        });
-    }
-    let (picked, count) = grid(ui, &db, scope, &st.family, &st.style, &q, 320.0);
-    insert = insert.or(picked);
-    if let Some(c) = insert {
-        match app.run("text.insert", json!({"text": c.to_string(), "raw": true})) {
-            Ok(_) => {
-                st.recent.retain(|x| *x != c);
-                st.recent.insert(0, c);
-                st.recent.truncate(12);
-            }
-            Err(e) => app.status_error("Glyphs", e),
-        }
-    }
-    crate::rtl::label(
-        ui,
-        egui::RichText::new(
-            crate::i18n::tr(&app.ui.language, "{count} glyphs — click to insert at the text cursor").replace("{count}", &count.to_string()),
-        )
-        .size(10.5)
-        .color(t.text_dim),
-    );
-    ui.data_mut(|d| d.insert_temp(id, st));
 }
 
 /// What a grid shows: the characters, their columns, and the one texture they are drawn into.
@@ -340,7 +242,6 @@ pub fn grid(
 
 /// The same grid as a framework component in a framework scroll area, for the panels that show the framework: the
 /// character clicked, and how many are shown. The Bullets page of the paragraph style dialog uses it too.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn framework_grid(
     ui: &mut egui::Ui,
     language: &str,
@@ -370,7 +271,6 @@ pub(crate) fn framework_grid(
 /// The glyph grid as a framework component: the characters of a face in one texture with cell borders, a hovered cell
 /// outlined, and the character of the cell clicked as its output. It has no keyboard handling, as the native grid
 /// has none.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod glyph_grid {
     use super::CELL;
     use craft_behavior::{Metrics, PressPhase, Sense};
@@ -508,7 +408,7 @@ mod tests {
     fn the_grid_leaves_room_for_the_scroll_bar() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         crate::theme::install_fonts(&ctx, "");
         crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::MediumDark));
         let scroll = ctx.global_style().spacing.scroll;
@@ -544,7 +444,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod framework_actions_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
@@ -621,14 +521,10 @@ mod framework_actions_tests {
         );
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Rig> {
+    fn harness(mut app: DesignApp) -> Harness<'static, Rig> {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "");
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(900.0, 600.0)).build_ui_state(
@@ -728,8 +624,8 @@ mod framework_actions_tests {
         panic!("natural Tab could not reach actual {role:?} {name:?}");
     }
     fn query(h: &mut Harness<'_, Rig>, text: &str) {
-        let name = h.state().app.framework_installed.then(|| label(h, "Search: character or U+code"));
-        tab_to(h, egui::accesskit::Role::TextInput, name.as_deref());
+        let name = label(h, "Search: character or U+code");
+        tab_to(h, egui::accesskit::Role::TextInput, Some(&name));
         key_mod(h, Key::A, Modifiers::COMMAND);
         event(h, Event::Text(text.to_owned()));
         steps(h, 2);
@@ -832,7 +728,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_default_and_cursor_font_style_pick_cancel_keep_document_and_natural_focus() {
         let (app, _, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
@@ -876,7 +772,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_real_family_pick_preserves_query_and_family_style_fallback_without_document_edits() {
         let (app, _, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         query(&mut h, "é");
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
@@ -906,7 +802,7 @@ mod framework_actions_tests {
         let family = "Glyphs Missing Saved Family";
         assert!(super::super::fonts(&app).styles(family).is_empty());
         app.run("type.char", json!({"attrs":{"fontFamily":family,"fontStyle":"Regular"}})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let name = label(&h, "Font Style");
@@ -925,7 +821,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_live_literal_unicode_code_and_no_match_queries_preserve_plain_escape_and_history() {
         let (app, sid, other) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let first = story(&mut h, &sid);
         let second = story(&mut h, &other);
@@ -983,7 +879,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_query_is_unbounded_and_browsing_never_inserts_into_the_editor() {
         let (app, _, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
@@ -1002,7 +898,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_real_atlas_hit_and_recent_pointer_keyboard_keep_exact_raw_replacement_and_undo() {
         let (app, sid, other) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
@@ -1046,7 +942,7 @@ mod framework_actions_tests {
             if c == ' ' {
                 app.run("text.select", json!({"story":sid,"anchor":5,"focus":5})).unwrap();
             }
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = h.state().app.session.active().unwrap().doc.clone();
             let history = undo_len(&h);
             let start = h.state().app.session.journal.len();
@@ -1068,7 +964,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_success_only_recent_dedup_order_cap_and_real_refusal_preserve_history() {
         let (app, sid, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let start = h.state().app.session.journal.len();
         for c in 'A'..='M' {
             grid_pick(&mut h, c);
@@ -1106,7 +1002,7 @@ mod framework_actions_tests {
         for transition in ["range", "story", "cell", "document", "absent"] {
             let (mut app, sid, other) = text_app();
             let table = if transition == "cell" { Some(app.run("table.insert", json!({"rows":1,"cols":2})).unwrap()["table"].clone()) } else { None };
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             grid_pick(&mut h, 'A');
             assert_eq!(panel_state(&h).recent, ['A']);
             let pos = recent_at(&h, 'A');
@@ -1166,7 +1062,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_held_recent_slot_cannot_follow_real_keyboard_mru_reassignment() {
         let (app, sid, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         grid_pick(&mut h, 'A');
         grid_pick(&mut h, 'B');
         assert_eq!(panel_state(&h).recent, ['B', 'A']);
@@ -1199,7 +1095,7 @@ mod framework_actions_tests {
         for language in ["de", "ar"] {
             let (mut app, sid, _) = text_app();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let name = label(&h, "Font Style");
             assert_ne!(name, "Font Style");
             let style = component(&h, "Select", &name);
@@ -1232,36 +1128,6 @@ mod framework_actions_tests {
     }
 
     #[test]
-    fn uninstalled_full_parent_retains_real_style_query_grid_recent_payloads_and_undo() {
-        let (app, sid, _) = text_app();
-        let mut h = harness(app, false);
-        assert!(!h.state().app.framework_installed);
-        assert!(!h.state().recorded.as_ref().is_some_and(|r| r.elements.iter().any(|e| matches!(e.component, "Select" | "TextField" | "Button"))));
-        let name = label(&h, "Font Style");
-        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.label().as_deref() == Some(name.as_str())).rect().center();
-        let before = h.state().app.session.active().unwrap().doc.clone();
-        let history = undo_len(&h);
-        click_at(&mut h, pos);
-        let pos = h.get_by_label("Bold").rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(panel_state(&h).style, "Bold");
-        assert_eq!(undo_len(&h), history);
-        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
-        let start = h.state().app.session.journal.len();
-        grid_pick(&mut h, 'A');
-        assert_eq!(calls(&h, start), [raw('A')]);
-        assert_eq!(story(&mut h, &sid), "Afirst row\nsecond row");
-        undo(&mut h);
-        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
-        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("A")).rect().center();
-        let start = h.state().app.session.journal.len();
-        click_at(&mut h, pos);
-        assert_eq!(calls(&h, start), [raw('A')]);
-        assert_eq!(story(&mut h, &sid), "Afirst row\nsecond row");
-        undo(&mut h);
-        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
-    }
-    #[test]
     fn installed_default_without_text_and_real_nondefault_cursor_font_initialize_without_edits() {
         for text_cursor in [false, true] {
             let (mut app, _, _) = text_app();
@@ -1272,7 +1138,7 @@ mod framework_actions_tests {
             }
             let before = app.session.active().unwrap().doc.clone();
             let history = app.session.active().unwrap().history.undo.len();
-            let h = harness(app, true);
+            let h = harness(app);
             let st = panel_state(&h);
             assert_eq!(st.family, if text_cursor { "Source Sans 3" } else { designcraft_fonts::DEFAULT_FAMILY });
             assert_eq!(st.style, if text_cursor { "Italic" } else { "Regular" });
@@ -1307,7 +1173,7 @@ mod framework_actions_tests {
     fn installed_plain_sdk_query_keeps_each_live_edit_and_actual_focus_until_escape_then_fresh_refocus() {
         let (mut app, sid, other) = text_app();
         app.run("text.select", json!({"story":sid,"anchor":2,"focus":7})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let target = query_target(&h);
         let history = undo_len(&h);
@@ -1358,7 +1224,7 @@ mod framework_actions_tests {
     fn installed_plain_sdk_query_real_pointer_clean_escape_and_enter_preserve_document_and_other_story() {
         let (mut app, sid, other) = text_app();
         app.run("text.select", json!({"story":other,"anchor":1,"focus":4})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let target = query_target(&h);
         let history = undo_len(&h);
@@ -1400,7 +1266,7 @@ mod framework_actions_tests {
         for language in ["", "de", "ar"] {
             let (mut app, _, _) = text_app();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = h.state().app.session.active().unwrap().doc.clone();
             let target = query_target(&h);
             let history = undo_len(&h);

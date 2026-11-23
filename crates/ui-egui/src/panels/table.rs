@@ -1,38 +1,9 @@
 //! The Table panel: row/column counts, row height, column width, cell text alignment and insets,
 //! merge/unmerge — for the table at the text insertion point or the selected cells.
 
-use designcraft_geom::Unit;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::DesignApp;
-use crate::theme::Tokens;
-use crate::widgets::{caption, divider, measure, number};
-
-/// The fallback's actions: egui's controls, for the browser and an uninstalled runtime. The desktop's are in
-/// [`framework`].
-struct Actions;
-
-impl Actions {
-    fn new(_app: &DesignApp, _info: &Value) -> Self {
-        Actions
-    }
-
-    fn button(
-        &self,
-        ui: &mut egui::Ui,
-        _key: &'static str,
-        _label: &str,
-        _state: (bool, bool),
-        _tooltip: Option<&str>,
-        legacy: impl FnOnce(&mut egui::Ui) -> egui::Response,
-    ) -> bool {
-        legacy(ui).clicked()
-    }
-
-    fn check(&self, ui: &mut egui::Ui, _key: &'static str, label: &str, value: &mut bool) -> bool {
-        ui.checkbox(value, crate::rtl::widget(ui, label)).changed()
-    }
-}
 
 // TABLE_STYLE_CONTROLS_BEGIN
 /// A choice belongs to the actual inclusive cell range, never the row's ordinal or current focus.
@@ -62,43 +33,25 @@ fn table_committed_choice(
     current: &str,
     width: f32,
 ) -> Option<String> {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
     let (id, valid) = table_control_identity(app, ui, info, key, choices, current);
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-        let entries: Vec<_> = choices.iter().map(|(value, label)| Entry::new(value.clone(), label.clone())).collect();
-        // An orphaned current name is only a placeholder, not an invented enabled catalog entry.
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::hover());
-        return craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current.to_owned()), &entries)
-            .id(id)
-            .enabled(valid && !entries.is_empty())
-            .size(craft_theme::ControlSize::Sm)
-            .placeholder(current.to_owned())
-            .show_at(ui, rect)
-            .events
-            .committed()
-            .cloned()
-            .filter(|value| choices.iter().any(|(actual, _)| actual == value));
-    }
-    let mut committed = None;
-    ui.add_enabled_ui(valid && !choices.is_empty(), |ui| {
-        let selected = choices.iter().find(|(value, _)| value == current).map_or(current, |(_, label)| label.as_str());
-        let combo = craft_ui_legacy::ComboBox::from_id_salt(id).selected_text(crate::rtl::widget(ui, selected)).width(width).show_ui(ui, |ui| {
-            for (value, label) in choices {
-                if ui.selectable_label(value == current, crate::rtl::widget(ui, label)).clicked() {
-                    committed = Some(value.clone());
-                }
-            }
-        });
-        let _ = crate::widgets::name_combo(combo, label);
-    });
-    committed
+    let entries: Vec<_> = choices.iter().map(|(value, label)| Entry::new(value.clone(), label.clone())).collect();
+    // An orphaned current name is only a placeholder, not an invented enabled catalog entry.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::hover());
+    craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current.to_owned()), &entries)
+        .id(id)
+        .enabled(valid && !entries.is_empty())
+        .size(craft_theme::ControlSize::Sm)
+        .placeholder(current.to_owned())
+        .show_at(ui, rect)
+        .events
+        .committed()
+        .cloned()
+        .filter(|value| choices.iter().any(|(actual, _)| actual == value))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
 struct TableStylePlus;
-#[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for TableStylePlus {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
         crate::icons::paint(painter, rect, "plus", color);
@@ -106,293 +59,28 @@ impl craft_ui_widgets::primitives::Glyph for TableStylePlus {
 }
 
 fn table_new_style(app: &DesignApp, ui: &mut egui::Ui, info: &Value, kind: &str, choices: &[(String, String)], current: &str, label: &str) -> bool {
+    use craft_ui_widgets::contract::{Props as _, Show as _};
     let (id, valid) = table_control_identity(app, ui, info, &format!("new-{kind}"), choices, current);
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-        return craft_ui_widgets::buttons::IconButton::new(craft_ui_widgets::primitives::IconSpec::glyph(&TableStylePlus))
-            .id(id)
-            .label(label.to_owned())
-            .tooltip(label.to_owned())
-            .enabled(valid)
-            .size(craft_theme::ControlSize::Sm)
-            .show_at(ui, rect)
-            .clicked();
-    }
-    ui.push_id(id, |ui| ui.add_enabled_ui(valid, |ui| crate::icons::button(ui, "plus", 20.0, false, label).clicked()).inner).inner
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    craft_ui_widgets::buttons::IconButton::new(craft_ui_widgets::primitives::IconSpec::glyph(&TableStylePlus))
+        .id(id)
+        .label(label.to_owned())
+        .tooltip(label.to_owned())
+        .enabled(valid)
+        .size(craft_theme::ControlSize::Sm)
+        .show_at(ui, rect)
+        .clicked()
 }
 // TABLE_STYLE_CONTROLS_END
 
-/// The Table panel: the framework's controls on the desktop, egui's in the browser and before the runtime is installed.
+/// The Table panel on the craft framework.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::show(app, ui);
-        return;
-    }
-    show_fallback(app, ui);
+    framework::show(app, ui);
 }
 
-fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let Ok(info) = app.session.execute("table.get", &json!({})) else {
-        ui.label(crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "Place the insertion point in a table, or create one.")).color(t.text_dim),
-        ));
-        ui.add_space(6.0);
-        let actions = Actions::new(app, &Value::Null);
-        let label = crate::i18n::tr(&app.ui.language, "Create Table…");
-        if actions.button(ui, "create", label, (true, false), None, |ui| ui.button(crate::rtl::widget(ui, label))) {
-            let _ = app.run("app.insertTableDialog", json!({}));
-        }
-        return;
-    };
-    let actions = Actions::new(app, &info);
-    let unit = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
-    let rows = info["rows"].as_array().cloned().unwrap_or_default();
-    let cols = info["columns"].as_array().cloned().unwrap_or_default();
-    let range = info["range"].clone();
-    let (r0, c0) = (range["r0"].as_u64().unwrap_or(0) as usize, range["c0"].as_u64().unwrap_or(0) as usize);
-    let sid = info["story"].clone();
-    let tid = info["table"].clone();
-    let cell = info["cells"].as_array().and_then(|cs| cs.iter().find(|c| c["row"] == r0 && c["col"] == c0)).cloned().unwrap_or(Value::Null);
-    let run = |app: &mut DesignApp, id: &str, p: Value| {
-        let _ = app.run(id, p);
-    };
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Cell Type"));
-        if actions.button(ui, "graphic-cell", crate::i18n::tr(&app.ui.language, "Graphic…"), (true, false), None, |ui| {
-            ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Graphic…")))
-        }) && let Err(e) = app.run("app.graphicCell", json!({}))
-        {
-            app.status_error("Table", e);
-        }
-        if actions.button(ui, "text-cell", crate::i18n::tr(&app.ui.language, "Text"), (true, false), None, |ui| {
-            ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Text")))
-        }) {
-            let _ = app.run("table.textCell", json!({}));
-        }
-    });
-    // Move the target row / column (InDesign drags them).
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Move"));
-        let (nr, nc) = (rows.len(), cols.len());
-        for (label, id, from, to, ok) in [
-            ("Row ↑", "table.moveRow", r0, r0.saturating_sub(1), r0 > 0),
-            ("Row ↓", "table.moveRow", r0, r0 + 1, r0 + 1 < nr),
-            ("Col ←", "table.moveColumn", c0, c0.saturating_sub(1), c0 > 0),
-            ("Col →", "table.moveColumn", c0, c0 + 1, c0 + 1 < nc),
-        ] {
-            if actions.button(ui, label, crate::i18n::tr(&app.ui.language, label), (ok, false), None, |ui| {
-                ui.add_enabled(ok, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).small())
-            }) && let Err(e) = app.run(id, json!({"from": from, "to": to}))
-            {
-                app.status_error("Table", e);
-            }
-        }
-    });
-    // Table and cell styles: pick to apply, + to save the current look as a new style.
-    if let Some(st) = app.session.active() {
-        let styles = &st.doc.styles;
-        let tnames: Vec<String> = styles.table.iter().map(|s| s.name.clone()).collect();
-        let cnames: Vec<String> = styles.cell.iter().map(|s| s.name.clone()).collect();
-        let tcur = info["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::BASIC_TABLE).to_string();
-        let ccur = cell["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::NO_CELL_STYLE).to_string();
-        for (label, kind, names, cur) in [("Table Style", "table", tnames, tcur), ("Cell Style", "cell", cnames, ccur)] {
-            ui.horizontal(|ui| {
-                let label = crate::i18n::tr(&app.ui.language, label).to_owned();
-                caption(ui, &label);
-                let choices: Vec<_> = names.into_iter().map(|name| (name.clone(), name)).collect();
-                if let Some(name) = table_committed_choice(app, ui, &info, kind, &label, &choices, &cur, 130.0) {
-                    run(
-                        app,
-                        &format!("style.{kind}.apply"),
-                        json!({"name": name, "story": sid, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]}),
-                    );
-                }
-                let new_label = crate::i18n::tr(&app.ui.language, if kind == "cell" { "New Cell Style" } else { "New Table Style" }).to_owned();
-                if table_new_style(app, ui, &info, kind, &choices, &cur, &new_label) {
-                    if kind == "cell" {
-                        run(app, "style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true}));
-                    } else {
-                        run(app, "style.table.create", json!({"name": "Table Style 1"}));
-                    }
-                }
-            });
-        }
-    }
-    egui::Grid::new("table_panel").num_columns(4).spacing([6.0, 6.0]).show(ui, |ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Rows"));
-        if let Some(v) = number(ui, "tp_rows", Some(rows.len() as f64), "", 52.0, 0) {
-            let n = v.round().max(1.0) as usize;
-            if n > rows.len() {
-                run(
-                    app,
-                    "table.insertRow",
-                    json!({"story": sid, "table": tid, "rows": [rows.len() - 1, rows.len() - 1], "where": "below", "count": n - rows.len()}),
-                );
-            } else if n < rows.len() {
-                run(app, "table.deleteRow", json!({"story": sid, "table": tid, "rows": [n, rows.len() - 1]}));
-            }
-        }
-        caption(ui, crate::i18n::tr_context(&app.ui.language, "Columns", "table"));
-        if let Some(v) = number(ui, "tp_cols", Some(cols.len() as f64), "", 52.0, 0) {
-            let n = v.round().max(1.0) as usize;
-            if n > cols.len() {
-                run(
-                    app,
-                    "table.insertColumn",
-                    json!({"story": sid, "table": tid, "cols": [cols.len() - 1, cols.len() - 1], "where": "right", "count": n - cols.len()}),
-                );
-            } else if n < cols.len() {
-                run(app, "table.deleteColumn", json!({"story": sid, "table": tid, "cols": [n, cols.len() - 1]}));
-            }
-        }
-        ui.end_row();
-        let row = rows.get(r0).cloned().unwrap_or(Value::Null);
-        let exactly = row["mode"] == "exactly";
-        caption(ui, crate::i18n::tr(&app.ui.language, "Row Height"));
-        let modes: Vec<_> = [("At Least", "atLeast"), ("Exactly", "exactly")]
-            .into_iter()
-            .map(|(label, mode)| (mode.to_owned(), crate::i18n::tr(&app.ui.language, label).to_owned()))
-            .collect();
-        let row_label = crate::i18n::tr(&app.ui.language, "Row Height").to_owned();
-        if let Some(mode) =
-            table_committed_choice(app, ui, &info, "row-height-mode", &row_label, &modes, if exactly { "exactly" } else { "atLeast" }, 70.0)
-        {
-            run(app, "table.setRowHeight", json!({"mode": mode}));
-        }
-        if let Some(h) = measure(ui, "tp_rowh", row["height"].as_f64(), unit, 64.0) {
-            run(app, "table.setRowHeight", json!({"height": h}));
-        }
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Column Width"));
-        ui.label("");
-        if let Some(w) = measure(ui, "tp_colw", cols.get(c0).and_then(|c| c["width"].as_f64()), unit, 64.0) {
-            run(app, "table.setColumnWidth", json!({"width": w}));
-        }
-        ui.end_row();
-    });
-    if actions.button(
-        ui,
-        "distribute-rows",
-        crate::i18n::tr(&app.ui.language, "Distribute Rows Evenly"),
-        (true, false),
-        Some(crate::i18n::tr(&app.ui.language, "Equal fixed heights for the selected rows; cell text may become overset.")),
-        |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Distribute Rows Evenly")))
-                .on_hover_text(crate::i18n::tr(&app.ui.language, "Equal fixed heights for the selected rows; cell text may become overset."))
-        },
-    ) && let Err(e) = app.run("table.distributeRows", json!({}))
-    {
-        app.status_error("Table", e);
-    }
-    divider(ui);
-    caption(ui, crate::i18n::tr(&app.ui.language, "Cell Text"));
-    ui.horizontal(|ui| {
-        for (label, vj) in [("Top", "top"), ("Center", "center"), ("Bottom", "bottom"), ("Justify", "justify")] {
-            if actions.button(ui, vj, crate::i18n::tr(&app.ui.language, label), (true, cell["vj"] == vj), None, |ui| {
-                ui.selectable_label(cell["vj"] == vj, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label)))
-            }) {
-                run(app, "table.setCell", json!({"vj": vj}));
-            }
-        }
-    });
-    ui.add_space(4.0);
-    let insets: Vec<f64> = cell["insets"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_else(|| vec![4.0; 4]);
-    egui::Grid::new("table_insets").num_columns(4).spacing([6.0, 6.0]).show(ui, |ui| {
-        let labels = ["Top", "Left", "Bottom", "Right"];
-        for (i, l) in labels.iter().enumerate() {
-            caption(ui, crate::i18n::tr(&app.ui.language, l));
-            if let Some(v) = measure(ui, &format!("tp_inset{i}"), insets.get(i).copied(), unit, 56.0) {
-                let mut n = insets.clone();
-                n.resize(4, 4.0);
-                n[i] = v.max(0.0);
-                run(app, "table.setCell", json!({"insets": n}));
-            }
-            if i % 2 == 1 {
-                ui.end_row();
-            }
-        }
-    });
-    divider(ui);
-    ui.horizontal(|ui| {
-        if actions.button(ui, "merge", crate::i18n::tr(&app.ui.language, "Merge Cells"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Merge Cells")))
-        }) {
-            run(app, "table.merge", json!({}));
-        }
-        if actions.button(ui, "unmerge", crate::i18n::tr(&app.ui.language, "Unmerge"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Unmerge")))
-        }) {
-            run(app, "table.unmerge", json!({}));
-        }
-    });
-    ui.horizontal(|ui| {
-        if actions.button(ui, "insert-row", crate::i18n::tr(&app.ui.language, "Insert Row"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Insert Row")))
-        }) {
-            run(app, "table.insertRowBelow", json!({}));
-        }
-        if actions.button(ui, "insert-column", crate::i18n::tr(&app.ui.language, "Insert Column"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Insert Column")))
-        }) {
-            run(app, "table.insertColumnRight", json!({}));
-        }
-    });
-    ui.horizontal(|ui| {
-        if actions.button(ui, "delete-row", crate::i18n::tr(&app.ui.language, "Delete Row"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Row")))
-        }) {
-            run(app, "table.deleteRow", json!({}));
-        }
-        if actions.button(ui, "delete-column", crate::i18n::tr(&app.ui.language, "Delete Column"), (true, false), None, |ui| {
-            ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Column")))
-        }) {
-            run(app, "table.deleteColumn", json!({}));
-        }
-    });
-    divider(ui);
-    // Column order: right to left puts the first column on the right.
-    let rtl = info["options"]["direction"] == "rightToLeft";
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Direction"));
-        for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
-            if actions.button(ui, dir, crate::i18n::tr(&app.ui.language, label), (true, on), None, |ui| {
-                ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label)))
-            }) && !on
-            {
-                run(app, "table.options", json!({"direction": dir}));
-            }
-        }
-    });
-    let mut alt = !info["options"]["altRows"].is_null();
-    if actions.check(ui, "alternating-rows", crate::i18n::tr(&app.ui.language, "Alternating Row Fills"), &mut alt) {
-        let v = if alt { json!({"first": 1, "firstColor": "[Black]", "firstTint": 0.1, "next": 1, "nextColor": "[None]"}) } else { Value::Null };
-        run(app, "table.options", json!({"altRows": v}));
-    }
-    let mut rep = info["options"]["repeatHeader"].as_bool().unwrap_or(true);
-    if actions.check(ui, "repeat-header", crate::i18n::tr(&app.ui.language, "Repeat Header Rows"), &mut rep) {
-        run(app, "table.options", json!({"repeatHeader": rep}));
-    }
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Header Rows"));
-        if let Some(v) = number(ui, "tp_hdr", info["headerRows"].as_f64(), "", 40.0, 0) {
-            run(app, "table.options", json!({"headerRows": v.max(0.0) as u64}));
-        }
-        caption(ui, crate::i18n::tr(&app.ui.language, "Footer Rows"));
-        if let Some(v) = number(ui, "tp_ftr", info["footerRows"].as_f64(), "", 40.0, 0) {
-            run(app, "table.options", json!({"footerRows": v.max(0.0) as u64}));
-        }
-    });
-}
-
-/// The Table panel on the craft framework: the same commands and payloads as the fallback, run once the panel is
-/// drawn. Every control's id carries the table's identity (document uid and epoch, story and table), so a press held
+/// The Table panel's controls: the commands and payloads, run once the panel is drawn. Every control's id carries
+/// the table's identity (document uid and epoch, story and table), so a press held
 /// over one table's control never acts on another's.
-#[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::{table_committed_choice, table_new_style};
     use crate::DesignApp;
@@ -664,6 +352,7 @@ mod framework {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod installed_action_tests {
     use super::*;
+    use serde_json::json;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::Harness;
@@ -703,14 +392,10 @@ mod installed_action_tests {
         (**app.session.active().unwrap().doc.story(story).unwrap().tables.get(&id).unwrap()).clone()
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, State> {
+    fn harness(mut app: DesignApp) -> Harness<'static, State> {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "");
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(640.0, 1000.0)).build_ui_state(
             |ui, state: &mut State| {
@@ -809,7 +494,7 @@ mod installed_action_tests {
 
     #[test]
     fn installed_empty_table_panel_opens_create_without_editing_and_refuses_missing_text() {
-        let mut h = harness(text_app(), true);
+        let mut h = harness(text_app());
         let before = h.state().app.session.active().unwrap().doc.clone();
         let undo = undo_len(&h);
         let journal = h.state().app.session.journal.len();
@@ -822,7 +507,7 @@ mod installed_action_tests {
 
         let mut app = text_app();
         app.run("selection.set", json!({"ids": []})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let undo = undo_len(&h);
         click(&mut h, "Button", "Create Table…");
@@ -839,7 +524,7 @@ mod installed_action_tests {
         let other = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
         select(&mut app, &made, [0, 0], [0, 0]);
         let untouched = table(&app, &other);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = table(&h.state().app, &made);
         let doc = h.state().app.session.active().unwrap().doc.clone();
         let revision = h.state().app.session.active().unwrap().revision;
@@ -895,7 +580,7 @@ mod installed_action_tests {
             if command == "table.unmerge" {
                 app.run("table.merge", json!({})).unwrap();
             }
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = table(&h.state().app, &made);
             let undo = undo_len(&h);
             let journal = h.state().app.session.journal.len();
@@ -920,7 +605,7 @@ mod installed_action_tests {
         }
         select(&mut app, &made, [0, 1], [0, 1]);
         let selected = app.session.active().unwrap().selection.cells;
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = table(&h.state().app, &made);
         let undo = undo_len(&h);
         let journal = h.state().app.session.journal.len();
@@ -948,7 +633,7 @@ mod installed_action_tests {
     #[test]
     fn installed_direction_noop_and_option_toggles_keep_identity_payloads_and_undo() {
         let (app, made) = table_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = table(&h.state().app, &made);
         let doc = h.state().app.session.active().unwrap().doc.clone();
         let undo = undo_len(&h);
@@ -992,7 +677,7 @@ mod installed_action_tests {
         let (mut app, made) = table_app();
         let png = designcraft_render::Rendered { width: 2, height: 2, pixels: [255, 0, 0, 255].repeat(4) }.to_png();
         app.run("table.placeGraphic", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "cell.png"})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = table(&h.state().app, &made);
         assert!(before.cell(0, 0).unwrap().graphic.is_some());
         let undo = undo_len(&h);
@@ -1018,7 +703,7 @@ mod installed_action_tests {
         let (mut app, made) = table_app();
         app.ui.language = "de".into();
         select(&mut app, &made, [0, 1], [0, 1]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = table(&h.state().app, &made);
         let journal = h.state().app.session.journal.len();
         click(&mut h, "Button", "Bottom");
@@ -1039,7 +724,7 @@ mod installed_action_tests {
         app.run("table.setCell", json!({"row": 0, "col": 0, "text": "B first"})).unwrap();
         app.run("table.setCell", json!({"row": 1, "col": 0, "text": "B second"})).unwrap();
         select(&mut app, &first, [0, 0], [0, 0]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let first_before = table(&h.state().app, &first);
         let second_before = table(&h.state().app, &second);
         let journal = h.state().app.session.journal.len();
@@ -1077,28 +762,14 @@ mod installed_action_tests {
         assert_eq!(table(&h.state().app, &first), first_before);
         assert_eq!(undo_len(&h), undo + 1);
     }
-
-    #[test]
-    fn uninstalled_table_panel_keeps_existing_legacy_actions_and_boundary_disable() {
-        let (app, made) = table_app();
-        let mut h = harness(app, false);
-        assert!(!h.state().app.framework_installed);
-        assert!(h.get_by_label("Row ↑").accesskit_node().is_disabled());
-        let before = table(&h.state().app, &made);
-        let journal = h.state().app.session.journal.len();
-        let rect = h.get_by_label("Insert Row").rect();
-        click_at(&mut h, rect.center());
-        assert_eq!(calls(&h, journal, "table.insertRowBelow"), [json!({})]);
-        assert_eq!(table(&h.state().app, &made).nrows(), before.nrows() + 1);
-        undo_once(&mut h);
-        assert_eq!(table(&h.state().app, &made), before);
-    }
 }
 
 // TABLE_STYLE_TESTS_BEGIN
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod style_control_tests {
     use super::*;
+    use crate::theme::Tokens;
+    use serde_json::json;
     use designcraft_doc::{Document, Selection, StoryId, Table};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::{
@@ -1199,13 +870,9 @@ mod style_control_tests {
         assert_eq!(st.selection, before.selection);
         assert!(st.is_dirty());
     }
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(680.0, 1100.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
@@ -1314,7 +981,7 @@ mod style_control_tests {
     fn ui_table_cell_style_natural_preview_escape_then_commit_exact_inclusive_range_and_undo() {
         let (app, made, other) = fixture();
         let untouched = table(&app, &other);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Cell Style");
         let before = quiet(h.state());
         let journal = h.state().session.journal.clone();
@@ -1352,7 +1019,7 @@ mod style_control_tests {
     fn ui_table_table_style_pointer_uses_complete_catalog_name_and_exact_table_payload() {
         let (app, made, other) = fixture();
         let untouched = table(&app, &other);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Table Style");
         let before = quiet(h.state());
         let journal = h.state().session.journal.len();
@@ -1374,7 +1041,7 @@ mod style_control_tests {
         for cell in [false, true] {
             let (app, made, other) = fixture();
             let untouched = table(&app, &other);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let (label, command, name) = if cell {
                 ("New Cell Style", "style.cell.create", "Cell Style 1")
             } else {
@@ -1421,7 +1088,7 @@ mod style_control_tests {
         let (mut app, _, _) = fixture();
         app.run("style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true})).unwrap();
         app.run("style.table.create", json!({"name": "Table Style 1"})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         for (label, command) in [("New Cell Style", "style.cell.create"), ("New Table Style", "style.table.create")] {
             let before = quiet(h.state());
             let journal = h.state().session.journal.len();
@@ -1455,7 +1122,7 @@ mod style_control_tests {
         for keyboard in [false, true] {
             let (app, made, other) = fixture();
             let untouched = table(&app, &other);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Row Height");
             let before = quiet(h.state());
             let journal = h.state().session.journal.len();
@@ -1497,7 +1164,7 @@ mod style_control_tests {
     fn ui_table_open_style_choice_drops_changed_range_table_catalog_or_recreated_document_and_recovers() {
         for change in ["range", "table", "reorder", "remove", "replace"] {
             let (app, made, other) = fixture();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             tab_to(&mut h, egui::accesskit::Role::ComboBox, "Cell Style");
             let retired_owner = sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Cell Style").id;
             key(&mut h, Key::Enter);
@@ -1624,7 +1291,7 @@ mod style_control_tests {
     fn ui_table_held_plus_does_not_follow_range_document_or_absence_and_fresh_click_recovers() {
         for change in ["range", "switch", "close", "delete"] {
             let (app, made, _) = fixture();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let pos = h.get_by_role_and_label(egui::accesskit::Role::Button, "New Cell Style").rect().center();
             frame(&mut h, Some(Event::PointerMoved(pos)));
             pointer(&mut h, pos, true);
@@ -1673,7 +1340,7 @@ mod style_control_tests {
     }
 
     #[test]
-    fn ui_table_removed_applied_style_is_not_an_enabled_orphan_and_uninstalled_controls_work() {
+    fn ui_table_removed_applied_style_is_not_an_enabled_orphan() {
         let (mut app, made, _) = fixture();
         app.run("style.cell.apply", apply_payload(CELL_STYLE, &made, [1, 2], [1, 2])).unwrap();
         app.session
@@ -1682,7 +1349,7 @@ mod style_control_tests {
                 Ok(())
             })
             .unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = quiet(h.state());
         let journal = h.state().session.journal.len();
         click(&mut h, egui::accesskit::Role::ComboBox, "Cell Style");
@@ -1692,32 +1359,15 @@ mod style_control_tests {
         key(&mut h, Key::Escape);
         assert_quiet(h.state(), &before);
         assert!(calls(h.state(), journal, "style.cell.apply").is_empty());
-        let (app, made, _) = fixture();
-        let mut h = harness(app, false);
-        assert!(!h.state().framework_installed);
-        let before = quiet(h.state());
-        let journal = h.state().session.journal.len();
-        click(&mut h, egui::accesskit::Role::ComboBox, "Table Style");
-        let pos = h.get_by_label(TABLE_STYLE).rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(calls(h.state(), journal, "style.table.apply"), [apply_payload(TABLE_STYLE, &made, [1, 2], [1, 2])]);
-        assert_one_edit(h.state(), &before);
-        undo(&mut h, &before);
-        click(&mut h, egui::accesskit::Role::ComboBox, "Row Height");
-        let pos = h.get_by_label("Exactly").rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(calls(h.state(), journal, "table.setRowHeight"), [json!({"mode": "exactly"})]);
     }
 
     #[test]
     fn ui_table_whole_app_parent_uses_real_style_select_and_exact_engine_target() {
-        let (mut app, made, other) = fixture();
+        let (app, made, other) = fixture();
         let untouched = table(&app, &other);
-        app.framework_opacity = true;
         let mut h = crate::test_window::open(app, egui::vec2(1400.0, 1000.0));
         let ctx = h.ctx.clone();
         h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
         h.state_mut().app.run("window.panel", json!({"panel": "table"})).unwrap();
         fn step(h: &mut Harness<'_, crate::test_window::Window>, event: Option<Event>) {
             let mut raw = std::mem::take(h.input_mut());
@@ -1770,7 +1420,7 @@ mod style_control_tests {
             assert_eq!(mixed.cell(1, 2).unwrap().style, CELL_STYLE, "another selected cell really has a different style");
             assert_eq!(mixed.cell(1, 1).unwrap().insets, [42.0, 43.0, 44.0, 45.0]);
             let untouched = table(&app, &other);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Cell Style");
             let before = quiet(h.state());
             let journal = h.state().session.journal.len();
@@ -1836,7 +1486,7 @@ mod style_control_tests {
             assert_eq!(overridden.style, TABLE_STYLE, "the actual table still displays its named style");
             assert_eq!(overridden.options.space_before, 41.0);
             let untouched = table(&app, &other);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             sdk(&h, "Select", egui::accesskit::Role::ComboBox, "Table Style");
             let before = quiet(h.state());
             let journal = h.state().session.journal.len();

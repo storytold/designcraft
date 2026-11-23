@@ -305,12 +305,10 @@ fn column_on_screen(app: &DesignApp, frame: u64, col: [f64; 4]) -> Option<(Pos2,
 }
 
 // This panel's action faces only. The shared style-dialog alignment/text/ruler helpers above
-// remain unchanged; their separate migration is not implied by this installed-native branch.
-#[cfg(not(target_arch = "wasm32"))]
+// remain unchanged; their separate migration is not implied by this panel's framework faces.
 #[derive(craft_ui::contract::MemoProps)]
 pub(crate) struct TabGlyph(pub(crate) &'static str);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for TabGlyph {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: Rect, color: Color32, _mirrored: bool) {
         // The app's existing tab-foot, alignment-dot, magnet and menu artwork; no new provider.
@@ -318,103 +316,70 @@ impl craft_ui_widgets::primitives::Glyph for TabGlyph {
     }
 }
 
-fn panel_alignments(ui: &mut Ui, lang: &str, framework: bool, target: &Option<String>, current: TabAlign) -> Option<TabAlign> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::IconSpec;
+fn panel_alignments(ui: &mut Ui, lang: &str, target: &Option<String>, current: TabAlign) -> Option<TabAlign> {
+    use craft_ui_widgets::buttons::IconButton;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::primitives::IconSpec;
 
-        let mut picked = None;
-        for (align, label) in ALIGNS {
-            let label = crate::i18n::tr(lang, label);
-            if IconButton::new(IconSpec::glyph(&TabGlyph(tab_icon(align))))
-                .id_salt(("tabs-alignment", target, tab_icon(align)))
-                .label(label.to_owned())
-                .tooltip(label.to_owned())
-                .selected(align == current)
-                .show(ui)
-                .clicked()
-            {
-                picked = Some(align);
-            }
-        }
-        return picked;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, target);
-    align_buttons(ui, lang, current)
-}
-
-fn panel_snap(ui: &mut Ui, framework: bool, target: &Option<String>, label: &str, enabled: bool) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::IconSpec;
-
-        return IconButton::new(IconSpec::glyph(&TabGlyph("tab-snap")))
-            .id_salt(("tabs-snap", target))
+    let mut picked = None;
+    for (align, label) in ALIGNS {
+        let label = crate::i18n::tr(lang, label);
+        if IconButton::new(IconSpec::glyph(&TabGlyph(tab_icon(align))))
+            .id_salt(("tabs-alignment", target, tab_icon(align)))
             .label(label.to_owned())
             .tooltip(label.to_owned())
-            .enabled(enabled)
+            .selected(align == current)
             .show(ui)
-            .clicked();
+            .clicked()
+        {
+            picked = Some(align);
+        }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, target);
-    ui.add_enabled_ui(enabled, |ui| crate::icons::button(ui, "tab-snap", 22.0, false, label)).inner.clicked()
+    picked
 }
 
-fn panel_menu(ui: &mut Ui, lang: &str, framework: bool, target: &Option<String>, selected: Option<usize>, cmds: &mut Vec<(&'static str, Value)>) {
-    let tr = |s: &'static str| crate::i18n::tr(lang, s);
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_ui_widgets::contract::{PopupKind, Props as _, Show as _, ShowContainer as _, Trigger};
-        use craft_ui_widgets::menu::{Menu, MenuItem};
-        use craft_ui_widgets::primitives::IconSpec;
+fn panel_snap(ui: &mut Ui, target: &Option<String>, label: &str, enabled: bool) -> bool {
+    use craft_ui_widgets::buttons::IconButton;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::primitives::IconSpec;
 
-        let opener = IconButton::new(IconSpec::glyph(&TabGlyph("menu")))
-            .id_salt(("tabs-menu-opener", target))
-            .label(tr("Tabs").to_owned())
-            .tooltip(tr("Tabs").to_owned())
-            .popup(PopupKind::Menu)
-            .show(ui);
-        let _ = Menu::new(tr("Tabs").to_owned()).id_salt(("tabs-menu", target)).opened_by(&opener, Trigger::Click).show(ui, |ui, _| {
-            for (label, id, needs_stop) in
-                [("Clear All", "type.tabs.clear", false), ("Delete Tab", "type.tabs.remove", true), ("Repeat Tab", "type.tabs.repeat", true)]
-            {
-                if MenuItem::new(tr(label).to_owned()).id_salt(id).enabled(!needs_stop || selected.is_some()).show(ui).ran {
-                    cmds.push((id, selected.map_or(json!({}), |i| json!({"index": i}))));
-                }
-            }
-            if MenuItem::new(tr("Reset Indents").to_owned()).id_salt("type.para").show(ui).ran {
-                cmds.push(("type.para", json!({"attrs": {"leftIndent": 0, "firstLineIndent": 0, "rightIndent": 0}})));
-            }
-        });
-        return;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, target);
-    crate::menus::menu_button(ui, "☰", |ui| {
+    IconButton::new(IconSpec::glyph(&TabGlyph("tab-snap")))
+        .id_salt(("tabs-snap", target))
+        .label(label.to_owned())
+        .tooltip(label.to_owned())
+        .enabled(enabled)
+        .show(ui)
+        .clicked()
+}
+
+fn panel_menu(ui: &mut Ui, lang: &str, target: &Option<String>, selected: Option<usize>, cmds: &mut Vec<(&'static str, Value)>) {
+    use craft_ui_widgets::buttons::IconButton;
+    use craft_ui_widgets::contract::{PopupKind, Props as _, Show as _, ShowContainer as _, Trigger};
+    use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::primitives::IconSpec;
+
+    let tr = |s: &'static str| crate::i18n::tr(lang, s);
+    let opener = IconButton::new(IconSpec::glyph(&TabGlyph("menu")))
+        .id_salt(("tabs-menu-opener", target))
+        .label(tr("Tabs").to_owned())
+        .tooltip(tr("Tabs").to_owned())
+        .popup(PopupKind::Menu)
+        .show(ui);
+    let _ = Menu::new(tr("Tabs").to_owned()).id_salt(("tabs-menu", target)).opened_by(&opener, Trigger::Click).show(ui, |ui, _| {
         for (label, id, needs_stop) in
             [("Clear All", "type.tabs.clear", false), ("Delete Tab", "type.tabs.remove", true), ("Repeat Tab", "type.tabs.repeat", true)]
         {
-            if ui.add_enabled(!needs_stop || selected.is_some(), egui::Button::new(crate::rtl::widget(ui, tr(label)))).clicked() {
+            if MenuItem::new(tr(label).to_owned()).id_salt(id).enabled(!needs_stop || selected.is_some()).show(ui).ran {
                 cmds.push((id, selected.map_or(json!({}), |i| json!({"index": i}))));
-                ui.close();
             }
         }
-        if ui.button(crate::rtl::widget(ui, tr("Reset Indents"))).clicked() {
+        if MenuItem::new(tr("Reset Indents").to_owned()).id_salt("type.para").show(ui).ran {
             cmds.push(("type.para", json!({"attrs": {"leftIndent": 0, "firstLineIndent": 0, "rightIndent": 0}})));
-            ui.close();
         }
     });
 }
 
 /// The X field: a measure in the document's unit, committed with Enter or when the field is left. Points in, points out.
-#[cfg(not(target_arch = "wasm32"))]
 fn measure_points(ui: &mut Ui, label: &str, points: Option<f64>, unit: Unit) -> Option<f64> {
     use crate::dialogs::text_forms::committed_text;
     let shown = points.filter(|v| v.is_finite()).map(|v| designcraft_geom::format_measure(v, unit)).unwrap_or_default();
@@ -424,15 +389,10 @@ fn measure_points(ui: &mut Ui, label: &str, points: Option<f64>, unit: Unit) -> 
 
 /// The Tabs panel. Numeric fields, draft text and the shared ruler remain future migration work.
 pub fn show(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
+    use craft_ui_widgets::runtime::env::{Direction, with_env};
 
-        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
-        with_env(ui, |scope| scope.direction = Some(direction), |ui| show_contents(app, ui));
-        return;
-    }
-    show_contents(app, ui);
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+    with_env(ui, |scope| scope.direction = Some(direction), |ui| show_contents(app, ui));
 }
 
 fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
@@ -478,10 +438,6 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
     let selected = state.selected;
     let sel = selected.and_then(|i| tabs.get(i));
     let current_align = sel.map_or(state.align, |s| s.align);
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
     // Stops have index identity, scoped to the real selected paragraphs and their document.
     // A held action may not follow a different range, stop, story, cell or document.
     // Alignment/leader values are not identity: ordinary edits must keep the same focus stop.
@@ -490,117 +446,62 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
     let mut cmds: Vec<(&'static str, Value)> = Vec::new();
     let mut snap_now = false;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let edit = if framework {
-        use crate::dialogs::framework::style_forms::tab_forms::TabRuler;
-        use crate::dialogs::text_forms::committed_text;
-        use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
-        use craft_ui_widgets::form::Field;
-        use craft_ui_widgets::layout_components::{Row, Stack};
+    use crate::dialogs::framework::style_forms::tab_forms::TabRuler;
+    use crate::dialogs::text_forms::committed_text;
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::form::Field;
+    use craft_ui_widgets::layout_components::{Row, Stack};
 
-        let mut edit = None;
-        let snap_scale = app.ui.tabs_panel.snap;
-        Stack::new().id_salt("tabs_panel").fill_width().show(ui, |ui, _| {
-            Row::new().id_salt("tabs_controls").wrap(true).show(ui, |ui, _| {
-                if let Some(a) = panel_alignments(ui, &lang, true, &target, current_align) {
-                    app.ui.tabs_panel.align = a;
-                    if let Some(i) = selected {
-                        cmds.push(("type.tabs.change", json!({"index": i, "align": a})));
-                    }
-                }
-                Field::new(tr("X:")).id_salt("tabs_x").sizing(Sizing::Content).show(ui, |ui, _| {
-                    if let Some(x) = measure_points(ui, tr("X:"), sel.map(|s| s.position), unit) {
-                        match selected {
-                            Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-                            None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
-                        }
-                    }
-                });
-                Field::new(tr("Leader:")).id_salt("tabs_leader").sizing(Sizing::Content).show(ui, |ui, _| {
-                    let leader = committed_text(ui, "tabs_leader", tr("Leader:"), sel.map_or("", |s| s.leader.as_str()), sel.is_some());
-                    if let (Some(l), Some(i)) = (leader, selected) {
-                        cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
-                    }
-                });
-                Field::new(tr("Align On:")).id_salt("tabs_align_on").sizing(Sizing::Content).show(ui, |ui, _| {
-                    let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
-                    let align_on = committed_text(ui, "tabs_align_on", tr("Align On:"), sel.map_or("", |s| s.align_on.as_str()), char_tab);
-                    if let (Some(c), Some(i)) = (align_on, selected) {
-                        cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
-                    }
-                });
-                if panel_snap(ui, true, &target, tr("Position panel above text frame"), screen.is_some()) {
-                    snap_now = true;
-                }
-                panel_menu(ui, &lang, true, &target, selected, &mut cmds);
-            });
-            let out = TabRuler::new(tr("Tabs"), tabs.clone(), (left, first, right), width, unit, selected)
-                .scale(snap_scale)
-                .id_salt("tabs_ruler")
-                .sizing(Sizing::FillWidth)
-                .show(ui);
-            edit = out.edit;
-        });
-        edit
-    } else {
-        None
-    };
-    #[cfg(target_arch = "wasm32")]
-    let edit = None;
-    if framework {
-        match edit {
-            Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
-            Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
-            Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-            Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
-            Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
-            None => {}
-        }
-    } else {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if let Some(a) = panel_alignments(ui, &lang, framework, &target, current_align) {
+    let mut edit = None;
+    let snap_scale = app.ui.tabs_panel.snap;
+    Stack::new().id_salt("tabs_panel").fill_width().show(ui, |ui, _| {
+        Row::new().id_salt("tabs_controls").wrap(true).show(ui, |ui, _| {
+            if let Some(a) = panel_alignments(ui, &lang, &target, current_align) {
                 app.ui.tabs_panel.align = a;
                 if let Some(i) = selected {
                     cmds.push(("type.tabs.change", json!({"index": i, "align": a})));
                 }
             }
-            ui.add_space(6.0);
-            crate::rtl::label(ui, tr("X:"));
-            if let Some(x) = crate::widgets::measure(ui, "tabs_x", sel.map(|s| s.position), unit, 72.0) {
-                match selected {
-                    Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-                    None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
+            Field::new(tr("X:")).id_salt("tabs_x").sizing(Sizing::Content).show(ui, |ui, _| {
+                if let Some(x) = measure_points(ui, tr("X:"), sel.map(|s| s.position), unit) {
+                    match selected {
+                        Some(i) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+                        None => cmds.push(("type.tabs.add", json!({"position": x, "align": current_align}))),
+                    }
                 }
-            }
-            crate::rtl::label(ui, tr("Leader:"));
-            let leader = text_commit(ui, "leader", sel.map_or("", |s| s.leader.as_str()), 36.0, sel.is_some(), tr("Leader:"));
-            if let (Some(l), Some(i)) = (leader, selected) {
-                cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
-            }
-            crate::rtl::label(ui, tr("Align On:"));
-            let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
-            let align_on = text_commit(ui, "alignOn", sel.map_or("", |s| s.align_on.as_str()), 18.0, char_tab, tr("Align On:"));
-            if let (Some(c), Some(i)) = (align_on, selected) {
-                cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
-            }
-            ui.add_space(6.0);
-            let snap_tip = tr("Position panel above text frame");
-            if panel_snap(ui, framework, &target, snap_tip, screen.is_some()) {
+            });
+            Field::new(tr("Leader:")).id_salt("tabs_leader").sizing(Sizing::Content).show(ui, |ui, _| {
+                let leader = committed_text(ui, "tabs_leader", tr("Leader:"), sel.map_or("", |s| s.leader.as_str()), sel.is_some());
+                if let (Some(l), Some(i)) = (leader, selected) {
+                    cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
+                }
+            });
+            Field::new(tr("Align On:")).id_salt("tabs_align_on").sizing(Sizing::Content).show(ui, |ui, _| {
+                let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
+                let align_on = committed_text(ui, "tabs_align_on", tr("Align On:"), sel.map_or("", |s| s.align_on.as_str()), char_tab);
+                if let (Some(c), Some(i)) = (align_on, selected) {
+                    cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
+                }
+            });
+            if panel_snap(ui, &target, tr("Position panel above text frame"), screen.is_some()) {
                 snap_now = true;
             }
-            panel_menu(ui, &lang, framework, &target, selected, &mut cmds);
+            panel_menu(ui, &lang, &target, selected, &mut cmds);
         });
-        ui.add_space(4.0);
-        let r = Ruler { tabs: &tabs, left, first, right, width, unit, selected, scale: app.ui.tabs_panel.snap };
-        match ruler(ui, "panel", &r) {
-            Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
-            Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
-            Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
-            Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
-            Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
-            None => {}
-        }
+        let out = TabRuler::new(tr("Tabs"), tabs.clone(), (left, first, right), width, unit, selected)
+            .scale(snap_scale)
+            .id_salt("tabs_ruler")
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        edit = out.edit;
+    });
+    match edit {
+        Some(RulerEdit::Select(i)) => app.ui.tabs_panel.selected = Some(i),
+        Some(RulerEdit::Add(x)) => cmds.push(("type.tabs.add", json!({"position": x, "align": app.ui.tabs_panel.align}))),
+        Some(RulerEdit::Move(i, x)) => cmds.push(("type.tabs.move", json!({"index": i, "position": x}))),
+        Some(RulerEdit::Remove(i)) => cmds.push(("type.tabs.remove", json!({"index": i}))),
+        Some(RulerEdit::Indent(k, x)) => cmds.push(("type.para", json!({"attrs": {k: x}}))),
+        None => {}
     }
     if snap_now {
         app.ui.tabs_panel.snap_request = 2;
@@ -649,7 +550,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod framework_actions_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
@@ -726,14 +627,10 @@ mod framework_actions_tests {
         );
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, State> {
+    fn harness(mut app: DesignApp) -> Harness<'static, State> {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "");
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(900.0, 330.0)).build_ui_state(
@@ -919,7 +816,7 @@ mod framework_actions_tests {
     #[test]
     fn installed_default_alignment_uses_real_pointer_and_tab_without_document_edits_until_ruler_add() {
         let (app, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
@@ -958,7 +855,7 @@ mod framework_actions_tests {
     fn installed_selected_stop_alignment_preserves_other_stop_and_paragraph_with_separate_undo() {
         let (mut app, story) = text_app();
         add_stops(&mut app, &[72.0, 144.0]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         pick_stop(&mut h, 1);
@@ -1000,7 +897,7 @@ mod framework_actions_tests {
     fn installed_menu_delete_clear_disabled_boundaries_close_and_do_not_replay() {
         let (mut app, _) = text_app();
         add_stops(&mut app, &[72.0, 144.0]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
@@ -1051,7 +948,7 @@ mod framework_actions_tests {
     fn installed_repeat_uses_real_menu_keys_and_preserves_real_refusal_without_history() {
         let (mut app, _) = text_app();
         add_stops(&mut app, &[72.0, 144.0]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
         pick_stop(&mut h, 1);
@@ -1072,7 +969,7 @@ mod framework_actions_tests {
 
         let (mut app, _) = text_app();
         add_stops(&mut app, &[0.5]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         pick_stop(&mut h, 0);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let history = undo_len(&h);
@@ -1093,7 +990,7 @@ mod framework_actions_tests {
         let (mut app, _) = text_app();
         add_stops(&mut app, &[72.0]);
         app.run("type.para", json!({"attrs": {"leftIndent": 18.0, "firstLineIndent": -6.0, "rightIndent": 12.0}})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = h.state().app.session.active().unwrap().doc.clone();
         let previous = tab_state(&mut h);
         let history = undo_len(&h);
@@ -1124,7 +1021,7 @@ mod framework_actions_tests {
             if !enabled {
                 app.canvas_rect = None;
             }
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = h.state().app.session.active().unwrap().doc.clone();
             let history = undo_len(&h);
             let start = h.state().app.session.journal.len();
@@ -1157,7 +1054,7 @@ mod framework_actions_tests {
             app.run("text.select", json!({"story": story, "anchor": 10, "focus": 10})).unwrap();
             add_stops(&mut app, &[72.0, 144.0]);
             app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             pick_stop(&mut h, 0);
             let name = label(&h, "Right-aligned tab");
             let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(name.as_str())).rect().center();
@@ -1216,7 +1113,7 @@ mod framework_actions_tests {
         app.run("text.select", json!({"story": story, "anchor": 10, "focus": 10})).unwrap();
         add_stops(&mut app, &[80.0, 160.0]);
         app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         pick_stop(&mut h, 0);
         click(&mut h, "IconButton", "Tabs");
         let name = label(&h, "Delete Tab");
@@ -1250,7 +1147,7 @@ mod framework_actions_tests {
         for language in ["de", "ar"] {
             let (mut app, _) = text_app();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = h.state().app.session.active().unwrap().doc.clone();
             let history = undo_len(&h);
             let start = h.state().app.session.journal.len();
@@ -1288,37 +1185,5 @@ mod framework_actions_tests {
             assert!(calls(&h, start).is_empty());
             assert_eq!(undo_len(&h), history);
         }
-    }
-
-    #[test]
-    fn uninstalled_full_parent_retains_native_alignment_menu_payloads_and_independent_undo() {
-        let (mut app, _) = text_app();
-        add_stops(&mut app, &[72.0, 144.0]);
-        let mut h = harness(app, false);
-        assert!(!h.state().app.framework_installed);
-        assert!(!h.state().recorded.as_ref().unwrap().elements.iter().any(|e| matches!(e.component, "IconButton" | "Menu" | "MenuItem")));
-        let before = h.state().app.session.active().unwrap().doc.clone();
-        let history = undo_len(&h);
-        pick_stop(&mut h, 1);
-        let start = h.state().app.session.journal.len();
-        let pos = h.get_by_label("Centered tab").rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(calls(&h, start), [call("type.tabs.change", json!({"index": 1, "align": "center"}))]);
-        assert_eq!(tab_state(&mut h)["tabs"][1]["align"], "center");
-        assert_eq!(undo_len(&h), history + 1);
-        undo(&mut h);
-        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
-        let start = h.state().app.session.journal.len();
-        let pos = h.get_by_label("☰").rect().center();
-        click_at(&mut h, pos);
-        let pos = h.get_by_label("Delete Tab").rect().center();
-        click_at(&mut h, pos);
-        assert_eq!(calls(&h, start), [call("type.tabs.remove", json!({"index": 1}))]);
-        assert_eq!(positions(&mut h), [72.0]);
-        assert_eq!(undo_len(&h), history + 1);
-        steps(&mut h, 3);
-        assert_eq!(calls(&h, start).len(), 1);
-        undo(&mut h);
-        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
     }
 }

@@ -183,39 +183,13 @@ fn type_label(lang: &str, v: &Value) -> String {
 
 // CELL_STROKE_TYPE_APPLICATION_BEGIN
 fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[String], lang: &str) -> Option<Value> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        let (rect, _) = ui.allocate_exact_size(vec2(140.0, 20.0), Sense::hover());
-        return type_select(app, ui, id, v, custom, lang, Some(rect));
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    let mut picked = None;
-    let shown = type_label(lang, &v["type"]);
-    let combo = craft_ui_legacy::ComboBox::from_id_salt((id, "type")).selected_text(crate::rtl::widget(ui, &shown)).width(140.0).show_ui(ui, |ui| {
-        for kind in TYPES {
-            let text = tr(&lang, builtin(kind).label());
-            if ui.selectable_label(shown == text, crate::rtl::widget(ui, text)).clicked() {
-                picked = Some(json!(kind));
-            }
-        }
-        if !custom.is_empty() {
-            ui.separator();
-        }
-        for n in custom {
-            if ui.selectable_label(shown == *n, n).clicked() {
-                picked = Some(json!({"kind": "style", "name": n}));
-            }
-        }
-    });
-    let _ = crate::widgets::name_combo(combo, tr(&lang, "Type"));
-    picked
+    let (rect, _) = ui.allocate_exact_size(vec2(140.0, 20.0), Sense::hover());
+    type_select(app, ui, id, v, custom, lang, Some(rect))
 }
 // CELL_STROKE_TYPE_APPLICATION_END
 
-/// The framework's Type select over the stroke attributes `v`: at `at` in a native parent (the Stroke panel), else in the
+/// The framework's Type select over the stroke attributes `v`: at `at` in a native parent, else in the
 /// flow of a framework form. Returns the `type` payload of a committed pick.
-#[cfg(not(target_arch = "wasm32"))]
 fn type_select(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[String], lang: &str, at: Option<Rect>) -> Option<Value> {
     use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
     // Values are serialized type identities, never translated captions or row ordinals.
@@ -325,13 +299,13 @@ pub fn panel(app: &mut DesignApp, ui: &mut Ui) {
     let key = egui::Id::unique("cell_stroke_edges");
     let mut edges: Edges = ui.data(|d| d.get_temp(key)).unwrap_or([true; 6]);
     let lang = app.ui.language.clone();
-    if edge_proxy(ui, "stroke_panel", &mut edges, &lang) {
+    if framework::edge_proxy(ui, "stroke_panel", &mut edges, &lang) {
         ui.data_mut(|d| d.insert_temp(key, edges));
     }
     ui.add_space(6.0);
     let values = current(app, &edges);
     let any = edges.iter().any(|on| *on);
-    let changed = ui.add_enabled_ui(any, |ui| stroke_fields(app, ui, "csp", &values)).inner;
+    let changed = framework::stroke_fields(app, ui, "csp", &values, any);
     if let Some((k, v)) = changed
         && let Err(e) = app.run("table.setCell", json!({"stroke": {k: v, "edges": edges_param(&edges)}}))
     {
@@ -341,7 +315,6 @@ pub fn panel(app: &mut DesignApp, ui: &mut Ui) {
 
 /// Cell strokes on the craft framework, for the framework dialog forms (Cell Options › Strokes and Fills and
 /// Diagonal Lines): the edge proxy as a framework component, the stroke fields and the swatch select.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework {
     use super::{EDGE_NAMES, Edges, PROXY_HELP, ProxyClick, WEIGHTS, lines_in, proxy_click};
     use crate::DesignApp;
@@ -666,11 +639,14 @@ mod tests {
         app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
         let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
         app.run("table.select", json!({"what": "table"})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(320.0, 600.0)).build_ui_state(
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 600.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
                     ui.data_mut(|d| d.insert_temp(id, true));
                     return;
                 }
@@ -679,11 +655,10 @@ mod tests {
             app,
         );
         h.run_steps(3);
-        // Leave only the inner horizontal line chosen: click the others off.
-        let lines = proxy_lines(h.get_by_label("Cell edges").rect());
-        for i in [0, 1, 2, 3, 5] {
-            let (a, b) = lines[i];
-            let at = a + (b - a) * 0.3;
+        // Leave only the inner horizontal line chosen: click the others off (the framework proxy's lines are its
+        // own accessible check boxes).
+        for line in ["Top", "Bottom", "Left", "Right", "Inner Vertical"] {
+            let at = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, line).rect().center();
             h.hover_at(at);
             h.drag_at(at);
             h.drop_at(at);
@@ -706,7 +681,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod type_style_sdk_tests {
     use super::*;
     use designcraft_engine::{DocState, HistoryEntry};
@@ -772,13 +747,9 @@ mod type_style_sdk_tests {
         assert_eq!(app.session.active().unwrap().history.redo.len(), 1);
         (app, made)
     }
-    fn harness(mut app: DesignApp, installed: bool, parent: Parent, width: f32) -> Harness<'static, State> {
+    fn harness(mut app: DesignApp, parent: Parent, width: f32) -> Harness<'static, State> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed);
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(width, 720.0)).build_ui_state(
             move |ui, state: &mut State| {
@@ -1056,27 +1027,6 @@ mod type_style_sdk_tests {
         open(h);
         click_popup_option(h, label, None);
     }
-    /// The uninstalled route's legacy Type menu is a scroll area as tall as egui's combo height, and the named styles
-    /// follow eleven built-in rows below it: the row is reached as a user reaches it, with the wheel over the open menu.
-    fn reveal_native_row(h: &mut Harness<'_, State>, label: &str) -> Pos2 {
-        let dotted = tr(&h.state().app.ui.language, builtin("dotted").label()).to_owned();
-        let over = h.get_by_label(&dotted).rect().center();
-        frame(h, Some(Event::PointerMoved(over)));
-        for phase in [egui::TouchPhase::Start, egui::TouchPhase::Move, egui::TouchPhase::End] {
-            frame(
-                h,
-                Some(Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Point,
-                    delta: if phase == egui::TouchPhase::Move { vec2(0.0, -2000.0) } else { egui::Vec2::ZERO },
-                    phase,
-                    modifiers: Modifiers::NONE,
-                    source: egui::MouseWheelSource::Wheel,
-                }),
-            );
-        }
-        idle(h, 20);
-        h.get_by_label(label).rect().center()
-    }
     #[derive(Clone)]
     struct Quiet {
         docs: Vec<DocState>,
@@ -1205,7 +1155,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_all_eleven_builtin_pointer_choices_keep_exact_payload_domain_and_undo_from_the_real_stroke_parent() {
         for kind in TYPES {
             let (app, _) = fixture();
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             assert!(!control(&h).facts.unwrap().disabled);
             let before = quiet(&h.state().app);
             let label = tr(&h.state().app.ui.language, builtin(kind).label()).to_owned();
@@ -1220,7 +1170,7 @@ mod type_style_sdk_tests {
     #[test]
     fn cell_stroke_custom_names_distinct_from_identical_builtin_captions_keep_object_payload_and_complete_catalog() {
         let (app, _) = fixture();
-        let mut h = harness(app, true, Parent::Stroke, 400.0);
+        let mut h = harness(app, Parent::Stroke, 400.0);
         let before = quiet(&h.state().app);
         open(&mut h);
         let catalog = observe_popup_catalog(&mut h);
@@ -1244,7 +1194,7 @@ mod type_style_sdk_tests {
     #[test]
     fn cell_stroke_natural_tab_popup_preview_escape_and_enter_commit_only_one_authoritative_edit() {
         let (app, _) = fixture();
-        let mut h = harness(app, true, Parent::Stroke, 400.0);
+        let mut h = harness(app, Parent::Stroke, 400.0);
         let before = quiet(&h.state().app);
         let owner = control(&h).id;
         tab_to(&mut h);
@@ -1287,7 +1237,7 @@ mod type_style_sdk_tests {
                 app.run("table.setCell", json!({"row": 1, "col": 1, "stroke": {"type": "dotted", "edges": ["top"]}})).unwrap();
                 assert!(current(&mut app, &[true; 6])["type"].is_null(), "genuine disagreement among the selected cell edges");
             }
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             let before = quiet(&h.state().app);
             if orphan {
                 let actual = current(&mut h.state_mut().app, &[true; 6]);
@@ -1317,14 +1267,14 @@ mod type_style_sdk_tests {
                 assert!(app.session.active().unwrap().selection.cells.is_none());
                 assert!(app.session.active().unwrap().selection.text.unwrap().cell.is_some());
             }
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             let edges = if caret {
                 [true; 6]
             } else {
-                let lines = proxy_lines(h.get_by_label("Cell edges").rect());
-                for index in [0, 1, 2, 3, 5] {
-                    let (a, b) = lines[index];
-                    click_at(&mut h, a + (b - a) * 0.3);
+                let lang = h.state().app.ui.language.clone();
+                // The framework proxy's lines are its own accessible check boxes, not guessed coordinates.
+                for line in ["Top", "Bottom", "Left", "Right", "Inner Vertical"] {
+                    click(&mut h, egui::accesskit::Role::CheckBox, tr(&lang, line));
                 }
                 let chosen = h.ctx.data(|data| data.get_temp::<Edges>(egui::Id::unique("cell_stroke_edges"))).unwrap();
                 assert_eq!(chosen, [false, false, false, false, true, false]);
@@ -1341,7 +1291,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_real_cell_options_drafts_cancel_without_domain_effect_then_confirm_one_exact_type_only_edit() {
         let (mut app, _) = fixture();
         crate::dialogs::open_cell_options(&mut app).unwrap();
-        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let mut h = harness(app, Parent::Dialog, 640.0);
         let before = quiet(&h.state().app);
         let original = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
         pick(&mut h, STYLE);
@@ -1368,7 +1318,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_real_cell_options_refusal_preserves_the_deleted_style_draft_and_all_document_history_until_recovery() {
         let (mut app, _) = fixture();
         crate::dialogs::open_cell_options(&mut app).unwrap();
-        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let mut h = harness(app, Parent::Dialog, 640.0);
         pick(&mut h, STYLE);
         h.state_mut().app.run("strokeStyle.delete", json!({"name": STYLE})).unwrap();
         idle(&mut h, 2);
@@ -1389,7 +1339,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_held_popup_choice_retires_catalog_range_table_document_epoch_edges_and_disabled_or_absent_owners() {
         for change in ["range", "table", "document", "epoch", "catalog", "definition", "edges", "parent-disabled", "hidden", "no-selection"] {
             let (app, made) = fixture();
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             let old_owner = control(&h).id;
             open(&mut h);
             let held = reveal_popup_option(&mut h, STYLE, None).rect.center();
@@ -1459,7 +1409,7 @@ mod type_style_sdk_tests {
     }
 
     #[test]
-    fn cell_stroke_genuine_missing_document_selection_and_disabled_parent_are_quiet_and_uninstalled_native_fallback_recovers() {
+    fn cell_stroke_genuine_missing_document_selection_and_disabled_parent_are_quiet() {
         for missing in ["document", "selection", "parent", "edges"] {
             let (mut app, _) = fixture();
             if missing == "document" {
@@ -1470,7 +1420,7 @@ mod type_style_sdk_tests {
             if missing == "selection" {
                 app.run("selection.set", json!({"ids": []})).unwrap();
             }
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             h.state_mut().disabled = missing == "parent";
             if missing == "edges" {
                 h.ctx.data_mut(|data| data.insert_temp(egui::Id::unique("cell_stroke_edges"), [false; 6]));
@@ -1499,31 +1449,13 @@ mod type_style_sdk_tests {
                 undo_redo(&mut h, &before);
             }
         }
-        let (app, _) = fixture();
-        let mut h = harness(app, false, Parent::Stroke, 400.0);
-        assert!(!h.state().app.framework_installed, "genuinely uninstalled native route");
-        let before = quiet(&h.state().app);
-        click(&mut h, egui::accesskit::Role::ComboBox, "Type");
-        let at = reveal_native_row(&mut h, STYLE);
-        click_at(&mut h, at);
-        assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), [true; 6]));
-        undo_redo(&mut h, &before);
-        let ctx = h.ctx.clone();
-        h.state_mut().app.framework_opacity = true;
-        h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
-        idle(&mut h, 3);
-        let before = quiet(&h.state().app);
-        pick(&mut h, "Dotted");
-        assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
-        undo_redo(&mut h, &before);
     }
 
     #[test]
     fn cell_stroke_real_sizing_and_hidden_parent_register_no_live_owner_hits_focus_stop_or_delayed_edit() {
         for sizing in [false, true] {
             let (app, _) = fixture();
-            let mut h = harness(app, true, Parent::Stroke, 400.0);
+            let mut h = harness(app, Parent::Stroke, 400.0);
             let label = name(&h);
             let at = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &label).rect().center();
             frame(&mut h, Some(Event::PointerMoved(at)));
@@ -1555,7 +1487,7 @@ mod type_style_sdk_tests {
         for language in ["en", "de"] {
             let (mut app, _) = fixture();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true, Parent::Stroke, 190.0);
+            let mut h = harness(app, Parent::Stroke, 190.0);
             let before = quiet(&h.state().app);
             idle(&mut h, 2);
             assert_quiet(&h.state().app, &before);
@@ -1586,7 +1518,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_real_cell_options_keyboard_popup_cancel_commit_and_outer_escape_keep_the_actual_modal_transaction() {
         let (mut app, _) = fixture();
         crate::dialogs::open_cell_options(&mut app).unwrap();
-        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let mut h = harness(app, Parent::Dialog, 640.0);
         let before = quiet(&h.state().app);
         let original = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
         tab_to(&mut h);
@@ -1619,7 +1551,7 @@ mod type_style_sdk_tests {
         for change in ["range", "catalog", "document"] {
             let (mut app, made) = fixture();
             crate::dialogs::open_cell_options(&mut app).unwrap();
-            let mut h = harness(app, true, Parent::Dialog, 640.0);
+            let mut h = harness(app, Parent::Dialog, 640.0);
             let draft = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
             open(&mut h);
             let at = reveal_popup_option(&mut h, STYLE, None).rect.center();
@@ -1658,7 +1590,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_framework_cell_options_edge_proxy_reseeds_the_draft_and_limits_the_type_to_the_chosen_edges() {
         let (mut app, _) = fixture();
         crate::dialogs::open_cell_options(&mut app).unwrap();
-        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let mut h = harness(app, Parent::Dialog, 640.0);
         let before = quiet(&h.state().app);
         let lang = h.state().app.ui.language.clone();
         // The framework proxy's lines are its own accessible check boxes, not guessed coordinates.
@@ -1686,7 +1618,7 @@ mod type_style_sdk_tests {
     fn cell_stroke_framework_diagonal_lines_segment_and_draw_order_apply_as_one_cell_options_edit() {
         let (mut app, _) = fixture();
         crate::dialogs::open_diagonal_lines(&mut app).unwrap();
-        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let mut h = harness(app, Parent::Dialog, 640.0);
         let before = quiet(&h.state().app);
         let lang = h.state().app.ui.language.clone();
         click(&mut h, egui::accesskit::Role::RadioButton, tr(&lang, "Crossed Diagonal Lines"));

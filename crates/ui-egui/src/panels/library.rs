@@ -5,10 +5,8 @@ use serde_json::json;
 
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
-use crate::theme::Tokens;
 
 /// What the Object Library panel's buttons ask for.
-#[cfg(not(target_arch = "wasm32"))]
 enum LibraryAction {
     ClearConveyor,
     New,
@@ -19,7 +17,6 @@ enum LibraryAction {
 }
 
 /// A framework button of a panel, a Tab stop identified by `salt`.
-#[cfg(not(target_arch = "wasm32"))]
 fn framework_action(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug, label: &str, enabled: bool, small: bool) -> bool {
     use craft_ui_widgets::contract::{Props as _, Show as _};
     craft_ui_widgets::buttons::Button::new(label.to_owned())
@@ -30,9 +27,8 @@ fn framework_action(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::De
         .clicked()
 }
 
-/// The Object Library panel on the framework: the conveyor, New and Open, Add Selection and a row for each item.
-#[cfg(not(target_arch = "wasm32"))]
-fn library_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+/// The Object Library panel: the conveyor, New and Open, Add Selection and a row for each item.
+pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Shade, Text};
     use craft_ui_widgets::layout_components::{Row, Stack};
@@ -130,115 +126,6 @@ fn library_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        library_framework(app, ui);
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
-    let action = |ui: &mut egui::Ui, id: egui::Id, label: &str, enabled: bool, small: bool| {
-        #[cfg(not(target_arch = "wasm32"))]
-        if framework {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            return craft_ui_widgets::buttons::Button::new(label.to_owned())
-                .id(id)
-                .enabled(enabled)
-                .size(if small { craft_theme::ControlSize::Sm } else { craft_theme::ControlSize::Md })
-                .show(ui)
-                .clicked();
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = (id, framework);
-        let button = egui::Button::new(crate::rtl::widget(ui, label));
-        ui.add_enabled(enabled, if small { button.small() } else { button }).clicked()
-    };
-    // Content Collector conveyor.
-    let conveyor = app.session.conveyor.iter().map(|c| c.0.clone()).collect::<Vec<_>>();
-    crate::rtl::label(ui, egui::RichText::new(format!("{} ({})", crate::i18n::tr(&app.ui.language, "Conveyor"), conveyor.len())).strong());
-    if conveyor.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(
-                    &app.ui.language,
-                    "Collect objects with the Content Collector (B); place them with the Content Placer.",
-                ))
-                .size(10.5)
-                .color(t.text_dim),
-            ),
-        );
-    } else {
-        crate::rtl::label(ui, egui::RichText::new(conveyor.join(", ")).size(10.5));
-        let clear_id = ui.scope_id().with("library_conveyor_clear");
-        if action(ui, clear_id, crate::i18n::tr(&app.ui.language, "Clear"), true, true) {
-            let _ = app.run("conveyor.clear", json!({}));
-        }
-    }
-    ui.separator();
-    ui.horizontal(|ui| {
-        let new_id = ui.scope_id().with("object_library_new");
-        let open_id = ui.scope_id().with("object_library_open");
-        if action(ui, new_id, crate::i18n::tr(&app.ui.language, "New Library…"), true, false) {
-            let asked = app.ask_save("Library.dclib", Bound::App, |app, path| app.run("library.new", json!({"path": path})));
-            report(app, "Library", asked);
-        }
-        if action(ui, open_id, crate::i18n::tr(&app.ui.language, "Open…"), true, false) {
-            let asked = app.ask_open("library", Bound::App, |app, path| {
-                app.run("library.open", json!({"path": path})).or_else(|e| report_err(app, "Library", e))
-            });
-            report(app, "Library", asked);
-        }
-    });
-    let Ok(items) = app.session.execute("library.list", &json!({})) else {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No library open.")).size(11.0).color(t.text_dim));
-        return;
-    };
-    let has_sel = app.session.active().is_some_and(|d| !d.selection.items.is_empty());
-    let add_id = ui.scope_id().with("object_library_add");
-    if action(ui, add_id, crate::i18n::tr(&app.ui.language, "Add Selection"), has_sel, false)
-        && let Err(e) = app.run("library.add", json!({}))
-    {
-        app.status_error("Library", e);
-    }
-    ui.separator();
-    let items = items.as_array().cloned().unwrap_or_default();
-    if items.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "The library is empty. Select objects and Add Selection."))
-                    .size(11.0)
-                    .color(t.text_dim),
-            ),
-        );
-    }
-    for it in items {
-        let i = it["index"].clone();
-        // The list's actual command identity, not the display name or an invented item key.
-        let item_id = ui.scope_id().with(("object_library_item", i.to_string()));
-        ui.horizontal(|ui| {
-            crate::rtl::label(ui, it["name"].as_str().unwrap_or(""));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if action(ui, item_id.with("delete"), crate::i18n::tr(&app.ui.language, "Delete"), true, true) {
-                    let _ = app.run("library.remove", json!({"index": i}));
-                }
-                if action(ui, item_id.with("place"), crate::i18n::tr(&app.ui.language, "Place"), true, true)
-                    && let Err(e) = app.run("library.place", json!({"index": i}))
-                {
-                    app.status_error("Library", e);
-                }
-            });
-        });
-    }
-}
-
 /// A dialog that couldn't be asked for, in the status line as `feature`'s error.
 fn report(app: &mut DesignApp, feature: &str, asked: Result<serde_json::Value, String>) {
     if let Err(e) = asked {
@@ -269,96 +156,39 @@ fn load_script(app: &mut DesignApp, path: &str, sel_id: egui::Id) {
     }
 }
 
-/// SDK Book faces keep their painted captions while exposing the complete action and chapter identity.
-fn book_sdk_button(
-    app: &DesignApp,
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    painted: &str,
-    small: bool,
-    selected: Option<bool>,
-) -> Option<bool> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).painted(painted.to_owned()).id(id).tooltip(label.to_owned());
-        if small {
-            button = button.size(ControlSize::Sm);
-        }
-        if let Some(selected) = selected {
-            button = button.selected(selected);
-        }
-        return Some(button.show(ui).clicked());
+/// Book faces keep their painted captions while exposing the complete action and chapter identity.
+fn book_sdk_button(ui: &mut egui::Ui, id: egui::Id, label: &str, painted: &str, small: bool, selected: Option<bool>) -> bool {
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).painted(painted.to_owned()).id(id).tooltip(label.to_owned());
+    if small {
+        button = button.size(ControlSize::Sm);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, ui, id, label, painted, small, selected);
-    None
+    if let Some(selected) = selected {
+        button = button.selected(selected);
+    }
+    button.show(ui).clicked()
 }
 
 fn book_button(app: &DesignApp, ui: &mut egui::Ui, salt: &'static str, label: &str) -> bool {
     let target = app.session.book.as_ref().map(|book| (&book.path, &book.documents));
     let id = ui.scope_id().with(("book_action", salt, target));
-    book_sdk_button(app, ui, id, label, label, false, None).unwrap_or_else(|| ui.button(crate::rtl::widget(ui, label)).clicked())
+    book_sdk_button(ui, id, label, label, false, None)
 }
 
 fn book_row_name(language: &str, action: &str, path: &str, index: usize) -> String {
     format!("{}: {path} ({})", crate::i18n::tr(language, action), index + 1)
 }
 
-fn book_open_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        if book_button(app, ui, "book_new", crate::i18n::tr(&app.ui.language, "New Book…")) {
-            let asked = app
-                .ask_save("Book.dcbook", Bound::App, |app, path| app.run("book.new", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
-            report(app, "Book", asked);
-        }
-        if book_button(app, ui, "book_open", crate::i18n::tr(&app.ui.language, "Open…")) {
-            let asked =
-                app.ask_open("book", Bound::App, |app, path| app.run("book.open", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
-            report(app, "Book", asked);
-        }
-    });
-}
-
-fn book_action_buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
-    ui.horizontal_wrapped(|ui| {
-        if book_button(app, ui, "book_add", crate::i18n::tr(&app.ui.language, "Add Document…")) {
-            let asked =
-                app.ask_open("open", Bound::App, |app, path| app.run("book.add", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
-            report(app, "Book", asked);
-        }
-        if book_button(app, ui, "book_paginate", crate::i18n::tr(&app.ui.language, "Update Numbering")) {
-            let _ = app.run("book.paginate", json!({}));
-        }
-        if book_button(app, ui, "book_sync", crate::i18n::tr(&app.ui.language, "Synchronize")) {
-            let _ = app.run("book.syncStyles", json!({}));
-        }
-        if book_button(app, ui, "book_export", crate::i18n::tr(&app.ui.language, "Export PDF…")) {
-            let asked = app.ask_save("Book.pdf", Bound::App, |app, path| {
-                app.run("book.exportPdf", json!({"path": path})).or_else(|e| report_err(app, "Book", e))
-            });
-            report(app, "Book", asked);
-        }
-    });
-}
-
 /// Book panel: the open book's documents with their page ranges; numbering, synchronising and
 /// exporting the whole book.
 pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
-        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
-        with_env(ui, |scope| scope.direction = Some(direction), |ui| book_contents(app, ui));
-        return;
-    }
-    book_contents(app, ui);
+    use craft_ui_widgets::runtime::env::{Direction, with_env};
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+    with_env(ui, |scope| scope.direction = Some(direction), |ui| book_framework(app, ui));
 }
 
 /// What the Book panel's buttons ask for.
-#[cfg(not(target_arch = "wasm32"))]
 enum BookAction {
     New,
     Open,
@@ -371,8 +201,7 @@ enum BookAction {
     Remove(usize),
 }
 
-/// The Book panel on the framework: New and Open, a row for each document, and the book-wide actions.
-#[cfg(not(target_arch = "wasm32"))]
+/// The Book panel: New and Open, a row for each document, and the book-wide actions.
 fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Shade, Text};
@@ -408,7 +237,6 @@ fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             let (first, pages) = (d["firstPage"].as_u64().unwrap_or(1), d["pages"].as_u64().unwrap_or(0));
             Row::new().id_salt(("book_row", i)).fill_width().show(ui, |ui, _| {
                 let marked = book_sdk_button(
-                    app_ref,
                     ui,
                     book_id.with((i, &path, "source")),
                     &book_row_name(&lang, "Style source", &path, i),
@@ -416,12 +244,10 @@ fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
                     true,
                     Some(i == source),
                 );
-                if marked == Some(true) {
+                if marked {
                     acts.push(BookAction::StyleSource(i));
                 }
-                if book_sdk_button(app_ref, ui, book_id.with((i, &path, "open")), &book_row_name(&lang, "Open", &path, i), &name, false, None)
-                    == Some(true)
-                {
+                if book_sdk_button(ui, book_id.with((i, &path, "open")), &book_row_name(&lang, "Open", &path, i), &name, false, None) {
                     acts.push(BookAction::OpenDocument(path.clone()));
                 }
                 Text::new(format!("{first}–{}", first + pages.saturating_sub(1)))
@@ -429,16 +255,7 @@ fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
                     .shade(Shade::Muted)
                     .sizing(Sizing::FillWidth)
                     .show(ui);
-                if book_sdk_button(
-                    app_ref,
-                    ui,
-                    book_id.with((i, &path, "remove")),
-                    &book_row_name(&lang, "Remove", &path, i),
-                    &tr("Remove"),
-                    true,
-                    None,
-                ) == Some(true)
-                {
+                if book_sdk_button(ui, book_id.with((i, &path, "remove")), &book_row_name(&lang, "Remove", &path, i), &tr("Remove"), true, None) {
                     acts.push(BookAction::Remove(i));
                 }
             });
@@ -502,127 +319,41 @@ fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-fn book_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        book_framework(app, ui);
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    book_open_buttons(app, ui);
-    let Ok(info) = app.session.execute("book.list", &json!({})) else {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No book open.")).size(11.0).color(t.text_dim));
-        return;
-    };
-    let source = info["styleSource"].as_u64().unwrap_or(0) as usize;
-    // A changed book or chapter sequence must not retarget an in-flight row press.
-    let target = app.session.book.as_ref().map(|book| (&book.path, &book.documents));
-    let book_id = ui.scope_id().with(("book_chapters", target));
-    ui.separator();
-    for (i, d) in info["documents"].as_array().cloned().unwrap_or_default().iter().enumerate() {
-        let path = d["path"].as_str().unwrap_or("").to_string();
-        let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let (first, pages) = (d["firstPage"].as_u64().unwrap_or(1), d["pages"].as_u64().unwrap_or(0));
-        ui.horizontal(|ui| {
-            if book_sdk_button(
-                app,
-                ui,
-                book_id.with((i, &path, "source")),
-                &book_row_name(&app.ui.language, "Style source", &path, i),
-                if i == source { "◆" } else { "◇" },
-                true,
-                Some(i == source),
-            )
-            .unwrap_or_else(|| {
-                ui.selectable_label(i == source, if i == source { "◆" } else { "◇" })
-                    .on_hover_ui(|ui| {
-                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Style source"));
-                    })
-                    .clicked()
-            }) {
-                let _ = app.run("book.styleSource", json!({"index": i}));
-            }
-            if book_sdk_button(app, ui, book_id.with((i, &path, "open")), &book_row_name(&app.ui.language, "Open", &path, i), &name, false, None)
-                .unwrap_or_else(|| {
-                    ui.selectable_label(false, &name)
-                        .on_hover_ui(|ui| {
-                            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Open"));
-                        })
-                        .clicked()
-                })
-            {
-                let _ = app.run("file.open", json!({"path": path}));
-            }
-            crate::rtl::label(ui, egui::RichText::new(format!("{first}–{}", first + pages.saturating_sub(1))).size(10.5).color(t.text_dim));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if book_sdk_button(
-                    app,
-                    ui,
-                    book_id.with((i, &path, "remove")),
-                    &book_row_name(&app.ui.language, "Remove", &path, i),
-                    crate::i18n::tr(&app.ui.language, "Remove"),
-                    true,
-                    None,
-                )
-                .unwrap_or_else(|| ui.small_button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Remove"))).clicked())
-                {
-                    let _ = app.run("book.remove", json!({"index": i}));
-                }
-            });
-        });
-    }
-    ui.separator();
-    book_action_buttons(app, ui);
-}
-
 /// Script actions retain the actual current script and document/selection identity, not an ordinal alone.
-fn scripts_action(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, label: &str, enabled: bool) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        return craft_ui_widgets::buttons::Button::new(label.to_owned())
-            .id(id)
-            .enabled(enabled)
-            .size(craft_theme::ControlSize::Sm)
-            .show(ui)
-            .clicked();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, id);
-    ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, label))).clicked()
+fn scripts_action(ui: &mut egui::Ui, id: egui::Id, label: &str, enabled: bool) -> bool {
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    craft_ui_widgets::buttons::Button::new(label.to_owned())
+        .id(id)
+        .enabled(enabled)
+        .size(craft_theme::ControlSize::Sm)
+        .show(ui)
+        .clicked()
 }
 
 /// Plain, unbounded write-through editors: the persisted UI strings remain the only model.
-fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text: &mut String, labels: (&str, &str), framework: bool) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
-        craft_ui_widgets::text::TextField::new(labels.0.to_owned(), Bind::bound(name))
-            .id(id.with("name"))
-            .limit(None)
-            .keeps_on_escape()
-            .sizing(Sizing::FillWidth)
-            .show(ui);
-        craft_ui_widgets::text::TextField::new(labels.1.to_owned(), Bind::bound(text))
-            .id(id.with("text"))
-            .limit(None)
-            .lines(8)
-            .mono()
-            .tab_inserts(true)
-            .keeps_on_escape()
-            .sizing(Sizing::FillWidth)
-            .show(ui);
-        return true;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (ui, id, name, text, labels, framework);
-    false
+fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text: &mut String, labels: (&str, &str)) {
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
+    craft_ui_widgets::text::TextField::new(labels.0.to_owned(), Bind::bound(name))
+        .id(id.with("name"))
+        .limit(None)
+        .keeps_on_escape()
+        .sizing(Sizing::FillWidth)
+        .show(ui);
+    craft_ui_widgets::text::TextField::new(labels.1.to_owned(), Bind::bound(text))
+        .id(id.with("text"))
+        .limit(None)
+        .lines(8)
+        .mono()
+        .tab_inserts(true)
+        .keeps_on_escape()
+        .sizing(Sizing::FillWidth)
+        .show(ui);
 }
 
-/// The Scripts panel on the framework: a row for each script (a click selects it, a double click runs it), the
-/// Run, New, Load and Delete actions, and the selected script's name and text.
-#[cfg(not(target_arch = "wasm32"))]
-fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+/// Scripts panel: saved command scripts — run (one undo step), edit, add, delete, load. A row for each script
+/// (a click selects it, a double click runs it), the Run, New, Load and Delete actions, and the selected
+/// script's name and text.
+pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::buttons::Button;
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Shade, Text};
@@ -663,12 +394,12 @@ fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         Divider::horizontal().show(ui);
         Row::new().id_salt("scripts_actions").show(ui, |ui, _| {
-            if scripts_action(app_ref, ui, actions.with("run"), &tr("Run"), run_enabled) {
+            if scripts_action(ui, actions.with("run"), &tr("Run"), run_enabled) {
                 run = Some(sel);
             }
-            new |= scripts_action(app_ref, ui, actions.with("new"), &tr("New"), true);
-            load |= scripts_action(app_ref, ui, actions.with("load"), &tr("Load…"), true);
-            delete |= scripts_action(app_ref, ui, actions.with("delete"), &tr("Delete"), run_enabled);
+            new |= scripts_action(ui, actions.with("new"), &tr("New"), true);
+            load |= scripts_action(ui, actions.with("load"), &tr("Load…"), true);
+            delete |= scripts_action(ui, actions.with("delete"), &tr("Delete"), run_enabled);
         });
     });
     if new {
@@ -691,7 +422,7 @@ fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     let labels = (tr("Name"), tr("Scripts"));
     if let Some((name, text)) = app.ui.scripts.get_mut(sel) {
         Stack::new().id_salt("scripts_editor").fill_width().show(ui, |ui, _| {
-            scripts_sdk_editors(ui, editor, name, text, (&labels.0, &labels.1), true);
+            scripts_sdk_editors(ui, editor, name, text, (&labels.0, &labels.1));
         });
     }
     if let Some(i) = run
@@ -708,90 +439,6 @@ fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
 }
-
-/// Scripts panel: saved command scripts — run (one undo step), edit, add, delete, load.
-pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        scripts_framework(app, ui);
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    let sel_id = egui::Id::unique("scripts_sel");
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
-    let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
-    if app.ui.scripts.is_empty() {
-        crate::rtl::label(
-            ui,
-            crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No scripts. Add one below.")).size(11.0).color(t.text_dim)),
-        );
-    }
-    let mut run: Option<usize> = None;
-    for (i, (name, _)) in app.ui.scripts.iter().enumerate() {
-        let r = ui.selectable_label(i == sel, name);
-        if r.clicked() {
-            sel = i;
-        }
-        if r.double_clicked() {
-            run = Some(i);
-        }
-    }
-    ui.separator();
-    let target = app
-        .session
-        .active()
-        .map(|st| format!("{:?}", (st.uid, st.identity_epoch, st.revision, &st.selection.items, &st.selection.text, &st.selection.cells)));
-    // Hash only the selected full script, not every hidden script or document content/history.
-    let actions = ui.scope_id().with(("scripts_actions", target, sel, app.ui.scripts.len(), app.ui.scripts.get(sel)));
-    ui.horizontal(|ui| {
-        if scripts_action(app, ui, actions.with("run"), crate::i18n::tr(&app.ui.language, "Run"), !app.ui.scripts.is_empty()) {
-            run = Some(sel);
-        }
-        if scripts_action(app, ui, actions.with("new"), crate::i18n::tr(&app.ui.language, "New"), true) {
-            app.ui.scripts.push((format!("Script {}", app.ui.scripts.len() + 1), "# command.id {json} per line\n".into()));
-            sel = app.ui.scripts.len() - 1;
-        }
-        if scripts_action(app, ui, actions.with("load"), crate::i18n::tr(&app.ui.language, "Load…"), true) {
-            let asked = app.ask_open("script", Bound::App, move |app, path| {
-                load_script(app, &path, sel_id);
-                Ok(serde_json::Value::Null)
-            });
-            report(app, "Scripts", asked);
-        }
-        if scripts_action(app, ui, actions.with("delete"), crate::i18n::tr(&app.ui.language, "Delete"), !app.ui.scripts.is_empty())
-            && sel < app.ui.scripts.len()
-        {
-            app.ui.scripts.remove(sel);
-            sel = sel.saturating_sub(1);
-        }
-    });
-    // The shelf and its editors are app-owned, not document-owned. Preserve the original selected-slot policy.
-    let editor = ui.scope_id().with(("scripts_editor", sel, app.ui.scripts.len()));
-    let labels = (crate::i18n::tr(&app.ui.language, "Name"), crate::i18n::tr(&app.ui.language, "Scripts"));
-    if let Some((name, text)) = app.ui.scripts.get_mut(sel)
-        && !scripts_sdk_editors(ui, editor, name, text, labels, framework)
-    {
-        ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).accessible_name(labels.0);
-        ui.add(egui::TextEdit::multiline(text).code_editor().desired_rows(8).desired_width(f32::INFINITY)).accessible_name(labels.1);
-    }
-    if let Some(i) = run
-        && let Some((name, text)) = app.ui.scripts.get(i).cloned()
-    {
-        match app.run("script.run", json!({"text": text})) {
-            Ok(r) => app.status(
-                crate::i18n::tr(&app.ui.language, "{name}: {count} step(s) done")
-                    .replace("{name}", &name)
-                    .replace("{count}", &r["steps"].to_string()),
-            ),
-            Err(e) => app.status(format!("{name}: {e}")),
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(sel_id, sel));
-}
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod framework_action_tests {
     use super::*;
@@ -878,7 +525,6 @@ mod framework_action_tests {
     }
 
     fn harness(mut app: DesignApp) -> Harness<'static, Window> {
-        app.framework_opacity = true;
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
@@ -1134,12 +780,9 @@ mod book_workflow_tests {
             key(h, Key::Tab);
         }
     }
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Rig> {
-        app.framework_opacity = true;
+    fn harness(mut app: DesignApp) -> Harness<'static, Rig> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(680.0, 540.0)).build_ui_state(
@@ -1225,7 +868,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_style_source_and_remove_preserve_duplicate_identity_and_document_undo() {
         let (f, app) = fixture(true);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let source = row(&h, "Style source", &f.chapters[2], 2);
         let other = row(&h, "Style source", &f.chapters[0], 0);
@@ -1254,7 +897,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_open_row_uses_full_path_not_duplicate_basename() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let name = row(&h, "Open", &f.chapters[1], 1);
         let start = h.state().app.session.journal.len();
         tab_to(&mut h, &name);
@@ -1267,7 +910,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_held_remove_cannot_follow_a_changed_chapter_sequence() {
         let (f, app) = fixture(true);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let held = row(&h, "Remove", &f.chapters[1], 1);
         let old = element(&h, &held);
         let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(held.as_str())).rect().center();
@@ -1294,7 +937,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_choosers_cancel_and_unavailable_keep_files_model_and_history() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let old_book = std::fs::read(&f.book).unwrap();
         let old_chapters: Vec<_> = f.chapters.iter().map(|p| std::fs::read(p).unwrap()).collect();
@@ -1322,7 +965,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_new_open_add_use_real_answered_callbacks_once() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let created = f._dir.path().join("New Book.dcbook").to_string_lossy().into_owned();
         let start = h.state().app.session.journal.len();
@@ -1358,7 +1001,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_paginate_sync_and_export_touch_closed_chapters_not_active_document() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         tab_to(&mut h, "Update Numbering");
@@ -1384,7 +1027,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_write_refusal_preserves_rows_source_files_and_document_then_recovers() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let backup = f._dir.path().join("Saved.dcbook");
         std::fs::rename(&f.book, &backup).unwrap();
@@ -1412,7 +1055,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_disabled_and_sizing_passes_cannot_dispatch_or_queue_dialogs() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let old = std::fs::read(&f.book).unwrap();
         let start = h.state().app.session.journal.len();
@@ -1439,36 +1082,18 @@ mod book_workflow_tests {
     fn installed_book_no_book_has_only_open_actions_and_full_translated_row_names() {
         let (_f, mut app) = fixture(false);
         app.run("book.close", json!({})).unwrap();
-        let h = harness(app, true);
+        let h = harness(app);
         element(&h, "New Book…");
         element(&h, "Open…");
         assert_eq!(h.state().controls.as_ref().unwrap().elements.iter().filter(|e| e.component == "Button" && e.part.is_none()).count(), 2);
         let (f, mut app) = fixture(true);
         app.ui.language = "de".to_owned();
-        let h = harness(app, true);
+        let h = harness(app);
         for (i, path) in f.chapters.iter().enumerate() {
             for action in ["Style source", "Open", "Remove"] {
                 element(&h, &row(&h, action, path, i));
             }
         }
-    }
-
-    #[test]
-    fn uninstalled_book_native_rows_and_real_remove_payload_remain_available() {
-        let (f, app) = fixture(false);
-        let mut h = harness(app, false);
-        assert!(!h.state().app.framework_installed);
-        assert!(!h.state().controls.as_ref().is_some_and(|r| r.elements.iter().any(|e| e.component == "Button")));
-        let pos = {
-            let nodes: Vec<_> = h.query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Remove")).collect();
-            assert_eq!(nodes.len(), 2);
-            nodes[1].rect().center()
-        };
-        let start = h.state().app.session.journal.len();
-        pointer(&mut h, pos, true);
-        pointer(&mut h, pos, false);
-        assert_eq!(&h.state().app.session.journal[start..], &[("book.remove".to_owned(), json!({"index":1}))]);
-        assert_eq!(h.state().app.session.book.as_ref().unwrap().documents, [f.chapters[0].clone()]);
     }
 
     #[test]
@@ -1480,7 +1105,7 @@ mod book_workflow_tests {
         for path in &f.chapters {
             other.execute("book.add", &json!({"path":path})).unwrap();
         }
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let bytes = std::fs::read(&f.book).unwrap();
         let name = row(&h, "Remove", &f.chapters[1], 1);
@@ -1503,7 +1128,7 @@ mod book_workflow_tests {
     #[test]
     fn installed_book_numbering_refuses_an_open_chapter_without_partial_disk_or_document_changes() {
         let (f, app) = fixture(false);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let open = row(&h, "Open", &f.chapters[0], 0);
         click(&mut h, &open);
         assert_eq!(h.state().app.session.active().unwrap().path.as_deref(), Some(f.chapters[0].as_str()));
@@ -1800,19 +1425,13 @@ mod scripts_shelf_workflow_tests {
 
     fn harness_with_original_glyphs(
         mut app: DesignApp,
-        installed: bool,
         parent: bool,
         width: f32,
         case: OriginalScriptGlyphs,
     ) -> Harness<'static, Window> {
         let texts = original_script_glyph_texts(case, &app.ui.language);
-        app.framework_transform = false;
-        app.framework_opacity = installed;
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed, "the case-local install choice selects the real editor route");
+        app.install_framework(&ctx);
         app.egui_ctx = Some(ctx.clone());
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut fonts = false;
@@ -1860,17 +1479,12 @@ mod scripts_shelf_workflow_tests {
         h
     }
 
-    fn harness(app: DesignApp, installed: bool, parent: bool, width: f32) -> Harness<'static, Window> {
-        harness_with_step_dt(app, installed, parent, width, None)
+    fn harness(app: DesignApp, parent: bool, width: f32) -> Harness<'static, Window> {
+        harness_with_step_dt(app, parent, width, None)
     }
-    fn harness_with_step_dt(mut app: DesignApp, installed: bool, parent: bool, width: f32, step_dt: Option<f32>) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = installed;
+    fn harness_with_step_dt(mut app: DesignApp, parent: bool, width: f32, step_dt: Option<f32>) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed, "the case-local install choice selects the real editor route");
+        app.install_framework(&ctx);
         app.egui_ctx = Some(ctx.clone());
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut fonts = false;
@@ -1944,7 +1558,7 @@ mod scripts_shelf_workflow_tests {
 
     #[test]
     fn scripts_new_edit_unbounded_plain_strings_escape_and_ui_persistence_keep_document_history() {
-        let mut h = harness_with_original_glyphs(app(), true, true, 340.0, OriginalScriptGlyphs::UnboundedName);
+        let mut h = harness_with_original_glyphs(app(), true, 340.0, OriginalScriptGlyphs::UnboundedName);
         let before = mark(&h);
         let original = h.state().app.ui.scripts.clone();
         let start = h.state().app.session.journal.len();
@@ -1973,7 +1587,7 @@ mod scripts_shelf_workflow_tests {
     fn scripts_real_parent_pointer_runs_exact_full_body_once_with_one_undo_and_redo() {
         let mut a = app();
         a.ui.scripts[0].1 = two();
-        let mut h = harness(a, true, true, 340.0);
+        let mut h = harness(a, true, 340.0);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         click(&mut h, "Run");
@@ -1997,7 +1611,7 @@ mod scripts_shelf_workflow_tests {
     #[test]
     fn scripts_natural_keyboard_space_and_enter_each_run_only_one_exact_script() {
         for activation in [Key::Space, Key::Enter] {
-            let mut h = harness(app(), true, false, 420.0);
+            let mut h = harness(app(), false, 420.0);
             let before = mark(&h);
             let start = h.state().app.session.journal.len();
             tab_to(&mut h, "Run");
@@ -2014,7 +1628,7 @@ mod scripts_shelf_workflow_tests {
 
     #[test]
     fn scripts_duplicate_native_row_selection_and_original_double_click_run_the_exact_slot() {
-        let mut h = harness(app(), true, false, 420.0);
+        let mut h = harness(app(), false, 420.0);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         let pos = second_row(&h);
@@ -2024,7 +1638,7 @@ mod scripts_shelf_workflow_tests {
         click(&mut h, "Run");
         assert_eq!(runs(&h, start), vec![json!({"text":two()})]);
         assert_eq!(count(&h), 2);
-        let mut double = harness_with_step_dt(app(), true, false, 420.0, Some(1.0 / 60.0));
+        let mut double = harness_with_step_dt(app(), false, 420.0, Some(1.0 / 60.0));
         let start = double.state().app.session.journal.len();
         let pos = second_row(&double);
         click_at(&mut double, pos);
@@ -2035,7 +1649,7 @@ mod scripts_shelf_workflow_tests {
 
     #[test]
     fn scripts_delete_only_selected_slot_and_empty_shelf_disabled_actions_preserve_domain() {
-        let mut h = harness(app(), true, true, 340.0);
+        let mut h = harness(app(), true, 340.0);
         let before = mark(&h);
         let original = h.state().app.ui.scripts.clone();
         let start = h.state().app.session.journal.len();
@@ -2070,7 +1684,7 @@ mod scripts_shelf_workflow_tests {
         let mut a = app();
         a.services.read = Some(Box::new(|p| std::fs::read(p).map_err(|e| e.to_string())));
         a.answer_dialogs(answer_with(Some(path.to_string_lossy().into_owned())));
-        let mut h = harness_with_original_glyphs(a, true, true, 340.0, OriginalScriptGlyphs::LoadedUtf8(path.to_string_lossy().into_owned()));
+        let mut h = harness_with_original_glyphs(a, true, 340.0, OriginalScriptGlyphs::LoadedUtf8(path.to_string_lossy().into_owned()));
         let before = mark(&h);
         let old = h.state().app.ui.scripts.clone();
         let start = h.state().app.session.journal.len();
@@ -2101,7 +1715,7 @@ mod scripts_shelf_workflow_tests {
             } else {
                 a.answer_dialogs(answer_with((mode != 0).then(|| "Unavailable.script".to_owned())));
             }
-            let mut h = harness(a, true, false, 420.0);
+            let mut h = harness(a, false, 420.0);
             let before = mark(&h);
             let old = h.state().app.ui.scripts.clone();
             let start = h.state().app.session.journal.len();
@@ -2123,7 +1737,7 @@ mod scripts_shelf_workflow_tests {
         let mut a = app();
         let text = format!("{}\nnope.command", one());
         a.ui.scripts[0].1 = text.clone();
-        let mut h = harness(a, true, true, 340.0);
+        let mut h = harness(a, true, 340.0);
         let before = mark(&h);
         let shelf = h.state().app.ui.scripts.clone();
         click(&mut h, "Run");
@@ -2138,7 +1752,7 @@ mod scripts_shelf_workflow_tests {
 
     #[test]
     fn scripts_disabled_parent_and_sdk_sizing_retire_input_and_accept_a_fresh_run() {
-        let mut h = harness(app(), true, true, 340.0);
+        let mut h = harness(app(), true, 340.0);
         let e = element(&h, "Run", "Button");
         event(&mut h, Event::PointerMoved(e.rect.center()));
         pointer(&mut h, e.rect.center(), true);
@@ -2171,7 +1785,7 @@ mod scripts_shelf_workflow_tests {
     #[test]
     fn scripts_held_run_cannot_follow_selected_body_full_content_or_document_selection_changes() {
         for change in 0..3 {
-            let mut h = harness(app(), true, false, 420.0);
+            let mut h = harness(app(), false, 420.0);
             let e = element(&h, "Run", "Button");
             event(&mut h, Event::PointerMoved(e.rect.center()));
             pointer(&mut h, e.rect.center(), true);
@@ -2200,7 +1814,7 @@ mod scripts_shelf_workflow_tests {
 
     #[test]
     fn scripts_held_run_rejects_recreated_document_with_same_uid_and_constructor_owned_new_epoch() {
-        let mut h = harness(app(), true, false, 420.0);
+        let mut h = harness(app(), false, 420.0);
         let e = element(&h, "Run", "Button");
         let uid = h.state().app.session.active().unwrap().uid;
         let epoch = h.state().app.session.active().unwrap().identity_epoch;
@@ -2229,7 +1843,7 @@ mod scripts_shelf_workflow_tests {
         for language in ["de", "ar"] {
             let mut a = app();
             a.ui.language = language.into();
-            let mut h = harness_with_original_glyphs(a, true, true, 340.0, OriginalScriptGlyphs::LocalizedNames);
+            let mut h = harness_with_original_glyphs(a, true, 340.0, OriginalScriptGlyphs::LocalizedNames);
             for caption in ["Run", "New", "Load…", "Delete"] {
                 element(&h, caption, "Button");
             }
@@ -2255,61 +1869,22 @@ mod scripts_shelf_workflow_tests {
     }
 
     #[test]
-    fn scripts_uninstalled_native_controls_and_code_editor_keep_real_selection_and_run_without_sdk_facts() {
-        let mut h = harness(app(), false, true, 340.0);
-        assert!(h.state().controls.as_ref().unwrap().elements.is_empty());
-        let singleline = h.get_all_by_role(egui::accesskit::Role::TextInput).count();
-        let multiline = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).count();
-        assert_eq!(singleline, 1);
-        assert_eq!(multiline, 1);
-        assert_eq!(singleline + multiline, 2);
-        let before = mark(&h);
-        let pos = second_row(&h);
-        click_at(&mut h, pos);
-        unchanged(&h, &before);
-        let run = h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").rect().center();
-        let start = h.state().app.session.journal.len();
-        click_at(&mut h, run);
-        assert_eq!(runs(&h, start), vec![json!({"text":two()})]);
-        assert_eq!(count(&h), 2);
-        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
-    }
-
-    #[test]
     fn scripts_sdk_and_native_code_editors_keep_tab_shift_tab_and_multiline_text_without_running() {
-        for installed in [true, false] {
-            let mut h = harness(app(), installed, false, 420.0);
-            let before = mark(&h);
-            let start = h.state().app.session.journal.len();
-            if installed {
-                edit(&mut h, "Scripts", "\t# line");
-            } else {
-                let body = one();
-                let full = label(&h, "Scripts");
-                let pos = h
-                    .get_by(|n| {
-                        n.role() == egui::accesskit::Role::MultilineTextInput
-                            && n.label().as_deref() == Some(full.as_str())
-                            && n.value().as_deref() == Some(body.as_str())
-                    })
-                    .rect()
-                    .center();
-                click_at(&mut h, pos);
-                key_mod(&mut h, Key::A, Modifiers::COMMAND);
-                event(&mut h, Event::Paste("\t# line".into()));
-            }
-            assert_eq!(h.state().app.ui.scripts[0].1, "\t# line");
-            key_mod(&mut h, Key::Tab, Modifiers { shift: true, ..Modifiers::NONE });
-            assert_eq!(h.state().app.ui.scripts[0].1, "# line");
-            key(&mut h, Key::Home);
-            key(&mut h, Key::Tab);
-            assert_eq!(h.state().app.ui.scripts[0].1, "\t# line");
-            key(&mut h, Key::End);
-            key(&mut h, Key::Enter);
-            event(&mut h, Event::Text("# two".into()));
-            assert_eq!(h.state().app.ui.scripts[0].1, "\t# line\n# two");
-            unchanged(&h, &before);
-            assert_eq!(h.state().app.session.journal.len(), start);
-        }
+        let mut h = harness(app(), false, 420.0);
+        let before = mark(&h);
+        let start = h.state().app.session.journal.len();
+        edit(&mut h, "Scripts", "\t# line");
+        assert_eq!(h.state().app.ui.scripts[0].1, "\t# line");
+        key_mod(&mut h, Key::Tab, Modifiers { shift: true, ..Modifiers::NONE });
+        assert_eq!(h.state().app.ui.scripts[0].1, "# line");
+        key(&mut h, Key::Home);
+        key(&mut h, Key::Tab);
+        assert_eq!(h.state().app.ui.scripts[0].1, "\t# line");
+        key(&mut h, Key::End);
+        key(&mut h, Key::Enter);
+        event(&mut h, Event::Text("# two".into()));
+        assert_eq!(h.state().app.ui.scripts[0].1, "\t# line\n# two");
+        unchanged(&h, &before);
+        assert_eq!(h.state().app.session.journal.len(), start);
     }
 }

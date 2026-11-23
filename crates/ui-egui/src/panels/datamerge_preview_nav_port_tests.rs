@@ -136,10 +136,8 @@ fn fixture(preview: bool) -> Harness<'static, Window> {
     if preview {
         app.run("data.preview", json!({"record": 2})).unwrap();
     }
-    app.framework_opacity = true;
     let ctx = egui::Context::default();
     app.install_framework(&ctx);
-    assert!(app.framework_installed);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(540.0, 820.0)).build_ui_state(

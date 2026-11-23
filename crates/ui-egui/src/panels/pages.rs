@@ -4,11 +4,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use designcraft_doc::{SpreadId, SpreadRef};
-use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
+use egui::Color32;
 use serde_json::json;
 
-use crate::theme::Tokens;
-use crate::{DesignApp, icons};
+use crate::DesignApp;
 
 /// What a thumbnail shows: a document page (absolute index) or a whole parent spread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -317,69 +316,6 @@ pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, fir
     }
 }
 
-/// The footer's page count and buttons: a page dropped on Create new page is duplicated at the end of the document.
-fn pages_footer(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::footer(app, ui, doc, cur);
-        return;
-    }
-    native_footer(app, ui, doc, cur, t, dragging);
-}
-
-fn native_footer(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(FOOTER_H - 4.0);
-        crate::rtl::label(
-            ui,
-            egui::RichText::new(
-                crate::i18n::tr(&app.ui.language, "{pages} Pages in {spreads} Spreads")
-                    .replace("{pages}", &doc.page_count().to_string())
-                    .replace("{spreads}", &doc.spreads.len().to_string()),
-            )
-            .size(11.0)
-            .color(t.text_dim),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete selected pages")).clicked() {
-                let _ = crate::dialogs::delete_pages(app, vec![cur]);
-            }
-            // Create new page; a page dropped on it is duplicated at the end of the document.
-            let plus = icons::button(ui, "plus", 20.0, dragging, crate::i18n::tr(&app.ui.language, "Create new page"));
-            if let Some(payload) = plus.dnd_release_payload::<PageDrag>() {
-                if let PageDrag::Page(from) = *payload
-                    && let Some((si, _)) = doc.page_loc(from)
-                {
-                    let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "atEnd": true}));
-                }
-            } else if plus.clicked() {
-                let _ = app.run("layout.pages.insert", json!({"after": cur, "count": 1}));
-            }
-            // Edit page size: InDesign's presets for the current page, or Custom Page Size….
-            let size = icons::button(ui, "panel-pages", 20.0, false, crate::i18n::tr(&app.ui.language, "Edit page size"));
-            egui::Popup::menu(&size).show(|ui| {
-                let Some((si, pi)) = doc.page_loc(cur) else { return };
-                let pg = &doc.spreads[si].pages[pi];
-                let landscape = pg.width > pg.height;
-                let current = crate::panels::properties::preset_name(pg.width, pg.height);
-                for (name, w, h) in crate::panels::properties::PAGE_PRESETS {
-                    let (w, h) = if landscape { (h, w) } else { (w, h) };
-                    if ui.selectable_label(current == *name, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, name))).clicked() {
-                        let _ = app.run("layout.pageSize", json!({"pages": [cur + 1], "width": w, "height": h}));
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Custom Page Size…"))).clicked() {
-                    app.ui.dialog =
-                        Some(crate::dialogs::Dialog::new("cmd:layout.pageSize", json!({"pages": [cur + 1], "width": pg.width, "height": pg.height})));
-                    ui.close();
-                }
-            });
-        });
-    });
-}
-
 /// A row of the Pages panel's parents list: [None] (`parent` = `None`) or a parent.
 struct ParentRow {
     label: String,
@@ -416,28 +352,7 @@ impl ParentRow {
     }
 }
 
-/// Paint a parent's icon `h` high, right-aligned at `right`: its rendered spread (when
-/// `thumbnails`), or blank pages for [None] and when the spread can't be rendered.
-fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &ParentRow, h: f32, thumbnails: bool, t: &Tokens) {
-    let area = egui::Rect::from_min_size(egui::pos2(right.x - row.unit_w * h, right.y - h / 2.0), vec2(row.unit_w * h, h));
-    let tex = if thumbnails && ui.is_rect_visible(area) { row.parent.and_then(|(_, id)| thumb(app, ui.ctx(), ThumbOf::Parent(id), h)) } else { None };
-    let p = ui.painter();
-    match tex {
-        Some(tex) => {
-            p.image(tex.id(), area, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
-        }
-        None => {
-            p.rect_filled(area, 0.0, Color32::WHITE);
-        }
-    }
-    for (x, w) in &row.pages {
-        let r = egui::Rect::from_min_size(egui::pos2(area.min.x + x * h, area.min.y), vec2(w * h, h));
-        p.rect_stroke(r, 0.0, Stroke::new(0.5, t.border), StrokeKind::Inside);
-    }
-}
-
-/// What the Pages panel shows this frame and how its parts share the room: the same for the native and the framework
-/// drawing.
+/// What the Pages panel shows this frame and how its parts share the room.
 struct Plan {
     uid: u64,
     editing_parents: bool,
@@ -568,7 +483,6 @@ impl Plan {
 
     /// One scale for the whole document (pages of their own size show in proportion): the document's page size at the
     /// panel's size, unless a taller page would pass 1.8 times it.
-    #[cfg(not(target_arch = "wasm32"))]
     fn scale(&self, doc: &designcraft_doc::Document) -> f32 {
         (self.th / doc.settings.page_height.max(1.0) as f32).min(1.8 * self.th / self.tallest as f32)
     }
@@ -597,340 +511,10 @@ fn apply_drop(app: &mut DesignApp, doc: &designcraft_doc::Document, drop: Option
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let doc = st.doc.clone();
     let plan = Plan::new(app, ui, &doc, st.uid, st.editing_parents);
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::show(app, ui, &doc, &plan);
-        return;
-    }
-    let Plan {
-        uid,
-        editing_parents,
-        rows,
-        opts,
-        row_h,
-        icon_h,
-        parent_thumbnails,
-        parents_min,
-        parents_max,
-        parents_h,
-        space,
-        pages_h,
-        cur,
-        cur_spread,
-        cur_parent,
-        selected_parent,
-        tallest,
-        th,
-        thumbnails,
-        layouts,
-        columns,
-        ..
-    } = plan;
-    let mut drop: Option<(PageDrag, usize)> = None;
-    ui.spacing_mut().item_spacing.y = 0.0;
-    // Parents side by side (Show Vertically off): tiles of the icon and the prefix, wrapping.
-    let tile_w = |unit_w: f32| tile_width(icon_h, unit_w);
-    let parents_part = |app: &mut DesignApp, ui: &mut egui::Ui| {
-        egui::ScrollArea::vertical().id_salt("pages_parents").max_height(parents_h).min_scrolled_height(parents_h).auto_shrink([false, true]).show(
-            ui,
-            |ui| {
-                ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
-                let each = |app: &mut DesignApp, ui: &mut egui::Ui, row: &ParentRow| {
-                    let label = row.label.as_str();
-                    let (r, resp) = if opts.parents_vertical {
-                        ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag())
-                    } else {
-                        ui.allocate_exact_size(vec2(tile_w(row.unit_w), icon_h + 22.0), Sense::click_and_drag())
-                    };
-                    let active = row.parent.is_some_and(|(i, id)| cur_parent == Some(i) || selected_parent == Some(id));
-                    if active {
-                        ui.painter().rect_filled(r, 0.0, t.row_selected);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(r, 0.0, t.hover);
-                    }
-                    if opts.parents_vertical {
-                        ui.painter().text(
-                            r.left_center() + vec2(3.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            label,
-                            egui::FontId::proportional(11.5),
-                            t.text_strong,
-                        );
-                        parent_icon(app, ui, egui::pos2(r.max.x - 10.0, r.center().y), row, icon_h, parent_thumbnails, &t);
-                    } else {
-                        let w = icon_h * row.unit_w;
-                        parent_icon(app, ui, egui::pos2(r.center().x + w / 2.0, r.min.y + 3.0 + icon_h / 2.0), row, icon_h, parent_thumbnails, &t);
-                        let short = row.prefix.clone().unwrap_or_else(|| label.to_string());
-                        ui.painter().text(
-                            egui::pos2(r.center().x, r.max.y - 9.0),
-                            egui::Align2::CENTER_CENTER,
-                            short,
-                            egui::FontId::proportional(11.0),
-                            t.text_strong,
-                        );
-                    }
-                    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, label));
-                    let resp = if opts.parents_vertical { resp } else { resp.on_hover_text(label) };
-                    resp.dnd_set_drag_payload(PageDrag::Parent(row.parent.map(|(_, id)| id)));
-                    if resp.clicked() {
-                        select_parent(app, row.parent.map(|(_, id)| id));
-                    }
-                    if resp.double_clicked()
-                        && let Some((_, id)) = row.parent
-                    {
-                        let _ = app.run("layout.parents.edit", json!({"on": true, "parent": id.0}));
-                    }
-                    if resp.dragged() {
-                        drag_ghost(ui, label, &t);
-                    }
-                    if let Some((_, id)) = row.parent {
-                        resp.context_menu(|ui| parent_menu(app, ui, &doc, Some(id), false));
-                    }
-                };
-                if opts.parents_vertical {
-                    for row in &rows {
-                        each(app, ui, row);
-                    }
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
-                        for row in &rows {
-                            each(app, ui, row);
-                        }
-                    });
-                }
-                // New Parent in one click: the next free prefix (B, C…), named Parent.
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), NEW_PARENT_H), Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(r, 0.0, t.hover);
-                }
-                let label = crate::i18n::tr(&app.ui.language, "New Parent");
-                ui.painter().text(
-                    r.left_center() + vec2(3.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    format!("+  {label}"),
-                    egui::FontId::proportional(11.0),
-                    t.text_dim,
-                );
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-                if resp.clicked()
-                    && let Ok(r) = app.run("layout.parents.new", json!({}))
-                {
-                    select_parent(app, r.get("id").and_then(serde_json::Value::as_u64).map(SpreadId));
-                }
-            },
-        );
-    };
-    // ---- Document spreads.
-    let followed_id = egui::Id::unique("pages_panel_followed");
-    let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
-    let mut pages_part = |app: &mut DesignApp, ui: &mut egui::Ui| {
-        // The document's spreads `spreads`, each a row centred on its spine.
-        let mut draw_spreads = |app: &mut DesignApp, ui: &mut egui::Ui, spreads: std::ops::Range<usize>| {
-            let center = ui.available_width() / 2.0;
-            for (si, sp) in doc.spreads.iter().enumerate().take(spreads.end).skip(spreads.start) {
-                let first = doc.first_page_of_spread(si);
-                // One scale for the whole document (pages of their own size show in proportion): the
-                // document's page size at the panel's size, unless a taller page would pass 1.8 times it.
-                // Each row is as tall as its spread's tallest page.
-                let scale = (th / doc.settings.page_height.max(1.0) as f32).min(1.8 * th / tallest as f32);
-                let row_h = sp.pages.iter().map(|p| p.height as f32 * scale).fold(0.0, f32::max).max(th * 0.25);
-                let spine = sp.spine_x() as f32;
-                let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0 + row_h + 22.0), Sense::hover());
-                let top = row.min.y + 8.0;
-                if cur_spread == Some(si) && !editing_parents {
-                    let key = (uid, cur);
-                    if ui.data(|d| d.get_temp::<(u64, usize)>(followed_id)) != Some(key) {
-                        ui.scroll_to_rect(row, None);
-                        ui.data_mut(|d| d.insert_temp(followed_id, key));
-                    }
-                }
-                for (pi, p) in sp.pages.iter().enumerate() {
-                    let abs = first + pi;
-                    let x0 = row.min.x + center + (p.x as f32 - spine) * scale;
-                    let pr = egui::Rect::from_min_size(egui::pos2(x0, top), vec2(p.width as f32 * scale, p.height as f32 * scale));
-                    let resp = ui.interact(pr, ui.scope_id().with(("page", abs)), Sense::click_and_drag());
-                    let selected = abs == cur && !editing_parents;
-                    // Screen readers hear "Page 3".
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
-                    });
-                    let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                    match (thumbnails && ui.is_rect_visible(pr)).then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
-                        Some(tex) => {
-                            ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
-                        }
-                        None => {
-                            ui.painter().rect_filled(pr, 0.0, tint);
-                        }
-                    }
-                    ui.painter().rect_stroke(pr, 0.0, Stroke::new(0.5, Color32::from_gray(0x4a)), StrokeKind::Outside);
-                    if abs == 0 || doc.sections.iter().any(|s| s.start == abs) {
-                        let c = egui::pos2(pr.center().x, row.min.y + 4.0);
-                        ui.painter().add(egui::Shape::convex_polygon(
-                            vec![c + vec2(-4.5, -3.0), c + vec2(4.5, -3.0), c + vec2(0.0, 3.0)],
-                            t.icon,
-                            Stroke::NONE,
-                        ));
-                        let marker =
-                            ui.interact(egui::Rect::from_center_size(c, vec2(12.0, 8.0)), ui.scope_id().with(("section", abs)), Sense::click());
-                        let label = format!(
-                            "{}: {}",
-                            crate::i18n::tr(&app.ui.language, "Numbering & Section Options…").trim_end_matches('…'),
-                            app.session.page_label(abs)
-                        );
-                        marker.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
-                        // A double click, or the keyboard or a screen reader activating it (a
-                        // single pointer click only selects, as on a page).
-                        let activated = marker.double_clicked() || marker.clicked() && !marker.clicked_by(egui::PointerButton::Primary);
-                        if activated {
-                            if editing_parents {
-                                let _ = app.run("layout.parents.edit", json!({"on": false}));
-                                if let Some(view) = app.view_mut() {
-                                    view.fitted = false;
-                                }
-                            }
-                            crate::canvas::go_to_page(app, abs);
-                            crate::menus::activate(app, "layout.section", &serde_json::Value::Null);
-                        }
-                    }
-                    // Parent prefix in the outer top corner (black on white).
-                    if let Some(pid) = p.parent
-                        && let Some(pp) = doc.parents.iter().find(|x| x.id == pid)
-                    {
-                        let prefix = pp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default();
-                        let g = ui.painter().layout_no_wrap(prefix, crate::theme::semibold(9.5), Color32::BLACK);
-                        let w = g.size().x + 2.0;
-                        let br = if p.side == designcraft_doc::PageSide::Left {
-                            egui::Rect::from_min_size(pr.left_top(), vec2(w, 10.0))
-                        } else {
-                            egui::Rect::from_min_size(pr.right_top() - vec2(w, 0.0), vec2(w, 10.0))
-                        };
-                        ui.painter().rect_filled(br, 0.0, Color32::WHITE);
-                        ui.painter().galley(br.min + vec2(1.0, -0.5), g, Color32::BLACK);
-                    }
-                    // Drag and drop: pages reorder, parents apply.
-                    resp.dnd_set_drag_payload(PageDrag::Page(abs));
-                    if resp.dragged() {
-                        drag_ghost(ui, &app.session.page_label(abs), &t);
-                    }
-                    if dragging && resp.contains_pointer() {
-                        ui.painter().rect_stroke(pr.expand(1.5), 0.0, Stroke::new(2.0, BADGE), StrokeKind::Outside);
-                    }
-                    if let Some(payload) = resp.dnd_release_payload::<PageDrag>() {
-                        drop = Some(((*payload).clone(), abs));
-                    }
-                    if resp.clicked() || resp.double_clicked() {
-                        select_parent(app, None);
-                        if editing_parents {
-                            let _ = app.run("layout.parents.edit", json!({"on": false}));
-                            // The canvas refits to the page's spread once it is centred.
-                            if let Some(v) = app.view_mut() {
-                                v.fitted = false;
-                            }
-                        }
-                        crate::canvas::go_to_page(app, abs);
-                    }
-                    resp.context_menu(|ui| page_menu(app, ui, &doc, &layouts, abs, si));
-                }
-                let label = spread_label(app, &doc, first, sp.pages.len());
-                // White on the badge; the theme's text colour elsewhere, so it reads on a light panel.
-                let badge = cur_spread == Some(si) && !editing_parents;
-                let ink = if badge { Color32::WHITE } else { t.text_strong };
-                let g = ui.painter().layout_no_wrap(label.clone(), crate::theme::semibold(11.0), ink);
-                let c = egui::pos2(row.min.x + center, top + row_h + 11.0);
-                let br = egui::Rect::from_center_size(c, vec2(g.size().x + 7.0, 12.5));
-                if badge {
-                    ui.painter().rect_filled(br, 0.0, BADGE);
-                }
-                ui.painter().galley(c - g.size() / 2.0, g, ink);
-                let lr = ui.interact(br, ui.scope_id().with(("spread_label", si)), Sense::click());
-                // A click goes to the spread, so assistive technology hears a button.
-                lr.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
-                if lr.clicked() {
-                    if editing_parents {
-                        let _ = app.run("layout.parents.edit", json!({"on": false}));
-                        if let Some(view) = app.view_mut() {
-                            view.fitted = false;
-                        }
-                    }
-                    crate::canvas::go_to_page(app, first);
-                }
-            }
-        };
-        let area = if columns { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
-        area.id_salt("pages_spreads").max_height(pages_h).min_scrolled_height(pages_h).auto_shrink([false, false]).show(ui, |ui| {
-            ui.add_space(4.0);
-            if columns {
-                // Alternate layouts side by side, as InDesign's: a column each, its name and size
-                // over it, and a column to add one more.
-                let scale = (th / doc.settings.page_height.max(1.0) as f32).min(1.8 * th / tallest as f32);
-                let cur_layout = layout_index(&layouts, cur);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 0.0);
-                    for (k, l) in layouts.iter().enumerate() {
-                        let spreads = spread_range(&doc, l);
-                        let widest =
-                            doc.spreads.get(spreads.clone()).unwrap_or_default().iter().map(|sp| sp.bounds().width() as f32).fold(0.0, f32::max);
-                        let col_w = (widest * scale + 24.0).max(LAYOUT_COL_MIN);
-                        ui.vertical(|ui| {
-                            ui.set_width(col_w);
-                            layout_header(app, ui, &doc, &layouts, k, k == cur_layout, &t);
-                            draw_spreads(app, ui, spreads);
-                        });
-                    }
-                    let (r, resp) = ui.allocate_exact_size(vec2(28.0, LAYOUT_HEADER_H), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(r, 2.0, t.hover);
-                    }
-                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(15.0), t.text_strong);
-                    let label = crate::i18n::tr(&app.ui.language, "Create Alternate Layout…");
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-                    if resp.on_hover_text(label).clicked() {
-                        open_create_alternate(app, &doc, &layouts, cur_layout);
-                    }
-                });
-            } else {
-                draw_spreads(app, ui, 0..doc.spreads.len());
-            }
-            // Right-click on the empty part of the panel: the short menu.
-            let rest = ui.available_rect_before_wrap();
-            let (_, empty) = ui.allocate_exact_size(vec2(ui.available_width(), rest.height().max(8.0)), Sense::click());
-            empty.context_menu(|ui| {
-                let entries = empty_entries(&app.ui.language, cur);
-                native_entries(app, ui, &doc, &layouts, entries);
-            });
-        });
-    };
-    // The divider: drag it to show more or fewer parents.
-    let divider = |app: &mut DesignApp, ui: &mut egui::Ui| {
-        let (dr, dresp) = ui.allocate_exact_size(vec2(ui.available_width(), DIVIDER_H), Sense::drag());
-        let line = egui::Rect::from_center_size(dr.center(), vec2(dr.width() + 20.0, 1.5));
-        ui.painter().rect_filled(line, 0.0, if dresp.hovered() || dresp.dragged() { t.text_dim } else { t.section_divider });
-        let dresp = dresp.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-        if dresp.dragged() {
-            let dy = dresp.drag_delta().y * if opts.pages_on_top { -1.0 } else { 1.0 };
-            app.ui.pages_parents_height = Some([(parents_h + dy).clamp(parents_min, parents_max), space]);
-        }
-        dresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Splitter, true, "Parents and pages divider"));
-    };
-    if opts.pages_on_top {
-        pages_part(app, ui);
-        divider(app, ui);
-        parents_part(app, ui);
-    } else {
-        parents_part(app, ui);
-        divider(app, ui);
-        pages_part(app, ui);
-    }
-    ui.spacing_mut().item_spacing.y = 4.0;
-    pages_footer(app, ui, &doc, cur, &t, dragging);
-    let alt = ui.input(|i| i.modifiers.alt);
-    apply_drop(app, &doc, drop.map(|(payload, to)| (payload, to, alt)));
+    framework::show(app, ui, &doc, &plan);
 }
 
 /// The panel menu's page commands, acting on the current page and its spread.
@@ -940,13 +524,8 @@ pub fn panel_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
     let cur = crate::canvas::current_page(app).unwrap_or(0);
     let Some((si, _)) = doc.page_loc(cur) else { return };
     let layouts = doc.layouts();
-    // The dock's menu button opens a framework menu: its rows are `MenuItem`s there, and native rows in the browser build.
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::panel_menu(app, ui, &doc, &layouts, cur, si);
-        return;
-    }
-    page_menu(app, ui, &doc, &layouts, cur, si);
+    // The dock's menu button opens a framework menu: its rows are `MenuItem`s.
+    framework::panel_menu(app, ui, &doc, &layouts, cur, si);
 }
 
 /// Panel Options…, with the panel's current options.
@@ -974,58 +553,6 @@ fn layout_size(doc: &designcraft_doc::Document, l: &designcraft_doc::LayoutRange
     doc.page(l.start).map_or((doc.settings.page_width, doc.settings.page_height), |p| (p.width, p.height))
 }
 
-/// An alternate layout column's header: its name and page size, and a menu (▾, or a right-click)
-/// to create, duplicate, change or delete layouts. Double-click: Alternate Layout Options.
-fn layout_header(
-    app: &mut DesignApp,
-    ui: &mut egui::Ui,
-    doc: &designcraft_doc::Document,
-    layouts: &[designcraft_doc::LayoutRange],
-    k: usize,
-    current: bool,
-    t: &Tokens,
-) {
-    let Some(l) = layouts.get(k) else { return };
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), LAYOUT_HEADER_H), Sense::click());
-    ui.painter().rect_filled(r.shrink2(vec2(0.0, 2.0)), 2.0, if current { t.row_selected } else { t.panel_darker });
-    let (w, h) = layout_size(doc, l);
-    let menu_r = egui::Rect::from_min_size(egui::pos2(r.max.x - 20.0, r.min.y + 4.0), vec2(18.0, LAYOUT_HEADER_H - 8.0));
-    let text_w = (r.width() - 26.0).max(8.0);
-    let name = ui.painter().layout(l.name.clone(), crate::theme::semibold(11.0), t.text_strong, text_w);
-    let name =
-        if name.rows.len() > 1 { ui.painter().layout_no_wrap(truncate(&l.name, 14), crate::theme::semibold(11.0), t.text_strong) } else { name };
-    ui.painter().galley(r.min + vec2(5.0, 5.0), name, t.text_strong);
-    ui.painter().text(
-        r.min + vec2(5.0, 20.0),
-        egui::Align2::LEFT_TOP,
-        format!("{} × {}", w.round(), h.round()),
-        egui::FontId::proportional(10.0),
-        t.text_dim,
-    );
-    let menu = ui.interact(menu_r, ui.scope_id().with(("layout_menu", k)), Sense::click());
-    if menu.hovered() {
-        ui.painter().rect_filled(menu_r, 2.0, t.hover);
-    }
-    ui.painter().text(menu_r.center(), egui::Align2::CENTER_CENTER, "▾", egui::FontId::proportional(12.0), t.text_strong);
-    let label = crate::i18n::tr(&app.ui.language, "Layout Options");
-    menu.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{label}: {}", l.name)));
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, current, l.name.clone()));
-    egui::Popup::menu(&menu).show(|ui| layout_menu(app, ui, doc, layouts, k));
-    if resp.double_clicked() {
-        open_layout_options(app, doc, layouts, k);
-    } else if resp.clicked() {
-        // As a page click: leave Edit Parents first, so the view moves on document pages.
-        if app.session.active().is_some_and(|st| st.editing_parents) {
-            let _ = app.run("layout.parents.edit", json!({"on": false}));
-            if let Some(v) = app.view_mut() {
-                v.fitted = false;
-            }
-        }
-        crate::canvas::go_to_page(app, l.start);
-    }
-    resp.context_menu(|ui| layout_menu(app, ui, doc, layouts, k));
-}
-
 /// The layout (index into `layouts`) holding absolute page `abs`.
 pub(crate) fn layout_index(layouts: &[designcraft_doc::LayoutRange], abs: usize) -> usize {
     layouts.iter().rposition(|l| l.start <= abs).unwrap_or(0)
@@ -1034,12 +561,6 @@ pub(crate) fn layout_index(layouts: &[designcraft_doc::LayoutRange], abs: usize)
 /// At most `n` characters of `s`, with an ellipsis when cut.
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) }
-}
-
-/// The commands on layout `k` as a native menu: in its column header's menu and in the panel menu.
-fn layout_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, layouts: &[designcraft_doc::LayoutRange], k: usize) {
-    let entries = layout_entries(&app.ui.language, layouts.len(), k);
-    native_entries(app, ui, doc, layouts, entries);
 }
 
 /// Create Alternate Layout…, from layout `k`, at its pages' other orientation.
@@ -1238,7 +759,7 @@ impl Act {
     }
 }
 
-/// An entry of a Pages panel menu. The framework and the native drawing of a menu show the same entries.
+/// An entry of a Pages panel menu.
 enum MenuEntry {
     Item {
         label: String,
@@ -1383,74 +904,6 @@ fn page_entries(app: &DesignApp, doc: &designcraft_doc::Document, layouts: &[des
     entries
 }
 
-/// Shows `entries` as the rows of a native menu `ui`; the one clicked runs and closes the menu.
-fn native_entries(
-    app: &mut DesignApp,
-    ui: &mut egui::Ui,
-    doc: &designcraft_doc::Document,
-    layouts: &[designcraft_doc::LayoutRange],
-    entries: Vec<MenuEntry>,
-) {
-    for entry in entries {
-        match entry {
-            MenuEntry::Sep => {
-                ui.separator();
-            }
-            MenuEntry::Item { label, enabled, check, hint, act } => {
-                let text = crate::rtl::widget(ui, label);
-                let mut response = match check {
-                    Some(mut on) => ui.add_enabled_ui(enabled, |ui| ui.checkbox(&mut on, text)).inner,
-                    None => ui.add_enabled(enabled, egui::Button::new(text)),
-                };
-                if let Some(hint) = hint {
-                    response = response.on_hover_ui(|ui| {
-                        crate::rtl::label(ui, hint);
-                    });
-                }
-                if response.clicked() {
-                    act.run(app, doc, layouts);
-                    ui.close();
-                }
-            }
-            MenuEntry::Sub { label, enabled, items } => {
-                ui.add_enabled_ui(enabled, |ui| {
-                    crate::menus::menu_button(ui, crate::rtl::widget(ui, label), |ui| native_entries(app, ui, doc, layouts, items));
-                });
-            }
-        }
-    }
-}
-
-/// The parent commands as a native menu.
-fn parent_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, target: Option<SpreadId>, named: bool) {
-    let entries = parent_entries(&app.ui.language, doc, target, named);
-    native_entries(app, ui, doc, &[], entries);
-}
-
-/// The menu of page `abs` in spread `si`, as a native menu.
-fn page_menu(
-    app: &mut DesignApp,
-    ui: &mut egui::Ui,
-    doc: &designcraft_doc::Document,
-    layouts: &[designcraft_doc::LayoutRange],
-    abs: usize,
-    si: usize,
-) {
-    let entries = page_entries(app, doc, layouts, abs, si);
-    native_entries(app, ui, doc, layouts, entries);
-}
-
-/// A small label following the pointer while dragging.
-pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
-    let Some(p) = ui.ctx().pointer_interact_pos() else { return };
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("page_drag")));
-    let g = painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(11.0), t.text_strong);
-    let r = egui::Rect::from_min_size(p + vec2(10.0, 8.0), g.size() + vec2(10.0, 6.0));
-    painter.rect(r, 2.0, t.panel_darker, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    painter.galley(r.min + vec2(5.0, 3.0), g, t.text_strong);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 mod framework;
 
 #[cfg(test)]
@@ -1458,74 +911,9 @@ mod tests;
 
 #[cfg(test)]
 mod spread_label_tests {
-    use egui_kittest::{Harness, kittest::Queryable};
     use serde_json::json;
 
     use super::*;
-
-    /// Section-marker activation targets its page and leaves parent editing without editing the document.
-    #[test]
-    fn double_clicking_a_section_marker_opens_that_pages_numbering_options() {
-        let mut app = app();
-        app.run("layout.section", json!({"page": 1, "startNumber": 1, "style": "lowerRoman"})).unwrap();
-        app.run("layout.section", json!({"page": 3, "startNumber": 1, "style": "arabic"})).unwrap();
-        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
-        app.run("layout.parents.edit", json!({"on": true})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let key = egui::Id::unique("section_marker_test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(key, true));
-                    return;
-                }
-                show(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
-        let pos = h.get_by_label("Numbering & Section Options: 1").rect().center();
-        let before = h.state().session.doc().unwrap().doc.clone();
-        for _ in 0..2 {
-            for pressed in [true, false] {
-                h.event(egui::Event::PointerMoved(pos));
-                h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
-                h.run_steps(1);
-            }
-        }
-        let dialog = h.state().ui.dialog.as_ref().unwrap();
-        assert_eq!(dialog.id, "numberingSection");
-        assert_eq!(dialog.fields.get("page"), Some(&json!(3)));
-        assert!(!h.state().session.doc().unwrap().editing_parents);
-        assert!(std::sync::Arc::ptr_eq(&h.state().session.doc().unwrap().doc, &before), "opening options does not edit the section");
-    }
-
-    #[test]
-    fn a_section_marker_opens_its_options_from_the_keyboard_but_not_on_one_click() {
-        let mut app = app();
-        app.run("layout.section", json!({"page": 3, "startNumber": 5})).unwrap();
-        app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
-        let mut h = Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let key = egui::Id::unique("section_marker_key_test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(key, true));
-                    return;
-                }
-                show(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
-        h.get_by_label("Numbering & Section Options: 5").click();
-        h.run_steps(2);
-        assert!(h.state().ui.dialog.is_none(), "one pointer click doesn't open the options");
-        h.run_steps(30);
-        h.get_by_label("Numbering & Section Options: 5").click_accesskit();
-        h.run_steps(2);
-        assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("numberingSection"));
-    }
 
     /// Create a facing-page document for section navigation tests.
     fn app() -> DesignApp {
@@ -1574,48 +962,12 @@ mod spread_label_tests {
         // section that starts on page 3 stays inside the spread, so the names stay apart.
         assert_eq!(labels(&app)[1], "2, 1, 2");
     }
-
-    /// Labels navigate to document spreads, including when parent editing was active.
-    #[test]
-    fn the_panel_shows_spread_labels_and_a_click_on_one_goes_to_its_spread() {
-        let mut app = app();
-        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
-        // The canvas the panel's clicks move (not drawn here).
-        app.canvas_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 800.0)));
-        let mut h = Harness::builder().with_size(vec2(260.0, 900.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let key = egui::Id::unique("test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(key, true));
-                    return;
-                }
-                egui::ScrollArea::vertical().show(ui, |ui| show(app, ui));
-            },
-            app,
-        );
-        h.run_steps(3);
-        // A spread label is a button: a click goes to the spread.
-        let _ = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("2, 1"));
-        assert!(h.query_by_label("2 1").is_none());
-        // Each page is named for screen readers: two pages are numbered 1.
-        assert_eq!(h.query_all_by_label("Page 1").count(), 2);
-        h.state_mut().run("layout.parents.edit", json!({"on": true})).unwrap();
-        if let Some(view) = h.state_mut().view_mut() {
-            view.fitted = true;
-        }
-        h.run_steps(3);
-        h.get_by_label("2–3").click();
-        h.run_steps(3);
-        assert!(!h.state().session.doc().unwrap().editing_parents);
-        assert!(!h.state().view().unwrap().fitted);
-        assert_eq!(h.state().session.doc().unwrap().doc.page_loc(crate::canvas::current_page(h.state()).unwrap()).unwrap().0, 2);
-    }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod pages_footer_workflow_tests {
     use super::*;
+    use egui::vec2;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
     use egui_kittest::{
@@ -1701,12 +1053,9 @@ mod pages_footer_workflow_tests {
         );
     }
 
-    fn harness(mut app: DesignApp, installed: bool, full_panel: bool) -> Harness<'static, Rig> {
-        app.framework_opacity = true;
+    fn harness(mut app: DesignApp, full_panel: bool) -> Harness<'static, Rig> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut ready = false;
         let mut locale_fonts_ready = false;
@@ -1735,9 +1084,7 @@ mod pages_footer_workflow_tests {
                             let Some(st) = state.app.session.active() else { return };
                             let doc = st.doc.clone();
                             let cur = crate::canvas::current_page(&state.app).unwrap_or(0);
-                            let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
-                            let t = Tokens::get(ui.ctx());
-                            pages_footer(&mut state.app, ui, &doc, cur, &t, dragging);
+                            framework::footer(&mut state.app, ui, &doc, cur);
                         })
                         .1;
                     })
@@ -1867,7 +1214,7 @@ mod pages_footer_workflow_tests {
 
     #[test]
     fn installed_pages_footer_idle_keeps_model_identity_nonempty_undo_redo_and_three_ids() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         let ids: Vec<_> = ACTIONS.iter().map(|c| element(&h, c).id).collect();
@@ -1879,7 +1226,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_create_pointer_has_exact_payload_one_undo_and_real_redo() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         let cur = crate::canvas::current_page(&h.state().app).unwrap();
@@ -1899,7 +1246,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_natural_tab_space_and_enter_activate_once() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         for caption in ACTIONS {
             let before = mark(&h);
             tab_to(&mut h, caption);
@@ -1918,7 +1265,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_delete_empty_current_page_has_real_undo_redo() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         crate::canvas::go_to_page(&mut h.state_mut().app, 1);
         idle(&mut h, 2);
         assert_eq!(crate::canvas::current_page(&h.state().app), Some(1));
@@ -1942,7 +1289,7 @@ mod pages_footer_workflow_tests {
         let mut app = fixture();
         app.run("layout.pages.delete", json!({"pages":[1,2]})).unwrap();
         crate::canvas::go_to_page(&mut app, 0);
-        let mut h = harness(app, true, false);
+        let mut h = harness(app, false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         click(&mut h, "Delete selected pages");
@@ -1961,7 +1308,7 @@ mod pages_footer_workflow_tests {
         let mut app = fixture();
         let item = app.run("frame.create", json!({"rect":[10,10,40,40]})).unwrap()["id"].as_u64().unwrap();
         assert!(app.session.active().unwrap().doc.page_has_items(0));
-        let mut h = harness(app, true, false);
+        let mut h = harness(app, false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         click(&mut h, "Delete selected pages");
@@ -1981,7 +1328,7 @@ mod pages_footer_workflow_tests {
         let mut app = fixture();
         app.run("layout.pageSize", json!({"pages":[2],"width":900,"height":600})).unwrap();
         crate::canvas::go_to_page(&mut app, 1);
-        let mut h = harness(app, true, false);
+        let mut h = harness(app, false);
         let before = mark(&h);
         let old_sizes = sizes(&h);
         let start = h.state().app.session.journal.len();
@@ -2002,7 +1349,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_size_menu_escape_and_custom_boundary_keep_history() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         tab_to(&mut h, "Edit page size");
@@ -2025,7 +1372,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_real_thumbnail_drag_duplicates_the_whole_spread_not_an_insert() {
-        let mut h = harness(fixture(), true, true);
+        let mut h = harness(fixture(), true);
         let before = mark(&h);
         let label = format!("Page {}", h.state().app.session.page_label(1));
         let from = h.get_by_label(&label).rect().center();
@@ -2052,7 +1399,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_held_press_retires_on_current_page_or_document_revision_change() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         for navigation in [true, false] {
             let old = element(&h, "Create new page").id;
             let p = pos(&h, "Create new page");
@@ -2083,7 +1430,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_held_press_cannot_cross_documents_with_the_same_local_page_index() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         let original = mark(&h);
         let old = element(&h, "Create new page").id;
         let p = pos(&h, "Create new page");
@@ -2107,7 +1454,7 @@ mod pages_footer_workflow_tests {
     }
     #[test]
     fn installed_pages_footer_disabled_sizing_and_no_document_cannot_commit() {
-        let mut h = harness(fixture(), true, false);
+        let mut h = harness(fixture(), false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         let p = pos(&h, "Create new page");
@@ -2136,7 +1483,7 @@ mod pages_footer_workflow_tests {
         click(&mut h, "Create new page");
         assert_eq!(count(&h), 4);
         let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-        let mut empty = harness(app, true, false);
+        let mut empty = harness(app, false);
         let start = empty.state().app.session.journal.len();
         assert_eq!(empty.query_all_by_role(egui::accesskit::Role::Button).count(), 0);
         key(&mut empty, Key::Tab);
@@ -2153,7 +1500,7 @@ mod pages_footer_workflow_tests {
         for language in ["de", "ar"] {
             let mut app = fixture();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true, false);
+            let mut h = harness(app, false);
             let before = mark(&h);
             let mut ids = HashSet::new();
             for caption in ACTIONS {
@@ -2181,23 +1528,5 @@ mod pages_footer_workflow_tests {
                 element(&h, caption);
             }
         }
-    }
-    #[test]
-    fn uninstalled_native_pages_footer_keeps_original_icons_and_actions_without_sdk_records() {
-        let mut h = harness(fixture(), false, false);
-        let before = mark(&h);
-        let start = h.state().app.session.journal.len();
-        assert!(h.state().controls.as_ref().is_none_or(|r| r.elements.iter().all(|e| e.component != "IconButton")));
-        for caption in ACTIONS {
-            let label = name(&h, caption);
-            assert_eq!(h.get_all_by_label(&label).count(), 1);
-        }
-        unchanged(&h, &before);
-        native_click(&mut h, "Create new page");
-        journal_one(&h, start, "layout.pages.insert", json!({"after":0,"count":1}));
-        assert_eq!(count(&h), 4);
-        assert_eq!(mark(&h).2, (before.2.0 + 1, 0));
-        native_click(&mut h, "Edit page size");
-        assert_eq!(h.get_all_by_label("A4").count(), 1);
     }
 }
