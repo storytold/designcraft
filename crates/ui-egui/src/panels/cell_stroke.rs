@@ -228,7 +228,7 @@ fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom:
         return craft_ui_widgets::pickers::Select::new(tr(lang, "Type").to_owned(), Bind::given(binding), &entries)
             .id(identity)
             .enabled(valid)
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             // An orphan is shown verbatim but is never synthesized as an enabled catalog row.
             .placeholder(type_label(lang, &v["type"]))
             .show_at(ui, rect)

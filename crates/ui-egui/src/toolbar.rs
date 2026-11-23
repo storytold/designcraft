@@ -635,6 +635,7 @@ fn line_tool_button(app: &DesignApp, ui: &mut egui::Ui, icon: &str, active: bool
         use craft_ui_widgets::buttons::IconButton;
         use craft_theme::ControlSize;
 
+        #[derive(craft_ui::contract::MemoProps)]
         struct LineGlyph;
         impl Glyph for LineGlyph {
             fn paint(&self, painter: &egui::Painter, _: &UiTokens, rect: egui::Rect, color: Color32, _: bool) {

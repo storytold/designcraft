@@ -154,7 +154,7 @@ fn book_sdk_button(
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::ControlSize;
+        use craft_theme::ControlSize;
         let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).painted(painted.to_owned()).id(id).tooltip(label.to_owned());
         if small {
             button = button.size(ControlSize::Sm);
@@ -305,7 +305,7 @@ fn scripts_action(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, label: &str,
         return craft_ui_widgets::buttons::Button::new(label.to_owned())
             .id(id)
             .enabled(enabled)
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             .show(ui)
             .clicked();
     }
@@ -322,7 +322,7 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
         craft_ui_widgets::text::TextField::new(labels.0.to_owned(), Bind::bound(name))
             .id(id.with("name"))
             .limit(None)
-            .keeps_on_escape()
+            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
             .sizing(Sizing::FillWidth)
             .show(ui);
         craft_ui_widgets::text::TextField::new(labels.1.to_owned(), Bind::bound(text))
@@ -331,7 +331,7 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
             .lines(8)
             .mono()
             .tab_inserts(true)
-            .keeps_on_escape()
+            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
             .sizing(Sizing::FillWidth)
             .show(ui);
         return true;

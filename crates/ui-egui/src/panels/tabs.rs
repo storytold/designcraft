@@ -307,6 +307,7 @@ fn column_on_screen(app: &DesignApp, frame: u64, col: [f64; 4]) -> Option<(Pos2,
 // This panel's action faces only. The shared style-dialog alignment/text/ruler helpers above
 // remain unchanged; their separate migration is not implied by this installed-native branch.
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(craft_ui::contract::MemoProps)]
 struct TabGlyph(&'static str);
 
 #[cfg(not(target_arch = "wasm32"))]

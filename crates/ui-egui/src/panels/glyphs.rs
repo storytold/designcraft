@@ -50,13 +50,13 @@ fn panel_query(ui: &mut egui::Ui, language: &str, framework: bool, query: &mut S
     #[cfg(not(target_arch = "wasm32"))]
     if framework {
         use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        use craft_ui_widgets::style::ControlSize;
+        use craft_theme::ControlSize;
         use craft_ui_widgets::text::TextField;
 
         let label = crate::i18n::tr(language, "Search: character or U+code");
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
         TextField::new(label, Bind::bound(query))
-            .keeps_on_escape()
+            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
             .limit(None)
             .id_salt("glyph_query")
             .placeholder(label)
@@ -84,7 +84,7 @@ fn panel_recent(ui: &mut egui::Ui, language: &str, framework: bool, target: &Opt
     if framework {
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::ControlSize;
+        use craft_theme::ControlSize;
 
         return Button::new(recent_name(language, c))
             .painted(c.to_string())

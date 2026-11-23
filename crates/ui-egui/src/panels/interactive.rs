@@ -59,7 +59,7 @@ fn interactive_compact_button(
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::ControlSize;
+        use craft_theme::ControlSize;
         let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled).size(ControlSize::Sm).show(ui);
         let clicked = out.clicked();
         return InteractiveButton { response: out.response, clicked };
@@ -300,7 +300,8 @@ fn tags_action(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, name: &str, pai
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
         return craft_ui_widgets::buttons::Button::new(name.to_owned())
             .painted(painted.to_owned())
             .id(id)
@@ -349,7 +350,7 @@ fn tags_name_field(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, draft: &mut
             .id(id)
             .placeholder(name.to_owned())
             .limit(None)
-            .keeps_on_escape()
+            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
             .enabled(enabled)
             .sizing(Sizing::FillWidth)
             .show(ui);
@@ -594,7 +595,7 @@ impl InteractiveFields {
             use craft_ui_widgets::contract::{Props as _, Show as _, Sizing};
             let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(self.id(key)).enabled(enabled);
             if small {
-                button = button.size(craft_ui_widgets::style::ControlSize::Sm);
+                button = button.size(craft_theme::ControlSize::Sm);
             } else {
                 button = button.sizing(Sizing::FillWidth);
             }
@@ -647,7 +648,7 @@ impl InteractiveFields {
                 .id(self.id(key))
                 .enabled(enabled)
                 .limit(None)
-                .keeps_on_escape()
+                // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
                 .sizing(Sizing::FillWidth)
                 .show(ui);
             if enabled && let Some(value) = out.value() {
@@ -1241,7 +1242,8 @@ fn track_action(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, name: &str, pa
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
         return craft_ui_widgets::buttons::Button::new(name.to_owned())
             .painted(painted.to_owned())
             .id(id)
@@ -2084,7 +2086,8 @@ mod ui223_interactive_actions_tests {
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::choice::Checkbox;
         use craft_ui_widgets::contract::{Bind, Props as _};
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
         use craft_ui_widgets::text::TextField;
 
         // Both named roles must be the exact enum already accepted by Props::size, not a copy.

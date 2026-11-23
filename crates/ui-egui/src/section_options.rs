@@ -334,7 +334,7 @@ fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_u
         .enabled(ui.is_enabled())
         .backdrop(Backdrop::None)
         .closable(false)
-        .side_buttons(true)
+        .button_place(craft_ui_panels::dialog::ButtonPlace::Side)
         .outer_gesture(false)
         .close_on_enter(true)
         .buttons([

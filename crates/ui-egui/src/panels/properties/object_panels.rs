@@ -206,6 +206,7 @@ fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Colo
 
 /// Text Wrap keeps its existing artwork; only discrete input moves through the installed SDK.
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(craft_ui::contract::MemoProps)]
 struct WrapModeArtwork<'a>(&'a str);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -230,7 +231,8 @@ fn wrap_mode_button(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, icon: &str
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_ui_widgets::primitives::IconSpec;
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
 
         // Keep the original compact row and selected plate, not a six-wide row of painted labels.
         let (_, rect) = ui.allocate_space(vec2(26.0, 26.0));
@@ -259,7 +261,7 @@ fn wrap_invert_checkbox(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, value:
     if app.framework_installed {
         use craft_ui_widgets::choice::Checkbox;
         use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let output = Checkbox::new(Bind::given(*value)).id(id).size(craft_ui_widgets::style::ControlSize::Sm).label(label.to_owned()).show(ui);
+        let output = Checkbox::new(Bind::given(*value)).id(id).size(craft_theme::ControlSize::Sm).label(label.to_owned()).show(ui);
         if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
             *value = next;
             return true;

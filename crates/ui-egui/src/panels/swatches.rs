@@ -8,6 +8,7 @@ use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(craft_ui::contract::MemoProps))]
 enum FooterAction {
     Group,
     New,
@@ -503,7 +504,7 @@ fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut S
                 ui.set_min_size(rect.size());
                 craft_ui_widgets::text::TextField::new(label.clone(), Bind::bound(&mut *text))
                     .id(id)
-                    .size(craft_ui_widgets::style::ControlSize::Sm)
+                    .size(craft_theme::ControlSize::Sm)
                     .limit(None)
                     .select_on_focus()
                     .submits()
@@ -517,7 +518,7 @@ fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut S
         // A dirty field takes Cancel itself. Only a clean field leaves the one Escape for its real enclosing scope.
         return Some(match scope.inner {
             Some(output) => (
-                output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
+                output.response.lost_focus() /* framework-gap(text_lost_focus) */ || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
                 output.escaped || scope_escaped,
             ),
             None => (scope_escaped, scope_escaped),

@@ -91,7 +91,7 @@ const NO_PICKER: &str = "needs a file picker";
 /// The dialogs, with a wake-up that repaints once the first frame has given it the context.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn new_dialogs(ctx: std::sync::Arc<std::sync::OnceLock<egui::Context>>) -> Dialogs {
-    craft_dialogs::Dialogs::new(std::sync::Arc::new(move || {
+    craft_dialogs::Dialogs::new(craft_dialogs::Wake::new(move || {
         if let Some(ctx) = ctx.get() {
             ctx.request_repaint();
         }

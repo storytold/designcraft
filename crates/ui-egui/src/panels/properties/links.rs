@@ -482,7 +482,8 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
         return craft_ui_widgets::buttons::Button::new(name)
             .id(id)
             .enabled(target_exists)

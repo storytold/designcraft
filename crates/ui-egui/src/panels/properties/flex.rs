@@ -112,6 +112,7 @@ fn flex_create_choice(app: &DesignApp, ui: &mut Ui, on: &mut bool, label: &str) 
     widgets::checkbox(ui, on, label).changed()
 }
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(craft_ui::contract::MemoProps)]
 struct FlexChoiceGlyph<'a>(&'a str);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -138,7 +139,7 @@ fn flex_icon_choice(app: &DesignApp, ui: &mut Ui, key: &str, icon: &str, on: boo
             .icon(IconSpec::glyph(&glyph).mirror(Mirror::Never))
             .icon_only()
             .tooltip(label.to_owned())
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             .show_at(ui, rect)
             .events
             .committed()

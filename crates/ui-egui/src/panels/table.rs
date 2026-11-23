@@ -114,7 +114,7 @@ fn table_committed_choice(
         return craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current.to_owned()), &entries)
             .id(id)
             .enabled(valid && !entries.is_empty())
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             .placeholder(current.to_owned())
             .show_at(ui, rect)
             .events
@@ -138,6 +138,7 @@ fn table_committed_choice(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(craft_ui::contract::MemoProps)]
 struct TableStylePlus;
 #[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for TableStylePlus {
@@ -157,7 +158,7 @@ fn table_new_style(app: &DesignApp, ui: &mut egui::Ui, info: &Value, kind: &str,
             .label(label.to_owned())
             .tooltip(label.to_owned())
             .enabled(valid)
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             .show_at(ui, rect)
             .clicked();
     }

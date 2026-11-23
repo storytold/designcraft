@@ -45,7 +45,7 @@ fn draft_field(ui: &mut egui::Ui, framework: bool, id: egui::Id, language: &str,
             .lines(2)
             .limit(None)
             .tab_inserts(false)
-            .keeps_on_escape()
+            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
             .sizing(Sizing::FillWidth)
             .show(ui);
         return;

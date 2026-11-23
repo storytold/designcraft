@@ -318,6 +318,7 @@ pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, fir
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[derive(craft_ui::contract::MemoProps)]
 struct PageFooterIcon(&'static str);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -334,7 +335,8 @@ fn page_footer_button(app: &DesignApp, ui: &mut egui::Ui, icon: &'static str, se
         use craft_ui_widgets::buttons::IconButton;
         use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_ui_widgets::primitives::IconSpec;
-        use craft_ui_widgets::style::{ControlSize, Variant};
+        use craft_theme::ControlSize;
+        use craft_ui_widgets::style::{Variant};
         let glyph = PageFooterIcon(icon);
         return IconButton::new(IconSpec::glyph(&glyph))
             .label(label.to_owned())

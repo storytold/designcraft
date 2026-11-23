@@ -84,7 +84,7 @@ fn ink_plate_button(
             .id(id)
             .enabled(enabled)
             .selected(selected)
-            .size(craft_ui_widgets::style::ControlSize::Sm)
+            .size(craft_theme::ControlSize::Sm)
             .variant(craft_ui_widgets::style::Variant::GHOST)
             .show(ui)
             .clicked();
