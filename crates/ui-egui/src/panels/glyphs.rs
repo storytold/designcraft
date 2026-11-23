@@ -56,7 +56,7 @@ fn panel_query(ui: &mut egui::Ui, language: &str, framework: bool, query: &mut S
         let label = crate::i18n::tr(language, "Search: character or U+code");
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
         TextField::new(label, Bind::bound(query))
-            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
+            .keeps_on_escape()
             .limit(None)
             .id_salt("glyph_query")
             .placeholder(label)

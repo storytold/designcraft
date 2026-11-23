@@ -322,7 +322,7 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
         craft_ui_widgets::text::TextField::new(labels.0.to_owned(), Bind::bound(name))
             .id(id.with("name"))
             .limit(None)
-            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
+            .keeps_on_escape()
             .sizing(Sizing::FillWidth)
             .show(ui);
         craft_ui_widgets::text::TextField::new(labels.1.to_owned(), Bind::bound(text))
@@ -331,7 +331,7 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
             .lines(8)
             .mono()
             .tab_inserts(true)
-            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
+            .keeps_on_escape()
             .sizing(Sizing::FillWidth)
             .show(ui);
         return true;

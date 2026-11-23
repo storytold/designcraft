@@ -518,7 +518,7 @@ fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut S
         // A dirty field takes Cancel itself. Only a clean field leaves the one Escape for its real enclosing scope.
         return Some(match scope.inner {
             Some(output) => (
-                output.response.lost_focus() /* framework-gap(text_lost_focus) */ || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
+                output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
                 output.escaped || scope_escaped,
             ),
             None => (scope_escaped, scope_escaped),

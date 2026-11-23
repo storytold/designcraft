@@ -350,7 +350,7 @@ fn tags_name_field(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, draft: &mut
             .id(id)
             .placeholder(name.to_owned())
             .limit(None)
-            // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
+            .keeps_on_escape()
             .enabled(enabled)
             .sizing(Sizing::FillWidth)
             .show(ui);
@@ -648,7 +648,7 @@ impl InteractiveFields {
                 .id(self.id(key))
                 .enabled(enabled)
                 .limit(None)
-                // framework-gap(keeps_on_escape): restore `.keeps_on_escape()` once craft-libs has it
+                .keeps_on_escape()
                 .sizing(Sizing::FillWidth)
                 .show(ui);
             if enabled && let Some(value) = out.value() {
