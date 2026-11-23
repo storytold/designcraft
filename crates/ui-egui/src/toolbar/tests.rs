@@ -310,7 +310,7 @@ fn tools_take_two_columns_while_one_does_not_fit() {
 /// Runs `app` in a window and double-clicks the Tools panel's Fill box.
 fn double_click_fill(app: crate::DesignApp) -> egui_kittest::Harness<'static, crate::DesignApp> {
     // Frames 1 ms apart, so two clicks make a double-click.
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut crate::DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -479,7 +479,7 @@ fn with_nothing_selected_the_proxy_sets_the_next_shapes_colours() {
     let mut app = app(false);
     app.run("file.new", json!({})).unwrap();
     // Frames 1 ms apart, so two clicks make a double-click.
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut crate::DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

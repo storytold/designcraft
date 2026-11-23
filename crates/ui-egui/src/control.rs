@@ -765,7 +765,7 @@ mod automation_contract_tests {
     #[test]
     fn control_typing_uses_explicit_caret_but_retains_widget_events() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         assert_eq!(call(&mut app, &ctx, "ui.text", json!({"text":"X"}))["ok"], false);
         let f = app.session.execute("frame.create", &json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
         app.session.execute("text.select", &json!({"story":f["story"],"anchor":5})).unwrap();

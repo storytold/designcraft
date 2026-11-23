@@ -583,7 +583,7 @@ mod tests {
         app.select_tool("type");
         app.run("text.select", json!({"story": story, "anchor": 5, "focus": 5})).unwrap();
         assert!(app.session.wants_text());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let frame = move |app: &mut DesignApp, modifiers: egui::Modifiers, events: Vec<egui::Event>| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),

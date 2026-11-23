@@ -981,7 +981,7 @@ fn undo_steps(app: &DesignApp) -> usize {
 #[test]
 fn paragraph_rules_dialog_shows_the_rule_and_applies_one_field() {
     let (mut app, rule) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.run("app.paragraphRulesDialog", json!({"rule": "ruleBelow"})).unwrap();
     draw(&mut app, &ctx);
     let d = app.ui.dialog.clone().unwrap();
@@ -1005,7 +1005,7 @@ fn paragraph_rules_dialog_shows_the_rule_and_applies_one_field() {
 #[test]
 fn paragraph_style_options_edit_one_rule_field() {
     let (mut app, rule) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
     draw(&mut app, &ctx);
     let resolved = |app: &DesignApp| serde_json::to_value(app.session.doc().unwrap().doc.styles.resolve_para_style("Ruled Child").0).unwrap();
@@ -1028,7 +1028,7 @@ fn paragraph_style_options_edit_one_rule_field() {
 /// clicks OK; returns the resolved attributes of the paragraph styled with it.
 fn style_section_edit(sections: &[&str], fields: Value) -> Value {
     let (mut app, _) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child"})));
     for section in sections {
         app.ui.dialog.as_mut().unwrap().fields.insert("section".into(), json!(section));
@@ -1116,7 +1116,7 @@ fn paragraph_style_options_ignore_optical_margin_is_set_on_ok() {
 #[test]
 fn paragraph_style_options_keep_a_bad_grep_pattern_open_with_the_error() {
     let (mut app, _) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled", "section": "general"})));
     draw(&mut app, &ctx);
     app.ui.dialog.as_mut().unwrap().fields.insert("p.grepStyles".into(), json!([{"style": "[None]", "pattern": "(?<=x"}]));
@@ -1131,7 +1131,7 @@ fn paragraph_style_options_keep_a_bad_grep_pattern_open_with_the_error() {
 #[test]
 fn paragraph_style_options_show_a_refused_rename_on_general_and_trim_a_new_name() {
     let (mut app, _) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled", "section": "rules"})));
     draw(&mut app, &ctx);
     app.ui.dialog.as_mut().unwrap().fields.insert("rename".into(), json!("Ruled Child"));
@@ -1307,7 +1307,7 @@ fn hyphenation_settings_mixed_checkbox_and_refused_settings() {
 #[test]
 fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing() {
     let (mut app, story) = two_paragraphs();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     assert!(crate::menus::menu_enabled(&app, "app.justificationDialog"));
     app.run("app.justificationDialog", json!({})).unwrap();
     draw(&mut app, &ctx);
@@ -1354,7 +1354,7 @@ fn justification_dialog_applies_to_a_local_paragraph_and_cancel_changes_nothing(
 #[test]
 fn justification_dialog_leaves_mixed_fields_alone_and_refuses_bad_values() {
     let (mut app, story) = two_paragraphs();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.run("text.select", json!({"story": story, "anchor": 0, "focus": 7})).unwrap();
     app.run("app.justificationDialog", json!({})).unwrap();
     draw(&mut app, &ctx);
@@ -1426,7 +1426,7 @@ fn justification_dialog_sets_auto_leading_and_single_word_justification() {
     h.run_steps(3);
     let mut app = std::mem::replace(h.state_mut(), DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
     drop(h);
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     assert_eq!(app.ui.dialog.as_ref().unwrap().fields["singleWordJustify"], "center", "the choice is the edit");
 
     // Out of range or not a choice: an error, the dialog stays open, nothing changes.
@@ -1494,7 +1494,7 @@ fn paragraph_style_options_justification_sets_auto_leading_and_single_word_justi
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     app.run("style.paragraph.create", json!({"name": "Headline"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Headline", "section": "justify"})));
     draw(&mut app, &ctx);
     app.ui.dialog.as_mut().unwrap().fields.insert("p.autoLeading".into(), json!(6.0));
@@ -4112,7 +4112,7 @@ fn style_rows_open_their_options_except_none() {
 #[test]
 fn style_options_sections_draw() {
     let mut app = styled_app();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut DesignApp| {
         for _ in 0..2 {
             let raw = egui::RawInput {
@@ -4303,7 +4303,7 @@ fn the_eyedropper_samples_what_proof_colors_and_the_ink_limit_show() {
     app.run("swatch.create", json!({"name": "Vivid Green", "color": [0, 255, 0]})).unwrap();
     let id = app.run("frame.create", json!({"rect": [36, 36, 560, 700], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
     app.run("object.fill", json!({"ids": [id], "swatch": "Vivid Green"})).unwrap();
-    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -4346,7 +4346,7 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
     app.run("swatch.create", json!({"name": "Eyedrop Red", "color": {"c": 0, "m": 100, "y": 100, "k": 0}})).unwrap();
     app.run("object.fill", json!({"ids": [id], "swatch": "Eyedrop Red"})).unwrap();
     app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#000000"})));
-    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -4912,7 +4912,7 @@ fn the_rule_colour_menu_offers_text_color() {
 #[test]
 fn paragraph_style_rules_take_a_type_and_a_gap_colour() {
     let (mut app, _) = ruled_paragraph();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
     draw(&mut app, &ctx);
     if let Some(d) = app.ui.dialog.as_mut() {
