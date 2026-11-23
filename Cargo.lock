@@ -1234,6 +1234,26 @@ version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
 
 [[package]]
+name = "craft-color-ui"
+version = "0.1.0"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
+dependencies = [
+ "craft-behavior",
+ "craft-cms",
+ "craft-host",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-platform",
+ "craft-settings",
+ "craft-theme",
+ "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "egui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "craft-csv"
 version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
@@ -2644,6 +2664,7 @@ name = "designcraft-ui-egui"
 version = "0.21.0"
 dependencies = [
  "craft-behavior",
+ "craft-color-ui",
  "craft-dialogs",
  "craft-file-formats",
  "craft-host",
@@ -2753,7 +2774,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
