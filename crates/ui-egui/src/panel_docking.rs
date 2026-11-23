@@ -72,9 +72,7 @@ pub(crate) fn cancel_gesture(ctx: &egui::Context) {
 }
 
 fn normalize(raw: &str) -> Option<&'static str> {
-    crate::dock::DOCK_TABS
-        .iter()
-        .chain(crate::dock::ICON_PANELS)
+    crate::dock::all_panels()
         .find(|(id, label, _)| id.eq_ignore_ascii_case(raw.trim()) || label.eq_ignore_ascii_case(raw.trim()))
         .map(|(id, _, _)| *id)
 }
@@ -93,10 +91,22 @@ fn registered(id: &str) -> bool {
     id == CANVAS || normalize(id) == Some(id)
 }
 
-/// The policy commands and the renderer apply: the canvas is protected.
+/// The policy commands and the renderer apply: the canvas is protected, and a float-only panel (Type › Tabs) floats
+/// alone: it takes no tabs or splits, shares no column and docks nowhere outside a column. The model has no right that
+/// keeps a panel out of a dock column of its own.
 fn model_permissions(id: &String) -> Permissions {
-    if id == CANVAS { Permissions::PROTECTED } else { Permissions::ALL }
+    if id == CANVAS {
+        Permissions::PROTECTED
+    } else if crate::dock::float_only(id) {
+        FLOAT_ONLY
+    } else {
+        Permissions::ALL
+    }
 }
+
+/// The rights of a float-only panel.
+const FLOAT_ONLY: Permissions =
+    Permissions::ALL.accepts_tabs(false).accepts_splits(false).shares_column(false).docks_outside_columns(false).collapses(false);
 
 /// The docked tree of `layout`, without its floating windows.
 fn docked(layout: &Layout<String>) -> Layout<String> {
@@ -503,8 +513,8 @@ pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<R
     if id == "window.collapseToIcons" {
         return Some(set_iconic(app, true));
     }
-    if matches!(id, "window.floatPanel" | "window.dockPanel" | "window.panel.float" | "window.panel.dock")
-        && let Some(panel) = params.get("panel").and_then(Value::as_str).filter(|p| crate::dock::float_only(p))
+    if matches!(id, "window.floatPanel" | "window.dockPanel" | "window.panel.float" | "window.panel.dock" | "window.panel")
+        && let Some(panel) = params.get("panel").and_then(Value::as_str).and_then(normalize).filter(|p| crate::dock::float_only(p))
     {
         return Some(float_only_panel(app, id, panel, params));
     }
@@ -512,7 +522,6 @@ pub(crate) fn command(app: &mut DesignApp, id: &str, params: &Value) -> Option<R
         if let Some(result) = open_floating_group(app, params) {
             return Some(result);
         }
-        // Float-only panels (Type › Tabs) are not in the layout.
         let panel = params.get("panel").and_then(Value::as_str).and_then(normalize)?;
         // Choosing a panel whose flyout is open closes the flyout, as the panel's icon does.
         if flyout_open(app, panel) {
@@ -663,10 +672,7 @@ fn float_space(app: &DesignApp) -> FloatSpace<String> {
             .unwrap_or_else(|| FloatSpace::new(float_bounds(app, ctx), &DockSizes::of(ctx))),
         None => FloatSpace::new(HEADLESS_AREA, &DockSizes::of(&egui::Context::default())),
     };
-    crate::dock::DOCK_TABS
-        .iter()
-        .chain(crate::dock::ICON_PANELS)
-        .fold(space, |space, (id, _, _)| space.with_panel_size((*id).to_owned(), floating_size(id)))
+    crate::dock::all_panels().fold(space, |space, (id, _, _)| space.with_panel_size((*id).to_owned(), floating_size(id)))
 }
 
 /// A change to the layout in use, committed only when every step succeeded.
@@ -853,35 +859,77 @@ fn known(action: &Action<String>) -> bool {
     }
 }
 
-/// Type › Tabs and the other float-only panels: their own windows outside the docking layout,
-/// listed in `UiState::floating` with their top-left positions.
+/// Type › Tabs and the other float-only panels: floating windows of the layout that take no other panel and never
+/// dock ([`model_permissions`]). Float Panel (and Window › the panel) opens one at `x`, `y`, or moves it there when it is
+/// open; Window › the panel brings an open one to the front; Dock Panel closes it, as it has no dock place to go back to.
 fn float_only_panel(app: &mut DesignApp, id: &str, panel: &str, params: &Value) -> Result<Value, String> {
-    let at = if matches!(id, "window.floatPanel" | "window.panel.float") {
-        Some([number(params, "x", 400.0)?, number(params, "y", 160.0)?])
-    } else {
-        None
-    };
-    app.ui.floating.retain(|(p, _)| p != panel);
-    if let Some(at) = at {
-        app.ui.hidden_panels = 0;
-        app.ui.floating.push((panel.to_string(), at));
+    let key = panel.to_string();
+    let txn = Transaction::begin(app)?;
+    let open = txn.workspace.layout().contains(&key);
+    let float = matches!(id, "window.floatPanel" | "window.panel.float");
+    if !float && id != "window.panel" {
+        return if open {
+            shared_command(app, "window.panel.close", &json!({"panel": panel}))
+        } else {
+            Ok(json!({"panel": panel, "floating": floating_panels(app)}))
+        };
     }
-    Ok(json!({"panel": panel, "floating": floating_panels(app)}))
+    if open && !float {
+        return shared_command(app, "window.panel.activate", &json!({"panel": panel}));
+    }
+    let at = pos2(number(params, "x", 400.0)?, number(params, "y", 160.0)?);
+    if open {
+        let size = txn.workspace.layout().floating.iter().find(|w| w.contains(&key)).map_or(floating_size(panel), |w| w.rect.size());
+        let mut txn = txn;
+        txn.apply(Action::move_floating(key.clone(), Rect::from_min_size(at, size)))?;
+        return Ok(txn.commit(app, Vec::new(), Some(key)));
+    }
+    let mut layout = txn.workspace.layout().clone();
+    let window = layout.fresh_window_id();
+    layout.floating.push(Floating::single(window, vec![key.clone()], 0, Rect::from_min_size(at, floating_size(panel))));
+    layout.validate().map_err(|e| e.to_string())?;
+    let hidden: Vec<(String, Location<String>)> = txn.workspace.hidden().iter().filter(|(p, _)| *p != key).cloned().collect();
+    let floated = txn.workspace.floated().to_vec();
+    let txn = Transaction { workspace: Workspace::from_parts(layout, hidden, floated) };
+    Ok(txn.commit(app, Vec::new(), Some(key)))
 }
 
-/// Once the layout is customized it holds every floating dock panel, so `UiState::floating`
-/// keeps only the float-only panels.
+/// Once the layout is customized it holds every floating panel, so `UiState::floating` (the default workspace's
+/// floating panels) empties. A float-only panel listed there by an earlier version, beside a customized layout, joins
+/// the layout as a floating window first.
 fn keep_float_only(app: &mut DesignApp) {
-    if app.ui.docking.is_some() {
-        app.ui.floating.retain(|(id, _)| crate::dock::float_only(id));
+    let Some(layout) = app.ui.docking.as_mut() else { return };
+    for (id, at) in &app.ui.floating {
+        let key = id.clone();
+        if crate::dock::float_only(id) && at.iter().all(|v| v.is_finite()) && !layout.contains(&key) {
+            let window = layout.fresh_window_id();
+            layout.floating.push(Floating::single(window, vec![key], 0, Rect::from_min_size(pos2(at[0], at[1]), floating_size(id))));
+        }
+    }
+    app.ui.floating.clear();
+}
+
+/// The Tabs panel asks to move over the text frame it edits, at the column's width (`tabs::PanelState::place`, set
+/// when it opens and by its magnet): its floating window takes that place, at the height it has.
+fn place_float_only(app: &mut DesignApp) {
+    let Some((at, width)) = app.ui.tabs_panel.place.take() else { return };
+    let key = "tabs".to_string();
+    let Some(height) = layout_of(app).floating.iter().find(|w| w.contains(&key)).map(|w| w.rect.height()) else { return };
+    let Ok(mut txn) = Transaction::begin(app) else { return };
+    if txn.apply(Action::move_floating(key, Rect::from_min_size(at, vec2(width, height)))).is_ok() {
+        txn.commit(app, Vec::new(), None);
     }
 }
 
-/// Every floating panel: the layout's floating windows, then the float-only panels.
+/// The screen rect of floating `panel`'s window, while it floats.
+pub(crate) fn floating_rect(app: &DesignApp, panel: &str) -> Option<Rect> {
+    let key = panel.to_string();
+    layout_of(app).floating.iter().find(|w| w.contains(&key)).map(|w| w.rect)
+}
+
+/// Every floating panel: the layout's floating windows.
 pub(crate) fn floating_panels(app: &DesignApp) -> Vec<String> {
-    let layout = layout_of(app);
-    let docked = layout.floating.iter().flat_map(|w| w.panels().cloned());
-    docked.chain(app.ui.floating.iter().filter(|(id, _)| crate::dock::float_only(id)).map(|(id, _)| id.clone())).collect()
+    layout_of(app).floating.iter().flat_map(|w| w.panels().cloned()).collect()
 }
 
 /// Panels InDesign opens together as one floating group from the Window menu, in tab order:
@@ -995,7 +1043,7 @@ struct Specs {
 
 impl PanelSpecs<String> for Specs {
     fn spec(&self, panel: &String) -> PanelSpec {
-        let english = crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS).find(|p| p.0 == panel).map_or(panel.as_str(), |p| p.1);
+        let english = crate::dock::all_panels().find(|p| p.0 == panel).map_or(panel.as_str(), |p| p.1);
         let spec = PanelSpec::new(crate::i18n::tr(&self.language, english).to_owned());
         if panel == CANVAS {
             return spec.canvas().limits(craft_ui::contract::SizeLimits::at_least(vec2(200.0, 120.0)));
@@ -1025,8 +1073,7 @@ impl craft_ui::primitives::Glyph for PanelArtwork {
 /// The artwork of a dock panel's icon.
 fn panel_artwork(panel: &str) -> Option<&'static PanelArtwork> {
     static ART: std::sync::OnceLock<Vec<(&'static str, PanelArtwork)>> = std::sync::OnceLock::new();
-    let art =
-        ART.get_or_init(|| crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS).map(|(id, _, icon)| (*id, PanelArtwork(icon))).collect());
+    let art = ART.get_or_init(|| crate::dock::all_panels().map(|(id, _, icon)| (*id, PanelArtwork(icon))).collect());
     art.iter().find(|(id, _)| *id == panel).map(|(_, artwork)| artwork)
 }
 
@@ -1094,6 +1141,8 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         forget_panels(app);
         app.status(crate::i18n::tr(&app.ui.language, "Invalid panel layout; restored the default dock"));
     }
+    keep_float_only(app);
+    place_float_only(app);
     if !runtime_on(ui.ctx()) {
         // The dock needs the craft UI runtime on the context; without it the window shows the canvas alone.
         static WARNED: std::sync::Once = std::sync::Once::new();
@@ -1271,6 +1320,8 @@ fn floating_size(panel: &str) -> egui::Vec2 {
         "properties" | "pages" | "layers" => egui::vec2(300.0, 420.0),
         "characterStyles" | "paragraphStyles" => egui::vec2(290.0, 340.0),
         "glyphs" | "library" | "links" | "preflight" | "dataMerge" => egui::vec2(320.0, 400.0),
+        // The Tabs panel spans a text column: its window moves over the frame at the column's width (`TABS_PLACE`).
+        "tabs" => egui::vec2(560.0, 150.0),
         _ => egui::vec2(280.0, 360.0),
     }
 }

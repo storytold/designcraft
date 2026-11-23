@@ -1420,3 +1420,44 @@ fn a_document_dropped_on_a_floating_panel_window_opens() {
     open_window_drops(&mut app, &[file]);
     assert_eq!(app.session.documents().len(), 1, "the dropped document opens");
 }
+
+/// Type › Tabs is a float-only panel: it opens as a floating window of the layout of its own, takes no other panel's
+/// tab, places itself over the text column it edits, and Dock Panel closes it. It replaces the native egui window
+/// `dock::float_only_windows` drew; `panels_float_and_dock` (menus) checks the commands' answers.
+#[test]
+fn tabs_floats_alone_in_the_layout_takes_no_tab_and_moves_to_its_place() {
+    let mut app = app();
+    app.run("window.floatPanel", json!({"panel": "tabs", "x": 120, "y": 90})).unwrap();
+    let layout = layout_of(&app);
+    let window = layout.floating.iter().find(|w| w.contains(&"tabs".to_string())).cloned().expect("Tabs floats");
+    assert_eq!(window.panels().cloned().collect::<Vec<_>>(), ["tabs"]);
+    assert_eq!([window.rect.min.x, window.rect.min.y], [120.0, 90.0]);
+    assert!(valid(&layout), "the layout with Tabs is valid");
+    // Another panel cannot join its window as a tab: the float-only rights refuse it.
+    let mut tried = layout.clone();
+    let into_tabs = super::Target::at("tabs".to_string(), super::DockPlacement::tab(None));
+    assert!(apply(&mut tried, Action::move_panel("swatches".to_string(), into_tabs)).is_err());
+    // The Tabs panel asks to move over its column (`tabs::PanelState::place`): the next frame takes that place and width.
+    app.ui.tabs_panel.place = Some((pos2(300.0, 200.0), 480.0));
+    let mut h = harness(app, vec2(1280.0, 800.0));
+    h.run_steps(2);
+    let rect = super::floating_rect(h.state(), "tabs").expect("still floating");
+    assert_eq!((rect.min, rect.width()), (pos2(300.0, 200.0), 480.0));
+    assert!(h.state().ui.tabs_panel.place.is_none(), "the request is taken once");
+    // Dock Panel closes it: it has no dock place to go back to.
+    h.state_mut().run("window.dockPanel", json!({"panel": "tabs"})).unwrap();
+    assert!(!layout_of(h.state()).contains(&"tabs".to_string()));
+}
+
+/// A Tabs window listed in `UiState::floating` by an earlier version, beside a customized layout, joins the layout.
+#[test]
+fn a_saved_float_only_entry_joins_a_customized_layout() {
+    let mut app = app();
+    app.run("window.floatPanel", json!({"panel": "swatches", "x": 50, "y": 60})).unwrap();
+    assert!(app.ui.docking.is_some(), "customized");
+    app.ui.floating = vec![("tabs".to_string(), [10.0, 20.0])];
+    let h = harness(app, vec2(1280.0, 800.0));
+    assert!(h.state().ui.floating.is_empty());
+    let rect = super::floating_rect(h.state(), "tabs").expect("Tabs joined the layout");
+    assert_eq!([rect.min.x, rect.min.y], [10.0, 20.0]);
+}
