@@ -256,7 +256,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let screen = if rulers { Rect::from_min_max(full.min + vec2(RULER, RULER), full.max) } else { full };
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
-    let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    // Not a Tab stop: egui's Tab traversal never lands on the canvas (the framework's panels cycle among themselves and Tab on
+    // the page hides them). It takes egui focus by request (`take_key_focus`, a click), which a widget that is not
+    // `FOCUSABLE` keeps while it is drawn.
+    let resp = ui.allocate_rect(full, Sense::CLICK | Sense::DRAG);
     #[cfg(not(target_arch = "wasm32"))]
     take_key_focus(app, ui.ctx(), &resp);
     if presenting {
