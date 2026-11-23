@@ -781,9 +781,6 @@ impl Transaction {
         release_closed(app, &closed);
         keep_float_only(app);
         if let Some(panel) = reveal {
-            if std::env::var_os("DESIGNCRAFT_DEBUG_OPENED").is_some() {
-                eprintln!("OPENED-DEBUG commit reveals {panel:?}");
-            }
             app.ui.hidden_panels = 0;
             app.ui.docking_opened = Some(panel.clone());
             app.ui.docking_raise = Some(panel);
@@ -1172,18 +1169,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             _ => {}
         }
     }
-    // The panel last opened follows the panel the person picks or moves the focus into; a focus that stays in a panel
-    // pass after pass, and a pass in which a body opened a panel itself (the Properties panel's Stroke link runs
-    // `window.panel`), leave it alone.
-    let moved_in = output.focused.clone().filter(|panel| app.ui.docking_focused.as_ref() != Some(panel));
-    // OPENED-DEBUG: temporary, to find what sets the panel last opened in the Stroke link test.
-    if std::env::var_os("DESIGNCRAFT_DEBUG_OPENED").is_some() {
-        eprintln!(
-            "OPENED-DEBUG before show {opened_before:?}, after show {:?}, focused {:?}, picked {:?}, was focused {:?}, flyout {:?}",
-            app.ui.docking_opened, output.focused, output.picked, app.ui.docking_focused, app.ui.docking_flyout
-        );
-    }
-    if let Some(panel) = output.picked.clone().or(moved_in)
+    // The panel last opened is the one a command opened or the person picked in the dock; a focus that moves into a
+    // panel (the press on the Properties panel's Stroke link, which itself opened Stroke) does not open it.
+    if let Some(panel) = output.picked.clone()
         && panel != CANVAS
         && app.ui.docking_opened == opened_before
     {
@@ -1323,42 +1311,48 @@ impl DockPanels<String> for PanelContent<'_> {
     /// The Pages panel's own menu, before its tab strip: its page commands. The dock's own rows (Float, Dock Panel,
     /// Move Panel To, Close, Collapse to Icons) are in the group's menu at the end of the strip.
     fn group_header(&mut self, panels: &[String], active: usize, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
-        use craft_ui::contract::{Props as _, Show as _, ShowContainer as _};
+        use craft_ui::contract::{Props as _, Remember as _, Show as _, ShowContainer as _};
         if panels.get(active).map(String::as_str) != Some("pages") {
             return;
         }
+        /// Whether the Pages Panel Menu is open. It is framework memory, not egui's: the dock replays a group's
+        /// header while nothing it reads changed, and a change of this state is one.
+        #[derive(Clone, Copy, Default)]
+        struct Open(bool);
         static MENU: PanelArtwork = PanelArtwork("menu");
         let label = crate::i18n::tr(&self.app.ui.language, "Pages Panel Menu").to_owned();
-        let opener = craft_ui::buttons::IconButton::new(craft_ui::primitives::IconSpec::glyph(&MENU))
-            .id(egui::Id::new("designcraft-pages-panel-menu"))
-            .label(label.clone())
-            .tooltip(label.clone())
-            .show(ui);
         let app = &mut *self.app;
-        // The host owns the menu's open state, as a framework menu bound to it expects: the opener toggles it. The rows
-        // are the Pages panel's own egui rows, which close only their egui menu, so a row that ran is seen by what it did
-        // (a command in the journal, a page more or less, a dialog it opened) and closes the menu.
-        let open_id = egui::Id::new("designcraft-pages-panel-menu-open");
-        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-        if opener.clicked() {
-            open = !open;
-        }
-        let effect = |app: &DesignApp| {
-            let pages = app.session.active().map(|d| d.doc.page_count());
-            (app.session.journal.len(), pages, app.ui.dialog.as_ref().map(|d| d.id.clone()))
-        };
-        let before = effect(app);
-        let mut ran = false;
-        // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-        let _ =
-            craft_ui::menu::Menu::new(label).open(Bind::bound(&mut open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(ui, |ui, _| {
-                crate::panels::pages::panel_menu(app, ui);
-                ran = effect(app) != before;
-            });
-        if ran {
-            open = false;
-        }
-        ui.data_mut(|d| d.insert_temp(open_id, open));
+        craft_ui::layout_components::Row::new().show(ui, |ui, cx| {
+            let open = &mut cx.memory::<Open>().0;
+            let opener = craft_ui::buttons::IconButton::new(craft_ui::primitives::IconSpec::glyph(&MENU))
+                .id(egui::Id::new("designcraft-pages-panel-menu"))
+                .label(label.clone())
+                .tooltip(label.clone())
+                .show(ui);
+            // The host owns the open state, as a framework menu bound to it expects: the opener toggles it. The rows
+            // are the Pages panel's own egui rows, which close only their egui menu, so a row that ran is seen by
+            // what it did (a command in the journal, a page more or less, a dialog it opened) and closes the menu.
+            if opener.clicked() {
+                *open = !*open;
+            }
+            let effect = |app: &DesignApp| {
+                let pages = app.session.active().map(|d| d.doc.page_count());
+                (app.session.journal.len(), pages, app.ui.dialog.as_ref().map(|d| d.id.clone()))
+            };
+            let before = effect(app);
+            let mut ran = false;
+            // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
+            let _ = craft_ui::menu::Menu::new(label).open(Bind::bound(&mut *open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(
+                ui,
+                |ui, _| {
+                    crate::panels::pages::panel_menu(app, ui);
+                    ran = effect(app) != before;
+                },
+            );
+            if ran {
+                *open = false;
+            }
+        });
     }
 }
 
