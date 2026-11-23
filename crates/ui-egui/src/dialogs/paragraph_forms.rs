@@ -822,13 +822,12 @@ fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, doc: &desi
                 if border {
                     // The gap colour shows between the dashes, dots or stripes.
                     color_tint(
-                        lang,
                         ui,
                         d,
                         a,
                         &swatches,
                         ("borderGapColor", "borderGapTint", "borderGapOverprint"),
-                        (&tr("Gap Color:"), &tr("Gap Tint:")),
+                        (&tr("Gap Color:"), &tr("Gap Tint:"), &tr("Overprint Gap")),
                         !solid,
                     );
                     field(ui, &tr("Cap:"), "borderCap", |ui| choice(ui, d, a, "borderCap", &tr("Cap:"), &caps, true));

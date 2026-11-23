@@ -311,7 +311,7 @@ pub(super) fn pick_list(ui: &mut Ui, salt: &str, label: &str, items: &[String], 
         .id_salt(("text_form_list", salt.to_owned()))
         .select(SelectMode::Single)
         .arrows_select(true)
-        .max_rows(max_rows)
+        .max_rows(u16::try_from(max_rows).unwrap_or(u16::MAX))
         .sizing(Sizing::FillWidth)
         .selection(Bind::bound(&mut selected))
         .show_items(ui, &rows, &mut |at, _| ListRow::new(rows.0.get(*at).cloned().unwrap_or_default()));
