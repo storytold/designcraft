@@ -12,6 +12,8 @@ use egui::Ui;
 
 #[path = "simple_forms.rs"]
 mod simple_forms;
+#[path = "style_forms.rs"]
+mod style_forms;
 
 /// A dialog's framework form.
 #[derive(Clone, Copy)]
@@ -69,6 +71,12 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "layerOptions" => Some(super::frame_forms::LAYER_OPTIONS),
         crate::effects_dialog::ID => Some(crate::effects_dialog::FORM),
         crate::object_style_dialog::ID => Some(crate::object_style_dialog::FORM),
+        "paragraphStyleOptions" => Some(style_forms::PARAGRAPH_STYLE_OPTIONS),
+        "characterStyleOptions" => Some(style_forms::CHARACTER_STYLE_OPTIONS),
+        "deleteParagraphStyle" => Some(style_forms::DELETE_PARAGRAPH_STYLE),
+        "deleteCharacterStyle" => Some(style_forms::DELETE_CHARACTER_STYLE),
+        "loadStyles" => Some(style_forms::LOAD_STYLES),
+        "ruby" => Some(style_forms::RUBY),
         _ => None,
     }
 }
