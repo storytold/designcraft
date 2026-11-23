@@ -71,7 +71,7 @@ fn parameter(ui: &mut Ui, d: &mut Dialog, a: &Attrs, lang: &str, f: &CommandFiel
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::super::table_layout_kit as kit;
     use super::*;

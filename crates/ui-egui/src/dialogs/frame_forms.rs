@@ -551,11 +551,8 @@ mod tests {
     /// The dialogs in a window whose context has the framework installed, so each opens in the framework host.
     fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        app.framework_transform = false;
-        app.framework_opacity = true;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        assert!(app.framework_installed);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(920.0, 1000.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {

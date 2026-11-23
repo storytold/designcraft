@@ -76,10 +76,8 @@ fn set_pdf_kind(v: &mut ExportVersion, kind: &str) {
     };
 }
 
-/// The body's controls: the framework's on the desktop (`sdk`), egui's in the browser. Export and Cancel are the dialog
-/// host's.
+/// The body's controls, on the framework's components. Export and Cancel are the dialog host's.
 struct ExportControls {
-    sdk: bool,
     document: Option<(u64, u64)>,
 }
 
@@ -105,354 +103,201 @@ impl ExportControls {
         wrap: bool,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> Option<R> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-            let mut add = Some(add);
-            let mut out = None;
-            craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(wrap).show(ui, |ui, _| {
-                if let Some(add) = add.take() {
-                    out = Some(add(ui));
-                }
-            });
-            return out;
-        }
-        Some(ui.push_id(scope, |ui| if wrap { ui.horizontal_wrapped(add).inner } else { ui.horizontal(add).inner }).inner)
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        let mut add = Some(add);
+        let mut out = None;
+        craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(wrap).show(ui, |ui, _| {
+            if let Some(add) = add.take() {
+                out = Some(add(ui));
+            }
+        });
+        out
     }
 
     /// Ids scoped by `scope` for what `add` shows, one under another.
     fn scope(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-            let mut add = Some(add);
-            craft_ui_widgets::layout_components::Stack::new().id_salt(scope).fill_width().show(ui, |ui, _| {
-                if let Some(add) = add.take() {
-                    add(ui);
-                }
-            });
-            return;
-        }
-        ui.push_id(scope, add);
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        let mut add = Some(add);
+        craft_ui_widgets::layout_components::Stack::new().id_salt(scope).fill_width().show(ui, |ui, _| {
+            if let Some(add) = add.take() {
+                add(ui);
+            }
+        });
     }
 
     /// A wrapping line of options, indented under the line they belong to.
     fn options(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-            let mut add = Some(add);
-            craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(true).indent(1).show(ui, |ui, _| {
-                if let Some(add) = add.take() {
-                    add(ui);
-                }
-            });
-            return;
-        }
-        ui.push_id(scope, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(12.0);
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        let mut add = Some(add);
+        craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(true).indent(1).show(ui, |ui, _| {
+            if let Some(add) = add.take() {
                 add(ui);
-            })
+            }
         });
     }
 
     /// A section's title.
     fn heading(&self, ui: &mut egui::Ui, text: &str) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::Show as _;
-            craft_ui_widgets::display::Text::new(text.to_owned()).role(craft_ui_widgets::style::TypeRole::BodyStrong).show(ui);
-            return;
-        }
-        ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(text).strong());
+        use craft_ui_widgets::contract::Show as _;
+        craft_ui_widgets::display::Text::new(text.to_owned()).role(craft_ui_widgets::style::TypeRole::BodyStrong).show(ui);
     }
 
     /// A line of text: a note in the muted colour, a refusal in the error colour, or a count in the strong weight.
     fn note(&self, ui: &mut egui::Ui, text: &str, kind: Note) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::Show as _;
-            use craft_ui_widgets::display::{Shade, Text};
-            let line = Text::new(text.to_owned());
-            match kind {
-                Note::Plain => line,
-                Note::Muted => line.shade(Shade::Muted),
-                Note::Error => line.tone(craft_theme::variant::Tone::Bad),
-                Note::Strong => line.role(craft_ui_widgets::style::TypeRole::BodyStrong),
-            }
-            .show(ui);
-            return;
+        use craft_ui_widgets::contract::Show as _;
+        use craft_ui_widgets::display::{Shade, Text};
+        let line = Text::new(text.to_owned());
+        match kind {
+            Note::Plain => line,
+            Note::Muted => line.shade(Shade::Muted),
+            Note::Error => line.tone(craft_theme::variant::Tone::Bad),
+            Note::Strong => line.role(craft_ui_widgets::style::TypeRole::BodyStrong),
         }
-        let rich = egui::RichText::new(text);
-        let rich = match kind {
-            Note::Plain => rich,
-            Note::Muted => rich.color(crate::theme::Tokens::get(ui.ctx()).text_dim),
-            Note::Error => rich.color(ui.visuals().error_fg_color),
-            Note::Strong => rich.strong(),
-        };
-        crate::rtl::label(ui, rich);
+        .show(ui);
     }
 
     /// The files the export will write, at most [`PREVIEW_ROWS`] of them, in a list that scrolls.
     fn files(&self, ui: &mut egui::Ui, files: &[String]) {
+        use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _};
+        use craft_ui_widgets::display::{Shade, Text};
         let more = (files.len() > PREVIEW_ROWS).then(|| format!("… {}", files.len() - PREVIEW_ROWS));
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _};
-            use craft_ui_widgets::display::{Shade, Text};
-            craft_ui_widgets::layout_components::Stack::new()
-                .id_salt("export_batch_preview")
-                .fill_width()
-                .scroll(Scroll::vertical())
-                .room_height(PREVIEW_ROOM)
-                .show(ui, |ui, _| {
-                    for f in files.iter().take(PREVIEW_ROWS) {
-                        Text::new(f.clone()).role(craft_ui_widgets::style::TypeRole::Mono).shade(Shade::Muted).show(ui);
-                    }
-                    if let Some(more) = &more {
-                        Text::new(more.clone()).show(ui);
-                    }
-                });
-            return;
-        }
-        let t = crate::theme::Tokens::get(ui.ctx());
-        egui::ScrollArea::vertical().id_salt("export_batch_preview").max_height(PREVIEW_ROOM).auto_shrink([false, true]).show(ui, |ui| {
-            for f in files.iter().take(PREVIEW_ROWS) {
-                ui.label(egui::RichText::new(f).monospace().size(11.0).color(t.text_dim));
-            }
-            if let Some(more) = more {
-                ui.label(more);
-            }
-        });
+        craft_ui_widgets::layout_components::Stack::new()
+            .id_salt("export_batch_preview")
+            .fill_width()
+            .scroll(Scroll::vertical())
+            .room_height(PREVIEW_ROOM)
+            .show(ui, |ui, _| {
+                for f in files.iter().take(PREVIEW_ROWS) {
+                    Text::new(f.clone()).role(craft_ui_widgets::style::TypeRole::Mono).shade(Shade::Muted).show(ui);
+                }
+                if let Some(more) = &more {
+                    Text::new(more.clone()).show(ui);
+                }
+            });
     }
 
     fn button(&self, ui: &mut egui::Ui, label: &str, enabled: bool) -> ExportButton {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
         let id = self.id(ui, "button", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled).show(ui);
-            let clicked = out.clicked();
-            return ExportButton { response: out.response, clicked };
-        }
-        let response = ui.push_id(id, |ui| ui.add_enabled(enabled, egui::Button::new(crate::rtl::widget(ui, label)))).inner;
-        let clicked = response.clicked();
-        ExportButton { response, clicked }
+        let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled).show(ui);
+        let clicked = out.clicked();
+        ExportButton { response: out.response, clicked }
     }
 
     /// A small button with the tooltip `tip`.
     fn small_button(&self, ui: &mut egui::Ui, label: &str, tip: &str) -> ExportButton {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(self.id(ui, "button", label)).tooltip(tip.to_owned()).show(ui);
-            let clicked = out.clicked();
-            return ExportButton { response: out.response, clicked };
-        }
-        let response = ui.push_id(self.id(ui, "small", label), |ui| ui.small_button(crate::rtl::widget(ui, label))).inner.on_hover_text(tip);
-        let clicked = response.clicked();
-        ExportButton { response, clicked }
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(self.id(ui, "button", label)).tooltip(tip.to_owned()).show(ui);
+        let clicked = out.clicked();
+        ExportButton { response: out.response, clicked }
     }
 
     fn remove_button(&self, ui: &mut egui::Ui, label: &str) -> ExportButton {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        use craft_ui_widgets::primitives::IconSpec;
         let id = self.id(ui, "remove", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            use craft_ui_widgets::primitives::IconSpec;
-            let out = craft_ui_widgets::buttons::IconButton::new(IconSpec::svg(std::borrow::Cow::Borrowed("trash").into()))
-                .id(id)
-                .label(label.to_owned())
-                .show(ui);
-            let clicked = out.clicked();
-            return ExportButton { response: out.response, clicked };
-        }
-        let response = ui.push_id(id, |ui| crate::icons::button(ui, "trash", 18.0, false, label)).inner;
-        let clicked = response.clicked();
-        ExportButton { response, clicked }
+        let out =
+            craft_ui_widgets::buttons::IconButton::new(IconSpec::svg(std::borrow::Cow::Borrowed("trash").into())).id(id).label(label.to_owned()).show(ui);
+        let clicked = out.clicked();
+        ExportButton { response: out.response, clicked }
     }
 
-    fn text(&self, ui: &mut egui::Ui, label: &str, value: &mut String, width: f32, hint: bool) -> bool {
+    fn text(&self, ui: &mut egui::Ui, label: &str, value: &mut String, hint: bool) -> bool {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         let id = self.id(ui, "text", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-            let field = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(value.clone())).id(id).limit(None);
-            let out = if hint { field.placeholder(label.to_owned()).show(ui) } else { field.show(ui) };
-            if let Some(next) = out.value().filter(|next| next.as_str() != value.as_str()) {
-                *value = next.clone();
-                return true;
-            }
-            return false;
+        let field = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(value.clone())).id(id).limit(None);
+        let out = if hint { field.placeholder(label.to_owned()).show(ui) } else { field.show(ui) };
+        if let Some(next) = out.value().filter(|next| next.as_str() != value.as_str()) {
+            *value = next.clone();
+            return true;
         }
-        let mut field = egui::TextEdit::singleline(value).desired_width(width).id(id);
-        if hint {
-            field = field.hint_text(label);
-        }
-        let response = ui.add(field);
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(label.to_owned()));
-        response.changed()
+        false
     }
 
     fn check(&self, ui: &mut egui::Ui, label: &str, value: &mut bool) -> bool {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         let id = self.id(ui, "check", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-            let before = *value;
-            craft_ui_widgets::choice::Checkbox::new(Bind::bound(value)).id(id).label(label.to_owned()).show(ui);
-            return *value != before;
-        }
-        ui.push_id(id, |ui| ui.checkbox(value, crate::rtl::widget(ui, label))).inner.changed()
+        let before = *value;
+        craft_ui_widgets::choice::Checkbox::new(Bind::bound(value)).id(id).label(label.to_owned()).show(ui);
+        *value != before
     }
 
     /// Only a Commit/Set changes the job: dropdown previews and Escape cannot replace a
     /// preset, apply PDF quick settings or append a version.
-    fn choice(&self, ui: &mut egui::Ui, label: &str, current: usize, entries: &[String], width: f32, placeholder: &str) -> Option<usize> {
+    fn choice(&self, ui: &mut egui::Ui, label: &str, current: usize, entries: &[String], placeholder: &str) -> Option<usize> {
+        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
         let id = self.id(ui, "choice", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-            let choices: Vec<_> = entries.iter().enumerate().map(|(i, name)| Entry::new(i, name.clone())).collect();
-            let out = craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices)
-                .id(id)
-                .placeholder(placeholder.to_owned())
-                .show(ui);
-            return out.events.committed().copied().filter(|i| *i < entries.len());
-        }
-        let mut picked = None;
-        let shown = entries.get(current).map_or(placeholder, String::as_str);
-        let response = craft_ui_legacy::ComboBox::from_id_salt(id)
-            .selected_text(shown)
-            .width(width)
-            .show_ui(ui, |ui| {
-                for (i, name) in entries.iter().enumerate() {
-                    if ui.selectable_label(i == current, name).clicked() {
-                        picked = Some(i);
-                    }
-                }
-            })
-            .response;
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(label.to_owned()));
-        picked
+        let choices: Vec<_> = entries.iter().enumerate().map(|(i, name)| Entry::new(i, name.clone())).collect();
+        let out =
+            craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices).id(id).placeholder(placeholder.to_owned()).show(ui);
+        out.events.committed().copied().filter(|i| *i < entries.len())
     }
 
     fn combine(&self, ui: &mut egui::Ui, value: &mut bool, label: &str, per_layout: &str, all_layouts: &str) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
-            let out =
-                craft_ui_widgets::choice::RadioGroup::new(label.to_owned(), Bind::given(*value)).id(self.id(ui, "radio", label)).show(ui, |ui, _| {
-                    craft_ui_widgets::layout_components::Row::new().show(ui, |ui, _| {
-                        craft_ui_widgets::choice::Radio::new(false).label(per_layout.to_owned()).show(ui);
-                        craft_ui_widgets::choice::Radio::new(true).label(all_layouts.to_owned()).show(ui);
-                    });
-                });
-            if let Some(next) = out.output.events.committed() {
-                *value = *next;
-            }
-            return;
-        }
-        ui.horizontal(|ui| {
-            if ui.radio(!*value, crate::rtl::widget(ui, per_layout)).clicked() {
-                *value = false;
-            }
-            if ui.radio(*value, crate::rtl::widget(ui, all_layouts)).clicked() {
-                *value = true;
-            }
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+        let out = craft_ui_widgets::choice::RadioGroup::new(label.to_owned(), Bind::given(*value)).id(self.id(ui, "radio", label)).show(ui, |ui, _| {
+            craft_ui_widgets::layout_components::Row::new().show(ui, |ui, _| {
+                craft_ui_widgets::choice::Radio::new(false).label(per_layout.to_owned()).show(ui);
+                craft_ui_widgets::choice::Radio::new(true).label(all_layouts.to_owned()).show(ui);
+            });
         });
+        if let Some(next) = out.output.events.committed() {
+            *value = *next;
+        }
     }
 
     fn number(&self, ui: &mut egui::Ui, label: &str, value: &mut f64, range: std::ops::RangeInclusive<f64>, integer: bool) -> bool {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         let id = self.id(ui, "number", label);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-            if integer {
-                craft_ui_widgets::display::Text::new(label.to_owned()).show(ui);
-            }
-            let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value))).id(id).range(range.clone()).step(1.0);
-            let out = if integer { field.snap_typed(true).fixed_decimals(0).commit_decimals(0).show(ui) } else { field.unit("ppi").show(ui) };
-            if let Some(Some(next)) = out.edit.events.landed().filter(|next| next.is_some_and(f64::is_finite)) {
-                let next = next.clamp(*range.start(), *range.end());
-                if next != *value {
-                    *value = next;
-                    return true;
-                }
-            }
-            return false;
-        }
-        let mut drag = egui::DragValue::new(value).range(range).speed(1.0);
         if integer {
-            drag = drag.max_decimals(0).prefix(format!("{label} "));
-        } else {
-            drag = drag.suffix(" ppi");
+            craft_ui_widgets::display::Text::new(label.to_owned()).show(ui);
         }
-        let response = ui.push_id(id, |ui| ui.add(drag)).inner;
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(label.to_owned()));
-        response.changed()
+        let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value))).id(id).range(range.clone()).step(1.0);
+        let out = if integer { field.snap_typed(true).fixed_decimals(0).commit_decimals(0).show(ui) } else { field.unit("ppi").show(ui) };
+        if let Some(Some(next)) = out.edit.events.landed().filter(|next| next.is_some_and(f64::is_finite)) {
+            let next = next.clamp(*range.start(), *range.end());
+            if next != *value {
+                *value = next;
+                return true;
+            }
+        }
+        false
     }
 
     fn add_version(&self, ui: &mut egui::Ui, label: &str) -> Option<ExportVersion> {
+        use craft_ui_widgets::contract::{Entry, Props as _, Trigger};
         let add = self.button(ui, label, true);
         let versions = version_templates();
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Entry, Props as _, Trigger};
-            let entries: Vec<_> = versions.iter().enumerate().map(|(i, version)| Entry::new(i, version.name.clone())).collect();
-            let picked = craft_ui_widgets::menu::Menu::new(label.to_owned())
-                .id(self.id(ui, "menu", label))
-                .opened_by(&add.response, Trigger::Click)
-                .pick(ui, &entries)
-                .picked;
-            return picked.and_then(|i| versions.get(i).cloned());
-        }
-        let mut picked = None;
-        egui::Popup::menu(&add.response).show(|ui| {
-            for version in &versions {
-                if ui.button(&version.name).clicked() {
-                    picked = Some(version.clone());
-                    ui.close();
-                }
-            }
-        });
-        picked
+        let entries: Vec<_> = versions.iter().enumerate().map(|(i, version)| Entry::new(i, version.name.clone())).collect();
+        let picked = craft_ui_widgets::menu::Menu::new(label.to_owned())
+            .id(self.id(ui, "menu", label))
+            .opened_by(&add.response, Trigger::Click)
+            .pick(ui, &entries)
+            .picked;
+        picked.and_then(|i| versions.get(i).cloned())
     }
 }
 
 /// Export Layouts and Versions on the framework's dialog host.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(form).width(660.0);
 
-#[cfg(not(target_arch = "wasm32"))]
 fn form(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> Option<bool> {
     show(app, ui, d);
     None
 }
 
-/// The dialog's body: the framework form's on the desktop, the browser window's otherwise.
+/// The dialog's body.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-        let _ = craft_ui_widgets::runtime::inspect::record(ui, workflow_region(), |ui| {
-            craft_ui_widgets::layout_components::Stack::new().id_salt("export_batch_body").fill_width().show(ui, |ui, _| show_body(app, ui, d));
-        });
-        return;
-    }
-    show_body(app, ui, d);
+    use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+    let _ = craft_ui_widgets::runtime::inspect::record(ui, workflow_region(), |ui| {
+        craft_ui_widgets::layout_components::Stack::new().id_salt("export_batch_body").fill_width().show(ui, |ui, _| show_body(app, ui, d));
+    });
 }
 
 fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    #[cfg(not(target_arch = "wasm32"))]
-    let sdk = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let sdk = false;
-    let controls = ExportControls { sdk, document: app.session.active().map(|st| (st.uid, st.identity_epoch)) };
+    let controls = ExportControls { document: app.session.active().map(|st| (st.uid, st.identity_epoch)) };
     let mut version_generation = d.fields.get("_sdkVersionGeneration").and_then(Value::as_u64).unwrap_or(0);
     let mut job = job_of(d);
     let before = job.clone();
@@ -465,7 +310,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         controls.note(ui, &tr("Preset:"), Note::Plain);
         let current = all.iter().position(|p| p.name == preset).unwrap_or(usize::MAX);
         let names: Vec<String> = all.iter().map(|p| p.name.clone()).collect();
-        if let Some(at) = controls.choice(ui, &tr("Preset:"), current, &names, 200.0, &tr("[Custom]")) {
+        if let Some(at) = controls.choice(ui, &tr("Preset:"), current, &names, &tr("[Custom]")) {
             job = all[at].job.clone();
             preset = all[at].name.clone();
             version_generation = version_generation.wrapping_add(1);
@@ -482,7 +327,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     controls.row(ui, "export_preset_name", false, |ui| {
         let mut name = d.s("presetName");
-        let changed = controls.text(ui, &tr("Preset name"), &mut name, 200.0, true);
+        let changed = controls.text(ui, &tr("Preset name"), &mut name, true);
         if changed {
             d.fields.insert("presetName".into(), json!(name));
         }
@@ -538,11 +383,11 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     for (i, v) in job.versions.iter_mut().enumerate() {
         controls.scope(ui, ("export_version", version_generation, i), |ui| {
             controls.row(ui, "export_version_line", false, |ui| {
-                controls.text(ui, &tr("Folder name"), &mut v.name, 170.0, true);
+                controls.text(ui, &tr("Folder name"), &mut v.name, true);
                 let formats = [ExportFormat::Pdf, ExportFormat::Png, ExportFormat::Jpeg];
                 let names: Vec<String> = ["PDF", "PNG", "JPEG"].into_iter().map(str::to_string).collect();
                 let current = formats.iter().position(|f| *f == v.format).unwrap_or(0);
-                if let Some(at) = controls.choice(ui, &tr("Format"), current, &names, 70.0, "") {
+                if let Some(at) = controls.choice(ui, &tr("Format"), current, &names, "") {
                     v.format = formats[at];
                 }
                 match v.format {
@@ -557,7 +402,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         let kinds = ["print", "bleed", "screen", "custom"];
                         let names: Vec<String> = kinds.iter().map(|kind| label(kind)).collect();
                         let current = kinds.iter().position(|k| *k == kind).unwrap_or(3);
-                        if let Some(at) = controls.choice(ui, &tr("PDF settings"), current, &names, 150.0, "") {
+                        if let Some(at) = controls.choice(ui, &tr("PDF settings"), current, &names, "") {
                             let k = kinds[at];
                             expanded.retain(|x| *x != i as u64);
                             if k == "custom" {
@@ -596,7 +441,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     let standards = ["none", "x4", "a2b"];
                     let names: Vec<String> = ["No standard", "PDF/X-4", "PDF/A-2b"].into_iter().map(str::to_string).collect();
                     let current = standards.iter().position(|s| *s == v.standard).unwrap_or(usize::MAX);
-                    if let Some(at) = controls.choice(ui, &tr("PDF standard"), current, &names, 110.0, "No standard") {
+                    if let Some(at) = controls.choice(ui, &tr("PDF standard"), current, &names, "No standard") {
                         v.standard = standards[at].into();
                     }
                 });
@@ -631,7 +476,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     // ---- File names.
     controls.heading(ui, &tr("File Names"));
     controls.row(ui, "export_file_names", false, |ui| {
-        controls.text(ui, &tr("File Names"), &mut job.file_name, 240.0, false);
+        controls.text(ui, &tr("File Names"), &mut job.file_name, false);
         for token in ["{document}", "{layout}", "{version}", "{date}"] {
             if controls.small_button(ui, token, &tr("Add to the name")).clicked {
                 job.file_name.push_str(if job.file_name.is_empty() || job.file_name.ends_with(' ') { "" } else { " " });
@@ -881,7 +726,6 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
 mod ui223_export_batch_workflow_tests {
     use super::*;
     use crate::theme::Tokens;
@@ -902,13 +746,9 @@ mod ui223_export_batch_workflow_tests {
 
     /// Body cases call the real production body with its actual Dialog. Only explicit host
     /// cases call dialogs::show, whose framework host draws Export and Cancel.
-    fn harness(mut app: DesignApp, sdk: bool, native_host: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp, native_host: bool) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if sdk {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(1100.0, 1050.0)).build_ui_state(
@@ -975,27 +815,15 @@ mod ui223_export_batch_workflow_tests {
         );
         click_rect(h, element.rect);
     }
-    fn choose(h: &mut Harness<'_, DesignApp>, label: &str, at: usize, value: &str, sdk: bool) {
-        if sdk {
-            sdk_click(h, "Select", label, at);
-        } else {
-            assert_eq!(at, 0);
-            let rect = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, label).rect();
-            click_rect(h, rect);
-        }
+    fn choose(h: &mut Harness<'_, DesignApp>, label: &str, at: usize, value: &str) {
+        sdk_click(h, "Select", label, at);
         let rect = h.get_all_by_label(value).last().unwrap().rect();
         click_rect(h, rect);
     }
-    fn type_text(h: &mut Harness<'_, DesignApp>, label: &str, at: usize, value: &str, sdk: bool) {
-        let rect = if sdk {
-            let element = sdk_element(h, "TextField", label, at);
-            assert_eq!(element.facts.as_ref().unwrap().role, "TextInput");
-            element.rect
-        } else {
-            assert_eq!(at, 0);
-            h.get_by_role_and_label(egui::accesskit::Role::TextInput, label).rect()
-        };
-        click_rect(h, rect);
+    fn type_text(h: &mut Harness<'_, DesignApp>, label: &str, at: usize, value: &str) {
+        let element = sdk_element(h, "TextField", label, at);
+        assert_eq!(element.facts.as_ref().unwrap().role, "TextInput");
+        click_rect(h, element.rect);
         key_mod(h, Key::A, Modifiers::COMMAND);
         input(h, Some(Event::Text(value.into())));
         idle(h, 2);
@@ -1137,17 +965,17 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_presets_custom_save_delete_and_disabled_save() {
-        let mut h = harness(app(), true, false);
+        let mut h = harness(app(), false);
         let steps = undo(&h);
         let disabled = sdk_element(&h, "Button", "Save Preset", 0);
         assert!(disabled.facts.as_ref().unwrap().disabled);
         click_rect(&mut h, disabled.rect);
         assert!(h.state().session.prefs.export_presets.is_empty());
-        choose(&mut h, "Preset:", 0, "Images per Layout", true);
+        choose(&mut h, "Preset:", 0, "Images per Layout");
         assert_eq!(job(&h), builtin_presets().into_iter().find(|p| p.name == "Images per Layout").unwrap().job);
-        type_text(&mut h, "File Names", 0, "Client {document}", true);
+        type_text(&mut h, "File Names", 0, "Client {document}");
         assert!(dialog(&h).s("preset").is_empty());
-        type_text(&mut h, "Preset name", 0, "  Client Café  ", true);
+        type_text(&mut h, "Preset name", 0, "  Client Café  ");
         let saved = job(&h);
         // Natural Tab from the real name field, followed by Space on the actual Save button.
         key(&mut h, Key::Tab);
@@ -1168,7 +996,7 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_keyboard_dropdown_preview_cancel_then_commit() {
-        let mut h = harness(app(), true, false);
+        let mut h = harness(app(), false);
         let original = job(&h);
         let journal = h.state().session.journal.clone();
         sdk_click(&mut h, "Select", "Preset:", 0);
@@ -1189,7 +1017,7 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_layout_sentinel_order_and_combine_radios() {
-        let mut h = harness(app(), true, false);
+        let mut h = harness(app(), false);
         let steps = undo(&h);
         assert_eq!(sdk_element(&h, "Checkbox", "Tablet H", 0).facts.as_ref().unwrap().role, "CheckBox");
         sdk_click(&mut h, "Checkbox", "Tablet H", 0);
@@ -1215,17 +1043,17 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_pdf_custom_marks_standard_and_quick_settings() {
-        let mut h = harness(app(), true, false);
-        choose(&mut h, "Preset:", 0, "All Layouts in One PDF", true);
-        choose(&mut h, "PDF settings", 0, "Custom", true);
+        let mut h = harness(app(), false);
+        choose(&mut h, "Preset:", 0, "All Layouts in One PDF");
+        choose(&mut h, "PDF settings", 0, "Custom");
         for label in ["Bleed", "Crop Marks", "Bleed Marks", "Page Information", "Compress Images", "Spreads"] {
             sdk_click(&mut h, "Checkbox", label, 0);
         }
-        choose(&mut h, "PDF standard", 0, "PDF/X-4", true);
+        choose(&mut h, "PDF standard", 0, "PDF/X-4");
         let version = job(&h).versions.remove(0);
         assert!(!version.bleed && version.marks.crop && version.marks.bleed && version.marks.page_info && version.compress_images && version.spreads);
         assert_eq!(version.standard, "x4");
-        choose(&mut h, "PDF settings", 0, "Screen", true);
+        choose(&mut h, "PDF settings", 0, "Screen");
         let version = job(&h).versions.remove(0);
         assert!(
             !version.bleed && !version.marks.crop && !version.marks.bleed && !version.marks.page_info && version.compress_images && !version.spreads
@@ -1238,10 +1066,10 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_formats_numbers_duplicate_remove_add_and_tokens() {
-        let mut h = harness(app(), true, false);
+        let mut h = harness(app(), false);
         let steps = undo(&h);
-        choose(&mut h, "Preset:", 0, "All Layouts in One PDF", true);
-        choose(&mut h, "Format", 0, "JPEG", true);
+        choose(&mut h, "Preset:", 0, "All Layouts in One PDF");
+        choose(&mut h, "Format", 0, "JPEG");
         type_number(&mut h, "Resolution", 0, "240");
         type_number(&mut h, "Quality", 0, "73");
         key(&mut h, Key::ArrowUp);
@@ -1262,7 +1090,7 @@ mod ui223_export_batch_workflow_tests {
         assert_eq!(job(&h).versions[1], version_templates().into_iter().find(|v| v.name == "PNG").unwrap());
         sdk_click(&mut h, "Checkbox", "Put each version in its own folder", 0);
         assert!(job(&h).folders);
-        type_text(&mut h, "File Names", 0, "{document}", true);
+        type_text(&mut h, "File Names", 0, "{document}");
         for token in ["{layout}", "{version}", "{date}"] {
             sdk_click(&mut h, "Button", token, 0);
         }
@@ -1274,15 +1102,15 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_structural_reindex_retires_old_field_identity() {
-        let mut h = harness(app(), true, false);
-        type_text(&mut h, "Folder name", 1, "Client Screen", true);
+        let mut h = harness(app(), false);
+        type_text(&mut h, "Folder name", 1, "Client Screen");
         let old_screen = sdk_element(&h, "TextField", "Folder name", 1).id;
         let old_png = sdk_element(&h, "TextField", "Folder name", 2).id;
         sdk_click(&mut h, "IconButton", "Remove version", 0);
         assert_eq!(job(&h).versions.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Client Screen", "PNG"]);
         assert_ne!(sdk_element(&h, "TextField", "Folder name", 0).id, old_screen);
         assert_ne!(sdk_element(&h, "TextField", "Folder name", 1).id, old_png);
-        type_text(&mut h, "Folder name", 1, "PNG client", true);
+        type_text(&mut h, "Folder name", 1, "PNG client");
         sdk_click(&mut h, "Button", "Duplicate", 1);
         assert_eq!(job(&h).versions.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Client Screen", "PNG client", "PNG client copy"]);
         no_idle_replay(&mut h);
@@ -1290,8 +1118,8 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_held_document_action_cannot_follow_new_document() {
-        let mut h = harness(app(), true, false);
-        choose(&mut h, "Preset:", 0, "All Layouts in One PDF", true);
+        let mut h = harness(app(), false);
+        choose(&mut h, "Preset:", 0, "All Layouts in One PDF");
         let old = sdk_element(&h, "Button", "Duplicate", 0);
         let pos = old.rect.center();
         input(&mut h, Some(Event::PointerMoved(pos)));
@@ -1312,20 +1140,20 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_builtin_and_long_preset_refusals_preserve_drafts() {
-        let mut h = harness(app(), true, false);
+        let mut h = harness(app(), false);
         let original = job(&h);
-        type_text(&mut h, "Preset name", 0, "Print + Screen", true);
+        type_text(&mut h, "Preset name", 0, "Print + Screen");
         sdk_click(&mut h, "Button", "Save Preset", 0);
         assert!(dialog(&h).s("status").contains("built-in"));
         assert_eq!(dialog(&h).s("presetName"), "Print + Screen");
         let too_long = "é".repeat(81);
-        type_text(&mut h, "Preset name", 0, &too_long, true);
+        type_text(&mut h, "Preset name", 0, &too_long);
         sdk_click(&mut h, "Button", "Save Preset", 0);
         assert!(dialog(&h).s("status").contains("80"));
         assert_eq!(dialog(&h).s("presetName"), too_long);
         assert!(h.state().session.prefs.export_presets.is_empty());
         assert_eq!(job(&h), original);
-        type_text(&mut h, "Preset name", 0, "   ", true);
+        type_text(&mut h, "Preset name", 0, "   ");
         let disabled = sdk_element(&h, "Button", "Save Preset", 0);
         assert!(disabled.facts.as_ref().unwrap().disabled);
         click_rect(&mut h, disabled.rect);
@@ -1335,8 +1163,8 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_body_preview_cap_is_real_scrolled_content_not_export_io() {
-        let mut h = harness(app_with(51, "Tablet H"), true, false);
-        choose(&mut h, "Preset:", 0, "Images per Layout", true);
+        let mut h = harness(app_with(51, "Tablet H"), false);
+        choose(&mut h, "Preset:", 0, "Images per Layout");
         let paths = dialog(&h).fields["preview"].as_array().unwrap().clone();
         assert_eq!(paths.len(), 204);
         assert_eq!(PREVIEW_ROWS, 200);
@@ -1364,52 +1192,28 @@ mod ui223_export_batch_workflow_tests {
     fn ui223_export_body_rtl_names_long_unicode_and_template_refusal() {
         let mut app = app_with(2, "مخطط الهاتف");
         app.ui.language = "ar".into();
-        let mut h = harness(app, true, false);
+        let mut h = harness(app, false);
         let tr = |key: &str| crate::i18n::tr("ar", key).to_string();
         let layout = sdk_element(&h, "Checkbox", "مخطط الهاتف", 0);
         assert_eq!(layout.facts.as_ref().unwrap().name.as_deref(), Some("مخطط الهاتف"));
         sdk_click(&mut h, "Checkbox", "مخطط الهاتف", 0);
         assert_eq!(job(&h).layouts, ["Print"]);
         let long = "نسخة Café–α ".repeat(18);
-        type_text(&mut h, &tr("Folder name"), 0, &long, true);
+        type_text(&mut h, &tr("Folder name"), 0, &long);
         assert_eq!(job(&h).versions[0].name, long);
         assert!(dialog(&h).fields["previewError"].is_null(), "the engine safely normalizes long output names, not the UI draft");
         let invalid = "x".repeat(401);
-        type_text(&mut h, &tr("File Names"), 0, &invalid, true);
+        type_text(&mut h, &tr("File Names"), 0, &invalid);
         assert_eq!(job(&h).file_name, invalid);
         assert!(dialog(&h).s("previewError").contains("too long"));
-        type_text(&mut h, &tr("File Names"), 0, "{document} {layout}", true);
+        type_text(&mut h, &tr("File Names"), 0, "{document} {layout}");
         assert!(dialog(&h).fields["previewError"].is_null());
         no_idle_replay(&mut h);
     }
 
     #[test]
-    fn ui223_export_body_native_fallback_keeps_complete_editing_routes() {
-        let mut h = harness(app(), false, false);
-        assert!(craft_ui_widgets::runtime::inspect::recorded(&h.ctx, workflow_region()).is_none());
-        choose(&mut h, "Preset:", 0, "All Layouts in One PDF", false);
-        type_text(&mut h, "Folder name", 0, "Client Café", false);
-        choose(&mut h, "Format", 0, "PNG", false);
-        assert_eq!(job(&h).versions[0].format, ExportFormat::Png);
-        assert_eq!(job(&h).versions[0].name, "Client Café");
-        click(&mut h, "Duplicate");
-        assert_eq!(job(&h).versions[1].name, "Client Café copy");
-        let remove = h.get_all_by_label("Remove version").last().unwrap().rect();
-        click_rect(&mut h, remove);
-        click(&mut h, "+ Add Version");
-        click(&mut h, "JPEG");
-        assert_eq!(job(&h).versions[1].format, ExportFormat::Jpeg);
-        click(&mut h, "Put each version in its own folder");
-        type_text(&mut h, "File Names", 0, "Client", false);
-        click(&mut h, "{layout}");
-        assert_eq!(job(&h).file_name, "Client {layout}");
-        assert!(job(&h).folders);
-        no_idle_replay(&mut h);
-    }
-
-    #[test]
     fn ui223_export_host_pointer_cancel_has_no_export_or_preference_side_effect() {
-        let mut h = harness(app(), true, true);
+        let mut h = harness(app(), true);
         let document = h.state().session.active().unwrap().doc.clone();
         let steps = undo(&h);
         let preferences = h.state().session.prefs.export_presets.clone();
@@ -1427,7 +1231,7 @@ mod ui223_export_batch_workflow_tests {
 
     #[test]
     fn ui223_export_host_empty_versions_refused_then_pointer_cancel() {
-        let mut h = harness(app(), true, true);
+        let mut h = harness(app(), true);
         for _ in 0..3 {
             sdk_click(&mut h, "IconButton", "Remove version", 0);
         }
@@ -1447,7 +1251,7 @@ mod ui223_export_batch_workflow_tests {
     fn ui223_export_host_queued_folder_cancel_remembers_without_exporting() {
         let mut app = app();
         app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
-        let mut h = harness(app, true, true);
+        let mut h = harness(app, true);
         let chosen = job(&h);
         click(&mut h, "Export…");
         assert!(h.state().ui.dialog.is_none());

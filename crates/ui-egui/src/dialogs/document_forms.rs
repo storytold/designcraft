@@ -214,7 +214,7 @@ fn file_info(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     None
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::super::table_layout_kit as kit;
     use super::*;

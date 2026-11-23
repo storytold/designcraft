@@ -428,10 +428,8 @@ mod tests {
         app.ui.language = "en".to_owned();
         app.run("app.newDocumentDialog", json!({})).unwrap();
         let ctx = egui::Context::default();
-        app.framework_opacity = true;
         app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        assert!(app.framework_installed, "the framework form needs the installed runtime");
         let mut ready = false;
         // Frames a sixtieth of a second apart, as the shipping window's: the harness's default quarter second puts the
         // two clicks of a double click further apart than egui's double-click delay.
