@@ -1408,3 +1408,6 @@ mod framework_tests {
         assert_eq!(overset_lines(&fits), 0);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;

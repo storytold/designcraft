@@ -893,3 +893,6 @@ mod auto_fit_workflow_tests {
         journal_one(&h, start, true);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
