@@ -265,9 +265,9 @@ pub(crate) fn place_table(
     // tables are not measured and keep the grid line on the frame edge.
     let ltr = table.options.direction != designcraft_doc::TextDirection::RightToLeft;
     // A table squeezed to the column keeps its grid on the column's edges.
-    let left_half = if ltr && k >= 1.0 - 1e-9 { outer_half_weight(table, &owners, 1) } else { 0.0 };
-    let (top_half, bottom_half) = (outer_half_weight(table, &owners, 0), outer_half_weight(table, &owners, 2));
-    let x_off = x_off + left_half;
+    let placed_inside = ltr && k >= 1.0 - 1e-9;
+    let half = |side: usize| if placed_inside { outer_half_weight(table, &owners, side) } else { 0.0 };
+    let (top_half, left_half, bottom_half) = (half(0), half(1), half(2));
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
     // Compose every owner cell.
     let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
@@ -374,7 +374,7 @@ pub(crate) fn place_table(
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
         let bottom = col.y1 - reserve;
-        let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
+        let at_col_top = cur.last_baseline.is_none() && (top - col.y0 - if first_frag { top_half } else { 0.0 }).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
@@ -390,7 +390,24 @@ pub(crate) fn place_table(
             if o.repeat_footer {
                 place_rows(body_end..nr, &mut y, true, &mut frag_rows);
             }
-            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
+            emit(
+                table,
+                anchor,
+                pi,
+                &frag_rows,
+                &heights,
+                &colx,
+                col.x0 + x_off + left_half,
+                top,
+                y,
+                first_frag,
+                false,
+                &layouts,
+                &owners,
+                cur,
+                col,
+                out,
+            );
             first_frag = false;
         }
         let was_first = first_frag;
@@ -400,7 +417,9 @@ pub(crate) fn place_table(
         }
         col = col_rect(cur);
         reserve = column_reserve(notes, cur, col);
-        y = col.y0;
+        // A table that has not started yet begins in the new column as it would have in the old
+        // one: half its top stroke down.
+        y = col.y0 + if first_frag { top_half } else { 0.0 };
         top = y;
         frag_rows.clear();
         body_placed = 0;
@@ -412,7 +431,24 @@ pub(crate) fn place_table(
         }
     }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
+    emit(
+        table,
+        anchor,
+        pi,
+        &frag_rows,
+        &heights,
+        &colx,
+        col.x0 + x_off + if first_frag { left_half } else { 0.0 },
+        top,
+        y,
+        first_frag,
+        true,
+        &layouts,
+        &owners,
+        cur,
+        col,
+        out,
+    );
     cur.last_baseline = Some(y + bottom_half);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
