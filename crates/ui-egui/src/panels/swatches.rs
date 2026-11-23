@@ -4489,8 +4489,12 @@ mod ui223_swatches_rename_apply_tests {
             // The keys of the held editor input go down while the source changes, before any pass has observed it: they are
             // the editor's, and must apply nothing. (A key pressed after the editor is gone is the list's, which has taken
             // the focus back: Enter on its current row is a real activation, not stale input.)
-            key(&mut h, Key::Enter);
-            key(&mut h, Key::Space);
+            for pressed in [true, false] {
+                for key in [Key::Enter, Key::Space] {
+                    h.input_mut().events.push(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+                }
+                frame(&mut h, None);
+            }
             idle(&mut h, 2);
             press(&mut h, at, false);
             assert!(draft(&h).is_none(), "{change} must retire the observed source");
