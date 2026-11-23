@@ -1932,7 +1932,10 @@ mod tests {
 mod framework_tests {
     use super::*;
     use egui::{Event, Key, Modifiers, PointerButton};
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
 
     type Window = Harness<'static, DesignApp>;
 
@@ -2043,7 +2046,6 @@ mod framework_tests {
 
     /// The rectangle of the node named `label`; see [`center`].
     fn rect_of(h: &Window, label: &str) -> egui::Rect {
-        use egui_kittest::kittest::NodeT as _;
         let nodes: Vec<_> = h.query_all_by_label(label).collect();
         let pick = [egui::accesskit::Role::TreeItem, egui::accesskit::Role::Button]
             .into_iter()
@@ -2238,7 +2240,12 @@ mod framework_tests {
 
     /// The text field of the rename in place, once it is open.
     fn renaming(h: &Window) -> bool {
-        h.query_by_role(egui::accesskit::Role::TextInput).is_some()
+        editor_field(h).is_some()
+    }
+
+    /// The open name field. The framework keeps a hidden node of the same role beside it, so the visible one is taken.
+    fn editor_field(h: &Window) -> Option<egui_kittest::Node<'_>> {
+        h.query_all_by_role(egui::accesskit::Role::TextInput).find(|node| !node.accesskit_node().is_hidden())
     }
 
     fn rename_target() -> (Window, ItemId) {
@@ -2294,14 +2301,14 @@ mod framework_tests {
         assert!(!renaming(&h) && object_name(&h).is_empty(), "an unedited label is not a name");
         // Typed over, Enter names it.
         start_rename(&mut h, row);
-        h.get_by_role(egui::accesskit::Role::TextInput).type_text("Hero bottle");
+        editor_field(&h).expect("the name field is open").type_text("Hero bottle");
         steps(&mut h, 2);
         press_key(&mut h, Key::Enter);
         assert_eq!(object_name(&h), "Hero bottle");
         // Escape leaves the name as it was.
         let row = center(&h, "Hero bottle");
         start_rename(&mut h, row);
-        h.get_by_role(egui::accesskit::Role::TextInput).type_text("Oops");
+        editor_field(&h).expect("the name field is open").type_text("Oops");
         press_key(&mut h, Key::Escape);
         assert_eq!(object_name(&h), "Hero bottle");
     }

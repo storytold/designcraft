@@ -4033,7 +4033,8 @@ mod ui223_swatches_rename_apply_tests {
             idle(h, 2);
             rect = row(h, name);
         }
-        let at = rect.left_center() + vec2(64.0, 0.0);
+        // The middle of the row is in the name's column whichever way the row reads; the ends hold the chip and the marks.
+        let at = rect.center();
         assert!(h.state().viewport.contains(at), "the same real row must be physically visible");
         at
     }
