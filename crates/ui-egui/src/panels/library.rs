@@ -7,7 +7,135 @@ use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::Tokens;
 
+/// What the Object Library panel's buttons ask for.
+#[cfg(not(target_arch = "wasm32"))]
+enum LibraryAction {
+    ClearConveyor,
+    New,
+    Open,
+    Add,
+    Place(serde_json::Value),
+    Remove(serde_json::Value),
+}
+
+/// A framework button of a panel, a Tab stop identified by `salt`.
+#[cfg(not(target_arch = "wasm32"))]
+fn framework_action(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug, label: &str, enabled: bool, small: bool) -> bool {
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    craft_ui_widgets::buttons::Button::new(label.to_owned())
+        .id_salt(salt)
+        .enabled(enabled)
+        .size(if small { craft_theme::ControlSize::Sm } else { craft_theme::ControlSize::Md })
+        .show(ui)
+        .clicked()
+}
+
+/// The Object Library panel on the framework: the conveyor, New and Open, Add Selection and a row for each item.
+#[cfg(not(target_arch = "wasm32"))]
+fn library_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::TypeRole;
+
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let conveyor = app.session.conveyor.iter().map(|c| c.0.clone()).collect::<Vec<_>>();
+    let items = app.session.execute("library.list", &json!({})).ok().map(|items| items.as_array().cloned().unwrap_or_default());
+    let has_sel = app.session.active().is_some_and(|d| !d.selection.items.is_empty());
+    let mut acts: Vec<LibraryAction> = Vec::new();
+    Stack::new().id_salt("object_library").fill_width().show(ui, |ui, _| {
+        // Content Collector conveyor.
+        Text::new(format!("{} ({})", tr("Conveyor"), conveyor.len())).role(TypeRole::BodyStrong).sizing(Sizing::FillWidth).show(ui);
+        if conveyor.is_empty() {
+            Text::new(tr("Collect objects with the Content Collector (B); place them with the Content Placer."))
+                .role(TypeRole::Caption)
+                .shade(Shade::Muted)
+                .sizing(Sizing::FillWidth)
+                .show(ui);
+        } else {
+            Text::new(conveyor.join(", ")).role(TypeRole::Caption).sizing(Sizing::FillWidth).show(ui);
+            if framework_action(ui, "library_conveyor_clear", &tr("Clear"), true, true) {
+                acts.push(LibraryAction::ClearConveyor);
+            }
+        }
+        Divider::horizontal().show(ui);
+        Row::new().id_salt("object_library_files").show(ui, |ui, _| {
+            if framework_action(ui, "object_library_new", &tr("New Library…"), true, false) {
+                acts.push(LibraryAction::New);
+            }
+            if framework_action(ui, "object_library_open", &tr("Open…"), true, false) {
+                acts.push(LibraryAction::Open);
+            }
+        });
+        let Some(items) = &items else {
+            Text::new(tr("No library open.")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+            return;
+        };
+        if framework_action(ui, "object_library_add", &tr("Add Selection"), has_sel, false) {
+            acts.push(LibraryAction::Add);
+        }
+        Divider::horizontal().show(ui);
+        if items.is_empty() {
+            Text::new(tr("The library is empty. Select objects and Add Selection."))
+                .role(TypeRole::Caption)
+                .shade(Shade::Muted)
+                .sizing(Sizing::FillWidth)
+                .show(ui);
+        }
+        for it in items {
+            let i = it["index"].clone();
+            // The list's actual command identity, not the display name or an invented item key.
+            let key = i.to_string();
+            Row::new().id_salt(("object_library_item", key.clone())).fill_width().show(ui, |ui, _| {
+                Text::new(it["name"].as_str().unwrap_or("").to_owned()).sizing(Sizing::FillWidth).show(ui);
+                if framework_action(ui, ("object_library_item_place", key.clone()), &tr("Place"), true, true) {
+                    acts.push(LibraryAction::Place(i.clone()));
+                }
+                if framework_action(ui, ("object_library_item_delete", key.clone()), &tr("Delete"), true, true) {
+                    acts.push(LibraryAction::Remove(i.clone()));
+                }
+            });
+        }
+    });
+    for act in acts {
+        match act {
+            LibraryAction::ClearConveyor => {
+                let _ = app.run("conveyor.clear", json!({}));
+            }
+            LibraryAction::New => {
+                let asked = app.ask_save("Library.dclib", Bound::App, |app, path| app.run("library.new", json!({"path": path})));
+                report(app, "Library", asked);
+            }
+            LibraryAction::Open => {
+                let asked = app.ask_open("library", Bound::App, |app, path| {
+                    app.run("library.open", json!({"path": path})).or_else(|e| report_err(app, "Library", e))
+                });
+                report(app, "Library", asked);
+            }
+            LibraryAction::Add => {
+                if let Err(e) = app.run("library.add", json!({})) {
+                    app.status_error("Library", e);
+                }
+            }
+            LibraryAction::Place(i) => {
+                if let Err(e) = app.run("library.place", json!({"index": i})) {
+                    app.status_error("Library", e);
+                }
+            }
+            LibraryAction::Remove(i) => {
+                let _ = app.run("library.remove", json!({"index": i}));
+            }
+        }
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        library_framework(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     #[cfg(not(target_arch = "wasm32"))]
     let framework = app.framework_installed;
@@ -153,8 +281,8 @@ fn book_sdk_button(
 ) -> Option<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_theme::ControlSize;
+        use craft_ui_widgets::contract::{Props as _, Show as _};
         let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).painted(painted.to_owned()).id(id).tooltip(label.to_owned());
         if small {
             button = button.size(ControlSize::Sm);
@@ -229,7 +357,157 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     book_contents(app, ui);
 }
 
+/// What the Book panel's buttons ask for.
+#[cfg(not(target_arch = "wasm32"))]
+enum BookAction {
+    New,
+    Open,
+    Add,
+    Paginate,
+    Sync,
+    Export,
+    StyleSource(usize),
+    OpenDocument(String),
+    Remove(usize),
+}
+
+/// The Book panel on the framework: New and Open, a row for each document, and the book-wide actions.
+#[cfg(not(target_arch = "wasm32"))]
+fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::TypeRole;
+
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let info = app.session.execute("book.list", &json!({})).ok();
+    // A changed book or chapter sequence must not retarget an in-flight row press.
+    let target = app.session.book.as_ref().map(|book| (&book.path, &book.documents));
+    let book_id = ui.scope_id().with(("book_chapters", target));
+    let mut acts: Vec<BookAction> = Vec::new();
+    let app_ref: &DesignApp = app;
+    Stack::new().id_salt("book").fill_width().show(ui, |ui, _| {
+        Row::new().id_salt("book_open_buttons").show(ui, |ui, _| {
+            if book_button(app_ref, ui, "book_new", &tr("New Book…")) {
+                acts.push(BookAction::New);
+            }
+            if book_button(app_ref, ui, "book_open", &tr("Open…")) {
+                acts.push(BookAction::Open);
+            }
+        });
+        let Some(info) = &info else {
+            Text::new(tr("No book open.")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+            return;
+        };
+        let source = info["styleSource"].as_u64().unwrap_or(0) as usize;
+        Divider::horizontal().show(ui);
+        for (i, d) in info["documents"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+            let path = d["path"].as_str().unwrap_or("").to_string();
+            let name = std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let (first, pages) = (d["firstPage"].as_u64().unwrap_or(1), d["pages"].as_u64().unwrap_or(0));
+            Row::new().id_salt(("book_row", i)).fill_width().show(ui, |ui, _| {
+                let marked = book_sdk_button(
+                    app_ref,
+                    ui,
+                    book_id.with((i, &path, "source")),
+                    &book_row_name(&lang, "Style source", &path, i),
+                    if i == source { "◆" } else { "◇" },
+                    true,
+                    Some(i == source),
+                );
+                if marked == Some(true) {
+                    acts.push(BookAction::StyleSource(i));
+                }
+                if book_sdk_button(app_ref, ui, book_id.with((i, &path, "open")), &book_row_name(&lang, "Open", &path, i), &name, false, None)
+                    == Some(true)
+                {
+                    acts.push(BookAction::OpenDocument(path.clone()));
+                }
+                Text::new(format!("{first}–{}", first + pages.saturating_sub(1)))
+                    .role(TypeRole::Caption)
+                    .shade(Shade::Muted)
+                    .sizing(Sizing::FillWidth)
+                    .show(ui);
+                if book_sdk_button(
+                    app_ref,
+                    ui,
+                    book_id.with((i, &path, "remove")),
+                    &book_row_name(&lang, "Remove", &path, i),
+                    &tr("Remove"),
+                    true,
+                    None,
+                ) == Some(true)
+                {
+                    acts.push(BookAction::Remove(i));
+                }
+            });
+        }
+        Divider::horizontal().show(ui);
+        Row::new().id_salt("book_actions").wrap(true).show(ui, |ui, _| {
+            if book_button(app_ref, ui, "book_add", &tr("Add Document…")) {
+                acts.push(BookAction::Add);
+            }
+            if book_button(app_ref, ui, "book_paginate", &tr("Update Numbering")) {
+                acts.push(BookAction::Paginate);
+            }
+            if book_button(app_ref, ui, "book_sync", &tr("Synchronize")) {
+                acts.push(BookAction::Sync);
+            }
+            if book_button(app_ref, ui, "book_export", &tr("Export PDF…")) {
+                acts.push(BookAction::Export);
+            }
+        });
+    });
+    for act in acts {
+        match act {
+            BookAction::New => {
+                let asked = app.ask_save("Book.dcbook", Bound::App, |app, path| {
+                    app.run("book.new", json!({"path": path})).or_else(|e| report_err(app, "Book", e))
+                });
+                report(app, "Book", asked);
+            }
+            BookAction::Open => {
+                let asked =
+                    app.ask_open("book", Bound::App, |app, path| app.run("book.open", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
+                report(app, "Book", asked);
+            }
+            BookAction::Add => {
+                let asked =
+                    app.ask_open("open", Bound::App, |app, path| app.run("book.add", json!({"path": path})).or_else(|e| report_err(app, "Book", e)));
+                report(app, "Book", asked);
+            }
+            BookAction::Paginate => {
+                let _ = app.run("book.paginate", json!({}));
+            }
+            BookAction::Sync => {
+                let _ = app.run("book.syncStyles", json!({}));
+            }
+            BookAction::Export => {
+                let asked = app.ask_save("Book.pdf", Bound::App, |app, path| {
+                    app.run("book.exportPdf", json!({"path": path})).or_else(|e| report_err(app, "Book", e))
+                });
+                report(app, "Book", asked);
+            }
+            BookAction::StyleSource(i) => {
+                let _ = app.run("book.styleSource", json!({"index": i}));
+            }
+            BookAction::OpenDocument(path) => {
+                let _ = app.run("file.open", json!({"path": path}));
+            }
+            BookAction::Remove(i) => {
+                let _ = app.run("book.remove", json!({"index": i}));
+            }
+        }
+    }
+}
+
 fn book_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        book_framework(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     book_open_buttons(app, ui);
     let Ok(info) = app.session.execute("book.list", &json!({})) else {
@@ -341,8 +619,103 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
     false
 }
 
+/// The Scripts panel on the framework: a row for each script (a click selects it, a double click runs it), the
+/// Run, New, Load and Delete actions, and the selected script's name and text.
+#[cfg(not(target_arch = "wasm32"))]
+fn scripts_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::primitives::HAlign;
+    use craft_ui_widgets::style::{TypeRole, Variant};
+
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let sel_id = egui::Id::unique("scripts_sel");
+    let mut sel: usize = ui.data(|d| d.get_temp(sel_id)).unwrap_or(0);
+    let mut run: Option<usize> = None;
+    let (mut new, mut load, mut delete) = (false, false, false);
+    let target = app
+        .session
+        .active()
+        .map(|st| format!("{:?}", (st.uid, st.identity_epoch, st.revision, &st.selection.items, &st.selection.text, &st.selection.cells)));
+    // Hash only the selected full script, not every hidden script or document content/history.
+    let actions = ui.scope_id().with(("scripts_actions", target, sel, app.ui.scripts.len(), app.ui.scripts.get(sel)));
+    let app_ref: &DesignApp = app;
+    let (empty, run_enabled) = (app_ref.ui.scripts.is_empty(), !app_ref.ui.scripts.is_empty());
+    Stack::new().id_salt("scripts").fill_width().show(ui, |ui, _| {
+        if empty {
+            Text::new(tr("No scripts. Add one below.")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        }
+        for (i, (name, _)) in app_ref.ui.scripts.iter().enumerate() {
+            let out = Button::new(name.clone())
+                .id_salt(("script_row", i))
+                .variant(if i == sel { Variant::SECONDARY } else { Variant::GHOST })
+                .align(HAlign::Start)
+                .sizing(Sizing::FillWidth)
+                .show(ui);
+            if out.clicks >= 2 {
+                run = Some(i);
+            } else if out.clicked() {
+                sel = i;
+            }
+        }
+        Divider::horizontal().show(ui);
+        Row::new().id_salt("scripts_actions").show(ui, |ui, _| {
+            if scripts_action(app_ref, ui, actions.with("run"), &tr("Run"), run_enabled) {
+                run = Some(sel);
+            }
+            new = scripts_action(app_ref, ui, actions.with("new"), &tr("New"), true);
+            load = scripts_action(app_ref, ui, actions.with("load"), &tr("Load…"), true);
+            delete = scripts_action(app_ref, ui, actions.with("delete"), &tr("Delete"), run_enabled);
+        });
+    });
+    if new {
+        app.ui.scripts.push((format!("Script {}", app.ui.scripts.len() + 1), "# command.id {json} per line\n".into()));
+        sel = app.ui.scripts.len() - 1;
+    }
+    if load {
+        let asked = app.ask_open("script", Bound::App, move |app, path| {
+            load_script(app, &path, sel_id);
+            Ok(serde_json::Value::Null)
+        });
+        report(app, "Scripts", asked);
+    }
+    if delete && sel < app.ui.scripts.len() {
+        app.ui.scripts.remove(sel);
+        sel = sel.saturating_sub(1);
+    }
+    // The shelf and its editors are app-owned, not document-owned. Preserve the original selected-slot policy.
+    let editor = ui.scope_id().with(("scripts_editor", sel, app.ui.scripts.len()));
+    let labels = (tr("Name"), tr("Scripts"));
+    if let Some((name, text)) = app.ui.scripts.get_mut(sel) {
+        Stack::new().id_salt("scripts_editor").fill_width().show(ui, |ui, _| {
+            scripts_sdk_editors(ui, editor, name, text, (&labels.0, &labels.1), true);
+        });
+    }
+    if let Some(i) = run
+        && let Some((name, text)) = app.ui.scripts.get(i).cloned()
+    {
+        match app.run("script.run", json!({"text": text})) {
+            Ok(r) => app.status(
+                crate::i18n::tr(&app.ui.language, "{name}: {count} step(s) done")
+                    .replace("{name}", &name)
+                    .replace("{count}", &r["steps"].to_string()),
+            ),
+            Err(e) => app.status(format!("{name}: {e}")),
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(sel_id, sel));
+}
+
 /// Scripts panel: saved command scripts — run (one undo step), edit, add, delete, load.
 pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        scripts_framework(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let sel_id = egui::Id::unique("scripts_sel");
     #[cfg(not(target_arch = "wasm32"))]
@@ -472,9 +845,16 @@ mod framework_action_tests {
 
     fn buttons(h: &Harness<'_, Window>, name: &str) -> Vec<Element> {
         let name = crate::i18n::tr(&h.state().app.ui.language, name);
-        let mut found: Vec<_> = h.state().controls.as_ref().unwrap().elements.iter().filter(|element| {
-            element.facts.as_ref().is_some_and(|facts| facts.role == "Button" && facts.name.as_deref() == Some(name))
-        }).cloned().collect();
+        let mut found: Vec<_> = h
+            .state()
+            .controls
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|element| element.facts.as_ref().is_some_and(|facts| facts.role == "Button" && facts.name.as_deref() == Some(name)))
+            .cloned()
+            .collect();
         found.sort_by(|a, b| a.rect.top().total_cmp(&b.rect.top()));
         found
     }

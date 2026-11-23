@@ -293,6 +293,86 @@ fn clock(p: &egui::Painter, r: Rect, color: Color32) {
     p.line_segment([c, c + vec2(3.0, 1.5)], Stroke::new(1.2, color));
 }
 
+/// The rows of the list: Recently Used (only for the plain list), then the families that pass the filters; and whether the
+/// kinds the filters need are still being read.
+fn build_rows(
+    app: &DesignApp,
+    ui: &Ui,
+    fonts: &designcraft_fonts::ScopedFonts<'static>,
+    scope: u32,
+    menu: &[FamilyInfo],
+    st: &MenuState,
+) -> (Vec<Row>, bool) {
+    let favs = app.session.prefs.favorite_fonts.clone();
+    let q = st.query.to_lowercase();
+    let filtered = st.class.is_some() || st.only_recent || st.similar.is_some();
+    let mut families: Vec<&FamilyInfo> = menu.iter().filter(|f| f.matches(&q) && (!st.only_favs || favs.contains(&f.family))).collect();
+    // While the kinds are read, the families read so far.
+    let mut loading = false;
+    if filtered {
+        let shared = kinds(ui.ctx(), fonts, scope);
+        let mut k = lock(&shared);
+        loading = !k.done;
+        // A family the read didn't list (installed or activated since) is read here once, after the
+        // read is done, and kept.
+        if k.done {
+            let missing: Vec<String> = families.iter().filter(|f| !k.of.contains_key(&f.family)).map(|f| f.family.clone()).collect();
+            for f in missing {
+                let v = family_kind(fonts, &f);
+                k.of.insert(f, v);
+            }
+        }
+        let kind = |f: &str| k.of.get(f).copied();
+        families.retain(|f| kind(&f.family).is_some_and(|(kind, added)| st.class.is_none_or(|c| kind.class == c) && (!st.only_recent || added)));
+        if let Some(like) = &st.similar {
+            let base = meta(ui, fonts, scope, like).kind;
+            let mut near: Vec<(u32, &FamilyInfo)> = families
+                .iter()
+                .filter_map(|f| {
+                    if f.family == *like {
+                        return Some((0, *f));
+                    }
+                    let (k, _) = kind(&f.family)?;
+                    (k.class == base.class).then(|| (designcraft_fonts::panose_distance(&base.panose, &k.panose).unwrap_or(u32::MAX / 2) + 1, *f))
+                })
+                .collect();
+            near.sort_by_key(|(d, _)| *d);
+            families = near.into_iter().take(SIMILAR).map(|(_, f)| f).collect();
+        }
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    if q.is_empty() && !filtered && !st.only_favs {
+        let recent: Vec<Row> = app
+            .session
+            .prefs
+            .recent_fonts
+            .iter()
+            .filter_map(|r| menu.iter().find(|f| f.family == *r))
+            .take(RECENT)
+            .map(|f| Row::Family { info: f.clone(), recent: true })
+            .collect();
+        if !recent.is_empty() {
+            rows.extend(recent);
+            rows.push(Row::Separator);
+        }
+    }
+    let mut group = None;
+    for f in families {
+        // A separator between the Western fonts and each CJK language's.
+        if group.is_some_and(|g| g != f.group) && st.similar.is_none() {
+            rows.push(Row::Separator);
+        }
+        group = Some(f.group);
+        rows.push(Row::Family { info: f.clone(), recent: false });
+        if st.expanded.contains(&f.family) {
+            for s in meta(ui, fonts, scope, &f.family).styles {
+                rows.push(Row::Style { family: f.family.clone(), style: s });
+            }
+        }
+    }
+    (rows, loading)
+}
+
 /// The Font menu inside any font field's popup or combo box. The search field has the keyboard
 /// while the menu is open (empty each time it opens); ↑/↓ move through the rows and Return picks
 /// one. A click on a family picks it (its Regular style), on one of its styles that style; the
@@ -331,7 +411,6 @@ pub fn font_menu_header<'a>(app: &'a mut DesignApp, ui: &mut Ui, menu: &'a [Fami
     let lang = app.ui.language.clone();
     let tr = |s: &'static str| crate::i18n::tr(&lang, s);
     let (fonts, scope) = (super::fonts(app), super::font_scope(app));
-    let favs = app.session.prefs.favorite_fonts.clone();
     let state_id = egui::Id::unique(STATE_ID);
     let mut st: MenuState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
     let frame = ui.ctx().cumulative_frame_nr();
@@ -444,73 +523,8 @@ pub fn font_menu_header<'a>(app: &'a mut DesignApp, ui: &mut Ui, menu: &'a [Fami
     let (row_h, sample_size) = SIZES[usize::from(app.ui.font_preview_size).min(SIZES.len() - 1)];
     ui.separator();
 
-    // The rows: Recently Used (only for the plain list), then the families that pass the filters.
     let q = st.query.to_lowercase();
-    let filtered = st.class.is_some() || st.only_recent || st.similar.is_some();
-    let mut families: Vec<&FamilyInfo> = menu.iter().filter(|f| f.matches(&q) && (!st.only_favs || favs.contains(&f.family))).collect();
-    // While the kinds are read, the families read so far.
-    let mut loading = false;
-    if filtered {
-        let shared = kinds(ui.ctx(), &fonts, scope);
-        let mut k = lock(&shared);
-        loading = !k.done;
-        // A family the read didn't list (installed or activated since) is read here once, after the
-        // read is done, and kept.
-        if k.done {
-            let missing: Vec<String> = families.iter().filter(|f| !k.of.contains_key(&f.family)).map(|f| f.family.clone()).collect();
-            for f in missing {
-                let v = family_kind(&fonts, &f);
-                k.of.insert(f, v);
-            }
-        }
-        let kind = |f: &str| k.of.get(f).copied();
-        families.retain(|f| kind(&f.family).is_some_and(|(kind, added)| st.class.is_none_or(|c| kind.class == c) && (!st.only_recent || added)));
-        if let Some(like) = &st.similar {
-            let base = meta(ui, &fonts, scope, like).kind;
-            let mut near: Vec<(u32, &FamilyInfo)> = families
-                .iter()
-                .filter_map(|f| {
-                    if f.family == *like {
-                        return Some((0, *f));
-                    }
-                    let (k, _) = kind(&f.family)?;
-                    (k.class == base.class).then(|| (designcraft_fonts::panose_distance(&base.panose, &k.panose).unwrap_or(u32::MAX / 2) + 1, *f))
-                })
-                .collect();
-            near.sort_by_key(|(d, _)| *d);
-            families = near.into_iter().take(SIMILAR).map(|(_, f)| f).collect();
-        }
-    }
-    let mut rows: Vec<Row> = Vec::new();
-    if q.is_empty() && !filtered && !st.only_favs {
-        let recent: Vec<Row> = app
-            .session
-            .prefs
-            .recent_fonts
-            .iter()
-            .filter_map(|r| menu.iter().find(|f| f.family == *r))
-            .take(RECENT)
-            .map(|f| Row::Family { info: f.clone(), recent: true })
-            .collect();
-        if !recent.is_empty() {
-            rows.extend(recent);
-            rows.push(Row::Separator);
-        }
-    }
-    let mut group = None;
-    for f in families {
-        // A separator between the Western fonts and each CJK language's.
-        if group.is_some_and(|g| g != f.group) && st.similar.is_none() {
-            rows.push(Row::Separator);
-        }
-        group = Some(f.group);
-        rows.push(Row::Family { info: f.clone(), recent: false });
-        if st.expanded.contains(&f.family) {
-            for s in meta(ui, &fonts, scope, &f.family).styles {
-                rows.push(Row::Style { family: f.family.clone(), style: s });
-            }
-        }
-    }
+    let (rows, loading) = build_rows(app, ui, &fonts, scope, menu, &st);
 
     // Keyboard: ↑/↓ through the pickable rows, Return picks.
     let pickable: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| !matches!(r, Row::Separator)).map(|(i, _)| i).collect();
@@ -710,6 +724,427 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
         ui.close();
     }
     pick
+}
+
+/// The Font menu on the framework: a popover that hangs from a field, holding the search field, the filters and the
+/// rows. The rows, the filters and what a pick does are the native menu's.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod framework {
+    use super::*;
+    use craft_ui_widgets::buttons::{Button, IconButton};
+    use craft_ui_widgets::contract::{Bind, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row as Line, Stack};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::popover::Popover;
+    use craft_ui_widgets::primitives::{HAlign, IconSpec};
+    use craft_ui_widgets::style::{TypeRole, Variant};
+    use craft_ui_widgets::text::TextField;
+
+    /// The menu's small artwork, painted with the app's own star, clock and arrow drawings.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct FontGlyph(&'static str);
+
+    impl craft_ui_widgets::primitives::Glyph for FontGlyph {
+        fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: Rect, color: Color32, _mirrored: bool) {
+            match self.0 {
+                "star" => paint_star(painter, rect.center(), 6.5, true, color),
+                "star-outline" => paint_star(painter, rect.center(), 6.5, false, color),
+                "clock" => clock(painter, rect, color),
+                "size-0" | "size-1" | "size-2" => {
+                    let size = SIZES[usize::from(self.0.as_bytes()[5] - b'0')].1;
+                    painter.text(rect.center(), Align2::CENTER_CENTER, "A", FontId::proportional(8.0 + size * 0.35), color);
+                }
+                "similar" => {
+                    painter.text(rect.center(), Align2::CENTER_CENTER, "≈", FontId::proportional(15.0), color);
+                }
+                "clear" => {
+                    painter.text(rect.center(), Align2::CENTER_CENTER, "×", FontId::proportional(14.0), color);
+                }
+                name => crate::icons::paint(painter, rect, name, color),
+            }
+        }
+    }
+
+    fn glyph_button(
+        ui: &mut Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        glyph: &'static str,
+        label: &str,
+        selected: bool,
+        enabled: bool,
+        at: Option<Rect>,
+    ) -> craft_ui_widgets::buttons::ButtonOutput {
+        let face = FontGlyph(glyph);
+        let button = IconButton::new(IconSpec::glyph(&face))
+            .id_salt(salt)
+            .label(label.to_owned())
+            .tooltip(label.to_owned())
+            .selected(selected)
+            .enabled(enabled);
+        match at {
+            Some(rect) => button.show_at(ui, rect),
+            None => button.show(ui),
+        }
+    }
+
+    /// A font field that opens the Font menu: a button showing the current family (named "Font Family") over a popover
+    /// holding the menu. Returns the font picked.
+    pub(crate) fn combo(
+        app: &mut DesignApp,
+        ui: &mut Ui,
+        id_salt: impl std::hash::Hash + std::fmt::Debug,
+        current: &str,
+        width: f32,
+    ) -> Option<FontPick> {
+        let menu = super::super::font_menu(app);
+        let shown = if current.is_empty() { "—".to_string() } else { super::super::font_label(app, &menu, current) };
+        let label = crate::i18n::tr(&app.ui.language, "Font Family").to_owned();
+        let id = ui.make_persistent_id(("font_combo", id_salt));
+        let mut open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
+        let (_, slot) = ui.allocate_space(vec2(width, 24.0));
+        let opener = Button::new(label.clone())
+            .painted(shown)
+            .id(id)
+            .align(HAlign::Start)
+            .variant(Variant::SECONDARY)
+            .tooltip(label.clone())
+            .show_at(ui, slot);
+        if opener.clicked() {
+            open = !open;
+        }
+        let mut pick = None;
+        let _ = Popover::new(label, Bind::bound(&mut open)).id(id.with("popover")).opened_by(&opener.response).show(ui, |ui, _| {
+            pick = body(app, ui, &menu, current, width);
+        });
+        if pick.is_some() {
+            open = false;
+        }
+        ui.data_mut(|d| d.insert_temp(id, open));
+        pick
+    }
+
+    /// The Font menu in a popover that hangs from `field`, a font field the caller draws itself (a click on it opens and closes
+    /// the popover). Returns the font picked.
+    pub(crate) fn popup(app: &mut DesignApp, ui: &mut Ui, field: &egui::Response, menu: &[FamilyInfo], current: &str) -> Option<FontPick> {
+        let label = crate::i18n::tr(&app.ui.language, "Font Family").to_owned();
+        let id = field.id.with("font_popup_open");
+        let mut open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
+        if field.clicked() {
+            open = !open;
+        }
+        let width = field.rect.width();
+        let mut pick = None;
+        let _ = Popover::new(label, Bind::bound(&mut open)).id(field.id.with("font_popover")).opened_by(field).show(ui, |ui, _| {
+            pick = body(app, ui, menu, current, width);
+        });
+        if pick.is_some() {
+            open = false;
+        }
+        ui.data_mut(|d| d.insert_temp(id, open));
+        pick
+    }
+
+    /// What a pass of the menu's header asks of the app, applied once its components are shown.
+    #[derive(Default)]
+    struct Asks {
+        size: Option<u8>,
+        sample: Option<String>,
+    }
+
+    /// The menu's body: the search field and filters, then the rows. Returns the font picked.
+    fn body(app: &mut DesignApp, ui: &mut Ui, menu: &[FamilyInfo], current: &str, width: f32) -> Option<FontPick> {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let (fonts, scope) = (super::super::fonts(app), super::super::font_scope(app));
+        let state_id = egui::Id::unique(STATE_ID);
+        let mut st: MenuState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
+        let frame = ui.ctx().cumulative_frame_nr();
+        if st.frame.is_none_or(|f| f.saturating_add(1) < frame) {
+            // Just opened: an empty search, nothing highlighted.
+            st.query.clear();
+            st.highlight = None;
+        }
+        st.frame = Some(frame);
+        ui.set_width(width.max(560.0));
+        // The keys the menu uses are its own: a dialog under it never sees Return.
+        let (down, up, enter) = ui.input_mut(|i| {
+            let mut key = |k| i.consume_key(egui::Modifiers::NONE, k);
+            (key(egui::Key::ArrowDown), key(egui::Key::ArrowUp), key(egui::Key::Enter))
+        });
+        let sample_key = app.ui.font_sample.clone();
+        let size_index = usize::from(app.ui.font_preview_size).min(SIZES.len() - 1);
+        let mut asks = Asks::default();
+        let before = st.query.clone();
+        Stack::new().id_salt("font_menu_header").fill_width().show(ui, |ui, _| {
+            Line::new().id_salt("font_search").fill_width().show(ui, |ui, _| {
+                // Return picks the highlighted row instead of leaving the field.
+                TextField::new(tr("Search fonts"), Bind::bound(&mut st.query))
+                    .id_salt("font_menu_search")
+                    .placeholder(tr("Search fonts"))
+                    .limit(None)
+                    .sizing(Sizing::FillWidth)
+                    .show(ui);
+                if glyph_button(ui, "font_menu_clear", "clear", &tr("Clear"), false, !st.query.is_empty(), None).clicked() {
+                    st.query.clear();
+                }
+            });
+            Line::new().id_salt("font_filters").wrap(true).show(ui, |ui, _| {
+                Text::new(tr("Filters:")).show(ui);
+                let class = st.class.map_or_else(|| tr("All Classes"), |c| tr(c.label()));
+                if Button::new(format!("{class} ▾")).id_salt("font_menu_class").variant(Variant::GHOST).selected(st.show_classes).show(ui).clicked()
+                {
+                    st.show_classes = !st.show_classes;
+                    st.show_samples = false;
+                }
+                if glyph_button(ui, "font_menu_favs", "star", &tr("Show Favorites Only"), st.only_favs, true, None).clicked() {
+                    st.only_favs = !st.only_favs;
+                }
+                if glyph_button(ui, "font_menu_added", "clock", &tr("Show Recently Added"), st.only_recent, true, None).clicked() {
+                    st.only_recent = !st.only_recent;
+                }
+                for (i, glyph) in ["size-0", "size-1", "size-2"].into_iter().enumerate() {
+                    let tip = [tr("Small Sample Text Size"), tr("Medium Sample Text Size"), tr("Large Sample Text Size")][i].clone();
+                    if glyph_button(ui, ("font_menu_size", i), glyph, &tip, size_index == i, true, None).clicked() {
+                        asks.size = Some(i as u8);
+                    }
+                }
+                let shown = SAMPLES.iter().find(|(k, _)| *k == sample_key).map_or(SAMPLES[0].1, |(_, l)| l);
+                if Button::new(format!("{} ▾", tr(shown)))
+                    .id_salt("font_menu_sample")
+                    .variant(Variant::GHOST)
+                    .selected(st.show_samples)
+                    .show(ui)
+                    .clicked()
+                {
+                    st.show_samples = !st.show_samples;
+                    st.show_classes = false;
+                }
+            });
+            if st.show_classes {
+                Line::new().id_salt("font_classes").wrap(true).show(ui, |ui, _| {
+                    if Button::new(tr("All Classes"))
+                        .id_salt("font_class_all")
+                        .variant(Variant::GHOST)
+                        .selected(st.class.is_none())
+                        .show(ui)
+                        .clicked()
+                    {
+                        st.class = None;
+                        st.show_classes = false;
+                    }
+                    for c in FontClass::ALL {
+                        if Button::new(tr(c.label()))
+                            .id_salt(("font_class", c.label()))
+                            .variant(Variant::GHOST)
+                            .selected(st.class == Some(c))
+                            .show(ui)
+                            .clicked()
+                        {
+                            st.class = Some(c);
+                            st.show_classes = false;
+                        }
+                    }
+                });
+            }
+            if st.show_samples {
+                Line::new().id_salt("font_samples").wrap(true).show(ui, |ui, _| {
+                    for (key, label) in SAMPLES {
+                        if Button::new(tr(label)).id_salt(("font_sample", key)).variant(Variant::GHOST).selected(sample_key == key).show(ui).clicked()
+                        {
+                            asks.sample = Some(key.to_string());
+                            st.show_samples = false;
+                        }
+                    }
+                });
+            }
+            if let Some(like) = st.similar.clone() {
+                Line::new().id_salt("font_similar").show(ui, |ui, _| {
+                    Text::new(tr("Similar to {family}").replace("{family}", &like)).role(TypeRole::BodyStrong).show(ui);
+                    if glyph_button(ui, "font_similar_clear", "clear", &tr("Clear"), false, true, None).clicked() {
+                        st.similar = None;
+                    }
+                });
+            }
+        });
+        if let Some(i) = asks.size {
+            app.ui.font_preview_size = i;
+        }
+        if let Some(key) = asks.sample {
+            app.ui.font_sample = key;
+        }
+        let selected = super::super::text_attrs(app).and_then(|a| a["selectedText"].as_str().map(str::to_string)).filter(|s| !s.trim().is_empty());
+        let sample = match app.ui.font_sample.as_str() {
+            "selected" => selected.unwrap_or_else(|| tr("Sample")),
+            key => tr(SAMPLES.iter().find(|(k, _)| *k == key).map_or("Sample", |(_, l)| l)),
+        };
+        let (row_h, sample_size) = SIZES[usize::from(app.ui.font_preview_size).min(SIZES.len() - 1)];
+        Divider::horizontal().show(ui);
+
+        let (rows, loading) = build_rows(app, ui, &fonts, scope, menu, &st);
+        // Keyboard: ↑/↓ through the pickable rows, Return picks.
+        let pickable: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| !matches!(r, Row::Separator)).map(|(i, _)| i).collect();
+        if st.query != before {
+            st.highlight = if st.query.is_empty() { None } else { Some(0) };
+        }
+        let last = pickable.len().checked_sub(1);
+        st.highlight = match (st.highlight, last) {
+            (_, None) => None,
+            (None, Some(_)) if down => Some(0),
+            (Some(h), Some(l)) if down => Some((h + 1).min(l)),
+            (Some(h), Some(l)) if up => Some(h.saturating_sub(1).min(l)),
+            (h, Some(l)) => h.map(|h| h.min(l)),
+        };
+        let highlighted_row = st.highlight.and_then(|h| pickable.get(h).copied());
+        let mut pick: Option<FontPick> = None;
+        if enter && let Some(row) = highlighted_row.and_then(|i| rows.get(i)) {
+            pick = match row {
+                Row::Family { info, .. } => Some(FontPick { family: info.family.clone(), style: None }),
+                Row::Style { family, style } => Some(FontPick { family: family.clone(), style: Some(style.clone()) }),
+                Row::Separator => None,
+            };
+        }
+
+        let english = app.session.prefs.show_font_names_in_english;
+        let mut favs = app.session.prefs.favorite_fonts.clone();
+        let (mut toggle_expand, mut toggle_fav, mut similar) = (None, None, None);
+        let t = Tokens::get(ui.ctx());
+        let list_height = (FONT_MENU_HEIGHT - 110.0).max(120.0);
+        Stack::new().id_salt("font_menu_rows").fill_width().scroll(Scroll::vertical()).room_height(list_height).show(ui, |ui, _| {
+            if let Some(note) = if loading { Some("Loading fonts…") } else { rows.is_empty().then_some("No fonts match") } {
+                Text::new(tr(note)).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+            }
+            // Only the rows in view are shown; the others keep their room, so the scroll keeps its length.
+            let view = ui.clip_rect().expand(40.0);
+            let w = ui.available_width();
+            for (i, row) in rows.iter().enumerate() {
+                let (family, style, recent) = match row {
+                    Row::Separator => {
+                        let (_, r) = ui.allocate_space(vec2(w, 8.0));
+                        if r.intersects(view) {
+                            Divider::horizontal().show_at(ui, r);
+                        }
+                        continue;
+                    }
+                    Row::Family { info, recent } => (info, None, *recent),
+                    Row::Style { family, style } => {
+                        let Some(info) = menu.iter().find(|f| f.family == *family) else { continue };
+                        (info, Some(style.as_str()), false)
+                    }
+                };
+                let f = &family.family;
+                let (_, r) = ui.allocate_space(vec2(w, if style.is_some() { row_h.min(30.0) } else { row_h }));
+                let highlighted = highlighted_row == Some(i);
+                if highlighted && (down || up) {
+                    ui.scroll_to_rect(r, None);
+                }
+                if !r.intersects(view) {
+                    continue;
+                }
+                let label = match style {
+                    Some(s) => s.to_string(),
+                    None => family.label(english).to_string(),
+                };
+                let is_current = style.is_none() && f == current;
+                let m = meta(ui, &fonts, scope, f);
+                let cy = r.center().y;
+                let expanded = st.expanded.contains(f);
+                // The row itself picks, over its whole width; the star, the arrow and ≈ sit on top of it.
+                let salt = ("font_row", f.clone(), style.map(str::to_owned), recent);
+                let base = Button::new(label.clone())
+                    .painted(" ".to_owned())
+                    .id_salt(salt.clone())
+                    .variant(if is_current { Variant::SECONDARY } else { Variant::GHOST })
+                    .selected(is_current)
+                    .show_at(ui, r);
+                let hovered = ui.rect_contains_pointer(r);
+                // Name (and how many styles), then the sample in the face, then the format.
+                let name_x = if style.is_some() { 48.0 } else { 40.0 };
+                let name = if style.is_none() && m.styles.len() > 1 { format!("{label} ({})", m.styles.len()) } else { label.clone() };
+                let preview_x = (r.width() * 0.42).max(190.0);
+                let icons_x = r.width() - 52.0;
+                let face_style = style.map_or_else(|| regular(&m.styles), str::to_string);
+                let tex = preview(ui, &fonts, scope, (f, &face_style), &sample, sample_size, t.text);
+                let size = tex.size_vec2() / ui.ctx().pixels_per_point();
+                let (ink, hover_fill) = (t.text, t.hover);
+                Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                    if highlighted && !is_current {
+                        cx.painter.rect_filled(rect, 0.0, hover_fill);
+                    }
+                    cx.painter.text(pos2(rect.min.x + name_x, rect.center().y), Align2::LEFT_CENTER, &name, FontId::proportional(12.5), ink);
+                    let shown = Rect::from_min_size(pos2(rect.min.x + preview_x, rect.center().y - size.y / 2.0), size);
+                    let clip = Rect::from_min_max(pos2(rect.min.x + preview_x, rect.min.y), pos2(rect.min.x + icons_x - 6.0, rect.max.y));
+                    cx.painter.with_clip_rect(clip).image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                })
+                .id_salt(("font_row_face", f.clone(), style.map(str::to_owned), recent))
+                .show_at(ui, r);
+                let mut handled = false;
+                if style.is_none() {
+                    let fav = favs.contains(f);
+                    let star = Rect::from_center_size(pos2(r.min.x + 10.0, cy), vec2(16.0, 16.0));
+                    let name = format!("{} {}", tr("Favorite"), family.label(english));
+                    if glyph_button(ui, ("font_fav", f.clone(), recent), if fav { "star" } else { "star-outline" }, &name, fav, true, Some(star))
+                        .clicked()
+                    {
+                        toggle_fav = Some(f.clone());
+                        handled = true;
+                    }
+                    // The arrow opens a family of several styles.
+                    if m.styles.len() > 1 && !recent {
+                        let arrow = Rect::from_center_size(pos2(r.min.x + 28.0, cy), vec2(16.0, 16.0));
+                        let arrow_label = tr(if expanded { "Hide Styles" } else { "Show Styles" });
+                        let glyph = if expanded { "chevron-down" } else { "chevron-right" };
+                        if glyph_button(ui, ("font_open", f.clone()), glyph, &arrow_label, false, true, Some(arrow)).clicked() {
+                            toggle_expand = Some(f.clone());
+                            handled = true;
+                        }
+                    }
+                    // Show Similar Fonts (on hover), and the format.
+                    if hovered || st.similar.as_deref() == Some(f.as_str()) {
+                        let sim = Rect::from_center_size(pos2(r.min.x + icons_x + 12.0, cy), vec2(18.0, 18.0));
+                        if glyph_button(ui, ("font_similar_row", f.clone(), recent), "similar", &tr("Show Similar Fonts"), false, true, Some(sim))
+                            .clicked()
+                        {
+                            similar = Some(f.clone());
+                            handled = true;
+                        }
+                    }
+                    let badge = Rect::from_center_size(pos2(r.max.x - 16.0, cy), vec2(20.0, 16.0));
+                    let (format, dim, accent) = (m.kind.format, t.text_dim, t.accent);
+                    Picture::painter(tr(format_name(m.kind.format)), ThumbAspect::SQUARE, move |cx, rect| {
+                        paint_format(&cx.painter, rect, format, dim, accent)
+                    })
+                    .id_salt(("font_format", f.clone(), recent))
+                    .show_at(ui, badge);
+                }
+                if base.clicked() && !handled {
+                    pick = Some(FontPick { family: f.clone(), style: style.map(str::to_string) });
+                }
+            }
+        });
+        if let Some(f) = toggle_expand
+            && !st.expanded.remove(&f)
+        {
+            st.expanded.insert(f);
+        }
+        let mut favs_changed = false;
+        if let Some(f) = toggle_fav {
+            toggle_favorite(&mut favs, f);
+            favs_changed = true;
+        }
+        if let Some(f) = similar {
+            st.similar = if st.similar.as_deref() == Some(f.as_str()) { None } else { Some(f) };
+            st.query.clear();
+        }
+        ui.data_mut(|d| d.insert_temp(state_id, st));
+        if favs_changed {
+            let _ = app.run("prefs.set", json!({ "favoriteFonts": favs }));
+        }
+        if let Some(p) = &pick {
+            remember_recent(app, &p.family);
+        }
+        pick
+    }
 }
 
 #[cfg(test)]

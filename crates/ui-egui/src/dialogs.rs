@@ -31,6 +31,8 @@ pub(crate) mod framework;
 #[cfg(not(target_arch = "wasm32"))]
 mod layout_forms;
 #[cfg(not(target_arch = "wasm32"))]
+mod special_forms;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod paragraph_forms;
 #[cfg(not(target_arch = "wasm32"))]
 mod command_form;

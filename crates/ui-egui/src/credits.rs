@@ -212,6 +212,55 @@ impl Default for View {
     }
 }
 
+/// The name toggle, sort and layout controls above the list, as framework components: toggle buttons, a select for the sort
+/// key and the reverse button.
+#[cfg(not(target_arch = "wasm32"))]
+fn controls_framework(ui: &mut egui::Ui, v: &mut View, lang: &str) {
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
+    use craft_ui_widgets::display::{Divider, Text};
+    use craft_ui_widgets::layout_components::Row;
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::style::Variant;
+
+    Row::new().id_salt("credits_controls").wrap(true).show(ui, |ui, _| {
+        Text::new(tr(lang, "Show").to_owned()).show(ui);
+        for m in NameMode::ALL {
+            if Button::new(tr(lang, m.label()).to_owned())
+                .id_salt(("credits_names", m.label()))
+                .variant(Variant::GHOST)
+                .selected(v.names == m)
+                .show(ui)
+                .clicked()
+            {
+                v.names = m;
+            }
+        }
+        Divider::vertical().show(ui);
+        Text::new(tr(lang, "Sort").to_owned()).show(ui);
+        let entries: Vec<Entry<usize>> = SortKey::ALL.iter().enumerate().map(|(i, k)| Entry::new(i, tr(lang, k.label().0).to_owned())).collect();
+        let at = SortKey::ALL.iter().position(|k| *k == v.key).unwrap_or(0);
+        let label = tr(lang, "Sort").to_owned();
+        let picked = Select::new(label, Bind::given(at), &entries).id_salt("credits_sort").show(ui).events.committed().copied();
+        if let Some(k) = picked.and_then(|i| SortKey::ALL.get(i).copied()).filter(|k| *k != v.key) {
+            v.key = k;
+            v.ascending = k.default_ascending();
+        }
+        let reverse = tr(lang, "Reverse the order").to_owned();
+        if Button::new(reverse.clone()).painted(if v.ascending { "▲" } else { "▼" }).tooltip(reverse).id_salt("credits_reverse").show(ui).clicked()
+        {
+            v.ascending = !v.ascending;
+        }
+        Divider::vertical().show(ui);
+        if Button::new(tr(lang, "Grab bag").to_owned()).id_salt("credits_grab_bag").variant(Variant::GHOST).selected(!v.table).show(ui).clicked() {
+            v.table = false;
+        }
+        if Button::new(tr(lang, "Table").to_owned()).id_salt("credits_table").variant(Variant::GHOST).selected(v.table).show(ui).clicked() {
+            v.table = true;
+        }
+    });
+}
+
 /// The name toggle, sort and layout controls above the list.
 fn controls(ui: &mut egui::Ui, v: &mut View, lang: &str) {
     ui.horizontal_wrapped(|ui| {
@@ -245,10 +294,20 @@ fn controls(ui: &mut egui::Ui, v: &mut View, lang: &str) {
 }
 
 /// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
-pub fn contributors_ui(ui: &mut egui::Ui, lang: &str) {
+pub fn contributors_ui(ui: &mut egui::Ui, lang: &str, framework: bool) {
     let id = egui::Id::unique("credits_view");
     let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
-    controls(ui, &mut v, lang);
+    #[cfg(not(target_arch = "wasm32"))]
+    if framework {
+        controls_framework(ui, &mut v, lang);
+    } else {
+        controls(ui, &mut v, lang);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = framework;
+        controls(ui, &mut v, lang);
+    }
     let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
     let totals = tr(lang, "{contributors} contributors · {commits} commits")
         .replace("{contributors}", &list.len().to_string())

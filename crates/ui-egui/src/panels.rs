@@ -426,6 +426,10 @@ pub fn font_combo(
     current: &str,
     width: f32,
 ) -> Option<FontPick> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return font_menu::framework::combo(app, ui, id_salt, current, width);
+    }
     let menu = font_menu(app);
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, &menu, current) };
     let field = ui.push_id(id_salt, |ui| crate::widgets::dropdown(ui, &shown, width)).inner;
@@ -437,11 +441,23 @@ pub fn font_combo(
 /// the font picked.
 pub fn font_popup(
     app: &mut DesignApp,
-    ui: &egui::Ui,
+    ui: &mut egui::Ui,
     field: &egui::Response,
     menu: &[designcraft_fonts::FamilyInfo],
     current: &str,
 ) -> Option<FontPick> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
+        field.widget_info(|| {
+            let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
+            info.enabled = true;
+            info.current_text_value = Some(shown.clone());
+            info.label = Some(crate::i18n::tr(&app.ui.language, "Font Family").to_owned());
+            info
+        });
+        return font_menu::framework::popup(app, ui, field, menu, current);
+    }
     let shown = if current.is_empty() { "—".to_string() } else { font_label(app, menu, current) };
     field.widget_info(|| {
         let mut info = egui::WidgetInfo::new(egui::Role::ComboBox);
@@ -501,6 +517,30 @@ pub fn style_shown(current: &str) -> String {
     }
 }
 
+/// A framework select over `options` (value, caption) with `current` shown; the value picked in this pass. A `current` none
+/// of them has shows as the placeholder.
+#[cfg(not(target_arch = "wasm32"))]
+fn framework_select(
+    ui: &mut egui::Ui,
+    salt: &str,
+    label: &str,
+    current: &str,
+    shown: &str,
+    width: f32,
+    options: &[(String, String)],
+) -> Option<String> {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::pickers::Select;
+
+    let entries: Vec<Entry<String>> = options.iter().map(|(value, caption)| Entry::new(value.clone(), caption.clone())).collect();
+    let (_, slot) = ui.allocate_space(egui::vec2(width, 24.0));
+    let mut select = Select::new(label.to_owned(), Bind::given(current.to_owned()), &entries).id_salt(salt.to_owned()).tooltip(label.to_owned());
+    if !options.iter().any(|(value, _)| value == current) {
+        select = select.placeholder(shown.to_owned());
+    }
+    select.show_at(ui, slot).events.committed().cloned().filter(|next| next != current)
+}
+
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
@@ -512,6 +552,15 @@ pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, c
         return;
     }
     let styles = fonts(app).styles(family);
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let options: Vec<(String, String)> = styles.iter().map(|s| (s.clone(), s.clone())).collect();
+        let label = crate::i18n::tr(&app.ui.language, "Font Style").to_owned();
+        if let Some(s) = framework_select(ui, "font_style", &label, current, &style_shown(current), width, &options) {
+            let _ = app.run("type.char", json!({"attrs": {"fontStyle": s}}));
+        }
+        return;
+    }
     let mut pick = None;
     let combo = craft_ui_legacy::ComboBox::from_id_salt("font_style").selected_text(style_shown(current)).width(width).show_ui(ui, |ui| {
         for s in &styles {
@@ -538,6 +587,19 @@ pub fn para_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, 
     let mut pick = None;
     let shown = crate::i18n::style_name(&app.ui.language, current);
     let label = if overridden { format!("{shown}+") } else { shown.to_string() };
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        let options: Vec<(String, String)> = names
+            .iter()
+            .filter(|n| *n != designcraft_doc::NO_PARA_STYLE)
+            .map(|n| (n.clone(), crate::i18n::style_name(&app.ui.language, n).to_string()))
+            .collect();
+        let name = crate::i18n::tr(&app.ui.language, "Paragraph Style").to_owned();
+        if let Some(n) = framework_select(ui, "para_style", &name, current, &label, width, &options) {
+            let _ = app.run("style.paragraph.apply", json!({"name": n, "clearOverrides": false}));
+        }
+        return;
+    }
     let combo = craft_ui_legacy::ComboBox::from_id_salt("para_style").selected_text(crate::rtl::widget(ui, label)).width(width).show_ui(ui, |ui| {
         for n in names.iter().filter(|n| *n != designcraft_doc::NO_PARA_STYLE) {
             if ui.selectable_label(n == current, crate::rtl::widget(ui, crate::i18n::style_name(&app.ui.language, n))).clicked() {

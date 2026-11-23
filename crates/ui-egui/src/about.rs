@@ -140,7 +140,11 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             ui.allocate_ui_with_layout(vec2(ui.available_width(), h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_min_height(h);
                 if app.ui.about_tab == 1 {
-                    crate::credits::contributors_ui(ui, &app.ui.language);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let framework = app.framework_installed;
+                    #[cfg(target_arch = "wasm32")]
+                    let framework = false;
+                    crate::credits::contributors_ui(ui, &app.ui.language, framework);
                 } else {
                     crate::credits::models_ui(ui, &app.ui.language);
                 }
