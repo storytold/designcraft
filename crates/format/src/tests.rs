@@ -936,3 +936,35 @@ fn embedded_documents_keep_their_older_version_and_version_5_loads() {
     let loaded = load(&save(&d).unwrap()).unwrap();
     assert_eq!(loaded.assets.len(), d.assets.len());
 }
+
+/// A document nested deeper than the reader accepts is refused before anything is written,
+/// while a moderately nested one still saves and reopens.
+#[test]
+fn an_over_deep_document_is_refused_before_writing() {
+    use designcraft_doc::geom::shapes;
+    use designcraft_doc::{Content, Item, ItemId, Shape};
+    fn nested(depth: usize) -> Document {
+        let mut d = Document::new(&NewDocument::default());
+        let layer = d.default_layer();
+        let square = || shapes::rectangle(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let mut item = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, square());
+        for _ in 0..depth {
+            let mut group = Item::new(ItemId(d.alloc()), layer, Shape::Rectangle, square());
+            group.content = Content::Group { items: vec![Arc::new(item)] };
+            item = group;
+        }
+        d.insert_item(SpreadRef::Doc(0), item, None).unwrap();
+        d
+    }
+
+    let shallow = nested(8);
+    load(&save(&shallow).expect("a moderately nested document saves")).expect("and reopens");
+
+    let deep = nested(64);
+    let mut out = Cursor::new(Vec::new());
+    match write(&mut out, &deep, None) {
+        Err(FormatError::Unsaveable(message)) => assert!(message.starts_with("the document would not reopen"), "{message}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(out.get_ref().is_empty(), "nothing is written before the refusal");
+}
