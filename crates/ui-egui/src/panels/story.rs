@@ -3,13 +3,11 @@
 use serde_json::{Value, json};
 
 use crate::DesignApp;
-use crate::widgets::{self, NumField};
 
 // STORY_OPTICAL_MARGIN_APPLICATION_BEGIN
 /// The option is story-wide: changing the flag, text range or document revision must not
 /// steal focus between successive keyboard toggles. Actual document epochs and target
 /// story/frame identities still retire input when its owner changes.
-#[cfg(not(target_arch = "wasm32"))]
 fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::choice::Checkbox;
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
@@ -66,31 +64,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// selected text frames, and the type size its hang amounts are set for. Without text or a text
 /// frame selected, the controls are disabled.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        show_framework(app, ui);
-        return;
-    }
-    let options = super::text_attrs(app).map(|a| a["storyOptions"].clone());
-    let enabled = options.is_some();
-    let options = options.unwrap_or(Value::Null);
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    ui.add_enabled_ui(enabled, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            // Stories that differ show unchecked; a click turns it on for all of them.
-            let mut on = options["opticalMargin"].as_bool().unwrap_or(false);
-            if widgets::checkbox(ui, &mut on, &tr("Optical Margin Alignment")).changed() {
-                let _ = app.run("story.options", json!({"opticalMargin": on}));
-            }
-            let field = NumField::number("storyOpticalMarginSize", options["opticalMarginSize"].as_f64(), " pt", 2)
-                .width(72.0)
-                .range(designcraft_doc::OpticalMargin::MIN_SIZE, designcraft_doc::OpticalMargin::MAX_SIZE);
-            if let Some(size) = crate::chrome::icon_field(ui, "font-size", &tr("Optical Margin Size"), field) {
-                let _ = app.run("story.options", json!({"opticalMarginSize": size}));
-            }
-        });
-    });
+    show_framework(app, ui);
 }
 
 #[cfg(test)]
@@ -102,12 +76,15 @@ mod tests {
 
     use super::*;
 
-    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-        let mut h = Harness::builder().with_size(egui::vec2(260.0, 200.0)).build_ui_state(
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(260.0, 200.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
+                    crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(Default::default()));
                     ui.data_mut(|d| d.insert_temp(id, true));
                     return;
                 }
@@ -137,7 +114,7 @@ mod tests {
                 .unwrap();
         app.run("edit.selectAll", json!({})).unwrap();
         let mut h = harness(app);
-        assert_eq!(size_field_text(&h).as_deref(), Some("12 pt"));
+        assert_eq!(size_field_text(&h).as_deref(), Some("12"));
         h.get_by_label("Optical Margin Alignment").click();
         h.run_steps(3);
         assert!(optical_margin(&h, story).on);
@@ -152,7 +129,7 @@ mod tests {
         // A value set elsewhere shows in the panel.
         h.state_mut().run("story.options", json!({"opticalMarginSize": 30})).unwrap();
         h.run_steps(3);
-        assert_eq!(size_field_text(&h).as_deref(), Some("30 pt"));
+        assert_eq!(size_field_text(&h).as_deref(), Some("30"));
     }
 
     #[test]
@@ -167,7 +144,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod optical_margin_sdk_tests {
     use super::*;
     use designcraft_doc::StoryId;
@@ -278,13 +255,9 @@ mod optical_margin_sdk_tests {
     }
     // STORY_ARABIC_FIXTURE_END
 
-    fn harness(mut app: DesignApp, installed: bool, width: f32) -> Harness<'static, State> {
+    fn harness(mut app: DesignApp, width: f32) -> Harness<'static, State> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed);
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(width, 220.0)).build_ui_state(
@@ -543,7 +516,7 @@ mod optical_margin_sdk_tests {
                 "text" => {}
                 _ => unreachable!(),
             }
-            let mut h = harness(app, true, 460.0);
+            let mut h = harness(app, 460.0);
             assert!(!control(&h).facts.unwrap().disabled);
             assert_eq!(
                 h.get_by_role_and_label(egui::accesskit::Role::CheckBox, NAME).accesskit_node().toggled(),
@@ -565,7 +538,7 @@ mod optical_margin_sdk_tests {
     #[test]
     fn ui_story_optical_margin_natural_tab_space_enter_preserves_focus_and_independent_history_for_repeated_toggles() {
         let (app, made) = fixture();
-        let mut h = harness(app, true, 460.0);
+        let mut h = harness(app, 460.0);
         let before_focus = quiet(&h.state().app);
         tab_to(&mut h);
         assert_quiet(&h.state().app, &before_focus);
@@ -604,7 +577,7 @@ mod optical_margin_sdk_tests {
     fn ui_story_optical_margin_held_pointer_retires_changed_story_document_epoch_and_disabled_or_missing_parent_before_recovery() {
         for change in ["story", "document", "epoch", "no-selection", "parent-disabled", "hidden"] {
             let (app, mut made) = fixture();
-            let mut h = harness(app, true, 460.0);
+            let mut h = harness(app, 460.0);
             let old_owner = control(&h).id;
             let pos = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, NAME).rect().center();
             let initial = quiet(&h.state().app);
@@ -666,7 +639,7 @@ mod optical_margin_sdk_tests {
     fn ui_story_optical_margin_old_space_release_never_activates_a_new_story_or_recreated_document() {
         for change in ["story", "epoch", "hidden"] {
             let (app, made) = fixture();
-            let mut h = harness(app, true, 460.0);
+            let mut h = harness(app, 460.0);
             tab_to(&mut h);
             let initial = quiet(&h.state().app);
             key_event(&mut h, Key::Space, true);
@@ -706,49 +679,41 @@ mod optical_margin_sdk_tests {
     }
 
     #[test]
-    fn ui_story_optical_margin_real_no_document_no_selection_and_disabled_parent_are_quiet_and_native_fallback_recovers() {
-        for installed in [true, false] {
-            for absent in ["no-document", "no-selection", "parent-disabled"] {
-                let app = if absent == "no-document" {
-                    DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
-                } else {
-                    fixture().0
-                };
-                let mut h = harness(app, installed, 460.0);
-                if absent == "no-selection" {
-                    h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
-                }
-                if absent == "parent-disabled" {
-                    h.state_mut().disabled = true;
-                }
-                let before = quiet(&h.state().app);
-                idle(&mut h, 2);
-                assert_quiet(&h.state().app, &before);
-                assert!(h.get_by_role_and_label(egui::accesskit::Role::CheckBox, NAME).accesskit_node().is_disabled());
-                assert_eq!(h.get_all_by_role(egui::accesskit::Role::TextInput).count(), 1);
-                assert!(h.get_all_by_role(egui::accesskit::Role::TextInput).all(|node| node.accesskit_node().is_disabled()));
-                click(&mut h);
-                key(&mut h, Key::Space);
-                assert_quiet(&h.state().app, &before);
-                h.state_mut().disabled = false;
-                if h.state().app.session.active().is_none() {
-                    h.state_mut().app.run("file.new", json!({})).unwrap();
-                }
-                let made = populate(&mut h.state_mut().app);
-                let recovered = quiet(&h.state().app);
-                idle(&mut h, 2);
-                assert_quiet(&h.state().app, &recovered);
-                assert_eq!(h.state().app.framework_installed, installed, "no forged runtime-install flag");
-                if installed {
-                    assert!(!control(&h).facts.unwrap().disabled);
-                } else {
-                    let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, egui::Id::NULL.with(REGION)).unwrap();
-                    assert_eq!(record.elements.iter().filter(|element| element.component == "Checkbox").count(), 0);
-                }
-                click(&mut h);
-                assert_one_edit(&h.state().app, &recovered, &[made.stories[0]], true);
-                undo_redo(&mut h, &recovered);
+    fn ui_story_optical_margin_real_no_document_no_selection_and_disabled_parent_are_quiet() {
+        for absent in ["no-document", "no-selection", "parent-disabled"] {
+            let app = if absent == "no-document" {
+                DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
+            } else {
+                fixture().0
+            };
+            let mut h = harness(app, 460.0);
+            if absent == "no-selection" {
+                h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
             }
+            if absent == "parent-disabled" {
+                h.state_mut().disabled = true;
+            }
+            let before = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &before);
+            assert!(h.get_by_role_and_label(egui::accesskit::Role::CheckBox, NAME).accesskit_node().is_disabled());
+            assert_eq!(h.get_all_by_role(egui::accesskit::Role::TextInput).count(), 1);
+            assert!(h.get_all_by_role(egui::accesskit::Role::TextInput).all(|node| node.accesskit_node().is_disabled()));
+            click(&mut h);
+            key(&mut h, Key::Space);
+            assert_quiet(&h.state().app, &before);
+            h.state_mut().disabled = false;
+            if h.state().app.session.active().is_none() {
+                h.state_mut().app.run("file.new", json!({})).unwrap();
+            }
+            let made = populate(&mut h.state_mut().app);
+            let recovered = quiet(&h.state().app);
+            idle(&mut h, 2);
+            assert_quiet(&h.state().app, &recovered);
+            assert!(!control(&h).facts.unwrap().disabled);
+            click(&mut h);
+            assert_one_edit(&h.state().app, &recovered, &[made.stories[0]], true);
+            undo_redo(&mut h, &recovered);
         }
     }
 
@@ -756,7 +721,7 @@ mod optical_margin_sdk_tests {
     fn ui_story_optical_margin_real_sizing_and_missing_parent_publish_no_live_owner_or_delayed_edit() {
         for mode in ["sizing", "hidden"] {
             let (app, made) = fixture();
-            let mut h = harness(app, true, 460.0);
+            let mut h = harness(app, 460.0);
             tab_to(&mut h);
             let pos = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, NAME).rect().center();
             let initial = quiet(&h.state().app);
@@ -797,7 +762,7 @@ mod optical_margin_sdk_tests {
         for language in ["en", "de", "ar"] {
             let (mut app, made) = fixture();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true, 460.0);
+            let mut h = harness(app, 460.0);
             let name = label(&h.state().app);
             let owner = control(&h).id;
             for external in [true, false] {
@@ -828,7 +793,7 @@ mod optical_margin_sdk_tests {
             }
             let (mut app, _) = fixture();
             app.ui.language = language.to_owned();
-            let mut narrow = harness(app, true, 150.0);
+            let mut narrow = harness(app, 150.0);
             let before = quiet(&narrow.state().app);
             let actual = control(&narrow);
             assert_eq!(actual.facts.unwrap().name.as_deref(), Some(label(&narrow.state().app).as_str()));
@@ -840,12 +805,10 @@ mod optical_margin_sdk_tests {
 
     #[test]
     fn ui_story_optical_margin_whole_window_panel_routes_the_actual_checkbox_to_only_its_story_and_undo() {
-        let (mut app, made) = fixture();
-        app.framework_opacity = true;
+        let (app, made) = fixture();
         let mut h = crate::test_window::open(app, egui::vec2(1400.0, 1000.0));
         let ctx = h.ctx.clone();
         h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
         h.state_mut().app.run("window.panel", json!({"panel": "story"})).unwrap();
         fn step(h: &mut Harness<'_, crate::test_window::Window>, event: Option<Event>) {
             let mut raw = std::mem::take(h.input_mut());
@@ -911,7 +874,7 @@ mod optical_margin_sdk_tests {
         let path = owned.0.join("Story optical margin.designcraft");
         let path = path.to_str().unwrap().to_owned();
         let (app, made) = fixture();
-        let mut h = harness(app, true, 460.0);
+        let mut h = harness(app, 460.0);
         h.state_mut().app.session.execute("file.save", &json!({"path": path})).unwrap();
         assert!(std::path::Path::new(&path).is_file());
         idle(&mut h, 2);

@@ -4,7 +4,7 @@
 //! The framework has no component for a page thumbnail laid out in spreads (pages of their own size centred on the spine,
 //! a label under each spread, a column for each alternate layout), so [`PageCell`] is the app's own leaf: a button
 //! that paints what the panel gives it and takes the drags and drops of pages and parents. Everything it reports goes
-//! through the same engine commands as the native panel's.
+//! through the engine commands.
 
 use std::ops::Range;
 
@@ -379,7 +379,7 @@ fn menu_rows(ui: &mut Ui, entries: &[MenuEntry], picked: &mut Option<Act>) {
 }
 
 /// The panel menu's rows, for the page `abs` in spread `si`, in the framework `Menu` the dock's menu button opens: the entry
-/// run does what it did as a native row, and the menu closes.
+/// run does what its command does, and the menu closes.
 pub(super) fn panel_menu(
     app: &mut DesignApp,
     ui: &mut Ui,

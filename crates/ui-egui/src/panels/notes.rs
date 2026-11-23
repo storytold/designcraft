@@ -4,16 +4,8 @@
 use serde_json::json;
 
 use crate::DesignApp;
-use crate::theme::Tokens;
-
-/// A button of the native notes list.
-fn legacy_action(ui: &mut egui::Ui, label: &str, enabled: bool, small: bool) -> bool {
-    let button = if small { egui::Button::new(crate::rtl::widget(ui, label)).small() } else { egui::Button::new(crate::rtl::widget(ui, label)) };
-    ui.add_enabled(enabled, button).clicked()
-}
 
 /// What a note's buttons ask for.
-#[cfg(not(target_arch = "wasm32"))]
 enum NoteAction {
     GoTo { story: serde_json::Value, at: u64 },
     Convert { story: serde_json::Value, id: serde_json::Value },
@@ -24,7 +16,6 @@ enum NoteAction {
 /// The notes list on the framework: the draft, New Note at Cursor, and a card per note with its text (read-only, with the
 /// caret Split Note splits at) and its Go To, Convert to Text, Split Note and Delete buttons. A note is its story and id,
 /// never its place in the list.
-#[cfg(not(target_arch = "wasm32"))]
 fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_panels::sections::GroupBox;
     use craft_ui_widgets::buttons::Button;
@@ -143,134 +134,11 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The draft of a new note in the native list.
-fn legacy_draft_field(ui: &mut egui::Ui, language: &str, draft: &mut String) {
-    ui.add(
-        egui::TextEdit::multiline(draft)
-            .hint_text(crate::rtl::widget(ui, crate::i18n::tr(language, "Note text")))
-            .desired_rows(2)
-            .desired_width(f32::INFINITY),
-    );
-}
-
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        show_framework(app, ui);
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    let Ok(list) = app.session.execute("note.list", &json!({})) else { return };
-    let notes = list.as_array().cloned().unwrap_or_default();
-    let has_text = app.session.active().is_some_and(|d| d.selection.text.is_some());
-    let id = egui::Id::unique("new_note_text");
-    let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    legacy_draft_field(ui, &app.ui.language, &mut draft);
-    let new_label = crate::i18n::tr(&app.ui.language, "New Note at Cursor");
-    if legacy_action(ui, new_label, has_text && !draft.trim().is_empty(), false) {
-        match app.run("note.new", json!({"text": draft.trim()})) {
-            Ok(_) => draft.clear(),
-            Err(e) => app.status_error("Notes", e),
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(id, draft));
-    ui.separator();
-    if notes.is_empty() {
-        ui.label(crate::rtl::widget(
-            ui,
-            egui::RichText::new(crate::i18n::tr(&app.ui.language, "No notes in this document.")).size(11.0).color(t.text_dim),
-        ));
-    }
-    for n in notes {
-        let (story, nid, at) = (n["story"].clone(), n["id"].clone(), n["at"].as_u64().unwrap_or(0));
-        ui.group(|ui| {
-            let author = n["author"].as_str().unwrap_or("");
-            if !author.is_empty() {
-                ui.label(egui::RichText::new(author).size(10.5).color(t.text_dim));
-            }
-            let mut text = n["text"].as_str().unwrap_or("");
-            let text_id = egui::Id::unique(("note_text", story.as_u64(), nid.as_u64()));
-            ui.add(egui::TextEdit::multiline(&mut text).id(text_id).frame(egui::Frame::NONE).desired_rows(1).desired_width(f32::INFINITY));
-            let split_at = split_point(ui.ctx(), text_id, text);
-            ui.horizontal(|ui| {
-                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Go To"), true, true) {
-                    let _ = app.run("text.select", json!({"story": story, "anchor": at, "focus": at + 3}));
-                }
-                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Convert to Text"), true, true) {
-                    let _ = app.run("note.convertToText", json!({"story": story, "id": nid}));
-                }
-                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Split Note"), split_at.is_some(), true)
-                    && let Some(at) = split_at
-                    && let Err(e) = app.run("note.split", json!({"story": story, "id": nid, "at": at}))
-                {
-                    app.status_error("Notes", e);
-                }
-                if legacy_action(ui, crate::i18n::tr(&app.ui.language, "Delete"), true, true) {
-                    let _ = app.run("note.delete", json!({"story": story, "id": nid}));
-                }
-            });
-        });
-    }
-}
-
-/// The byte offset of the insertion point in a note's text field, when it lies strictly inside
-/// the text and selects nothing.
-fn split_point(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
-    let r = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
-    let k: usize = r.primary.index.into();
-    if r.primary.index != r.secondary.index || k == 0 {
-        return None;
-    }
-    text.char_indices().nth(k).map(|(i, _)| i)
+    show_framework(app, ui);
 }
 
 #[cfg(test)]
-mod tests {
-    use egui_kittest::Harness;
-    use egui_kittest::kittest::{NodeT, Queryable};
-
-    use super::*;
-
-    #[test]
-    fn split_note_splits_the_note_at_the_insertion_point_in_its_text() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({})).unwrap();
-        let r = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Draft copy."})).unwrap();
-        app.run("text.select", json!({"story": r["story"], "anchor": 5, "focus": 5})).unwrap();
-        app.run("note.new", json!({"text": "check this", "author": "Ed"})).unwrap();
-        let mut h = Harness::builder().with_size(egui::vec2(320.0, 400.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let id = egui::Id::unique("test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(id, true));
-                    return;
-                }
-                show(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
-        assert!(h.get_by_label("Split Note").accesskit_node().is_disabled(), "no insertion point in the note yet");
-        let field = h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("check this")).rect();
-        h.hover_at(field.center());
-        h.drag_at(field.center());
-        h.drop_at(field.center());
-        h.run_steps(2);
-        h.key_press(egui::Key::Home);
-        for _ in 0..6 {
-            h.key_press(egui::Key::ArrowRight);
-        }
-        h.run_steps(2);
-        h.get_by_label("Split Note").click();
-        h.run_steps(3);
-        let list = h.state_mut().session.execute("note.list", &json!({})).unwrap();
-        let texts: Vec<_> = list.as_array().unwrap().iter().map(|n| (n["text"].clone(), n["author"].clone())).collect();
-        assert_eq!(texts, [(json!("check "), json!("Ed")), (json!("this"), json!("Ed"))]);
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
 mod installed_action_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
@@ -294,11 +162,9 @@ mod installed_action_tests {
     }
 
     fn harness(mut app: DesignApp) -> Harness<'static, State> {
-        app.framework_opacity = true;
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "");
         app.install_framework(&ctx);
-        assert!(app.framework_installed);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(640.0, 680.0)).build_ui_state(
             |ui, state: &mut State| {
@@ -531,7 +397,7 @@ mod installed_action_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod draft_composition_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
@@ -590,14 +456,9 @@ mod draft_composition_tests {
         eprintln!("Notes Arabic case uses actual {} {}, face {}, {} existing bytes", face.family, face.style, face.index(), face.data().len());
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Window> {
-        app.framework_transform = false;
-        app.framework_opacity = installed;
+    fn harness(mut app: DesignApp) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed);
+        app.install_framework(&ctx);
         app.egui_ctx = Some(ctx.clone());
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut fonts = false;
@@ -687,12 +548,7 @@ mod draft_composition_tests {
     }
     fn field(h: &Harness<'_, Window>) -> (Rect, String, Option<String>, bool, bool) {
         let name = label(h, "Note text");
-        let expected = draft(h);
-        let installed = h.state().app.framework_installed;
-        let node = h.get_by(|n| {
-            n.role() == egui::accesskit::Role::MultilineTextInput
-                && if installed { n.label().as_deref() == Some(name.as_str()) } else { n.value().unwrap_or_default() == expected }
-        });
+        let node = h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.label().as_deref() == Some(name.as_str()));
         let access = node.accesskit_node();
         (node.rect(), format!("{:?}", access.id()), access.value().map(|s| s.to_string()), access.is_focused(), access.is_disabled())
     }
@@ -703,9 +559,7 @@ mod draft_composition_tests {
     fn paste(h: &mut Harness<'_, Window>, text: &str) {
         let (rect, _, _, _, disabled) = field(h);
         assert!(!disabled);
-        if h.state().app.framework_installed {
-            assert!(rect.contains(element(h, "TextField", "Note text").rect.center()));
-        }
+        assert!(rect.contains(element(h, "TextField", "Note text").rect.center()));
         click_at(h, rect.center());
         assert!(field(h).3, "the original physical click must focus the actual multiline editor");
         key(h, Key::A, Modifiers::COMMAND);
@@ -720,7 +574,7 @@ mod draft_composition_tests {
     fn click_new(h: &mut Harness<'_, Window>) {
         let (before, ax) = new_rect(h);
         if !h.state().viewport.contains(before.center()) {
-            let semantic = h.state().app.framework_installed.then(|| element(h, "Button", "New Note at Cursor").id);
+            let semantic = element(h, "Button", "New Note at Cursor").id;
             let viewport = h.state().viewport;
             event(h, Event::PointerMoved(viewport.center()));
             event(
@@ -737,9 +591,7 @@ mod draft_composition_tests {
             steps(h, 1);
             let (after, after_ax) = new_rect(h);
             assert_eq!(after_ax, ax, "native scroll must preserve the same full AX action identity");
-            if let Some(id) = semantic {
-                assert_eq!(element(h, "Button", "New Note at Cursor").id, id);
-            }
+            assert_eq!(element(h, "Button", "New Note at Cursor").id, semantic);
             assert!(h.state().viewport.contains(after.center()));
             eprintln!(
                 "Notes genuine wheel preserves New action {ax}: {:?} -> {:?}, viewport {:?}",
@@ -800,7 +652,7 @@ mod draft_composition_tests {
     #[test]
     fn notes_draft_full_unicode_multiline_escape_pointer_create_once_undo_redo() {
         let (app, story) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let text = format!("  αβ😀 &<>\\\" {}\nsecond line\tend  ", "é".repeat(1300));
         glyphs(&h, &text);
         let before = mark(&h);
@@ -844,7 +696,7 @@ mod draft_composition_tests {
     #[test]
     fn notes_draft_enter_is_a_newline_tab_shift_tab_and_keyboard_create_clear_once() {
         let (app, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         paste(&mut h, "αβ😀");
@@ -879,7 +731,7 @@ mod draft_composition_tests {
     fn notes_draft_missing_selection_whitespace_and_disabled_parent_preserve_state() {
         let (mut app, story) = text_app();
         app.run("selection.set", json!({"ids": []})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         paste(&mut h, "  αβ😀 memo  ");
@@ -920,7 +772,7 @@ mod draft_composition_tests {
     fn notes_draft_real_footnote_refusal_retains_full_text_then_targets_story_once() {
         let (mut app, story) = text_app();
         app.run("footnote.insert", json!({"text": "Footnote"})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         paste(&mut h, "  αβ😀\nrefused & retained  ");
         let before = mark(&h);
         let status = h.state().app.ui.status.clone();
@@ -956,7 +808,7 @@ mod draft_composition_tests {
         for language in ["de", "ar"] {
             let (mut app, story) = text_app();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let text = if language == "ar" { "  مرحبا αβ😀\nملاحظة &<>  " } else { "  Grüße αβ😀\nNotiz &<>  " };
             glyphs(&h, text);
             glyphs(&h, &label(&h, "Note text"));
@@ -988,7 +840,7 @@ mod draft_composition_tests {
     #[test]
     fn notes_draft_document_switch_preserves_panel_draft_but_targets_current_document() {
         let (app, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         paste(&mut h, "  current document αβ😀  ");
         let original = mark(&h);
         let uid = h.state().app.session.active().unwrap().uid;
@@ -1019,40 +871,15 @@ mod draft_composition_tests {
     }
 
     #[test]
-    fn notes_draft_native_uninstalled_fallback_keeps_actual_input_creation_and_undo() {
-        let (app, story) = text_app();
-        let mut h = harness(app, false);
-        assert!(!h.state().app.framework_installed);
-        assert!(
-            h.state().controls.as_ref().is_none_or(|record| record.elements.is_empty()),
-            "the uninstalled route must not create SDK controls; an empty inspection region is permitted"
-        );
-        let before = mark(&h);
-        let start = h.state().app.session.journal.len();
-        paste(&mut h, "  αβ😀\nlegacy draft  ");
-        key(&mut h, Key::Escape, Modifiers::NONE);
-        assert_draft(&h, "  αβ😀\nlegacy draft  ");
-        unchanged(&h, &before);
-        click_new(&mut h);
-        assert_eq!(calls(&h, start), [json!({"text": "αβ😀\nlegacy draft"})]);
-        assert_eq!(notes(&mut h)[0]["story"], story);
-        assert_draft(&h, "");
-        assert_eq!(mark(&h).2.0, before.2.0 + 1);
-        h.state_mut().app.run("edit.undo", json!({})).unwrap();
-        assert_eq!(mark(&h).0.as_ref(), before.0.as_ref());
-        assert_eq!(mark(&h).1, before.1);
-    }
-
-    #[test]
     fn notes_draft_no_document_and_real_sizing_parent_do_not_create_or_change_draft() {
         let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-        let empty = harness(app, true);
+        let empty = harness(app);
         assert!(empty.state().controls.as_ref().unwrap().elements.is_empty());
         assert_eq!(empty.query_all_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput).count(), 0);
         assert!(empty.state().app.session.documents().is_empty());
         assert!(empty.state().app.session.journal.is_empty());
         let (app, _) = text_app();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         paste(&mut h, "keep through sizing αβ😀");
         let before = mark(&h);
         let start = h.state().app.session.journal.len();

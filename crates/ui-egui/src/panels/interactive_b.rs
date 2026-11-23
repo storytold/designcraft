@@ -1,8 +1,7 @@
 //! The framework forms of the Interactive panels from Object States to Track Changes.
 //!
 //! Each panel draws only framework components and collects its commands while drawing; they run once the pass
-//! has drawn, so the engine, the selection and Undo see the commands the native panels ran. The native bodies
-//! stay in `interactive.rs` for the browser build and for a runtime that is not installed.
+//! has drawn, so the engine, the selection and Undo see the commands each panel ran.
 
 use super::{InteractiveDraft, InteractiveFields, LIQUID_RULES, ask_then_run, liquid_rule_label, object_based, track_identity, track_row_name};
 use crate::DesignApp;

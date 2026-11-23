@@ -18,7 +18,7 @@ use crate::{DesignApp, icons};
 
 mod document;
 mod flex;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod framework_test_kit;
 mod links;
 mod object;
@@ -50,7 +50,6 @@ pub(crate) use typography::{composer_choice, para_field_min};
 /// The framework versions of the kerning field, the language select, the reference-point picker and the stroke type and
 /// corner shape pickers, for the Control
 /// bar as well as this panel.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use {
     object::framework::{corner_shape_select, reference_point, stroke_type_select},
     text::framework::{kerning_field, language_select},
@@ -245,43 +244,23 @@ fn auto_fit(app: &DesignApp) -> bool {
 
 /// Frame Fitting for a graphic frame: the fitting buttons, Frame Fitting Options… beside them, then Auto-Fit.
 fn frame_fitting_section(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use crate::framework_transform::{button, check, icon_button};
-        let lang = app.ui.language.clone();
-        let b = block(ui, FIELD_H);
-        for (k, (icon, mode, tip)) in FITTINGS.into_iter().enumerate() {
-            let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.id().with(("frame-fitting", mode)));
-            if icon_button(ui, at, id, icon, crate::i18n::tr(&lang, tip), false) {
-                let _ = app.run("object.fit", json!({"mode": mode}));
-            }
+    use crate::framework_transform::{button, check, icon_button};
+    let lang = app.ui.language.clone();
+    let b = block(ui, FIELD_H);
+    for (k, (icon, mode, tip)) in FITTINGS.into_iter().enumerate() {
+        let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.id().with(("frame-fitting", mode)));
+        if icon_button(ui, at, id, icon, crate::i18n::tr(&lang, tip), false) {
+            let _ = app.run("object.fit", json!({"mode": mode}));
         }
-        let id = ui.id().with("frame-fitting-options");
-        if button(ui, Some(sub(b, 5.0 * 31.0, 0.0, 64.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
-            crate::menus::activate(app, "app.fittingOptions", &Value::Null);
-        }
-        ui.add_space(5.0);
-        let id = ui.id().with("frame-fitting-auto");
-        if let Some(on) = check(ui, None, id, crate::i18n::tr(&lang, "Auto-Fit"), auto_fit(app), true) {
-            let _ = app.run("object.fittingOptions", json!({"autoFit": on}));
-        }
-        return;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        for (icon, mode, tip) in FITTINGS {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.fit", json!({"mode": mode}));
-            }
-        }
-        // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
-            crate::menus::activate(app, "app.fittingOptions", &Value::Null);
-        }
-    });
-    let mut auto = auto_fit(app);
-    if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
-        let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+    let id = ui.id().with("frame-fitting-options");
+    if button(ui, Some(sub(b, 5.0 * 31.0, 0.0, 64.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
+        crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+    }
+    ui.add_space(5.0);
+    let id = ui.id().with("frame-fitting-auto");
+    if let Some(on) = check(ui, None, id, crate::i18n::tr(&lang, "Auto-Fit"), auto_fit(app), true) {
+        let _ = app.run("object.fittingOptions", json!({"autoFit": on}));
     }
 }
 

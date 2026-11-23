@@ -382,7 +382,7 @@ fn build_rows(
 /// open (it closes on a click outside only).
 ///
 /// [`font_menu_header`] lays out the search field and the filters, [`font_menu_list`] the rows
-/// under them: the header and list of a [`craft_ui_legacy::combo::Menu`] or [`craft_ui_legacy::ComboBox`], so
+/// under them: the header and list of a menu, so
 /// only the rows scroll. Rows a field adds above the search (a blank "no font" row) go in the
 /// header before [`font_menu_header`].
 pub struct FontMenu<'a> {
@@ -729,8 +729,7 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
 }
 
 /// The Font menu on the framework: a popover that hangs from a field, holding the search field, the filters and the
-/// rows. The rows, the filters and what a pick does are the native menu's.
-#[cfg(not(target_arch = "wasm32"))]
+/// rows. The rows, the filters and what a pick does are those of [`font_menu_header`] and [`font_menu_list`].
 pub(crate) mod framework {
     use super::*;
     use craft_ui_widgets::buttons::{Button, IconButton};

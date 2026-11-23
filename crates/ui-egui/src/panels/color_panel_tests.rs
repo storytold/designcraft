@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::DesignApp;
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-    Harness::builder().with_size(vec2(320.0, 320.0)).build_ui_state(|ui, app: &mut DesignApp| super::swatches::color_panel(app, ui), app)
+    crate::test_window::builder().with_size(vec2(320.0, 320.0)).build_ui_state(|ui, app: &mut DesignApp| super::swatches::color_panel(app, ui), app)
 }
 
 fn fill_tint(app: &DesignApp, id: u64) -> f32 {

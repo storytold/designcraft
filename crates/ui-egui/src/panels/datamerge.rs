@@ -1,228 +1,22 @@
 //! Data Merge panel. It reads the linked source and calls commands. Opening the panel does not merge.
 
-use egui::{Color32, Sense, Stroke, vec2};
+
+use egui::{Color32, Stroke, vec2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
-use crate::theme::{Tokens, semibold};
+use crate::theme::semibold;
 
-/// The Data Merge panel: the framework's controls on the desktop, egui's in the browser and before the runtime is
-/// installed.
+/// The Data Merge panel: the craft framework's controls.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework::show(app, ui);
-        return;
-    }
-    show_fallback(app, ui);
-}
-
-fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    let snapshot = app.session.active().map(|st| {
-        let source = st.doc.data_merge.sources.first();
-        (
-            (st.uid, st.identity_epoch),
-            source.map(|s| s.name.clone()),
-            source.map(|s| s.id),
-            source.map(|s| s.rows.len()).unwrap_or(0),
-            st.doc.data_merge.options.clone(),
-            st.preview_record.unwrap_or(0),
-        )
-    });
-    let Some((document, source_name, source_id, record_count, options, preview_record)) = snapshot else {
-        dim(ui, &t, &lang, "No data source");
-        return;
-    };
-    let controls = DataMergeControls { document, sdk: false, enabled: true };
-    let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-
-    ui.horizontal(|ui| {
-        let label = source_name.clone().unwrap_or_else(|| tr(&lang, "No data source").to_string());
-        let color = if source_name.is_some() { t.text_strong } else { t.text_dim };
-        crate::rtl::label(ui, egui::RichText::new(label).color(color));
-    });
-    ui.horizontal(|ui| {
-        if controls.button(ui, "select-source", tr(&lang, "Select Data Source…"), tr(&lang, "Select Data Source…"), true, false) {
-            select_source(app);
-        }
-        let has_source = source_name.is_some();
-        if controls.button(ui, "update-source", tr(&lang, "Update"), tr(&lang, "Update"), has_source, false) {
-            let _ = app.run("data.source.update", json!({}));
-        }
-        if controls.button(ui, "remove-source", tr(&lang, "Remove"), tr(&lang, "Remove"), has_source, false) {
-            let _ = app.run("data.source.remove", json!({}));
-        }
-    });
-    ui.separator();
-
-    if fields.is_empty() {
-        dim(ui, &t, &lang, "Pass csv, rows, or bytes from the control channel.");
-    }
-    for field in &fields {
-        let name = field["name"].as_str().unwrap_or("").to_string();
-        let kind = field["kind"].as_str().unwrap_or("text").to_string();
-        let uses = field["uses"].as_u64().unwrap_or(0);
-        ui.horizontal(|ui| {
-            kind_icon(ui, &kind, t.icon);
-            crate::rtl::label(ui, egui::RichText::new(name.clone()).color(t.text));
-            crate::rtl::label(ui, egui::RichText::new(uses.to_string()).size(11.0).color(t.text_dim));
-            let bind = kind == "image" || kind == "qr";
-            let caption = if bind { "Bind to frame" } else { "Insert field" };
-            // Keep the short painted caption and the untouched raw data-field name, but
-            // name the real action unambiguously for keyboard/accessibility consumers.
-            ui.push_id(("datamerge-field", source_id, name.as_str(), kind.as_str()), |ui| {
-                let caption = tr(&lang, caption);
-                let action_name = format!("{caption}: {name}");
-                if controls.button(ui, "insert-field", caption, &action_name, true, true) {
-                    let params = if bind { json!({"field": name}) } else { json!({"field": name, "role": "text"}) };
-                    let _ = app.run("data.placeholder.add", params);
-                }
-            });
-        });
-    }
-    ui.separator();
-
-    let mut preview_on = preview_record > 0;
-    if controls.check(ui, "preview", tr(&lang, "Preview"), &mut preview_on) {
-        if preview_on {
-            let _ = app.run("data.preview", json!({"record": 1}));
-        } else {
-            let _ = app.run("data.preview.stop", json!({}));
-        }
-    }
-    let navigation_button = |ui: &mut egui::Ui, label: &str| ui.small_button(w(ui, &lang, label)).clicked();
-    let max_record = (record_count as u32).max(1);
-    let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
-    let mut jump = None;
-    ui.add_enabled_ui(preview_record > 0, |ui| {
-        // The SDK number field is wider than the old bare counter. Wrap the existing
-        // navigation rather than clipping the last buttons in a narrow sidebar.
-        ui.horizontal_wrapped(|ui| {
-            if navigation_button(ui, "First") {
-                jump = Some(1);
-            }
-            if navigation_button(ui, "Previous") {
-                jump = Some(shown.saturating_sub(1).max(1));
-            }
-            let record = controls.number(ui, "preview-record", tr(&lang, "Record"), shown as f64, Some(1.0..=max_record as f64), true, false);
-            if let Some(rec) = record.value {
-                jump = Some(rec as u32);
-            }
-            let label = crate::rtl::label(ui, egui::RichText::new(tr(&lang, "Record")).color(t.text));
-            record.response.labelled_by(label.id);
-            if navigation_button(ui, "Next") {
-                jump = Some(shown.saturating_add(1).min(max_record));
-            }
-            if navigation_button(ui, "Last") {
-                jump = Some(max_record);
-            }
-        });
-    });
-    if let Some(rec) = jump.filter(|rec| *rec != preview_record) {
-        let _ = app.run("data.preview", json!({"record": rec}));
-    }
-    ui.separator();
-
-    crate::rtl::label(ui, egui::RichText::new(tr(&lang, "Merge options")).strong().color(t.text_strong));
-    let records_name = tr(&lang, "Merge options");
-    let record_options = [("all", "All records"), ("one", "One record"), ("range", "Range")];
-    if let Some(records) = controls.choice(ui, "dm_records", &options.records, &record_options, &lang, records_name) {
-        let _ = app.run("data.options", json!({"records": records}));
-    }
-    if options.records == "one" {
-        if let Some(one) =
-            controls.number(ui, "one-record", tr(&lang, "Record"), options.one.max(1) as f64, Some(1.0..=max_record as f64), true, true).value
-        {
-            let _ = app.run("data.options", json!({"one": one as u32}));
-        }
-    }
-    if options.records == "range" {
-        let mut range = options.range.clone();
-        if controls.text(ui, "record-range", tr(&lang, "Range"), &mut range) {
-            let _ = app.run("data.options", json!({"range": range}));
-        }
-    }
-    crate::rtl::label(ui, egui::RichText::new(tr(&lang, "Records per page")).color(t.text));
-    let per_page_name = tr(&lang, "Records per page");
-    let per_page_options = [("single", "Single record"), ("multiple", "Multiple records")];
-    if let Some(per_page) = controls.choice(ui, "dm_per_page", &options.per_page, &per_page_options, &lang, per_page_name) {
-        let _ = app.run("data.options", json!({"perPage": per_page}));
-    }
-    if options.per_page == "multiple" {
-        let arrange_options = [("rows", "Rows first"), ("columns", "Columns first")];
-        let arrange_name = tr(&lang, "Arrangement");
-        if let Some(arrange) = controls.choice(ui, "dm_arrange", &options.arrange, &arrange_options, &lang, arrange_name) {
-            let _ = app.run("data.options", json!({"arrange": arrange}));
-        }
-        let labels = ["Top", "Right", "Bottom", "Left"];
-        let mut insets = options.insets;
-        let mut insets_changed = false;
-        for (i, label) in labels.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let label_response = crate::rtl::label(ui, egui::RichText::new(tr(&lang, label)).color(t.text));
-                let number = controls.number(ui, label, tr(&lang, label), insets[i], None, false, false);
-                number.response.labelled_by(label_response.id);
-                if let Some(value) = number.value {
-                    insets[i] = value;
-                    insets_changed = true;
-                }
-            });
-        }
-        if insets_changed {
-            let _ = app.run("data.options", json!({"insets": insets}));
-        }
-        if let Some(column_spacing) =
-            controls.number(ui, "column-spacing", tr(&lang, "Column spacing"), options.column_spacing, None, false, true).value
-        {
-            let _ = app.run("data.options", json!({"columnSpacing": column_spacing}));
-        }
-        if let Some(row_spacing) = controls.number(ui, "row-spacing", tr(&lang, "Row spacing"), options.row_spacing, None, false, true).value {
-            let _ = app.run("data.options", json!({"rowSpacing": row_spacing}));
-        }
-    }
-    if let Some(fitting) = controls.choice(
-        ui,
-        "dm_fitting",
-        &options.fitting,
-        &[
-            ("fitProportionally", "Fit proportionally"),
-            ("fillProportionally", "Fill proportionally"),
-            ("fitContentToFrame", "Fit content to frame"),
-            ("none", "None"),
-        ],
-        &lang,
-        "Image Fitting",
-    ) {
-        let _ = app.run("data.options", json!({"fitting": fitting}));
-    }
-    let mut center = options.center;
-    if controls.check(ui, "center", tr(&lang, "Center in frame"), &mut center) {
-        let _ = app.run("data.options", json!({"center": center}));
-    }
-    let mut link_images = options.link_images;
-    if controls.check(ui, "link-images", tr(&lang, "Link images"), &mut link_images) {
-        let _ = app.run("data.options", json!({"linkImages": link_images}));
-    }
-    if let Some(limit) = controls.number(ui, "limit", tr(&lang, "Limit"), options.limit.unwrap_or(0) as f64, Some(0.0..=100_000.0), true, true).value
-    {
-        let limit = limit as u32;
-        let value = if limit == 0 { Value::Null } else { json!(limit) };
-        let _ = app.run("data.options", json!({"limit": value}));
-    }
-    ui.add_space(6.0);
-    if controls.button(ui, "merge", tr(&lang, "Create Merged Document…"), tr(&lang, "Create Merged Document…"), true, false) {
-        let _ = app.run("data.merge", json!({}));
-    }
+    framework::show(app, ui);
 }
 
 /// Local widget adapters only: every accepted value still calls the existing live engine
 /// command below. No draft document, Apply/Cancel layer, IO protocol or Undo wrapper.
 #[derive(Clone, Copy)]
 struct DataMergeControls {
-    sdk: bool,
     document: (u64, u64),
     /// Whether the controls take input; the framework's also follow the parent Ui.
     enabled: bool,
@@ -238,83 +32,56 @@ impl DataMergeControls {
         ui.make_persistent_id(("datamerge-workflow", self.document, kind, key))
     }
 
-    fn button(&self, ui: &mut egui::Ui, key: &str, caption: &str, name: &str, enabled: bool, small: bool) -> bool {
+    fn button(&self, ui: &mut egui::Ui, key: &str, caption: &str, name: &str, enabled: bool) -> bool {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
         let id = self.id(ui, "button", key);
         let enabled = enabled && self.enabled && ui.is_enabled();
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            return craft_ui_widgets::buttons::Button::new(name.to_owned()).painted(caption.to_owned()).id(id).enabled(enabled).show(ui).clicked();
-        }
-        let response = ui
-            .push_id(id, |ui| {
-                ui.add_enabled_ui(enabled, |ui| {
-                    if small { ui.small_button(crate::rtl::widget(ui, caption)) } else { ui.button(crate::rtl::widget(ui, caption)) }
-                })
-                .inner
-            })
-            .inner;
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-        response.clicked()
+        craft_ui_widgets::buttons::Button::new(name.to_owned()).painted(caption.to_owned()).id(id).enabled(enabled).show(ui).clicked()
     }
 
     fn check(&self, ui: &mut egui::Ui, key: &str, name: &str, value: &mut bool) -> bool {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         let id = self.id(ui, "check", key);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-            let before = *value;
-            craft_ui_widgets::choice::Checkbox::new(Bind::bound(value))
-                .id(id)
-                .label(name.to_owned())
-                .enabled(self.enabled && ui.is_enabled())
-                .show(ui);
-            return *value != before;
-        }
-        ui.push_id(id, |ui| ui.checkbox(value, crate::rtl::widget(ui, name))).inner.changed()
+        let before = *value;
+        craft_ui_widgets::choice::Checkbox::new(Bind::bound(value))
+            .id(id)
+            .label(name.to_owned())
+            .enabled(self.enabled && ui.is_enabled())
+            .show(ui);
+        *value != before
     }
 
     fn choice(&self, ui: &mut egui::Ui, key: &str, current: &str, options: &[(&str, &str)], lang: &str, name: &str) -> Option<String> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, Sizing};
-            let id = self.id(ui, "choice", key);
-            let current_index = options.iter().position(|(value, _)| *value == current).unwrap_or(usize::MAX);
-            let entries: Vec<_> = options.iter().enumerate().map(|(i, (_, text))| Entry::new(i, tr(lang, text).to_owned())).collect();
-            let out = craft_ui_widgets::pickers::Select::new(tr(lang, name).to_owned(), Bind::given(current_index), &entries)
-                .id(id)
-                .enabled(self.enabled && ui.is_enabled())
-                .placeholder(current.to_owned())
-                .sizing(Sizing::FillWidth)
-                .show(ui);
-            // Arrow navigation is only a proposal. Escape cannot send data.options.
-            return out.events.committed().and_then(|i| options.get(*i)).map(|(value, _)| (*value).to_owned()).filter(|value| value != current);
-        }
-        ui.push_id(self.id(ui, "choice", key), |ui| choice(ui, key, current, options, lang, name)).inner
+        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, Sizing};
+        let id = self.id(ui, "choice", key);
+        let current_index = options.iter().position(|(value, _)| *value == current).unwrap_or(usize::MAX);
+        let entries: Vec<_> = options.iter().enumerate().map(|(i, (_, text))| Entry::new(i, tr(lang, text).to_owned())).collect();
+        let out = craft_ui_widgets::pickers::Select::new(tr(lang, name).to_owned(), Bind::given(current_index), &entries)
+            .id(id)
+            .enabled(self.enabled && ui.is_enabled())
+            .placeholder(current.to_owned())
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        // Arrow navigation is only a proposal. Escape cannot send data.options.
+        out.events.committed().and_then(|i| options.get(*i)).map(|(value, _)| (*value).to_owned()).filter(|value| value != current)
     }
 
     fn text(&self, ui: &mut egui::Ui, key: &str, name: &str, value: &mut String) -> bool {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
         let id = self.id(ui, "text", key);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
-            let out = craft_ui_widgets::text::TextField::new(name.to_owned(), Bind::given(value.clone()))
-                .id(id)
-                .enabled(self.enabled && ui.is_enabled())
-                .limit(None)
-                .sizing(Sizing::FillWidth)
-                .show(ui);
-            // Range text was already live, including invalid grammar. Only data.merge
-            // parses record ranges; do not turn this panel into an invented Apply dialog.
-            if let Some(next) = out.value().filter(|next| next.as_str() != value.as_str()) {
-                *value = next.clone();
-                return true;
-            }
-            return false;
+        let out = craft_ui_widgets::text::TextField::new(name.to_owned(), Bind::given(value.clone()))
+            .id(id)
+            .enabled(self.enabled && ui.is_enabled())
+            .limit(None)
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        // Range text was already live, including invalid grammar. Only data.merge
+        // parses record ranges; do not turn this panel into an invented Apply dialog.
+        if let Some(next) = out.value().filter(|next| next.as_str() != value.as_str()) {
+            *value = next.clone();
+            return true;
         }
-        let response = ui.add(egui::TextEdit::singleline(value).id(id));
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-        response.changed()
+        false
     }
 
     fn number(
@@ -327,70 +94,38 @@ impl DataMergeControls {
         integer: bool,
         prefix: bool,
     ) -> MergeNumber {
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
         let id = self.id(ui, "number", key);
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
-            let mut shown = None;
-            craft_ui_widgets::layout_components::Row::new().id_salt(("datamerge-number", key)).show(ui, |ui, _| {
-                if prefix {
-                    craft_ui_widgets::display::Text::new(name.to_owned()).show(ui);
-                }
-                let mut field = craft_ui_widgets::text::NumberField::new(name.to_owned(), Bind::given(Some(value)))
-                    .id(id)
-                    .enabled(self.enabled && ui.is_enabled())
-                    .step(1.0);
-                if let Some(range) = &range {
-                    field = field.range(range.clone());
-                }
-                let out = if integer { field.fixed_decimals(0).show(ui) } else { field.show(ui) };
-                // Like the original live DragValue, successful typing/scrubbing is
-                // already an engine edit. Escape is not a new rollback command or an
-                // invented grouped Undo transaction; ignore Cancel-only events.
-                let next = out
-                    .edit
-                    .value()
-                    .copied()
-                    .flatten()
-                    .filter(|v| v.is_finite())
-                    .map(|v| {
-                        let v = if integer { v.trunc() } else { v };
-                        range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))
-                    })
-                    .filter(|v| *v != value);
-                shown = Some(MergeNumber { response: out.edit.response, value: next });
-            });
-            return shown.unwrap_or_else(|| MergeNumber { response: ui.response(), value: None });
-        }
-        if integer {
-            // Keep the real legacy u32 control, including its quarter-point drag speed,
-            // integer conversion and live-typing behavior, in the native fallback.
-            let mut next = value as u32;
-            let mut field = egui::DragValue::new(&mut next);
-            if let Some(range) = &range {
-                field = field.range(*range.start() as u32..=*range.end() as u32);
-            }
+        let mut shown = None;
+        craft_ui_widgets::layout_components::Row::new().id_salt(("datamerge-number", key)).show(ui, |ui, _| {
             if prefix {
-                field = field.prefix(format!("{name} "));
+                craft_ui_widgets::display::Text::new(name.to_owned()).show(ui);
             }
-            let response = ui.push_id(id, |ui| ui.add(field)).inner;
-            response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-            let next = next as f64;
-            let changed = response.changed() && next != value;
-            return MergeNumber { response, value: changed.then_some(next) };
-        }
-        let mut next = value;
-        let mut field = egui::DragValue::new(&mut next).speed(1.0);
-        if let Some(range) = &range {
-            field = field.range(range.clone());
-        }
-        if prefix {
-            field = field.prefix(format!("{name} "));
-        }
-        let response = ui.push_id(id, |ui| ui.add(field)).inner;
-        response.ctx.accesskit_node_builder(response.id, |node| node.set_label(name.to_owned()));
-        let changed = response.changed() && next.is_finite() && next != value;
-        MergeNumber { response, value: changed.then_some(next) }
+            let mut field = craft_ui_widgets::text::NumberField::new(name.to_owned(), Bind::given(Some(value)))
+                .id(id)
+                .enabled(self.enabled && ui.is_enabled())
+                .step(1.0);
+            if let Some(range) = &range {
+                field = field.range(range.clone());
+            }
+            let out = if integer { field.fixed_decimals(0).show(ui) } else { field.show(ui) };
+            // Like the original live DragValue, successful typing/scrubbing is
+            // already an engine edit. Escape is not a new rollback command or an
+            // invented grouped Undo transaction; ignore Cancel-only events.
+            let next = out
+                .edit
+                .value()
+                .copied()
+                .flatten()
+                .filter(|v| v.is_finite())
+                .map(|v| {
+                    let v = if integer { v.trunc() } else { v };
+                    range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))
+                })
+                .filter(|v| *v != value);
+            shown = Some(MergeNumber { response: out.edit.response, value: next });
+        });
+        shown.unwrap_or_else(|| MergeNumber { response: ui.response(), value: None })
     }
 }
 
@@ -402,26 +137,6 @@ fn select_source(app: &mut DesignApp) {
     if asked.is_err() {
         app.status(tr(&app.ui.language, "Pass csv, rows, or bytes from the control channel."));
     }
-}
-
-/// Render a localized, named combo and return only a changed selection.
-fn choice(ui: &mut egui::Ui, id: &str, current: &str, options: &[(&str, &str)], lang: &str, name: &str) -> Option<String> {
-    let label = options.iter().find(|(value, _)| *value == current).map(|(_, text)| tr(lang, text)).unwrap_or(current);
-    let mut picked = None;
-    let combo = craft_ui_legacy::ComboBox::from_id_salt(id).selected_text(label).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
-        for (value, text) in options {
-            if ui.selectable_label(*value == current, tr(lang, text)).clicked() {
-                picked = Some((*value).to_string());
-            }
-        }
-    });
-    let _ = crate::widgets::name_combo(combo, name.to_owned());
-    picked.filter(|value| value != current)
-}
-
-fn kind_icon(ui: &mut egui::Ui, kind: &str, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-    paint_kind(ui.painter(), rect, kind, color);
 }
 
 /// A data field's kind as a 16-point glyph in `rect`: a picture, a QR code, or a T for text.
@@ -447,21 +162,12 @@ fn paint_kind(painter: &egui::Painter, rect: egui::Rect, kind: &str, color: Colo
     }
 }
 
-fn dim(ui: &mut egui::Ui, t: &Tokens, lang: &str, key: &str) {
-    crate::rtl::label(ui, egui::RichText::new(tr(lang, key)).size(11.0).color(t.text_dim));
-}
-
 fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     crate::i18n::tr(lang, s)
 }
 
-fn w(ui: &egui::Ui, lang: &str, s: &str) -> egui::WidgetText {
-    crate::rtl::widget(ui, tr(lang, s))
-}
-
-/// The Data Merge panel on the craft framework: the same live commands as the fallback, through the same control
-/// adapters, laid out with framework rows and text. Every control's id carries the document's identity.
-#[cfg(not(target_arch = "wasm32"))]
+/// The Data Merge panel on the craft framework: the live commands through the control adapters, laid out with
+/// framework rows and text. Every control's id carries the document's identity.
 mod framework {
     use super::{DataMergeControls, paint_kind, select_source, tr};
     use crate::DesignApp;
@@ -499,7 +205,7 @@ mod framework {
             note(ui, tr(&lang, "No data source"));
             return;
         };
-        let controls = DataMergeControls { document, sdk: true, enabled: true };
+        let controls = DataMergeControls { document, enabled: true };
         let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
         let max_record = (record_count as u32).max(1);
         let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
@@ -512,12 +218,12 @@ mod framework {
                 None => Text::new(tr(&lang, "No data source").to_owned()).shade(Shade::Muted).show(ui),
             };
             Row::new().id_salt("source").wrap(true).show(ui, |ui, _| {
-                select = controls.button(ui, "select-source", tr(&lang, "Select Data Source…"), tr(&lang, "Select Data Source…"), true, false);
+                select = controls.button(ui, "select-source", tr(&lang, "Select Data Source…"), tr(&lang, "Select Data Source…"), true);
                 let has_source = source_name.is_some();
-                if controls.button(ui, "update-source", tr(&lang, "Update"), tr(&lang, "Update"), has_source, false) {
+                if controls.button(ui, "update-source", tr(&lang, "Update"), tr(&lang, "Update"), has_source) {
                     commands.push(("data.source.update", json!({})));
                 }
-                if controls.button(ui, "remove-source", tr(&lang, "Remove"), tr(&lang, "Remove"), has_source, false) {
+                if controls.button(ui, "remove-source", tr(&lang, "Remove"), tr(&lang, "Remove"), has_source) {
                     commands.push(("data.source.remove", json!({})));
                 }
             });
@@ -541,7 +247,7 @@ mod framework {
                     let bind = kind == "image" || kind == "qr";
                     // The short caption shows; the action is named with the untouched field name.
                     let caption = tr(&lang, if bind { "Bind to frame" } else { "Insert field" });
-                    if controls.button(ui, "insert-field", caption, &format!("{caption}: {name}"), true, true) {
+                    if controls.button(ui, "insert-field", caption, &format!("{caption}: {name}"), true) {
                         let params = if bind { json!({"field": name}) } else { json!({"field": name, "role": "text"}) };
                         commands.push(("data.placeholder.add", params));
                     }
@@ -556,7 +262,7 @@ mod framework {
             let navigation = DataMergeControls { enabled: preview_record > 0, ..controls };
             Row::new().id_salt("preview-navigation").wrap(true).show(ui, |ui, _| {
                 for (key, label, to) in [("first", "First", 1), ("previous", "Previous", shown.saturating_sub(1).max(1))] {
-                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true, true) {
+                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true) {
                         jump = Some(to);
                     }
                 }
@@ -566,7 +272,7 @@ mod framework {
                 }
                 Text::new(tr(&lang, "Record").to_owned()).show(ui);
                 for (key, label, to) in [("next", "Next", shown.saturating_add(1).min(max_record)), ("last", "Last", max_record)] {
-                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true, true) {
+                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true) {
                         jump = Some(to);
                     }
                 }
@@ -641,7 +347,7 @@ mod framework {
                 let limit = limit as u32;
                 commands.push(("data.options", json!({"limit": if limit == 0 { Value::Null } else { json!(limit) }})));
             }
-            if controls.button(ui, "merge", tr(&lang, "Create Merged Document…"), tr(&lang, "Create Merged Document…"), true, false) {
+            if controls.button(ui, "merge", tr(&lang, "Create Merged Document…"), tr(&lang, "Create Merged Document…"), true) {
                 commands.push(("data.merge", json!({})));
             }
         });
@@ -673,7 +379,10 @@ mod tests {
         app.run("file.new", json!({})).unwrap();
         app.run("data.source.select", json!({"bytes": designcraft_engine::cmd::base64_encode(b"Name\nAda\nGrace\n"), "name": "people.csv"})).unwrap();
         app.run("data.options", json!({"perPage": "multiple"})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(420.0, 700.0)).build_ui_state(
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(420.0, 700.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let key = egui::Id::unique("datamerge_test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
@@ -759,19 +468,13 @@ mod ui223_datamerge_workflow_tests {
         app
     }
 
-    fn fixture(app: DesignApp, sdk: bool) -> Harness<'static, Window> {
-        fixture_width(app, sdk, 560.0)
+    fn fixture(app: DesignApp) -> Harness<'static, Window> {
+        fixture_width(app, 560.0)
     }
 
-    fn fixture_width(mut app: DesignApp, sdk: bool, width: f32) -> Harness<'static, Window> {
-        // Pin both pilot inputs before installation, not the process environment. A
-        // fallback fixture must not silently inherit the Transform pilot's runtime.
-        app.framework_transform = false;
-        app.framework_opacity = sdk;
-        assert!(!app.framework_installed);
+    fn fixture_width(mut app: DesignApp, width: f32) -> Harness<'static, Window> {
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
-        assert_eq!(app.framework_installed, sdk);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(width, 1400.0)).build_ui_state(
@@ -786,9 +489,7 @@ mod ui223_datamerge_workflow_tests {
                     ui.add_enabled_ui(state.enabled, |ui| {
                         // Observe only the same inherited formatting configuration that
                         // NumberField reads. Do not override the host locale or widget state.
-                        if state.app.framework_installed {
-                            state.number_units = Some(craft_ui_widgets::runtime::env::Env::of(ui).units());
-                        }
+                        state.number_units = Some(craft_ui_widgets::runtime::env::Env::of(ui).units());
                         state.controls = record(ui, egui::Id::NULL.with("datamerge-full-workflow-tests"), |ui| show(&mut state.app, ui)).1;
                     });
                 });
@@ -857,10 +558,6 @@ mod ui223_datamerge_workflow_tests {
         }
         click_rect(h, element.rect);
     }
-    fn native_click(h: &mut Harness<'_, Window>, name: &str) {
-        let rect = h.get_by_label(name).rect();
-        click_rect(h, rect);
-    }
     fn tab_to(h: &mut Harness<'_, Window>, element: &Element) {
         let mut visited = HashSet::new();
         loop {
@@ -872,13 +569,8 @@ mod ui223_datamerge_workflow_tests {
             key(h, Key::Tab);
         }
     }
-    fn choose(h: &mut Harness<'_, Window>, name: &str, value: &str, sdk: bool) {
-        if sdk {
-            click(h, "Select", name);
-        } else {
-            let rect = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, name).rect();
-            click_rect(h, rect);
-        }
+    fn choose(h: &mut Harness<'_, Window>, name: &str, value: &str) {
+        click(h, "Select", name);
         let rect = h.get_all_by_label(value).last().unwrap().rect();
         click_rect(h, rect);
     }
@@ -903,20 +595,8 @@ mod ui223_datamerge_workflow_tests {
         eprintln!("Data Merge genuine numeric input: value={value:?}, text={text:?}, decimal={:?}", units.reader(None).decimal_separator());
         text
     }
-    fn native_number(h: &mut Harness<'_, Window>, name: &str, at: usize, value: &str) {
-        let rect =
-            h.query_all_by_label(name).filter(|node| node.accesskit_node().role() == egui::accesskit::Role::SpinButton).nth(at).unwrap().rect();
-        // A real DragValue click enters its numeric editor. In particular a long
-        // prefix disappears in edit mode, so a second click at the old button's
-        // centre can land outside the now-short editor and dismiss it again.
-        click_rect(h, rect);
-        key_mod(h, Key::A, Modifiers::COMMAND);
-        event(h, Event::Text(value.to_owned()));
-        key(h, Key::Enter);
-    }
-    fn range(h: &mut Harness<'_, Window>, value: &str, sdk: bool) {
-        let rect =
-            if sdk { control(h, "TextField", "Range", 0).rect } else { h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Range").rect() };
+    fn range(h: &mut Harness<'_, Window>, value: &str) {
+        let rect = control(h, "TextField", "Range", 0).rect;
         replace(h, rect, value);
     }
     fn options(h: &Harness<'_, Window>) -> designcraft_doc::MergeOptions {
@@ -973,7 +653,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_source_cancel_update_refusal_remove_and_undo() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let before = effects(&h);
         click(&mut h, "Button", "Select Data Source…");
         assert_eq!(h.state().app.file_dialogs.queued(), 1);
@@ -1005,7 +685,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_field_insert_image_and_qr_bind_preserve_payload_and_undo() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let story = text_target(&mut h);
         let history = h.state().app.session.active().unwrap().history.undo.len();
         click(&mut h, "Button", "Insert field: Name");
@@ -1037,7 +717,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_field_refusals_keep_source_document_and_history() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let before = effects(&h);
         for name in ["Insert field: Name", "Bind to frame: Photo", "Bind to frame: Code"] {
             click(&mut h, "Button", name);
@@ -1049,7 +729,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_preview_toggle_record_and_escape_keep_session_policy() {
-        let mut h = fixture_width(app(1, false), true, 320.0);
+        let mut h = fixture_width(app(1, false), 320.0);
         for name in ["First", "Previous", "Next", "Last"] {
             let navigation = control(&h, "Button", name, 0);
             assert!(navigation.rect.left() >= 0.0 && navigation.rect.right() <= 320.0, "the actual narrow-sidebar navigation must not clip: {name}");
@@ -1086,7 +766,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_natural_tab_dropdown_escape_and_commit_are_distinct() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let select = control(&h, "Select", "Merge options", 0);
         tab_to(&mut h, &select);
         let before = effects(&h);
@@ -1114,10 +794,10 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_all_options_numbers_fitting_and_limit_remain_live() {
-        let mut h = fixture(app(1, false), true);
-        choose(&mut h, "Records per page", "Multiple records", true);
+        let mut h = fixture(app(1, false));
+        choose(&mut h, "Records per page", "Multiple records");
         assert_eq!(payload(&h, "data.options"), json!({"perPage": "multiple"}));
-        choose(&mut h, "Arrangement", "Columns first", true);
+        choose(&mut h, "Arrangement", "Columns first");
         assert_eq!(options(&h).arrange, "columns");
         for (name, value) in [("Top", 12.5), ("Right", -2.0), ("Bottom", 3.0), ("Left", 4.0)] {
             let text = numeric_input(&h, value);
@@ -1137,7 +817,7 @@ mod ui223_datamerge_workflow_tests {
             ("None", "none"),
             ("Fit proportionally", "fitProportionally"),
         ] {
-            choose(&mut h, "Image Fitting", name, true);
+            choose(&mut h, "Image Fitting", name);
             assert_eq!(options(&h).fitting, value);
             assert_eq!(payload(&h, "data.options"), json!({"fitting": value}));
         }
@@ -1164,11 +844,11 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_invalid_range_refuses_merge_then_recovers_in_order() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let story = text_target(&mut h);
         click(&mut h, "Button", "Insert field: Name");
-        choose(&mut h, "Merge options", "Range", true);
-        range(&mut h, "9", true);
+        choose(&mut h, "Merge options", "Range");
+        range(&mut h, "9");
         assert_eq!(options(&h).range, "9", "range text is live; grammar is not prematurely refused by the widget");
         key(&mut h, Key::Escape);
         assert_eq!(options(&h).range, "9", "Escape does not invent a panel-wide rollback of live engine edits");
@@ -1177,7 +857,7 @@ mod ui223_datamerge_workflow_tests {
         assert!(!h.state().app.ui.status.is_empty());
         assert_eq!(effects(&h), before, "an out-of-range record must not add a document or history");
         no_idle_replay(&mut h);
-        range(&mut h, "3,1-2", true);
+        range(&mut h, "3,1-2");
         key(&mut h, Key::Enter);
         let template = h.state().app.session.active().unwrap().doc.clone();
         click(&mut h, "Button", "Create Merged Document…");
@@ -1197,12 +877,12 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_one_record_merge_preserves_template_saved_state_and_undo() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let story = text_target(&mut h);
         let insert = control(&h, "Button", "Insert field: Name", 0);
         tab_to(&mut h, &insert);
         key(&mut h, Key::Enter);
-        choose(&mut h, "Merge options", "One record", true);
+        choose(&mut h, "Merge options", "One record");
         number(&mut h, "Record", 1, "2");
         assert_eq!(payload(&h, "data.options"), json!({"one": 2}));
         let before = effects(&h);
@@ -1225,11 +905,11 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_multiple_records_tile_only_two_cards_in_memory() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         text_target(&mut h);
         click(&mut h, "Button", "Insert field: Name");
-        choose(&mut h, "Records per page", "Multiple records", true);
-        choose(&mut h, "Arrangement", "Columns first", true);
+        choose(&mut h, "Records per page", "Multiple records");
+        choose(&mut h, "Arrangement", "Columns first");
         number(&mut h, "Limit", 0, "2");
         let before = effects(&h);
         click(&mut h, "Button", "Create Merged Document…");
@@ -1249,14 +929,14 @@ mod ui223_datamerge_workflow_tests {
         for (pages, facing) in [(1, true), (2, false)] {
             let mut app = app(pages, facing);
             app.run("data.options", json!({"perPage": "multiple"})).unwrap();
-            let mut h = fixture(app, true);
+            let mut h = fixture(app);
             let before = effects(&h);
             click(&mut h, "Button", "Create Merged Document…");
             assert!(h.state().app.ui.status.contains("one page"));
             assert_eq!(effects(&h), before);
             no_idle_replay(&mut h);
-            choose(&mut h, "Records per page", "Single record", true);
-            choose(&mut h, "Merge options", "One record", true);
+            choose(&mut h, "Records per page", "Single record");
+            choose(&mut h, "Merge options", "One record");
             click(&mut h, "Button", "Create Merged Document…");
             assert_eq!(h.state().app.session.documents().len(), 2);
             assert_eq!(h.state().app.session.active().unwrap().doc.page_count(), pages as usize);
@@ -1268,7 +948,7 @@ mod ui223_datamerge_workflow_tests {
     fn ui223_datamerge_disabled_and_sizing_input_never_defers_workflow_actions() {
         let mut app = app(1, false);
         app.run("data.options", json!({"records": "range", "range": "1-3", "perPage": "multiple"})).unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let center = control(&h, "Checkbox", "Center in frame", 0);
         tab_to(&mut h, &center);
         let before = effects(&h);
@@ -1303,7 +983,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_held_action_cannot_follow_a_new_document_identity() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let old = control(&h, "Checkbox", "Center in frame", 0);
         let old_doc = effects(&h).documents[0].clone();
         let pos = old.rect.center();
@@ -1327,7 +1007,7 @@ mod ui223_datamerge_workflow_tests {
     fn ui223_datamerge_no_source_keeps_disabled_and_refusal_routes() {
         let mut app = app(1, false);
         app.run("data.source.remove", json!({})).unwrap();
-        let mut h = fixture(app, true);
+        let mut h = fixture(app);
         let before = effects(&h);
         for name in ["Update", "Remove"] {
             assert!(control(&h, "Button", name, 0).facts.as_ref().unwrap().disabled);
@@ -1348,7 +1028,7 @@ mod ui223_datamerge_workflow_tests {
 
     #[test]
     fn ui223_datamerge_csv_and_rows_queries_use_real_adapter_without_attachment() {
-        let mut h = fixture(app(1, false), true);
+        let mut h = fixture(app(1, false));
         let before = effects(&h);
         for params in
             [json!({"csv": "Résumé\nAda\nGrace\nKatherine\n"}), json!({"rows": [{"Résumé": "Ada"}, {"Résumé": "Grace"}, {"Résumé": "Katherine"}]})]
@@ -1360,86 +1040,4 @@ mod ui223_datamerge_workflow_tests {
         no_idle_replay(&mut h);
     }
 
-    #[test]
-    fn ui223_datamerge_native_fallback_retains_complete_live_workflow() {
-        let mut app = app(1, false);
-        select_csv(&mut app, "Résumé,@Photo,#Code\nAda,,one\nGrace,,two\nKatherine,,three\n");
-        let mut h = fixture(app, false);
-        assert!(!h.state().app.framework_installed);
-        let before = effects(&h);
-        native_click(&mut h, "Select Data Source…");
-        h.state_mut().app.settle_dialogs();
-        idle(&mut h, 3);
-        assert_eq!(effects(&h), before);
-        native_click(&mut h, "Update");
-        assert_eq!(effects(&h), before);
-        let story = text_target(&mut h);
-        native_click(&mut h, "Insert field: Résumé");
-        assert_eq!(payload(&h, "data.placeholder.add"), json!({"field": "Résumé", "role": "text"}));
-        undo(&mut h);
-        let frame = h.state_mut().app.run("frame.create", json!({"rect": [20, 50, 60, 90], "content": "graphic"})).unwrap()["id"].as_u64().unwrap();
-        h.state_mut().app.run("selection.set", json!({"ids": [frame]})).unwrap();
-        idle(&mut h, 3);
-        for field in ["Photo", "Code"] {
-            native_click(&mut h, &format!("Bind to frame: {field}"));
-            assert_eq!(payload(&h, "data.placeholder.add"), json!({"field": field}));
-            assert_eq!(h.state().app.session.active().unwrap().doc.data_merge.placeholders.len(), 1);
-            undo(&mut h); // Never preview or merge an image placeholder in these bounded cases.
-        }
-        h.state_mut().app.run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
-        idle(&mut h, 3);
-        native_click(&mut h, "Insert field: Résumé");
-        native_click(&mut h, "Preview");
-        native_number(&mut h, "Record", 0, "3");
-        assert_eq!(h.state().app.session.active().unwrap().preview_record, Some(3));
-        native_click(&mut h, "Preview");
-        assert_eq!(h.state().app.session.active().unwrap().preview_record, None);
-        choose(&mut h, "Merge options", "One record", false);
-        native_number(&mut h, "Record", 1, "2");
-        assert_eq!(options(&h).one, 2);
-        choose(&mut h, "Merge options", "All records", false);
-        assert_eq!(options(&h).records, "all");
-        choose(&mut h, "Merge options", "Range", false);
-        range(&mut h, "2", false);
-        key(&mut h, Key::Enter);
-        assert_eq!(options(&h).range, "2");
-        choose(&mut h, "Records per page", "Multiple records", false);
-        choose(&mut h, "Arrangement", "Columns first", false);
-        choose(&mut h, "Image Fitting", "None", false);
-        for name in ["Top", "Right", "Bottom", "Left", "Column spacing", "Row spacing"] {
-            native_number(&mut h, name, 0, "1");
-        }
-        native_number(&mut h, "Limit", 0, "2");
-        assert_eq!(options(&h).limit, Some(2));
-        native_number(&mut h, "Limit", 0, "0");
-        assert_eq!(options(&h).insets, [1.0; 4]);
-        assert_eq!(options(&h).column_spacing, 1.0);
-        assert_eq!(options(&h).row_spacing, 1.0);
-        assert_eq!(options(&h).limit, None);
-        let center = options(&h).center;
-        native_click(&mut h, "Center in frame");
-        assert_eq!(options(&h).center, !center);
-        let link = options(&h).link_images;
-        native_click(&mut h, "Link images");
-        assert_eq!(options(&h).link_images, !link);
-        choose(&mut h, "Records per page", "Single record", false);
-        native_click(&mut h, "Preview");
-        assert_eq!(h.state().app.session.active().unwrap().preview_record, Some(1));
-        native_click(&mut h, "Preview");
-        assert_eq!(h.state().app.session.active().unwrap().preview_record, None);
-        native_click(&mut h, "Create Merged Document…");
-        assert_eq!(h.state().app.session.documents().len(), 2);
-        assert_eq!(h.state().app.session.active().unwrap().doc.story(designcraft_doc::StoryId(story)).unwrap().text, "Grace");
-        assert_eq!(payload(&h, "data.merge"), json!({}));
-        no_idle_replay(&mut h);
-        let merged = h.state().app.session.active().unwrap().doc.clone();
-        native_click(&mut h, "Remove");
-        assert!(h.state().app.session.active().unwrap().doc.data_merge.sources.is_empty());
-        let removed = effects(&h);
-        native_click(&mut h, "Update");
-        assert_eq!(effects(&h), removed, "native fallback preserves disabled Update");
-        undo(&mut h);
-        assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), merged.as_ref());
-        no_idle_replay(&mut h);
-    }
 }

@@ -21,11 +21,8 @@ struct Window {
 }
 
 fn fixture(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, Window> {
-    app.framework_transform = false;
-    app.framework_opacity = true;
     let ctx = egui::Context::default();
     app.install_framework(&ctx);
-    assert!(app.framework_installed);
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(320.0, 480.0)).build_ui_state(
         move |ui, state: &mut Window| {

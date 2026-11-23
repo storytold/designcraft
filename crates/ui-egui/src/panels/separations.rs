@@ -7,7 +7,6 @@ use serde_json::json;
 
 use crate::DesignApp;
 use crate::i18n::tr;
-use crate::theme::Tokens;
 
 /// A swatch for an ink's row.
 fn ink_color(ink: &Ink) -> egui::Color32 {
@@ -27,45 +26,28 @@ fn ink_color(ink: &Ink) -> egui::Color32 {
     }
 }
 
-fn mode_button(ui: &mut egui::Ui, framework: bool, kind: &str, label: &str, on: bool) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::buttons::Button;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::Variant;
+fn mode_button(ui: &mut egui::Ui, kind: &str, label: &str, on: bool) -> bool {
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::style::Variant;
 
-        return Button::new(label.to_owned()).id_salt(("separations-mode", kind)).variant(Variant::GHOST).selected(on).show(ui).clicked();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (framework, kind);
-    ui.selectable_label(on, crate::rtl::widget(ui, label)).clicked()
+    Button::new(label.to_owned()).id_salt(("separations-mode", kind)).variant(Variant::GHOST).selected(on).show(ui).clicked()
 }
 
-fn mode_actions(ui: &mut egui::Ui, lang: &str, framework: bool, on: bool, limit: Option<f32>) -> Option<serde_json::Value> {
+fn mode_actions(ui: &mut egui::Ui, lang: &str, on: bool, limit: Option<f32>) -> Option<serde_json::Value> {
+    use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+    use craft_ui_widgets::layout_components::Row;
+
     let mut run = None;
     let modes = [
         ("off", "Off", !on, json!({"plate": null, "inkLimit": null})),
         ("separations", "Separations", on && limit.is_none(), json!({"plate": "all", "inkLimit": null})),
         ("ink-limit", "Ink Limit", limit.is_some(), json!({"inkLimit": limit.unwrap_or(300.0)})),
     ];
-    #[cfg(not(target_arch = "wasm32"))]
-    if framework {
-        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-        use craft_ui_widgets::layout_components::Row;
-
-        Row::new().id_salt("separations_modes").show(ui, |ui, _| {
-            for (kind, label, selected, params) in &modes {
-                if mode_button(ui, true, kind, tr(lang, label), *selected) && !*selected {
-                    run = Some(params.clone());
-                }
-            }
-        });
-        return run;
-    }
-    ui.horizontal(|ui| {
-        for (kind, label, selected, params) in modes {
-            if mode_button(ui, framework, kind, tr(lang, label), selected) && !selected {
-                run = Some(params);
+    Row::new().id_salt("separations_modes").show(ui, |ui, _| {
+        for (kind, label, selected, params) in &modes {
+            if mode_button(ui, kind, tr(lang, label), *selected) && !*selected {
+                run = Some(params.clone());
             }
         }
     });
@@ -90,34 +72,21 @@ fn ink_plate_button(
     let enabled = app.session.active().is_some_and(|st| spread < st.doc.spreads.len()) && app.ui.separations.is_some();
     // The composite action and a real spot ink named “All Inks” must not share an action name.
     let label = if plate.is_some() { format!("{}: {name}", tr(&app.ui.language, "Plate")) } else { name.to_owned() };
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        return craft_ui_widgets::buttons::Button::new(label)
-            .painted(name.to_owned())
-            .id(id)
-            .enabled(enabled)
-            .selected(selected)
-            .size(craft_theme::ControlSize::Sm)
-            .variant(craft_ui_widgets::style::Variant::GHOST)
-            .show(ui)
-            .clicked();
-    }
-    ui.push_id(id, |ui| {
-        ui.add_enabled_ui(enabled, |ui| {
-            let response = ui.selectable_label(selected, crate::rtl::widget(ui, name));
-            response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label.clone()));
-            response.clicked()
-        })
-        .inner
-    })
-    .inner
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    craft_ui_widgets::buttons::Button::new(label)
+        .painted(name.to_owned())
+        .id(id)
+        .enabled(enabled)
+        .selected(selected)
+        .size(craft_theme::ControlSize::Sm)
+        .variant(craft_ui_widgets::style::Variant::GHOST)
+        .show(ui)
+        .clicked()
 }
 // SEPARATIONS_PLATE_ADAPTER_END
 
 /// The panel on the framework: the mode buttons, the ink limit field, and a row for each plate (its swatch, its button and
-/// the percentage under the pointer). The commands are the native panel's.
-#[cfg(not(target_arch = "wasm32"))]
+/// the percentage under the pointer).
 fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
@@ -131,7 +100,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     let sep = app.ui.separations.clone();
     let mut run: Option<serde_json::Value> = None;
     Stack::new().id_salt("separations").fill_width().show(ui, |ui, _| {
-        if let Some(p) = mode_actions(ui, &lang, true, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit)) {
+        if let Some(p) = mode_actions(ui, &lang, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit)) {
             run = Some(p);
         }
         if let Some(limit) = sep.as_ref().and_then(|s| s.ink_limit) {
@@ -226,90 +195,10 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        show_framework(app, ui);
-        return;
-    }
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    let sep = app.ui.separations.clone();
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    #[cfg(target_arch = "wasm32")]
-    let framework = false;
-    let mut run = mode_actions(ui, &lang, framework, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit));
-    if let Some(mut limit) = sep.as_ref().and_then(|s| s.ink_limit) {
-        ui.horizontal(|ui| {
-            ui.label(crate::rtl::widget(ui, tr(&lang, "Ink Limit")));
-            if ui.add(egui::DragValue::new(&mut limit).range(0.0..=400.0).suffix("%")).changed() {
-                run = Some(json!({"inkLimit": limit}));
-            }
-        });
-    }
-    if let Some(p) = run.take() {
-        if let Err(e) = app.run("view.separations", p) {
-            app.status_error("Separations Preview", e);
-        }
-        return;
-    }
-    let Some(sep) = sep else {
-        ui.label(egui::RichText::new(tr(&lang, "Shows the plates the exported PDF prints.")).size(11.0).color(t.text_dim));
-        return;
-    };
-    ui.separator();
-    let Some(designcraft_doc::SpreadRef::Doc(si)) = crate::canvas::current_spread(app) else { return };
-    let sheet = match app.canvas.separations.sheet(si) {
-        None => {
-            ui.label(egui::RichText::new(tr(&lang, "Separating…")).size(11.0).color(t.text_dim));
-            return;
-        }
-        Some(Err(e)) => {
-            ui.label(egui::RichText::new(e.as_str()).size(11.0).color(t.text_dim));
-            return;
-        }
-        Some(Ok(sheet)) => sheet.clone(),
-    };
-    // Each ink's percentage under the pointer.
-    let k = f64::from(sheet.plates.dpi) / 72.0;
-    let coverage = app.canvas.separations.pointer.filter(|(psi, _)| *psi == si).and_then(|(_, p)| {
-        let (x, y) = ((p.x - sheet.area.x0) * k, (p.y - sheet.area.y0) * k);
-        (x >= 0.0 && y >= 0.0).then(|| sheet.plates.coverage_at(x as u32, y as u32, &[])).flatten()
-    });
-    let pct = |v: Option<f32>| v.map_or_else(String::new, |v| format!("{v:.0}%"));
-    let row = |ui: &mut egui::Ui, selected: bool, color: Option<egui::Color32>, plate: Option<usize>, name: &str, value: String| {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-            if let Some(c) = color {
-                ui.painter().rect_filled(r, 1.0, c);
-            }
-            let clicked = ink_plate_button(app, ui, &sheet, si, plate, name, selected);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(egui::RichText::new(value).size(11.0)));
-            clicked
-        })
-        .inner
-    };
-    if row(ui, sep.plate.is_none(), None, None, tr(&lang, "All Inks"), pct(coverage.as_ref().map(|c| c.total))) {
-        run = Some(json!({"plate": "all"}));
-    }
-    for (id, ink) in sheet.plates.inks.iter() {
-        let selected = sep.plate.as_deref().and_then(|n| sheet.ink(n)) == Some(id);
-        let value = pct(coverage.as_ref().and_then(|c| c.inks.get(id.index()).copied()));
-        if row(ui, selected, Some(ink_color(ink)), Some(id.index()), ink.name(), value) {
-            run = Some(json!({"plate": if selected { "all" } else { ink.name() }}));
-        }
-    }
-    for name in &sheet.plates.unseparated {
-        ui.label(egui::RichText::new(format!("{name} ({})", tr(&lang, "not separated"))).size(11.0).color(t.text_dim));
-    }
-    if let Some(p) = run
-        && let Err(e) = app.run("view.separations", p)
-    {
-        app.status_error("Separations Preview", e);
-    }
+    show_framework(app, ui);
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use egui::{Event, Key, Modifiers, PointerButton};
@@ -326,19 +215,15 @@ mod tests {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app.ui.language = language.to_owned();
-        app.framework_opacity = true;
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, language);
         app.install_framework(&ctx);
-        assert!(app.framework_installed);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(420.0, 140.0)).build_ui_state(
             |ui, state: &mut State| {
                 let sep = state.app.ui.separations.clone();
                 let lang = state.app.ui.language.clone();
-                if let Some(params) =
-                    mode_actions(ui, &lang, state.app.framework_installed, sep.is_some(), sep.as_ref().and_then(|sep| sep.ink_limit))
-                {
+                if let Some(params) = mode_actions(ui, &lang, sep.is_some(), sep.as_ref().and_then(|sep| sep.ink_limit)) {
                     state.requests.push(params.clone());
                     state.app.run("view.separations", params).unwrap();
                 }
@@ -462,9 +347,10 @@ mod tests {
 }
 
 // SEPARATIONS_PLATE_TESTS_BEGIN
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod plate_action_tests {
     use super::*;
+    use crate::theme::Tokens;
     use designcraft_doc::{Document, Selection};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::{
@@ -522,13 +408,9 @@ mod plate_action_tests {
         assert_eq!(now.selection, before.selection);
         assert_eq!(now.journal, before.journal);
     }
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(egui::vec2(680.0, 780.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
@@ -727,7 +609,7 @@ mod plate_action_tests {
 
     #[test]
     fn ui_separations_real_process_and_spot_plate_pointer_actions_toggle_and_keep_document_history_saved_state_unchanged() {
-        let mut h = harness(fixture(), true);
+        let mut h = harness(fixture());
         let before = quiet(h.state());
         for ink in ["Cyan", "Gold", SPOT, "All Inks"] {
             let label = plate_name(h.state(), ink);
@@ -757,7 +639,7 @@ mod plate_action_tests {
     fn ui_separations_plate_natural_tab_space_enter_uses_full_names_and_preserves_actual_ink_limit() {
         let mut app = fixture();
         app.run("view.separations", json!({"inkLimit": 275})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = quiet(h.state());
         for (ink, key_value) in [(SPOT, Key::Space), ("Cyan", Key::Enter)] {
             let label = plate_name(h.state(), ink);
@@ -780,7 +662,7 @@ mod plate_action_tests {
     #[test]
     fn ui_separations_held_plate_pointer_drops_changed_document_spread_sheet_alias_or_absence_and_fresh_input_recovers() {
         for change in ["switch", "replace", "page", "sheet", "alias", "close", "off"] {
-            let mut h = harness(fixture(), true);
+            let mut h = harness(fixture());
             let label = plate_name(h.state(), "Cyan");
             let pos = h.get_by_role_and_label(egui::accesskit::Role::Button, &label).rect().center();
             let old_sheet = real_sheet(h.state());
@@ -818,7 +700,7 @@ mod plate_action_tests {
     #[test]
     fn ui_separations_held_space_cannot_activate_replaced_plate_owner_and_fresh_natural_keyboard_recovers() {
         for change in ["switch", "replace", "page", "sheet"] {
-            let mut h = harness(fixture(), true);
+            let mut h = harness(fixture());
             let label = plate_name(h.state(), "Cyan");
             tab_to(&mut h, egui::accesskit::Role::Button, &label);
             key_event(&mut h, Key::Space, true);
@@ -837,13 +719,13 @@ mod plate_action_tests {
         }
     }
     #[test]
-    fn ui_separations_plate_off_no_document_and_uninstalled_fallback_remain_real_and_nonediting() {
-        let mut empty = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()), true);
+    fn ui_separations_plate_off_and_no_document_remain_real_and_nonediting() {
+        let mut empty = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
         assert!(empty.state().session.active().is_none());
         assert_eq!(empty.query_all_by(|node| node.role() == egui::accesskit::Role::Button && node.label().as_deref() == Some("All Inks")).count(), 0);
         let mut app = fixture();
         app.run("view.separations", json!({"plate": null, "inkLimit": null})).unwrap();
-        let mut off = harness(app, true);
+        let mut off = harness(app);
         let before = quiet(off.state());
         assert_eq!(
             off.query_all_by(|node| node.role() == egui::accesskit::Role::Button && node.label().as_deref() == Some("Plate: Cyan")).count(),
@@ -851,22 +733,12 @@ mod plate_action_tests {
         );
         idle(&mut off, 2);
         assert_quiet(off.state(), &before);
-        let mut h = harness(fixture(), false);
-        assert!(!h.state().framework_installed);
-        let before = quiet(h.state());
-        let label = plate_name(h.state(), SPOT);
-        click(&mut h, egui::accesskit::Role::Button, &label);
-        assert_view(h.state(), Some(SPOT), None);
-        assert_quiet(h.state(), &before);
-        click(&mut h, egui::accesskit::Role::Button, "All Inks");
-        assert_view(h.state(), None, None);
-        assert_quiet(h.state(), &before);
     }
     #[test]
     fn ui_separations_localized_plate_action_keeps_complete_actual_ink_name_and_unedited_domain() {
         let mut app = fixture();
         app.ui.language = "hu".to_owned();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = quiet(h.state());
         let label = plate_name(h.state(), SPOT);
         assert!(label.ends_with(SPOT));
@@ -883,12 +755,10 @@ mod plate_action_tests {
 
     #[test]
     fn ui_separations_whole_app_parent_opens_real_preview_and_selects_actual_spot_without_document_edit() {
-        let mut app = fixture();
-        app.framework_opacity = true;
+        let app = fixture();
         let mut h = crate::test_window::open(app, egui::vec2(1400.0, 1000.0));
         let ctx = h.ctx.clone();
         h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
         h.state_mut().app.run("window.panel", json!({"panel": "separations"})).unwrap();
         h.state_mut().app.run("view.firstPage", json!({})).unwrap();
         h.state_mut().app.run("view.separations", json!({"plate": "all", "inkLimit": null})).unwrap();
