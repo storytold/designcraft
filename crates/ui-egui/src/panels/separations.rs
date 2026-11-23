@@ -916,6 +916,20 @@ mod plate_action_tests {
         for _ in 0..2 {
             step(&mut h, None);
         }
+        // SEPARATIONS-DEBUG: temporary, to see where the panel's rows are now.
+        {
+            use egui_kittest::kittest::NodeT as _;
+            eprintln!("SEPARATIONS-DEBUG clicked at {pos:?}, view {:?}, status {:?}", h.state().app.ui.separations, h.state().app.ui.status);
+            for n in h.query_all_by(|n| n.role() == egui::accesskit::Role::Button) {
+                let name = n.accesskit_node().label().unwrap_or_default();
+                if ["Off", "Separations", "Ink Limit", "All Inks", "Plate", "Cyan", "Magenta", "Yellow", "Black", "Gold"]
+                    .iter()
+                    .any(|k| name.contains(k))
+                {
+                    eprintln!("SEPARATIONS-DEBUG   button {name:?} rect {:?}", n.rect());
+                }
+            }
+        }
         assert_view(&h.state().app, Some(SPOT), None);
         assert_quiet(&h.state().app, &before);
     }
