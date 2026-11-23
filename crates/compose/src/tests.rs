@@ -10489,3 +10489,72 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Where a line may end after a dash. InDesign 2026 (observed with each text alone after a short
+/// word, hyphenation off, the widths swept so that every possible first line shows): a hyphen
+/// breaks only after three or more characters of its word and not before a single letter, so
+/// `(-4)`, `x-4` and `ab-cd` stay whole and `well-known` and `1,000-2,000` break; an en dash
+/// needs something before it and two letters or digits after it; a slash needs two after it and
+/// is no break between digits (`3/4`).
+#[test]
+fn a_dash_ends_a_line_only_between_the_parts_of_a_word() {
+    let breaks_after_dash = |text: &str, composer: designcraft_doc::attrs::Composer| {
+        let para = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+        let text = format!("aaa {text} bbb");
+        let mut width = 6.0;
+        while width < 400.0 {
+            let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, width, 900.0), para.clone());
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let lines = all_lines(&cs);
+            if let Some(first) = lines.first().filter(|_| lines.len() > 1) {
+                let line = text[first.range.clone()].trim_end();
+                if line.len() > 4 && line.ends_with(['-', '\u{2013}', '/']) {
+                    return true;
+                }
+            }
+            width += 0.5;
+        }
+        false
+    };
+    use designcraft_doc::attrs::Composer;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for whole in [
+            "(-4)",
+            "(+4)",
+            "-4",
+            "x-4",
+            "12-34",
+            "5-10",
+            "a-b",
+            "ab-cd",
+            "ab-cdef",
+            "abc-d",
+            "abcd-e",
+            "(-b)",
+            "--4",
+            "x\u{2013}4",
+            "(\u{2013}4)",
+            "3/4",
+            "a/b",
+            "1234/5678",
+        ] {
+            assert!(!breaks_after_dash(whole, composer), "{whole:?} stays whole ({composer:?})");
+        }
+        for broken in [
+            "well-known",
+            "(well-known)",
+            "abc-def",
+            "abcd-ef",
+            "1,000-2,000",
+            "abc-1234",
+            "1234-5678",
+            "ab--cdef",
+            "well\u{2013}known",
+            "ab\u{2013}cdef",
+            "abc/def",
+            "ab/cdef",
+        ] {
+            assert!(breaks_after_dash(broken, composer), "{broken:?} may break after its dash ({composer:?})");
+        }
+    }
+}

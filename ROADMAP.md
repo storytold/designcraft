@@ -396,6 +396,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-22** · A line no longer ends after a dash that is a sign or a join in a short token (#3153), as in InDesign: `(-4)`, `x-4`, `ab-cd`, `abc-d`, `x–4` and `3/4` stay whole, while `well-known`, `1,000-2,000`, `ab–cdef` and `abc/def` still break. A hyphen breaks only after three or more characters of its word and not before a single letter; an en dash needs something before it and two letters or digits after it; a slash needs two after it and is no break between digits. A table cell holding `79% (-4)` came out as `79% (-` and `4)`. Of 86 texts swept in InDesign 2026 the break points now agree on 80 instead of 49; digit-only hyphenated numbers such as `12-3456` are not matched. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

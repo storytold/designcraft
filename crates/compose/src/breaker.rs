@@ -313,6 +313,31 @@ fn cjk_break(a: &Glyph, b: &Glyph, sp: &Spacing) -> bool {
     cjk_pair(a, b, sp.korean_char_breaks) && kinsoku_allows(a.ch, b.ch)
 }
 
+/// Whether the hyphen-minus or en dash at `glyphs[i]` is not a place to break after, because it
+/// is a sign or a join inside a short token (`(-4)`, `x-4`, `ab-cd`, `4–5%`) and not a dash
+/// between words (observed in InDesign 2026): a hyphen-minus breaks only after three or more
+/// characters of its word, and not when a single letter follows it; an en dash only after
+/// something and before at least two letters or digits; a slash only before at least two letters
+/// or digits, and never between two digits (`3/4`).
+fn dash_blocks_break(glyphs: &[Glyph], i: usize) -> bool {
+    let Some(g) = glyphs.get(i) else { return false };
+    if !matches!(g.ch, '-' | '\u{2013}' | '/') {
+        return false;
+    }
+    let before = glyphs[..i].iter().rev().take_while(|p| !p.is_space()).count();
+    let mut after = glyphs[i + 1..].iter().take_while(|n| !n.is_space());
+    let first = after.next().map(|n| n.ch);
+    let second_is_word = after.next().is_some_and(|n| n.ch.is_alphanumeric());
+    if g.ch == '-' {
+        before < 3 || first.is_some_and(char::is_alphabetic) && !second_is_word
+    } else if g.ch == '/' {
+        !(first.is_some_and(char::is_alphanumeric) && second_is_word)
+            || glyphs[..i].last().is_some_and(|p| p.ch.is_ascii_digit()) && first.is_some_and(|c| c.is_ascii_digit())
+    } else {
+        before == 0 || !(first.is_some_and(char::is_alphanumeric) && second_is_word)
+    }
+}
+
 pub fn is_forced(c: char) -> bool {
     use designcraft_doc::story::{FORCED_LINE_BREAK, is_break_char};
     c == FORCED_LINE_BREAK || is_break_char(c)
@@ -482,7 +507,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         ig.push(i);
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
         if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
-            if matches!(g.ch, '-' | '\u{2010}') {
+            if dash_blocks_break(glyphs, i) {
+                // Not a break opportunity.
+            } else if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
                 p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only());
@@ -1011,6 +1038,8 @@ pub fn greedy(
                             last_ok = Some((i + 1, true));
                         }
                     }
+                } else if dash_blocks_break(glyphs, i) {
+                    // Not a break opportunity.
                 } else if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
                     || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
                 {
