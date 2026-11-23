@@ -20,7 +20,7 @@ pub(crate) use app_bar::resize_borders;
 use app_bar::search_id;
 pub use app_bar::{app_bar, search_had_focus};
 pub use control_bar::control_bar;
-pub(crate) use control_bar::{icon_field, swatch_field};
+pub(crate) use control_bar::icon_field;
 pub(crate) use start_screen::recent_file_stat;
 pub use start_screen::start_screen;
 #[cfg(test)]

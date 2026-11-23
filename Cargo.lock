@@ -1241,12 +1241,12 @@ dependencies = [
  "craft-behavior",
  "craft-cms",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-platform",
  "craft-settings",
  "craft-theme",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-ui",
  "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
  "egui",
  "serde",
@@ -1297,7 +1297,7 @@ dependencies = [
  "block2 0.6.2",
  "craft-atomic",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-platform",
  "futures-lite",
  "log",
@@ -1405,11 +1405,6 @@ dependencies = [
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
-
-[[package]]
-name = "craft-fonts-build"
-version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3#44b98c369ff942f2b4562eef5d0cadb974ed5fc3"
 
 [[package]]
@@ -1418,34 +1413,11 @@ version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3#44b98c369ff942f2b4562eef5d0cadb974ed5fc3"
 dependencies = [
  "bitflags 2.13.2",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "egui",
  "serde",
  "toml",
  "web-time",
-]
-
-[[package]]
-name = "craft-i18n"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
-dependencies = [
- "fixed_decimal",
- "icu_decimal",
- "icu_locale_core",
- "icu_locale_fallback",
- "icu_normalizer",
- "icu_plurals",
- "icu_properties",
- "icu_provider",
- "icu_provider_adapters",
- "icu_provider_blob",
- "log",
- "objc2-foundation 0.3.2",
- "sys-locale",
- "unicode-bidi",
- "windows-registry",
- "writeable",
 ]
 
 [[package]]
@@ -1570,7 +1542,7 @@ version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3#44b98c369ff942f2b4562eef5d0cadb974ed5fc3"
 dependencies = [
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-tracked",
  "craft-ui-macros",
  "craft-xml",
@@ -1604,11 +1576,11 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-quit",
  "craft-theme",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-ui",
  "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
  "egui",
  "serde",
@@ -1901,27 +1873,6 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
-dependencies = [
- "craft-fonts-build 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "egui",
- "epaint",
- "js-sys",
- "log",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "serde",
- "skrifa 0.44.0",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "craft-ui"
-version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3#44b98c369ff942f2b4562eef5d0cadb974ed5fc3"
 dependencies = [
  "craft-cloud-ui",
@@ -1939,7 +1890,7 @@ version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3#44b98c369ff942f2b4562eef5d0cadb974ed5fc3"
 dependencies = [
  "craft-behavior",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-theme",
  "craft-ui-macros",
@@ -1958,9 +1909,9 @@ dependencies = [
  "craft-behavior",
  "craft-codepage",
  "craft-font-catalog",
- "craft-fonts-build 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-fonts-build",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-platform",
  "craft-quit",
@@ -2004,7 +1955,7 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-quit",
  "craft-theme",
@@ -2022,7 +1973,7 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-pdf",
  "craft-theme",
@@ -2043,7 +1994,7 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-platform",
  "craft-svg",
  "craft-theme",
@@ -2063,7 +2014,7 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-i18n",
  "craft-keymap",
  "craft-theme",
  "craft-ui-contract",
@@ -2679,8 +2630,7 @@ dependencies = [
  "craft-menu",
  "craft-prepress",
  "craft-theme",
- "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=44b98c369ff942f2b4562eef5d0cadb974ed5fc3)",
+ "craft-ui",
  "craft-ui-panels",
  "craft-ui-shell",
  "craft-ui-widgets",
