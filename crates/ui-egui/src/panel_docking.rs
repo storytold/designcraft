@@ -1315,43 +1315,56 @@ impl DockPanels<String> for PanelContent<'_> {
         if panels.get(active).map(String::as_str) != Some("pages") {
             return;
         }
-        /// Whether the Pages Panel Menu is open. It is framework memory, not egui's: the dock replays a group's
-        /// header while nothing it reads changed, and a change of this state is one.
-        #[derive(Clone, Copy, Default)]
-        struct Open(bool);
+        /// What the app looked like as far as the menu's rows can change it: the journal's length, the page count and
+        /// the dialog open.
+        type Effect = (usize, Option<usize>, Option<String>);
+        /// Whether the Pages Panel Menu is open, and the app's [`Effect`] when it opened. It is framework memory, not
+        /// egui's: the dock replays a group's header while nothing it reads changed, and a change of this state is one.
+        #[derive(Clone, Default)]
+        struct Open {
+            open: bool,
+            at: Option<Effect>,
+        }
         static MENU: PanelArtwork = PanelArtwork("menu");
         let label = crate::i18n::tr(&self.app.ui.language, "Pages Panel Menu").to_owned();
         let app = &mut *self.app;
+        let effect = |app: &DesignApp| -> Effect {
+            let pages = app.session.active().map(|d| d.doc.page_count());
+            (app.session.journal.len(), pages, app.ui.dialog.as_ref().map(|d| d.id.clone()))
+        };
         craft_ui::layout_components::Row::new().show(ui, |ui, cx| {
-            let open = &mut cx.memory::<Open>().0;
+            let state = cx.memory::<Open>();
             let opener = craft_ui::buttons::IconButton::new(craft_ui::primitives::IconSpec::glyph(&MENU))
                 .id(egui::Id::new("designcraft-pages-panel-menu"))
                 .label(label.clone())
                 .tooltip(label.clone())
                 .show(ui);
             // The host owns the open state, as a framework menu bound to it expects: the opener toggles it. The rows
-            // are the Pages panel's own egui rows, which close only their egui menu, so a row that ran is seen by
-            // what it did (a command in the journal, a page more or less, a dialog it opened) and closes the menu.
+            // are the Pages panel's own egui rows, which close only their egui menu, and some run their command on a
+            // later pass, so a row that ran is seen by what it did since the menu opened (a command in the journal, a
+            // page more or less, a dialog it opened), and that closes the menu.
             if opener.clicked() {
-                *open = !*open;
+                state.open = !state.open;
+                state.at = state.open.then(|| effect(app));
             }
-            let effect = |app: &DesignApp| {
-                let pages = app.session.active().map(|d| d.doc.page_count());
-                (app.session.journal.len(), pages, app.ui.dialog.as_ref().map(|d| d.id.clone()))
-            };
-            let before = effect(app);
-            let mut ran = false;
+            if state.open && state.at.as_ref().is_some_and(|at| *at != effect(app)) {
+                state.open = false;
+                state.at = None;
+            }
+            let mut open = state.open;
             // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-            let _ = craft_ui::menu::Menu::new(label.clone()).open(Bind::bound(&mut *open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(
-                ui,
-                |ui, _| {
-                    crate::panels::pages::panel_menu(app, ui);
-                    ran = effect(app) != before;
-                },
-            );
-            if ran {
-                *open = false;
+            let _ = craft_ui::menu::Menu::new(label.clone())
+                .open(Bind::bound(&mut open))
+                .opened_by(&opener, craft_ui::contract::Trigger::Click)
+                .show(ui, |ui, _| crate::panels::pages::panel_menu(app, ui));
+            // Escape or a press outside closes it through the bound value.
+            let state = cx.memory::<Open>();
+            if !open {
+                state.at = None;
             }
+            state.open = open;
+            // What the tests read of the menu: its open state.
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("designcraft-pages-panel-menu-open"), open));
         });
     }
 }
