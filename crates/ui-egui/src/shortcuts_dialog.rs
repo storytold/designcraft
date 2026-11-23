@@ -246,7 +246,15 @@ pub(crate) fn deliver(app: &mut DesignApp, bytes: &[u8]) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
     if text.trim_start().starts_with('{') {
-        host.pending.push(Pending::Json(text.to_owned()));
+        // A set exported before panels and tools had commands of their own names them by the old keys.
+        let text = match serde_json::from_str::<Value>(text) {
+            Ok(mut set) => {
+                crate::keys::migrate_sets_value(&mut set);
+                set.to_string()
+            }
+            Err(_) => text.to_owned(),
+        };
+        host.pending.push(Pending::Json(text));
         return;
     }
     match crate::shortcut_import::read_set(text) {

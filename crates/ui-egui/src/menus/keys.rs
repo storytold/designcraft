@@ -99,8 +99,12 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
     // handle them, and Paste carries the text.
     let accept = |hit: &craft_keymap::Hit| {
         let c = &hit.command;
-        let on_bar =
-            || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);
+        let on_bar = || {
+            c.params.is_null()
+                && crate::keys::panel_of(c).is_none()
+                && crate::keys::tool_of(c).is_none()
+                && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger)
+        };
         let leave = hit.exact && hit.cycle.is_empty() && (c.id == "edit.clear" || on_bar());
         !leave
     };
@@ -125,23 +129,23 @@ fn run_keys(app: &mut DesignApp, ctx: &egui::Context, keys: Keys, typing: bool) 
         if !hit.cycle.is_empty() {
             // Tools sharing a key: the press after the group's current tool selects the next one.
             let current = app.session.tool_id();
-            let tools: Vec<&str> = hit.cycle.iter().filter_map(|c| c.params.get("tool").and_then(Value::as_str)).collect();
+            let tools: Vec<&str> = hit.cycle.iter().filter_map(crate::keys::tool_of).collect();
             let next = tools.iter().position(|t| *t == current).and_then(|i| tools.get((i + 1) % tools.len())).or(tools.first());
             if let Some(tool) = next.map(|t| t.to_string()) {
                 log::debug!("tool shortcut -> {tool}");
                 app.select_tool(&tool);
             }
-        } else if hit.command.id == crate::keys::TOOL_COMMAND
-            && let Some(tool) = hit.command.params.get("tool").and_then(Value::as_str).map(str::to_string)
-        {
+        } else if let Some(tool) = crate::keys::tool_of(&hit.command).map(str::to_string) {
             log::debug!("tool shortcut -> {tool}");
             app.select_tool(&tool);
         } else {
             // Like choosing the menu item: "…" commands open their dialog.
             // Zoom In/Out by key zoom around the pointer while it is over the canvas.
-            match pointer_zoom_params(ctx, &hit.command.id) {
-                Some(p) => activate(app, &hit.command.id, &p),
-                None => activate(app, &hit.command.id, &hit.command.params),
+            // A panel's command opens the panel the way its menu row does: `window.panel` with the panel.
+            let (id, params) = crate::keys::runs(&hit.command);
+            match pointer_zoom_params(ctx, &id) {
+                Some(p) => activate(app, &id, &p),
+                None => activate(app, &id, &params),
             }
         }
     }

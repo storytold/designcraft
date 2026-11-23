@@ -26,6 +26,8 @@ impl UiState {
     pub fn read_preferences(bytes: &[u8]) -> serde_json::Result<ReadPreferences> {
         let mut saved: Value = serde_json::from_slice(bytes)?;
         let mut intact = recover_docking(&mut saved);
+        // Panels and tools had one command id with their id in its params; each has an id of its own now.
+        migrate_shortcut_keys(&mut saved);
         // Shortcut sets this version cannot read load as none (`lenient_sets`): keep the file.
         intact &= saved.get("shortcutSets").is_none_or(|v| v.is_null() || serde_json::from_value::<craft_keymap::Profiles>(v.clone()).is_ok());
         if let Some(workspaces) = saved.get_mut("customWorkspaces").and_then(Value::as_array_mut) {
@@ -42,6 +44,20 @@ impl UiState {
             intact &= migrate(docking, floating, docking_hidden, *dock_expanded, icon_groups.as_deref());
         }
         Ok(ReadPreferences { ui, intact })
+    }
+}
+
+/// The command keys of earlier versions in the saved shortcuts, `shortcutsMore` and shortcut sets become the keys the panels' and
+/// tools' commands have now (`keys::migrated_key`), so a saved ui.json keeps every binding.
+fn migrate_shortcut_keys(saved: &mut Value) {
+    let Some(fields) = saved.as_object_mut() else { return };
+    for field in ["shortcuts", "shortcutsMore"] {
+        if let Some(overrides) = fields.get_mut(field) {
+            crate::keys::migrate_overrides_value(overrides);
+        }
+    }
+    if let Some(sets) = fields.get_mut("shortcutSets") {
+        crate::keys::migrate_sets_value(sets);
     }
 }
 
