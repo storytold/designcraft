@@ -11,6 +11,8 @@ mod distribute_locks;
 mod export_page_input;
 mod insert_pages_bounds;
 mod insert_pages_parent;
+#[cfg(not(target_arch = "wasm32"))]
+mod layer_merge_descendants;
 mod param_keys;
 mod pdf_backend;
 mod preflight_resolution;
