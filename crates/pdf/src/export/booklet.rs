@@ -81,51 +81,9 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         return Err(PdfError::NoPages);
     }
     let pdf_opts = PdfOptions { title: opts.title.clone(), ..PdfOptions::default() };
-    let mut warnings = Vec::new();
-    let (base, cmyk_icc) = if print_color(doc, &pdf_opts) {
-        let (settings, icc, warning) = crate::pdfx::print_settings_and_profile(false)?;
-        warnings.extend(warning);
-        (settings, Some(icc))
-    } else {
-        (krilla::SerializeSettings::default(), None)
-    };
-    let settings = krilla::SerializeSettings { compress_content_streams: true, ..base };
-    let metadata = file_info_metadata(doc, opts.title.as_deref(), None);
-    let mut writer = Writer::new(settings, metadata);
+    let (mut writer, cmyk_icc, warnings) = imposed_writer(doc, &pdf_opts)?;
     let pdf = writer.document_mut();
-    let mut ex = Exporter {
-        drawing_items: Vec::new(),
-        inks: crate::inks::ink_set(doc),
-        doc,
-        cache,
-        composed: HashMap::new(),
-        opts: &pdf_opts,
-        clip: Rect::ZERO,
-        warnings,
-        images: HashMap::new(),
-        outputs: HashMap::new(),
-        images_by_content: ImageContentCache::default(),
-        #[cfg(test)]
-        image_conversions: 0,
-        pdfs: HashMap::new(),
-        variants: HashMap::new(),
-        has_optional_content: false,
-        #[cfg(test)]
-        pdf_preparations: 0,
-        layer_error: None,
-        // krilla's default.
-        version: PdfVersion::Pdf17,
-        too_new: Vec::new(),
-        svgs: HashMap::new(),
-        fonts: HashMap::new(),
-        reverse_cmaps: HashMap::new(),
-        rgb_only: false,
-        tags: Vec::new(),
-        story_tags: HashMap::new(),
-        tag_story: None,
-        text_area: None,
-        para_tags: HashMap::new(),
-    };
+    let mut ex = imposed_exporter(doc, cache, &pdf_opts, warnings);
     let pairs = booklet_pairs(n, opts.kind);
     // Sheet size from the largest page.
     let (mut pw, mut ph) = (0.0f64, 0.0f64);
@@ -161,6 +119,65 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         s.finish();
         page.finish();
     }
+    let (bytes, warnings) = finish_imposed(writer, ex, cmyk_icc.as_deref())?;
+    Ok(ExportReport { bytes, pages: pairs.len(), warnings })
+}
+
+/// The writer for imposed sheets (Print Booklet, Export Imposed PDF): CMYK print colour when the
+/// document blends in CMYK, no PDF standard. Also the CMYK profile and any warning about it.
+pub(super) fn imposed_writer(doc: &Document, opts: &PdfOptions) -> Result<(Writer, Option<Vec<u8>>, Vec<String>)> {
+    let mut warnings = Vec::new();
+    let (base, cmyk_icc) = if print_color(doc, opts) {
+        let (settings, icc, warning) = crate::pdfx::print_settings_and_profile(false)?;
+        warnings.extend(warning);
+        (settings, Some(icc))
+    } else {
+        (krilla::SerializeSettings::default(), None)
+    };
+    let settings = krilla::SerializeSettings { compress_content_streams: opts.compress, ..base };
+    let metadata = file_info_metadata(doc, opts.title.as_deref(), None);
+    Ok((Writer::new(settings, metadata), cmyk_icc, warnings))
+}
+
+/// An exporter drawing a document's pages onto imposed sheets.
+pub(super) fn imposed_exporter<'a>(doc: &'a Document, cache: &'a Cache, opts: &'a PdfOptions, warnings: Vec<String>) -> Exporter<'a> {
+    Exporter {
+        drawing_items: Vec::new(),
+        inks: crate::inks::ink_set(doc),
+        doc,
+        cache,
+        composed: HashMap::new(),
+        opts,
+        clip: Rect::ZERO,
+        warnings,
+        images: HashMap::new(),
+        outputs: HashMap::new(),
+        images_by_content: ImageContentCache::default(),
+        #[cfg(test)]
+        image_conversions: 0,
+        pdfs: HashMap::new(),
+        variants: HashMap::new(),
+        has_optional_content: false,
+        #[cfg(test)]
+        pdf_preparations: 0,
+        layer_error: None,
+        // krilla's default.
+        version: PdfVersion::Pdf17,
+        too_new: Vec::new(),
+        svgs: HashMap::new(),
+        fonts: HashMap::new(),
+        reverse_cmaps: HashMap::new(),
+        rgb_only: false,
+        tags: Vec::new(),
+        story_tags: HashMap::new(),
+        tag_story: None,
+        text_area: None,
+        para_tags: HashMap::new(),
+    }
+}
+
+/// The imposed file's bytes and warnings once every sheet is drawn.
+pub(super) fn finish_imposed(writer: Writer, ex: Exporter<'_>, cmyk_icc: Option<&[u8]>) -> Result<(Vec<u8>, Vec<String>)> {
     ex.check_placed_versions()?;
     if let Some(error) = ex.layer_error {
         return Err(error);
@@ -170,7 +187,7 @@ fn export_booklet_inner(doc: &Document, cache: &Cache, opts: &BookletOptions) ->
         bytes = crate::optional_content::register(&bytes)?;
     }
     let mut warnings = ex.warnings;
-    bytes = crate::default_cmyk::attach(bytes, cmyk_icc.as_deref(), Standard::None, &mut warnings)?;
+    bytes = crate::default_cmyk::attach(bytes, cmyk_icc, Standard::None, &mut warnings)?;
     warnings.dedup();
-    Ok(ExportReport { bytes, pages: pairs.len(), warnings })
+    Ok((bytes, warnings))
 }

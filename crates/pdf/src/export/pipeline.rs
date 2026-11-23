@@ -82,7 +82,7 @@ pub(crate) fn exported_items(doc: &Document, si: usize) -> Vec<(Affine, &Item)> 
     out
 }
 
-fn bleed_lr(side: PageSide, b: [f64; 4]) -> (f64, f64) {
+pub(super) fn bleed_lr(side: PageSide, b: [f64; 4]) -> (f64, f64) {
     // Bleed is top, bottom, inside, outside; single-sided pages read inside as left.
     if side == PageSide::Left { (b[3], b[2]) } else { (b[2], b[3]) }
 }

@@ -3337,6 +3337,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "layerSettings" => crate::i18n::tr(&app.ui.language, "Layer Options"),
         crate::effects_dialog::ID => crate::i18n::tr(&app.ui.language, "Effects"),
         crate::export_batch_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Layouts and Versions"),
+        crate::imposed_export_dialog::ID => crate::i18n::tr(&app.ui.language, "Export Imposed PDF"),
         crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package"),
         crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Printing Instructions"),
         crate::object_style_dialog::ID => crate::i18n::tr(&app.ui.language, crate::object_style_dialog::title(&d)),
@@ -3362,6 +3363,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "numberingSection" => 560.0,
             crate::effects_dialog::ID => 720.0,
             crate::export_batch_dialog::ID => 660.0,
+            crate::imposed_export_dialog::ID => 660.0,
             "colorPicker" => 580.0,
             crate::package_dialog::ID => 720.0,
             crate::package_dialog::INSTRUCTIONS => 520.0,
@@ -3710,6 +3712,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                     "layerSettings" => options::layer_options(app, ui, &mut d),
                     crate::effects_dialog::ID => crate::effects_dialog::show(app, ui, &mut d),
                     crate::export_batch_dialog::ID => crate::export_batch_dialog::show(app, ui, &mut d),
+                    crate::imposed_export_dialog::ID => crate::imposed_export_dialog::show(app, ui, &mut d),
                     crate::package_dialog::ID => crate::package_dialog::show(app, ui, &mut d),
                     crate::package_dialog::INSTRUCTIONS => crate::package_dialog::show_instructions(app, ui, &mut d),
                     crate::object_style_dialog::ID => crate::object_style_dialog::show(app, ui, &mut d),
@@ -4214,7 +4217,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
             "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
-            crate::export_batch_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
+            crate::export_batch_dialog::ID | crate::imposed_export_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
             crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package…").to_string(),
             crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Continue").to_string(),
             _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
@@ -5714,6 +5717,7 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         "alert" => Ok(Value::Null),
         crate::effects_dialog::ID => crate::effects_dialog::confirm(app, &d),
         crate::export_batch_dialog::ID => crate::export_batch_dialog::confirm(app, &d),
+        crate::imposed_export_dialog::ID => crate::imposed_export_dialog::confirm(app, &d),
         crate::package_dialog::ID | crate::package_dialog::INSTRUCTIONS => {
             let r = if d.id == crate::package_dialog::ID {
                 crate::package_dialog::confirm(app, &d)

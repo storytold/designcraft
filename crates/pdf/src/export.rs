@@ -31,6 +31,7 @@ mod booklet;
 mod common;
 mod graphics;
 mod images;
+mod impose;
 mod metadata;
 mod paint;
 mod pipeline;
@@ -44,6 +45,7 @@ use graphics::CoverageImage;
 use images::ConstantImageHasher;
 pub(crate) use images::SRGB_ICC;
 use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, embedded_icc, is_grey, is_grey_icc};
+pub use impose::{ImposeOptions, Imposition, MAX_COPIES, export_imposed, impose};
 pub(crate) use metadata::civil;
 pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
 pub use pipeline::{
@@ -290,17 +292,20 @@ mod unwind_tests {
                 .output()
                 .unwrap();
             assert!(output.status.success(), "export child failed: {:?}\n{}", output.status, String::from_utf8_lossy(&output.stderr));
-            assert!(String::from_utf8_lossy(&output.stdout).contains("all three export entry points recovered"));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("all four export entry points recovered"));
             return;
         }
         let doc = Document::new(&designcraft_doc::build::NewDocument { pages: 1, ..Default::default() });
         let cache = Cache::new();
         let source = export_pdf(&doc, &cache, &Default::default()).unwrap();
         let parts = [(source, vec![(612.0, 792.0)])];
-        for entry in ["document", "booklet", "merge"] {
+        let mut imposed = ImposeOptions::default();
+        imposed.spec.sheet = designcraft_geom::Size::new(792.0, 1224.0);
+        for entry in ["document", "booklet", "imposed", "merge"] {
             let export = || match entry {
                 "document" => export_pdf(&doc, &cache, &Default::default()),
                 "booklet" => export_booklet(&doc, &cache, &Default::default()).map(|report| report.bytes),
+                "imposed" => export_imposed(&doc, &cache, &imposed).map(|report| report.bytes),
                 _ => merge_pdfs(&parts, None),
             };
             FAIL_NEXT_SURFACE.set(true);
@@ -308,6 +313,6 @@ mod unwind_tests {
             let fresh = export().unwrap();
             assert!(!craft_pdf::syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
         }
-        println!("all three export entry points recovered");
+        println!("all four export entry points recovered");
     }
 }
