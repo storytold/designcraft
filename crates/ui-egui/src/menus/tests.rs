@@ -2183,12 +2183,15 @@ fn panels_float_and_dock() {
     assert_eq!(r["floating"], json!([]));
     assert!(app.ui.docking.as_ref().unwrap().floating.is_empty());
     assert!(run_ui(&mut app, "window.floatPanel", &json!({"panel": "nope"})).unwrap().is_err());
-    // Float-only panels (Type › Tabs) have their own windows outside the layout.
+    // Float-only panels (Type › Tabs) float as windows of the layout of their own, and Dock Panel closes them.
     let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "tabs", "x": 10, "y": 20})).unwrap().unwrap();
     assert_eq!(r["floating"], json!(["tabs"]));
-    assert_eq!(app.ui.floating, [("tabs".to_string(), [10.0, 20.0])]);
+    let window = app.ui.docking.as_ref().unwrap().floating.iter().find(|w| w.contains(&"tabs".to_string())).cloned().expect("Tabs floats");
+    assert_eq!([window.rect.min.x, window.rect.min.y], [10.0, 20.0]);
+    assert_eq!(window.panels().count(), 1, "alone in its window");
     run_ui(&mut app, "window.dockPanel", &json!({"panel": "tabs"})).unwrap().unwrap();
-    assert!(app.ui.floating.is_empty());
+    assert!(crate::panel_docking::floating_panels(&app).is_empty());
+    assert!(!app.ui.docking.as_ref().unwrap().contains(&"tabs".to_string()), "closed, not docked");
 }
 
 /// One frame as the desktop app runs it: queued synthetic input, then the native menu item
@@ -3729,12 +3732,12 @@ fn window_menu_commands_restore_hidden_panels() {
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
-    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+    assert!(crate::panel_docking::floating_panels(&app).iter().any(|p| p == "tabs"));
 
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
-    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+    assert!(crate::panel_docking::floating_panels(&app).iter().any(|p| p == "tabs"), "Tabs stays open when unhidden");
 
     // Table toggle activates instead of closing while hidden.
     run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();

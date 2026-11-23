@@ -606,7 +606,7 @@ fn shift_f9_toggles_table_after_customization_through_the_real_shortcut_path() {
 }
 
 #[test]
-fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
+fn a_tab_released_over_the_story_editor_window_neither_joins_nor_moves_it() {
     let mut app = app();
     app.run("file.new", json!({})).unwrap();
     let story = app.run("frame.create", json!({"rect":[72,72,300,200],"content":"text","text":"Story editor overlay fixture"})).unwrap()["story"]
@@ -615,6 +615,11 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
     let doc = serde_json::to_value(&app.session.active().unwrap().doc).unwrap();
     let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let editor_key = crate::story_editor::PANEL.to_string();
+    // The editor's floating window: the panels it holds and where it is.
+    let editor_window = |h: &Harness<'static, crate::test_window::Window>| {
+        layout_of(&h.state().app).floating.iter().find(|w| w.contains(&editor_key)).map(|w| (w.panels().cloned().collect::<Vec<_>>(), w.rect))
+    };
     let from = tab_named(&h, "Properties").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
@@ -623,30 +628,23 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
     assert!(dragging_tab(&h.ctx, "properties"), "must own a real tab drag before opening editor");
-    assert!(h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).is_none());
-    let layout = h.state().app.ui.docking.clone();
+    assert!(editor_window(&h).is_none());
     let frame_before = h.ctx.cumulative_frame_nr();
     h.state_mut().app.run("app.storyEditor", json!({"story":story})).unwrap();
-    // The unmeasured first frame blocks the full content, even outside the eventual editor.
-    let release = egui::pos2(150.0, 150.0);
+    let opened = editor_window(&h).expect("the editor opens as a floating window of the dock");
+    // Released over the editor in the frame its window first draws.
+    let release = opened.1.center();
     h.input_mut().events.extend([
         Event::PointerMoved(release),
         Event::PointerButton { pos: release, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
     ]);
     h.run_steps(1);
     assert_eq!(h.ctx.cumulative_frame_nr() - frame_before, 1, "release must occur in the first editor frame");
-    let measured = h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap();
-    assert!(!measured.contains(release), "fixture exercises the conservative first-frame guard outside eventual editor bounds");
-    assert_eq!(h.state().app.ui.docking, layout, "first editor frame must block release before it has a measured rectangle");
+    assert_eq!(editor_window(&h), Some((vec![editor_key.clone()], opened.1)), "the tab neither joins the editor's window nor moves it");
     assert_eq!(serde_json::to_value(&h.state().app.session.active().unwrap().doc).unwrap(), doc);
     h.run_steps(3);
-    let editor = h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap();
-    let screen = h.ctx.content_rect();
-    let outside = [screen.left_bottom() + vec2(80.0, -80.0), screen.right_bottom() + vec2(-450.0, -80.0)]
-        .into_iter()
-        .find(|p| !editor.contains(*p))
-        .expect("fixture has space outside editor");
-    let before_outside = h.state().app.ui.docking.clone();
+    // A tab dragged over the drawn editor and released there leaves it alone too.
+    let shown = editor_window(&h).expect("the editor stays open");
     let from = tab_named(&h, "Layers").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
@@ -655,14 +653,37 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
     assert!(dragging_tab(&h.ctx, "layers"));
+    let over = shown.1.center();
+    h.event(Event::PointerMoved(over));
+    h.event(Event::PointerButton { pos: over, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(editor_window(&h), Some((vec![editor_key.clone()], shown.1)), "a drawn editor's window takes no tab and stays put");
+    // A release outside the editor still docks or floats the tab as before.
+    let screen = h.ctx.content_rect();
+    let outside = [screen.left_bottom() + vec2(80.0, -80.0), screen.right_bottom() + vec2(-450.0, -80.0)]
+        .into_iter()
+        .find(|p| !shown.1.contains(*p))
+        .expect("fixture has space outside editor");
+    let before_outside = h.state().app.ui.docking.clone();
+    let from = tab_named(&h, "Properties").center();
+    h.event(Event::PointerMoved(from));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
+    h.run_steps(2);
+    assert!(dragging_tab(&h.ctx, "properties"));
     h.event(Event::PointerMoved(outside));
     h.event(Event::PointerButton { pos: outside, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_ne!(h.state().app.ui.docking, before_outside, "measured editor must permit ordinary releases outside its bounds");
-    let after = h.state().app.ui.docking.clone();
+    assert_ne!(h.state().app.ui.docking, before_outside, "a release outside the editor moves the tab");
+    assert_eq!(editor_window(&h).map(|w| w.0), Some(vec![editor_key.clone()]), "and leaves the editor's window alone");
+    // Closing the editor takes its window away and nothing else.
+    let mut after = layout_of(&h.state().app);
+    after.floating.retain(|w| !w.contains(&editor_key));
     h.state_mut().app.run("app.storyEditor", json!({"story":story})).unwrap();
     h.run_steps(3);
-    assert_eq!(h.state().app.ui.docking, after, "closing editor must not revive a blocked drag");
+    assert_eq!(layout_of(&h.state().app), after, "closing the editor removes only its window");
     assert_eq!(serde_json::to_value(&h.state().app.session.active().unwrap().doc).unwrap(), doc);
 }
 
@@ -1289,7 +1310,7 @@ fn a_canvas_click_leaves_an_open_flyout_open() {
 #[test]
 fn panel_icons_are_painted_in_code() {
     use super::PanelSpecs as _;
-    let specs = super::Specs { language: "en".into() };
+    let specs = super::Specs { language: "en".into(), titles: Vec::new() };
     assert!(specs.spec(&"pages".to_string()).icon.is_some(), "Pages has an icon");
     assert!(specs.spec(&CANVAS.to_string()).icon.is_none(), "the canvas has none");
     let ctx = egui::Context::default();
@@ -1419,4 +1440,63 @@ fn a_document_dropped_on_a_floating_panel_window_opens() {
     file.path = Some(path.clone());
     open_window_drops(&mut app, &[file]);
     assert_eq!(app.session.documents().len(), 1, "the dropped document opens");
+}
+
+/// Type › Tabs is a float-only panel: it opens as a floating window of the layout of its own, takes no other panel's
+/// tab, places itself over the text column it edits, and Dock Panel closes it. It replaces the native egui window
+/// `dock::float_only_windows` drew; `panels_float_and_dock` (menus) checks the commands' answers.
+#[test]
+fn tabs_floats_alone_in_the_layout_takes_no_tab_and_moves_to_its_place() {
+    let mut app = app();
+    app.run("window.floatPanel", json!({"panel": "tabs", "x": 120, "y": 90})).unwrap();
+    let layout = layout_of(&app);
+    let window = layout.floating.iter().find(|w| w.contains(&"tabs".to_string())).cloned().expect("Tabs floats");
+    assert_eq!(window.panels().cloned().collect::<Vec<_>>(), ["tabs"]);
+    assert_eq!([window.rect.min.x, window.rect.min.y], [120.0, 90.0]);
+    assert!(valid(&layout), "the layout with Tabs is valid");
+    // Another panel cannot join its window as a tab: the float-only rights refuse it.
+    let mut tried = layout.clone();
+    let into_tabs = super::Target::at("tabs".to_string(), super::DockPlacement::tab(None));
+    assert!(apply(&mut tried, Action::move_panel("swatches".to_string(), into_tabs)).is_err());
+    // The Tabs panel asks to move over its column (`tabs::PanelState::place`): the next frame takes that place and width.
+    app.ui.tabs_panel.place = Some((pos2(300.0, 200.0), 480.0));
+    let mut h = harness(app, vec2(1280.0, 800.0));
+    h.run_steps(2);
+    let rect = super::floating_rect(h.state(), "tabs").expect("still floating");
+    assert_eq!((rect.min, rect.width()), (pos2(300.0, 200.0), 480.0));
+    assert!(h.state().ui.tabs_panel.place.is_none(), "the request is taken once");
+    // Dock Panel closes it: it has no dock place to go back to.
+    h.state_mut().run("window.dockPanel", json!({"panel": "tabs"})).unwrap();
+    assert!(!layout_of(h.state()).contains(&"tabs".to_string()));
+}
+
+/// A Tabs window listed in `UiState::floating` by an earlier version, beside a customized layout, joins the layout.
+#[test]
+fn a_saved_float_only_entry_joins_a_customized_layout() {
+    let mut app = app();
+    app.run("window.floatPanel", json!({"panel": "swatches", "x": 50, "y": 60})).unwrap();
+    assert!(app.ui.docking.is_some(), "customized");
+    app.ui.floating = vec![("tabs".to_string(), [10.0, 20.0])];
+    let h = harness(app, vec2(1280.0, 800.0));
+    assert!(h.state().ui.floating.is_empty());
+    let rect = super::floating_rect(h.state(), "tabs").expect("Tabs joined the layout");
+    assert_eq!([rect.min.x, rect.min.y], [10.0, 20.0]);
+}
+
+/// A panel's title can change while it is open (the Story Editor's word count): the spec model shows the changing title
+/// in place of the panel's name, and the dock gets a new model only when the language or a title changed.
+#[test]
+fn a_changing_panel_title_makes_a_new_spec_model_only_when_it_changes() {
+    use super::PanelSpecs as _;
+    let titles = vec![("tabs".to_string(), "Tabs · 3 stops".to_string())];
+    let specs = super::specs("en", titles.clone());
+    assert!(format!("{:?}", specs.spec(&"tabs".to_string()).label).contains("Tabs · 3 stops"), "the changing title shows");
+    assert!(format!("{:?}", specs.spec(&"pages".to_string()).label).contains("Pages"), "other panels keep their names");
+    assert!(std::sync::Arc::ptr_eq(&specs, &super::specs("en", titles)), "the same titles keep the same model");
+    let changed = super::specs("en", vec![("tabs".to_string(), "Tabs · 4 stops".to_string())]);
+    assert!(!std::sync::Arc::ptr_eq(&specs, &changed), "a changed title makes a new model");
+    assert!(format!("{:?}", changed.spec(&"tabs".to_string()).label).contains("Tabs · 4 stops"));
+    let plain = super::specs("en", Vec::new());
+    assert!(!std::sync::Arc::ptr_eq(&changed, &plain), "and so does a title that ends");
+    assert!(format!("{:?}", plain.spec(&"tabs".to_string()).label).contains("Tabs"));
 }
