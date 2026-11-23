@@ -228,33 +228,47 @@ const KEY_TARGET: &str = "canvas_key_target";
 /// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
 const CANVAS_LAST: &str = "canvas_last_response";
 
-/// The canvas is the window's default key target, as the page is in InDesign: with nothing else holding egui focus at the
-/// end of the pass, the canvas takes it. The craft UI runtime's key stage leaves Escape, Tab and the clipboard events in
-/// egui's input while egui focus is on an app widget (`FocusedRecord::foreign`), but strips them for the framework when
-/// nothing has focus, which is what the app's own canvas code (tool keys, text editing, Presentation, the shortcut
-/// dispatcher) cannot read. The end of the pass, not the canvas's own place in it: a framework focus move (Tab to the next
-/// stop) gives its focus when that stop registers, which can be after the canvas is drawn, and it must not lose it to the
-/// canvas. Not while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys; the
-/// focus a click gave stays where it is.
+/// Whether egui held focus when this pass began (after the runtime's begin hook moved focus for a Tab or a request).
+#[cfg(not(target_arch = "wasm32"))]
+const FOCUS_AT_START: &str = "canvas_focus_at_start";
+
+/// Records whether egui holds focus as the pass begins, for [`take_key_focus`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn note_focus_at_start(ctx: &egui::Context) {
+    let held = ctx.memory(|memory| memory.focused().is_some());
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(FOCUS_AT_START), held));
+}
+
+/// The canvas is the window's default key target, as the page is in InDesign: with nothing else holding egui focus, the
+/// canvas takes it. The craft UI runtime's key stage leaves Escape, Tab and the clipboard events in egui's input while egui
+/// focus is on an app widget (`FocusedRecord::foreign`), but strips them for the framework when nothing has focus, which
+/// is what the app's own canvas code (tool keys, text editing, Presentation, the shortcut dispatcher) cannot read.
+///
+/// Called at the end of the pass, not where the canvas is drawn: a framework focus move (Tab to the next stop) gives its
+/// focus when that stop registers, which can be after the canvas is drawn. It also needs focus to have been absent as the
+/// pass began, so a pass in which focus left a widget (the framework handing it on) never gives it to the canvas. Not
+/// while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys; the focus a click
+/// gave stays where it is. `DESIGNCRAFT_DEBUG_FOCUS` prints what it saw.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
-    let Some(canvas) = ctx.data_mut(|data| {
-        let id = data.get_temp::<egui::Id>(egui::Id::new(KEY_TARGET));
-        data.remove::<egui::Id>(egui::Id::new(KEY_TARGET));
-        id
-    }) else {
-        return;
-    };
-    if ctx.memory(|memory| memory.focused().is_some())
-        || app.ui.dialog.is_some()
-        || app.ui.palette.is_some()
-        || app.ui.about
-        || any_open(ctx, OpenFilter::Keys)
-    {
-        return;
+    let at_start = ctx.data(|data| data.get_temp::<bool>(egui::Id::new(FOCUS_AT_START))).unwrap_or(false);
+    let Some(canvas) = ctx.data_mut(|data| data.remove_temp::<egui::Id>(egui::Id::new(KEY_TARGET))) else { return };
+    let now = ctx.memory(|memory| memory.focused());
+    let blocked = app.ui.dialog.is_some() || app.ui.palette.is_some() || app.ui.about || any_open(ctx, OpenFilter::Keys);
+    let take = now.is_none() && !at_start && !blocked;
+    if std::env::var_os("DESIGNCRAFT_DEBUG_FOCUS").is_some() {
+        let stop = craft_ui_widgets::runtime::focus::focused_rec(ctx).map(|rec| rec.stop.id);
+        eprintln!(
+            "canvas focus: frame {} pass {} at_start {at_start} now {now:?} (rect {:?}) stop {stop:?} blocked {blocked} take {take}",
+            ctx.cumulative_frame_nr(),
+            ctx.current_pass_index(),
+            now.and_then(|id| ctx.read_response(id)).map(|r| r.rect),
+        );
     }
-    ctx.memory_mut(|memory| memory.request_focus(canvas));
+    if take {
+        ctx.memory_mut(|memory| memory.request_focus(canvas));
+    }
 }
 
 /// Lay out the canvas, scrollbars and rulers, presentation mode, fit/view state, input handling and painting.

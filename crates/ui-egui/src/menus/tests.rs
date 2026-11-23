@@ -630,6 +630,7 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
         // canvas is drawn first. Middle-click changes pane focus without moving the caret.
         let other = app.other_pane.as_ref().and_then(|p| p.1).unwrap().center();
         frame(&mut app, vec![egui::Event::PointerMoved(other)]);
+        let journal_before = app.session.journal.len();
         frame(
             &mut app,
             vec![
@@ -638,7 +639,14 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
             ],
         );
         assert_eq!(app.focus_pane, 1 - focus_pane);
-        assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
+        assert_eq!(
+            app.run("story.get", json!({"story": story})).unwrap()["text"],
+            "B",
+            "a key in the pane-switch frame is dispatched once; pane {} focus {}, commands {:?}",
+            app.pane,
+            app.focus_pane,
+            &app.session.journal[journal_before..]
+        );
         assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
     }
 }
@@ -2048,8 +2056,9 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
         })
         .expect("copying objects puts text on the system clipboard");
     assert!(!copied.is_empty());
+    let journal = app.session.journal.len();
     frame(&mut app, vec![egui::Event::Paste(copied.clone())]);
-    assert_eq!(count(&app), n + 1, "the paste key pastes the copied rectangle");
+    assert_eq!(count(&app), n + 1, "the paste key pastes the copied rectangle; commands: {:?}", &app.session.journal[journal..]);
 
     // Pasting into text anchors the copied object; the clipboard placeholder isn't typed.
     let r = app.session.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
