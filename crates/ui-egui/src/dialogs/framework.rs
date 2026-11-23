@@ -76,6 +76,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "pdfImport" => Some(super::import_forms::PDF_IMPORT),
         crate::effects_dialog::ID => Some(crate::effects_dialog::FORM),
         crate::object_style_dialog::ID => Some(crate::object_style_dialog::FORM),
+        "cellOptions" | "diagonalLines" => Some(super::cell_options_form::FORM),
         _ => None,
     }
 }
