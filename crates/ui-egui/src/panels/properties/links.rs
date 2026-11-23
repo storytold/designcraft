@@ -568,13 +568,25 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
         use craft_theme::ControlSize;
         use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_ui_widgets::style::Variant;
-        return craft_ui_widgets::buttons::Button::new(name)
-            .id(id)
-            .enabled(target_exists)
-            .size(ControlSize::Sm)
-            .variant(Variant::GHOST)
-            .show(ui)
-            .clicked();
+        let out =
+            craft_ui_widgets::buttons::Button::new(name.clone()).id(id).enabled(target_exists).size(ControlSize::Sm).variant(Variant::GHOST).show(ui);
+        // TEMPORARY (whole-app Preflight click diagnosis, remove once the red is understood).
+        #[cfg(test)]
+        eprintln!(
+            "PREFLIGHT-DEBUG button {name:?}: id={id:?} rect={:?} clip={:?} layer={:?} enabled={target_exists} ui_enabled={} hovered={} \
+             contains_pointer={} pointer_down_on={} clicked={} clicks={} sizing={}",
+            out.response.rect,
+            ui.clip_rect(),
+            ui.layer_id(),
+            ui.is_enabled(),
+            out.response.hovered(),
+            out.response.contains_pointer(),
+            out.response.is_pointer_button_down_on(),
+            out.clicked(),
+            out.clicks,
+            ui.is_sizing_pass(),
+        );
+        return out.clicked();
     }
     ui.push_id(id, |ui| ui.add_enabled(target_exists, egui::Button::new(egui::RichText::new(name).size(11.0)).frame(false))).inner.clicked()
 }
@@ -1689,13 +1701,27 @@ mod ui_preflight_navigation_tests {
         let before = quiet(&h.state().app);
         let journal = h.state().app.session.journal.len();
         let pos = h.get_by_role_and_label(egui::accesskit::Role::Button, &label).rect().center();
+        // TEMPORARY (whole-app Preflight click diagnosis, remove once the red is understood).
+        eprintln!(
+            "PREFLIGHT-DEBUG test: label={label:?} pos={pos:?} layer_at={:?} screen={:?} flyout={:?}",
+            h.ctx.layer_id_at(pos),
+            h.ctx.content_rect(),
+            h.state().app.ui.docking_flyout,
+        );
         step(&mut h, Some(Event::PointerMoved(pos)));
         for pressed in [true, false] {
+            eprintln!("PREFLIGHT-DEBUG test: pointer {}", if pressed { "pressed" } else { "released" });
             step(&mut h, Some(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }));
         }
         for _ in 0..3 {
             step(&mut h, None);
         }
+        eprintln!(
+            "PREFLIGHT-DEBUG test: after the click focused={:?} journal_tail={:?} selection={:?}",
+            h.ctx.memory(|m| m.focused()),
+            &h.state().app.session.journal[journal..],
+            h.state().app.session.active().map(|st| st.selection.items.clone()),
+        );
         let app = &h.state().app;
         assert_eq!(app.session.active().unwrap().selection.items, vec![ItemId(items[1])]);
         assert_eq!(crate::canvas::current_page(app), Some(1));
