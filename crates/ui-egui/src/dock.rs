@@ -258,10 +258,18 @@ mod visual_regressions {
                     let tokens = Tokens::for_brightness(brightness);
                     crate::theme::apply(&ctx, &tokens);
                     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| crate::panel_docking::show(&mut app, ui));
-                    output.textures_delta.clear();
-                    let mut output = ctx.run_ui(scaled_input(vec2(width, 640.0), scale), |ui| crate::panel_docking::show(&mut app, ui));
-                    output.textures_delta.clear();
+                    // The interface brightness the window shows, which the framework's dock follows through the frame's
+                    // root values (`DesignApp::raw_input_hook`), as the shipping window gives them each frame.
+                    app.ui.brightness = brightness;
+                    let mut frame = |app: &mut DesignApp| {
+                        let mut input = scaled_input(vec2(width, 640.0), scale);
+                        app.raw_input_hook(&ctx, &mut input);
+                        let mut output = ctx.run_ui(input, |ui| crate::panel_docking::show(app, ui));
+                        output.textures_delta.clear();
+                        output
+                    };
+                    frame(&mut app);
+                    let output = frame(&mut app);
                     assert_eq!(ctx.content_rect().size(), vec2(width, 640.0));
                     assert_eq!(ctx.pixels_per_point(), scale);
                     let text = output

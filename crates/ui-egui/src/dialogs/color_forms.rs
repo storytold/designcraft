@@ -476,10 +476,18 @@ mod tests {
 
         /// The one accessibility node of `role` that `test` picks, and its bounds.
         fn node(&self, role: Role, what: &str, test: impl Fn(&Node) -> bool) -> (bool, egui::Rect) {
-            let matches: Vec<_> = self.ax.as_ref().unwrap().nodes.iter().filter(|(_, n)| n.role() == role && test(n)).collect();
-            assert_eq!(matches.len(), 1, "exactly one {role:?} {what}");
-            let b = matches[0].1.bounds().unwrap();
-            (matches[0].1.is_disabled(), egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32)))
+            let rect = |n: &Node| {
+                let b = n.bounds().unwrap();
+                egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))
+            };
+            let matches: Vec<_> = self.ax.as_ref().unwrap().nodes.iter().filter(|(_, n)| n.role() == role && test(n)).map(|(_, n)| n).collect();
+            // A framework text field is a node of its own around its text part's node, both text inputs with the
+            // same value: one field when every match lies inside the others' bounds. Take its innermost node.
+            let inner = matches.iter().copied().min_by(|a, b| (rect(a).area()).total_cmp(&rect(b).area()));
+            let one_field = inner.is_some_and(|inner| matches.iter().all(|n| rect(n).expand(0.5).contains_rect(rect(inner))));
+            assert!(one_field, "exactly one {role:?} {what}: {} nodes", matches.len());
+            let n = inner.unwrap();
+            (n.is_disabled(), rect(n))
         }
 
         fn named(&self, role: Role, name: &str) -> (bool, egui::Rect) {

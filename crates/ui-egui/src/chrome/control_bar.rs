@@ -1234,6 +1234,10 @@ mod framework_tests {
         found.sort_by(|a, b| a.min.y.total_cmp(&b.min.y).then(a.min.x.total_cmp(&b.min.x)));
         *found.get(nth).unwrap_or_else(|| panic!("no {label:?} ({roles:?}) #{nth} in the Control panel"))
     }
+    fn has_role(h: &Harness<'_, Rig>, label: &str, roles: &[Role]) -> bool {
+        let bar = h.state().bar.unwrap();
+        h.query_all_by_label(label).any(|n| roles.contains(&n.accesskit_node().role()) && bar.contains(n.rect().center()))
+    }
     fn has(h: &Harness<'_, Rig>, label: &str) -> bool {
         let bar = h.state().bar.unwrap();
         h.query_all_by_label(label).any(|n| bar.contains(n.rect().center()))
@@ -1261,7 +1265,9 @@ mod framework_tests {
         session.execute("file.new", &json!({"width": 252, "height": 144, "facingPages": false})).unwrap();
         session.set_tool("page");
         let mut h = harness(DesignApp::new_for_panel_tests(session, crate::Services::default()));
-        control(&h, "Liquid Page Rule:", &[Role::ComboBox], 0);
+        // The rule's select is named by its caption; the framework may name it without the caption's colon.
+        let rule = ["Liquid Page Rule:", "Liquid Page Rule"].iter().any(|name| has_role(&h, name, &[Role::ComboBox]));
+        assert!(rule, "the Liquid Page Rule select is in the Control panel");
         control(&h, "Page Size", &[Role::ComboBox], 0);
         assert!(!has(&h, "Objects Move with Page"));
         let ran = press(&mut h, "Show Parent Page Overlay", &[Role::CheckBox], 0);
@@ -1360,8 +1366,9 @@ mod framework_tests {
         let pressed = h
             .query_all_by_label("Align to Baseline Grid")
             .find(|n| bar.contains(n.rect().center()) && n.accesskit_node().role() == Role::Button)
-            .map(|n| n.accesskit_node().toggled());
-        assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)));
+            // A framework icon button shows its on state as selected, where the native toggle was toggled.
+            .map(|n| n.accesskit_node().is_selected());
+        assert_eq!(pressed, Some(Some(true)));
         assert_eq!(attrs(&mut h)["para"]["gridAlign"], "firstLineOnly");
         assert_eq!(button(&mut h, "Align to Baseline Grid"), [("type.para".to_owned(), json!({"attrs": {"gridAlign": "none"}}))]);
         assert_eq!(attrs(&mut h)["para"]["gridAlign"], "none");

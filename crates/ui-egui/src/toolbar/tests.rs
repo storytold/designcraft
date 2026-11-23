@@ -37,12 +37,14 @@ fn collect_text(shape: &egui::Shape, clip: egui::Rect, texts: &mut Vec<(String, 
 /// including painted labels, unchanged shortcuts and unclipped, nonoverlapping text.
 #[test]
 fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
+    // The native Tools panel's own keys (Esc closes its flyout): no craft UI runtime on the context, which would take
+    // them first; the panels are not needed.
     use egui::{Event, Modifiers, PointerButton};
 
     for double in [false, true] {
         let mut app = app(double);
         app.ui.language = "hu".into();
-        let mut h = test_window::open(app, vec2(1400.0, 1000.0));
+        let mut h = test_window::open_without_runtime(app, vec2(1400.0, 1000.0));
         for tool in designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()) {
             h.state_mut().app.run("tool.select", serde_json::json!({"tool": tool.id})).unwrap();
             h.run_steps(3);
@@ -117,6 +119,8 @@ fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
 /// resetting on reopening while preserving the open scroll position, shortcut and selection.
 #[test]
 fn hungarian_flyout_scrolls_horizontally_in_narrow_windows() {
+    // The native Tools panel's own keys (Esc closes its flyout): no craft UI runtime on the context, which would take
+    // them first; the panels are not needed.
     use egui::{Event, Modifiers, PointerButton};
 
     for double in [false, true] {
@@ -130,7 +134,7 @@ fn hungarian_flyout_scrolls_horizontally_in_narrow_windows() {
             )
             .unwrap();
             app.select_tool("rectangleFrame");
-            let mut h = test_window::open(app, vec2(width, 1000.0));
+            let mut h = test_window::open_without_runtime(app, vec2(width, 1000.0));
             let at = rect(&h, "Téglalapkeret eszköz (F)").center();
             h.input_mut().events.push(Event::PointerMoved(at));
             for pressed in [true, false] {
@@ -220,10 +224,12 @@ fn review_shot(h: &mut egui_kittest::Harness<'static, test_window::Window>, name
 /// swatch, a panel), not only on the canvas.
 #[test]
 fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
+    // The native Tools panel's own keys (Esc closes its flyout): no craft UI runtime on the context, which would take
+    // them first; the panels are not needed.
     use egui::{Event, Modifiers, PointerButton};
     use egui_kittest::kittest::Queryable;
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let mut h = crate::test_window::open_without_runtime(app, vec2(1400.0, 900.0));
     let open = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
         let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
         h.input_mut().events.push(Event::PointerMoved(at));
@@ -253,10 +259,12 @@ fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
 /// it without switching the active tool.
 #[test]
 fn a_tool_flyout_opened_by_holding_stays_open_and_esc_keeps_the_tool() {
+    // The native Tools panel's own keys (Esc closes its flyout): no craft UI runtime on the context, which would take
+    // them first; the panels are not needed.
     use egui::{Event, Modifiers, PointerButton};
     use egui_kittest::kittest::Queryable;
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let mut h = crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 1.0 / 60.0);
+    let mut h = crate::test_window::open_stepped_without_runtime(app, vec2(1400.0, 900.0), 1.0, 1.0 / 60.0);
     h.state_mut().app.select_tool("rectangleFrame");
     h.run_steps(2);
     let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();

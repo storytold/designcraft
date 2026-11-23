@@ -1065,8 +1065,10 @@ mod auto_fit_workflow_tests {
         let entry_owner = h.ctx.memory(|m| m.focused()).expect("the toolbar editor owns actual focus");
         assert_ne!(entry_owner, canvas_owner);
         let entry_response = h.ctx.read_response(entry_owner).expect("the focused toolbar editor response is live");
-        assert!(entry.expand(0.5).contains_rect(entry_response.rect) && entry_response.rect.expand(0.5).contains_rect(entry),
-            "AX focus and egui focus identify the same inner editor, not its spinner or full field slot");
+        // The framework field holds the egui focus as one component whose response is the field's own box around its
+        // text part, which is the AX text input: the focused component is that field, not another control.
+        assert!(entry_response.rect.expand(0.5).contains_rect(entry),
+            "AX focus and egui focus identify the same X field: {entry:?} inside {:?}", entry_response.rect);
         unchanged(&h, &traversal_before);
         assert_eq!(h.state().app.session.journal.len(), traversal_start, "toolbar entry alone submits no command");
         tab_to_checkbox(&mut h);
