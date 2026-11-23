@@ -390,6 +390,8 @@ pub(crate) use file::load_document_fonts;
 pub use file::{
     DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use file::{ReadDocument, read_document};
 pub use layout::chapter_numbering;
 pub use paste_image::{IMAGE_EXTENSIONS, MAX_PASTED_PIXELS, PASTED_IMAGE_NAME, check_pasted_base64, check_pasted_size, pasted_pixels, pasted_png};
 pub use paste_svg::is_svg_markup;
