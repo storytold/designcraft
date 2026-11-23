@@ -208,16 +208,20 @@ fn wheel_navigate(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf:
     }
 }
 
-/// Where the primary button went down this pass, if egui no longer holds the press origin.
+/// Where the primary button went down this pass, if egui no longer holds the press origin. A pointer that left (or whose
+/// last event was malformed, which the input hook turns into `PointerGone`) ends the gesture: an earlier press of the pass
+/// is not recovered past it, so a later release cannot complete it.
 fn recent_primary_press(ui: &egui::Ui) -> Option<Pos2> {
     ui.input(|i| {
         i.events
             .iter()
             .rev()
-            .find_map(|event| match event {
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
-                _ => None,
+            .map_while(|event| match event {
+                egui::Event::PointerGone => None,
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(Some(*pos)),
+                _ => Some(None),
             })
+            .find_map(|pos| pos)
             .filter(|pos| pos.is_finite())
     })
 }
