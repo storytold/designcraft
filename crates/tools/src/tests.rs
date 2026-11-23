@@ -1960,6 +1960,84 @@ fn double_clicking_handles_on_sheared_frame_keeps_axis_and_opposite_ref() {
 }
 
 #[test]
+fn double_clicking_handle_on_mixed_orientation_selection_declines_ambiguous_axes() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (upright, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 300.0, 200.0), lid, "A", ParaFormat::default()).unwrap();
+    let (upright2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 100.0, 520.0, 200.0), lid, "B", ParaFormat::default()).unwrap();
+    let (rot90, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 250.0, 300.0, 350.0), lid, "C", ParaFormat::default()).unwrap();
+    d.item_mut(rot90).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let (rot90_2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 250.0, 520.0, 350.0), lid, "D", ParaFormat::default()).unwrap();
+    d.item_mut(rot90_2).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let (rot180, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 400.0, 300.0, 500.0), lid, "E", ParaFormat::default()).unwrap();
+    d.item_mut(rot180).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::PI);
+    let singular = add_rect(&mut d, Rect::new(320.0, 400.0, 520.0, 500.0));
+    d.item_mut(singular).unwrap().xf = designcraft_geom::Affine::scale(0.0);
+
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let mut t = create("selection");
+
+    // Mixed 0° + 90° selection: every side handle needs different local axes, so both selection
+    // orders decline the ambiguous fit (without falling through to text editing), while corners
+    // still share axis="both" and omit `ref`.
+    for items in [vec![upright, rot90], vec![rot90, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let b = cx.selection_bounds().unwrap();
+        for handle in [1, 3, 5, 7] {
+            let p = select::handles(b)[handle];
+            assert!(
+                t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)).is_empty(),
+                "expected decline for order={items:?} handle={handle}"
+            );
+            assert!(
+                t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_clicks(2)).is_empty(),
+                "expected decline on second press for order={items:?} handle={handle}"
+            );
+        }
+        let tl = select::handles(b)[0];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, tl.x, tl.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "both"}))],
+            "corner handle for order={items:?}"
+        );
+    }
+
+    // Mixed 0° + 180° selection shares axis="height" on the top handle in both selection orders,
+    // omitting `ref` because opposite edges differ.
+    for items in [vec![upright, rot180], vec![rot180, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height"}))],
+            "0+180 order={items:?}"
+        );
+    }
+
+    // Matching multi-selections keep both axis and opposite `ref`.
+    for (items, axis, rf) in [(vec![upright, upright2], "height", 7), (vec![rot90, rot90_2], "width", 5)] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "same-orientation multi-select {items:?}"
+        );
+    }
+
+    // A degenerate transform alongside a valid frame also declines side handles in both orders.
+    for items in [vec![upright, singular], vec![singular, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)).is_empty(), "degenerate mixed order={items:?}");
+    }
+}
+
+#[test]
 fn pen_continues_an_open_path_from_either_end_point() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();

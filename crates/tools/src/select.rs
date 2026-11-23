@@ -540,9 +540,11 @@ fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
 }
 
 /// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes and
-/// keeps the opposite local edge/corner (`ref` 0..=8) fixed. When a multi-selection has differing
-/// local orientations for the handle, `ref` is omitted so each frame keeps its own default.
-fn fitting_params(cx: &ToolContext, handle: usize) -> (&'static str, Option<usize>) {
+/// keeps the opposite local edge/corner (`ref` 0..=8) fixed. Returns `None` when a multi-selection
+/// needs different local axes for the same side handle (e.g. an unrotated frame selected alongside
+/// a 90°-rotated frame). When all selected items share the same local axis but have differing
+/// opposite references, `ref` is omitted so each frame keeps its own default.
+fn fitting_params(cx: &ToolContext, handle: usize) -> Option<(&'static str, Option<usize>)> {
     let dir = match handle {
         0 => Point::new(-1.0, -1.0),
         1 => Point::new(0.0, -1.0),
@@ -561,17 +563,37 @@ fn fitting_params(cx: &ToolContext, handle: usize) -> (&'static str, Option<usiz
     } else {
         "height"
     };
-    let for_item = |id: ItemId| -> Option<(&'static str, usize)> {
-        let it = cx.doc.item(id)?;
-        let xf = cx.item_canvas_xf(id)? * it.xf;
-        fitting_item_params(xf, handle, dir)
-    };
-    let mut results = cx.selection.items.iter().filter_map(|id| for_item(*id));
-    let Some((first_axis, first_ref)) = results.next() else {
-        return (fallback_axis, None);
-    };
-    let all_match = results.all(|(ax, rf)| ax == first_axis && rf == first_ref);
-    (first_axis, all_match.then_some(first_ref))
+    let mut axis: Option<&'static str> = None;
+    let mut ref_pt: Option<usize> = None;
+    let mut ref_mixed = false;
+    let mut seen_degenerate = false;
+    let mut count = 0usize;
+    for id in &cx.selection.items {
+        let Some(it) = cx.doc.item(*id) else { continue };
+        count += 1;
+        let Some((ax, rf)) = cx.item_canvas_xf(*id).and_then(|spread_xf| fitting_item_params(spread_xf * it.xf, handle, dir)) else {
+            seen_degenerate = true;
+            ref_mixed = true;
+            continue;
+        };
+        match axis {
+            None => {
+                axis = Some(ax);
+                ref_pt = Some(rf);
+            }
+            Some(prev) if prev != ax => return None,
+            Some(_) => {
+                if ref_pt != Some(rf) {
+                    ref_mixed = true;
+                }
+            }
+        }
+    }
+    if seen_degenerate && !corner && count > 1 {
+        return None;
+    }
+    let axis = axis.unwrap_or(fallback_axis);
+    Some((axis, if ref_mixed { None } else { ref_pt }))
 }
 
 fn fitting_item_params(xf: designcraft_geom::Affine, handle: usize, dir: Point) -> Option<(&'static str, usize)> {
@@ -1338,7 +1360,9 @@ impl Tool for SelectionTool {
             && let Some(h) = handle_at(cx, p)
         {
             self.drag = Drag::None;
-            let (axis, rf) = fitting_params(cx, h);
+            let Some((axis, rf)) = fitting_params(cx, h) else {
+                return vec![];
+            };
             let params = match rf {
                 Some(rf) => json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}),
                 None => json!({"mode": "fitFrameToContent", "axis": axis}),
