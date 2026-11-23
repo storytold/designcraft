@@ -1041,7 +1041,7 @@ mod framework {
     }
 
     /// The id of the control `key` of the section the panel's `ui` shows.
-    fn control_id(ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+    fn control_id(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         ui.id().with(("properties-object", key))
     }
 
