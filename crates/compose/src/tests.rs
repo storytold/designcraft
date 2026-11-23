@@ -2470,6 +2470,38 @@ fn a_cell_inset_is_at_least_half_its_edge_stroke() {
     assert!(lines(8.0) > lines(0.0), "{} vs {}", lines(8.0), lines(0.0));
 }
 
+/// A table that breaks across frames draws its border on the cut edges, so the text there keeps
+/// half the border weight clear; a table that stays whole keeps the interior strokes' half.
+#[test]
+fn a_table_that_breaks_keeps_its_text_off_the_border_drawn_at_the_cut() {
+    let table = || {
+        let mut t = filled(4, 1, 0, 100.0);
+        t.options.border.weight = 20.0;
+        for r in 0..4 {
+            t.cell_mut(r, 0).unwrap().insets = [0.0; 4];
+        }
+        t
+    };
+    let sides = |cell: &PlacedCell| (cell.clip.y0 - cell.rect.y0, cell.rect.y1 - cell.clip.y1);
+    // Whole: the interior rows sit between 1 pt strokes.
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), table());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let (top, bottom) = sides(cs.frames[0].tables[0].cell(1, 0).unwrap());
+    assert!((top - 0.5).abs() < 1e-6 && (bottom - 0.5).abs() < 1e-6, "{top} {bottom}");
+    // Broken between frames: the cut edges are the table border.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 40.0), lid, "", ParaFormat::default()).unwrap();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 600.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(f1, f2).unwrap();
+    d.story_mut(sid).unwrap().insert_table(0, table());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let (_, last_bottom) = sides(cs.frames[0].tables[0].cell(0, 0).unwrap());
+    let (next_top, _) = sides(cs.frames[1].tables[0].cell(1, 0).unwrap());
+    assert!(last_bottom >= 10.0 - 1e-6 && next_top >= 10.0 - 1e-6, "{last_bottom} {next_top}");
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
