@@ -2452,15 +2452,17 @@ fn a_table_starts_half_its_outer_strokes_inside_the_frame() {
         let after = ft.lines.iter().find(|l| l.range.start == len - 5).unwrap().baseline;
         (cell.x0, cell.y0, after)
     };
+    // Weights up to 7 pt: half of them stays within the default 4 pt cell inset, so the rows do not
+    // grow with the border and only the placement changes.
     let (x, y, after) = compose_with(1.0, 1.0, 1.0, 1.0);
-    let (xt, yt, at) = compose_with(9.0, 1.0, 1.0, 1.0);
-    assert!((yt - y - 4.0).abs() < 1e-6 && (xt - x).abs() < 1e-6, "a heavier top border moves the table down, not across");
-    assert!((at - after - 4.0).abs() < 1e-6, "and the text after it with it");
-    let (xl, yl, al) = compose_with(1.0, 9.0, 1.0, 1.0);
-    assert!((xl - x - 4.0).abs() < 1e-6 && (yl - y).abs() < 1e-6 && (al - after).abs() < 1e-6, "a heavier left border moves it across only");
-    let (xb, yb, ab) = compose_with(1.0, 1.0, 9.0, 1.0);
-    assert!((xb - x).abs() < 1e-6 && (yb - y).abs() < 1e-6 && (ab - after - 4.0).abs() < 1e-6, "a heavier bottom border moves only the text after");
-    let (xr, yr, ar) = compose_with(1.0, 1.0, 1.0, 9.0);
+    let (xt, yt, at) = compose_with(7.0, 1.0, 1.0, 1.0);
+    assert!((yt - y - 3.0).abs() < 1e-6 && (xt - x).abs() < 1e-6, "a heavier top border moves the table down, not across");
+    assert!((at - after - 3.0).abs() < 1e-6, "and the text after it with it");
+    let (xl, yl, al) = compose_with(1.0, 7.0, 1.0, 1.0);
+    assert!((xl - x - 3.0).abs() < 1e-6 && (yl - y).abs() < 1e-6 && (al - after).abs() < 1e-6, "a heavier left border moves it across only");
+    let (xb, yb, ab) = compose_with(1.0, 1.0, 7.0, 1.0);
+    assert!((xb - x).abs() < 1e-6 && (yb - y).abs() < 1e-6 && (ab - after - 3.0).abs() < 1e-6, "a heavier bottom border moves only the text after");
+    let (xr, yr, ar) = compose_with(1.0, 1.0, 1.0, 7.0);
     assert!((xr - x).abs() < 1e-6 && (yr - y).abs() < 1e-6 && (ar - after).abs() < 1e-6, "the right border moves nothing");
 }
 
