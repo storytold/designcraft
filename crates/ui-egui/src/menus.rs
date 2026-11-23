@@ -31,6 +31,8 @@ pub use keys::{forwarded_shortcuts, shortcuts};
 pub use keys::window_escape;
 #[cfg(test)]
 use quick_apply::quick_commands;
+#[cfg(not(target_arch = "wasm32"))]
+pub use quick_apply::quick_apply_catalog;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
 pub use run::run_ui;
 pub(crate) use run::save_then;

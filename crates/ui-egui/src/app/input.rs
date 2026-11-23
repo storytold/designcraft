@@ -52,8 +52,10 @@ impl DesignApp {
             let _fired = take_output(ctx);
             // The host carries the interface language's command labels, which the framework's Keyboard Shortcuts dialog shows.
             use craft_ui_widgets::runtime::commands::CommandInput;
-            // The tools are commands on the board, without chords, so the Tools rail resolves and fires them.
-            let commands = CommandInput::new().catalog(crate::toolbar::tool_catalog(&self.ui.language));
+            // The tools are commands on the board, without chords, so the Tools rail resolves and fires them; while Quick
+            // Apply is open, its commands and the document's styles are too, so its palette resolves and picks them.
+            let catalog = menus::quick_apply_catalog(self).unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language));
+            let commands = CommandInput::new().catalog(catalog);
             set_input(ctx, FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands));
         }
         // An undecorated window gets its caption back when the toolkit changes its flags
