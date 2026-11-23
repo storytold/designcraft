@@ -433,7 +433,9 @@ mod tests {
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         assert!(app.framework_installed, "the framework form needs the installed runtime");
         let mut ready = false;
-        let mut h = Harness::builder().with_context(ctx).with_size(vec2(1440.0, 900.0)).build_ui_state(
+        // Frames a sixtieth of a second apart, as the shipping window's: the harness's default quarter second puts the
+        // two clicks of a double click further apart than egui's double-click delay.
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 if !ready {
                     crate::theme::install_fonts(ui.ctx(), &app.ui.language);

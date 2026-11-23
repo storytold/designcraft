@@ -474,13 +474,13 @@ mod framework {
     use super::{TagsWorkflowDraft, ask_then_run, dest_text, tags_editable, tags_identity, tags_targets};
     use crate::DesignApp;
     use craft_theme::ControlSize;
+    use craft_theme::Srgba;
     use craft_ui_widgets::buttons::{Button, Link};
     use craft_ui_widgets::choice::Checkbox;
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
-    use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
+    use craft_ui_widgets::display::{Divider, Icon, Shade, Text};
     use craft_ui_widgets::layout_components::{Row, Stack};
-    use craft_ui_widgets::list::ThumbAspect;
-    use craft_ui_widgets::primitives::{HAlign, Wrap};
+    use craft_ui_widgets::primitives::{HAlign, IconSpec, Wrap};
     use craft_ui_widgets::style::{TypeRole, Variant};
     use craft_ui_widgets::text::TextField;
     use serde_json::{Value, json};
@@ -749,14 +749,12 @@ mod framework {
                 let color = tag["color"].as_array().map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect::<Vec<_>>()).unwrap_or_default();
                 let row = actions.with(("tag", tag.to_string()));
                 Row::new().id_salt(("tag", tag.to_string())).fill_width().show(ui, |ui, _| {
-                    let chip = (color.len() == 3).then(|| egui::Color32::from_rgb(color[0], color[1], color[2]));
-                    Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
-                        if let Some(chip) = chip {
-                            cx.painter.rect_filled(egui::Rect::from_center_size(rect.center(), egui::vec2(12.0, 12.0)), 2.0, chip);
-                        }
-                    })
-                    .id_salt("tag_color")
-                    .show(ui);
+                    // The tag's colour as a framework swatch; a tag without one keeps an empty swatch's place.
+                    let chip = match color.as_slice() {
+                        [r, g, b] => IconSpec::swatch(Srgba::rgb(f32::from(*r) / 255.0, f32::from(*g) / 255.0, f32::from(*b) / 255.0)),
+                        _ => IconSpec::empty_swatch(),
+                    };
+                    Icon::new(chip).id_salt("tag_color").show(ui);
                     let name = format!("{} <{}>", tr(&lang, "Tag the selection"), n);
                     let ready = editable && (has_sel || text_sel) && tags_identity(app) == snapshot;
                     if tag_action(ui, row.with("apply"), &name, &n, ready, true) && tags_identity(app) == snapshot && tags_targets(app) == targets {
