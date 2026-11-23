@@ -532,6 +532,179 @@ pub fn models_ui(ui: &mut egui::Ui, lang: &str) {
     });
 }
 
+/// The rows of a framework table or list over `count` items, named by their text.
+#[cfg(not(target_arch = "wasm32"))]
+struct Rows(Vec<String>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl craft_behavior::DisplayOrder<usize> for Rows {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn key(&self, at: usize) -> usize {
+        at
+    }
+
+    fn index_of(&self, key: &usize) -> Option<usize> {
+        (*key < self.0.len()).then_some(*key)
+    }
+
+    fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.0.get(at).map(|name| std::borrow::Cow::Borrowed(name.as_str()))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl craft_behavior::ItemSource<usize> for Rows {}
+
+/// About ▸ Contributors on the framework: the name toggle, sort and layout controls, then the list as a grab bag of links or
+/// as a sortable table. The link that was activated (a click on a name, or Enter on a table row) comes back as the URL to open.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn contributors_framework(ui: &mut egui::Ui, lang: &str) -> Option<String> {
+    use craft_behavior::{ColumnKey, ColumnWidth, Selection};
+    use craft_ui_widgets::buttons::Link;
+    use craft_ui_widgets::contract::{
+        CollectionEvent, ColumnEvent, ColumnSort, ColumnSpec, Props as _, Scroll, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
+    };
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::ListRow;
+    use craft_ui_widgets::style::TypeRole;
+    use craft_ui_widgets::table::Table;
+
+    let id = egui::Id::unique("credits_view");
+    let mut v = ui.data_mut(|d| d.get_temp::<View>(id)).unwrap_or_default();
+    controls_framework(ui, &mut v, lang);
+    let list = sorted(CONTRIBUTORS, v.names, v.key, v.ascending);
+    let totals = tr(lang, "{contributors} contributors · {commits} commits")
+        .replace("{contributors}", &list.len().to_string())
+        .replace("{commits}", &group(TOTAL_COMMITS));
+    Text::new(totals).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+    Divider::horizontal().show(ui);
+    let mut open: Option<String> = None;
+    if list.is_empty() {
+        Text::new(tr(lang, "No contributor data was built into this copy.").to_owned()).sizing(Sizing::FillWidth).show(ui);
+    } else if v.table {
+        let columns: Vec<ColumnSpec> = SortKey::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| {
+                let width = if i == 0 { ColumnWidth::fill(1.0) } else { ColumnWidth::Content };
+                let mut column = ColumnSpec::new(ColumnKey::index(i as u32), tr_context(lang, k.label().1, "contributors").to_owned(), width)
+                    .sortable()
+                    .resizable();
+                if i > 0 {
+                    column = column.numeric();
+                }
+                if !k.default_ascending() {
+                    column = column.first_descending();
+                }
+                column
+            })
+            .collect();
+        let rows: Vec<[String; 9]> = list.iter().map(|c| cells(c)).collect();
+        let names = Rows(list.iter().map(|c| c.name(v.names)).collect());
+        let sort_at = SortKey::ALL.iter().position(|k| *k == v.key).unwrap_or(0);
+        let out = Table::<usize>::new(tr(lang, "Contributors").to_owned(), columns)
+            .striped(true)
+            .sort(ColumnSort::new(ColumnKey::index(sort_at as u32), !v.ascending))
+            .max_rows(14)
+            .selection(craft_ui_widgets::contract::Bind::given(Selection::default()))
+            .show_items(ui, &names, &mut |at, icx| {
+                let mut row = ListRow::new(list[*at].name(v.names)).cells(icx.cells()).striped(icx.row.striped);
+                for (col, text) in rows[*at].iter().enumerate() {
+                    row = row.cell(ColumnKey::index(col as u32 + 1), text.clone());
+                }
+                row
+            });
+        for event in out.events {
+            match event {
+                CollectionEvent::Column(ColumnEvent::Sort { key, descending, .. }) => {
+                    let at = SortKey::ALL.iter().enumerate().find(|(i, _)| ColumnKey::index(*i as u32) == key).map(|(_, k)| *k);
+                    if let Some(k) = at {
+                        v.key = k;
+                        v.ascending = !descending;
+                    }
+                }
+                CollectionEvent::Activate(at) => open = list.get(at).map(|c| format!("https://github.com/{}", c.login)),
+                _ => {}
+            }
+        }
+    } else {
+        Stack::new().id_salt("credits_bag").fill_width().scroll(Scroll::vertical()).room_height(320.0).show(ui, |ui, _| {
+            Row::new().id_salt("credits_names").wrap(true).show(ui, |ui, _| {
+                for (i, c) in list.iter().enumerate() {
+                    if i > 0 {
+                        Text::new("·".to_owned()).shade(Shade::Muted).show(ui);
+                    }
+                    let url = format!("https://github.com/{}", c.login);
+                    if Link::new(c.name(v.names)).url(url.clone()).tooltip(c.summary()).id_salt(("credit", c.login)).show(ui).clicked() {
+                        open = Some(url);
+                    }
+                }
+            });
+        });
+    }
+    ui.data_mut(|d| d.insert_temp(id, v));
+    open
+}
+
+/// About ▸ Models on the framework: AI models credited in Co-Authored-By trailers, in a table.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn models_framework(ui: &mut egui::Ui, lang: &str) {
+    use craft_behavior::{ColumnKey, ColumnWidth, Selection};
+    use craft_ui_widgets::contract::{ColumnSpec, Props as _, Show as _, ShowCollection as _, Sizing};
+    use craft_ui_widgets::display::Text;
+    use craft_ui_widgets::list::ListRow;
+    use craft_ui_widgets::table::Table;
+
+    if MODELS.is_empty() {
+        Text::new(tr(lang, "No model credits were built into this copy.").to_owned()).sizing(Sizing::FillWidth).show(ui);
+        return;
+    }
+    let assisted: u64 = MODELS.iter().map(|m| m.commits).max().unwrap_or(0).max(1);
+    let titles = ["Company", "Model", "Version", "Commits", "% of all commits", "Lines +/−"];
+    // Company, Model and Version read as text; the counts line up on the right.
+    let right = [false, false, false, true, true, true];
+    let grow = [1.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+    let columns: Vec<ColumnSpec> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, title)| {
+            let width = if grow[i] > 0.0 { ColumnWidth::fill(grow[i]) } else { ColumnWidth::Content };
+            let column = ColumnSpec::new(ColumnKey::index(i as u32), tr(lang, title).to_owned(), width).resizable();
+            if right[i] { column.numeric() } else { column }
+        })
+        .collect();
+    let rows: Vec<[String; 6]> = MODELS
+        .iter()
+        .map(|m| {
+            [
+                m.company.to_string(),
+                m.model.to_string(),
+                m.version.to_string(),
+                group(m.commits),
+                format!("{:.0}%", 100.0 * m.commits as f64 / TOTAL_COMMITS.max(assisted) as f64),
+                format!("+{} / −{}", group(m.lines_added), group(m.lines_deleted)),
+            ]
+        })
+        .collect();
+    let names = Rows(MODELS.iter().map(|m| format!("{} {}", m.company, m.model)).collect());
+    let _ = Table::<usize>::new(tr(lang, "Models").to_owned(), columns)
+        .striped(true)
+        .max_rows(14)
+        .selection(craft_ui_widgets::contract::Bind::given(Selection::default()))
+        .show_items(ui, &names, &mut |at, icx| {
+            // The first column shows the row's own label: the company.
+            let mut row = ListRow::new(rows[*at][0].clone()).cells(icx.cells()).striped(icx.row.striped);
+            for (col, text) in rows[*at].iter().enumerate().skip(1) {
+                row = row.cell(ColumnKey::index(col as u32), text.clone());
+            }
+            row
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
