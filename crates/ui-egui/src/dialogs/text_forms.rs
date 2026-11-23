@@ -389,7 +389,7 @@ pub(super) fn toggle(ui: &mut Ui, salt: &str, label: &str, value: Option<bool>, 
 }
 
 /// A short text that is committed, not typed through: its value when committed.
-pub(super) fn committed_text(ui: &mut Ui, salt: &str, label: &str, current: &str, enabled: bool) -> Option<String> {
+pub(crate) fn committed_text(ui: &mut Ui, salt: &str, label: &str, current: &str, enabled: bool) -> Option<String> {
     let out = TextField::new(label.to_owned(), Bind::given(current.to_owned()))
         .id_salt(("text_form_commit", salt.to_owned()))
         .limit(None::<usize>)

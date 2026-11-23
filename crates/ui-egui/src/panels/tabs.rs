@@ -416,9 +416,9 @@ fn panel_menu(ui: &mut Ui, lang: &str, framework: bool, target: &Option<String>,
 /// The X field: a measure in the document's unit, committed with Enter or when the field is left. Points in, points out.
 #[cfg(not(target_arch = "wasm32"))]
 fn measure_points(ui: &mut Ui, label: &str, points: Option<f64>, unit: Unit) -> Option<f64> {
-    use crate::dialogs::framework::style_forms::style_kit;
+    use crate::dialogs::text_forms::committed_text;
     let shown = points.filter(|v| v.is_finite()).map(|v| designcraft_geom::format_measure(v, unit)).unwrap_or_default();
-    let text = style_kit::committed_text(ui, "tabs_x", label, &shown, true)?;
+    let text = committed_text(ui, "tabs_x", label, &shown, true)?;
     designcraft_geom::units::parse_measure(&text, unit).ok().filter(|v| v.is_finite())
 }
 
@@ -491,7 +491,8 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
 
     #[cfg(not(target_arch = "wasm32"))]
     let edit = if framework {
-        use crate::dialogs::framework::style_forms::{style_kit, tab_forms::TabRuler};
+        use crate::dialogs::framework::style_forms::tab_forms::TabRuler;
+        use crate::dialogs::text_forms::committed_text;
         use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
         use craft_ui_widgets::form::Field;
         use craft_ui_widgets::layout_components::{Row, Stack};
@@ -515,14 +516,14 @@ fn show_contents(app: &mut DesignApp, ui: &mut Ui) {
                     }
                 });
                 Field::new(tr("Leader:")).id_salt("tabs_leader").sizing(Sizing::Content).show(ui, |ui, _| {
-                    let leader = style_kit::committed_text(ui, "tabs_leader", tr("Leader:"), sel.map_or("", |s| s.leader.as_str()), sel.is_some());
+                    let leader = committed_text(ui, "tabs_leader", tr("Leader:"), sel.map_or("", |s| s.leader.as_str()), sel.is_some());
                     if let (Some(l), Some(i)) = (leader, selected) {
                         cmds.push(("type.tabs.change", json!({"index": i, "leader": l})));
                     }
                 });
                 Field::new(tr("Align On:")).id_salt("tabs_align_on").sizing(Sizing::Content).show(ui, |ui, _| {
                     let char_tab = sel.is_some_and(|s| s.align == TabAlign::Char);
-                    let align_on = style_kit::committed_text(ui, "tabs_align_on", tr("Align On:"), sel.map_or("", |s| s.align_on.as_str()), char_tab);
+                    let align_on = committed_text(ui, "tabs_align_on", tr("Align On:"), sel.map_or("", |s| s.align_on.as_str()), char_tab);
                     if let (Some(c), Some(i)) = (align_on, selected) {
                         cmds.push(("type.tabs.change", json!({"index": i, "alignOn": c})));
                     }
