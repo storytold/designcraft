@@ -9,11 +9,17 @@
 use super::table_layout_kit as kit;
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable as _;
 use egui::vec2;
+use egui_kittest::kittest::Queryable as _;
 use serde_json::{Value, json};
 
-fn st(h: &mut egui_kittest::Harness<'static, DesignApp>) -> &mut DesignApp {
+/// The Auto Leading stored for a percent typed into its field: the whole percent the field shows.
+fn auto_leading_typed(pct: f64) -> f64 {
+    // Adding 0.0 turns a rounded -0 into 0.
+    (pct.round() + 0.0) / 100.0
+}
+
+fn st<'a>(h: &'a mut egui_kittest::Harness<'static, DesignApp>) -> &'a mut DesignApp {
     h.state_mut()
 }
 
@@ -114,7 +120,7 @@ fn body_style_app() -> DesignApp {
 /// style sets only the kenten attributes.
 #[test]
 fn style_dialogs_kenten_and_japanese_composition_reach_the_style_and_its_paragraph() {
-    use designcraft_doc::cjk::KentenKind;
+    use designcraft_doc::cjk_settings::KentenKind;
     let mut app = body_style_app();
     if let Some(st) = app.session.active_mut() {
         let table = designcraft_doc::cjk::MojikumiTable { name: "Body Text".into(), ..Default::default() };

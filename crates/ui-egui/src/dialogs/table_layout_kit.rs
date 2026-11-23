@@ -322,11 +322,8 @@ pub(crate) fn dialog_rect(h: &Harness<'_, DesignApp>, title: &str) -> egui::Rect
 /// the app's input hook (use [`steps`], [`event`] and the click helpers).
 pub(crate) fn panel_harness(mut app: DesignApp, size: egui::Vec2, show: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_transform = true;
-    app.framework_opacity = true;
     app.install_framework(&ctx);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-    assert!(app.framework_installed, "a framework panel needs the installed runtime");
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(size).with_step_dt(0.05).build_ui_state(
         move |ui, app: &mut DesignApp| {

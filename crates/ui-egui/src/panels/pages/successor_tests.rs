@@ -12,13 +12,11 @@ use serde_json::json;
 #[test]
 fn the_framework_panel_redraws_one_thumbnail_per_frame_after_an_edit_and_drops_deleted_pages() {
     let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
     app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0)));
     app.run("file.new", json!({"pages": 60, "facingPages": false})).unwrap();
     let ctx = egui::Context::default();
     crate::theme::install_fonts(&ctx, "");
     app.install_framework(&ctx);
-    assert!(app.framework_installed, "the framework panel needs the installed runtime");
     let frame = |app: &mut DesignApp, time: f64| {
         let before = THUMB_RENDERS.with(std::cell::Cell::get);
         let mut raw = egui::RawInput {

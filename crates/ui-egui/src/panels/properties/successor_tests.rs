@@ -10,7 +10,8 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
-use super::ln;
+use super::framework_test_kit as ln;
+use super::framework_test_kit::Window;
 use super::object::transform_anchors;
 use super::*;
 
@@ -25,8 +26,6 @@ fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::I
     use designcraft_doc::{Asset, AssetId, Content, Graphic, ItemId};
     use std::sync::Arc;
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({"title": "Linked graphics"})).unwrap();
     let mut items = Vec::new();
     let mut assets = Vec::new();
@@ -103,8 +102,6 @@ fn settle_links(h: &mut Harness<'static, DesignApp>) {
 #[test]
 fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
     let mut ready = false;
@@ -131,8 +128,6 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
 #[test]
 fn text_stroke_panel_keeps_the_weight_in_range() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -164,8 +159,6 @@ fn text_stroke_panel_keeps_the_weight_in_range() {
 #[test]
 fn properties_text_stroke_weight_keeps_the_character_range() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -247,8 +240,6 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
 #[test]
 fn properties_character_section_sets_the_language() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "bunun", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -283,8 +274,6 @@ fn properties_character_section_sets_the_language() {
 #[test]
 fn effects_panel_shadow_fields_use_the_document_unit() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].clone();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -322,8 +311,6 @@ fn effects_panel_shadow_fields_use_the_document_unit() {
 #[test]
 fn more_options_grid_button_keeps_first_line_only() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "If fine plants", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -343,8 +330,6 @@ fn more_options_grid_button_keeps_first_line_only() {
 #[test]
 fn more_options_expand_character_and_paragraph_in_place() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "If fine plants", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -515,8 +500,6 @@ fn panel_harness(app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Ha
 
 fn text_app() -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "AVATAR", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
@@ -673,8 +656,6 @@ fn a_manual_kerning_value_at_a_caret_kerns_the_pair() {
 #[test]
 fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     // A graphic frame: the Appearance section shows a single Fill chip.
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
@@ -746,8 +727,6 @@ fn double_clicking_a_fill_chip_opens_the_color_picker() {
     };
     let frame = || {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.framework_opacity = true;
-        app.framework_installed = true;
         app.run("file.new", json!({})).unwrap();
         let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
         app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -765,8 +744,6 @@ fn double_clicking_a_fill_chip_opens_the_color_picker() {
     assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.s("target")), Some("stroke".into()));
     // Selected text: its own Fill chip.
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Lemon"})).unwrap();
     app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
@@ -799,8 +776,6 @@ fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
 #[test]
 fn bullets_options_open_the_bullets_and_numbering_dialog() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "4 eggs"})).unwrap();
     app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 6})).unwrap();
@@ -820,8 +795,6 @@ fn bullets_options_open_the_bullets_and_numbering_dialog() {
 #[test]
 fn the_bulleted_list_button_applies_a_hanging_indent() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let f = app
         .run(
@@ -850,8 +823,6 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
 #[test]
 fn several_shapes_show_pathfinder_and_intersect_combines_them() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [100, 100, 300, 300], "shape": "ellipse"})).unwrap()["id"].clone();
     let b = app.run("frame.create", json!({"rect": [200, 100, 300, 200]})).unwrap()["id"].clone();
@@ -881,8 +852,6 @@ fn several_shapes_show_pathfinder_and_intersect_combines_them() {
 #[test]
 fn the_opacity_arrow_opens_a_slider_and_a_drag_is_one_undo_step() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -938,8 +907,6 @@ fn the_opacity_arrow_opens_a_slider_and_a_drag_is_one_undo_step() {
 #[test]
 fn properties_frame_fitting_sets_auto_fit_and_opens_its_options() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
     let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
@@ -971,8 +938,6 @@ fn properties_frame_fitting_sets_auto_fit_and_opens_its_options() {
 #[test]
 fn properties_text_wrap_shows_and_sets_the_offsets() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -1039,8 +1004,6 @@ fn properties_text_wrap_shows_and_sets_the_offsets() {
 #[test]
 fn the_corner_shape_list_has_glyph_rows_and_picks_a_shape() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -1074,8 +1037,6 @@ const CYAN: &str = "C=100 M=0 Y=0 K=0";
 #[test]
 fn the_fill_menu_sets_a_tint() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
     app.run("object.fill", json!({"swatch": CYAN, "ids": [id]})).unwrap();
@@ -1104,8 +1065,6 @@ fn the_fill_menu_sets_a_tint() {
 #[test]
 fn a_tint_on_several_objects_keeps_each_ones_swatch() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
     let b = app.run("frame.create", json!({"rect": [220, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
@@ -1135,8 +1094,6 @@ fn a_tint_on_several_objects_keeps_each_ones_swatch() {
 #[test]
 fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Heading"})).unwrap();
     let (id, story) = (r["id"].as_u64().unwrap(), designcraft_doc::StoryId(r["story"].as_u64().unwrap()));
@@ -1157,8 +1114,6 @@ fn apply_to_text_colours_a_text_frames_text_not_the_frame() {
 #[test]
 fn apply_to_text_colours_the_text_of_several_text_frames() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let mut ids = vec![];
     let mut stories = vec![];
@@ -1190,8 +1145,6 @@ fn apply_to_text_colours_the_text_of_several_text_frames() {
 #[test]
 fn selected_points_show_convert_points_and_delete_points() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [72, 72, 172, 172]})).unwrap()["id"].as_u64().unwrap();
     let b = app.run("frame.create", json!({"rect": [200, 72, 300, 172]})).unwrap()["id"].as_u64().unwrap();
@@ -1217,8 +1170,6 @@ fn selected_points_show_convert_points_and_delete_points() {
 #[test]
 fn one_selected_point_shows_its_frames_size_greyed() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [72, 72, 172, 222]})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"anchors": [[a, 0, 0]]})).unwrap();
@@ -1240,8 +1191,6 @@ fn one_selected_point_shows_its_frames_size_greyed() {
 #[test]
 fn transform_flips_and_rotates_from_properties() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200]})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -1313,8 +1262,6 @@ fn frame_options(app: &DesignApp, id: u64) -> designcraft_doc::TextFrameOptions 
 fn properties_text_frame_sets_inset_spacing_and_vertical_justification() {
     use designcraft_doc::VerticalJustification;
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
     app.run("selection.set", json!({"ids": [id]})).unwrap();
@@ -1354,8 +1301,6 @@ fn properties_text_frame_sets_inset_spacing_and_vertical_justification() {
 #[test]
 fn properties_text_frame_inset_link_starts_linked_after_revert() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "text", "text": "Hello"})).unwrap()["id"].as_u64().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -1379,8 +1324,6 @@ fn properties_text_frame_inset_link_starts_linked_after_revert() {
 fn properties_text_frame_shows_while_typing_and_changes_the_caret_frame() {
     use designcraft_doc::VerticalJustification;
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
     let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
@@ -1406,8 +1349,6 @@ fn properties_text_frame_shows_while_typing_and_changes_the_caret_frame() {
 #[test]
 fn properties_text_frame_shows_one_inset_for_an_oval() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap()["id"]
         .as_u64()
@@ -1428,8 +1369,6 @@ fn properties_text_frame_shows_one_inset_for_an_oval() {
 #[test]
 fn properties_text_frame_one_inset_lowers_a_uniform_inset_on_every_side() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": "Hello"})).unwrap()["id"]
         .as_u64()
@@ -1449,8 +1388,6 @@ fn properties_text_frame_one_inset_lowers_a_uniform_inset_on_every_side() {
 #[test]
 fn properties_text_frame_one_inset_keeps_the_sides_of_a_rectangle_in_the_selection() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
     let a = app.run("frame.create", json!({"rect": [72, 72, 300, 300], "shape": "ellipse", "content": "text", "text": text})).unwrap();
@@ -1480,8 +1417,6 @@ fn properties_text_frame_one_inset_keeps_the_sides_of_a_rectangle_in_the_selecti
 fn properties_text_frame_inset_link_starts_off_when_another_frame_has_uneven_sides() {
     for even_first in [true, false] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.framework_opacity = true;
-        app.framework_installed = true;
         app.run("file.new", json!({})).unwrap();
         let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
         let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
@@ -1513,8 +1448,6 @@ fn properties_text_frame_inset_link_starts_off_when_another_frame_has_uneven_sid
 #[test]
 fn properties_text_frame_inset_link_of_one_frame_does_not_carry_to_a_text_selection() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let text = (0..40).map(|i| format!("Line {i} of the threaded story.")).collect::<Vec<_>>().join(" ");
     let a = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": text})).unwrap();
@@ -1544,8 +1477,6 @@ fn properties_text_frame_inset_link_of_one_frame_does_not_carry_to_a_text_select
 #[test]
 fn properties_text_frame_shows_no_insets_for_type_on_a_path() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "shape": "ellipse"})).unwrap()["id"].as_u64().unwrap();
     app.run("type.onPath", json!({"id": id, "text": "Around"})).unwrap();
