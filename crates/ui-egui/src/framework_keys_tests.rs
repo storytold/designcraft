@@ -16,10 +16,10 @@
 //! - Shift+Tab must come back to the framework field's own stop;
 //! - Escape must leave a typed draft uncommitted.
 
-use egui_kittest::kittest::Queryable as _;
 use crate::DesignApp;
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
 use serde_json::json;
 
 /// The whole window, as the desktop shell runs it: the host input hook, then `logic` and `ui`.
@@ -109,6 +109,19 @@ fn undo_steps(h: &Harness<'_, DesignApp>) -> usize {
 
 fn journal(h: &Harness<'_, DesignApp>) -> usize {
     h.state().session.journal.len()
+}
+
+/// The rect of the control that holds the keyboard as AccessKit reports it. egui's own focus can be an arena root (here the
+/// dock's whole body) while a framework member of the arena, such as the Opacity row's chevron, holds the keyboard, so the
+/// member is read from the accessibility tree, never from `ctx.memory().focused()` and its response.
+fn keyboard_rect(h: &Harness<'_, DesignApp>) -> Option<egui::Rect> {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let root = h.queryable_node();
+    std::iter::once(root.clone())
+        .chain(root.children_recursive())
+        .filter(|node| node.accesskit_node().is_focused())
+        .map(|node| node.rect())
+        .min_by(|a, b| a.area().total_cmp(&b.area()))
 }
 
 fn focused(h: &Harness<'_, DesignApp>) -> Option<egui::Id> {
@@ -228,7 +241,7 @@ fn tab_commits_the_typed_value_and_hands_the_keyboard_to_an_identified_app_contr
     // part of the framework component, and not merely "a different id".
     let next = focused(&h).expect("Tab left the keyboard on another stop");
     assert_ne!(next, in_field, "the keyboard left the framework field");
-    let rect = h.ctx.read_response(next).map(|r| r.rect).expect("the stop that took the keyboard is an identified control");
+    let rect = keyboard_rect(&h).expect("the stop that took the keyboard is an identified control");
     assert!(rect.width() > 0.0 && rect.height() > 0.0, "that control has a real rect: {rect:?}");
     assert!(rect.center().x > h.ctx.content_rect().width() / 2.0, "it is in the Properties panel: {rect:?}");
     // Outside the WHOLE framework component (its box and every Tab stop the framework recorded), so an SDK
@@ -249,18 +262,19 @@ fn tab_from_the_chevron_goes_on_to_the_rows_frame_fitting_button() {
     let field = rect_of(&h, "opacity");
     type_draft(&mut h, field.center(), "40");
     press(&mut h, Key::Tab, Modifiers::NONE);
-    let on_chevron = focused(&h).expect("Tab left the keyboard on the chevron");
     let more = rect_of(&h, "more");
-    let chevron = h.ctx.read_response(on_chevron).map(|r| r.rect).expect("the chevron is an identified control");
+    let chevron = keyboard_rect(&h).expect("Tab left the keyboard on the chevron, an identified control");
     assert!((chevron.center() - more.center()).length() < 1.5, "the first Tab landed on the chevron at {more:?}, not {chevron:?}");
     // The positive control for "the row is one framework Tab order": the next Tab reaches the row's next control, the
     // Frame Fitting button, not some stop elsewhere in the window and not nothing.
     press(&mut h, Key::Tab, Modifiers::NONE);
-    let next = focused(&h).expect("Tab left the keyboard on another stop");
-    assert_ne!(next, on_chevron, "the keyboard left the chevron");
-    let rect = h.ctx.read_response(next).map(|r| r.rect).expect("the stop that took the keyboard is an identified control");
+    let rect = keyboard_rect(&h).expect("the stop that took the keyboard is an identified control");
+    assert_ne!(rect, chevron, "the keyboard left the chevron");
     let fitting = h.get_by_role_and_label(egui::accesskit::Role::Button, "Frame Fitting").rect();
-    assert!((rect.center() - fitting.center()).length() < 1.5_f32, "the keyboard went on to the row's Frame Fitting button at {fitting:?}, not {rect:?}");
+    assert!(
+        (rect.center() - fitting.center()).length() < 1.5_f32,
+        "the keyboard went on to the row's Frame Fitting button at {fitting:?}, not {rect:?}"
+    );
 }
 
 #[test]

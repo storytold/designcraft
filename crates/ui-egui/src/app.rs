@@ -276,8 +276,6 @@ impl DesignApp {
             panel_docking::cancel_gesture(&ctx);
         }
         canvas::begin_frame(&ctx);
-        #[cfg(not(target_arch = "wasm32"))]
-        canvas::note_focus_at_start(&ctx);
         let dbg = std::env::var_os("DESIGNCRAFT_DEBUG_LAYOUT").is_some();
         if dbg {
             eprintln!("root start {:?}", ui.available_rect_before_wrap());
