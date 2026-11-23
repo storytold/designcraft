@@ -7,7 +7,18 @@ use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::{Tokens, semibold};
 
+/// The Data Merge panel: the framework's controls on the desktop, egui's in the browser and before the runtime is
+/// installed.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ui);
+        return;
+    }
+    show_fallback(app, ui);
+}
+
+fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let snapshot = app.session.active().map(|st| {
@@ -25,13 +36,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         dim(ui, &t, &lang, "No data source");
         return;
     };
-    let controls = DataMergeControls {
-        document,
-        #[cfg(not(target_arch = "wasm32"))]
-        sdk: app.framework_installed,
-        #[cfg(target_arch = "wasm32")]
-        sdk: false,
-    };
+    let controls = DataMergeControls { document, sdk: false, enabled: true };
     let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
 
     ui.horizontal(|ui| {
@@ -88,23 +93,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("data.preview.stop", json!({}));
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let framework = app.framework_installed;
-    let navigation_button = |ui: &mut egui::Ui, key: &str, label: &str| {
-        #[cfg(not(target_arch = "wasm32"))]
-        if framework {
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-            return craft_ui_widgets::buttons::Button::new(tr(&lang, label).to_owned())
-                .id(ui.make_persistent_id(("datamerge-preview", key)))
-                .enabled(ui.is_enabled())
-                .size(craft_theme::ControlSize::Sm)
-                .show(ui)
-                .clicked();
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = key;
-        ui.small_button(w(ui, &lang, label)).clicked()
-    };
+    let navigation_button = |ui: &mut egui::Ui, label: &str| ui.small_button(w(ui, &lang, label)).clicked();
     let max_record = (record_count as u32).max(1);
     let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
     let mut jump = None;
@@ -112,10 +101,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         // The SDK number field is wider than the old bare counter. Wrap the existing
         // navigation rather than clipping the last buttons in a narrow sidebar.
         ui.horizontal_wrapped(|ui| {
-            if navigation_button(ui, "first", "First") {
+            if navigation_button(ui, "First") {
                 jump = Some(1);
             }
-            if navigation_button(ui, "previous", "Previous") {
+            if navigation_button(ui, "Previous") {
                 jump = Some(shown.saturating_sub(1).max(1));
             }
             let record = controls.number(ui, "preview-record", tr(&lang, "Record"), shown as f64, Some(1.0..=max_record as f64), true, false);
@@ -124,10 +113,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             let label = crate::rtl::label(ui, egui::RichText::new(tr(&lang, "Record")).color(t.text));
             record.response.labelled_by(label.id);
-            if navigation_button(ui, "next", "Next") {
+            if navigation_button(ui, "Next") {
                 jump = Some(shown.saturating_add(1).min(max_record));
             }
-            if navigation_button(ui, "last", "Last") {
+            if navigation_button(ui, "Last") {
                 jump = Some(max_record);
             }
         });
@@ -231,9 +220,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Local widget adapters only: every accepted value still calls the existing live engine
 /// command below. No draft document, Apply/Cancel layer, IO protocol or Undo wrapper.
+#[derive(Clone, Copy)]
 struct DataMergeControls {
     sdk: bool,
     document: (u64, u64),
+    /// Whether the controls take input; the framework's also follow the parent Ui.
+    enabled: bool,
 }
 
 struct MergeNumber {
@@ -248,7 +240,7 @@ impl DataMergeControls {
 
     fn button(&self, ui: &mut egui::Ui, key: &str, caption: &str, name: &str, enabled: bool, small: bool) -> bool {
         let id = self.id(ui, "button", key);
-        let enabled = enabled && ui.is_enabled();
+        let enabled = enabled && self.enabled && ui.is_enabled();
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
             use craft_ui_widgets::contract::{Props as _, Show as _};
@@ -257,11 +249,7 @@ impl DataMergeControls {
         let response = ui
             .push_id(id, |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
-                    if small {
-                        ui.small_button(crate::rtl::widget(ui, caption))
-                    } else {
-                        ui.button(crate::rtl::widget(ui, caption))
-                    }
+                    if small { ui.small_button(crate::rtl::widget(ui, caption)) } else { ui.button(crate::rtl::widget(ui, caption)) }
                 })
                 .inner
             })
@@ -276,7 +264,11 @@ impl DataMergeControls {
         if self.sdk {
             use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
             let before = *value;
-            craft_ui_widgets::choice::Checkbox::new(Bind::bound(value)).id(id).label(name.to_owned()).enabled(ui.is_enabled()).show(ui);
+            craft_ui_widgets::choice::Checkbox::new(Bind::bound(value))
+                .id(id)
+                .label(name.to_owned())
+                .enabled(self.enabled && ui.is_enabled())
+                .show(ui);
             return *value != before;
         }
         ui.push_id(id, |ui| ui.checkbox(value, crate::rtl::widget(ui, name))).inner.changed()
@@ -289,17 +281,12 @@ impl DataMergeControls {
             let id = self.id(ui, "choice", key);
             let current_index = options.iter().position(|(value, _)| *value == current).unwrap_or(usize::MAX);
             let entries: Vec<_> = options.iter().enumerate().map(|(i, (_, text))| Entry::new(i, tr(lang, text).to_owned())).collect();
-            let width = ui.available_width().min(200.0);
-            let out = ui
-                .allocate_ui_with_layout(vec2(width, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    craft_ui_widgets::pickers::Select::new(tr(lang, name).to_owned(), Bind::given(current_index), &entries)
-                        .id(id)
-                        .enabled(ui.is_enabled())
-                        .placeholder(current.to_owned())
-                        .sizing(Sizing::FillWidth)
-                        .show(ui)
-                })
-                .inner;
+            let out = craft_ui_widgets::pickers::Select::new(tr(lang, name).to_owned(), Bind::given(current_index), &entries)
+                .id(id)
+                .enabled(self.enabled && ui.is_enabled())
+                .placeholder(current.to_owned())
+                .sizing(Sizing::FillWidth)
+                .show(ui);
             // Arrow navigation is only a proposal. Escape cannot send data.options.
             return out.events.committed().and_then(|i| options.get(*i)).map(|(value, _)| (*value).to_owned()).filter(|value| value != current);
         }
@@ -313,7 +300,7 @@ impl DataMergeControls {
             use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
             let out = craft_ui_widgets::text::TextField::new(name.to_owned(), Bind::given(value.clone()))
                 .id(id)
-                .enabled(ui.is_enabled())
+                .enabled(self.enabled && ui.is_enabled())
                 .limit(None)
                 .sizing(Sizing::FillWidth)
                 .show(ui);
@@ -343,47 +330,37 @@ impl DataMergeControls {
         let id = self.id(ui, "number", key);
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
-            return ui
-                .horizontal(|ui| {
-                    if prefix {
-                        crate::rtl::label(ui, name);
-                    }
-                    let width = if key == "preview-record" { 56.0 } else { 110.0 };
-                    let out = ui
-                        .allocate_ui_with_layout(vec2(width, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let mut field = craft_ui_widgets::text::NumberField::new(name.to_owned(), Bind::given(Some(value)))
-                                .id(id)
-                                .enabled(ui.is_enabled())
-                                .step(1.0)
-                                .sizing(Sizing::FillWidth);
-                            if let Some(range) = &range {
-                                field = field.range(range.clone());
-                            }
-                            if integer {
-                                field.fixed_decimals(0).show(ui)
-                            } else {
-                                field.show(ui)
-                            }
-                        })
-                        .inner;
-                    // Like the original live DragValue, successful typing/scrubbing is
-                    // already an engine edit. Escape is not a new rollback command or an
-                    // invented grouped Undo transaction; ignore Cancel-only events.
-                    let next = out
-                        .edit
-                        .value()
-                        .copied()
-                        .flatten()
-                        .filter(|v| v.is_finite())
-                        .map(|v| {
-                            let v = if integer { v.trunc() } else { v };
-                            range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))
-                        })
-                        .filter(|v| *v != value);
-                    MergeNumber { response: out.edit.response, value: next }
-                })
-                .inner;
+            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+            let mut shown = None;
+            craft_ui_widgets::layout_components::Row::new().id_salt(("datamerge-number", key)).show(ui, |ui, _| {
+                if prefix {
+                    craft_ui_widgets::display::Text::new(name.to_owned()).show(ui);
+                }
+                let mut field = craft_ui_widgets::text::NumberField::new(name.to_owned(), Bind::given(Some(value)))
+                    .id(id)
+                    .enabled(self.enabled && ui.is_enabled())
+                    .step(1.0);
+                if let Some(range) = &range {
+                    field = field.range(range.clone());
+                }
+                let out = if integer { field.fixed_decimals(0).show(ui) } else { field.show(ui) };
+                // Like the original live DragValue, successful typing/scrubbing is
+                // already an engine edit. Escape is not a new rollback command or an
+                // invented grouped Undo transaction; ignore Cancel-only events.
+                let next = out
+                    .edit
+                    .value()
+                    .copied()
+                    .flatten()
+                    .filter(|v| v.is_finite())
+                    .map(|v| {
+                        let v = if integer { v.trunc() } else { v };
+                        range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))
+                    })
+                    .filter(|v| *v != value);
+                shown = Some(MergeNumber { response: out.edit.response, value: next });
+            });
+            return shown.unwrap_or_else(|| MergeNumber { response: ui.response(), value: None });
         }
         if integer {
             // Keep the real legacy u32 control, including its quarter-point drag speed,
@@ -444,7 +421,11 @@ fn choice(ui: &mut egui::Ui, id: &str, current: &str, options: &[(&str, &str)], 
 
 fn kind_icon(ui: &mut egui::Ui, kind: &str, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-    let painter = ui.painter();
+    paint_kind(ui.painter(), rect, kind, color);
+}
+
+/// A data field's kind as a 16-point glyph in `rect`: a picture, a QR code, or a T for text.
+fn paint_kind(painter: &egui::Painter, rect: egui::Rect, kind: &str, color: Color32) {
     match kind {
         "image" => {
             painter.rect_stroke(rect.shrink(1.5), 1.0, Stroke::new(1.0, color), egui::StrokeKind::Middle);
@@ -476,6 +457,204 @@ fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
 
 fn w(ui: &egui::Ui, lang: &str, s: &str) -> egui::WidgetText {
     crate::rtl::widget(ui, tr(lang, s))
+}
+
+/// The Data Merge panel on the craft framework: the same live commands as the fallback, through the same control
+/// adapters, laid out with framework rows and text. Every control's id carries the document's identity.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{DataMergeControls, paint_kind, select_source, tr};
+    use crate::DesignApp;
+    use crate::theme::Tokens;
+    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::style::TypeRole;
+    use serde_json::{Value, json};
+
+    fn note(ui: &mut egui::Ui, text: &str) {
+        Text::new(text.to_owned()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+    }
+
+    fn heading(ui: &mut egui::Ui, text: &str) {
+        Text::new(text.to_owned()).role(TypeRole::BodyStrong).show(ui);
+    }
+
+    pub(super) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let lang = app.ui.language.clone();
+        let icon = Tokens::get(ui.ctx()).icon;
+        let snapshot = app.session.active().map(|st| {
+            let source = st.doc.data_merge.sources.first();
+            (
+                (st.uid, st.identity_epoch),
+                source.map(|s| s.name.clone()),
+                source.map(|s| s.id),
+                source.map(|s| s.rows.len()).unwrap_or(0),
+                st.doc.data_merge.options.clone(),
+                st.preview_record.unwrap_or(0),
+            )
+        });
+        let Some((document, source_name, source_id, record_count, options, preview_record)) = snapshot else {
+            note(ui, tr(&lang, "No data source"));
+            return;
+        };
+        let controls = DataMergeControls { document, sdk: true, enabled: true };
+        let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        let max_record = (record_count as u32).max(1);
+        let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
+        // What the pass asked for, run once it is drawn.
+        let mut commands: Vec<(&'static str, Value)> = Vec::new();
+        let (mut select, mut jump) = (false, None);
+        Stack::new().id_salt(("datamerge", document)).fill_width().show(ui, |ui, _| {
+            match &source_name {
+                Some(name) => Text::new(name.clone()).role(TypeRole::BodyStrong).show(ui),
+                None => Text::new(tr(&lang, "No data source").to_owned()).shade(Shade::Muted).show(ui),
+            };
+            Row::new().id_salt("source").wrap(true).show(ui, |ui, _| {
+                select = controls.button(ui, "select-source", tr(&lang, "Select Data Source…"), tr(&lang, "Select Data Source…"), true, false);
+                let has_source = source_name.is_some();
+                if controls.button(ui, "update-source", tr(&lang, "Update"), tr(&lang, "Update"), has_source, false) {
+                    commands.push(("data.source.update", json!({})));
+                }
+                if controls.button(ui, "remove-source", tr(&lang, "Remove"), tr(&lang, "Remove"), has_source, false) {
+                    commands.push(("data.source.remove", json!({})));
+                }
+            });
+            Divider::horizontal().show(ui);
+            if fields.is_empty() {
+                note(ui, tr(&lang, "Pass csv, rows, or bytes from the control channel."));
+            }
+            for field in &fields {
+                let name = field["name"].as_str().unwrap_or("").to_string();
+                let kind = field["kind"].as_str().unwrap_or("text").to_string();
+                let uses = field["uses"].as_u64().unwrap_or(0);
+                Row::new().id_salt(("datamerge-field", source_id, name.as_str(), kind.as_str())).fill_width().show(ui, |ui, _| {
+                    let painted = kind.clone();
+                    Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                        paint_kind(&cx.painter, egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)), &painted, icon);
+                    })
+                    .id_salt("kind")
+                    .show(ui);
+                    Text::new(name.clone()).show(ui);
+                    Text::new(uses.to_string()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+                    let bind = kind == "image" || kind == "qr";
+                    // The short caption shows; the action is named with the untouched field name.
+                    let caption = tr(&lang, if bind { "Bind to frame" } else { "Insert field" });
+                    if controls.button(ui, "insert-field", caption, &format!("{caption}: {name}"), true, true) {
+                        let params = if bind { json!({"field": name}) } else { json!({"field": name, "role": "text"}) };
+                        commands.push(("data.placeholder.add", params));
+                    }
+                });
+            }
+            Divider::horizontal().show(ui);
+            let mut preview_on = preview_record > 0;
+            if controls.check(ui, "preview", tr(&lang, "Preview"), &mut preview_on) {
+                commands.push(if preview_on { ("data.preview", json!({"record": 1})) } else { ("data.preview.stop", json!({})) });
+            }
+            // The record navigation takes input only while a record is previewed; it wraps in a narrow sidebar.
+            let navigation = DataMergeControls { enabled: preview_record > 0, ..controls };
+            Row::new().id_salt("preview-navigation").wrap(true).show(ui, |ui, _| {
+                for (key, label, to) in [("first", "First", 1), ("previous", "Previous", shown.saturating_sub(1).max(1))] {
+                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true, true) {
+                        jump = Some(to);
+                    }
+                }
+                let record = navigation.number(ui, "preview-record", tr(&lang, "Record"), shown as f64, Some(1.0..=max_record as f64), true, false);
+                if let Some(rec) = record.value {
+                    jump = Some(rec as u32);
+                }
+                Text::new(tr(&lang, "Record").to_owned()).show(ui);
+                for (key, label, to) in [("next", "Next", shown.saturating_add(1).min(max_record)), ("last", "Last", max_record)] {
+                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true, true) {
+                        jump = Some(to);
+                    }
+                }
+            });
+            Divider::horizontal().show(ui);
+            heading(ui, tr(&lang, "Merge options"));
+            let record_options = [("all", "All records"), ("one", "One record"), ("range", "Range")];
+            if let Some(records) = controls.choice(ui, "dm_records", &options.records, &record_options, &lang, tr(&lang, "Merge options")) {
+                commands.push(("data.options", json!({"records": records})));
+            }
+            if options.records == "one"
+                && let Some(one) =
+                    controls.number(ui, "one-record", tr(&lang, "Record"), options.one.max(1) as f64, Some(1.0..=max_record as f64), true, true).value
+            {
+                commands.push(("data.options", json!({"one": one as u32})));
+            }
+            if options.records == "range" {
+                let mut range = options.range.clone();
+                if controls.text(ui, "record-range", tr(&lang, "Range"), &mut range) {
+                    commands.push(("data.options", json!({"range": range})));
+                }
+            }
+            Text::new(tr(&lang, "Records per page").to_owned()).show(ui);
+            let per_page_options = [("single", "Single record"), ("multiple", "Multiple records")];
+            if let Some(per_page) = controls.choice(ui, "dm_per_page", &options.per_page, &per_page_options, &lang, tr(&lang, "Records per page")) {
+                commands.push(("data.options", json!({"perPage": per_page})));
+            }
+            if options.per_page == "multiple" {
+                let arrange_options = [("rows", "Rows first"), ("columns", "Columns first")];
+                if let Some(arrange) = controls.choice(ui, "dm_arrange", &options.arrange, &arrange_options, &lang, tr(&lang, "Arrangement")) {
+                    commands.push(("data.options", json!({"arrange": arrange})));
+                }
+                let mut insets = options.insets;
+                let mut insets_changed = false;
+                for (i, label) in ["Top", "Right", "Bottom", "Left"].iter().enumerate() {
+                    if let Some(value) = controls.number(ui, label, tr(&lang, label), insets[i], None, false, true).value {
+                        insets[i] = value;
+                        insets_changed = true;
+                    }
+                }
+                if insets_changed {
+                    commands.push(("data.options", json!({"insets": insets})));
+                }
+                if let Some(spacing) =
+                    controls.number(ui, "column-spacing", tr(&lang, "Column spacing"), options.column_spacing, None, false, true).value
+                {
+                    commands.push(("data.options", json!({"columnSpacing": spacing})));
+                }
+                if let Some(spacing) = controls.number(ui, "row-spacing", tr(&lang, "Row spacing"), options.row_spacing, None, false, true).value {
+                    commands.push(("data.options", json!({"rowSpacing": spacing})));
+                }
+            }
+            let fitting_options = [
+                ("fitProportionally", "Fit proportionally"),
+                ("fillProportionally", "Fill proportionally"),
+                ("fitContentToFrame", "Fit content to frame"),
+                ("none", "None"),
+            ];
+            if let Some(fitting) = controls.choice(ui, "dm_fitting", &options.fitting, &fitting_options, &lang, "Image Fitting") {
+                commands.push(("data.options", json!({"fitting": fitting})));
+            }
+            let mut center = options.center;
+            if controls.check(ui, "center", tr(&lang, "Center in frame"), &mut center) {
+                commands.push(("data.options", json!({"center": center})));
+            }
+            let mut link_images = options.link_images;
+            if controls.check(ui, "link-images", tr(&lang, "Link images"), &mut link_images) {
+                commands.push(("data.options", json!({"linkImages": link_images})));
+            }
+            let limit = options.limit.unwrap_or(0) as f64;
+            if let Some(limit) = controls.number(ui, "limit", tr(&lang, "Limit"), limit, Some(0.0..=100_000.0), true, true).value {
+                let limit = limit as u32;
+                commands.push(("data.options", json!({"limit": if limit == 0 { Value::Null } else { json!(limit) }})));
+            }
+            if controls.button(ui, "merge", tr(&lang, "Create Merged Document…"), tr(&lang, "Create Merged Document…"), true, false) {
+                commands.push(("data.merge", json!({})));
+            }
+        });
+        if select {
+            select_source(app);
+        }
+        for (id, params) in commands {
+            let _ = app.run(id, params);
+        }
+        if let Some(rec) = jump.filter(|rec| *rec != preview_record) {
+            let _ = app.run("data.preview", json!({"record": rec}));
+        }
+    }
 }
 
 #[cfg(test)]
