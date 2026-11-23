@@ -913,3 +913,63 @@ fn text_frame_options_form_follow_the_ruler_units() {
         assert!((o.gutter - pt(4.0)).abs() < 1e-6, "{shape}: the gutter {}", o.gutter);
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// CJK style sections and Layer Options
+
+/// Successor of `ruby_alignment_and_shatai_angle_reach_the_style_and_its_paragraph`: Ruby Alignment, the Shatai values and the
+/// Grid Alignment settings of Paragraph Style Options reach the style and the paragraph that follows it.
+#[test]
+fn paragraph_style_options_form_ruby_alignment_and_shatai_angle_reach_the_style_and_its_paragraph() {
+    use designcraft_doc::ruby::RubyAlignment;
+    let mut app = kit::app(1, false);
+    app.run("style.paragraph.create", json!({"name": "Body"})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "漢字かな"})).unwrap();
+    app.run("text.select", json!({"story": r["story"], "anchor": 0, "focus": 2})).unwrap();
+    app.run("style.paragraph.apply", json!({"name": "Body"})).unwrap();
+    app.run("prefs.set", json!({"cjkFeatures": true})).unwrap();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Body", "section": "cjk.rubyPlacement"})));
+    let mut h = kit::harness_sized(app, vec2(1400.0, 900.0));
+    {
+        let d = h.state_mut().ui.dialog.as_mut().unwrap();
+        d.fields.insert("c.rubyAlignment".into(), json!("equalAki"));
+        d.fields.insert("section".into(), json!("cjk.shatai"));
+        d.fields.insert("c.shataiMagnification".into(), json!(20.0));
+        d.fields.insert("c.shataiAngle".into(), json!(60.0));
+        d.fields.insert("section".into(), json!("cjk.grid"));
+        d.fields.insert("p.gridAlign".into(), json!("allLines"));
+        d.fields.insert("p.gridReference".into(), json!("emCenter"));
+        d.fields.insert("p.gridGyoudori".into(), json!(2));
+    }
+    kit::steps(&mut h, 3);
+    kit::click(&mut h, &[Role::Button], "OK", 0);
+    assert!(h.state().ui.dialog.is_none());
+    let doc = h.state().session.active().unwrap().doc.clone();
+    let st = doc.styles.para("Body").unwrap();
+    assert_eq!(st.chars.ruby_alignment, Some(RubyAlignment::EqualAki));
+    assert_eq!((st.chars.shatai_magnification, st.chars.shatai_angle), (Some(20.0), Some(60.0)));
+    assert_eq!((st.para.grid_reference, st.para.grid_gyoudori), (Some(designcraft_doc::cjk::CharacterAlignment::EmCenter), Some(2)));
+    let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
+    assert_eq!(a["chars"]["rubyAlignment"], "equalAki", "the paragraph follows its style");
+    assert_eq!(a["chars"]["shataiAngle"], 60.0);
+    assert_eq!(a["para"]["gridGyoudori"], 2);
+}
+
+/// Successor of `layer_options_lock_the_layers_guides` (with the double click that opens it, which the Layers panel's own
+/// tests cover): Lock Guides sits beside Lock Layer in the framework Layer Options and OK locks the guides only.
+#[test]
+fn layer_options_form_locks_the_layers_guides() {
+    let mut app = kit::app(1, false);
+    app.run("layer.new", json!({"name": "Grid"})).unwrap();
+    let id = app.session.active().unwrap().doc.layers.iter().find(|l| l.name == "Grid").unwrap().id.0;
+    crate::dialogs::open_layer_options(&mut app, Some(id)).unwrap();
+    let mut h = kit::harness(app);
+    let (lock, guides) = (kit::rect_of(&h, "Lock Layer").unwrap(), kit::rect_of(&h, "Lock Guides").unwrap());
+    assert!((lock.center().y - guides.center().y).abs() < 2.0 && guides.left() > lock.right(), "Lock Guides is beside Lock Layer");
+    kit::click(&mut h, &[Role::CheckBox], "Lock Guides", 0);
+    kit::click(&mut h, &[Role::Button], "OK", 0);
+    assert!(h.state().ui.dialog.is_none());
+    let doc = &h.state().session.active().unwrap().doc;
+    let l = doc.layers.iter().find(|l| l.name == "Grid").unwrap();
+    assert!(l.lock_guides && !l.locked);
+}
