@@ -4486,10 +4486,13 @@ mod ui223_swatches_rename_apply_tests {
                 }
             }
             let before = snapshot(&h);
-            idle(&mut h, 2);
-            press(&mut h, at, false);
+            // The keys of the held editor input go down while the source changes, before any pass has observed it: they are
+            // the editor's, and must apply nothing. (A key pressed after the editor is gone is the list's, which has taken
+            // the focus back: Enter on its current row is a real activation, not stale input.)
             key(&mut h, Key::Enter);
             key(&mut h, Key::Space);
+            idle(&mut h, 2);
+            press(&mut h, at, false);
             assert!(draft(&h).is_none(), "{change} must retire the observed source");
             unchanged(&h, &before);
             assert!(rename_calls(&h, before.journal).is_empty());
