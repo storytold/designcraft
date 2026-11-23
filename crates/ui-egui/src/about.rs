@@ -32,8 +32,12 @@ pub const ABOUT_TABS: [&str; 3] = ["About", "Contributors", "Models"];
 
 /// Paint the ArtCraft mark into `rect` (square), rasterised once per size and cached.
 pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
+    paint_mark_in(ui.ctx(), ui.painter(), rect, color);
+}
+
+/// [`paint_mark`] with the context and painter given, for a painter that is not a `Ui`'s (a framework picture's).
+pub fn paint_mark_in(ctx: &egui::Context, painter: &egui::Painter, rect: Rect, color: Color32) {
     use designcraft_render::vello_cpu::{self, kurbo, peniko};
-    let ctx = ui.ctx();
     let ppp = ctx.pixels_per_point();
     let px = ((rect.width().min(rect.height()) * ppp).round() as u32).clamp(8, 1024);
     let key = egui::Id::unique(("artcraft_mark", px, color.to_array()));
@@ -58,7 +62,7 @@ pub fn paint_mark(ui: &egui::Ui, rect: Rect, color: Color32) {
     });
     let side = rect.width().min(rect.height());
     let r = Rect::from_center_size(rect.center(), vec2(side, side));
-    ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
 /// A speech-bubble glyph (drawn in code) for Discord buttons.
@@ -110,6 +114,11 @@ fn link(ui: &mut egui::Ui, text: &str, url: &str, color: Color32) -> bool {
 
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if !app.ui.about {
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ctx);
         return;
     }
     let t = Tokens::get(ctx);
@@ -253,4 +262,139 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if let Some(k) = open {
         let _ = app.run(&format!("help.{k}"), json!({}));
     }
+}
+
+/// Help › About on the framework: a dialog with its three tabs, the same links, commands and credits.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{ABOUT_TABS, BRAND, DesignApp, SIBLINGS, json, links, paint_chat_icon, paint_mark_in};
+    use craft_ui_panels::dialog::Dialog as FrameworkDialog;
+    use craft_ui_panels::sections::{DialogRole, FooterButton};
+    use craft_ui_widgets::buttons::{Button, Link};
+    use craft_ui_widgets::choice::Segmented;
+    use craft_ui_widgets::contract::{Bind, Entry, LeastWidth, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Picture, PictureSize, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::{ThumbAspect, ThumbSize};
+    use craft_ui_widgets::primitives::IconSpec;
+    use craft_ui_widgets::runtime::overlay::Backdrop;
+    use craft_ui_widgets::style::{TypeRole, Variant};
+
+    /// The speech bubble of the Discord buttons.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Chat;
+
+    impl craft_ui_widgets::primitives::Glyph for Chat {
+        fn paint(
+            &self,
+            painter: &egui::Painter,
+            _tokens: &craft_ui_widgets::style::UiTokens,
+            rect: egui::Rect,
+            color: egui::Color32,
+            _mirrored: bool,
+        ) {
+            paint_chat_icon(painter, rect.center(), rect.width().min(rect.height()), color);
+        }
+    }
+
+    /// The Join our Discord button: the accent button with the speech bubble before its label; whether it was clicked.
+    pub fn discord_button(ui: &mut egui::Ui, label: String, salt: &str) -> bool {
+        let face = Chat;
+        Button::new(label)
+            .id_salt(salt.to_owned())
+            .variant(Variant::PRIMARY)
+            .icon(IconSpec::glyph(&face))
+            .tooltip(links::DISCORD.to_owned())
+            .show(ui)
+            .clicked()
+    }
+
+    pub(super) fn show(app: &mut DesignApp, ctx: &egui::Context) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let mut opened = true;
+        let mut open: Option<&'static str> = None;
+        let mut urls: Vec<String> = Vec::new();
+        let tab = app.ui.about_tab;
+        let mut next_tab = tab;
+        let shown = egui::Area::new(egui::Id::unique("about_framework_host")).order(egui::Order::Foreground).show(ctx, |ui| {
+            FrameworkDialog::new(tr("About DesignCraft"))
+                .id_salt("about_dialog")
+                .opened(Bind::bound(&mut opened))
+                .backdrop(Backdrop::None)
+                .closable(false)
+                .outer_gesture(false)
+                .close_on_enter(false)
+                .least_width(if tab == 0 { LeastWidth::Dialog } else { LeastWidth::WideDialog })
+                .buttons(vec![FooterButton::new(tr("  Close  ").trim().to_owned(), DialogRole::Cancel)])
+                .show(ui, |ui, _| {
+                    Stack::new().id_salt("about").fill_width().show(ui, |ui, _| {
+                        let entries: Vec<Entry<String>> = ABOUT_TABS.iter().enumerate().map(|(i, l)| Entry::new(i.to_string(), tr(l))).collect();
+                        let out = Segmented::new(tr("About DesignCraft"), Bind::given(tab.to_string()), &entries).id_salt("about_tabs").show(ui);
+                        if let Some(picked) = out.events.committed().and_then(|v| v.parse::<u8>().ok()) {
+                            next_tab = picked;
+                        }
+                        match tab {
+                            1 => urls.extend(crate::credits::contributors_framework(ui, &lang)),
+                            2 => crate::credits::models_framework(ui, &lang),
+                            _ => about_page(ui, &lang, &mut open, &mut urls),
+                        }
+                    });
+                })
+                .output
+        });
+        app.ui.about_tab = next_tab;
+        app.ui.pending_urls.extend(urls);
+        if !opened || shown.inner.closed.is_some() || shown.inner.picked.is_some() {
+            app.ui.about = false;
+        }
+        if let Some(k) = open {
+            let _ = app.run(&format!("help.{k}"), json!({}));
+        }
+    }
+
+    fn about_page(ui: &mut egui::Ui, lang: &str, open: &mut Option<&'static str>, urls: &mut Vec<String>) {
+        let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+        Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| paint_mark_in(cx.painter.ctx(), &cx.painter, rect, BRAND))
+            .id_salt("about_mark")
+            .extent(PictureSize::Thumb(ThumbSize::Large))
+            .show(ui);
+        Text::new(tr("DesignCraft")).role(TypeRole::Title).sizing(Sizing::FillWidth).show(ui);
+        Text::new(format!("{} {}", tr("Version"), env!("CARGO_PKG_VERSION"))).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        Text::new(tr("Page layout for print and screen — fast, open and scriptable.")).sizing(Sizing::FillWidth).show(ui);
+        Text::new(tr("Part of the ArtCraft suite of open creative tools.")).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        if discord_button(ui, tr("Join the ArtCraft Discord"), "about_discord") {
+            *open = Some("discord");
+        }
+        Text::new(tr("discord.gg/artcraft — help, feedback and show-and-tell"))
+            .role(TypeRole::Caption)
+            .shade(Shade::Muted)
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        Row::new().id_salt("about_links").wrap(true).show(ui, |ui, _| {
+            for (text, key) in [("DesignCraft page", "appPage"), ("GitHub", "github"), ("getartcraft.com", "website"), ("Report an issue", "issues")]
+            {
+                if Link::new(tr(text)).url(links::get(key).unwrap_or_default().to_string()).id_salt(key).show(ui).clicked() {
+                    *open = Some(key);
+                }
+            }
+        });
+        Divider::horizontal().show(ui);
+        Text::new(tr("More ArtCraft apps")).role(TypeRole::BodyStrong).sizing(Sizing::FillWidth).show(ui);
+        Row::new().id_salt("about_siblings").wrap(true).show(ui, |ui, _| {
+            for (slug, name, what) in SIBLINGS {
+                let url = format!("{}/apps/{slug}", links::WEBSITE);
+                if Button::new((*name).to_owned()).id_salt(("about_sibling", *slug)).tooltip(format!("{} — {url}", tr(what))).show(ui).clicked() {
+                    urls.push(url);
+                }
+            }
+        });
+        Text::new(tr("Open source. No telemetry.")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+    }
+}
+
+/// The Join our Discord button as a framework component (see [`framework::discord_button`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn discord_framework(ui: &mut egui::Ui, label: String, salt: &str) -> bool {
+    framework::discord_button(ui, label, salt)
 }

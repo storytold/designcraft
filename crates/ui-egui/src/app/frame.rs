@@ -140,29 +140,19 @@ impl DesignApp {
         if !presenting {
             chrome::doc_tabs(self, ui);
         }
-        let split_layout = (self.split && !presenting)
-            .then(|| {
-                craft_ui_legacy::layout::split_rect(
-                    ui.available_rect_before_wrap(),
-                    craft_ui_legacy::layout::SplitAxis::Horizontal,
-                    craft_ui_legacy::layout::SplitSize::Ratio(0.5),
-                    2.0,
-                    0.0,
-                )
-            })
-            .flatten();
-        if let Some(layout) = split_layout {
+        let split_layout = (self.split && !presenting).then(|| split_panes(ui.available_rect_before_wrap())).flatten();
+        if let Some((first, divider, second)) = split_layout {
             // Two panes with a divider; each has its own view (zoom, scroll) and render cache.
-            ui.painter().rect_filled(layout.divider, 0.0, t.border);
+            ui.painter().rect_filled(divider, 0.0, t.border);
             // Resolve the clicked pane before either canvas handles this frame's keys.
             if let Some(p) = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) {
-                if layout.first.contains(p) {
+                if first.contains(p) {
                     self.focus_pane = 0;
-                } else if layout.second.contains(p) {
+                } else if second.contains(p) {
                     self.focus_pane = 1;
                 }
             }
-            for (k, half) in [layout.first, layout.second].into_iter().enumerate() {
+            for (k, half) in [first, second].into_iter().enumerate() {
                 self.switch_pane(k as u8);
                 // A new pane starts at the other pane's view.
                 if k == 1 && self.view().is_none() {
@@ -185,5 +175,43 @@ impl DesignApp {
             }
             canvas::show(self, ui);
         }
+    }
+}
+
+/// The split view's two side-by-side panes of equal width and the divider between them, which takes
+/// [`SPLIT_DIVIDER`] points of the width (all of it in a narrower rect). `None` for a rect with a non-finite or
+/// inverted extent.
+fn split_panes(rect: egui::Rect) -> Option<(egui::Rect, egui::Rect, egui::Rect)> {
+    if !rect.is_finite() || rect.width() < 0.0 || rect.height() < 0.0 {
+        return None;
+    }
+    let divider = SPLIT_DIVIDER.min(rect.width());
+    let edge = rect.min.x + (rect.width() - divider) * 0.5;
+    let first = egui::Rect::from_min_max(rect.min, egui::pos2(edge, rect.max.y));
+    let line = egui::Rect::from_min_max(egui::pos2(edge, rect.min.y), egui::pos2(edge + divider, rect.max.y));
+    let second = egui::Rect::from_min_max(egui::pos2(line.max.x, rect.min.y), rect.max);
+    Some((first, line, second))
+}
+
+/// The width of the line between the split view's panes, in points.
+const SPLIT_DIVIDER: f32 = 2.0;
+
+#[cfg(test)]
+mod split_tests {
+    use super::split_panes;
+    use egui::{Rect, pos2};
+
+    /// The panes share the width the divider leaves, the divider sits between them, and the three cover the rect.
+    #[test]
+    fn the_split_view_gives_each_pane_half_of_what_the_divider_leaves() {
+        let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(412.0, 300.0));
+        let (first, divider, second) = split_panes(rect).unwrap();
+        assert_eq!((first.width(), divider.width(), second.width()), (200.0, 2.0, 200.0));
+        assert_eq!((first.min, first.max.x, divider.min.x, divider.max.x, second.max), (rect.min, 210.0, 210.0, 212.0, rect.max));
+        assert!([first, divider, second].iter().all(|pane| pane.min.y == rect.min.y && pane.max.y == rect.max.y));
+        // A rect narrower than the divider is all divider; an inverted one has no split.
+        let (first, divider, second) = split_panes(Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 5.0))).unwrap();
+        assert_eq!((first.width(), divider.width(), second.width()), (0.0, 1.0, 0.0));
+        assert!(split_panes(Rect::from_min_max(pos2(5.0, 0.0), pos2(1.0, 5.0))).is_none());
     }
 }

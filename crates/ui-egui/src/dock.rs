@@ -1,9 +1,6 @@
-//! The panels: their ids, names, icons and contents, and the windows of the float-only panels.
-//! `panel_docking` places the others in the docking layout.
+//! The panels: their ids, names, icons and contents. `panel_docking` places them in the docking layout; the
+//! float-only panels (Type › Tabs) open there as floating windows that never dock.
 
-use egui::{Sense, vec2};
-
-use crate::theme::{Tokens, semibold};
 use crate::{DesignApp, panels};
 
 /// (id, label, icon) of the Properties · Pages · Layers group of the default dock.
@@ -53,33 +50,46 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
     ("dataMerge", "Data Merge", "panel-datamerge"),
 ];
 
-/// Panels that only float, outside the docking layout (they open from a menu).
-pub const FLOATING_PANELS: &[(&str, &str)] = &[("tabs", "Tabs")];
+/// (id, label, icon) of the panels that only float (they open from a menu): floating windows of the docking layout
+/// that take no other panel and never dock.
+pub const FLOATING_PANELS: &[(&str, &str, &str)] = &[("tabs", "Tabs", "tab-left"), (crate::story_editor::PANEL, "Story Editor", "story-editor")];
+
+/// Every panel: the default dock's, the iconic column's and the float-only ones.
+pub fn all_panels() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
+    DOCK_TABS.iter().chain(ICON_PANELS).chain(FLOATING_PANELS)
+}
 
 /// The English name of panel `id`.
 pub fn panel_label(id: &str) -> &'static str {
-    DOCK_TABS.iter().chain(ICON_PANELS).map(|p| (p.0, p.1)).chain(FLOATING_PANELS.iter().copied()).find(|p| p.0 == id).map_or("Panel", |p| p.1)
+    all_panels().find(|p| p.0 == id).map_or("Panel", |p| p.1)
 }
 
-/// A panel's contents at most `max_h` tall, scrolling past that. The Pages panel scrolls its
-/// parts itself and keeps its footer at the bottom, so it gets the height instead.
-fn scrolled_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, max_h: f32) {
-    if scrolls_itself(id) {
-        ui.allocate_ui(vec2(ui.available_width(), max_h.clamp(160.0, 560.0)), |ui| panel_body(app, ui, id));
-    } else {
-        egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| panel_body(app, ui, id));
+/// The title panel `id` shows in place of its name while it says something that changes, such as a count; `None`
+/// shows the panel's translated name. The dock reads the titles each frame and builds its panel specs again only when
+/// one of them changed.
+pub fn panel_title(app: &DesignApp, id: &str) -> Option<String> {
+    match id {
+        crate::story_editor::PANEL => crate::story_editor::title(app),
+        _ => None,
     }
 }
 
-/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer).
+/// The panels showing a changing title ([`panel_title`]), with that title.
+pub fn panel_titles(app: &DesignApp) -> Vec<(String, String)> {
+    all_panels().filter_map(|(id, _, _)| panel_title(app, id).map(|title| ((*id).to_owned(), title))).collect()
+}
+
+/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer; the Story Editor, whose text
+/// scrolls inside it).
 pub fn scrolls_itself(id: &str) -> bool {
-    id == "pages"
+    matches!(id, "pages" | crate::story_editor::PANEL)
 }
 
 /// The contents of an icon-column panel.
 pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
     match id {
         "properties" => panels::properties::show(app, ui),
+        crate::story_editor::PANEL => crate::story_editor::body(app, ui),
         "pages" => panels::pages::show(app, ui),
         "layers" => panels::layers::show(app, ui),
         "swatches" => panels::swatches::show(app, ui),
@@ -125,70 +135,17 @@ pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
     }
 }
 
-/// Panels that only float, outside the dock and the docking layout (the Tabs panel).
+/// Panels that only float (the Tabs panel): the docking layout opens them as floating windows of their own and keeps
+/// them out of the dock.
 pub(crate) fn float_only(id: &str) -> bool {
     FLOATING_PANELS.iter().any(|p| p.0 == id)
-}
-
-/// The float-only panels' windows (the Tabs panel). The docking layout draws the other
-/// floating panels.
-pub fn float_only_windows(app: &mut DesignApp, ctx: &egui::Context) {
-    let t = Tokens::get(ctx);
-    for (id, at) in app.ui.floating.clone() {
-        if !float_only(&id) {
-            continue;
-        }
-        let label = crate::i18n::tr(&app.ui.language, panel_label(&id)).to_owned();
-        let mut open = true;
-        let mut w = egui::Window::new(label.clone())
-            .id(egui::Id::unique(("floating_panel", &id)))
-            .title_bar(false)
-            .default_pos(egui::pos2(at[0], at[1]))
-            .default_width(if id == "tabs" { 560.0 } else { 256.0 })
-            .resizable(true)
-            .frame(egui::Frame::window(&ctx.global_style()).fill(t.panel).inner_margin(egui::Margin::same(0)));
-        // The Tabs panel moves over the text frame it edits, at the column's width.
-        if id == "tabs"
-            && let Some((pos, width)) = app.ui.tabs_panel.place.take()
-        {
-            w = w.current_pos(pos).min_width(width).max_width(width);
-        }
-        let r = w.show(ctx, |ui| {
-            // Header strip (drag it to move the panel): name and close.
-            let (strip, _) = ui.allocate_exact_size(vec2(ui.available_width().max(200.0), 24.0), Sense::hover());
-            ui.painter().rect_filled(strip, 0.0, t.panel_darker);
-            crate::rtl::paint(ui.painter(), strip.min + vec2(10.0, 12.0), egui::Align2::LEFT_CENTER, &label, semibold(12.0), t.text_strong);
-            let close = egui::Rect::from_min_size(egui::pos2(strip.max.x - 22.0, strip.min.y + 3.0), vec2(18.0, 18.0));
-            if ui
-                .interact(close, ui.scope_id().with("fclose"), Sense::click())
-                .on_hover_ui(|ui| {
-                    crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Close"));
-                })
-                .clicked()
-            {
-                open = false;
-            }
-            ui.painter().text(close.center(), egui::Align2::CENTER_CENTER, "×", egui::FontId::proportional(15.0), t.text_dim);
-            egui::Frame::NONE.inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                scrolled_body(app, ui, &id, ctx.content_rect().height() - 160.0);
-            });
-        });
-        // Remember where it was left.
-        if let Some(r) = r
-            && let Some(f) = app.ui.floating.iter_mut().find(|(p, _)| *p == id)
-        {
-            f.1 = [r.response.rect.min.x, r.response.rect.min.y];
-        }
-        if !open {
-            app.ui.floating.retain(|(p, _)| *p != id);
-        }
-    }
 }
 
 #[cfg(test)]
 mod visual_regressions {
     use super::*;
-    use egui::Color32;
+    use crate::theme::Tokens;
+    use egui::{Color32, vec2};
 
     fn scaled_input(size: egui::Vec2, scale: f32) -> egui::RawInput {
         let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() };

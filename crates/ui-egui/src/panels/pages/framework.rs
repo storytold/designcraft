@@ -16,10 +16,11 @@ use craft_ui_widgets::buttons::{Button, IconButton};
 use craft_ui_widgets::contract::overlay::Anchor;
 use craft_ui_widgets::contract::{
     Access, Bind, CollectionEvent, Common, Component, Cx, DisabledLook, DropMark, DropOperation, DropTarget, LeadSource, ListDrag, MeasureCx,
-    NoValue, Outcome, PaintUi, Pointer as _, PopupKind, Props as _, Role, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
-    Trigger,
+    NoValue, Outcome, PaintUi, Pointer as _, PopupKind, Props as _, Role, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
+    Sizing, Trigger,
 };
 use craft_ui_widgets::display::{Divider, Shade, Text};
+use craft_ui_widgets::layout_components::Stack;
 use craft_ui_widgets::list::{List, ListRow};
 use craft_ui_widgets::menu::{Menu, MenuItem};
 use craft_ui_widgets::primitives::IconSpec;
@@ -141,6 +142,7 @@ pub(super) struct PageCell<'a> {
     click: Option<Click>,
     dropped: Option<(PageDrag, DropOperation)>,
     moved: Option<f32>,
+    follow: bool,
 }
 
 impl<'a> PageCell<'a> {
@@ -157,6 +159,7 @@ impl<'a> PageCell<'a> {
             click: None,
             dropped: None,
             moved: None,
+            follow: false,
         }
         .label(label)
     }
@@ -197,6 +200,12 @@ impl<'a> PageCell<'a> {
     /// The cell takes the drops `accepts` takes.
     pub(super) fn takes(mut self, accepts: fn(&PageDrag) -> bool) -> Self {
         self.takes = Some(accepts);
+        self
+    }
+
+    /// The cell asks the scroll region around it to bring it into view, in each pass it is shown with this on.
+    pub(super) fn following(mut self) -> Self {
+        self.follow = true;
         self
     }
 
@@ -241,6 +250,10 @@ impl Component for PageCell<'_> {
     /// A press that moves starts the cell's drag, or, for the handle, reports how far it moved; a click, the second
     /// click of a double click and the keyboard are reported as a click; a drag the cell takes is over it or drops on it.
     fn update(&mut self, cx: &mut Cx<'_, Self>) {
+        if self.follow {
+            let rect = cx.rect;
+            cx.reveal(rect);
+        }
         let phase = cx.press().phase;
         self.look.hovered = cx.hit();
         self.look.held = phase.button_down();
@@ -362,6 +375,24 @@ fn menu_rows(ui: &mut Ui, entries: &[MenuEntry], picked: &mut Option<Act>) {
                 Menu::submenu_row_enabled(ui, label.clone(), *enabled, |ui, _| menu_rows(ui, items, picked));
             }
         }
+    }
+}
+
+/// The panel menu's rows, for the page `abs` in spread `si`, in the framework `Menu` the dock's menu button opens: the entry
+/// run does what it did as a native row, and the menu closes.
+pub(super) fn panel_menu(
+    app: &mut DesignApp,
+    ui: &mut Ui,
+    doc: &designcraft_doc::Document,
+    layouts: &[designcraft_doc::LayoutRange],
+    abs: usize,
+    si: usize,
+) {
+    let entries = page_entries(app, doc, layouts, abs, si);
+    let mut picked = None;
+    menu_rows(ui, &entries, &mut picked);
+    if let Some(act) = picked {
+        act.run(app, doc, layouts);
     }
 }
 
@@ -577,36 +608,33 @@ fn parents_list(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Documen
 /// button under them.
 fn parent_tiles(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, p: &Plan) {
     let lang = app.ui.language.clone();
-    egui::ScrollArea::vertical().id_salt("pages_parents").max_height(p.parents_h).min_scrolled_height(p.parents_h).auto_shrink([false, true]).show(
-        ui,
-        |ui| {
-            let width = ui.available_width();
-            let tile_h = p.icon_h + 22.0;
-            let (mut x, mut y) = (0.0_f32, 0.0_f32);
-            let mut places = Vec::with_capacity(p.rows.len());
-            for row in &p.rows {
-                let w = tile_width(p.icon_h, row.unit_w);
-                if x > 0.0 && x + w > width {
-                    x = 0.0;
-                    y += tile_h;
-                }
-                places.push(vec2(x, y));
-                x += w + 6.0;
+    Stack::new().id_salt("pages_parents").fill_width().scroll(Scroll::vertical()).room_height(p.parents_h).show(ui, |ui, _| {
+        let width = ui.available_width();
+        let tile_h = p.icon_h + 22.0;
+        let (mut x, mut y) = (0.0_f32, 0.0_f32);
+        let mut places = Vec::with_capacity(p.rows.len());
+        for row in &p.rows {
+            let w = tile_width(p.icon_h, row.unit_w);
+            if x > 0.0 && x + w > width {
+                x = 0.0;
+                y += tile_h;
             }
-            let (_, area) = ui.allocate_space(vec2(width, y + tile_h));
-            for (row, at) in p.rows.iter().zip(places) {
-                let tile = Rect::from_min_size(area.min + at, vec2(tile_width(p.icon_h, row.unit_w), tile_h));
-                parent_tile(app, ui, doc, p, row, tile, &lang);
-            }
-            let (_, new) = ui.allocate_space(vec2(ui.available_width(), NEW_PARENT_H));
-            let label = crate::i18n::tr(&lang, "New Parent").to_owned();
-            if Button::new(label).id_salt("pages_new_parent").variant(Variant::GHOST).show_at(ui, new).clicked()
-                && let Ok(made) = app.run("layout.parents.new", json!({}))
-            {
-                select_parent(app, made.get("id").and_then(serde_json::Value::as_u64).map(SpreadId));
-            }
-        },
-    );
+            places.push(vec2(x, y));
+            x += w + 6.0;
+        }
+        let (_, area) = ui.allocate_space(vec2(width, y + tile_h));
+        for (row, at) in p.rows.iter().zip(places) {
+            let tile = Rect::from_min_size(area.min + at, vec2(tile_width(p.icon_h, row.unit_w), tile_h));
+            parent_tile(app, ui, doc, p, row, tile, &lang);
+        }
+        let (_, new) = ui.allocate_space(vec2(ui.available_width(), NEW_PARENT_H));
+        let label = crate::i18n::tr(&lang, "New Parent").to_owned();
+        if Button::new(label).id_salt("pages_new_parent").variant(Variant::GHOST).show_at(ui, new).clicked()
+            && let Ok(made) = app.run("layout.parents.new", json!({}))
+        {
+            select_parent(app, made.get("id").and_then(serde_json::Value::as_u64).map(SpreadId));
+        }
+    });
 }
 
 /// One parent's tile.
@@ -658,8 +686,8 @@ fn parent_tile(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document
 /// The document's spreads, each with its page thumbnails, as InDesign's, in a scroll area of their own. Alternate layouts
 /// stand side by side, each a column with its header.
 fn pages(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, p: &Plan, drop: &mut Option<PageDrop>) {
-    let area = if p.columns { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() };
-    area.id_salt("pages_spreads").max_height(p.pages_h).min_scrolled_height(p.pages_h).auto_shrink([false, false]).show(ui, |ui| {
+    let scroll = if p.columns { Scroll::both() } else { Scroll::vertical() };
+    Stack::new().id_salt("pages_spreads").fill_width().scroll(scroll).room_height(p.pages_h).show(ui, |ui, _| {
         ui.add_space(4.0);
         if p.columns {
             layout_columns(app, ui, doc, p, drop);
@@ -778,7 +806,8 @@ fn spreads(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, p:
         if p.cur_spread == Some(si) && !p.editing_parents {
             let key = (p.uid, p.cur);
             if ui.data(|d| d.get_temp::<(u64, usize)>(followed_id)) != Some(key) {
-                ui.scroll_to_rect(row, None);
+                // The scroll region around brings the current spread into view, once for each page the panel follows.
+                PageCell::plain().id_salt(("pages_follow", si)).following().show_at(ui, row);
                 ui.data_mut(|d| d.insert_temp(followed_id, key));
             }
         }
