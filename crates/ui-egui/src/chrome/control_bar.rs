@@ -1267,12 +1267,15 @@ mod framework_tests {
         let mut h = harness(DesignApp::new_for_panel_tests(session, crate::Services::default()));
         // The rule's select is named by its caption; the framework may name it without the caption's colon.
         let rule = ["Liquid Page Rule:", "Liquid Page Rule"].iter().any(|name| has_role(&h, name, &[Role::ComboBox]));
-        let combos: Vec<String> = h
-            .query_all_by_role(Role::ComboBox)
-            .filter(|n| h.state().bar.unwrap().contains(n.rect().center()))
-            .map(|n| format!("{:?}", n.accesskit_node().label()))
+        let bar = h.state().bar.unwrap();
+        let roles = [Role::Button, Role::ComboBox, Role::CheckBox, Role::RadioButton, Role::TextInput, Role::SpinButton, Role::ListBox, Role::Label];
+        let nodes: Vec<String> = roles
+            .iter()
+            .flat_map(|role| h.query_all_by_role(*role).collect::<Vec<_>>())
+            .filter(|n| bar.contains(n.rect().center()))
+            .map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.accesskit_node().label()))
             .collect();
-        assert!(rule, "the Liquid Page Rule select is in the Control panel; the bar's selects: {combos:?}");
+        assert!(rule, "the Liquid Page Rule select is in the Control panel; the bar's named nodes: {nodes:?}");
         control(&h, "Page Size", &[Role::ComboBox], 0);
         assert!(!has(&h, "Objects Move with Page"));
         let ran = press(&mut h, "Show Parent Page Overlay", &[Role::CheckBox], 0);
