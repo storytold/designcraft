@@ -1183,7 +1183,7 @@ dependencies = [
 [[package]]
 name = "craft-atomic"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "rustix 1.1.5",
 ]
@@ -1191,7 +1191,7 @@ dependencies = [
 [[package]]
 name = "craft-behavior"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "accesskit",
  "bitflags 2.13.2",
@@ -1209,12 +1209,12 @@ dependencies = [
 [[package]]
 name = "craft-cfb"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-cloud-ui"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "egui",
 ]
@@ -1222,7 +1222,7 @@ dependencies = [
 [[package]]
 name = "craft-cms"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "md-5",
  "rayon",
@@ -1231,23 +1231,23 @@ dependencies = [
 [[package]]
 name = "craft-codepage"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-color-ui"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-cms",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-platform",
  "craft-settings",
  "craft-theme",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
- "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "egui",
  "serde",
  "serde_json",
@@ -1256,7 +1256,7 @@ dependencies = [
 [[package]]
 name = "craft-csv"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1272,7 +1272,7 @@ dependencies = [
 [[package]]
 name = "craft-dds"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "rayon",
 ]
@@ -1280,7 +1280,7 @@ dependencies = [
 [[package]]
 name = "craft-designcraft-format"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-document-bundle",
  "craft-eps",
@@ -1292,12 +1292,12 @@ dependencies = [
 [[package]]
 name = "craft-dialogs"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "block2 0.6.2",
  "craft-atomic",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-platform",
  "futures-lite",
  "log",
@@ -1312,7 +1312,7 @@ dependencies = [
 [[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "serde",
 ]
@@ -1320,7 +1320,7 @@ dependencies = [
 [[package]]
 name = "craft-document-bundle"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-zip",
  "serde_json",
@@ -1331,7 +1331,7 @@ dependencies = [
 [[package]]
 name = "craft-docx"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1351,7 +1351,7 @@ dependencies = [
 [[package]]
 name = "craft-drawingml"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "chrono",
  "craft-xml",
@@ -1363,12 +1363,12 @@ dependencies = [
 [[package]]
 name = "craft-eps"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-epub"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-xml",
  "craft-zip",
@@ -1378,7 +1378,7 @@ dependencies = [
 [[package]]
 name = "craft-file-formats"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-eps",
  "craft-idml",
@@ -1391,7 +1391,7 @@ dependencies = [
 [[package]]
 name = "craft-font-catalog"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "harfrust 0.13.3",
  "kurbo",
@@ -1410,15 +1410,15 @@ source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa3
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-host"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bitflags 2.13.2",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "egui",
  "serde",
  "toml",
@@ -1451,7 +1451,7 @@ dependencies = [
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "chrono",
  "fixed_decimal",
@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "craft-idml"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-xml",
  "craft-zip",
@@ -1516,12 +1516,12 @@ dependencies = [
 [[package]]
 name = "craft-image-codecs"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
- "craft-dds 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
- "craft-jpeg 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
- "craft-metadata 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
- "craft-tiff 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-dds 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
+ "craft-jpeg 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
+ "craft-metadata 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
+ "craft-tiff 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "crc32fast",
  "exr",
  "flate2",
@@ -1543,7 +1543,7 @@ dependencies = [
 [[package]]
 name = "craft-indd"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "indd",
 ]
@@ -1559,7 +1559,7 @@ dependencies = [
 [[package]]
 name = "craft-jpeg"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1567,10 +1567,10 @@ dependencies = [
 [[package]]
 name = "craft-keymap"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-tracked",
  "craft-ui-macros",
  "craft-xml",
@@ -1582,7 +1582,7 @@ dependencies = [
 [[package]]
 name = "craft-math"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-xml",
  "roxmltree 0.21.2",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "craft-mcp-server"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "serde_json",
 ]
@@ -1600,16 +1600,16 @@ dependencies = [
 [[package]]
 name = "craft-menu"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-quit",
  "craft-theme",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
- "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "egui",
  "serde",
  "serde_json",
@@ -1630,11 +1630,11 @@ dependencies = [
 [[package]]
 name = "craft-metadata"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "brotli-decompressor 6.3.1",
  "chrono",
- "craft-tiff 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-tiff 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "quick-xml 0.41.0",
  "serde",
 ]
@@ -1642,7 +1642,7 @@ dependencies = [
 [[package]]
 name = "craft-mime"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "chrono",
  "craft-codepage",
@@ -1652,7 +1652,7 @@ dependencies = [
 [[package]]
 name = "craft-offcrypto"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -1669,7 +1669,7 @@ dependencies = [
 [[package]]
 name = "craft-opc"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-xml",
  "craft-zip",
@@ -1680,7 +1680,7 @@ dependencies = [
 [[package]]
 name = "craft-pdf"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bytemuck",
  "craft-svg",
@@ -1697,7 +1697,7 @@ dependencies = [
 [[package]]
 name = "craft-platform"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "async-channel",
  "async-io",
@@ -1727,7 +1727,7 @@ dependencies = [
 [[package]]
 name = "craft-pptx"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-drawingml",
  "craft-opc",
@@ -1742,7 +1742,7 @@ dependencies = [
 [[package]]
 name = "craft-prepress"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-cms",
  "craft-pdf",
@@ -1755,7 +1755,7 @@ dependencies = [
 [[package]]
 name = "craft-print"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-host",
  "craft-winprint-gdi",
@@ -1775,7 +1775,7 @@ dependencies = [
 [[package]]
 name = "craft-ps"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-eps",
  "kurbo",
@@ -1788,7 +1788,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1799,7 +1799,7 @@ dependencies = [
 [[package]]
 name = "craft-quit"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "dispatch2",
  "egui",
@@ -1810,7 +1810,7 @@ dependencies = [
 [[package]]
 name = "craft-rtf"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-codepage",
  "encoding_rs",
@@ -1819,7 +1819,7 @@ dependencies = [
 [[package]]
 name = "craft-settings"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-atomic",
  "craft-host",
@@ -1836,14 +1836,14 @@ dependencies = [
 [[package]]
 name = "craft-sheet"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-svg"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
- "craft-image-codecs 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-image-codecs 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-xml",
  "data-url",
  "flate2",
@@ -1862,7 +1862,7 @@ dependencies = [
 [[package]]
 name = "craft-theme"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bitflags 2.13.2",
  "craft-tracked",
@@ -1887,7 +1887,7 @@ dependencies = [
 [[package]]
 name = "craft-tiff"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1896,7 +1896,7 @@ dependencies = [
 [[package]]
 name = "craft-tracked"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "craft-ui"
@@ -1922,7 +1922,7 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-cloud-ui",
  "craft-ui-canvas",
@@ -1936,10 +1936,10 @@ dependencies = [
 [[package]]
 name = "craft-ui-canvas"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-theme",
  "craft-ui-macros",
@@ -1952,15 +1952,15 @@ dependencies = [
 [[package]]
 name = "craft-ui-contract"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "accesskit",
  "craft-behavior",
  "craft-codepage",
  "craft-font-catalog",
- "craft-fonts-build 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-fonts-build 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-platform",
  "craft-quit",
@@ -1969,7 +1969,7 @@ dependencies = [
  "craft-theme",
  "craft-tracked",
  "craft-ui-macros",
- "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "egui",
  "epaint_default_fonts",
  "flate2",
@@ -1989,7 +1989,7 @@ dependencies = [
 [[package]]
 name = "craft-ui-macros"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2000,11 +2000,11 @@ dependencies = [
 [[package]]
 name = "craft-ui-panels"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-quit",
  "craft-theme",
@@ -2018,11 +2018,11 @@ dependencies = [
 [[package]]
 name = "craft-ui-patterns"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-pdf",
  "craft-theme",
@@ -2039,17 +2039,17 @@ dependencies = [
 [[package]]
 name = "craft-ui-shell"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-platform",
  "craft-svg",
  "craft-theme",
  "craft-ui-macros",
  "craft-ui-panels",
- "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "egui",
  "raw-window-handle",
  "serde",
@@ -2059,11 +2059,11 @@ dependencies = [
 [[package]]
 name = "craft-ui-widgets"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-behavior",
  "craft-host",
- "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-keymap",
  "craft-theme",
  "craft-ui-contract",
@@ -2103,7 +2103,7 @@ dependencies = [
 [[package]]
 name = "craft-win32"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "winsafe",
 ]
@@ -2122,7 +2122,7 @@ dependencies = [
 [[package]]
 name = "craft-window"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-atomic",
  "craft-behavior",
@@ -2152,7 +2152,7 @@ dependencies = [
 [[package]]
 name = "craft-wordmodel"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "base64 0.23.1",
  "craft-math",
@@ -2166,7 +2166,7 @@ dependencies = [
 [[package]]
 name = "craft-xlsx"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "craft-drawingml",
  "craft-opc",
@@ -2178,7 +2178,7 @@ dependencies = [
 [[package]]
 name = "craft-xml"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "quick-xml 0.41.0",
  "serde",
@@ -2188,7 +2188,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -2543,7 +2543,7 @@ dependencies = [
  "craft-eps",
  "craft-file-formats",
  "craft-image-codecs 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-jpeg 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-jpeg 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-ps",
  "craft-psd",
  "craft-svg",
@@ -2680,12 +2680,12 @@ dependencies = [
  "craft-prepress",
  "craft-theme",
  "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "craft-ui-panels",
  "craft-ui-widgets",
  "craft-update",
  "craft-window 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66)",
  "designcraft-color",
  "designcraft-compose",
  "designcraft-doc",
@@ -3925,7 +3925,7 @@ dependencies = [
 [[package]]
 name = "hayro"
 version = "0.7.1"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bytemuck",
  "hayro-interpret",
@@ -3945,7 +3945,7 @@ checksum = "9f4d0e94ddd48749f06bbe4e5389fb9799a0c45bcaf00495042076ef05e3241a"
 [[package]]
 name = "hayro-cmap"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "brotli",
  "hayro-postscript",
@@ -3954,7 +3954,7 @@ dependencies = [
 [[package]]
 name = "hayro-interpret"
 version = "0.7.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bitflags 2.13.2",
  "hayro-cmap",
@@ -3972,7 +3972,7 @@ dependencies = [
 [[package]]
 name = "hayro-jbig2"
 version = "0.3.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "fearless_simd",
  "hayro-ccitt",
@@ -3990,12 +3990,12 @@ dependencies = [
 [[package]]
 name = "hayro-postscript"
 version = "0.1.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 
 [[package]]
 name = "hayro-syntax"
 version = "0.7.2"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "flate2",
  "hayro-ccitt",
@@ -4724,7 +4724,7 @@ dependencies = [
 [[package]]
 name = "krilla"
 version = "0.8.2"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "base64 0.22.1",
  "bumpalo",
@@ -4881,7 +4881,7 @@ checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 [[package]]
 name = "linesweeper"
 version = "0.5.0"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "arrayvec",
  "kurbo",
@@ -8402,7 +8402,7 @@ dependencies = [
 [[package]]
 name = "vello_common"
 version = "0.0.8"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bytemuck",
  "fearless_simd",
@@ -8451,7 +8451,7 @@ dependencies = [
 [[package]]
 name = "vello_cpu"
 version = "0.0.8"
-source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=f93657556f98c24d9c5403b2a0e3822099152d44#f93657556f98c24d9c5403b2a0e3822099152d44"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=9f05106df830026dafad917666524eb46fb5ba66#9f05106df830026dafad917666524eb46fb5ba66"
 dependencies = [
  "bytemuck",
  "glifo 0.1.1",
