@@ -781,6 +781,9 @@ impl Transaction {
         release_closed(app, &closed);
         keep_float_only(app);
         if let Some(panel) = reveal {
+            if std::env::var_os("DESIGNCRAFT_DEBUG_OPENED").is_some() {
+                eprintln!("OPENED-DEBUG commit reveals {panel:?}");
+            }
             app.ui.hidden_panels = 0;
             app.ui.docking_opened = Some(panel.clone());
             app.ui.docking_raise = Some(panel);
@@ -1173,6 +1176,13 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // pass after pass, and a pass in which a body opened a panel itself (the Properties panel's Stroke link runs
     // `window.panel`), leave it alone.
     let moved_in = output.focused.clone().filter(|panel| app.ui.docking_focused.as_ref() != Some(panel));
+    // OPENED-DEBUG: temporary, to find what sets the panel last opened in the Stroke link test.
+    if std::env::var_os("DESIGNCRAFT_DEBUG_OPENED").is_some() {
+        eprintln!(
+            "OPENED-DEBUG before show {opened_before:?}, after show {:?}, focused {:?}, picked {:?}, was focused {:?}, flyout {:?}",
+            app.ui.docking_opened, output.focused, output.picked, app.ui.docking_focused, app.ui.docking_flyout
+        );
+    }
     if let Some(panel) = output.picked.clone().or(moved_in)
         && panel != CANVAS
         && app.ui.docking_opened == opened_before
