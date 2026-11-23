@@ -1208,21 +1208,12 @@ mod tests {
             draft_with(&cancel_opening, json!({"chapterSource": "userDefined", "chapterStart": "9"})).fields
         );
         assert_quiet(&h, &canceled);
-        for escape in 0..2 {
-            for pressed in [true, false] {
-                event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-            }
-            if escape == 0 {
-                assert_eq!(
-                    h.state().0.ui.dialog.as_ref().unwrap().fields,
-                    cancel_opening.fields,
-                    "the first Escape restores the complete field draft/mode without closing the host"
-                );
-                assert!(any_open(&h.ctx, OpenFilter::Modal));
-                assert_quiet(&h, &canceled);
-            }
+        // One Escape cancels the field's draft and the dialog with it (craft's dialog rule, as in InDesign).
+        for pressed in [true, false] {
+            event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
-        assert!(h.state().0.ui.dialog.is_none(), "Escape cancels the draft, then the actual SDK dialog host");
+        assert!(h.state().0.ui.dialog.is_none(), "one Escape cancels the draft and the actual SDK dialog host");
+        assert!(!any_open(&h.ctx, OpenFilter::Modal));
         assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), before.as_ref(), "Cancel never edits either numbering part");
         assert_eq!(
             h.state().0.session.active().unwrap().doc.as_ref(),
