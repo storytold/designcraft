@@ -62,6 +62,11 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "convertTextToTable" | "convertTableToText" => Some(super::table_forms::CONVERT),
         "createGuides" => Some(super::layout_forms::CREATE_GUIDES),
         "marginsAndColumns" => Some(super::layout_forms::MARGINS_AND_COLUMNS),
+        "textFrameOptions" => Some(super::frame_forms::TEXT_FRAME_OPTIONS),
+        "fittingOptions" => Some(super::frame_forms::FITTING_OPTIONS),
+        "polygonSettings" => Some(super::frame_forms::POLYGON_SETTINGS),
+        "qrCode" => Some(super::frame_forms::QR_CODE),
+        "layerOptions" => Some(super::frame_forms::LAYER_OPTIONS),
         _ => None,
     }
 }
