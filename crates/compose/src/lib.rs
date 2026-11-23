@@ -5158,11 +5158,14 @@ fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize
     if points.is_empty() {
         return;
     }
-    let total = extra.min(points.iter().map(|&i| line[i].size * 1.5).sum());
+    // Each join takes up to 1.5 em of its own size; the line's length is shared evenly, and a
+    // join whose share passes its own cap leaves the rest to the word spaces.
+    let cap = |g: &Glyph| g.size * 1.5;
+    let total = extra.min(points.iter().map(|&i| cap(&line[i])).sum());
     let per = total / points.len() as f64;
     // From the end, so the indices of earlier words stay valid.
     for &i in points.iter().rev() {
-        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per) {
+        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per.min(cap(&line[i]))) {
             line.splice(range, glyphs);
             *extra -= added;
         }
@@ -5220,7 +5223,8 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) ->
     let mut seen: HashMap<usize, usize> = HashMap::new();
     for s in &shaped {
         let in_run = (at..at + run).contains(&s.cluster);
-        let mut g = if in_run {
+        // The offset set on a mark by hand (Diacritic Position), kept over the shaper's own.
+        let (mut g, (set_dx, set_dy)) = if in_run {
             // A tatweel takes the metrics of the letter after the join, and no text.
             let mut g = n.clone();
             g.len = 0;
@@ -5228,22 +5232,24 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) ->
             g.rendered_char = '\u{0640}';
             g.safe_tatweel_before = false;
             g.space = 0.0;
-            g
+            (g, (0.0, 0.0))
         } else {
             let cluster = if s.cluster < at { s.cluster } else { s.cluster - run };
             let nth = seen.entry(cluster).or_default();
-            let mut originals = plain.iter().zip(word).filter(|(p, _)| p.cluster == cluster).map(|(_, g)| g);
-            let mut g = originals.clone().nth(*nth).or_else(|| originals.next())?.clone();
+            let mut originals = plain.iter().zip(word).filter(|(p, _)| p.cluster == cluster);
+            let (p, g) = originals.clone().nth(*nth).or_else(|| originals.next())?;
+            let set = (g.dx - f64::from(p.x_offset) * g.sx, g.dy + f64::from(p.y_offset) * g.sy);
+            let mut g = g.clone();
             if *nth > 0 {
                 g.len = 0;
             }
             *nth += 1;
-            g
+            (g, set)
         };
         g.gid = s.gid;
         g.adv = f64::from(s.x_advance) * g.sx;
-        g.dx = f64::from(s.x_offset) * g.sx;
-        g.dy = -f64::from(s.y_offset) * g.sy;
+        g.dx = f64::from(s.x_offset) * g.sx + set_dx;
+        g.dy = -f64::from(s.y_offset) * g.sy + set_dy;
         if in_run { tatweels.push(g) } else { letters.push(g) }
     }
     // The tatweels go with the letter after the join, after its glyphs and in visual order: the

@@ -10546,3 +10546,82 @@ fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
         }
     }
 }
+
+/// Kashidas on a line of mixed sizes: each join takes at most 1.5 em of its own size. The line's
+/// length was shared evenly across the joins, so a small word beside a large one took the large
+/// word's share and stretched far past its own limit.
+#[test]
+fn a_small_word_beside_a_large_one_keeps_its_own_kashida_limit() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Sizes", &glyphs).unwrap());
+    let text = "بسم بسم";
+    let (mut d, sid, fid) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 600.0, 200.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    let small = text.find(' ').unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Kashida Sizes".into());
+        f.over.size = Some(48.0);
+    });
+    d.story_mut(sid).unwrap().format_chars(0..small, |f| f.over.size = Some(12.0));
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let line = &cs.frame(fid).unwrap().lines[0];
+    let tatweel = line.glyphs.iter().find(|g| g.len > 0).unwrap().face.glyph_for('\u{0640}');
+    let added = |words: std::ops::Range<usize>| {
+        line.glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel && words.contains(&g.byte)).map(|g| g.adv).sum::<f64>()
+    };
+    let (small_added, large_added) = (added(0..small), added(small..text.len()));
+    assert!(small_added > 0.0 && large_added > 0.0, "both words take a kashida: {small_added}, {large_added}");
+    assert!(small_added <= 12.0 * 1.5 + 1e-6, "the 12 pt word's kashida is {small_added} pt, past its 18 pt limit");
+}
+
+/// A word shaped again for a kashida keeps the offset its marks were given by hand (Diacritic
+/// Position): only the shaper's own offset is replaced.
+#[test]
+fn a_kashida_keeps_a_marks_hand_set_offset() {
+    use designcraft_fonts::testing::font_mapping;
+    // The damma is drawn with Source Sans 3's combining acute, a mark in its GDEF.
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), ('\u{064F}', '\u{0301}'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Marks", &glyphs).unwrap());
+    let text = "بُسم بسم";
+    // The mark's position from its letter, and whether the word took a kashida.
+    let compose = |kashidas: bool| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 400.0, 100.0),
+            ParaAttrs {
+                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                align: Some(Align::FullyJustified),
+                kashidas: Some(kashidas),
+                ..Default::default()
+            },
+        );
+        // Diacritic Position set on the whole text, as for a paragraph: it moves only the marks.
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Kashida Marks".into());
+            f.over.size = Some(24.0);
+            f.over.diacritic_x_offset = Some(300.0);
+            f.over.diacritic_y_offset = Some(200.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let line = &cs.frame(fid).unwrap().lines[0];
+        let face = line.glyphs[0].face;
+        let m = line.glyphs.iter().find(|g| g.gid == face.glyph_for('\u{064F}')).unwrap();
+        assert!(m.face.glyph_is_mark(m.gid), "the damma is a mark");
+        let base = line.glyphs.iter().find(|g| g.byte == 0 && g.gid == face.glyph_for('ب')).unwrap();
+        let tatweel = m.face.glyph_for('\u{0640}');
+        let stretched = line.glyphs.iter().any(|g| g.len == 0 && g.gid == tatweel && g.byte < text.find(' ').unwrap());
+        ((m.x - base.x, m.y - base.y), stretched)
+    };
+    let (plain, _) = compose(false);
+    let (justified, stretched) = compose(true);
+    assert!(stretched, "the word with the mark takes a kashida");
+    assert!((plain.0 - justified.0).abs() < 1e-6 && (plain.1 - justified.1).abs() < 1e-6, "the mark moved from {plain:?} to {justified:?}");
+}
