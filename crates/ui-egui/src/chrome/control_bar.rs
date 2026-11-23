@@ -670,7 +670,7 @@ mod framework {
     }
 
     /// The id of the control `key` of the panel.
-    fn id(key: impl std::hash::Hash) -> egui::Id {
+    fn id(key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         egui::Id::new(("control-bar", key))
     }
 
@@ -1245,7 +1245,7 @@ mod framework_tests {
         h.state().app.session.journal[start..].to_vec()
     }
     fn button(h: &mut Harness<'_, Rig>, label: &str) -> Vec<(String, Value)> {
-        press(h, label, &[Role::Button, Role::ToggleButton], 0)
+        press(h, label, &[Role::Button], 0)
     }
     fn attrs(h: &mut Harness<'_, Rig>) -> Value {
         crate::panels::text_attrs(&mut h.state_mut().app).unwrap()
@@ -1359,7 +1359,7 @@ mod framework_tests {
         let bar = h.state().bar.unwrap();
         let pressed = h
             .query_all_by_label("Align to Baseline Grid")
-            .find(|n| bar.contains(n.rect().center()) && matches!(n.accesskit_node().role(), Role::Button | Role::ToggleButton))
+            .find(|n| bar.contains(n.rect().center()) && n.accesskit_node().role() == Role::Button)
             .map(|n| n.accesskit_node().toggled());
         assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)));
         assert_eq!(attrs(&mut h)["para"]["gridAlign"], "firstLineOnly");

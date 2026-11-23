@@ -377,7 +377,7 @@ pub(crate) mod framework {
     }
 
     /// The id of the control `key` of the panel.
-    fn id(key: impl std::hash::Hash) -> egui::Id {
+    fn id(key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         egui::Id::new(("object-control", key))
     }
 
