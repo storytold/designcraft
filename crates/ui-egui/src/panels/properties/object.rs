@@ -1000,11 +1000,10 @@ fn group_or_lock(i: &SelInfo) -> (&'static str, &'static str) {
 /// The object sections on the craft UI framework: the same rows, at the same places, over the same engine commands
 /// as the native bodies above, every control a framework component.
 #[cfg(not(target_arch = "wasm32"))]
-mod framework {
+pub(super) mod framework {
     use super::*;
-    use crate::framework_transform::{Artwork, Length, icon, icon_button, length_field};
+    use crate::framework_transform::{Artwork, Length, icon, icon_button, length_field, swatch_icon};
     use craft_behavior::{Anchor9, Mixed, Selection};
-    use craft_theme::Srgba;
     use craft_theme::variant::Tone;
     use craft_ui_widgets::buttons::{Button, ButtonOutput, IconButton, Link};
     use craft_ui_widgets::choice::{Checkbox, Segmented};
@@ -1027,6 +1026,8 @@ mod framework {
         color: Option<egui::Color32>,
         gradient: Option<(egui::Color32, egui::Color32)>,
         stroke: bool,
+        /// The "T" that marks a chip of the text's own colours.
+        text: bool,
     }
 
     impl Glyph for Chip {
@@ -1037,7 +1038,22 @@ mod framework {
                 widgets::paint_chip(painter, rect, self.color, self.gradient);
             }
             painter.rect_stroke(rect, 0.0, Stroke::new(1.0, Tokens::get(painter.ctx()).field_border), StrokeKind::Inside);
+            if self.text && !self.stroke {
+                let light = self.color.is_some_and(|c| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b()) > 380);
+                let ink = if light { egui::Color32::BLACK } else { egui::Color32::WHITE };
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, "T", crate::theme::semibold(12.0), ink);
+            }
         }
+    }
+
+    /// What a Fill or Stroke chip colours: the selected frames (Apply To offered when they are all text frames), or
+    /// the selected text.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::panels::properties) enum SwatchFor {
+        /// The selected objects; `text_frames` when every one is a text frame.
+        Frames { text_frames: bool },
+        /// The selected text.
+        Text,
     }
 
     /// The id of the control `key` of the section the panel's `ui` shows.
@@ -1056,13 +1072,11 @@ mod framework {
         crate::framework_transform::more_options(ui, &app.ui.language, id)
     }
 
-    /// The reference-point picker at `at` over the panel's point `current` (0..8, row-major): the point picked this
-    /// pass.
-    fn reference_point(app: &DesignApp, ui: &mut Ui, at: Rect, current: u8) -> Option<u8> {
+    /// The reference-point picker at `at` with the id `id` over the point `current` (0..8, row-major), named in
+    /// `language`: the point picked this pass. Properties › Transform and the Control bar share it.
+    pub(crate) fn reference_point(ui: &mut Ui, at: Rect, id: egui::Id, language: &str, current: u8) -> Option<u8> {
         let held = Anchor9::ALL.get(usize::from(current)).copied();
-        let out = ReferencePoint::new(crate::i18n::tr(&app.ui.language, "Reference Point").to_owned(), Bind::given(held))
-            .id(control_id(ui, "reference-point"))
-            .show_at(ui, at);
+        let out = ReferencePoint::new(crate::i18n::tr(language, "Reference Point").to_owned(), Bind::given(held)).id(id).show_at(ui, at);
         let picked = out.events.committed().copied().flatten()?;
         Anchor9::ALL.iter().position(|point| *point == picked).and_then(|at| u8::try_from(at).ok())
     }
@@ -1071,7 +1085,8 @@ mod framework {
         let lang = app.ui.language.clone();
         let rp = app.ui.ref_point;
         let b = block(ui, 2.0 * FIELD_H + 4.0);
-        if let Some(p) = reference_point(app, ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
+        let id = control_id(ui, "reference-point");
+        if let Some(p) = reference_point(ui, sub(b, 5.0, 10.0, 26.0, 26.0), id, &lang, rp) {
             app.ui.ref_point = p;
         }
         let constrain = temp_bool(ui, "constrain_wh", false);
@@ -1109,7 +1124,8 @@ mod framework {
         let rp = app.ui.ref_point;
         let b = block(ui, 2.0 * FIELD_H + 4.0);
         let (x, y) = reference_position(i.page_rect, rp);
-        if let Some(p) = reference_point(app, ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
+        let id = control_id(ui, "reference-point");
+        if let Some(p) = reference_point(ui, sub(b, 5.0, 10.0, 26.0, 26.0), id, &lang, rp) {
             app.ui.ref_point = p;
         }
         let mut set = serde_json::Map::new();
@@ -1199,12 +1215,12 @@ mod framework {
         let text_frames = all_text_frames(app, i);
         // Fill.
         let b = block(ui, FIELD_H);
-        swatch_chip(app, ui, sub(b, 4.0, 2.0, 17.0, 17.0), &doc, &i.fill, false, text_frames);
+        swatch_chip(app, ui, sub(b, 4.0, 2.0, 17.0, 17.0), &doc, &i.fill, false, SwatchFor::Frames { text_frames });
         Text::new(tr("Fill")).show_at(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H));
         ui.add_space(4.0);
         // Stroke.
         let b = block(ui, FIELD_H);
-        swatch_chip(app, ui, sub(b, 4.0, 2.0, 17.0, 17.0), &doc, &i.stroke, true, text_frames);
+        swatch_chip(app, ui, sub(b, 4.0, 2.0, 17.0, 17.0), &doc, &i.stroke, true, SwatchFor::Frames { text_frames });
         let id = control_id(ui, "stroke-link");
         if link(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), id, &tr("Stroke")) {
             show_panel(app, "stroke");
@@ -1304,30 +1320,41 @@ mod framework {
         }
     }
 
-    /// A Fill (`stroke` false) or Stroke chip at `at`: a click opens and closes its swatch popover, a double click opens
-    /// the Color Picker, as InDesign's do.
-    fn swatch_chip(app: &mut DesignApp, ui: &mut Ui, at: Rect, doc: &designcraft_doc::Document, swatch: &str, stroke: bool, text_frames: bool) {
+    /// A Fill (`stroke` false) or Stroke chip at `at` of `target`: a click opens and closes its swatch popover, a double
+    /// click opens the Color Picker, as InDesign's do.
+    pub(in crate::panels::properties) fn swatch_chip(
+        app: &mut DesignApp,
+        ui: &mut Ui,
+        at: Rect,
+        doc: &designcraft_doc::Document,
+        swatch: &str,
+        stroke: bool,
+        target: SwatchFor,
+    ) {
+        let text = target == SwatchFor::Text;
         let (color, gradient) = widgets::swatch_colors(doc, swatch, 1.0);
-        let chip = Chip { color, gradient: if stroke { None } else { gradient }, stroke };
+        let chip = Chip { color, gradient: if stroke { None } else { gradient }, stroke, text };
         let name = crate::i18n::tr(&app.ui.language, if stroke { "Stroke" } else { "Fill" }).to_owned();
-        let id = control_id(ui, ("swatch", stroke));
-        let out = IconButton::new(IconSpec::glyph(&chip))
-            .id(id)
-            .label(if stroke { "Stroke swatch" } else { "Fill swatch" })
-            .tooltip(format!("{name}: {swatch}"))
-            .popup(PopupKind::Dialog)
-            .show_at(ui, at);
+        let label = match (text, stroke) {
+            (false, false) => "Fill swatch",
+            (false, true) => "Stroke swatch",
+            (true, false) => "Text fill swatch",
+            (true, true) => "Text stroke swatch",
+        };
+        let id = control_id(ui, ("swatch", stroke, text));
+        let out =
+            IconButton::new(IconSpec::glyph(&chip)).id(id).label(label).tooltip(format!("{name}: {swatch}")).popup(PopupKind::Dialog).show_at(ui, at);
         // The popover's open state is the chip's: a pick closes it, as a swatch menu does.
         let open_id = id.with("open");
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
         if out.clicks >= 2 {
             open = false;
-            open_color_picker(app, doc, swatch, stroke, false);
+            open_color_picker(app, doc, swatch, stroke, text);
         } else if out.clicked() {
             open = !open;
         }
         if open {
-            open = swatch_popover(app, ui, &out, doc, swatch, stroke, text_frames);
+            open = swatch_popover(app, ui, &out, doc, swatch, stroke, target);
         }
         ui.data_mut(|d| d.insert_temp(open_id, open));
     }
@@ -1352,15 +1379,6 @@ mod framework {
 
     impl craft_behavior::ItemSource<usize> for SwatchNames<'_> {}
 
-    /// A swatch's colour as a list row's icon: its colour, a gradient's first stop, or the empty swatch for None.
-    fn swatch_icon(doc: &designcraft_doc::Document, name: &str) -> IconSpec<'static> {
-        let (color, gradient) = widgets::swatch_colors(doc, name, 1.0);
-        match color.or(gradient.map(|(first, _)| first)) {
-            Some(c) => IconSpec::swatch(Srgba::rgb(f32::from(c.r()) / 255.0, f32::from(c.g()) / 255.0, f32::from(c.b()) / 255.0)),
-            None => IconSpec::empty_swatch(),
-        }
-    }
-
     /// The Fill (or Stroke) popover hung from `opener`, as InDesign's: Apply To (a text frame's frame or its text), the
     /// tint, then the swatches. `cur` is the frames' swatch. Whether it is still open after this pass.
     fn swatch_popover(
@@ -1370,16 +1388,18 @@ mod framework {
         doc: &designcraft_doc::Document,
         cur: &str,
         stroke: bool,
-        text_frame: bool,
+        target: SwatchFor,
     ) -> bool {
         let lang = app.ui.language.clone();
         let tr = |s: &'static str| crate::i18n::tr(&lang, s).to_owned();
         let to_text_id = apply_to_text_key(stroke);
-        let to_text = text_frame && ui.data(|d| d.get_temp::<bool>(to_text_id)).unwrap_or(false);
+        // Text frames offer Apply To Frame or Text; selected text is always coloured as text.
+        let text_frame = target == (SwatchFor::Frames { text_frames: true });
+        let to_text = target == SwatchFor::Text || text_frame && ui.data(|d| d.get_temp::<bool>(to_text_id)).unwrap_or(false);
         let (cur, tint) = swatch_target(app, cur, stroke, to_text);
         let names: Vec<String> = doc.swatches.iter().map(|sw| sw.name.clone()).collect();
         let current = names.iter().position(|name| *name == cur);
-        let id = control_id(ui, ("swatch-popover", stroke));
+        let id = control_id(ui, ("swatch-popover", stroke, target == SwatchFor::Text));
         let mut open = true;
         let shown =
             Popover::new(tr(if stroke { "Stroke" } else { "Fill" }), Bind::bound(&mut open)).id(id).opened_by(&opener.response).show(ui, |ui, _| {
