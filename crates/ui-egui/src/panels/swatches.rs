@@ -1935,6 +1935,9 @@ mod framework {
                     if out.activation_clicks >= 2 {
                         // Double-click: Swatch Options (the first click has applied the swatch).
                         actions.push(Action::Run("app.swatchOptionsDialog", json!({"name": name})));
+                    } else if out.activation_clicks == 0 && fill_cur.as_deref() == Some(name.as_str()) {
+                        // Enter on the row of the swatch the selection already has changes nothing: no command, no undo step.
+                        ui.data_mut(|d| d.insert_temp(egui::Id::unique(PICKED), name.clone()));
                     } else {
                         ui.data_mut(|d| d.insert_temp(egui::Id::unique(PICKED), name.clone()));
                         let stroke = app.ui.stroke_front;
