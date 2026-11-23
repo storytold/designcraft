@@ -313,6 +313,12 @@ fn cjk_break(a: &Glyph, b: &Glyph, sp: &Spacing) -> bool {
     cjk_pair(a, b, sp.korean_char_breaks) && kinsoku_allows(a.ch, b.ch)
 }
 
+/// Whether `g` ends the word-like token a dash is judged in: a space of any kind, a tab or a
+/// forced break.
+fn ends_token(g: &Glyph) -> bool {
+    g.is_space() || matches!(g.ch, '\u{A0}' | '\u{202F}' | '\t') || is_forced(g.ch)
+}
+
 /// Whether the hyphen-minus or en dash at `glyphs[i]` is not a place to break after, because it
 /// is a sign or a join inside a short token (`(-4)`, `x-4`, `ab-cd`, `4–5%`) and not a dash
 /// between words (observed in InDesign 2026): a hyphen-minus breaks only after three or more
@@ -324,8 +330,10 @@ fn dash_blocks_break(glyphs: &[Glyph], i: usize) -> bool {
     if !matches!(g.ch, '-' | '\u{2013}' | '/') {
         return false;
     }
-    let before = glyphs[..i].iter().rev().take_while(|p| !p.is_space()).count();
-    let mut after = glyphs[i + 1..].iter().take_while(|n| !n.is_space());
+    // Only whether three characters precede it matters, so the scan stops there. A no-break space
+    // or a tab ends the token too (their own break permissions are unchanged).
+    let before = glyphs[..i].iter().rev().take(3).take_while(|p| !ends_token(p)).count();
+    let mut after = glyphs[i + 1..].iter().take_while(|n| !ends_token(n));
     let first = after.next().map(|n| n.ch);
     let second_is_word = after.next().is_some_and(|n| n.ch.is_alphanumeric());
     if g.ch == '-' {
@@ -508,7 +516,13 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
         let next_is_space = glyphs.get(i + 1).is_none_or(|n| n.is_space());
         if i + 1 < n && !next_is_space && !g.no_break && g.break_after != Some(false) {
             if dash_blocks_break(glyphs, i) {
-                // Not a break opportunity.
+                // Not a natural break opportunity; a token wider than the measure still breaks here
+                // when it has to.
+                if emergency_after.get(i) == Some(&true) {
+                    let mut p = Item::penalty(0.0, EMERGENCY_PENALTY, false);
+                    p.emergency = true;
+                    push_inword(&mut it, &mut ig, p, i + 1, sp);
+                }
             } else if matches!(g.ch, '-' | '\u{2010}') {
                 let mut p = Item::penalty(0.0, 50.0, true);
                 p.hang = right_hang(g, sp);
