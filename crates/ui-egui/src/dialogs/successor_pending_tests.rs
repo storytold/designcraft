@@ -2,9 +2,9 @@
 //! Justification dialog's Auto Leading and Single Word Justification, the Kenten and composition settings of the style dialogs,
 //! and the font style select's named instances. They run the real dialog host over an installed framework (`table_layout_kit`).
 //!
-//! Two checks of the old font style tests are not carried over: that a closed popup does not preload a catalogued font, and that a
-//! family whose file has gone is not retried every frame. Both needed a font database of their own, which the native combo took as
-//! an argument; the framework select reads the app's global one.
+//! The two checks of the old font style tests that need a font database of their own (a closed popup does not preload a catalogued font; a
+//! missing family is not retried every frame, but reopening, hiding or a new scope retries it) are in `panels/successor_tests.rs`, over
+//! `framework_transform::font_style_select_in`, which takes the database as a parameter.
 
 use super::table_layout_kit as kit;
 use super::*;

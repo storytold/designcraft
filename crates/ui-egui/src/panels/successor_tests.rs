@@ -236,15 +236,13 @@ fn layers_a_selected_group_member_moves_its_whole_group_onto_a_locked_layer_with
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The font style select
+// The font style select over a font database of its own
 
-/// Successor of `cold_style_popup_discovers_instances_and_selects_them` for what the framework select can show: its list holds
-/// the named instances of a catalogued variable font, and picking one returns it. (The old test's `closed popup must not
-/// preload the font` check needs a database of its own, and the framework select reads the app's global one.)
-#[test]
-fn the_framework_font_style_select_lists_named_instances_and_picks_one() {
-    let family = "Synthetic Style Select";
-    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::variable_font(family).unwrap());
+/// What the window shows: the app, whether the select is drawn, the document scope of its fonts, and the style it returned.
+type StyleState = (DesignApp, bool, u32, Option<String>);
+
+/// The framework font style select of `family`, showing Regular, over `db` (`font_style_select_in`), in a window with the runtime.
+fn style_select_window<'a>(db: &'a designcraft_fonts::FontDb, family: &'a str) -> egui_kittest::Harness<'a, StyleState> {
     let mut app = kit::app(1, false);
     let ctx = egui::Context::default();
     app.framework_transform = true;
@@ -252,30 +250,101 @@ fn the_framework_font_style_select_lists_named_instances_and_picks_one() {
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     let mut ready = false;
     let mut h = egui_kittest::Harness::builder().with_context(ctx).with_size(vec2(600.0, 500.0)).with_step_dt(0.05).build_ui_state(
-        move |ui, state: &mut (DesignApp, Option<String>)| {
+        move |ui, state: &mut StyleState| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), "en");
                 ready = true;
                 return;
             }
-            let (app, picked) = state;
-            if let Some(style) = crate::framework_transform::font_style_select(app, ui, None, egui::Id::new("style_select_test"), family, "Regular") {
-                *picked = Some(style);
+            let (app, shown, scope, picked) = state;
+            if *shown {
+                let fonts = db.scoped(*scope);
+                if let Some(style) = crate::framework_transform::font_style_select_in(
+                    app,
+                    ui,
+                    None,
+                    egui::Id::new("style_select_db"),
+                    &fonts,
+                    *scope,
+                    family,
+                    "Regular",
+                ) {
+                    *picked = Some(style);
+                }
             }
         },
-        (app, None),
+        (app, true, 0, None),
     );
     h.run_steps(4);
-    let combo = h.get_by_role_and_label(Role::ComboBox, "Font Style").rect().center();
-    h.hover_at(combo);
-    h.drag_at(combo);
-    h.drop_at(combo);
+    h
+}
+
+fn open_select(h: &mut egui_kittest::Harness<'_, StyleState>) {
+    let at = h.get_by_role_and_label(Role::ComboBox, "Font Style").rect().center();
+    h.hover_at(at);
+    h.drag_at(at);
+    h.drop_at(at);
     h.run_steps(4);
+}
+
+/// Successor of `cold_style_popup_discovers_instances_and_selects_them`: over a database where the variable font is catalogued but not
+/// loaded, the closed select does not load it, opening the select loads it once and lists its named instances, and picking one returns it.
+#[test]
+fn the_framework_font_style_select_loads_a_catalogued_font_only_when_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let family = "Synthetic Cold Style";
+    std::fs::write(dir.path().join("variable.ttf"), designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+    let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+    assert_eq!(db.styles(family), ["Regular"]);
+    let mut h = style_select_window(&db, family);
+    assert_eq!(db.styles(family), ["Regular"], "a closed select must not preload the font");
+    open_select(&mut h);
+    assert_eq!(db.styles(family), ["Regular", "SemiBold"], "opening it loads the font and finds its named instances");
     assert!(h.query_by_label("SemiBold").is_some(), "the named instance is listed");
     let at = h.get_by_label("SemiBold").rect().center();
     h.hover_at(at);
     h.drag_at(at);
     h.drop_at(at);
     h.run_steps(4);
-    assert_eq!(h.state().1.as_deref(), Some("SemiBold"));
+    assert_eq!(h.state().3.as_deref(), Some("SemiBold"));
+}
+
+/// Successor of `missing_family_styles_are_cached_until_the_popup_reopens`: when the family's font file has gone, the open list does not
+/// try it again every frame, and the font is tried again when the list is opened again, when the select is drawn again after it was
+/// hidden, and in another scope.
+#[test]
+fn a_missing_family_is_not_retried_every_frame_but_reopen_hide_and_scope_retry() {
+    for retry in ["reopen", "hidden", "scope"] {
+        let dir = tempfile::tempdir().unwrap();
+        let family = "Synthetic Missing Style";
+        let path = dir.path().join("variable.ttf");
+        std::fs::write(&path, designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.path().to_owned()]);
+        assert_eq!(db.styles(family), ["Regular"]);
+        std::fs::remove_file(&path).unwrap();
+        let mut h = style_select_window(&db, family);
+        open_select(&mut h);
+        assert!(h.query_by_label("SemiBold").is_none());
+        std::fs::write(&path, designcraft_fonts::testing::variable_font(family).unwrap()).unwrap();
+        h.run_steps(3);
+        assert_eq!(db.styles(family), ["Regular"], "an open list must not retry the missing font every frame");
+        match retry {
+            "hidden" => {
+                h.state_mut().1 = false;
+                h.run_steps(3);
+                h.state_mut().1 = true;
+            }
+            "scope" => h.state_mut().2 = 1,
+            _ => {
+                h.key_press(egui::Key::Escape);
+                h.run_steps(3);
+                open_select(&mut h);
+            }
+        }
+        h.run_steps(3);
+        if h.query_by_label("SemiBold").is_none() {
+            open_select(&mut h);
+        }
+        assert!(h.query_by_label("SemiBold").is_some(), "{retry} retries the now-readable font");
+    }
 }

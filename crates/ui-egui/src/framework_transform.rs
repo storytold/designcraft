@@ -378,13 +378,77 @@ pub(crate) fn font_family_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<
 }
 
 /// The font style select of `family` at `at` (or in the flow), showing `current` (a style with axis settings shows
-/// its axes, as the native field does): the style picked this pass.
+/// its axes, as the native field does): the style picked this pass. The styles come from the app's fonts.
 pub(crate) fn font_style_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, family: &str, current: &str) -> Option<String> {
-    let styles = crate::panels::fonts(app).styles(family);
-    let choices: Vec<(String, String)> = styles.iter().map(|s| (s.clone(), s.clone())).collect();
-    let held = styles.iter().find(|s| *s == current).cloned();
-    let shown = crate::panels::style_shown(current);
-    choice(ui, at, id, crate::i18n::tr(&app.ui.language, "Font Style"), held, &choices, Some(&shown))
+    font_style_select_in(app, ui, at, id, &crate::panels::fonts(app), crate::panels::font_scope(app), family, current)
+}
+
+/// [`font_style_select`] over `fonts`, the font database (in document scope `scope`) the styles are read from.
+///
+/// The styles are listed without loading the font while the select is closed: a catalogued variable font shows its Regular
+/// style until the select is opened. Opening it (a click, or Enter or Space on it) loads the font once, which finds its
+/// named instances, and the list then holds them until it is closed: a family whose font file has gone is not tried again
+/// every frame of the open list, but opening the list again (or drawing the select again after it was hidden for a frame,
+/// or in another scope) tries again.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn font_style_select_in(
+    app: &DesignApp,
+    ui: &mut egui::Ui,
+    at: Option<Rect>,
+    id: egui::Id,
+    fonts: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    current: &str,
+) -> Option<String> {
+    /// The styles read when the list was opened: the family and scope they are of, the last frame the select was drawn in, whether
+    /// the list is open, and the styles.
+    #[derive(Clone)]
+    struct Opened {
+        family: String,
+        scope: u32,
+        frame: u64,
+        open: bool,
+        styles: Vec<String>,
+    }
+    let key = id.with(("font_style_opened", scope));
+    let frame = ui.ctx().cumulative_frame_nr();
+    // What the last pass left: still valid while the select was drawn in the frame before this one, for this family.
+    let held = ui
+        .data(|data| data.get_temp::<Opened>(key))
+        .filter(|o| o.open && o.family == family && o.scope == scope && o.frame.saturating_add(1) >= frame);
+    let styles = held.as_ref().map_or_else(|| fonts.styles(family), |o| o.styles.clone());
+    let entries: Vec<Entry<String>> = styles.iter().map(|s| Entry::new(s.clone(), s.clone())).collect();
+    let label = crate::i18n::tr(&app.ui.language, "Font Style");
+    let selected = styles.iter().find(|s| *s == current).cloned();
+    let field = Select::new(label.to_owned(), Bind::given(selected.map_or(Mixed::Mixed, Mixed::Same)), &entries)
+        .id(id)
+        .placeholder(crate::panels::style_shown(current));
+    let out = match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    };
+    let picked = out.events.committed().cloned();
+    // Its list is open while a popup layer of the last frame hangs from the select. Opening it loads the font, which finds the
+    // named instances, once; the list then keeps what that found until it is closed.
+    let ctx = ui.ctx().clone();
+    let open = picked.is_none()
+        && craft_ui_widgets::runtime::overlay::top(&ctx)
+            .and_then(|top| craft_ui_widgets::runtime::overlay::entry(&ctx, top))
+            .is_some_and(|entry| !entry.rank.is_modal() && entry.anchor.is_some_and(|anchor| anchor.intersects(out.response.rect)));
+    if open {
+        let styles = match held {
+            Some(held) => held.styles,
+            None => {
+                let _ = fonts.face(family, current);
+                fonts.styles(family)
+            }
+        };
+        ui.data_mut(|data| data.insert_temp(key, Opened { family: family.to_owned(), scope, frame, open: true, styles }));
+    } else {
+        ui.data_mut(|data| data.remove::<Opened>(key));
+    }
+    picked
 }
 
 /// A check box at `at` (or in the flow) labelled `label`: its new value when it was toggled this pass.
