@@ -726,6 +726,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 mod ui223_export_batch_workflow_tests {
     use super::*;
     use crate::theme::Tokens;

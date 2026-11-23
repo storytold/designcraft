@@ -2,7 +2,7 @@
 //! (`ui.dialog.set {field, value}`) and confirm them (`ui.dialog.confirm`) like a user would.
 
 use designcraft_doc::SpreadRef;
-use designcraft_geom::{Unit, format_measure};
+use designcraft_geom::{Unit, format_measure, units::parse_measure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 

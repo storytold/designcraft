@@ -3,7 +3,6 @@
 //! its name shows its settings and turns it on), the settings on the right in the document's
 //! units, Preview on the page while it is open, and OK as one undo step (`object.effects`).
 
-use designcraft_geom::{Unit, format_measure};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
