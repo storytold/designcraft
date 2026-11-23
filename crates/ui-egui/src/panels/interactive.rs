@@ -473,15 +473,13 @@ fn tags_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
 mod framework {
     use super::{TagsWorkflowDraft, ask_then_run, dest_text, tags_editable, tags_identity, tags_targets};
     use crate::DesignApp;
-    use craft_behavior::ColumnWidth;
     use craft_theme::ControlSize;
     use craft_theme::Srgba;
     use craft_ui_widgets::buttons::{Button, Link};
     use craft_ui_widgets::choice::Checkbox;
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Icon, Shade, Text};
-    use craft_ui_widgets::layout::GridFit;
-    use craft_ui_widgets::layout_components::{Grid, Row, Stack};
+    use craft_ui_widgets::layout_components::{Row, Stack};
     use craft_ui_widgets::primitives::{HAlign, IconSpec, Wrap};
     use craft_ui_widgets::style::{TypeRole, Variant};
     use craft_ui_widgets::text::TextField;
@@ -682,13 +680,6 @@ mod framework {
         run_all(app, commands);
     }
 
-    /// The new tag's name and New: the field takes the room the button leaves.
-    const FIELD_AND_ACTION: [ColumnWidth; 2] = [ColumnWidth::fill(1.0), ColumnWidth::Content];
-    /// A tag's row: its colour, its name (which tags the selection) taking the free room, and Delete.
-    // A grid, not a row with a filling child: a row shares its room by running its children again, and inside
-    // `measure::run` a child with its own id is then claimed twice in one pass (a framework bug, reported).
-    const SWATCH_NAME_ACTION: [ColumnWidth; 3] = [ColumnWidth::Content, ColumnWidth::fill(1.0), ColumnWidth::Content];
-
     /// A Tags action: small and quiet, named in full (`name`) while it shows `painted`; `fill` takes the row's free
     /// width. Only an editable panel (enabled, not measuring) takes it.
     fn tag_action(ui: &mut egui::Ui, id: egui::Id, name: &str, painted: &str, enabled: bool, fill: bool) -> bool {
@@ -728,7 +719,7 @@ mod framework {
             .filter(|d| d.document == document)
             .unwrap_or_else(|| TagsWorkflowDraft { document, ..Default::default() });
         Stack::new().id_salt(("tags", document_key)).fill_width().show(ui, |ui, _| {
-            Grid::new(&FIELD_AND_ACTION).id_salt("tags_new").fill_width().fit(GridFit::Fixed).show(ui, |ui, _| {
+            Row::new().id_salt("tags_new").fill_width().show(ui, |ui, _| {
                 let enabled = tags_editable(ui);
                 let name = tr(&lang, "New tag");
                 let out = TextField::new(name.clone(), Bind::given(draft.name.clone()))
@@ -757,7 +748,7 @@ mod framework {
                 let n = tag["name"].as_str().unwrap_or("").to_owned();
                 let color = tag["color"].as_array().map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0) as u8).collect::<Vec<_>>()).unwrap_or_default();
                 let row = actions.with(("tag", tag.to_string()));
-                Grid::new(&SWATCH_NAME_ACTION).id_salt(("tag", tag.to_string())).fill_width().fit(GridFit::Fixed).show(ui, |ui, _| {
+                Row::new().id_salt(("tag", tag.to_string())).fill_width().show(ui, |ui, _| {
                     // The tag's colour as a framework swatch; a tag without one keeps an empty swatch's place.
                     let chip = match color.as_slice() {
                         [r, g, b] => IconSpec::swatch(Srgba::rgb(f32::from(*r) / 255.0, f32::from(*g) / 255.0, f32::from(*b) / 255.0)),
@@ -2394,13 +2385,16 @@ mod ui223_object_states_forms_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("object-states-forms"), |ui| (state.panel)(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -3241,13 +3235,16 @@ mod ui223_liquid_workflow_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("liquid-workflow"), |ui| liquid(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -3875,13 +3872,16 @@ mod ui223_track_workflow_tests {
                 state.parent = ui.max_rect();
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("track-workflow"), |ui| track_changes(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
@@ -4404,13 +4404,16 @@ mod ui223_tags_xml_workflow_tests {
                 state.clicked |= ui.input(|i| i.pointer.any_click());
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
-                    let mut render = || {
+                    let mut render = |ui: &mut egui::Ui| {
                         state.controls = record(ui, egui::Id::NULL.with("tags-xml-workflow"), |ui| tags(&mut state.app, ui)).1;
                     };
                     if state.measuring {
-                        craft_ui_widgets::runtime::measure::run(&ctx, render);
+                        // A host measures a panel's content in an invisible sizing pass, as the framework's own hosts
+                        // (testing::layout::body) do.
+                        let sizing = egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()).sizing_pass().invisible();
+                        craft_ui_widgets::runtime::measure::run(&ctx, || ui.scope_builder(sizing, |ui| render(ui)));
                     } else {
-                        render();
+                        render(ui);
                     }
                 });
             },
