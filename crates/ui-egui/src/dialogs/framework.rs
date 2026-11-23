@@ -13,7 +13,7 @@ use egui::Ui;
 #[path = "simple_forms.rs"]
 mod simple_forms;
 #[path = "style_forms.rs"]
-mod style_forms;
+pub(crate) mod style_forms;
 
 /// A dialog's framework form.
 #[derive(Clone, Copy)]

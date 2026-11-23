@@ -7,6 +7,11 @@ use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
 fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::list(app, ui, para);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
     let names: Vec<String> = if para {
@@ -97,29 +102,360 @@ pub fn character(app: &mut DesignApp, ui: &mut egui::Ui) {
     list(app, ui, false);
 }
 
-/// The compact text-style create action; commands and list/row behavior stay with the app.
+/// The compact text-style create action of the native list; commands and list/row behavior stay with the app.
 fn text_style_create_button(app: &DesignApp, ui: &mut egui::Ui, para: bool) -> bool {
     let label = crate::i18n::tr(&app.ui.language, crate::i18n::tr(&app.ui.language, "Create New Style from Selection"));
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::buttons::Button;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::Variant;
+    let _ = para;
+    icons::button(ui, "plus", 20.0, false, label).clicked()
+}
 
-        let identity = app.session.active().map(|st| (st.uid, st.identity_epoch));
-        // `painted` keeps the localized accessible name while showing only the existing plus action.
-        // Do not install a runtime here: the host owns it, and an uninstalled native/web UI falls back.
-        return Button::new(label)
-            .id_salt(("text-style-create", para, identity))
+/// The panels on the framework: the same rows, menus, commands and Undo steps as the native lists, drawn with its
+/// components. Each pass collects what the user asked for and runs it after the components are shown.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use craft_ui_panels::sections::Section;
+    use craft_ui_widgets::buttons::{Button, IconButton};
+    use craft_ui_widgets::contract::{Bind, PopupKind, Props as _, Show as _, ShowContainer as _, Sizing, Trigger};
+    use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::primitives::{HAlign, IconSpec};
+    use craft_ui_widgets::style::{TypeRole, Variant};
+    use craft_ui_widgets::text::TextField;
+    use serde_json::{Value, json};
+
+    use super::{object_style_of_selection, selection_overrides_styles};
+    use crate::DesignApp;
+    use crate::panels::tabs::TabGlyph;
+    use crate::theme::Tokens;
+
+    /// What a pass of a panel asks for.
+    enum Act {
+        /// A command.
+        Run(&'static str, Value),
+        /// The options dialog of a text style (paragraph when true).
+        Options(bool, String),
+        /// The options dialog of an object style.
+        ObjectOptions(String),
+        /// The New Object Style dialog.
+        ObjectNew,
+        /// A dialog that asks before deleting the named style.
+        Delete(&'static str, String),
+    }
+
+    fn finish(app: &mut DesignApp, acts: Vec<Act>) {
+        for act in acts {
+            match act {
+                Act::Run(id, params) => {
+                    let _ = app.run(id, params);
+                }
+                Act::Options(para, name) => {
+                    crate::dialogs::open_style_options(app, para, &name);
+                }
+                Act::ObjectOptions(name) => {
+                    let _ = crate::object_style_dialog::open_edit(app, &name);
+                }
+                Act::ObjectNew => {
+                    crate::object_style_dialog::open_new(app);
+                }
+                Act::Delete(dialog, name) => app.ui.dialog = Some(crate::dialogs::Dialog::new(dialog, json!({"name": name}))),
+            }
+        }
+    }
+
+    /// A row of a style menu; whether it ran.
+    fn item(ui: &mut egui::Ui, salt: &str, label: String, enabled: bool) -> bool {
+        MenuItem::new(label).id_salt(salt.to_owned()).enabled(enabled).show(ui).ran
+    }
+
+    /// A button at a panel's foot with the app's glyph; one that opens a menu says so.
+    fn glyph_button(
+        ui: &mut egui::Ui,
+        salt: &str,
+        glyph: &'static str,
+        label: &str,
+        enabled: bool,
+        menu: bool,
+    ) -> craft_ui_widgets::buttons::ButtonOutput {
+        let face = TabGlyph(glyph);
+        let button =
+            IconButton::new(IconSpec::glyph(&face)).id_salt(salt.to_owned()).label(label.to_owned()).tooltip(label.to_owned()).enabled(enabled);
+        if menu { button.popup(PopupKind::Menu).show(ui) } else { button.show(ui) }
+    }
+
+    pub(super) fn list(app: &mut DesignApp, ui: &mut egui::Ui, para: bool) {
+        let Some(st) = app.session.active() else { return };
+        let identity = (st.uid, st.identity_epoch);
+        let names: Vec<String> = if para {
+            st.doc.styles.paragraph.iter().map(|s| s.name.clone()).collect()
+        } else {
+            st.doc.styles.character.iter().map(|s| s.name.clone()).collect()
+        };
+        let attrs = crate::panels::text_attrs(app);
+        let current = attrs.as_ref().and_then(|a| a[if para { "paragraphStyle" } else { "characterStyle" }].as_str().map(str::to_string));
+        let overrides = attrs
+            .as_ref()
+            .map(|a| {
+                if para {
+                    a["charOverrides"].as_u64().unwrap_or(0) + a["paraOverrides"].as_u64().unwrap_or(0)
+                } else {
+                    a["characterStyleOverrides"].as_u64().unwrap_or(0)
+                }
+            })
+            .unwrap_or(0);
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let summary = match &current {
+            Some(c) => format!("{}{}", crate::i18n::style_name(&lang, c), if overrides > 0 { "+" } else { "" }),
+            None => tr("No text selected"),
+        };
+        // Groups (`Group/Name`) as folders, ungrouped styles first.
+        let groups: Vec<String> = {
+            let mut g: Vec<String> = names.iter().filter_map(|n| n.rsplit_once('/').map(|(g, _)| g.to_string())).collect();
+            g.sort();
+            g.dedup();
+            g
+        };
+        let state = (current.as_deref(), overrides > 0);
+        let mut acts: Vec<Act> = Vec::new();
+        let mut create = false;
+        ui.push_id(("framework-styles", para, identity), |ui| {
+            Stack::new().id_salt("styles").fill_width().show(ui, |ui, _| {
+                Text::new(summary.clone()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+                for n in names.iter().filter(|n| !n.contains('/')) {
+                    if para && n == designcraft_doc::NO_PARA_STYLE {
+                        continue;
+                    }
+                    text_row(&lang, ui, para, n, state, &groups, &mut acts);
+                }
+                for g in &groups {
+                    Section::new(g.clone()).id_salt(("style_group", para, g)).show(ui, |ui, _| {
+                        for n in names.iter().filter(|n| n.rsplit_once('/').is_some_and(|(x, _)| x == g)) {
+                            text_row(&lang, ui, para, n, state, &groups, &mut acts);
+                        }
+                    });
+                }
+                Row::new().id_salt("styles_footer").fill_width().show(ui, |ui, _| {
+                    let hint = if cfg!(target_os = "macos") { "⌥-click clears overrides" } else { "Alt-click clears overrides" };
+                    Text::new(tr(hint)).role(TypeRole::Caption).shade(Shade::Faint).sizing(Sizing::FillWidth).show(ui);
+                    let (load, command) = if para {
+                        ("Load Paragraph Styles…", "app.loadParagraphStyles")
+                    } else {
+                        ("Load Character Styles…", "app.loadCharacterStyles")
+                    };
+                    let opener = glyph_button(ui, "styles_menu_opener", "menu", &tr("Load Styles"), true, true);
+                    let _ =
+                        Menu::new(tr("Load Styles")).id_salt(("styles_menu", para)).opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
+                            for (label, id) in [(load, command), ("Load All Text Styles…", "app.loadTextStyles")] {
+                                if item(ui, id, tr(label), true) {
+                                    acts.push(Act::Run(id, json!({})));
+                                }
+                            }
+                        });
+                    create = create_button(app_label(&lang), ui, para, identity);
+                });
+            });
+        });
+        if create {
+            let cmd = if para { "style.paragraph.create" } else { "style.character.create" };
+            let base = if para { "Paragraph Style 1" } else { "Character Style 1" };
+            acts.push(Act::Run(cmd, json!({"name": base, "fromSelection": true})));
+        }
+        finish(app, acts);
+    }
+
+    fn app_label(lang: &str) -> String {
+        crate::i18n::tr(lang, crate::i18n::tr(lang, "Create New Style from Selection")).to_string()
+    }
+
+    /// The compact create action; its label is also its accessible name.
+    fn create_button(label: String, ui: &mut egui::Ui, para: bool, identity: (u64, u64)) -> bool {
+        Button::new(label.clone())
+            .id_salt(("text-style-create", para, Some(identity)))
             .painted("+")
             .variant(Variant::GHOST)
             .tooltip(label)
             .show(ui)
-            .clicked();
+            .clicked()
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = para;
-    icons::button(ui, "plus", 20.0, false, label).clicked()
+
+    /// One text style: a click applies it (⌥ clears overrides), a double click edits it, and the context menu holds
+    /// edit, apply, redefine, break link, move to group and delete.
+    fn text_row(
+        lang: &str,
+        ui: &mut egui::Ui,
+        para: bool,
+        n: &str,
+        (current, overridden): (Option<&str>, bool),
+        groups: &[String],
+        acts: &mut Vec<Act>,
+    ) {
+        let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+        let shown = n.rsplit('/').next().unwrap_or(n);
+        let label = if n.contains('/') { shown } else { crate::i18n::style_name(lang, shown) };
+        let is_current = current == Some(n);
+        let row_label = format!("{label}{}", if is_current && overridden { "+" } else { "" });
+        let editable = n != if para { designcraft_doc::NO_PARA_STYLE } else { designcraft_doc::NO_CHAR_STYLE };
+        let apply = if para { "style.paragraph.apply" } else { "style.character.apply" };
+        let kind = if para { "paragraph" } else { "character" };
+        let out = Button::new(row_label.clone())
+            .id_salt(("style_row", para, n.to_owned()))
+            .variant(if is_current { Variant::SECONDARY } else { Variant::GHOST })
+            .align(HAlign::Start)
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        if out.clicks >= 2 && editable {
+            acts.push(Act::Options(para, n.to_owned()));
+        } else if out.clicked() {
+            acts.push(Act::Run(apply, json!({"name": n, "clearOverrides": out.mods.alt})));
+        }
+        let _ = Menu::context(row_label, &out.response).id_salt(("style_menu", para, n.to_owned())).show(ui, |ui, _| {
+            if editable && item(ui, "edit", tr("Edit \"{name}\"…").replace("{name}", label), true) {
+                acts.push(Act::Options(para, n.to_owned()));
+            }
+            if item(ui, "apply", format!("{} \"{}\"", tr("Apply"), label), true) {
+                acts.push(Act::Run(apply, json!({"name": n})));
+            }
+            if editable && is_current && item(ui, "redefine", tr("Redefine Style"), true) {
+                let command = if para { "style.paragraph.redefine" } else { "style.character.redefine" };
+                acts.push(Act::Run(command, json!({"name": n})));
+            }
+            if para && item(ui, "clear", tr("Apply \"{name}\", Clear Overrides").replace("{name}", label), true) {
+                acts.push(Act::Run("style.paragraph.apply", json!({"name": n, "clearOverrides": true})));
+            }
+            if is_current && item(ui, "break", tr("Break Link to Style"), true) {
+                acts.push(Act::Run("style.breakLink", json!({"kind": kind})));
+            }
+            if !n.starts_with('[') {
+                let _ = Menu::submenu_row(ui, tr("Move to Group"), |ui, _| {
+                    if n.contains('/') && item(ui, "no_group", tr("[No Group]"), true) {
+                        acts.push(Act::Run("style.group", json!({"kind": kind, "names": [n], "group": ""})));
+                    }
+                    for g in groups {
+                        if n.rsplit_once('/').map(|(x, _)| x) != Some(g.as_str()) && item(ui, &format!("group:{g}"), g.clone(), true) {
+                            acts.push(Act::Run("style.group", json!({"kind": kind, "names": [n], "group": g})));
+                        }
+                    }
+                    Divider::horizontal().show(ui);
+                    let id = ui.make_persistent_id(("new_style_group", para));
+                    let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+                    let hint = tr("New group…");
+                    let out = TextField::new(hint.clone(), Bind::bound(&mut name))
+                        .id_salt(("new_style_group", para))
+                        .placeholder(hint)
+                        .limit(None)
+                        .submits()
+                        .show(ui);
+                    if out.events.committed().is_some() && !name.trim().is_empty() {
+                        acts.push(Act::Run("style.group", json!({"kind": kind, "names": [n], "group": name.trim()})));
+                        name.clear();
+                    }
+                    ui.data_mut(|d| d.insert_temp(id, name));
+                });
+                Divider::horizontal().show(ui);
+                let (dialog, label) =
+                    if para { ("deleteParagraphStyle", "Delete Paragraph Style…") } else { ("deleteCharacterStyle", "Delete Character Style…") };
+                if item(ui, "delete", tr(label), true) {
+                    acts.push(Act::Delete(dialog, n.to_owned()));
+                }
+            }
+        });
+    }
+
+    pub(super) fn object(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let t = Tokens::get(ui.ctx());
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let Some(st) = app.session.active() else { return };
+        let identity = (st.uid, st.identity_epoch);
+        let names: Vec<String> = st.doc.styles.object.iter().map(|s| s.name.clone()).collect();
+        let (default_graphic, default_text) = (st.doc.styles.default_graphic_frame.clone(), st.doc.styles.default_text_frame.clone());
+        let current = object_style_of_selection(app);
+        let selected = current.is_some();
+        let over = selection_overrides_styles(app);
+        let shown = |n: &str, over: bool| format!("{}{}", crate::i18n::style_name(&lang, n), if over { "+" } else { "" });
+        let summary = current.as_ref().map_or_else(String::new, |(n, over)| shown(n, *over));
+        let icon = t.icon;
+        let mut acts: Vec<Act> = Vec::new();
+        let (mut create, mut clear) = (None, false);
+        ui.push_id(("framework-object-styles", identity), |ui| {
+            Stack::new().id_salt("object_styles").fill_width().show(ui, |ui, _| {
+                if !summary.is_empty() {
+                    Text::new(summary.clone()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+                }
+                for n in &names {
+                    let is_current = current.as_ref().is_some_and(|(c, _)| c == n);
+                    let label = shown(n, is_current && current.as_ref().is_some_and(|c| c.1));
+                    let editable = n != designcraft_doc::NO_OBJECT_STYLE;
+                    let (graphic, text) = (*n == default_graphic, *n == default_text);
+                    Row::new().id_salt(("object_style_row", n.clone())).fill_width().show(ui, |ui, _| {
+                        let out = Button::new(label.clone())
+                            .id_salt(("object_style", n.clone()))
+                            .variant(if is_current { Variant::SECONDARY } else { Variant::GHOST })
+                            .align(HAlign::Start)
+                            .sizing(Sizing::FillWidth)
+                            .show(ui);
+                        // The default styles of new graphic and text frames, as InDesign marks them.
+                        Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                            if graphic || text {
+                                let mark = egui::Rect::from_center_size(rect.center(), egui::vec2(11.0, 11.0));
+                                cx.painter.rect_stroke(mark, 0.0, egui::Stroke::new(1.0, icon), egui::StrokeKind::Inside);
+                                if text {
+                                    cx.painter.text(mark.center(), egui::Align2::CENTER_CENTER, "T", egui::FontId::proportional(8.5), icon);
+                                }
+                            }
+                        })
+                        .id_salt(("object_style_mark", n.clone()))
+                        .show(ui);
+                        if out.clicks >= 2 && editable {
+                            acts.push(Act::ObjectOptions(n.clone()));
+                        } else if out.clicked() && selected {
+                            acts.push(Act::Run("style.object.apply", json!({"name": n})));
+                        }
+                        let name = crate::i18n::style_name(&lang, n);
+                        let _ = Menu::context(label.clone(), &out.response).id_salt(("object_style_menu", n.clone())).show(ui, |ui, _| {
+                            if editable && item(ui, "edit", tr("Edit \"{name}\"…").replace("{name}", name), true) {
+                                acts.push(Act::ObjectOptions(n.clone()));
+                            }
+                            if item(ui, "apply", format!("{} \"{}\"", tr("Apply"), name), selected) {
+                                acts.push(Act::Run("style.object.apply", json!({"name": n})));
+                            }
+                        });
+                    });
+                }
+                Row::new().id_salt("object_styles_footer").fill_width().show(ui, |ui, _| {
+                    let opener = glyph_button(ui, "object_styles_menu_opener", "menu", &tr("Object Styles"), true, true);
+                    let _ =
+                        Menu::new(tr("Object Styles")).id_salt("object_styles_menu").opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
+                            if item(ui, "new", tr("New Object Style…"), true) {
+                                acts.push(Act::ObjectNew);
+                            }
+                            if let Some((n, _)) = current.as_ref().filter(|(n, _)| n != designcraft_doc::NO_OBJECT_STYLE)
+                                && item(ui, "options", tr("Object Style Options…"), true)
+                            {
+                                acts.push(Act::ObjectOptions(n.clone()));
+                            }
+                        });
+                    clear = glyph_button(ui, "object_styles_clear", "style-clear", &tr("Clear Overrides"), over, false).clicked() && over;
+                    let new = glyph_button(ui, "object_styles_new", "style-new", &tr("Create New Style"), true, false);
+                    if new.clicked() {
+                        create = Some(new.mods.alt);
+                    }
+                });
+            });
+        });
+        if clear {
+            acts.push(Act::Run("style.object.clearOverrides", json!({})));
+        }
+        // Alt-click, or nothing selected: the New Object Style dialog; otherwise the selection's style is captured.
+        match create {
+            Some(alt) if alt || !selected => acts.push(Act::ObjectNew),
+            Some(_) => acts.push(Act::Run("style.object.create", json!({"name": "Object Style 1", "fromSelection": true}))),
+            None => {}
+        }
+        finish(app, acts);
+    }
 }
 
 /// The selected object's style, and whether the object differs from it (an override: `+`): its
@@ -149,6 +485,11 @@ fn selection_overrides_styles(app: &DesignApp) -> bool {
 /// double-click opens its options; the default graphic and text frame styles are marked), and at
 /// the bottom Clear Overrides and Create New Style (⌥/Alt-click: the New Object Style dialog).
 pub fn object(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::object(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let Some(st) = app.session.active() else { return };
@@ -766,13 +1107,22 @@ mod tests {
                 !h.get_by_label("Create New Style from Selection").is_focused(),
                 "the pointer click alone must not be mistaken for keyboard focus"
             );
-            for pressed in [true, false] {
-                text_style_event(
-                    &mut h,
-                    egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE },
-                );
+            // The style rows are keyboard stops of their own now (they are framework buttons), so natural Tab
+            // passes through them before it reaches the create control: press it until the control is focused.
+            let create_focused =
+                |h: &Harness<'_, DesignApp>| h.get_by_role_and_label(egui::accesskit::Role::Button, "Create New Style from Selection").is_focused();
+            for _ in 0..24 {
+                if create_focused(&h) {
+                    break;
+                }
+                for pressed in [true, false] {
+                    text_style_event(
+                        &mut h,
+                        egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE },
+                    );
+                }
+                text_style_steps(&mut h, 3);
             }
-            text_style_steps(&mut h, 3);
             assert!(
                 h.get_by_role_and_label(egui::accesskit::Role::Button, "Create New Style from Selection").is_focused(),
                 "natural Tab reaches the create control before Space; focused widget: {:?}",

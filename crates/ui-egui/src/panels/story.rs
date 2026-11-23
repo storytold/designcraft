@@ -9,32 +9,56 @@ use crate::widgets::{self, NumField};
 /// The option is story-wide: changing the flag, text range or document revision must not
 /// steal focus between successive keyboard toggles. Actual document epochs and target
 /// story/frame identities still retire input when its owner changes.
-fn optical_margin_changed(app: &DesignApp, ui: &mut egui::Ui, on: &mut bool, label: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::choice::Checkbox;
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+#[cfg(not(target_arch = "wasm32"))]
+fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+    use craft_ui_widgets::layout_components::Row;
+    use craft_ui_widgets::text::NumberField;
 
-        let owner = app.session.active().map(|st| {
-            (
-                st.uid,
-                st.identity_epoch,
-                st.selection.text.map(|selection| selection.story.0),
-                st.selection.cells.map(|selection| selection.story.0),
-                st.selection.items.as_slice(),
-            )
-        });
-        // The existing panel deliberately shows differing stories unchecked, not as a dash.
-        let out = Checkbox::new(Bind::given(*on)).id(ui.make_persistent_id(("story-optical-margin", owner))).label(label.to_owned()).show(ui);
+    let options = super::text_attrs(app).map(|a| a["storyOptions"].clone());
+    let enabled = options.is_some();
+    let options = options.unwrap_or(Value::Null);
+    let lang = app.ui.language.clone();
+    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+    let owner = app.session.active().map(|st| {
+        (
+            st.uid,
+            st.identity_epoch,
+            st.selection.text.map(|selection| selection.story.0),
+            st.selection.cells.map(|selection| selection.story.0),
+            st.selection.items.to_vec(),
+        )
+    });
+    // Stories that differ show unchecked, not as a dash; a click turns it on for all of them.
+    let on = options["opticalMargin"].as_bool().unwrap_or(false);
+    let size = options["opticalMarginSize"].as_f64();
+    let mut changes: Vec<Value> = Vec::new();
+    Row::new().id_salt("story_options").wrap(true).show(ui, |ui, _| {
+        let out = Checkbox::new(Bind::given(on))
+            .id(ui.make_persistent_id(("story-optical-margin", &owner)))
+            .label(tr("Optical Margin Alignment"))
+            .enabled(enabled)
+            .show(ui);
         if let Some(after) = out.events.committed() {
-            *on = *after;
-            return true;
+            changes.push(json!({"opticalMargin": after}));
         }
-        return false;
+        let label = tr("Optical Margin Size");
+        let out = NumberField::new(label.clone(), Bind::given(size))
+            .id_salt("story_optical_margin_size")
+            .unit("pt".to_owned())
+            .range(designcraft_doc::OpticalMargin::MIN_SIZE..=designcraft_doc::OpticalMargin::MAX_SIZE)
+            .step(1.0)
+            .tooltip(label)
+            .enabled(enabled)
+            .show(ui);
+        if let Some(value) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
+            changes.push(json!({"opticalMarginSize": value}));
+        }
+    });
+    for change in changes {
+        let _ = app.run("story.options", change);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    widgets::checkbox(ui, on, label).changed()
 }
 // STORY_OPTICAL_MARGIN_APPLICATION_END
 
@@ -42,6 +66,11 @@ fn optical_margin_changed(app: &DesignApp, ui: &mut egui::Ui, on: &mut bool, lab
 /// selected text frames, and the type size its hang amounts are set for. Without text or a text
 /// frame selected, the controls are disabled.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        show_framework(app, ui);
+        return;
+    }
     let options = super::text_attrs(app).map(|a| a["storyOptions"].clone());
     let enabled = options.is_some();
     let options = options.unwrap_or(Value::Null);
@@ -51,7 +80,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             // Stories that differ show unchecked; a click turns it on for all of them.
             let mut on = options["opticalMargin"].as_bool().unwrap_or(false);
-            if optical_margin_changed(app, ui, &mut on, &tr("Optical Margin Alignment")) {
+            if widgets::checkbox(ui, &mut on, &tr("Optical Margin Alignment")).changed() {
                 let _ = app.run("story.options", json!({"opticalMargin": on}));
             }
             let field = NumField::number("storyOpticalMarginSize", options["opticalMarginSize"].as_f64(), " pt", 2)
