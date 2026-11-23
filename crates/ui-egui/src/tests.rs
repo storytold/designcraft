@@ -7,7 +7,7 @@ fn control_bar_shows_its_second_row() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
     app.run("file.newSample", json!({})).unwrap();
     app.ui.control_bar = true;
-    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1680,7 +1680,7 @@ fn control_screenshot_times_out_without_writing_a_file() {
 fn discarded_pass_runs_the_frame_stage_once_but_ticks_every_pass() {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({"title": "multipass"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
     let mut raw = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
     raw.viewports
@@ -1759,7 +1759,7 @@ fn hidden_logic_requests_exactly_one_paint_per_tick_until_a_settled_ui_pass() {
 fn font_gated_first_pass_requeues_injected_input_instead_of_acknowledging_it() {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({"title": "fonts"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.control_synthetic.push(egui::Event::Text("x".into()));
     let mut raw = hidden_raw();
     app.raw_input_hook(&ctx, &mut raw);

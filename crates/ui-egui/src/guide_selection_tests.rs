@@ -10,7 +10,7 @@ use super::{
 };
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);

@@ -558,7 +558,7 @@ fn a_reassigned_tool_key_selects_the_tool_and_the_old_key_does_not() {
 fn split_window_panes_have_their_own_views() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -602,7 +602,7 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
         app.run("window.split", json!({"on": true})).unwrap();
         app.focus_pane = focus_pane;
 
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let frame = |app: &mut crate::DesignApp, events| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -648,7 +648,7 @@ fn split_window_click_focus_routes_menu_zoom_but_hover_scroll_stays_local() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     app.run("window.split", json!({"on": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut time = 0.0;
     let mut frame = |app: &mut crate::DesignApp, events| {
         time += 0.1;
@@ -731,7 +731,7 @@ fn split_window_contextual_bars_have_independent_widget_ids() {
     }
     app.run("edit.selectAll", json!({})).unwrap();
     app.run("window.split", json!({"on": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     ctx.options_mut(|options| options.warn_on_id_clash = true);
     let mut warnings = Vec::new();
     for _ in 0..4 {
@@ -920,7 +920,7 @@ fn every_interface_language_is_selectable_persisted_and_keeps_document_data() {
 #[test]
 fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..4 {
             let mut output = ctx.run_ui(
@@ -1064,7 +1064,7 @@ fn fitting_options_follow_the_ruler_units() {
 fn tab_and_presentation_hide_floating_panels_too() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =
@@ -1134,7 +1134,7 @@ fn tab_hides_panels_and_documents_cycle() {
 fn rotate_spread_view() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 3})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -1166,7 +1166,7 @@ fn rotate_spread_view() {
 fn hand_tool_hold_starts_power_zoom() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, t: f64, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1209,7 +1209,7 @@ fn hand_tool_hold_starts_power_zoom() {
 fn middle_drag_pans_with_any_tool() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1246,7 +1246,7 @@ fn middle_drag_pans_with_any_tool() {
 fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1322,7 +1322,7 @@ fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
 fn go_back_and_go_forward_retrace_the_pages_viewed() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1390,7 +1390,7 @@ fn go_back_and_go_forward_retrace_the_pages_viewed() {
 fn go_back_waits_for_the_view_to_be_fitted() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -1417,7 +1417,7 @@ fn go_back_waits_for_the_view_to_be_fitted() {
 fn next_spread_at_the_last_spread_is_no_jump() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1458,7 +1458,7 @@ fn next_spread_at_the_last_spread_is_no_jump() {
 fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1530,7 +1530,7 @@ fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
 fn go_back_after_presentation_returns_to_the_last_spread_presented() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1590,7 +1590,7 @@ fn presentation_shows_one_spread_and_goes_through_them_with_keys_and_clicks() {
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap();
     let id = app.session.active().unwrap().selection.items[0];
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1691,7 +1691,7 @@ fn tool_shortcuts_work_after_drawing_on_the_canvas() {
     // tools without pressing Esc first (#1).
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1742,7 +1742,7 @@ fn escape_and_shift_w_leave_presentation_for_the_previous_mode() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "graphic"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1796,7 +1796,7 @@ fn cmd_plus_zooms_the_canvas_not_the_window() {
     // Cmd+- does, not hand the key to egui's whole-window zoom.
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1879,7 +1879,7 @@ fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
     for sc in ["Cmd+Shift+P", "Ctrl+P", "Cmd+Alt+P", "Alt+Shift+F11", "Alt+PageDown"] {
         assert!(crate::menus::native_key_equivalent(sc), "{sc}");
     }
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
@@ -1905,7 +1905,7 @@ fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
 fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1944,7 +1944,7 @@ fn quick_apply_rows_are_left_aligned() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.ui.palette = Some(String::new());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut shapes = Vec::new();
     for _ in 0..3 {
         let input =
@@ -1978,7 +1978,7 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
     // the system clipboard (#164, #185).
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -2032,7 +2032,7 @@ fn paste_with_no_insertion_point_makes_a_text_frame_from_other_apps_text() {
         let it = d.doc.item(*d.selection.items.first()?)?;
         Some(d.doc.story(it.text_frame()?.story)?.text.clone())
     };
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     native_frame(&mut app, &ctx, vec![], None);
@@ -2097,7 +2097,7 @@ fn sample_scripts_run() {
 fn new_window_shows_a_second_view() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -2193,7 +2193,7 @@ fn document_items(app: &crate::DesignApp) -> (usize, usize) {
 #[test]
 fn native_select_all_selects_the_focused_fields_text() {
     // The Mac menu bar takes ⌘A before the window sees it (#30).
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
     native_frame(&mut app, &ctx, vec![], None);
@@ -2203,7 +2203,7 @@ fn native_select_all_selects_the_focused_fields_text() {
 
 #[test]
 fn native_paste_and_copy_act_on_the_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
     native_frame(&mut app, &ctx, vec![], None);
@@ -2222,7 +2222,7 @@ fn native_paste_and_copy_act_on_the_focused_field() {
 
 #[test]
 fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200], "content": "text", "text": "hello"})).unwrap();
@@ -2247,7 +2247,7 @@ fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
 
 #[test]
 fn native_undo_and_redo_act_on_the_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "");
     native_frame(&mut app, &ctx, vec![egui::Event::Text("abc".into())], None);
     assert_eq!(app.ui.palette.as_deref(), Some("abc"));
@@ -2263,7 +2263,7 @@ fn native_undo_and_redo_act_on_the_focused_field() {
 
 #[test]
 fn native_editing_items_are_enabled_for_a_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     // Nothing is selected in the document, so its Copy and Cut are off; the field's are on.
     assert!(!menu_enabled(&app, "edit.copy") && !menu_enabled(&app, "edit.cut"));
@@ -2279,7 +2279,7 @@ fn native_editing_items_are_enabled_for_a_focused_field() {
 
 #[test]
 fn native_select_all_without_a_focused_field_selects_the_documents_items() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     app.ui.palette = None;
     native_frame(&mut app, &ctx, vec![], None);
@@ -2717,7 +2717,7 @@ fn insert_white_space_shows_the_em_and_en_space_shortcuts() {
 fn native_insert_shortcuts_leave_the_document_alone_while_a_field_has_focus() {
     // On the Mac the menu bar takes ⇧⌘M before the window: with Quick Apply's field focused it
     // must not type into the story behind it.
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
@@ -2740,7 +2740,7 @@ fn native_insert_shortcuts_leave_the_document_alone_while_a_dialog_or_quick_appl
     // The same cases stop the window's shortcuts. In the first frame nothing has keyboard focus
     // yet, so only the open dialog or Quick Apply keeps the character out of the story.
     for open in ["", "dialog", "palette"] {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({})).unwrap();
         let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
@@ -3318,7 +3318,7 @@ fn web_save_marks_the_document_saved_only_after_the_download_starts() {
 }
 
 fn start_screen_texts(app: &mut crate::DesignApp) -> Vec<String> {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");
     let mut shapes = Vec::new();
     for _ in 0..3 {
@@ -3390,7 +3390,7 @@ fn open_recent_of_a_missing_file_alerts_and_the_start_screen_lists_recent_files(
 #[test]
 fn start_screen_scrolls_when_the_window_is_too_short() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");
     let size = egui::vec2(1366.0, 300.0);
     let mut tile_y = |events: Vec<egui::Event>| {
@@ -3565,7 +3565,7 @@ fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
 fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -3632,7 +3632,7 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
 fn window_menu_commands_restore_hidden_panels() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =

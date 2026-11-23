@@ -206,25 +206,30 @@ mod visual_regressions {
                 for scale in [1.0, 1.5, 2.0] {
                     let app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
                     let mut ready = false;
-                    let mut harness =
-                        egui_kittest::Harness::builder().with_size(vec2(width, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
-                            move |ui, app: &mut DesignApp| {
-                                if !ready {
-                                    crate::theme::install_fonts(ui.ctx(), "en");
-                                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(brightness));
-                                    ready = true;
-                                    return;
-                                }
-                                crate::panel_docking::show(app, ui);
-                            },
-                            app,
-                        );
+                    let mut harness = crate::test_window::builder().with_size(vec2(width, 640.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
+                        move |ui, app: &mut DesignApp| {
+                            if !ready {
+                                crate::theme::install_fonts(ui.ctx(), "en");
+                                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(brightness));
+                                ready = true;
+                                return;
+                            }
+                            crate::panel_docking::show(app, ui);
+                        },
+                        app,
+                    );
                     harness.input_mut().max_texture_side = Some(8192);
                     harness.run_steps(4);
                     let stem = format!("designcraft-dock-{}-{width}-{scale}x", brightness.id());
                     harness.render().unwrap().save(directory.join(format!("{stem}.png"))).unwrap();
-                    let tab = crate::panel_docking::tab_id("properties");
-                    let tab = harness.ctx.read_response(tab).unwrap().rect;
+                    let tab = {
+                        use egui_kittest::kittest::Queryable;
+                        harness
+                            .query_all_by_label("Properties")
+                            .map(|node| node.rect())
+                            .find(|rect| rect.height() <= 45.0)
+                            .expect("the Properties tab")
+                    };
                     let region = serde_json::json!({
                         "screen": [width, 640.0], "scale": scale,
                         "regions": {"dock-tabs": [tab.left(), tab.top(), (width - tab.left()), tab.height()]}
@@ -248,7 +253,7 @@ mod visual_regressions {
         for brightness in crate::theme::Brightness::ALL {
             for width in [800.0, 1280.0] {
                 for scale in [1.0, 1.5, 2.0] {
-                    let ctx = egui::Context::default();
+                    let ctx = crate::test_window::context();
                     crate::theme::install_fonts(&ctx, "en");
                     let tokens = Tokens::for_brightness(brightness);
                     crate::theme::apply(&ctx, &tokens);

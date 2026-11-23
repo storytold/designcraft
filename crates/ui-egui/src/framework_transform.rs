@@ -45,9 +45,11 @@ pub(crate) fn enabled() -> bool {
 /// where it made the context: the desktop shell's eframe creation context, or a test's own context. A
 /// second call on the same context is not an error.
 pub(crate) fn install(ctx: &egui::Context) {
-    let spec = craft_ui_widgets::InstallSpec::new(craft_host::target::ShellInfo::default(), std::sync::Arc::new(craft_window_sdk::system::NoWindows));
+    // The running platform's window services, so floating dock panels open OS windows of their own where it allows.
+    let spec =
+        craft_ui_widgets::InstallSpec::new(craft_host::target::ShellInfo::default(), std::sync::Arc::new(craft_window_sdk::system::SystemWindows));
     match craft_ui_widgets::install(ctx, spec) {
-        Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => {}
+        Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => crate::panel_docking::note_runtime(ctx),
         Err(error) => log::warn!("the craft UI runtime was not installed; the Properties panel keeps its native controls: {error}"),
     }
 }

@@ -403,6 +403,20 @@ pub(crate) mod test_window {
         ready: bool,
     }
 
+    /// A context with the craft UI runtime installed, as the shipping window's is: the panel dock, and the canvas it
+    /// holds, need it. The app's own `framework_installed` stays as the test sets it, so every other surface draws
+    /// as that flag chooses.
+    pub fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        crate::framework_transform::install(&ctx);
+        ctx
+    }
+
+    /// `Harness::builder()` on a [`context`] with the runtime installed.
+    pub fn builder<State>() -> egui_kittest::HarnessBuilder<State> {
+        egui_kittest::HarnessBuilder::<State>::default().with_context(context())
+    }
+
     /// The window at `size` with a new document open.
     pub fn open(app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
         open_scaled(app, size, 1.0)
@@ -420,7 +434,7 @@ pub(crate) mod test_window {
             app.run("file.new", serde_json::json!({})).unwrap();
         }
         let mut h =
-            Harness::builder().with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
+            builder().with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
                 |ui, w: &mut Window| {
                     // The builder runs a frame before the texture size can be raised: skip it.
                     if !w.ready {

@@ -1165,7 +1165,7 @@ mod text_color_tests {
         app.run("selection.set", json!({"ids":[f["id"]]})).unwrap();
         app.run("app.formattingAffectsText", json!({"on":true})).unwrap();
         let before = app.session.doc().unwrap().doc.item(ItemId(f["id"].as_u64().unwrap())).unwrap().fill.clone();
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+        let mut h = crate::test_window::builder().with_size(egui::vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
             |ui, app: &mut DesignApp| {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);

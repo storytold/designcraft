@@ -304,7 +304,7 @@ fn populated_canvas_keeps_a_real_stroke_edit_after_floating_and_redocking() {
     app.run("object.stroke", json!({"weight":8})).unwrap();
     app.run("window.panel.float", json!({"panel":"stroke","x":40,"y":140,"width":310,"height":490})).unwrap();
     let directory = std::env::var_os("CRAFT_UI_DOCKING_FIXTURES").map(std::path::PathBuf::from);
-    let builder = Harness::builder().with_size(vec2(1280.0, 800.0));
+    let builder = crate::test_window::builder().with_size(vec2(1280.0, 800.0));
     let builder = if directory.is_some() { builder.wgpu() } else { builder };
     let mut h = builder.build_ui_state(
         |ui, app: &mut DesignApp| {
@@ -347,7 +347,7 @@ fn properties_stroke_link_opens_the_stroke_panel_in_a_custom_workspace() {
     // Floating Layers leaves Pages the active tab beside Properties.
     app.run("window.panel", json!({"panel":"properties"})).unwrap();
     assert!(in_iconic_column(app.ui.docking.as_ref().unwrap(), "stroke"));
-    let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1280.0, 800.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             app.logic(ui.ctx());
             app.ui(ui);
@@ -1017,7 +1017,7 @@ fn arrow_after_dragging_a_dock_divider_nudges_the_selection_not_the_dock() {
     let mut app = app();
     app.run("file.new", json!({"width":480,"height":360})).unwrap();
     let id = app.run("frame.create", json!({"rect":[80,70,330,230],"content":"none"})).unwrap()["id"].as_u64().unwrap();
-    let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1280.0, 800.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             app.logic(ui.ctx());
             app.ui(ui);
