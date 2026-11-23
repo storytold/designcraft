@@ -74,8 +74,10 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             // The caret Split Note splits at is the text field's own, kept with the note.
             let caret_id = ui.make_persistent_id(("notes-caret", identity));
             let mut caret: usize = ui.data(|d| d.get_temp(caret_id)).unwrap_or(0);
+            // Named for the note, not "Note text": that is the draft field's name.
+            let field_name = if author.is_empty() { tr("Note") } else { format!("{} — {author}", tr("Note")) };
             GroupBox::new(author, None).id_salt(("notes-row", identity)).show(ui, |ui, _| {
-                TextField::new(tr("Note text"), Bind::given(text.clone()))
+                TextField::new(field_name, Bind::given(text.clone()))
                     .id_salt(("note_text", identity))
                     .read_only(true)
                     .lines(2)
@@ -502,7 +504,12 @@ mod installed_action_tests {
         let mut h = harness(app);
         let notes = list(&mut h);
         assert!(buttons(&h, "Split Note")[1].facts.as_ref().unwrap().disabled);
-        let field = h.get_by(|node| node.role() == egui::accesskit::Role::MultilineTextInput && node.value().as_deref() == Some("αβ😀tail")).rect();
+        // The named field: the framework also exposes an unnamed input proxy that carries the same value.
+        let field = h
+            .get_by(|node| {
+                node.role() == egui::accesskit::Role::MultilineTextInput && node.label().is_some() && node.value().as_deref() == Some("αβ😀tail")
+            })
+            .rect();
         click_at(&mut h, field.center());
         key(&mut h, Key::Home, Modifiers::NONE);
         key(&mut h, Key::ArrowRight, Modifiers::NONE);

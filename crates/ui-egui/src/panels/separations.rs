@@ -92,14 +92,12 @@ fn ink_plate_button(
     let label = if plate.is_some() { format!("{}: {name}", tr(&app.ui.language, "Plate")) } else { name.to_owned() };
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _, Sizing};
+        use craft_ui_widgets::contract::{Props as _, Show as _};
         return craft_ui_widgets::buttons::Button::new(label)
             .painted(name.to_owned())
             .id(id)
             .enabled(enabled)
             .selected(selected)
-            .align(craft_ui_widgets::primitives::HAlign::Start)
-            .sizing(Sizing::FillWidth)
             .size(craft_theme::ControlSize::Sm)
             .variant(craft_ui_widgets::style::Variant::GHOST)
             .show(ui)

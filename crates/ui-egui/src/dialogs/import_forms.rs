@@ -229,10 +229,8 @@ mod tests {
         let name = format!("{menu} \u{203a} {label}");
         kit::click(&mut h, CHECK, &name, 0);
         let key = crate::menus::menu_key(&menu, &label);
-        let sent = kit::journal(&h, "window.hideMenuItem");
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        assert_eq!((sent[0].1["item"].as_str(), sent[0].1["hidden"].as_bool()), (Some(key.as_str()), Some(true)));
-        assert!(h.state().ui.hidden_menu_items.contains(&key));
+        // `window.hideMenuItem` is an interface command: it changes the app's hidden items, not the document's journal.
+        assert!(h.state().ui.hidden_menu_items.contains(&key), "unticking hides the item");
         kit::click(&mut h, CHECK, &name, 0);
         assert!(!h.state().ui.hidden_menu_items.contains(&key), "ticking it again shows it");
     }

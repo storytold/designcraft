@@ -177,7 +177,8 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
                 .show(ui, |ui, _| {
                     let mut held = cell.borrow_mut();
                     let (app, d) = &mut *held;
-                    from_form = (form.show)(app, ui, d);
+                    // The body can run more than once in a pass (a measuring run), and only the run that saw the click reports it.
+                    from_form = (form.show)(app, ui, d).or(from_form);
                 })
                 .output
         });

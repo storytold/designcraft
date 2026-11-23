@@ -241,6 +241,8 @@ mod tests {
         let mut app = kit::app(1, false);
         kit::open(&mut app, "app.colorSettings");
         let mut h = kit::harness(app);
+        // Opening the dialog read the settings through the same command: count only what the dialog sends.
+        let opened = kit::journal(&h, "color.settings").len();
         let _ = h.get_by_role_and_label(Role::Dialog, "Color Settings");
         let intent = designcraft_color::cms::Intent::ALL[1];
         kit::pick(&mut h, "Intent:", &crate::i18n::tr("en", intent.label()));
@@ -250,7 +252,7 @@ mod tests {
         assert_eq!(kit::draft(&h).b("bpc"), !bpc);
         kit::click(&mut h, BUTTON, "OK", 0);
         assert!(h.state().ui.dialog.is_none());
-        let sent = kit::journal(&h, "color.settings");
+        let sent = kit::journal(&h, "color.settings").split_off(opened);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!((sent[0].1["intent"].as_str(), sent[0].1["bpc"].as_bool()), (Some(intent.id()), Some(!bpc)));
     }
@@ -263,6 +265,8 @@ mod tests {
         let mut app = kit::app(2, false);
         crate::dialogs::open_document_setup(&mut app);
         let mut h = kit::harness(app);
+        // Opening the dialog read the setup through the same command: count only what the dialog sends.
+        let opened = kit::journal(&h, "layout.documentSetup").len();
         let _ = h.get_by_role_and_label(Role::Dialog, "Document Setup");
         kit::pick(&mut h, "Page Size:", "A4");
         let (w, hh) = (kit::draft(&h).m("width").unwrap(), kit::draft(&h).m("height").unwrap());
@@ -276,7 +280,7 @@ mod tests {
         }
         kit::click(&mut h, BUTTON, "OK", 0);
         assert!(h.state().ui.dialog.is_none());
-        let sent = kit::journal(&h, "layout.documentSetup");
+        let sent = kit::journal(&h, "layout.documentSetup").split_off(opened);
         assert_eq!(sent.len(), 1, "{sent:?}");
         let p = &sent[0].1;
         assert_eq!(p["margins"]["top"], 10.0);
@@ -290,10 +294,11 @@ mod tests {
         let mut app = kit::app(1, false);
         crate::dialogs::open_document_setup(&mut app);
         let mut h = kit::harness(app);
+        let opened = kit::journal(&h, "layout.documentSetup").len();
         kit::type_and_commit(&mut h, "Number of Pages:", 0, "3");
         kit::click(&mut h, BUTTON, "Adjust Layout", 0);
         assert!(h.state().ui.dialog.is_none(), "Adjust Layout closes the dialog");
-        let sent = kit::journal(&h, "layout.documentSetup");
+        let sent = kit::journal(&h, "layout.documentSetup").split_off(opened);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!((sent[0].1["adjustLayout"].as_bool(), sent[0].1["pages"].as_u64()), (Some(true), Some(3)));
     }
