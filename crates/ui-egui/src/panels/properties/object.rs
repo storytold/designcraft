@@ -1240,7 +1240,8 @@ pub(super) mod framework {
         if let Some(v) = weight.edit.events.committed().copied().flatten().or(picked).filter(|v| v.is_finite()) {
             let _ = app.run("object.stroke", json!({"weight": v}));
         }
-        stroke_type_select(app, ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), &i.stroke_kind);
+        let id = control_id(ui, "stroke-type");
+        stroke_type_select(app, ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), id, &i.stroke_kind);
         ui.add_space(4.0);
         // Corner.
         let b = block(ui, FIELD_H);
@@ -1258,7 +1259,8 @@ pub(super) mod framework {
         if let Some(v) = corner.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
             let _ = app.run("object.cornerOptions", corner_size_params(shape, v));
         }
-        corner_shape_select(app, ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), shape, size);
+        let id = control_id(ui, "corner-shape");
+        corner_shape_select(app, ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), id, shape, size);
         ui.add_space(4.0);
         // Opacity.
         let b = block(ui, FIELD_H);
@@ -1283,14 +1285,15 @@ pub(super) mod framework {
         }
     }
 
-    /// The stroke type picker at `at`: the face is the current type's line, the list each type's line and name.
-    fn stroke_type_select(app: &mut DesignApp, ui: &mut Ui, at: Rect, current: &str) {
+    /// The stroke type picker at `at` with the id `id`: the face is the current type's line, the list each type's line
+    /// and name. A pick runs `object.stroke`. Properties › Appearance and the Control bar share it.
+    pub(crate) fn stroke_type_select(app: &mut DesignApp, ui: &mut Ui, at: Rect, id: egui::Id, current: &str) {
         let lang = app.ui.language.clone();
         let entries: Vec<Entry<&'static str>> =
             STROKE_TYPES.iter().map(|&(label, kind)| Entry::new(kind, crate::i18n::tr(&lang, label).to_owned())).collect();
         let held = STROKE_TYPES.iter().find(|(_, kind)| *kind == current).map_or(Mixed::Mixed, |&(_, kind)| Mixed::Same(kind));
         let picked = Select::new(crate::i18n::tr(&lang, "Stroke Type").to_owned(), Bind::given(held), &entries)
-            .id(control_id(ui, "stroke-type"))
+            .id(id)
             .picture(|kind: &&'static str, cx: &ContentPainterCx<'_>, rect: Rect| paint_stroke_type(&cx.painter, rect, kind, cx.ink()))
             .picture_only()
             .show_at(ui, at)
@@ -1302,13 +1305,15 @@ pub(super) mod framework {
         }
     }
 
-    /// The corner shape picker at `at`: the face is the current shape's glyph, the list each shape's glyph and name.
-    fn corner_shape_select(app: &mut DesignApp, ui: &mut Ui, at: Rect, shape: CornerShape, size: f64) {
+    /// The corner shape picker at `at` with the id `id`: the face is the current shape's glyph, the list each shape's
+    /// glyph and name. A pick runs `object.cornerOptions` with the corner `size`. Properties › Appearance and the
+    /// Control bar share it.
+    pub(crate) fn corner_shape_select(app: &mut DesignApp, ui: &mut Ui, at: Rect, id: egui::Id, shape: CornerShape, size: f64) {
         let lang = app.ui.language.clone();
         let entries: Vec<Entry<CornerShape>> =
             CornerShape::ALL.into_iter().map(|s| Entry::new(s, crate::i18n::tr(&lang, s.label()).to_owned())).collect();
         let picked = Select::new(crate::i18n::tr(&lang, "Corner Shape").to_owned(), Bind::given(shape), &entries)
-            .id(control_id(ui, "corner-shape"))
+            .id(id)
             .picture(|shape: &CornerShape, cx: &ContentPainterCx<'_>, rect: Rect| paint_corner_shape(&cx.painter, rect, *shape, cx.ink()))
             .picture_only()
             .show_at(ui, at)
