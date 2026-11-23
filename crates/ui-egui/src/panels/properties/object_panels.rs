@@ -2744,6 +2744,7 @@ mod ui223_text_wrap_mode_invert_tests {
 mod framework_panel_tests {
     use super::super::framework_test_kit::*;
     use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT as _;
     use egui_kittest::kittest::Queryable;
     use serde_json::json;
 
