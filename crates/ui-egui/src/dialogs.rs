@@ -34,6 +34,7 @@ mod layout_forms;
 pub(crate) mod paragraph_forms;
 #[cfg(not(target_arch = "wasm32"))]
 mod command_form;
+mod preferences;
 #[cfg(not(target_arch = "wasm32"))]
 mod table_forms;
 #[cfg(not(target_arch = "wasm32"))]

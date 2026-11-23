@@ -1,4 +1,4 @@
-use super::{DesignApp, Sense, Tokens, Value, divider, json, sel_info, units, vec2};
+use super::{DesignApp, FIELD_H, Sense, Tokens, Value, block, divider, json, sel_info, sub, units, vec2};
 use crate::app::file_dialogs::Bound;
 
 /// Only Links actions opt into the already-installed native runtime. A context without it (and
@@ -8,15 +8,24 @@ struct LinkButton {
     clicked: bool,
 }
 
-fn link_button(app: &DesignApp, ui: &mut egui::Ui, target: (&str, u64), action: &str, label: &str, enabled: bool, small: bool) -> LinkButton {
+/// A Links action: `(kind, id, action)` names its target (an asset, a story, the document) and what it does.
+type LinkAction<'a> = (&'a str, u64, &'a str);
+
+/// A Links action button labelled `label` (translated here), tipped `tip` (translated by the caller) when given.
+fn link_button(app: &DesignApp, ui: &mut egui::Ui, key: LinkAction<'_>, label: &str, tip: Option<&str>, enabled: bool, small: bool) -> LinkButton {
+    let (kind, target, action) = key;
     // Keep document and actual asset/story identity explicit, independent of translated labels.
     let uid = app.session.active().map(|st| st.uid);
-    let id = ui.make_persistent_id(("links_action", uid, target, action));
+    let id = ui.make_persistent_id(("links_action", uid, (kind, target), action));
     let label = crate::i18n::tr(&app.ui.language, label);
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
         use craft_ui_widgets::contract::{Props as _, Show as _};
-        let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled).show(ui);
+        let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled);
+        if let Some(tip) = tip {
+            button = button.tooltip(tip.to_owned());
+        }
+        let out = button.show(ui);
         // SDK activation is authoritative: egui's extra click rule need not match it.
         let clicked = out.clicked();
         return LinkButton { response: out.response, clicked };
@@ -27,6 +36,12 @@ fn link_button(app: &DesignApp, ui: &mut egui::Ui, target: (&str, u64), action: 
             ui.add_enabled(enabled, if small { button.small() } else { button })
         })
         .inner;
+    let response = match tip {
+        Some(tip) => response.on_hover_ui(|ui| {
+            crate::rtl::label(ui, tip);
+        }),
+        None => response,
+    };
     let clicked = response.clicked();
     LinkButton { response, clicked }
 }
@@ -43,6 +58,10 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         if with_window_intents(ui.ctx(), crate::i18n::is_rtl(&app.ui.language), |keys| keys.take(Intent::Cancel)) {
             crate::dialogs::cancel(app);
         }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::links_body(app, ui);
     }
     // Linked stories (Place and Link).
     let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
@@ -65,7 +84,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                             egui::RichText::new(crate::i18n::tr(&app.ui.language, "⚠ out of date")).color(egui::Color32::from_rgb(230, 160, 40)),
                         ),
                     );
-                    if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0)), "update", "Update", true, true).clicked {
+                    if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0), "update"), "Update", None, true, true).clicked {
                         let _ = app.run("story.updateLink", json!({"story": l["story"]}));
                     }
                 }
@@ -73,49 +92,11 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         ui.separator();
     }
-    let Some(st) = app.session.active() else {
+    let t = Tokens::get(ui.ctx());
+    let Some((rows, unavailable)) = link_rows(app, ui) else {
         return;
     };
-    let t = Tokens::get(ui.ctx());
-    // Whether a linked file is still there and unchanged is asked of the file system, and a
-    // network path may take an operating-system timeout to answer: native builds list the links
-    // from the document and take their statuses from a check on a background worker.
-    #[cfg(not(target_arch = "wasm32"))]
-    let refresh = {
-        let doc = std::sync::Arc::clone(&st.doc);
-        let snapshot = crate::links_worker::Snapshot {
-            key: crate::links_worker::Key::new(st.uid, &doc, st.path.as_deref()),
-            doc: std::sync::Arc::clone(&doc),
-            cache: std::sync::Arc::clone(&app.session.cache),
-            document: st.path.as_ref().map(std::path::PathBuf::from),
-        };
-        let refresh = app.links_worker.rows(ui.ctx(), snapshot);
-        // A file the check read and found unchanged isn't read again, in this session or the next.
-        if !refresh.verified.is_empty() {
-            designcraft_engine::cmd::remember_link_files(&mut app.session, &doc, &refresh.verified);
-        }
-        refresh
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let rows = &refresh.values;
-    // Web builds have no filesystem to wait for: the list is refreshed at most twice a second.
-    #[cfg(target_arch = "wasm32")]
-    let rows = {
-        let key = egui::Id::unique("links_panel");
-        let now = ui.input(|i| i.time);
-        let rev = (st.uid, st.revision);
-        let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
-        match cached {
-            Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
-            _ => {
-                let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-                ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
-                rows
-            }
-        }
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    if refresh.unavailable && !rows.is_empty() {
+    if unavailable && !rows.is_empty() {
         crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Link status is unavailable.")).color(t.text_dim).size(11.0));
     }
     if rows.is_empty() {
@@ -164,13 +145,12 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             if response.clicked() {
                 chosen = Some(aid);
             }
-            let (txt, col) = match r["status"].as_str().unwrap_or("") {
-                "missing" => ("\u{26A0} Missing", egui::Color32::from_rgb(0xe5, 0x4b, 0x4b)),
-                "modified" => ("\u{25B2} Modified", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
-                "embedded" => ("Embedded", t.text_dim),
-                "checking" => ("Checking\u{2026}", t.text_dim),
-                "tooLarge" => ("Too large to check", egui::Color32::from_rgb(0xe8, 0xb3, 0x2c)),
-                _ => ("OK", egui::Color32::from_rgb(60, 200, 90)),
+            let (txt, tone) = status_look(r["status"].as_str().unwrap_or(""));
+            let col = match tone {
+                StatusTone::Bad => egui::Color32::from_rgb(0xe5, 0x4b, 0x4b),
+                StatusTone::Warn => egui::Color32::from_rgb(0xe8, 0xb3, 0x2c),
+                StatusTone::Dim => t.text_dim,
+                StatusTone::Good => egui::Color32::from_rgb(60, 200, 90),
             };
             let status = ui
                 .horizontal(|ui| {
@@ -184,18 +164,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             if let Some(why) = r["refused"].as_str() {
                 status.on_hover_text(why);
             }
-            let uses = r["uses"].as_array().cloned().unwrap_or_default();
-            let info = match uses.first() {
-                Some(u) => {
-                    let page = u["page"].as_str().unwrap_or("PB");
-                    let ppi = u["ppi"].as_f64().map(|p| format!(" · {p:.0} ppi")).unwrap_or_default();
-                    let more = if uses.len() > 1 { format!(" (+{})", uses.len() - 1) } else { String::new() };
-                    format!("{page}{ppi}{more}")
-                }
-                None => crate::i18n::tr(&app.ui.language, "unused").into(),
-            };
-            // Low effective resolution for print is flagged like the Preflight check.
-            let low = uses.first().and_then(|u| u["ppi"].as_f64()).is_some_and(|p| p < 150.0);
+            let (info, low) = use_info(&app.ui.language, r);
             crate::rtl::label(
                 ui,
                 egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
@@ -217,20 +186,75 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap());
         ui.add_space(6.0);
     }
+    link_actions(app, ui, &rows, chosen);
+}
+
+/// The placed graphics and linked text files the Links panel lists, and whether their statuses could not be checked;
+/// `None` without a document.
+fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(Vec<Value>, bool)> {
+    let st = app.session.active()?;
+    // Whether a linked file is still there and unchanged is asked of the file system, and a
+    // network path may take an operating-system timeout to answer: native builds list the links
+    // from the document and take their statuses from a check on a background worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    let refresh = {
+        let doc = std::sync::Arc::clone(&st.doc);
+        let snapshot = crate::links_worker::Snapshot {
+            key: crate::links_worker::Key::new(st.uid, &doc, st.path.as_deref()),
+            doc: std::sync::Arc::clone(&doc),
+            cache: std::sync::Arc::clone(&app.session.cache),
+            document: st.path.as_ref().map(std::path::PathBuf::from),
+        };
+        let refresh = app.links_worker.rows(ui.ctx(), snapshot);
+        // A file the check read and found unchanged isn't read again, in this session or the next.
+        if !refresh.verified.is_empty() {
+            designcraft_engine::cmd::remember_link_files(&mut app.session, &doc, &refresh.verified);
+        }
+        refresh
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let rows = refresh.values.clone();
+    // Web builds have no filesystem to wait for: the list is refreshed at most twice a second.
+    #[cfg(target_arch = "wasm32")]
+    let rows = {
+        let key = egui::Id::unique("links_panel");
+        let now = ui.input(|i| i.time);
+        let rev = (st.uid, st.revision);
+        let cached: Option<(f64, (u64, u64), Vec<Value>)> = ui.data(|d| d.get_temp(key));
+        match cached {
+            Some((at, r, rows)) if r == rev && now - at < 0.5 => rows,
+            _ => {
+                let rows = app.session.execute("links.list", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+                ui.data_mut(|d| d.insert_temp(key, (now, rev, rows.clone())));
+                rows
+            }
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let unavailable = refresh.unavailable;
+    #[cfg(target_arch = "wasm32")]
+    let unavailable = false;
+    Some((rows, unavailable))
+}
+
+/// The Links actions under the list: Relink…, Go To, Update and Embed (or Unlink, Unembed…) for the chosen row, then
+/// Relink to Folder….
+fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: Option<u64>) {
     ui.horizontal_wrapped(|ui| {
         let Some(aid) = chosen else {
-            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Choose a link.")).color(t.text_dim).size(11.0));
+            note(app, ui, crate::i18n::tr(&app.ui.language, "Choose a link."));
             return;
         };
         // A linked text file is addressed by its story.
         let is_text = rows.iter().any(|r| r["story"].as_u64() == Some(aid));
+        let kind = if is_text { "story" } else { "asset" };
         let target = if is_text { json!({"story": aid}) } else { json!({"asset": aid}) };
         let with = |k: &str, v: Value| {
             let mut p = target.clone();
             p[k] = v;
             p
         };
-        if link_button(app, ui, (if is_text { "story" } else { "asset" }, aid), "relink", "Relink…", true, false).clicked {
+        if link_button(app, ui, (kind, aid, "relink"), "Relink…", None, true, false).clicked {
             let target = with("path", Value::Null);
             let asked = app.ask_open("relink", Bound::Document, move |app, path| {
                 let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
@@ -240,41 +264,33 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 app.status_error("Relink", e);
             }
         }
-        if link_button(app, ui, (if is_text { "story" } else { "asset" }, aid), "go_to", "Go To", true, false).clicked {
+        if link_button(app, ui, (kind, aid, "go_to"), "Go To", None, true, false).clicked {
             let _ = app.run("links.goTo", target.clone());
         }
         let row = rows.iter().find(|r| r["asset"].as_u64() == Some(aid));
         let status = row.and_then(|r| r["status"].as_str()).unwrap_or("");
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
+        let edited_tip = crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced");
         // A graphic is updated only when its file changed; a linked story can always be imported again.
-        let update = link_button(app, ui, (if is_text { "story" } else { "asset" }, aid), "update", "Update", is_text || status == "modified", false);
-        if edited {
-            update.response.on_hover_ui(|ui| {
-                crate::rtl::label(
-                    ui,
-                    crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced"),
-                );
-            });
-        }
+        let update = link_button(app, ui, (kind, aid, "update"), "Update", edited.then_some(edited_tip), is_text || status == "modified", false);
         if update.clicked {
             update_links(app, target.clone());
         }
         if is_text {
-            if link_button(app, ui, ("story", aid), "unlink", "Unlink", true, false).clicked {
+            if link_button(app, ui, ("story", aid, "unlink"), "Unlink", None, true, false).clicked {
                 let _ = app.run("links.embed", target.clone());
             }
         } else if status == "embedded" {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let unembed = link_button(app, ui, ("asset", aid), "unembed", "Unembed\u{2026}", true, false);
-                unembed.response.on_hover_text(crate::i18n::tr(&app.ui.language, "Keep the graphic in a file and link to it"));
-                if unembed.clicked {
+                let tip = crate::i18n::tr(&app.ui.language, "Keep the graphic in a file and link to it");
+                if link_button(app, ui, ("asset", aid, "unembed"), "Unembed\u{2026}", Some(tip), true, false).clicked {
                     app.unembed_link(aid);
                 }
             }
         } else {
-            let embed = link_button(app, ui, ("asset", aid), "embed", "Embed", !matches!(status, "missing" | "modified"), false);
-            embed.response.on_hover_text(crate::i18n::tr(&app.ui.language, "Copy the file into the document"));
+            let tip = crate::i18n::tr(&app.ui.language, "Copy the file into the document");
+            let embed = link_button(app, ui, ("asset", aid, "embed"), "Embed", Some(tip), !matches!(status, "missing" | "modified"), false);
             if embed.clicked
                 && let Err(e) = app.run("links.embed", target.clone())
             {
@@ -284,11 +300,8 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     });
     ui.horizontal(|ui| {
         // Choose any file in the folder: missing links are looked up there by name.
-        let folder = link_button(app, ui, ("document", 0), "relink_folder", "Relink to Folder…", true, false);
-        folder.response.on_hover_ui(|ui| {
-            crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
-        });
-        if folder.clicked {
+        let tip = crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics");
+        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true, false).clicked {
             let asked = app.ask_open("relink", Bound::Document, |app, path| {
                 let Some(dir) = std::path::Path::new(&path).parent() else {
                     return Ok(Value::Null);
@@ -303,6 +316,58 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+/// A small dim note ("Choose a link."): the framework's faint text once it is installed.
+fn note(app: &DesignApp, ui: &mut egui::Ui, text: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        craft_ui_widgets::display::Text::new(text.to_owned()).shade(craft_ui_widgets::display::Shade::Faint).show(ui);
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = app;
+    let t = Tokens::get(ui.ctx());
+    crate::rtl::label(ui, egui::RichText::new(text).color(t.text_dim).size(11.0));
+}
+
+/// How a link's status reads: its words and its tone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusTone {
+    Bad,
+    Warn,
+    Dim,
+    Good,
+}
+
+/// The words (to translate) and tone of the link status `status`.
+fn status_look(status: &str) -> (&'static str, StatusTone) {
+    match status {
+        "missing" => ("\u{26A0} Missing", StatusTone::Bad),
+        "modified" => ("\u{25B2} Modified", StatusTone::Warn),
+        "embedded" => ("Embedded", StatusTone::Dim),
+        "checking" => ("Checking\u{2026}", StatusTone::Dim),
+        "tooLarge" => ("Too large to check", StatusTone::Warn),
+        _ => ("OK", StatusTone::Good),
+    }
+}
+
+/// A link row's first use, as the Page · PPI column shows it ("3 · 240 ppi (+1)", or "unused"), and whether its
+/// effective resolution is low for print (flagged like the Preflight check).
+fn use_info(language: &str, r: &Value) -> (String, bool) {
+    let uses = r["uses"].as_array().cloned().unwrap_or_default();
+    let info = match uses.first() {
+        Some(u) => {
+            let page = u["page"].as_str().unwrap_or("PB");
+            let ppi = u["ppi"].as_f64().map(|p| format!(" · {p:.0} ppi")).unwrap_or_default();
+            let more = if uses.len() > 1 { format!(" (+{})", uses.len() - 1) } else { String::new() };
+            format!("{page}{ppi}{more}")
+        }
+        None => crate::i18n::tr(language, "unused").into(),
+    };
+    let low = uses.first().and_then(|u| u["ppi"].as_f64()).is_some_and(|p| p < 150.0);
+    (info, low)
 }
 
 /// Thumbnail edge in the Links panel, in points.
@@ -321,7 +386,15 @@ fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response 
 /// Chain links for a linked graphic, a page with a folded corner for an embedded one.
 fn storage_icon(ui: &mut egui::Ui, linked: bool, color: egui::Color32, language: &str) {
     let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-    let p = ui.painter();
+    paint_storage(ui.painter(), rect, linked, color);
+    response.on_hover_text(crate::i18n::tr(
+        language,
+        if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" },
+    ));
+}
+
+/// Paints in `rect` chain links for a linked graphic, a page with a folded corner for an embedded one.
+fn paint_storage(p: &egui::Painter, rect: egui::Rect, linked: bool, color: egui::Color32) {
     let stroke = egui::Stroke::new(1.3, color);
     let c = rect.center();
     if linked {
@@ -337,10 +410,6 @@ fn storage_icon(ui: &mut egui::Ui, linked: bool, color: egui::Color32, language:
         p.line_segment([body.right_top() + vec2(-fold, 0.0), body.right_top() + vec2(-fold, fold)], stroke);
         p.line_segment([body.right_top() + vec2(-fold, fold), body.right_top() + vec2(0.0, fold)], stroke);
     }
-    response.on_hover_text(crate::i18n::tr(
-        language,
-        if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" },
-    ));
 }
 
 /// The proxy of a linked graphic, drawn small. `None` when the graphic has no proxy or it can't be
@@ -429,36 +498,49 @@ pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Val
 }
 
 pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let u = units(app);
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::info_panel(app, ui);
+    }
     let t = Tokens::get(ui.ctx());
+    for line in info_lines(app) {
+        crate::rtl::label(ui, line);
+    }
+    crate::rtl::label(ui, egui::RichText::new(render_line(app)).color(t.text_dim));
+}
+
+/// The Info panel's lines: the selection's position, size, fill and stroke, or the document's page, story and item
+/// counts (none without a document).
+fn info_lines(app: &mut DesignApp) -> Vec<String> {
+    let u = units(app);
     match sel_info(app) {
         Some(i) => {
             let f = |v: f64| designcraft_geom::format_measure(v, u);
-            crate::rtl::label(ui, format!("X: {}   Y: {}", f(i.page_rect.x0), f(i.page_rect.y0)));
-            crate::rtl::label(ui, format!("W: {}   H: {}", f(i.page_rect.width()), f(i.page_rect.height())));
-            crate::rtl::label(
-                ui,
+            vec![
+                format!("X: {}   Y: {}", f(i.page_rect.x0), f(i.page_rect.y0)),
+                format!("W: {}   H: {}", f(i.page_rect.width()), f(i.page_rect.height())),
                 format!("{}: {}   {}: {}", crate::i18n::tr(&app.ui.language, "Fill"), i.fill, crate::i18n::tr(&app.ui.language, "Stroke"), i.stroke),
-            );
+            ]
         }
-        None => {
-            if let Some(st) = app.session.active() {
-                crate::rtl::label(
-                    ui,
-                    format!(
-                        "{} · {} · {}",
-                        crate::i18n::count_label(&app.ui.language, "pages", st.doc.page_count()),
-                        crate::i18n::count_label(&app.ui.language, "stories", st.doc.stories.len()),
-                        crate::i18n::count_label(&app.ui.language, "items", st.doc.all_items().len())
-                    ),
-                );
-            }
-        }
+        None => app
+            .session
+            .active()
+            .map(|st| {
+                format!(
+                    "{} · {} · {}",
+                    crate::i18n::count_label(&app.ui.language, "pages", st.doc.page_count()),
+                    crate::i18n::count_label(&app.ui.language, "stories", st.doc.stories.len()),
+                    crate::i18n::count_label(&app.ui.language, "items", st.doc.all_items().len())
+                )
+            })
+            .into_iter()
+            .collect(),
     }
-    crate::rtl::label(
-        ui,
-        egui::RichText::new(format!("{} {:.1} ms", crate::i18n::tr(&app.ui.language, "Render"), app.perf.render_ms)).color(t.text_dim),
-    );
+}
+
+/// The Info panel's last line: how long the canvas took to render.
+fn render_line(app: &DesignApp) -> String {
+    format!("{} {:.1} ms", crate::i18n::tr(&app.ui.language, "Render"), app.perf.render_ms)
 }
 
 // PREFLIGHT_ADAPTER_BEGIN
@@ -497,6 +579,10 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
 // PREFLIGHT_ADAPTER_END
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::preflight_panel(app, ui);
+    }
     let t = Tokens::get(ui.ctx());
     let found = crate::preflight_worker::issues(app, ui.ctx());
     // The active document's first check hasn't ended.
@@ -505,31 +591,8 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     let errors = issues.iter().filter(|i| i.severity == "error").count();
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(
-            r.center(),
-            4.5,
-            if checking {
-                t.text_dim
-            } else if errors == 0 {
-                egui::Color32::from_rgb(60, 200, 90)
-            } else {
-                egui::Color32::from_rgb(235, 50, 50)
-            },
-        );
-        crate::rtl::label(
-            ui,
-            if checking {
-                crate::i18n::tr(&app.ui.language, "Checking").to_string()
-            } else if issues.is_empty() {
-                crate::i18n::tr(&app.ui.language, "No errors").to_string()
-            } else {
-                format!(
-                    "{}, {}",
-                    crate::i18n::count_label(&app.ui.language, "errors", errors),
-                    crate::i18n::count_label(&app.ui.language, "warnings", issues.len() - errors)
-                )
-            },
-        );
+        ui.painter().circle_filled(r.center(), 4.5, preflight_dot(&t, checking, errors));
+        crate::rtl::label(ui, preflight_status(app, checking, &issues, errors));
     });
     divider(ui);
     for i in issues.iter() {
@@ -539,11 +602,247 @@ pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             crate::rtl::label(ui, egui::RichText::new(format!("   page {pg}")).size(10.0).color(t.text_dim));
         }
         if clicked {
-            if let Some(id) = i.item {
-                let _ = app.run("selection.set", json!({"ids": [id]}));
+            preflight_go_to(app, i);
+        }
+    }
+}
+
+/// The Preflight panel's status: Checking, No errors, or the error and warning counts.
+fn preflight_status(app: &DesignApp, checking: bool, issues: &[designcraft_engine::cmd::preflight::Issue], errors: usize) -> String {
+    if checking {
+        crate::i18n::tr(&app.ui.language, "Checking").to_string()
+    } else if issues.is_empty() {
+        crate::i18n::tr(&app.ui.language, "No errors").to_string()
+    } else {
+        format!(
+            "{}, {}",
+            crate::i18n::count_label(&app.ui.language, "errors", errors),
+            crate::i18n::count_label(&app.ui.language, "warnings", issues.len() - errors)
+        )
+    }
+}
+
+/// The colour of the Preflight status dot: dim while checking, green without errors, red with them.
+fn preflight_dot(t: &Tokens, checking: bool, errors: usize) -> egui::Color32 {
+    if checking {
+        t.text_dim
+    } else if errors == 0 {
+        egui::Color32::from_rgb(60, 200, 90)
+    } else {
+        egui::Color32::from_rgb(235, 50, 50)
+    }
+}
+
+/// Goes to a Preflight issue: selects its item and shows its page.
+fn preflight_go_to(app: &mut DesignApp, issue: &designcraft_engine::cmd::preflight::Issue) {
+    if let Some(id) = issue.item {
+        let _ = app.run("selection.set", json!({"ids": [id]}));
+    }
+    if let Some(p) = issue.page {
+        crate::canvas::go_to_page(app, p);
+    }
+}
+
+/// The Links, Info and Preflight panels on the craft UI framework: the same rows and actions as the native bodies above,
+/// every control and label a framework component. The action buttons and issue rows were already the framework's
+/// (`link_button`, `preflight_issue_button`).
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::*;
+    use craft_theme::{ControlSize, Emphasis, Tone};
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::display::{Badge, Divider, Elide, Icon, Shade, Text};
+    use craft_ui_widgets::primitives::{Glyph, IconSpec};
+    use craft_ui_widgets::style::{TypeRole, UiTokens, Variant};
+    use egui::{Rect, pos2};
+
+    /// A linked graphic's proxy, drawn small, as a framework glyph.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Thumb(#[memo_props(hash = "a texture id is a plain key; the handle stays in the context's cache")] egui::TextureId);
+
+    impl Glyph for Thumb {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, _color: egui::Color32, _mirrored: bool) {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            painter.image(self.0, rect, uv, egui::Color32::WHITE);
+        }
+    }
+
+    /// Chain links for a linked graphic, a page with a folded corner for an embedded one, as a framework glyph.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Storage(bool);
+
+    impl Glyph for Storage {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+            paint_storage(painter, rect, self.0, color);
+        }
+    }
+
+    /// The framework tone of a link status.
+    fn tone(t: StatusTone) -> Tone {
+        match t {
+            StatusTone::Bad => Tone::Bad,
+            StatusTone::Warn => Tone::Warn,
+            StatusTone::Dim => Tone::Neutral,
+            StatusTone::Good => Tone::Good,
+        }
+    }
+
+    /// Small secondary text at `at` (or in the flow).
+    fn small(ui: &mut egui::Ui, at: Option<Rect>, text: &str, shade: Shade, tone: Option<Tone>) {
+        let mut shown = Text::new(text.to_owned()).role(TypeRole::Caption).shade(shade);
+        if let Some(tone) = tone {
+            shown = shown.tone(tone);
+        }
+        match at {
+            Some(at) => shown.elide(Elide::End).show_at(ui, at),
+            None => shown.show(ui),
+        };
+    }
+
+    pub(super) fn links_body(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        // Linked stories (Place and Link).
+        let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        if !stories.is_empty() {
+            Text::new(tr("Linked Stories")).role(TypeRole::BodyStrong).show(ui);
+            for l in &stories {
+                ui.horizontal(|ui| {
+                    let label = tr("Story {story} ← story {parent}")
+                        .replace("{story}", &l["story"].to_string())
+                        .replace("{parent}", &l["parent"].to_string());
+                    Text::new(label).show(ui);
+                    if l["outOfDate"].as_bool().unwrap_or(false) {
+                        Badge::new(tr("⚠ out of date")).variant(Variant::look(Emphasis::Soft, Tone::Warn)).show(ui);
+                        if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0), "update"), "Update", None, true, true).clicked {
+                            let _ = app.run("story.updateLink", json!({"story": l["story"]}));
+                        }
+                    }
+                });
             }
-            if let Some(p) = i.page {
-                crate::canvas::go_to_page(app, p);
+            Divider::horizontal().show(ui);
+        }
+        let Some((rows, unavailable)) = link_rows(app, ui) else {
+            return;
+        };
+        if unavailable && !rows.is_empty() {
+            small(ui, None, &tr("Link status is unavailable."), Shade::Muted, None);
+        }
+        if rows.is_empty() {
+            Text::new(tr("No placed graphics.")).shade(Shade::Muted).show(ui);
+            return;
+        }
+        let sel_key = egui::Id::unique("links_panel_sel");
+        let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
+        // Leave room for Status and Page/PPI instead of widening the rows for long source paths.
+        let width = ui.available_width();
+        let name_width = (width - 160.0).max(50.0);
+        let status_x = name_width + 10.0;
+        let info_x = status_x + 90.0;
+        let info_w = (width - info_x).max(40.0);
+        let b = block(ui, 16.0);
+        small(ui, Some(sub(b, 0.0, 0.0, name_width, 16.0)), &tr("Name"), Shade::Muted, None);
+        small(ui, Some(sub(b, status_x, 0.0, 80.0, 16.0)), &tr("Status"), Shade::Muted, None);
+        small(ui, Some(sub(b, info_x, 0.0, info_w, 16.0)), &tr("Page · PPI"), Shade::Muted, None);
+        let uid = app.session.active().map(|st| st.uid);
+        for r in rows.iter() {
+            // Asset and story ids come from one counter: a row is chosen by either.
+            let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
+            let name = r["name"].as_str().unwrap_or("");
+            let storage = r["storage"].as_str().unwrap_or("");
+            let path = r["path"].as_str().filter(|path| !path.is_empty());
+            let thumb = if r["story"].is_null() { app.session.active().and_then(|st| proxy_thumb(ui.ctx(), st.uid, &st.doc, aid)) } else { None };
+            let b = block(ui, if path.is_some() { 38.0 } else { THUMB });
+            let mut x = 0.0;
+            if let Some(tex) = thumb {
+                let glyph = Thumb(tex.id());
+                Icon::new(IconSpec::glyph(&glyph)).show_at(ui, sub(b, 0.0, 0.0, THUMB, THUMB));
+                x = THUMB + 6.0;
+            }
+            let id = ui.make_persistent_id(("links_row", uid, aid));
+            let picked = Button::new(name.to_owned())
+                .id(id)
+                .variant(Variant::GHOST)
+                .size(ControlSize::Sm)
+                .selected(chosen == Some(aid))
+                .show_at(ui, sub(b, x, 0.0, name_width - x, 20.0))
+                .clicked();
+            let picked_path = path.is_some_and(|path| {
+                Button::new(path.to_owned())
+                    .id(id.with("path"))
+                    .variant(Variant::GHOST)
+                    .size(ControlSize::Sm)
+                    .tooltip(path.to_owned())
+                    .show_at(ui, sub(b, x, 20.0, name_width - x, 16.0))
+                    .clicked()
+            });
+            if picked || picked_path {
+                chosen = Some(aid);
+            }
+            let (words, look) = status_look(r["status"].as_str().unwrap_or(""));
+            let mut sx = status_x;
+            if !storage.is_empty() {
+                let linked = storage == "linked";
+                let glyph = Storage(linked);
+                let tip = tr(if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" });
+                Icon::new(IconSpec::glyph(&glyph)).label(tip).show_at(ui, sub(b, sx, 3.0, 14.0, 14.0));
+                sx += 18.0;
+            }
+            let mut badge = Badge::new(tr(words)).variant(Variant::look(Emphasis::Soft, tone(look)));
+            // Why a link isn't followed (a path on another computer, a device).
+            if let Some(why) = r["refused"].as_str() {
+                badge = badge.tooltip(why.to_owned());
+            }
+            badge.show_at(ui, sub(b, sx, 1.0, (info_x - 4.0 - sx).max(30.0), 18.0));
+            let (info, low) = use_info(&lang, r);
+            small(ui, Some(sub(b, info_x, 2.0, info_w, 16.0)), &info, Shade::Muted, low.then_some(Tone::Warn));
+            ui.add_space(4.0);
+        }
+        if let Some(c) = chosen {
+            ui.data_mut(|d| d.insert_temp(sel_key, c));
+        }
+        ui.add_space(6.0);
+        if let Some(path) = rows
+            .iter()
+            .find(|r| r["asset"].as_u64().or_else(|| r["story"].as_u64()) == chosen)
+            .and_then(|r| r["path"].as_str())
+            .filter(|path| !path.is_empty())
+        {
+            // A selected link stays distinguishable even if two rows truncate to the same prefix.
+            small(ui, None, path, Shade::Muted, None);
+            ui.add_space(6.0);
+        }
+        link_actions(app, ui, &rows, chosen);
+    }
+
+    pub(super) fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        for line in info_lines(app) {
+            Text::new(line).show(ui);
+        }
+        Text::new(render_line(app)).shade(Shade::Muted).show(ui);
+    }
+
+    pub(super) fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let found = crate::preflight_worker::issues(app, ui.ctx());
+        // The active document's first check hasn't ended.
+        let checking = found.is_none() && app.session.active().is_some();
+        let issues = found.unwrap_or_default();
+        let errors = issues.iter().filter(|i| i.severity == "error").count();
+        let b = block(ui, FIELD_H);
+        // The status dot is drawing only; the status text after it is what is read out.
+        let t = Tokens::get(ui.ctx());
+        ui.painter().circle_filled(sub(b, 0.0, 6.0, 10.0, 10.0).center(), 4.5, preflight_dot(&t, checking, errors));
+        Text::new(preflight_status(app, checking, &issues, errors)).show_at(ui, sub(b, 16.0, 0.0, (b.width() - 16.0).max(40.0), FIELD_H));
+        divider(ui);
+        for i in issues.iter() {
+            let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
+            let clicked = preflight_issue_button(app, ui, i, page.as_deref());
+            if let Some(pg) = &page {
+                small(ui, None, &format!("   page {pg}"), Shade::Muted, None);
+            }
+            if clicked {
+                preflight_go_to(app, i);
             }
         }
     }

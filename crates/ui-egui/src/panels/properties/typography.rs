@@ -1039,3 +1039,51 @@ mod framework {
         }
     }
 }
+
+/// The Character and Paragraph panels on the framework, driven with real pointer and key events.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_tests {
+    use super::super::framework_test_kit::*;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    #[test]
+    fn the_character_panels_underline_button_and_size_field_run_type_char_once_each() {
+        let mut app = document();
+        text_frame(&mut app, "Hello");
+        let mut h = open(app, crate::panels::properties::character_panel);
+        let steps = undo_steps(&h);
+        click(&mut h, Role::Button, "Underline");
+        assert_eq!(journal(&h, "type.char").last(), Some(&json!({"attrs": {"underline": true}})));
+        assert_eq!(undo_steps(&h), steps + 1);
+        assert!(h.query_all_by_label("Underline Options").next().is_some(), "an underline shows its options");
+        type_into(&mut h, "Size", "18");
+        assert_eq!(text_attrs(&mut h)["chars"]["size"].as_f64(), Some(18.0));
+        assert_eq!(undo_steps(&h), steps + 2);
+    }
+
+    #[test]
+    fn the_paragraph_panels_indent_field_and_menu_run_type_para() {
+        let mut app = document();
+        text_frame(&mut app, "Hello");
+        let mut h = open(app, crate::panels::properties::paragraph_panel);
+        // Picas: the field reads the app's own spelling.
+        type_into(&mut h, "Left Indent", "1p0");
+        assert_eq!(text_attrs(&mut h)["para"]["leftIndent"].as_f64(), Some(12.0));
+        click(&mut h, Role::Button, "Paragraph");
+        let at = h.query_all_by_label("Balance Ragged Lines").last().expect("the panel menu lists Balance Ragged Lines").rect().center();
+        click_at(&mut h, at);
+        assert_eq!(journal(&h, "type.para").last(), Some(&json!({"attrs": {"balanceRagged": true}})));
+    }
+
+    #[test]
+    fn hyphenate_is_a_framework_check_box_on_the_paragraph_panel() {
+        let mut app = document();
+        text_frame(&mut app, "Hello");
+        let mut h = open(app, crate::panels::properties::paragraph_panel);
+        let on = text_attrs(&mut h)["para"]["hyphenate"].as_bool().unwrap_or(true);
+        click(&mut h, Role::CheckBox, "Hyphenate");
+        assert_eq!(journal(&h, "type.para").last(), Some(&json!({"attrs": {"hyphenate": !on}})));
+    }
+}
