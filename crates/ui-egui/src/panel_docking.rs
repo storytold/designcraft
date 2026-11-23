@@ -1318,24 +1318,24 @@ impl DockPanels<String> for PanelContent<'_> {
             .tooltip(label.clone())
             .show(ui);
         let app = &mut *self.app;
-        // The menu's open state is the dock's: a row that ran closes the framework menu too. The rows are the Pages
-        // panel's own egui rows, which close only their egui menu, so a row that ran is seen by what it did: a command
-        // in the journal, or a dialog it opened.
-        let open_id = egui::Id::new("designcraft-pages-panel-menu-open");
-        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        // The menu keeps its own open state. Its rows are the Pages panel's own egui rows, which close only their egui
+        // menu, so a row that ran is seen by what it did (a command in the journal, a dialog it opened) and the menu
+        // closes by starting over under a new id.
+        let generation_id = egui::Id::new("designcraft-pages-panel-menu-generation");
+        let generation = ui.data(|d| d.get_temp::<u64>(generation_id)).unwrap_or(0);
         let effect = |app: &DesignApp| (app.session.journal.len(), app.ui.dialog.as_ref().map(|d| d.id.clone()));
         let before = effect(app);
         let mut ran = false;
         // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-        let _ =
-            craft_ui::menu::Menu::new(label).opened_by(&opener, craft_ui::contract::Trigger::Click).open(Bind::bound(&mut open)).show(ui, |ui, _| {
+        ui.push_id(("pages-panel-menu", generation), |ui| {
+            let _ = craft_ui::menu::Menu::new(label).opened_by(&opener, craft_ui::contract::Trigger::Click).show(ui, |ui, _| {
                 crate::panels::pages::panel_menu(app, ui);
                 ran = effect(app) != before;
             });
+        });
         if ran {
-            open = false;
+            ui.data_mut(|d| d.insert_temp(generation_id, generation.wrapping_add(1)));
         }
-        ui.data_mut(|d| d.insert_temp(open_id, open));
     }
 }
 

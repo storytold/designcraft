@@ -994,7 +994,21 @@ mod framework {
                 for (k, (icon, tip)) in
                     [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
                 {
-                    if button(ui, icon, icon, &tr(tip), text_mode == (k == 1)).clicked() {
+                    let out = button(ui, icon, icon, &tr(tip), text_mode == (k == 1));
+                    // Temporary: what the button reports, for the red-round diagnosis of the footer's clicks.
+                    if std::env::var_os("DESIGNCRAFT_DEBUG_RAIL").is_some() {
+                        let r = &out.response;
+                        eprintln!(
+                            "RAIL-DEBUG footer {tip}: clicks={} clicked={} hovered={} contains_pointer={} rect={:?} pass={}",
+                            out.clicks,
+                            out.clicked(),
+                            r.hovered(),
+                            r.contains_pointer(),
+                            r.rect,
+                            ui.ctx().current_pass_index()
+                        );
+                    }
+                    if out.clicked() {
                         let _ = app.run("app.formattingAffectsText", json!({"on": k == 1}));
                     }
                 }
@@ -1284,6 +1298,28 @@ mod line_workflow_tests {
     fn ordinary(installed: bool) -> Harness<'static, Rig> {
         let (app, anchor) = fixture();
         harness(app, anchor, installed, vec2(1800.0, 1000.0))
+    }
+
+    /// Temporary diagnosis for the red round: what the installed Line harness records and exposes. Run alone with
+    /// `--ignored --nocapture`.
+    #[test]
+    #[ignore = "diagnostic"]
+    fn diagnose_installed_line_harness() {
+        let h = ordinary(true);
+        eprintln!("LINE-DEBUG parent panel rect: {:?}", h.state().parent);
+        for e in h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements) {
+            eprintln!(
+                "LINE-DEBUG element {} part={:?} depth={} name={:?} role={:?} rect={:?}",
+                e.component,
+                e.part,
+                e.depth,
+                e.facts.as_ref().and_then(|f| f.name.clone()),
+                e.facts.as_ref().map(|f| f.role.clone()),
+                e.rect
+            );
+        }
+        let buttons: Vec<String> = h.query_all_by_role(egui::accesskit::Role::Button).filter_map(|n| n.accesskit_node().label().map(str::to_owned)).collect();
+        eprintln!("LINE-DEBUG AX buttons ({}): {buttons:?}", buttons.len());
     }
     fn mark(h: &Harness<'_, Rig>) -> Mark {
         let st = h.state().app.session.active().unwrap();
