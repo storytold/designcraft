@@ -397,7 +397,7 @@ pub(crate) fn place_table(
                 &frag_rows,
                 &heights,
                 &colx,
-                col.x0 + x_off + left_half,
+                col.x0 + x_off + if first_frag { left_half } else { 0.0 },
                 top,
                 y,
                 first_frag,

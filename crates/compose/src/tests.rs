@@ -2510,6 +2510,25 @@ fn border_placement_leaves_squeezed_rtl_and_continued_tables_alone() {
     assert!((a7.x0 - a1.x0 - 3.0).abs() < 1e-6, "the first fragment moves by half the extra weight");
     assert!((b7.x0 - b1.x0).abs() < 1e-6 && (b7.y0 - b1.y0).abs() < 1e-6, "the continuation stays put: {b1:?} vs {b7:?}");
 
+    // Three fragments: the middle one keeps its column's edge too, not only the last.
+    let three = |weight: f64| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 60.0), lid, "", ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 100.0, 300.0, 160.0), lid, "", ParaFormat::default()).unwrap();
+        let (f3, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(f1, f2).unwrap();
+        d.thread(f2, f3).unwrap();
+        let mut t = filled(9, 2, 0, 200.0);
+        t.options.border.weight = weight;
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(cs.frames.iter().all(|f| f.tables.len() == 1), "the table has a fragment in each of the three frames");
+        cs.frames.iter().map(|f| f.tables[0].rect.x0).collect::<Vec<_>>()
+    };
+    let (t1, t7) = (three(1.0), three(7.0));
+    assert!((t7[0] - t1[0] - 3.0).abs() < 1e-6 && (t7[1] - t1[1]).abs() < 1e-6 && (t7[2] - t1[2]).abs() < 1e-6, "{t1:?} vs {t7:?}");
+
     // A table with text above it whose first row does not fit moves to the next frame whole, and
     // starts there half its top border down, as it would have in the first frame.
     let moved = |weight: f64| {
