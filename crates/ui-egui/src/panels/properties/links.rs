@@ -191,7 +191,7 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// The placed graphics and linked text files the Links panel lists, and whether their statuses could not be checked;
 /// `None` without a document.
-fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(Vec<Value>, bool)> {
+fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(std::sync::Arc<Vec<Value>>, bool)> {
     let st = app.session.active()?;
     // Whether a linked file is still there and unchanged is asked of the file system, and a
     // network path may take an operating-system timeout to answer: native builds list the links
@@ -213,7 +213,7 @@ fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(Vec<Value>, bool)> {
         refresh
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let rows = refresh.values.clone();
+    let rows = std::sync::Arc::clone(&refresh.values);
     // Web builds have no filesystem to wait for: the list is refreshed at most twice a second.
     #[cfg(target_arch = "wasm32")]
     let rows = {
@@ -230,6 +230,8 @@ fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(Vec<Value>, bool)> {
             }
         }
     };
+    #[cfg(target_arch = "wasm32")]
+    let rows = std::sync::Arc::new(rows);
     #[cfg(not(target_arch = "wasm32"))]
     let unavailable = refresh.unavailable;
     #[cfg(target_arch = "wasm32")]
@@ -649,7 +651,8 @@ fn preflight_go_to(app: &mut DesignApp, issue: &designcraft_engine::cmd::preflig
 #[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::*;
-    use craft_theme::{ControlSize, Emphasis, Tone};
+    use craft_theme::variant::Tone;
+    use craft_theme::{ControlSize, Emphasis};
     use craft_ui_widgets::buttons::Button;
     use craft_ui_widgets::contract::{Props as _, Show as _};
     use craft_ui_widgets::display::{Badge, Divider, Elide, Icon, Shade, Text};

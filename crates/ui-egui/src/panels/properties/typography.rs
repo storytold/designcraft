@@ -637,7 +637,7 @@ mod framework {
     use craft_ui_widgets::value_drag::Slider;
 
     /// The id of the control `key` of the panel the `ui` shows.
-    fn cid(ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+    fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         ui.id().with(("typography-panels", key))
     }
 
