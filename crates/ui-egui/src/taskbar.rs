@@ -142,10 +142,9 @@ mod framework {
         let _ = Menu::new(label.to_owned()).id_salt(format!("{salt}_menu")).opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
             for sw in &doc.swatches {
                 let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
-                let row =
-                    MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(Some(sw.name == current)).sample(move |cx, rect| {
-                        widgets::paint_chip(&cx.painter, rect, c, g);
-                    });
+                let row = MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(sw.name == current).sample(move |cx, rect| {
+                    widgets::paint_chip(&cx.painter, rect, c, g);
+                });
                 if row.show(ui).ran {
                     picked = Some(sw.name.clone());
                 }
@@ -192,7 +191,7 @@ mod framework {
                 if MenuItem::new(tr("Hide Bar")).id_salt("hide").show(ui).ran {
                     asks.push(Ask::Hide);
                 }
-                let pin = MenuItem::new(tr("Pin Bar Position")).id_salt("pin").check(Some(pinned)).show(ui);
+                let pin = MenuItem::new(tr("Pin Bar Position")).id_salt("pin").check(pinned).show(ui);
                 if pin.ran {
                     asks.push(Ask::Run("window.taskBarPin", if pinned { json!({"on": false}) } else { json!({"on": true, "at": place}) }));
                 }
@@ -278,7 +277,7 @@ mod framework {
                 ("Justify", "leftJustified"),
                 ("Justify All", "fullyJustified"),
             ] {
-                if MenuItem::new(tr(label)).id_salt(v).check(Some(al == v)).show(ui).ran {
+                if MenuItem::new(tr(label)).id_salt(v).check(al == v).show(ui).ran {
                     asks.push(Ask::Run("type.para", json!({"attrs": {"align": v}})));
                 }
             }

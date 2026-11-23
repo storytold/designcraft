@@ -159,7 +159,7 @@ mod framework {
                             if i == b.pages && i > 0 {
                                 Divider::horizontal().show(ui);
                             }
-                            if MenuItem::new(nm.clone()).id_salt(("page", i)).check(Some(i == b.current)).show(ui).ran {
+                            if MenuItem::new(nm.clone()).id_salt(("page", i)).check(i == b.current).show(ui).ran {
                                 asks.push(Ask::PageBox(i));
                             }
                         }
