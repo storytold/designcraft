@@ -1,6 +1,6 @@
 //! Properties › Appearance's Opacity row on the craft UI framework: the percent field where the opacity is typed,
-//! the chevron beside it, and the slider popover the chevron opens, over the same `object.opacity` command the native
-//! row runs, so the document, the canvas and the undo history stay the engine's.
+//! the chevron beside it, and the slider popover the chevron opens, over the `object.opacity` command, so the document, the canvas and the
+//! undo history stay the engine's.
 //!
 //! - the field commits on the framework's `Commit` (Enter, Tab, focus loss, a step key) and on a `Set` (a reset): one
 //!   `object.opacity`, one undo step. Tab from it goes on to the chevron, the row's next stop;
@@ -11,7 +11,7 @@
 //!   guarded by a marker that says the open preview is this row's, so a cancel from here never takes another panel's
 //!   preview back;
 //! - the value is a whole percent: the field steps by 1, snaps a typed value to it and rounds a committed one;
-//! - a locked object's opacity stays editable, as the native one is.
+//! - a locked object's opacity stays editable.
 
 use crate::DesignApp;
 use crate::framework_transform::Artwork;
@@ -27,11 +27,6 @@ use craft_ui_widgets::runtime::env::UnitKind;
 use craft_ui_widgets::text::NumberField;
 use egui::Rect;
 use serde_json::{Value, json};
-
-/// Whether the Opacity row is the framework's: always on the desktop, where the framework is the UI.
-pub(crate) fn enabled() -> bool {
-    true
-}
 
 /// Where the row and the document meet: the document keeps a ratio (0..=1) and the row shows whole percents
 /// (0..=100). This and [`ratio`] are the only place the two scales meet, so nothing double-scales: 0.4 shows as 40,

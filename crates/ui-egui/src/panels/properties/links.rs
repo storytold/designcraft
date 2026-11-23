@@ -1,8 +1,7 @@
-use super::{DesignApp, FIELD_H, Sense, Tokens, Value, block, divider, json, sel_info, sub, units, vec2};
+use super::{DesignApp, FIELD_H, Tokens, Value, block, divider, json, sel_info, sub, units, vec2};
 use crate::app::file_dialogs::Bound;
 
-/// Only Links actions opt into the already-installed native runtime. A context without it (and
-/// the web build) must keep working buttons rather than paint an inert SDK component.
+/// A Links action button's response and whether it was activated.
 struct LinkButton {
     response: egui::Response,
     clicked: bool,
@@ -12,38 +11,21 @@ struct LinkButton {
 type LinkAction<'a> = (&'a str, u64, &'a str);
 
 /// A Links action button labelled `label` (translated here), tipped `tip` (translated by the caller) when given.
-fn link_button(app: &DesignApp, ui: &mut egui::Ui, key: LinkAction<'_>, label: &str, tip: Option<&str>, enabled: bool, small: bool) -> LinkButton {
+fn link_button(app: &DesignApp, ui: &mut egui::Ui, key: LinkAction<'_>, label: &str, tip: Option<&str>, enabled: bool) -> LinkButton {
     let (kind, target, action) = key;
     // Keep document and actual asset/story identity explicit, independent of translated labels.
     let uid = app.session.active().map(|st| st.uid);
     let id = ui.make_persistent_id(("links_action", uid, (kind, target), action));
     let label = crate::i18n::tr(&app.ui.language, label);
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled);
-        if let Some(tip) = tip {
-            button = button.tooltip(tip.to_owned());
-        }
-        let out = button.show(ui);
-        // SDK activation is authoritative: egui's extra click rule need not match it.
-        let clicked = out.clicked();
-        return LinkButton { response: out.response, clicked };
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    let mut button = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled);
+    if let Some(tip) = tip {
+        button = button.tooltip(tip.to_owned());
     }
-    let response = ui
-        .push_id(id, |ui| {
-            let button = egui::Button::new(crate::rtl::widget(ui, label));
-            ui.add_enabled(enabled, if small { button.small() } else { button })
-        })
-        .inner;
-    let response = match tip {
-        Some(tip) => response.on_hover_ui(|ui| {
-            crate::rtl::label(ui, tip);
-        }),
-        None => response,
-    };
-    let clicked = response.clicked();
-    LinkButton { response, clicked }
+    let out = button.show(ui);
+    // SDK activation is authoritative: egui's extra click rule need not match it.
+    let clicked = out.clicked();
+    LinkButton { response: out.response, clicked }
 }
 
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
@@ -52,141 +34,13 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // The installed runtime owns Escape and exposes it as an untaken window Cancel, so
     // egui's raw key_pressed no longer sees it. Give only our existing confirmation that
     // real event; never invent a key, bypass a popup, or confirm/replace the story here.
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed && app.ui.dialog.as_ref().is_some_and(|d| d.id == "updateLink") && !egui::Popup::is_any_open(ui.ctx()) {
+    if app.ui.dialog.as_ref().is_some_and(|d| d.id == "updateLink") && !egui::Popup::is_any_open(ui.ctx()) {
         use craft_ui_widgets::runtime::keys::{Intent, with_window_intents};
         if with_window_intents(ui.ctx(), crate::i18n::is_rtl(&app.ui.language), |keys| keys.take(Intent::Cancel)) {
             crate::dialogs::cancel(app);
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::links_body(app, ui);
-    }
-    // Linked stories (Place and Link).
-    let stories = app.session.execute("story.links", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
-    if !stories.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Linked Stories")).strong());
-        for l in &stories {
-            let out = l["outOfDate"].as_bool().unwrap_or(false);
-            ui.horizontal(|ui| {
-                crate::rtl::label(
-                    ui,
-                    crate::i18n::tr(&app.ui.language, "Story {story} ← story {parent}")
-                        .replace("{story}", &l["story"].to_string())
-                        .replace("{parent}", &l["parent"].to_string()),
-                );
-                if out {
-                    crate::rtl::label(
-                        ui,
-                        crate::rtl::widget(
-                            ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "⚠ out of date")).color(egui::Color32::from_rgb(230, 160, 40)),
-                        ),
-                    );
-                    if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0), "update"), "Update", None, true, true).clicked {
-                        let _ = app.run("story.updateLink", json!({"story": l["story"]}));
-                    }
-                }
-            });
-        }
-        ui.separator();
-    }
-    let t = Tokens::get(ui.ctx());
-    let Some((rows, unavailable)) = link_rows(app, ui) else {
-        return;
-    };
-    if unavailable && !rows.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Link status is unavailable.")).color(t.text_dim).size(11.0));
-    }
-    if rows.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "No placed graphics.")).color(t.text_dim));
-        return;
-    }
-    let sel_key = egui::Id::unique("links_panel_sel");
-    let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
-    // Leave room for Status and Page/PPI instead of widening the grid for long source paths.
-    let name_width = (ui.available_width() - 160.0).max(50.0);
-    egui::Grid::new("links_grid").num_columns(3).striped(true).spacing([10.0, 4.0]).show(ui, |ui| {
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Name")).color(t.text_dim).size(11.0));
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Status")).color(t.text_dim).size(11.0));
-        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Page · PPI")).color(t.text_dim).size(11.0));
-        ui.end_row();
-        for r in rows.iter() {
-            // Asset and story ids come from one counter: a row is chosen by either.
-            let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
-            let name = r["name"].as_str().unwrap_or("");
-            let storage = r["storage"].as_str().unwrap_or("");
-            let thumb = if r["story"].is_null() { app.session.active().and_then(|st| proxy_thumb(ui.ctx(), st.uid, &st.doc, aid)) } else { None };
-            let response = ui
-                .horizontal(|ui| {
-                    if let Some(tex) = &thumb {
-                        ui.add(egui::Image::new(tex).fit_to_exact_size(vec2(THUMB, THUMB)));
-                    }
-                    ui.vertical(|ui| {
-                        ui.set_width(name_width - if thumb.is_some() { THUMB + 6.0 } else { 0.0 });
-                        let name = ui.add(egui::Button::selectable(chosen == Some(aid), name).truncate());
-                        match r["path"].as_str().filter(|path| !path.is_empty()) {
-                            Some(path) => name.union(
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0))
-                                        .truncate()
-                                        .sense(Sense::click())
-                                        .show_tooltip_when_elided(false),
-                                )
-                                .on_hover_text(path),
-                            ),
-                            None => name,
-                        }
-                    })
-                    .inner
-                })
-                .inner;
-            if response.clicked() {
-                chosen = Some(aid);
-            }
-            let (txt, tone) = status_look(r["status"].as_str().unwrap_or(""));
-            let col = match tone {
-                StatusTone::Bad => egui::Color32::from_rgb(0xe5, 0x4b, 0x4b),
-                StatusTone::Warn => egui::Color32::from_rgb(0xe8, 0xb3, 0x2c),
-                StatusTone::Dim => t.text_dim,
-                StatusTone::Good => egui::Color32::from_rgb(60, 200, 90),
-            };
-            let status = ui
-                .horizontal(|ui| {
-                    if !storage.is_empty() {
-                        storage_icon(ui, storage == "linked", t.text_dim, &app.ui.language);
-                    }
-                    badge(ui, crate::i18n::tr(&app.ui.language, txt), col)
-                })
-                .inner;
-            // Why a link isn't followed (a path on another computer, a device).
-            if let Some(why) = r["refused"].as_str() {
-                status.on_hover_text(why);
-            }
-            let (info, low) = use_info(&app.ui.language, r);
-            crate::rtl::label(
-                ui,
-                egui::RichText::new(info).size(11.0).color(if low { egui::Color32::from_rgb(0xe8, 0xb3, 0x2c) } else { t.text_dim }),
-            );
-            ui.end_row();
-        }
-    });
-    if let Some(c) = chosen {
-        ui.data_mut(|d| d.insert_temp(sel_key, c));
-    }
-    ui.add_space(6.0);
-    if let Some(path) = rows
-        .iter()
-        .find(|r| r["asset"].as_u64().or_else(|| r["story"].as_u64()) == chosen)
-        .and_then(|r| r["path"].as_str())
-        .filter(|path| !path.is_empty())
-    {
-        // A selected link stays distinguishable even if two rows truncate to the same prefix.
-        ui.add(egui::Label::new(egui::RichText::new(path).color(t.text_dim).size(11.0)).wrap());
-        ui.add_space(6.0);
-    }
-    link_actions(app, ui, &rows, chosen);
+    framework::links_body(app, ui)
 }
 
 /// The placed graphics and linked text files the Links panel lists, and whether their statuses could not be checked;
@@ -244,7 +98,7 @@ fn link_rows(app: &mut DesignApp, ui: &egui::Ui) -> Option<(std::sync::Arc<Vec<V
 fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: Option<u64>) {
     ui.horizontal_wrapped(|ui| {
         let Some(aid) = chosen else {
-            note(app, ui, crate::i18n::tr(&app.ui.language, "Choose a link."));
+            note(ui, crate::i18n::tr(&app.ui.language, "Choose a link."));
             return;
         };
         // A linked text file is addressed by its story.
@@ -256,7 +110,7 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
             p[k] = v;
             p
         };
-        if link_button(app, ui, (kind, aid, "relink"), "Relink…", None, true, false).clicked {
+        if link_button(app, ui, (kind, aid, "relink"), "Relink…", None, true).clicked {
             let target = with("path", Value::Null);
             let asked = app.ask_open("relink", Bound::Document, move |app, path| {
                 let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
@@ -266,7 +120,7 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
                 app.status_error("Relink", e);
             }
         }
-        if link_button(app, ui, (kind, aid, "go_to"), "Go To", None, true, false).clicked {
+        if link_button(app, ui, (kind, aid, "go_to"), "Go To", None, true).clicked {
             let _ = app.run("links.goTo", target.clone());
         }
         let row = rows.iter().find(|r| r["asset"].as_u64() == Some(aid));
@@ -274,25 +128,25 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
         let edited = rows.iter().any(|r| r["story"].as_u64() == Some(aid) && r["edited"].as_bool() == Some(true));
         let edited_tip = crate::i18n::tr(&app.ui.language, "This story was edited in the layout: you'll be asked before those edits are replaced");
         // A graphic is updated only when its file changed; a linked story can always be imported again.
-        let update = link_button(app, ui, (kind, aid, "update"), "Update", edited.then_some(edited_tip), is_text || status == "modified", false);
+        let update = link_button(app, ui, (kind, aid, "update"), "Update", edited.then_some(edited_tip), is_text || status == "modified");
         if update.clicked {
             update_links(app, target.clone());
         }
         if is_text {
-            if link_button(app, ui, ("story", aid, "unlink"), "Unlink", None, true, false).clicked {
+            if link_button(app, ui, ("story", aid, "unlink"), "Unlink", None, true).clicked {
                 let _ = app.run("links.embed", target.clone());
             }
         } else if status == "embedded" {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let tip = crate::i18n::tr(&app.ui.language, "Keep the graphic in a file and link to it");
-                if link_button(app, ui, ("asset", aid, "unembed"), "Unembed\u{2026}", Some(tip), true, false).clicked {
+                if link_button(app, ui, ("asset", aid, "unembed"), "Unembed\u{2026}", Some(tip), true).clicked {
                     app.unembed_link(aid);
                 }
             }
         } else {
             let tip = crate::i18n::tr(&app.ui.language, "Copy the file into the document");
-            let embed = link_button(app, ui, ("asset", aid, "embed"), "Embed", Some(tip), !matches!(status, "missing" | "modified"), false);
+            let embed = link_button(app, ui, ("asset", aid, "embed"), "Embed", Some(tip), !matches!(status, "missing" | "modified"));
             if embed.clicked
                 && let Err(e) = app.run("links.embed", target.clone())
             {
@@ -303,7 +157,7 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
     ui.horizontal(|ui| {
         // Choose any file in the folder: missing links are looked up there by name.
         let tip = crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics");
-        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true, false).clicked {
+        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked {
             let asked = app.ask_open("relink", Bound::Document, |app, path| {
                 let Some(dir) = std::path::Path::new(&path).parent() else {
                     return Ok(Value::Null);
@@ -320,18 +174,10 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
     });
 }
 
-/// A small dim note ("Choose a link."): the framework's faint text once it is installed.
-fn note(app: &DesignApp, ui: &mut egui::Ui, text: &str) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        craft_ui_widgets::display::Text::new(text.to_owned()).shade(craft_ui_widgets::display::Shade::Faint).show(ui);
-        return;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    let t = Tokens::get(ui.ctx());
-    crate::rtl::label(ui, egui::RichText::new(text).color(t.text_dim).size(11.0));
+/// A small dim note ("Choose a link."), in the framework's faint text.
+fn note(ui: &mut egui::Ui, text: &str) {
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    craft_ui_widgets::display::Text::new(text.to_owned()).shade(craft_ui_widgets::display::Shade::Faint).show(ui);
 }
 
 /// How a link's status reads: its words and its tone.
@@ -386,14 +232,6 @@ fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response 
 }
 
 /// Chain links for a linked graphic, a page with a folded corner for an embedded one.
-fn storage_icon(ui: &mut egui::Ui, linked: bool, color: egui::Color32, language: &str) {
-    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-    paint_storage(ui.painter(), rect, linked, color);
-    response.on_hover_text(crate::i18n::tr(
-        language,
-        if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" },
-    ));
-}
 
 /// Paints in `rect` chain links for a linked graphic, a page with a folded corner for an embedded one.
 fn paint_storage(p: &egui::Painter, rect: egui::Rect, linked: bool, color: egui::Color32) {
@@ -500,15 +338,7 @@ pub(crate) fn run_update_links(app: &mut DesignApp, target: Value) -> Result<Val
 }
 
 pub fn info_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::info_panel(app, ui);
-    }
-    let t = Tokens::get(ui.ctx());
-    for line in info_lines(app) {
-        crate::rtl::label(ui, line);
-    }
-    crate::rtl::label(ui, egui::RichText::new(render_line(app)).color(t.text_dim));
+    framework::info_panel(app, ui)
 }
 
 /// The Info panel's lines: the selection's position, size, fill and stroke, or the document's page, story and item
@@ -548,7 +378,7 @@ fn render_line(app: &DesignApp) -> String {
 // PREFLIGHT_ADAPTER_BEGIN
 /// A result is a navigation target, never a row index or whichever item happens to be selected.
 /// Keep the worker's last-known issues visible, but a held press cannot follow a new document
-/// incarnation, revision, item, page, kind or message. No SDK runtime means a working egui row.
+/// incarnation, revision, item, page, kind or message.
 fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraft_engine::cmd::preflight::Issue, page: Option<&str>) -> bool {
     let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision));
     let id = ui.make_persistent_id(("preflight_issue", owner, issue.severity, issue.kind, &issue.message, issue.item, issue.page));
@@ -563,50 +393,15 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
         (None, Some(item)) => format!("{text} · item {item}"),
         (None, None) => text,
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::Variant;
-        return craft_ui_widgets::buttons::Button::new(name)
-            .id(id)
-            .enabled(target_exists)
-            .size(ControlSize::Sm)
-            .variant(Variant::GHOST)
-            .show(ui)
-            .clicked();
-    }
-    ui.push_id(id, |ui| ui.add_enabled(target_exists, egui::Button::new(egui::RichText::new(name).size(11.0)).frame(false))).inner.clicked()
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::style::Variant;
+    craft_ui_widgets::buttons::Button::new(name).id(id).enabled(target_exists).size(ControlSize::Sm).variant(Variant::GHOST).show(ui).clicked()
 }
 // PREFLIGHT_ADAPTER_END
 
 pub fn preflight_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::preflight_panel(app, ui);
-    }
-    let t = Tokens::get(ui.ctx());
-    let found = crate::preflight_worker::issues(app, ui.ctx());
-    // The active document's first check hasn't ended.
-    let checking = found.is_none() && app.session.active().is_some();
-    let issues = found.unwrap_or_default();
-    let errors = issues.iter().filter(|i| i.severity == "error").count();
-    ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().circle_filled(r.center(), 4.5, preflight_dot(&t, checking, errors));
-        crate::rtl::label(ui, preflight_status(app, checking, &issues, errors));
-    });
-    divider(ui);
-    for i in issues.iter() {
-        let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
-        let clicked = preflight_issue_button(app, ui, i, page.as_deref());
-        if let Some(pg) = &page {
-            crate::rtl::label(ui, egui::RichText::new(format!("   page {pg}")).size(10.0).color(t.text_dim));
-        }
-        if clicked {
-            preflight_go_to(app, i);
-        }
-    }
+    framework::preflight_panel(app, ui)
 }
 
 /// The Preflight panel's status: Checking, No errors, or the error and warning counts.
@@ -648,7 +443,6 @@ fn preflight_go_to(app: &mut DesignApp, issue: &designcraft_engine::cmd::preflig
 /// The Links, Info and Preflight panels on the craft UI framework: the same rows and actions as the native bodies above,
 /// every control and label a framework component. The action buttons and issue rows were already the framework's
 /// (`link_button`, `preflight_issue_button`).
-#[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::*;
     use craft_theme::variant::Tone;
@@ -718,7 +512,7 @@ mod framework {
                     Text::new(label).show(ui);
                     if l["outOfDate"].as_bool().unwrap_or(false) {
                         Badge::new(tr("⚠ out of date")).variant(Variant::look(Emphasis::Soft, Tone::Warn)).show(ui);
-                        if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0), "update"), "Update", None, true, true).clicked {
+                        if link_button(app, ui, ("linked_story", l["story"].as_u64().unwrap_or(0), "update"), "Update", None, true).clicked {
                             let _ = app.run("story.updateLink", json!({"story": l["story"]}));
                         }
                     }
@@ -851,7 +645,7 @@ mod framework {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_links_tests {
     use super::*;
     use designcraft_doc::{Asset, AssetData, AssetId, Content, Graphic, ItemId, Storage, StoryId, TextFileLink};
@@ -979,13 +773,9 @@ mod ui223_links_tests {
     }
 
     /// Real production panel, runtime hooks and input hook, but no desktop window or native chooser.
-    fn harness(mut app: DesignApp, sdk: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if sdk {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut locale_fonts_ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(500.0, 700.0)).build_ui_state(
@@ -1073,7 +863,7 @@ mod ui223_links_tests {
     #[test]
     fn ui223_links_pointer_go_to_preserves_same_named_asset_identity() {
         let (app, items, assets) = graphics();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         click(&mut h, "studio-b/photo.svg");
         let steps = undo(h.state());
         let count = command_count(h.state(), "links.goTo");
@@ -1095,7 +885,7 @@ mod ui223_links_tests {
     #[test]
     fn ui223_links_missing_graphic_update_and_embed_are_inert() {
         let (app, _, _) = graphics();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         click(&mut h, "studio-b/photo.svg");
         let before = Arc::clone(&h.state().session.active().unwrap().doc);
         let journal = h.state().session.journal.clone();
@@ -1115,7 +905,7 @@ mod ui223_links_tests {
     fn ui223_links_pointer_story_update_targets_one_child_and_undo_restores_it() {
         let (app, parent, a, b) = linked_stories();
         let frames = app.session.active().unwrap().doc.story(b).unwrap().frames.clone();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let label = format!("Story {} ← story {}", b.0, parent.0);
         let y = h.get_by_label(&label).rect().center().y;
         let rect = h.get_all_by_label("Update").find(|n| n.rect().y_range().contains(y)).unwrap().rect();
@@ -1140,7 +930,7 @@ mod ui223_links_tests {
         let (mut app, _, a, b) = linked_stories();
         // Only one out-of-date child, so the natural Tab target is unambiguous.
         app.run("story.updateLink", json!({"story": b.0})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let update = button(&h, "Update");
         for _ in 0..8 {
             key(&mut h, Key::Tab);
@@ -1177,7 +967,7 @@ mod ui223_links_tests {
                 Some(TextFileLink { path: path.into(), ..Default::default() });
             stories.push(story);
         }
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         click(&mut h, "studio-b/chapter.txt");
         assert!(!button(&h, "Update").facts.as_ref().unwrap().disabled, "text can always be imported again");
         let before_update = undo(h.state());
@@ -1204,7 +994,7 @@ mod ui223_links_tests {
     #[test]
     fn ui223_links_cancelled_relink_folder_and_unembed_leave_document_unchanged() {
         let (app, _, assets) = graphics();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         click(&mut h, "embedded.svg");
         for label in ["Relink…", "Relink to Folder…", "Unembed…"] {
             let before = Arc::clone(&h.state().session.active().unwrap().doc);
@@ -1242,7 +1032,7 @@ mod ui223_links_tests {
         // Seed the existing question as an in-memory fixture; positive file-change detection is
         // not claimed here, since that requires real source files. Render and cancel the real dialog.
         app.ui.dialog = Some(crate::dialogs::Dialog::new("updateLink", json!({"target": {"story": story.0}, "files": "chapter.txt"})));
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let journal = h.state().session.journal.clone();
         let steps = undo(h.state());
         key(&mut h, Key::Escape);
@@ -1254,25 +1044,12 @@ mod ui223_links_tests {
     }
 
     #[test]
-    fn ui223_links_without_runtime_retains_working_native_actions() {
-        let (app, items, _) = graphics();
-        let mut h = harness(app, false);
-        assert!(!h.state().framework_installed);
-        click(&mut h, "studio-b/photo.svg");
-        let record = craft_ui_widgets::runtime::inspect::recorded(&h.ctx, region()).unwrap();
-        assert!(record.elements.iter().all(|e| e.component != "Button"), "fallback must not paint inert SDK controls");
-        let steps = undo(h.state());
-        click(&mut h, "Go To");
-        assert_eq!(h.state().session.active().unwrap().selection.items, vec![items[1]]);
-        assert_eq!(undo(h.state()), steps);
-    }
-    #[test]
     fn ui223_links_localized_actions_keep_asset_identity() {
         for language in ["fr", "ar"] {
             let (mut app, items, assets) = graphics();
             app.ui.language = language.into();
             let label = crate::i18n::tr(language, "Go To").to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             click(&mut h, "studio-b/photo.svg");
             let go = button(&h, &label);
             click_at(&mut h, go.rect);
@@ -1283,7 +1060,7 @@ mod ui223_links_tests {
 }
 
 // PREFLIGHT_TESTS_BEGIN
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui_preflight_navigation_tests {
     use super::*;
     use designcraft_doc::{Document, ItemId, Selection};
@@ -1383,13 +1160,9 @@ mod ui_preflight_navigation_tests {
         }
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, DesignApp> {
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-            assert!(app.framework_installed);
-        }
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(640.0, 700.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
@@ -1484,7 +1257,7 @@ mod ui_preflight_navigation_tests {
         assert_eq!((a.page, b.page), (Some(0), Some(1)));
         let names = [name(&app, &a), name(&app, &b)];
         assert_ne!(names[0], names[1]);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = quiet(h.state());
         for (at, page) in [(1, 1), (0, 0)] {
             assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::Button, &names[at]).count(), 1);
@@ -1506,7 +1279,7 @@ mod ui_preflight_navigation_tests {
         let warning = issue(&mut app, &ctx, items[2], "emptyText");
         assert_eq!((error.severity, warning.severity), ("error", "warning"));
         let targets = [(name(&app, &error), items[1], 1, Key::Enter), (name(&app, &warning), items[2], 2, Key::Space)];
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = quiet(h.state());
         for (label, item, page, activate) in targets {
             sdk_row(&h, &label);
@@ -1524,7 +1297,7 @@ mod ui_preflight_navigation_tests {
     }
 
     #[test]
-    fn ui_preflight_status_counts_and_no_document_and_uninstalled_fallback_remain_real() {
+    fn ui_preflight_status_counts_and_no_document_remain_real() {
         let (mut app, items) = fixture();
         let ctx = egui::Context::default();
         let found = crate::preflight_worker::issues(&mut app, &ctx).unwrap();
@@ -1537,8 +1310,7 @@ mod ui_preflight_navigation_tests {
         assert!(errors >= 2 && found.len() - errors >= 1);
         let warning = issue(&mut app, &ctx, items[2], "emptyText");
         let label = name(&app, &warning);
-        let mut h = harness(app, false);
-        assert!(!h.state().framework_installed);
+        let mut h = harness(app);
         assert!(h.query_by_label(&status).is_some());
         let before = quiet(h.state());
         let journal = h.state().session.journal.len();
@@ -1565,7 +1337,7 @@ mod ui_preflight_navigation_tests {
             let ctx = egui::Context::default();
             let target = issue(&mut app, &ctx, items[1], "overset");
             let label = name(&app, &target);
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let pos = h.get_by_role_and_label(egui::accesskit::Role::Button, &label).rect().center();
             frame(&mut h, Some(Event::PointerMoved(pos)));
             pointer(&mut h, pos, true);
@@ -1612,7 +1384,7 @@ mod ui_preflight_navigation_tests {
         let ctx = egui::Context::default();
         let target = issue(&mut app, &ctx, items[0], "overset");
         let label = name(&app, &target);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         tab_to(&mut h, &label);
         key_event(&mut h, Key::Enter, true);
         let doc = h.state().session.active().unwrap().doc.as_ref().clone();
@@ -1639,7 +1411,7 @@ mod ui_preflight_navigation_tests {
         let ctx = egui::Context::default();
         let old = issue(&mut app, &ctx, items[1], "overset");
         let old_label = name(&app, &old);
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let pos = h.get_by_role_and_label(egui::accesskit::Role::Button, &old_label).rect().center();
         frame(&mut h, Some(Event::PointerMoved(pos)));
         pointer(&mut h, pos, true);
@@ -1666,11 +1438,9 @@ mod ui_preflight_navigation_tests {
         let ctx = egui::Context::default();
         let target = issue(&mut app, &ctx, items[1], "overset");
         let label = name(&app, &target);
-        app.framework_opacity = true;
         let mut h = crate::test_window::open(app, vec2(1300.0, 850.0));
         let ctx = h.ctx.clone();
         h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
         h.state_mut().app.run("window.panel", json!({"panel": "preflight"})).unwrap();
         fn step(h: &mut Harness<'_, crate::test_window::Window>, event: Option<Event>) {
             let mut raw = std::mem::take(h.input_mut());

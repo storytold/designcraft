@@ -11,7 +11,7 @@
 //! updates are not applied, so the document does not move while a value is being typed.
 //!
 //! The framework's runtime must be installed on the context once, outside a pass, before its first one
-//! ([`install`], called from the desktop shell's creation context). Without it the panel draws its native body.
+//! ([`install`], called from the shell's creation context).
 
 use crate::DesignApp;
 use crate::panels::SelInfo;
@@ -34,11 +34,6 @@ use egui::{Rect, pos2, vec2};
 use serde_json::{Map, Value, json};
 use std::ops::RangeInclusive;
 
-/// Whether the object sections are the framework's: always on the desktop, where the framework is the UI.
-pub(crate) fn enabled() -> bool {
-    true
-}
-
 /// Installs the framework's runtime on `ctx`, once, before its first pass.
 ///
 /// It refuses to install inside a pass ([`craft_ui_widgets::InstallError::DuringPass`]), so a host calls this
@@ -57,7 +52,7 @@ pub(crate) fn install_with(ctx: &egui::Context, chrome: craft_host::target::Wind
     let spec = craft_ui_widgets::InstallSpec::new(shell, std::sync::Arc::new(craft_window_sdk::system::SystemWindows));
     match craft_ui_widgets::install(ctx, spec) {
         Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => crate::panel_docking::note_runtime(ctx),
-        Err(error) => log::warn!("the craft UI runtime was not installed; the Properties panel keeps its native controls: {error}"),
+        Err(error) => log::warn!("the craft UI runtime was not installed; the interface takes no input: {error}"),
     }
 }
 

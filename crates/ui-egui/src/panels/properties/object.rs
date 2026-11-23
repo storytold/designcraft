@@ -1,14 +1,12 @@
 use super::{
-    CornerShape, DesignApp, FIELD_H, NumField, Rect, SelInfo, Sense, Stroke, StrokeKind, Tokens, Ui, Unit, Value, block, full_width, icon_toggle,
-    icons, json, link_label, measure, more_options, outline_button, place, pos2, set_temp_bool, show_panel, sub, temp_bool, units, vec2, widgets,
+    CornerShape, DesignApp, FIELD_H, Rect, SelInfo, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, json, pos2, set_temp_bool,
+    show_panel, sub, temp_bool, units, vec2, widgets,
 };
 
 // ---------------------------------------------------------------- Objects
 //
-// Every section here has two bodies. With the craft UI framework's runtime on the context (the desktop app) the
-// section is drawn whole by the framework (`framework` below): every control is a framework component, so Tab, Escape
-// and focus run through one order. The browser build has no framework, and a context without its runtime takes no
-// framework input, so there the native body below draws the same controls over the same engine commands.
+// Every section here is drawn whole by the craft UI framework (`framework` below): every control is a framework
+// component, so Tab, Escape and focus run through one order.
 
 /// The stroke types Properties › Appearance offers, as InDesign's list names them, with their engine kinds.
 const STROKE_TYPES: &[(&str, &str)] = &[
@@ -116,38 +114,6 @@ const CONVERT_SHAPES: [(&str, &str); 9] = [
     ("Orthogonal Line", "orthogonalLine"),
 ];
 
-/// The 9-point reference-point proxy; returns a newly picked point (0..8, row-major).
-pub(crate) fn ref_point_proxy(ui: &mut Ui, r: Rect, cur: u8) -> Option<u8> {
-    let t = Tokens::get(ui.ctx());
-    let mut out = None;
-    let pitch = r.width() / 3.0;
-    for i in 0..9u8 {
-        let c = pos2(r.min.x + pitch * (i % 3) as f32 + pitch / 2.0, r.min.y + pitch * (i / 3) as f32 + pitch / 2.0);
-        let sq = Rect::from_center_size(c, vec2(6.0, 6.0));
-        let resp = ui.interact(sq.expand(1.5), ui.scope_id().with(("refpt", i)), Sense::click());
-        if i == cur {
-            ui.painter().rect_filled(sq.expand(0.5), 0.0, egui::Color32::WHITE);
-        } else {
-            ui.painter().rect_stroke(sq, 0.0, Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.icon }), StrokeKind::Inside);
-        }
-        if resp.clicked() {
-            out = Some(i);
-        }
-    }
-    // Connecting lines between the squares.
-    for k in 0..3 {
-        let y = r.min.y + pitch * k as f32 + pitch / 2.0;
-        let x = r.min.x + pitch * k as f32 + pitch / 2.0;
-        for j in 0..2 {
-            let a = r.min.x + pitch * j as f32 + pitch / 2.0 + 3.0;
-            ui.painter().line_segment([pos2(a, y), pos2(a + pitch - 6.0, y)], Stroke::new(1.0, t.icon));
-            let a = r.min.y + pitch * j as f32 + pitch / 2.0 + 3.0;
-            ui.painter().line_segment([pos2(x, a), pos2(x, a + pitch - 6.0)], Stroke::new(1.0, t.icon));
-        }
-    }
-    out
-}
-
 /// The reference point's position on the selection's bounds `r`, in page coordinates.
 fn reference_position(r: designcraft_geom::Rect, rp: u8) -> (f64, f64) {
     let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
@@ -155,99 +121,14 @@ fn reference_position(r: designcraft_geom::Rect, rp: u8) -> (f64, f64) {
 }
 
 pub(super) fn transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::transform_section(app, ui, i);
-    }
-    let u = units(app);
-    let rp = app.ui.ref_point;
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
-    // Reference-point position of the bounds.
-    let r = i.page_rect;
-    let (x, y) = reference_position(r, rp);
-    if let Some(p) = ref_point_proxy(ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
-        app.ui.ref_point = p;
-    }
-    let constrain = temp_bool(ui, "constrain_wh", false);
-    let mut set = serde_json::Map::new();
-    for (row, (lx, vx, kx, lw, vw, kw)) in
-        [("X:", x, "x", "W:", r.width(), "width"), ("Y:", y, "y", "H:", r.height(), "height")].into_iter().enumerate()
-    {
-        let yy = row as f32 * 25.0;
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
-        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, kx, Some(vx), u, 54.0)) {
-            set.insert(kx.into(), json!(v));
-        }
-        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
-        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| measure(ui, kw, Some(vw), u, 54.0)) {
-            set.insert(kw.into(), json!(v));
-            if constrain && vw > 0.0 {
-                let k = v / vw;
-                let (ok, ov) = if kw == "width" { ("height", r.height()) } else { ("width", r.width()) };
-                set.insert(ok.into(), json!(ov * k));
-            }
-        }
-    }
-    let clicked = place(ui, sub(b, 200.0, 12.0, 22.0, FIELD_H), |ui| {
-        widgets::icon_toggle_sized(
-            ui,
-            if constrain { "link" } else { "link-broken" },
-            constrain,
-            "Constrain proportions for width and height",
-            vec2(22.0, 21.0),
-        )
-        .clicked()
-    });
-    if clicked {
-        set_temp_bool(ui, "constrain_wh", !constrain);
-    }
-    if !set.is_empty() {
-        set.insert("ref".into(), json!(rp));
-        let _ = app.run("transform.set", Value::Object(set));
-    }
-    transform_angles(app, ui, rp);
-    if more_options(ui, &app.ui.language).clicked() {
-        show_panel(app, "info");
-    }
+    framework::transform_section(app, ui, i);
 }
 
 /// Properties › Transform for points selected with Direct Selection: X/Y/W/H of the points'
 /// bounds (from the reference point); X and Y move the points, W and H spread or gather them
 /// about the reference point. No angles: those turn objects.
 pub(super) fn anchor_transform_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::anchor_transform_section(app, ui, i);
-    }
-    let u = units(app);
-    let rp = app.ui.ref_point;
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
-    let r = i.page_rect;
-    let (x, y) = reference_position(r, rp);
-    if let Some(p) = ref_point_proxy(ui, sub(b, 5.0, 10.0, 26.0, 26.0), rp) {
-        app.ui.ref_point = p;
-    }
-    let mut set = serde_json::Map::new();
-    let (single, w, h) = anchor_size(app, i);
-    for (row, (lx, vx, kx, lw, vw, kw)) in [("X:", x, "x", "W:", w, "width"), ("Y:", y, "y", "H:", h, "height")].into_iter().enumerate() {
-        let yy = row as f32 * 25.0;
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, lx, 18.0));
-        if let Some(v) = place(ui, sub(b, 59.0, yy, 54.0, FIELD_H), |ui| measure(ui, &format!("pt_{kx}"), Some(vx), u, 54.0)) {
-            set.insert(kx.into(), json!(v));
-        }
-        place(ui, sub(b, 120.0, yy, 19.0, FIELD_H), |ui| widgets::caption_w(ui, lw, 19.0));
-        let id = format!("pt_{kw}");
-        let field = NumField::measure(&id, Some(vw), u).width(54.0).enabled(!single);
-        if let Some(v) = place(ui, sub(b, 140.0, yy, 54.0, FIELD_H), |ui| field.show(ui)) {
-            set.insert(kw.into(), json!(v));
-        }
-    }
-    if !set.is_empty() {
-        let _ = transform_anchors(app, &Value::Object(set));
-    }
-    if more_options(ui, &app.ui.language).clicked() {
-        show_panel(app, "info");
-    }
+    framework::anchor_transform_section(app, ui, i);
 }
 
 /// Whether one point is selected, and the width and height the anchor fields show: a single point has no size, so
@@ -292,81 +173,7 @@ pub(crate) fn transform_anchors(app: &mut DesignApp, set: &Value) -> Result<Valu
 /// Properties › Transform for selected ruler guides: X for one vertical guide, Y for one
 /// horizontal guide; with several guides both fields are empty.
 pub(super) fn guide_section(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::guide_section(app, ui);
-    }
-    let guide = crate::panels::guide_field(app);
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
-    for (row, (label, key)) in [("X:", "gx"), ("Y:", "gy")].into_iter().enumerate() {
-        let yy = row as f32 * 25.0;
-        let on = guide.filter(|g| g.row() == row);
-        place(ui, sub(b, 40.0, yy, 18.0, FIELD_H), |ui| widgets::caption_w(ui, label, 18.0));
-        let typed = place(ui, sub(b, 59.0, yy, 135.0, FIELD_H), |ui| {
-            if on.is_none() {
-                ui.disable();
-            }
-            measure(ui, key, on.map(|g| g.value), on.map_or_else(|| units(app), |g| g.unit), 135.0)
-        });
-        if let (Some(v), Some(g)) = (typed, on) {
-            let _ = app.run("guide.move", g.move_to(v));
-        }
-    }
-}
-
-/// Properties › Transform, below X/Y/W/H as in InDesign: rotation and shear angles beside the
-/// X and Y scales (totals, as Transformations are Totals), then rotate a quarter turn and flip.
-fn transform_angles(app: &mut DesignApp, ui: &mut Ui, rp: u8) {
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    let tv = app.session.execute("transform.info", &json!({})).ok();
-    let tv_get = |k: &str| tv.as_ref().and_then(|v| v[k].as_f64());
-    ui.add_space(4.0);
-    let b = block(ui, 2.0 * FIELD_H + 4.0);
-    let mut set = serde_json::Map::new();
-    for (row, cells) in ANGLE_ROWS.into_iter().enumerate() {
-        let yy = row as f32 * 25.0;
-        for (col, (icon, tip, key, suffix, id)) in cells.into_iter().enumerate() {
-            let x = if col == 0 { 40.0 } else { 120.0 };
-            let ir = sub(b, x, yy + 2.0, 17.0, 17.0);
-            icons::paint(ui.painter(), ir, icon, t.icon);
-            ui.interact(ir, ui.scope_id().with(id), Sense::hover()).on_hover_text(crate::i18n::tr(&lang, tip));
-            if let Some(v) = place(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H), |ui| widgets::number(ui, id, tv_get(key), suffix, 54.0, 1)) {
-                set.insert(key.into(), json!(v));
-            }
-        }
-    }
-    if !set.is_empty() {
-        set.insert("ref".into(), json!(rp));
-        let _ = app.run("transform.set", Value::Object(set));
-    }
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(36.0);
-        ui.spacing_mut().item_spacing.x = 10.0;
-        for (icon, tip, cmd, params) in rotate_flip() {
-            let label = crate::i18n::tr(&lang, tip);
-            let resp = icon_toggle(ui, icon, false, label);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-            if resp.clicked() {
-                let _ = app.run(cmd, params);
-            }
-        }
-    });
-}
-
-/// A stroke-type preview dropdown (light box with the line style).
-pub(crate) fn stroke_type_dropdown(app: &mut DesignApp, ui: &mut Ui, cur: &str, w: f32) {
-    let resp = preview_dropdown(ui, w, crate::i18n::tr(&app.ui.language, "Stroke Type"), |p, r| paint_stroke_type(p, r, cur, egui::Color32::BLACK));
-    egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(170.0);
-        for (label, kind) in STROKE_TYPES {
-            if preview_row(ui, *kind == cur, crate::i18n::tr(&app.ui.language, label), 40.0, |p, r, c| paint_stroke_type(p, r, kind, c)).clicked() {
-                let _ = app.run("object.stroke", stroke_type_params(kind));
-                ui.close();
-            }
-        }
-    });
+    framework::guide_section(app, ui);
 }
 
 fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str, c: egui::Color32) {
@@ -499,126 +306,8 @@ pub(crate) fn corner_shape_button(ui: &mut Ui, shape: CornerShape, width: f32) -
     preview_dropdown(ui, width, "", |p, r| paint_corner_shape(p, r, shape, egui::Color32::BLACK))
 }
 
-pub(crate) fn corner_type_dropdown(app: &mut DesignApp, ui: &mut Ui, shape: CornerShape, size: f64, width: f32) {
-    let resp =
-        preview_dropdown(ui, width, crate::i18n::tr(&app.ui.language, "Corner Shape"), |p, r| paint_corner_shape(p, r, shape, egui::Color32::BLACK));
-    egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(150.0);
-        for s in CornerShape::ALL {
-            if preview_row(ui, s == shape, crate::i18n::tr(&app.ui.language, s.label()), 22.0, |p, r, c| paint_corner_shape(p, r, s, c)).clicked() {
-                let _ = app.run("object.cornerOptions", corner_shape_params(s, size));
-                ui.close();
-            }
-        }
-    });
-}
-
 pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::appearance_section(app, ui, i);
-    }
-    let t = Tokens::get(ui.ctx());
-    let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
-    let text_frames = all_text_frames(app, i);
-    // Fill.
-    let b = block(ui, FIELD_H);
-    let (fc, fg) = widgets::swatch_colors(&doc, &i.fill, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
-    widgets::paint_chip(ui.painter(), chip, fc, fg);
-    ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.scope_id().with("fillchip"), Sense::click()).on_hover_text(format!(
-        "{}: {}",
-        crate::i18n::tr(&app.ui.language, "Fill"),
-        i.fill
-    ));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Fill swatch"));
-    swatch_menu(app, &resp, &doc, &i.fill, false, text_frames, false);
-    if resp.double_clicked() {
-        open_color_picker(app, &doc, &i.fill, false, false);
-    }
-    crate::rtl::paint(
-        ui.painter(),
-        b.min + vec2(34.0, FIELD_H / 2.0),
-        egui::Align2::LEFT_CENTER,
-        crate::i18n::tr(&app.ui.language, "Fill"),
-        egui::FontId::proportional(11.5),
-        t.text,
-    );
-    ui.add_space(4.0);
-    // Stroke.
-    let b = block(ui, FIELD_H);
-    let (sc, _) = widgets::swatch_colors(&doc, &i.stroke, 1.0);
-    let chip = sub(b, 4.0, 2.0, 17.0, 17.0);
-    widgets::paint_stroke_chip(ui.painter(), chip, sc, egui::Color32::from_gray(20));
-    ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let resp = ui.interact(chip, ui.scope_id().with("strokechip"), Sense::click()).on_hover_text(format!(
-        "{}: {}",
-        crate::i18n::tr(&app.ui.language, "Stroke"),
-        i.stroke
-    ));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Stroke swatch"));
-    swatch_menu(app, &resp, &doc, &i.stroke, true, text_frames, false);
-    if resp.double_clicked() {
-        open_color_picker(app, &doc, &i.stroke, true, false);
-    }
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Stroke"), 56.0)).clicked() {
-        show_panel(app, "stroke");
-    }
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::points("sw", Some(i.stroke_weight), 3).width(69.0).spinner().presets(STROKE_WEIGHTS).range(0.0, 800.0).show(ui)
-    }) {
-        let _ = app.run("object.stroke", json!({"weight": v}));
-    }
-    let kind = i.stroke_kind.clone();
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| stroke_type_dropdown(app, ui, &kind, 54.0));
-    ui.add_space(4.0);
-    // Corner.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "corner", t.accent);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Corner"), 56.0)).clicked() {
-        // Corner Options, as Object › Corner Options… opens it.
-        crate::menus::activate(app, "object.cornerOptions", &Value::Null);
-    }
-    let (shape, size) = i.corner;
-    if let Some(v) = place(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H), |ui| {
-        NumField::measure("corner", Some(size), Unit::Points).width(69.0).spinner().range(0.0, 1000.0).show(ui)
-    }) {
-        let _ = app.run("object.cornerOptions", corner_size_params(shape, v));
-    }
-    place(ui, sub(b, 171.0, 0.0, 54.0, FIELD_H), |ui| {
-        corner_type_dropdown(app, ui, shape, size, 54.0);
-    });
-    ui.add_space(4.0);
-    // Opacity.
-    let b = block(ui, FIELD_H);
-    icons::paint(ui.painter(), sub(b, 3.0, 1.0, 19.0, 19.0), "opacity", t.icon);
-    if place(ui, sub(b, 34.0, 0.0, 56.0, FIELD_H), |ui| link_label(ui, crate::i18n::tr(&app.ui.language, "Opacity"), 56.0)).clicked() {
-        show_panel(app, "effects");
-    }
-    let typed = place(ui, sub(b, 96.0, 0.0, 51.0, FIELD_H), |ui| {
-        NumField::number("opacity", Some((i.opacity * 100.0).round()), "%", 0).width(51.0).range(0.0, 100.0).show(ui)
-    });
-    // The field shows whole percents; `object.opacity` takes the ratio.
-    if let Some(percent) = typed {
-        let _ = app.run("object.opacity", json!({"opacity": (percent / 100.0).clamp(0.0, 1.0)}));
-    }
-    let more = sub(b, 147.0, 0.0, 18.0, FIELD_H);
-    let mresp = ui.interact(more, ui.scope_id().with("opmore"), Sense::click());
-    ui.painter().rect(more, 0.0, if mresp.hovered() { t.hover } else { t.input }, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    icons::paint(ui.painter(), more.shrink(4.0), "chevron-right", t.icon);
-    mresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr(&app.ui.language, "Opacity")));
-    opacity_slider(app, &mresp, i.opacity);
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        if icon_toggle(ui, "frame-dashed", false, crate::i18n::tr(&app.ui.language, "Frame Fitting")).clicked() {
-            show_panel(app, "textWrap");
-        }
-        if icon_toggle(ui, "fx", i.shadow, crate::i18n::tr(&app.ui.language, "Effects: Drop Shadow")).clicked() {
-            let _ = app.run("object.dropShadow", json!({"on": !i.shadow}));
-        }
-    });
+    framework::appearance_section(app, ui, i);
 }
 
 /// Whether every selected object is a text frame: the Fill and Stroke popups then offer Apply To Frame or Text, for
@@ -633,46 +322,6 @@ pub(super) fn open_color_picker(app: &mut DesignApp, doc: &designcraft_doc::Docu
     let mut fields = crate::panels::swatches::picker_fields(doc.resolve_color(swatch, 1.0), stroke);
     fields["text"] = json!(text);
     app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
-}
-
-/// The Opacity slider that the arrow beside the field opens, as in InDesign: a drag shows the
-/// new opacity live and is one undo step when let go.
-fn opacity_slider(app: &mut DesignApp, resp: &egui::Response, opacity: f64) {
-    let (mut slid, mut held, mut shown) = (None, false, false);
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        shown = true;
-        // A thin rail and a round knob, as InDesign draws it.
-        ui.spacing_mut().slider_width = 130.0;
-        ui.spacing_mut().slider_rail_height = 2.0;
-        let mut v = (opacity * 100.0).round();
-        let slider = ui.add(
-            egui::Slider::new(&mut v, 0.0..=100.0).integer().show_value(false).handle_shape(egui::style::HandleShape::Circle).trailing_fill(false),
-        );
-        // The slider has no visible caption (the field beside the arrow is the label), so it's
-        // named for assistive technology only.
-        let label = crate::i18n::tr(&app.ui.language, "Opacity");
-        slider.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), v, label));
-        // The release frame can move the value too; it stays part of the drag's preview, which
-        // the next frame commits as the one undo step.
-        let pressed = slider.is_pointer_button_down_on() || slider.dragged() || slider.drag_stopped();
-        if slider.changed() {
-            slid = Some((v, pressed));
-        }
-        held = pressed;
-    });
-    match slid {
-        Some((v, true)) => app.live_preview("Opacity", "object.opacity", json!({"opacity": v / 100.0})),
-        Some((v, false)) => {
-            // The keyboard (arrow keys on the focused slider): applied at once.
-            app.end_live_preview();
-            let _ = app.run("object.opacity", json!({"opacity": v / 100.0}));
-        }
-        None if held => app.hold_live_preview(),
-        // Shown but let go without a change (a click outside, Escape): the drag's preview is
-        // committed now, before whatever that click does, so that keeps its own undo step.
-        None if shown => app.end_live_preview(),
-        None => {}
-    }
 }
 
 /// The key under which a Fill (`stroke` false) or Stroke popup remembers that it colours a text frame's text.
@@ -716,56 +365,6 @@ fn apply_swatch(app: &mut DesignApp, stroke: bool, to_text: bool, swatch: Option
     }
 }
 
-/// The Fill (or Stroke) popup of Properties › Appearance, as InDesign's: Apply To (a text frame's
-/// frame or its text), the tint, then the swatches. `cur` is the frame's swatch. With `text_only`
-/// (text selected) it colours the selected text.
-pub(super) fn swatch_menu(
-    app: &mut DesignApp,
-    resp: &egui::Response,
-    doc: &designcraft_doc::Document,
-    cur: &str,
-    stroke: bool,
-    text_frame: bool,
-    text_only: bool,
-) {
-    let lang = app.ui.language.clone();
-    let tr = |s: &'static str| crate::i18n::tr(&lang, s);
-    let to_text_id = apply_to_text_key(stroke);
-    let to_text = text_only || text_frame && resp.ctx.data(|d| d.get_temp::<bool>(to_text_id)).unwrap_or(false);
-    let (cur, tint) = swatch_target(app, cur, stroke, to_text);
-    let mut picked = None;
-    let mut new_tint = None;
-    let mut switch = None;
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        if text_frame {
-            ui.horizontal(|ui| {
-                crate::rtl::label(ui, tr("Apply To:"));
-                for (label, text) in [("Frame", false), ("Text", true)] {
-                    if ui.selectable_label(to_text == text, crate::rtl::widget(ui, tr(label))).clicked() {
-                        switch = Some(text);
-                    }
-                }
-            });
-        }
-        ui.horizontal(|ui| {
-            crate::rtl::label(ui, tr("Tint:"));
-            if let Some(v) = NumField::number(if stroke { "stroke_tint" } else { "fill_tint" }, Some((tint * 100.0).round()), "%", 0)
-                .width(60.0)
-                .range(0.0, 100.0)
-                .show(ui)
-            {
-                new_tint = Some(v / 100.0);
-            }
-        });
-        ui.separator();
-        picked = crate::panels::swatch_list(ui, doc, &cur);
-    });
-    if let Some(t) = switch {
-        resp.ctx.data_mut(|d| d.insert_temp(to_text_id, t));
-    }
-    apply_swatch(app, stroke, to_text, picked, new_tint);
-}
-
 /// The Align To button's glyph shows what the objects align to, as InDesign's.
 pub(super) fn align_to_icon(to: &str) -> &'static str {
     match to {
@@ -803,58 +402,11 @@ fn pick_align_to(app: &mut DesignApp, key: Option<designcraft_doc::ItemId>, id: 
 }
 
 pub(super) fn align_row(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::align_row(app, ui);
-    }
-    let t = Tokens::get(ui.ctx());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let (to, key, tip) = align_target(app);
-        let resp = icon_toggle(ui, align_to_icon(&to), false, &tip);
-        egui::Popup::menu(&resp).show(|ui| {
-            for (label, id) in ALIGN_TO {
-                if ui.selectable_label(to == id, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    pick_align_to(app, key, id);
-                    ui.close();
-                }
-            }
-        });
-        let (r, _) = ui.allocate_exact_size(vec2(1.0, FIELD_H), Sense::hover());
-        ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.section_divider.gamma_multiply(1.6)));
-        for (edge, icon, tip) in ALIGN_EDGES {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.align", json!({"edge": edge, "to": to}));
-            }
-        }
-    });
+    framework::align_row(app, ui);
 }
 
 pub(super) fn wrap_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::wrap_section(app, ui, i);
-    }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 7.0;
-        for (icon, mode, tip) in WRAP_MODES {
-            if icon_toggle(ui, icon, i.wrap == mode, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.textWrap", json!({"mode": mode}));
-            }
-        }
-        ui.add_space(2.0);
-        let mut inv = i.wrap_invert;
-        let enabled = i.wrap != "none";
-        let r = ui.add_enabled_ui(enabled, |ui| widgets::checkbox(ui, &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))).inner;
-        if r.changed() {
-            // Each object keeps its own mode.
-            let _ = app.run("object.textWrap", json!({"mode": null, "invert": inv}));
-        }
-    });
-    wrap_offsets(app, ui, i);
-    if more_options(ui, &app.ui.language).clicked() {
-        show_panel(app, "textWrap");
-    }
+    framework::wrap_section(app, ui, i);
 }
 
 /// The key under which the wrap offsets' link remembers its state. It belongs to the selection: another selection
@@ -876,60 +428,6 @@ fn wrap_offsets_set(linked: bool, k: usize, v: f64) -> [Option<f64>; 4] {
     }
 }
 
-/// The wrap offsets under the wrap buttons, as InDesign's Properties panel shows them: Top and
-/// Bottom, the link that makes all four the same, then Left and Right. Greyed with no wrap.
-fn wrap_offsets(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    let u = units(app);
-    let enabled = i.wrap != "none";
-    let offsets = i.wrap_offsets;
-    ui.add_space(4.0);
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
-    let mut set = None;
-    let link_id = wrap_link_key(app);
-    ui.add_enabled_ui(enabled, |ui| {
-        // Linked while the four are the same, until the link is clicked.
-        let same = offsets.iter().all(|v| (v - offsets[0]).abs() < 1e-9);
-        let linked = ui.data(|d| d.get_temp::<bool>(link_id)).unwrap_or(same);
-        for (k, key, icon, tip, x, y) in WRAP_OFFSETS {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
-            icons::paint(ui.painter(), ir, icon, if enabled { t.icon } else { t.text_dim });
-            ui.interact(ir, ui.scope_id().with(("prop_wrap_off", k)), Sense::hover()).on_hover_ui(|ui| {
-                crate::rtl::label(ui, tr(tip));
-            });
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(key, Some(offsets[k]), u).width(76.0).spinner().range(-8000.0, 8000.0).enabled(enabled).show(ui)
-            });
-            if let Some(v) = nv {
-                set = Some(wrap_offsets_set(linked, k, v));
-            }
-        }
-        if place(ui, sub(b, 106.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
-                .clicked()
-        }) {
-            ui.data_mut(|d| d.insert_temp(link_id, !linked));
-        }
-    });
-    if let Some(o) = set {
-        // Each object keeps its own mode: only the offsets change.
-        let _ = app.run("object.textWrap", json!({"mode": null, "offset": o}));
-    }
-}
-
-fn arrange_menu(app: &mut DesignApp, resp: &egui::Response) {
-    egui::Popup::menu(resp).show(|ui| {
-        for (label, cmd) in ARRANGE {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                let _ = app.run(cmd, json!({}));
-                ui.close();
-            }
-        }
-    });
-}
-
 /// Converts the selection to the shape `to`; a shape that cannot be converted says why in the status bar.
 fn convert_shape(app: &mut DesignApp, to: &str) {
     if let Err(e) = app.run("object.convertShape", json!({"to": to})) {
@@ -937,59 +435,8 @@ fn convert_shape(app: &mut DesignApp, to: &str) {
     }
 }
 
-fn convert_shape_menu(app: &mut DesignApp, resp: &egui::Response) {
-    egui::Popup::menu(resp).show(|ui| {
-        for (label, to) in CONVERT_SHAPES {
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                convert_shape(app, to);
-                ui.close();
-            }
-        }
-    });
-}
-
 pub(super) fn quick_actions_object(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::quick_actions_object(app, ui, i);
-    }
-    let fw = full_width(ui);
-    let hw = (fw - 10.0) / 2.0;
-    if i.is_text {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), hw);
-            convert_shape_menu(app, &r);
-            let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-            arrange_menu(app, &r);
-        });
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Fill with Placeholder Text"), fw).clicked() {
-            let _ = app.run("type.fillWithPlaceholder", json!({}));
-        }
-        ui.add_space(4.0);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Edit in Story Editor"), fw).clicked() {
-            let _ = app.run("app.storyEditor", json!({}));
-        }
-        return;
-    }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Arrange"), hw);
-        arrange_menu(app, &r);
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, group_or_lock(i).0), hw).clicked() {
-            let _ = app.run(group_or_lock(i).1, json!({}));
-        }
-    });
-    ui.add_space(4.0);
-    if i.kind == "<group>" {
-        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Ungroup"), fw).clicked() {
-            let _ = app.run("object.ungroup", json!({}));
-        }
-    } else {
-        let r = outline_button(ui, crate::i18n::tr(&app.ui.language, "Convert Shape"), fw);
-        convert_shape_menu(app, &r);
-    }
+    framework::quick_actions_object(app, ui, i);
 }
 
 /// The second quick action of an object selection: Group for several objects, else Lock; label and command.
@@ -997,9 +444,7 @@ fn group_or_lock(i: &SelInfo) -> (&'static str, &'static str) {
     if i.count > 1 { ("Group", "object.group") } else { ("Lock", "object.lock") }
 }
 
-/// The object sections on the craft UI framework: the same rows, at the same places, over the same engine commands
-/// as the native bodies above, every control a framework component.
-#[cfg(not(target_arch = "wasm32"))]
+/// The object sections on the craft UI framework: every control a framework component.
 pub(super) mod framework {
     use super::*;
     use crate::framework_transform::{Artwork, Length, icon, icon_button, length_field, swatch_icon};

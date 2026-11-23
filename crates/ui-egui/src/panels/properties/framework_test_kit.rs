@@ -1,5 +1,3 @@
-#![cfg(not(target_arch = "wasm32"))]
-
 //! What the framework tests of the Properties panel and its small panels share: a document, a panel drawn under the
 //! installed framework, and real pointer and key events found through AccessKit.
 
@@ -43,11 +41,8 @@ pub(super) fn rectangle(app: &mut DesignApp) -> u64 {
 /// `panel` drawn each pass on a context that has the framework's runtime installed.
 pub(super) fn open(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Window {
     let ctx = egui::Context::default();
-    app.framework_transform = false;
-    app.framework_opacity = true;
     app.install_framework(&ctx);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-    assert!(app.framework_installed, "the framework bodies need the installed runtime");
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 2000.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {

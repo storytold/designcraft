@@ -1,5 +1,3 @@
-#![cfg(not(target_arch = "wasm32"))]
-
 //! Properties › Appearance on the craft UI framework: the Opacity row's percent field, its chevron and the slider
 //! popover the chevron opens, and the section's other framework controls, in the real section of a real document,
 //! driven with real pointer and key events.
@@ -10,7 +8,7 @@
 //! the drag without a new undo step, and the release is one step. Escape during that drag goes back through
 //! the engine's own `edit.cancelPreview`. The rest are the guards the section needs: a cancel from this row
 //! never takes another panel's preview back, the field's rect is this frame's and goes with the selection,
-//! without the framework's runtime the row keeps the native field, and the stroke weight field and the effects
+//! and the stroke weight field and the effects
 //! button run their engine commands as one undo step each.
 //!
 //! Geometry is the framework's own: the field and the slider are drawn inside `inspect::record`, and the
@@ -32,10 +30,9 @@ fn app_with_frame() -> (DesignApp, designcraft_doc::ItemId) {
     (app, id)
 }
 
-/// The Properties panel on a context that has the framework's runtime, with `pilot` as the flag.
-fn properties_harness(mut app: DesignApp, pilot: bool) -> Harness<'static, DesignApp> {
+/// The Properties panel on a context that has the framework's runtime.
+fn properties_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_opacity = pilot;
     app.install_framework(&ctx);
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 900.0)).build_ui_state(
@@ -55,11 +52,10 @@ fn properties_harness(mut app: DesignApp, pilot: bool) -> Harness<'static, Desig
     h
 }
 
-/// The whole window, as the desktop shell runs it each pass (`logic` then `ui`), with the pilot on: the app
-/// clears the pilot's rects at the start of each pass, so only this pass's are there.
+/// The whole window, as the desktop shell runs it each pass (`logic` then `ui`), with the framework's runtime: the app
+/// clears the row's rects at the start of each pass, so only this pass's are there.
 fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_opacity = true;
     app.install_framework(&ctx);
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
@@ -142,7 +138,7 @@ fn open_slider(h: &mut Harness<'_, DesignApp>) -> egui::Rect {
 #[test]
 fn typing_an_opacity_moves_the_object_and_one_undo_puts_it_back() {
     let (app, id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     assert!((opacity(&h, id) - 1.0).abs() < 1e-9, "the frame starts opaque");
     let steps = undo_steps(&h);
     let field = rect_of(&h, "opacity");
@@ -164,12 +160,12 @@ fn a_locked_objects_opacity_stays_editable() {
     // Lock deselects, as Cmd+L does; a person then clicks the locked frame again.
     app.run("selection.set", json!({"ids": [id.0]})).expect("the locked frame is selected again");
     assert!(crate::panels::sel_info(&app).expect("a selection").locked, "the selection is locked");
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     let field = rect_of(&h, "opacity");
     type_value(&mut h, field, "40");
-    // The bespoke row never disabled its opacity field for a locked object, and `object.opacity` has no
-    // lock guard: the pilot matches that, and the edit is one undo step either way.
+    // `object.opacity` has no lock guard and the row never disables its field for a locked object: the edit
+    // commits as one undo step.
     assert!((opacity(&h, id) - f64::from(0.4_f32)).abs() < 1e-12, "a locked object's opacity field still commits: {}", opacity(&h, id));
     assert_eq!(undo_steps(&h) - steps, 1, "one gesture, one undo step");
 }
@@ -177,7 +173,7 @@ fn a_locked_objects_opacity_stays_editable() {
 #[test]
 fn a_step_key_commits_one_more_step() {
     let (app, id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     let field = rect_of(&h, "opacity");
     type_value(&mut h, field, "40");
@@ -204,7 +200,7 @@ fn a_step_key_commits_one_more_step() {
 #[test]
 fn dragging_the_slider_previews_live_and_commits_one_step() {
     let (app, id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     let track = open_slider(&mut h);
     // The thumb of a fully opaque object sits at the right end of the track: a press on it and a drag left
@@ -238,7 +234,7 @@ fn dragging_the_slider_previews_live_and_commits_one_step() {
 #[test]
 fn escape_mid_drag_puts_the_object_back_and_pushes_no_step() {
     let (app, id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     let track = open_slider(&mut h);
     let from = pos2(track.right() - 2.0, track.center().y);
@@ -266,7 +262,7 @@ fn escape_mid_drag_puts_the_object_back_and_pushes_no_step() {
 #[test]
 fn escape_in_the_popup_leaves_another_panels_preview_alone() {
     let (app, id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     // Another panel's drag opened a preview on this object; this row started nothing.
     h.state_mut().live_preview("Other panel", "object.opacity", json!({"opacity": 0.5}));
@@ -304,27 +300,10 @@ fn the_field_rect_is_this_frames_and_goes_with_the_selection() {
     assert!(h.state().framework_opacity_fields.is_empty(), "stale rect with no selection: {:?}", h.state().framework_opacity_fields);
 }
 
-/// The framework is on by default on the desktop; with no framework runtime at all (the browser build's case) the
-/// row keeps its bespoke field and command. Successor of the old pilot-off test.
-#[test]
-fn the_row_stays_bespoke_without_the_framework_runtime() {
-    let (mut app, id) = app_with_frame();
-    app.framework_transform = false;
-    let mut h = properties_harness(app, false);
-    assert!(!h.state().framework_opacity, "no framework row");
-    assert!(!h.state().framework_installed, "so nothing installed the framework's runtime");
-    assert!(h.state().framework_opacity_fields.is_empty(), "the bespoke field drew instead: {:?}", h.state().framework_opacity_fields);
-    // The row is unchanged: the command behind the bespoke field still moves the object in one step.
-    let steps = undo_steps(&h);
-    h.state_mut().run("object.opacity", json!({"opacity": 0.25})).expect("object.opacity");
-    assert!((opacity(&h, id) - 0.25).abs() < 1e-12, "the bespoke row's command still runs: {}", opacity(&h, id));
-    assert_eq!(undo_steps(&h) - steps, 1, "and is one undo step");
-}
-
 #[test]
 fn typing_a_stroke_weight_runs_one_stroke_step() {
     let (app, _id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     let steps = undo_steps(&h);
     let field = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Stroke Weight").rect();
     type_value(&mut h, field, "3");
@@ -336,7 +315,7 @@ fn typing_a_stroke_weight_runs_one_stroke_step() {
 #[test]
 fn the_effects_button_turns_the_drop_shadow_on_in_one_step() {
     let (app, _id) = app_with_frame();
-    let mut h = properties_harness(app, true);
+    let mut h = properties_harness(app);
     assert!(!crate::panels::sel_info(h.state()).expect("the frame is selected").shadow, "the frame starts without a shadow");
     let steps = undo_steps(&h);
     let at = h.get_by_role_and_label(egui::accesskit::Role::Button, "Effects: Drop Shadow").rect().center();

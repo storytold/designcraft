@@ -67,7 +67,7 @@ fn linked_graphics(paths: &[Option<&str>]) -> (DesignApp, Vec<designcraft_doc::I
 
 fn links_harness(app: DesignApp, width: f32) -> Harness<'static, DesignApp> {
     let mut ready = false;
-    let mut h = Harness::builder().with_size(vec2(width, 600.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(width, 600.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), "");
@@ -118,7 +118,7 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
     let mut ready = false;
-    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), "");
@@ -144,7 +144,7 @@ fn text_stroke_panel_keeps_the_weight_in_range() {
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
     let mut ready = false;
-    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), "");
@@ -174,7 +174,7 @@ fn properties_text_stroke_weight_keeps_the_character_range() {
     app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
     let mut ready = false;
-    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), "");
@@ -282,7 +282,7 @@ fn properties_character_section_sets_the_language() {
     app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "bunun", "caret": true})).unwrap();
     app.run("edit.selectAll", json!({})).unwrap();
     assert_ne!(language(&mut app), "French");
-    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             // The panel's fonts are installed before its first frame.
             let id = egui::Id::unique("test_fonts");
@@ -516,7 +516,7 @@ fn kerning(app: &mut DesignApp) -> Value {
 
 /// A harness drawing `panel` for `app` (fonts installed before the first frame).
 fn panel_harness(app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
-    Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             let id = egui::Id::unique("test_fonts");
             if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -643,7 +643,7 @@ fn dragging_one_of_several_axis_sliders_is_one_undo_step() {
     let before = font_style(&mut app);
     let steps = undo_steps(&app);
     // The app commits a preview no panel held at the start of each frame (DesignApp::ui).
-    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let id = egui::Id::unique("test_fonts");
             if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -750,7 +750,7 @@ fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
     app.run("selection.set", json!({"ids": [id]})).unwrap();
     let before = app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.swatch.clone();
     assert_ne!(before, "[Paper]");
-    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let id = egui::Id::unique("test_fonts");
             if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -797,7 +797,7 @@ fn double_clicking_a_fill_chip_opens_the_color_picker() {
     };
     // Frames 1 ms apart, so two clicks make a double-click.
     let panel = |app: DesignApp| {
-        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).with_step_dt(0.001).build_ui_state(
+        let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).with_step_dt(0.001).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -841,7 +841,7 @@ fn double_clicking_a_fill_chip_opens_the_color_picker() {
 }
 
 fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let id = egui::Id::unique("test_fonts");
             if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
@@ -940,7 +940,7 @@ fn the_opacity_arrow_opens_a_slider_and_a_drag_is_one_undo_step() {
     app.run("selection.set", json!({"ids": [id]})).unwrap();
     let opacity = |app: &DesignApp| app.session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().opacity;
     let steps = undo_steps(&app);
-    let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let id = egui::Id::unique("test_fonts");
             if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
