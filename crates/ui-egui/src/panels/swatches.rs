@@ -358,6 +358,7 @@ struct RenameInput {
     generation: u64,
     last_frame: u64,
     focus_pending: bool,
+    scope_open: bool,
 }
 
 const RENAME_INPUT: &str = "swatches_rename_input";
@@ -404,29 +405,123 @@ fn prepare_rename(app: &DesignApp, ui: &egui::Ui) {
     }
 }
 
-/// Only public component focus and text events are used; whole text loss is not a pointer-cause flag.
+#[cfg(not(target_arch = "wasm32"))]
+mod rename_edit_scope {
+    use craft_behavior::{CancelRule, Metrics};
+    use craft_ui_widgets::contract::{Bind, BindMut, Common, Component, Container, ContainerProps, Cx, NoValue, Outcome, Role};
+    use craft_ui_widgets::runtime::focus::FocusPolicy;
+    use craft_ui_widgets::runtime::overlay::CloseReason;
+    use craft_ui_widgets::style::{ComponentStyle, StyleCx};
+
+    /// The inline editor owns a real closable scope, not a popup or a new text-field Escape policy.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(container)]
+    pub(super) struct RenameEditScope<'a> {
+        #[common]
+        common: Common,
+        #[container]
+        props: ContainerProps,
+        open: Bind<'a, bool>,
+        closed: Option<CloseReason>,
+    }
+
+    impl<'a> RenameEditScope<'a> {
+        pub(super) fn new(open: Bind<'a, bool>) -> Self {
+            Self { common: Common::new(), props: ContainerProps::new().focus(FocusPolicy::NONE.cancel(CancelRule::Close)), open, closed: None }
+        }
+    }
+
+    #[derive(Clone, PartialEq)]
+    pub(super) struct RenameEditScopeStyle;
+
+    impl ComponentStyle for RenameEditScopeStyle {
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    pub(super) struct RenameEditScopeOutput {
+        response: egui::Response,
+        pub(super) closed: Option<CloseReason>,
+    }
+
+    impl Outcome for RenameEditScopeOutput {
+        type Value = NoValue;
+
+        fn response(&self) -> &egui::Response {
+            &self.response
+        }
+    }
+
+    impl Component for RenameEditScope<'_> {
+        const ROLE: Role = Role::None;
+        const PARTS: bool = false;
+        const STOPS: bool = false;
+        const OVERLAYS: bool = false;
+        type Style = RenameEditScopeStyle;
+        type Output = RenameEditScopeOutput;
+
+        fn style(_: &StyleCx<'_>, _: RenameEditScopeStyleKey) -> RenameEditScopeStyle {
+            RenameEditScopeStyle
+        }
+
+        fn sense(&self) -> craft_behavior::Sense {
+            craft_behavior::Sense::empty()
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> RenameEditScopeOutput {
+            RenameEditScopeOutput { response: cx.response.clone(), closed: self.closed }
+        }
+    }
+
+    impl Container for RenameEditScope<'_> {
+        fn open(&mut self) -> Option<BindMut<'_, bool>> {
+            Some(self.open.reborrow())
+        }
+
+        fn closed(&mut self, why: CloseReason) {
+            self.closed.get_or_insert(why);
+        }
+    }
+}
+
+/// Only public component focus, text and enclosing-scope close facts are used; text loss stays cause-neutral.
 fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut String, rect: egui::Rect) -> Option<(bool, bool)> {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
         use craft_ui_widgets::runtime::focus::{self, FocusTarget};
+        use craft_ui_widgets::runtime::overlay::CloseReason;
         let key = egui::Id::unique(RENAME_INPUT);
         let mut owner = ui.data(|data| data.get_temp::<RenameInput>(key)).expect("live rename owner prepared by its row");
+        // Resolve the original field identity before entering its new, non-focusing editing scope.
         let id = ui.scope_id().with(("swatches-rename", owner.document, name, owner.generation));
         let label = format!("{}: {name}", crate::i18n::tr(&app.ui.language, "Name"));
-        let output = craft_ui_widgets::text::TextField::new(label, Bind::bound(text))
-            .id(id)
-            .size(craft_ui_widgets::style::ControlSize::Sm)
-            .limit(None)
-            .select_on_focus()
-            .submits()
-            .show_at(ui, rect);
-        if owner.focus_pending && focus::request(ui.ctx(), FocusTarget::Id(id)) {
+        let scope =
+            rename_edit_scope::RenameEditScope::new(Bind::bound(&mut owner.scope_open)).id(id.with("editing-scope")).show_at(ui, rect, |ui, _| {
+                // The scope has no padding or surface. Both measuring and live bodies use the real row's allocation.
+                ui.set_min_size(rect.size());
+                craft_ui_widgets::text::TextField::new(label.clone(), Bind::bound(&mut *text))
+                    .id(id)
+                    .size(craft_ui_widgets::style::ControlSize::Sm)
+                    .limit(None)
+                    .select_on_focus()
+                    .submits()
+                    .show_at(ui, rect)
+            });
+        let scope_escaped = scope.output.closed == Some(CloseReason::Escape);
+        if owner.focus_pending && scope.inner.is_some() && focus::request(ui.ctx(), FocusTarget::Id(id)) {
             owner.focus_pending = false;
-            ui.data_mut(|data| data.insert_temp(key, owner));
         }
-        // Enter, Tab and Escape have their own public facts even when no changed value exists.
-        return Some((output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some(), output.escaped));
+        ui.data_mut(|data| data.insert_temp(key, owner));
+        // A dirty field takes Cancel itself. Only a clean field leaves the one Escape for its real enclosing scope.
+        return Some(match scope.inner {
+            Some(output) => (
+                output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
+                output.escaped || scope_escaped,
+            ),
+            None => (scope_escaped, scope_escaped),
+        });
     }
     #[cfg(target_arch = "wasm32")]
     let _ = (app, ui, name, text, rect);
@@ -452,7 +547,7 @@ fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::
         let generation_key = egui::Id::unique(RENAME_GENERATION);
         let generation = ui.data(|data| data.get_temp::<u64>(generation_key)).unwrap_or(0).wrapping_add(1);
         ui.data_mut(|data| data.insert_temp(generation_key, generation));
-        RenameInput { document, source: name.clone(), generation, last_frame: frame, focus_pending: true }
+        RenameInput { document, source: name.clone(), generation, last_frame: frame, focus_pending: true, scope_open: true }
     });
     owner.last_frame = frame;
     ui.data_mut(|data| data.insert_temp(owner_key, owner));
