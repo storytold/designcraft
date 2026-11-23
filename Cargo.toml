@@ -12,7 +12,7 @@ repository = "https://github.com/storytold/designcraft"
 
 [workspace.dependencies]
 # Shared Khmer segmentation and proofreading; data is an explicit, hash-verified build input.
-craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "5a8e94506c37dd959763de01cdf5c81a1d7386dc", version = "=0.1.0" }
+craft-khmer = { git = "https://github.com/storytold/craft-libs", rev = "07b4050386cbbd933c19320c2b6700b449498d1c", version = "=0.1.0" }
 # Shared RFC 4648 encoding; document decoding policies remain local.
 craft-mime = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }
 # Shared JSON-RPC 2.0 / MCP server framing and lifecycle.
