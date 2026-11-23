@@ -7,8 +7,6 @@ use super::*;
 #[test]
 fn the_framework_grid_leaves_room_for_the_scroll_bar() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");

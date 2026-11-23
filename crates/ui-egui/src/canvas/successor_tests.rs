@@ -93,8 +93,6 @@ fn right_click(h: &mut Harness<'_, DesignApp>, p: Pos2) {
 
 fn new_document() -> Harness<'static, DesignApp> {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     harness(app)
 }
@@ -102,8 +100,6 @@ fn new_document() -> Harness<'static, DesignApp> {
 /// [`new_document`] at 60 frames a second, the cadence a wheel motion really arrives at.
 fn new_document_60fps() -> Harness<'static, DesignApp> {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     harness_with_step(app, 1.0 / 60.0)
 }
@@ -135,8 +131,6 @@ fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {
 
 fn zoom_app(tool: &str) -> DesignApp {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.select_tool(tool);
     app.ui.rulers = false;
@@ -317,8 +311,6 @@ fn selected(h: &Harness<'_, DesignApp>) -> Vec<u64> {
 #[test]
 fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
     let b = app.run("frame.create", json!({"rect": [150, 150, 300, 300]})).unwrap()["id"].as_u64().unwrap();
@@ -344,8 +336,6 @@ fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
 #[test]
 fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
     app.run("edit.copy", json!({})).unwrap();
@@ -373,8 +363,6 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
 #[test]
 fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
     let b = app.run("frame.create", json!({"rect": [36, 600, 200, 760]})).unwrap()["id"].as_u64().unwrap();
@@ -393,8 +381,6 @@ fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
 #[test]
 fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let a = app.run("frame.create", json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
     app.select_tool("rectangleFrame");
@@ -415,8 +401,6 @@ fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
 #[test]
 fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text"})).unwrap();
     app.select_tool("type");
@@ -443,8 +427,6 @@ fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
 #[test]
 fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
     app.ui.hidden_menu_items.push(crate::menus::menu_key("Object/Arrange", "Bring to Front"));
@@ -462,8 +444,6 @@ fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
 /// row must land within the double-click delay).
 fn typing(text: &str) -> (Harness<'static, DesignApp>, u64) {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let r = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": text})).unwrap();
     let id = r["id"].as_u64().unwrap();
@@ -571,8 +551,6 @@ struct NativeClickFixture {
 /// Build the old and target stories, measure an interior target caret, and leave the old story selected before the click.
 fn native_gui_click_fixture() -> NativeClickFixture {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     let ctx = egui::Context::default();
     let old = typing_app(&mut app, &ctx, "Old story");
     let frame = app.run("frame.create", json!({"rect": [36, 280, 300, 400], "content": "text", "text": "Target story"})).unwrap();
@@ -688,8 +666,6 @@ fn native_gui_second_click_target(f: &mut NativeClickFixture) -> (Value, Pos2, u
 #[allow(deprecated)] // `ImeEvent::Enabled` / `Disabled`: egui no longer sends them, other integrations may.
 fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     let ctx = egui::Context::default();
     let sid = typing_app(&mut app, &ctx, "曲:");
     // At a text caret the IME is allowed, its window on the caret as the canvas draws it.
@@ -748,8 +724,6 @@ fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
 fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
     for key in [egui::Key::Enter, egui::Key::Tab] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.framework_opacity = true;
-        app.framework_installed = true;
         app.run("file.new", json!({})).unwrap();
         let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Hello"})).unwrap();
         app.select_tool("type");

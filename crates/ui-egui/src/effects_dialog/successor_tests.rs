@@ -18,7 +18,7 @@ fn app_with_frame() -> (DesignApp, u64) {
     (app, id)
 }
 
-fn st(h: &mut egui_kittest::Harness<'static, DesignApp>) -> &mut DesignApp {
+fn st<'a>(h: &'a mut egui_kittest::Harness<'static, DesignApp>) -> &'a mut DesignApp {
     h.state_mut()
 }
 

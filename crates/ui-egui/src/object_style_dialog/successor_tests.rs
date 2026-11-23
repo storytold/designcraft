@@ -29,7 +29,7 @@ fn shows_like(h: &egui_kittest::Harness<'static, DesignApp>, prefix: &str) -> bo
     h.query_all_by_label_contains(prefix).next().is_some()
 }
 
-fn st(h: &mut egui_kittest::Harness<'static, DesignApp>) -> &mut DesignApp {
+fn st<'a>(h: &'a mut egui_kittest::Harness<'static, DesignApp>) -> &'a mut DesignApp {
     h.state_mut()
 }
 

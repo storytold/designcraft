@@ -13,8 +13,6 @@ fn story_text(app: &DesignApp, doc: usize) -> String {
 
 fn story_editor_harness(text: &str) -> egui_kittest::Harness<'static, crate::test_window::Window> {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": text, "caret": false})).unwrap();
     app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
@@ -42,8 +40,6 @@ fn depth_marks_wait_for_composition_after_editing() {
         }
     }
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let text = "First line\nSecond line\nThird line\n".repeat(4);
     let r = app.run("frame.create", json!({"rect": [72, 72, 372, 172], "content": "text", "text": text, "caret": false})).unwrap();

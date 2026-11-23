@@ -362,7 +362,7 @@ fn select_table(app: &mut DesignApp) {
 
 /// The table `id` of the active document.
 fn table_of(h: &egui_kittest::Harness<'_, DesignApp>, id: u64) -> designcraft_doc::Table {
-    h.state().session.active().unwrap().doc.stories.values().find_map(|story| story.tables.get(&id)).unwrap().clone()
+    h.state().session.active().unwrap().doc.stories.values().find_map(|story| story.tables.get(&id)).map(|table| (**table).clone()).unwrap()
 }
 
 /// Successor of `cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges`: the framework form shows the

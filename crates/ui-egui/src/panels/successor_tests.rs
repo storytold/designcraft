@@ -64,7 +64,6 @@ fn swatch_select_lists_long_names_inside_their_rows() {
     let long = "C=15 M=100 Y=100 K=0 Long Name";
     app.run("swatch.create", json!({"name": long, "color": {"c": 15, "m": 100, "y": 100, "k": 0}})).unwrap();
     let ctx = egui::Context::default();
-    app.framework_transform = true;
     app.install_framework(&ctx);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     let mut ready = false;
@@ -245,7 +244,6 @@ type StyleState = (DesignApp, bool, u32, Option<String>);
 fn style_select_window<'a>(db: &'a designcraft_fonts::FontDb, family: &'a str) -> egui_kittest::Harness<'a, StyleState> {
     let mut app = kit::app(1, false);
     let ctx = egui::Context::default();
-    app.framework_transform = true;
     app.install_framework(&ctx);
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     let mut ready = false;

@@ -11,8 +11,6 @@ use super::*;
 #[test]
 fn split_note_splits_the_note_at_the_insertion_point_in_its_text() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     let r = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Draft copy."})).unwrap();
     app.run("text.select", json!({"story": r["story"], "anchor": 5, "focus": 5})).unwrap();

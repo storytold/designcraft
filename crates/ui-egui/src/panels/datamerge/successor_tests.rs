@@ -14,8 +14,6 @@ use super::*;
 #[test]
 fn arrangement_combo_is_accessible_and_distinct_from_the_records_combo() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.framework_opacity = true;
-    app.framework_installed = true;
     app.run("file.new", json!({})).unwrap();
     app.run("data.source.select", json!({"bytes": designcraft_engine::cmd::base64_encode(b"Name\nAda\nGrace\n"), "name": "people.csv"})).unwrap();
     app.run("data.options", json!({"perPage": "multiple"})).unwrap();
