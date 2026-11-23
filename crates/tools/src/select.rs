@@ -567,11 +567,10 @@ fn fitting_params(cx: &ToolContext, handle: usize) -> Option<(&'static str, Opti
     let mut ref_pt: Option<usize> = None;
     let mut ref_mixed = false;
     let mut seen_degenerate = false;
-    let mut count = 0usize;
-    for id in &cx.selection.items {
-        let Some(it) = cx.doc.item(*id) else { continue };
-        count += 1;
-        let Some((ax, rf)) = cx.item_canvas_xf(*id).and_then(|spread_xf| fitting_item_params(spread_xf * it.xf, handle, dir)) else {
+    let selected = cx.selected_with_canvas_xf();
+    let count = selected.len();
+    for (it, spread_xf) in selected {
+        let Some((ax, rf)) = fitting_item_params(spread_xf * it.xf, handle, dir) else {
             seen_degenerate = true;
             ref_mixed = true;
             continue;
