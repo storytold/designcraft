@@ -7,70 +7,12 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{DesignApp, icons};
 
-#[derive(Clone, Copy)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(craft_ui::contract::MemoProps))]
-enum FooterAction {
-    Group,
-    New,
-    Delete,
-}
-
-impl FooterAction {
-    fn key(self) -> &'static str {
-        match self {
-            Self::Group => "new-group",
-            Self::New => "new-swatch",
-            Self::Delete => "delete-swatch",
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl craft_ui_widgets::primitives::Glyph for FooterAction {
-    fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
-        match self {
-            Self::Group => {
-                // The existing folder artwork, not a replacement symbol or icon provider.
-                let f = egui::Rect::from_center_size(rect.center(), vec2(14.0, 10.0));
-                painter.rect_stroke(f, 1.5, egui::Stroke::new(1.2, color), egui::StrokeKind::Inside);
-                painter.line_segment([f.left_top() + vec2(1.0, 3.0), f.right_top() + vec2(-1.0, 3.0)], egui::Stroke::new(1.0, color));
-            }
-            Self::New => icons::paint(painter, rect, "plus", color),
-            Self::Delete => icons::paint(painter, rect, "trash", color),
-        }
-    }
-}
-
-fn footer_action(
-    app: &DesignApp,
-    ui: &mut egui::Ui,
-    action: FooterAction,
-    target: Option<&str>,
-    label: &str,
-    enabled: bool,
-    legacy: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) -> bool {
+pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::IconSpec;
-
-        let identity = app.session.active().map(|st| (st.uid, st.identity_epoch));
-        return IconButton::new(IconSpec::glyph(&action))
-            .id_salt(("swatches-footer", identity, action.key(), target))
-            .label(label.to_owned())
-            .tooltip(label.to_owned())
-            .enabled(enabled)
-            .show(ui)
-            .clicked();
+        framework::show(app, ui);
+        return;
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, action.key(), target, label, enabled);
-    legacy(ui).clicked()
-}
-
-pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     prepare_rename(app, ui);
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
@@ -161,20 +103,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED))).filter(|n: &String| doc.swatch(n).is_some_and(|w| !w.locked));
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let del = footer_action(
-                app,
-                ui,
-                FooterAction::Delete,
-                picked.as_deref(),
-                crate::i18n::tr(&app.ui.language, "Delete Swatch"),
-                picked.is_some(),
-                |ui| {
-                    ui.add_enabled_ui(picked.is_some(), |ui| {
-                        icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Swatch"))
-                    })
-                    .inner
-                },
-            );
+            let del = ui
+                .add_enabled_ui(picked.is_some(), |ui| icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete Swatch")))
+                .inner
+                .clicked();
             if del
                 && let Some(name) = &picked
                 && app.run("swatch.delete", json!({"name": name})).is_ok()
@@ -183,21 +115,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             }
             // The selection's fill or stroke (whichever is in front) becomes a swatch; with nothing
             // selected, a new colour.
-            if footer_action(
-                app,
-                ui,
-                FooterAction::New,
-                Some(if app.ui.stroke_front { "stroke" } else { "fill" }),
-                crate::i18n::tr(&app.ui.language, "New Swatch"),
-                true,
-                |ui| icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "New Swatch")),
-            ) {
+            if icons::button(ui, "plus", 20.0, false, crate::i18n::tr(&app.ui.language, "New Swatch")).clicked() {
                 let target = if app.ui.stroke_front { "stroke" } else { "fill" };
                 let _ = app.run("swatch.new", json!({"target": target}));
             }
-            if footer_action(app, ui, FooterAction::Group, None, crate::i18n::tr(&app.ui.language, "New Color Group"), true, |ui| {
-                folder_button(ui, crate::i18n::tr(&app.ui.language, "New Color Group"))
-            }) {
+            if folder_button(ui, crate::i18n::tr(&app.ui.language, "New Color Group")).clicked() {
                 let _ = app.run("swatch.newColorGroup", json!({}));
             }
             crate::menus::menu_button(ui, "☰", |ui| {
@@ -356,14 +278,10 @@ fn folder_button(ui: &mut egui::Ui, tip: &str) -> egui::Response {
 struct RenameInput {
     document: (u64, u64),
     source: String,
-    generation: u64,
     last_frame: u64,
-    focus_pending: bool,
-    scope_open: bool,
 }
 
 const RENAME_INPUT: &str = "swatches_rename_input";
-const RENAME_GENERATION: &str = "swatches_rename_generation";
 
 fn retire_rename(ui: &egui::Ui) {
     ui.data_mut(|data| {
@@ -406,129 +324,6 @@ fn prepare_rename(app: &DesignApp, ui: &egui::Ui) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-mod rename_edit_scope {
-    use craft_behavior::{CancelRule, Metrics};
-    use craft_ui_widgets::contract::{Bind, BindMut, Common, Component, Container, ContainerProps, Cx, NoValue, Outcome, Role};
-    use craft_ui_widgets::runtime::focus::FocusPolicy;
-    use craft_ui_widgets::runtime::overlay::CloseReason;
-    use craft_ui_widgets::style::{ComponentStyle, StyleCx};
-
-    /// The inline editor owns a real closable scope, not a popup or a new text-field Escape policy.
-    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
-    #[component(container)]
-    pub(super) struct RenameEditScope<'a> {
-        #[common]
-        common: Common,
-        #[container]
-        props: ContainerProps,
-        open: Bind<'a, bool>,
-        closed: Option<CloseReason>,
-    }
-
-    impl<'a> RenameEditScope<'a> {
-        pub(super) fn new(open: Bind<'a, bool>) -> Self {
-            Self { common: Common::new(), props: ContainerProps::new().focus(FocusPolicy::NONE.cancel(CancelRule::Close)), open, closed: None }
-        }
-    }
-
-    #[derive(Clone, PartialEq)]
-    pub(super) struct RenameEditScopeStyle;
-
-    impl ComponentStyle for RenameEditScopeStyle {
-        fn metrics(&self) -> Metrics {
-            Metrics::new()
-        }
-    }
-
-    pub(super) struct RenameEditScopeOutput {
-        response: egui::Response,
-        pub(super) closed: Option<CloseReason>,
-    }
-
-    impl Outcome for RenameEditScopeOutput {
-        type Value = NoValue;
-
-        fn response(&self) -> &egui::Response {
-            &self.response
-        }
-    }
-
-    impl Component for RenameEditScope<'_> {
-        const ROLE: Role = Role::None;
-        const PARTS: bool = false;
-        const STOPS: bool = false;
-        const OVERLAYS: bool = false;
-        type Style = RenameEditScopeStyle;
-        type Output = RenameEditScopeOutput;
-
-        fn style(_: &StyleCx<'_>, _: RenameEditScopeStyleKey) -> RenameEditScopeStyle {
-            RenameEditScopeStyle
-        }
-
-        fn sense(&self) -> craft_behavior::Sense {
-            craft_behavior::Sense::empty()
-        }
-
-        fn finish(self, cx: Cx<'_, Self>) -> RenameEditScopeOutput {
-            RenameEditScopeOutput { response: cx.response.clone(), closed: self.closed }
-        }
-    }
-
-    impl Container for RenameEditScope<'_> {
-        fn open(&mut self) -> Option<BindMut<'_, bool>> {
-            Some(self.open.reborrow())
-        }
-
-        fn closed(&mut self, why: CloseReason) {
-            self.closed.get_or_insert(why);
-        }
-    }
-}
-
-/// Only public component focus, text and enclosing-scope close facts are used; text loss stays cause-neutral.
-fn sdk_rename_field(app: &DesignApp, ui: &mut egui::Ui, name: &str, text: &mut String, rect: egui::Rect) -> Option<(bool, bool)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
-        use craft_ui_widgets::runtime::focus::{self, FocusTarget};
-        use craft_ui_widgets::runtime::overlay::CloseReason;
-        let key = egui::Id::unique(RENAME_INPUT);
-        let mut owner = ui.data(|data| data.get_temp::<RenameInput>(key)).expect("live rename owner prepared by its row");
-        // Resolve the original field identity before entering its new, non-focusing editing scope.
-        let id = ui.scope_id().with(("swatches-rename", owner.document, name, owner.generation));
-        let label = format!("{}: {name}", crate::i18n::tr(&app.ui.language, "Name"));
-        let scope =
-            rename_edit_scope::RenameEditScope::new(Bind::bound(&mut owner.scope_open)).id(id.with("editing-scope")).show_at(ui, rect, |ui, _| {
-                // The scope has no padding or surface. Both measuring and live bodies use the real row's allocation.
-                ui.set_min_size(rect.size());
-                craft_ui_widgets::text::TextField::new(label.clone(), Bind::bound(&mut *text))
-                    .id(id)
-                    .size(craft_theme::ControlSize::Sm)
-                    .limit(None)
-                    .select_on_focus()
-                    .submits()
-                    .show_at(ui, rect)
-            });
-        let scope_escaped = scope.output.closed == Some(CloseReason::Escape);
-        if owner.focus_pending && scope.inner.is_some() && focus::request(ui.ctx(), FocusTarget::Id(id)) {
-            owner.focus_pending = false;
-        }
-        ui.data_mut(|data| data.insert_temp(key, owner));
-        // A dirty field takes Cancel itself. Only a clean field leaves the one Escape for its real enclosing scope.
-        return Some(match scope.inner {
-            Some(output) => (
-                output.text_lost_focus || output.submitted || output.escaped || output.left_by_tab.is_some() || scope_escaped,
-                output.escaped || scope_escaped,
-            ),
-            None => (scope_escaped, scope_escaped),
-        });
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, ui, name, text, rect);
-    None
-}
-
 /// The name field of a swatch being renamed in place, over `rect`; false when `sw` isn't. Enter or
 /// a click elsewhere renames it (`swatch.options`), Escape leaves it as it was.
 fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::swatch::Swatch, rect: egui::Rect) -> bool {
@@ -544,32 +339,24 @@ fn rename_field(app: &mut DesignApp, ui: &mut egui::Ui, sw: &designcraft_color::
     let document = (st.uid, st.identity_epoch);
     let owner_key = egui::Id::unique(RENAME_INPUT);
     let frame = ui.ctx().cumulative_frame_nr();
-    let mut owner = ui.data(|data| data.get_temp::<RenameInput>(owner_key)).unwrap_or_else(|| {
-        let generation_key = egui::Id::unique(RENAME_GENERATION);
-        let generation = ui.data(|data| data.get_temp::<u64>(generation_key)).unwrap_or(0).wrapping_add(1);
-        ui.data_mut(|data| data.insert_temp(generation_key, generation));
-        RenameInput { document, source: name.clone(), generation, last_frame: frame, focus_pending: true, scope_open: true }
-    });
+    let mut owner =
+        ui.data(|data| data.get_temp::<RenameInput>(owner_key)).unwrap_or_else(|| RenameInput { document, source: name.clone(), last_frame: frame });
     owner.last_frame = frame;
     ui.data_mut(|data| data.insert_temp(owner_key, owner));
-    let (finished, escaped) = if let Some(facts) = sdk_rename_field(app, ui, &name, &mut text, rect) {
-        facts
-    } else {
-        let id = egui::Id::unique(("swatch_rename", &sw.name));
-        let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
-        let resp = ui.put(rect, edit);
-        if !resp.has_focus() && !resp.lost_focus() {
-            // The field opens with the name selected.
-            resp.request_focus();
-            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
-                state.store(ui.ctx(), id);
-            }
+    let id = egui::Id::unique(("swatch_rename", &sw.name));
+    let edit = egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(12.5)).margin(vec2(2.0, 1.0));
+    let resp = ui.put(rect, edit);
+    if !resp.has_focus() && !resp.lost_focus() {
+        // The field opens with the name selected.
+        resp.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+            state.store(ui.ctx(), id);
         }
-        (resp.lost_focus(), ui.input(|i| i.key_pressed(egui::Key::Escape)))
-    };
+    }
+    let (finished, escaped) = (resp.lost_focus(), ui.input(|i| i.key_pressed(egui::Key::Escape)));
     if finished {
         ui.data_mut(|d| {
             d.remove_temp::<(String, String)>(key);
@@ -879,7 +666,7 @@ fn swatch_row(
 }
 
 /// Colour models of the Color panel (its panel menu: Lab, CMYK, RGB).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ColorMode {
     Cmyk,
     Rgb,
@@ -889,6 +676,11 @@ pub enum ColorMode {
 /// Color panel: fill/stroke proxy, sliders in the chosen model (or a tint slider for a named
 /// swatch), the spectrum ramp, Add to Swatches. Edits apply unnamed colours (`object.color`).
 pub fn color_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::color_panel(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let target = super::color_target_or_defaults(app);
     let Some((fill, fill_tint, stroke_sw, stroke_tint)) = target else {
@@ -1463,6 +1255,11 @@ fn set_stop(stops: &mut [serde_json::Value], i: usize, key: &str, v: serde_json:
 /// stop for its colour). Until the fill is
 /// a gradient the ramp shows the default White → Black, and using it gives the fill a gradient.
 pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::gradient_panel(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     let lang = app.ui.language.clone();
     let Some(st) = app.session.active() else { return };
@@ -1730,6 +1527,1565 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             o.insert("target".to_string(), json!(if stroke_front { "stroke" } else { "fill" }));
         }
         let _ = app.run("object.gradient", p);
+    }
+}
+
+/// The Swatches, Color and Gradient panels on the craft UI framework, shown while it is installed
+/// (`DesignApp::framework_installed`): the swatch list and its folders are one framework `List` (a tree, one pick,
+/// rename in place, drags to the Gradient panel's ramp, drops of the Gradient panel's thumbnail, the row menus), the
+/// header, footer and panel menu are framework buttons, fields and menus, and the colour mode and gradient type are
+/// `Select`s. The ramp of the Gradient panel, its thumbnail and the channel track faces are app-defined components.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{
+        ColorMode, GRAD_SEL, GradientDrag, PICKED, RampDrag, RampSel, RowMarks, RowMode, SwatchDrag, cmyk_ramp, color_json, color32, live_drag,
+        paint_color_type, paint_mode, paint_not_editable, picker_fields, ramp_release, row_marks, set_stop, set_stop_color, set_tint, stops_json,
+        thumbnail,
+    };
+    use crate::framework_transform::Artwork;
+    use crate::i18n::tr;
+    use crate::theme::Tokens;
+    use crate::{DesignApp, icons};
+    use craft_behavior::{Axis, DisplayOrder, EditEvent, ItemSource, Metrics, NumberCodec, PartKey, PointerButton, PressPhase, Selection, Sense};
+    use craft_color_ui::ui::{ColorPopover, ColorRamp, PickedColor, RampKind, RampPick};
+    use craft_theme::Srgba;
+    use craft_ui_widgets::buttons::{Button, IconButton, ToggleButton};
+    use craft_ui_widgets::contract::{
+        ActivateOn, Bind, CollectionEvent, Common, Component, Cx, DropKind, DropOperation, DropPlace, Entry, Input, ListDrag, MeasureCx, NoValue,
+        Outcome, PaintUi, PartsCx, Pointer as _, PopupKind, Props as _, Remember as _, Role, SelectMode, Show as _, ShowCollection as _,
+        ShowContainer as _, Sizing, Trigger,
+    };
+    use craft_ui_widgets::display::{Divider, Icon, Shade, Text};
+    use craft_ui_widgets::layout_components::Row;
+    use craft_ui_widgets::list::{List, ListRow};
+    use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec, PaintShape, StrokeWidth};
+    use craft_ui_widgets::runtime::drag::{DragPreview, DropMark, DropTarget};
+    use craft_ui_widgets::runtime::env::{Env, Label, UnitKind};
+    use craft_ui_widgets::runtime::focus::KeyUse;
+    use craft_ui_widgets::style::{ComponentStyle, DataColor, StyleColor, StyleCx, UiTokens};
+    use craft_ui_widgets::text::NumberField;
+    use craft_ui_widgets::value_drag::{Slider, SliderThumb, TrackFace};
+    use designcraft_color::{ColorType, SwatchValue};
+    use egui::{Color32, CornerRadius, Pos2, Rect, Ui, Vec2, pos2, vec2};
+    use serde_json::{Value, json};
+    use std::borrow::Cow;
+
+    /// The footer's three actions, drawn with the app's own artwork.
+    #[derive(Clone, Copy, craft_ui::contract::MemoProps)]
+    enum FooterAction {
+        Group,
+        New,
+        Delete,
+    }
+
+    impl FooterAction {
+        fn key(self) -> &'static str {
+            match self {
+                Self::Group => "new-group",
+                Self::New => "new-swatch",
+                Self::Delete => "delete-swatch",
+            }
+        }
+    }
+
+    impl Glyph for FooterAction {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: Color32, _mirrored: bool) {
+            match self {
+                Self::Group => folder(painter, rect, color),
+                Self::New => icons::paint(painter, rect, "plus", color),
+                Self::Delete => icons::paint(painter, rect, "trash", color),
+            }
+        }
+    }
+
+    /// The folder the colour groups and New Color Group show: the existing artwork, not an icon provider's.
+    fn folder(painter: &egui::Painter, rect: Rect, color: Color32) {
+        let f = Rect::from_center_size(rect.center(), vec2(14.0, 10.0));
+        painter.rect_stroke(f, 1.5, egui::Stroke::new(1.2, color), egui::StrokeKind::Inside);
+        painter.line_segment([f.left_top() + vec2(1.0, 3.0), f.right_top() + vec2(-1.0, 3.0)], egui::Stroke::new(1.0, color));
+    }
+
+    /// A colour group's folder.
+    static FOLDER: FooterAction = FooterAction::Group;
+
+    /// The marks at the end of a swatch row, as the native columns draw them; `Blank` keeps an empty column's room.
+    #[derive(Clone, Copy, craft_ui::contract::MemoProps)]
+    enum Mark {
+        NotEditable,
+        Process,
+        Spot,
+        Cmyk,
+        Rgb,
+        Gray,
+        NoColor,
+        Registration,
+        Blank,
+    }
+
+    impl Glyph for Mark {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: Color32, _mirrored: bool) {
+            match self {
+                Mark::NotEditable => paint_not_editable(painter, rect, color),
+                Mark::Process => paint_color_type(painter, rect, ColorType::Process, color),
+                Mark::Spot => paint_color_type(painter, rect, ColorType::Spot, color),
+                Mark::Cmyk => paint_mode(painter, rect, RowMode::Cmyk, color),
+                Mark::Rgb => paint_mode(painter, rect, RowMode::Rgb, color),
+                Mark::Gray => paint_mode(painter, rect, RowMode::Gray, color),
+                Mark::NoColor => paint_mode(painter, rect, RowMode::None, color),
+                Mark::Registration => paint_mode(painter, rect, RowMode::Registration, color),
+                Mark::Blank => {}
+            }
+        }
+    }
+
+    static NOT_EDITABLE: Mark = Mark::NotEditable;
+    static PROCESS: Mark = Mark::Process;
+    static SPOT: Mark = Mark::Spot;
+    static CMYK: Mark = Mark::Cmyk;
+    static RGB: Mark = Mark::Rgb;
+    static GRAY: Mark = Mark::Gray;
+    static NO_COLOR: Mark = Mark::NoColor;
+    static REGISTRATION: Mark = Mark::Registration;
+    static BLANK: Mark = Mark::Blank;
+
+    /// The Swatches panel's Fill/Stroke proxy: the stroke as a frame of its colour, the one in front drawn last.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct Proxy {
+        fill: Option<Color32>,
+        fill_gradient: Option<(Color32, Color32)>,
+        stroke: Option<Color32>,
+        stroke_gradient: Option<(Color32, Color32)>,
+        stroke_front: bool,
+    }
+
+    impl Glyph for Proxy {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, _color: Color32, _mirrored: bool) {
+            let t = Tokens::get(painter.ctx());
+            // The native proxy's 27-point drawing, scaled to the button's icon.
+            let k = rect.width().min(rect.height()) / 27.0;
+            let at = |x: f32, y: f32| Rect::from_min_size(rect.min + vec2(x, y) * k, Vec2::splat(16.0 * k));
+            let (fill_r, stroke_r) = (at(1.0, 2.0), at(10.0, 10.0));
+            let paint = |stroke: bool| {
+                if stroke {
+                    crate::widgets::paint_chip(painter, stroke_r, self.stroke, self.stroke_gradient);
+                    painter.rect_filled(stroke_r.shrink(4.0 * k), 0.0, t.panel);
+                    painter.rect_stroke(stroke_r.shrink(4.0 * k), 0.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Outside);
+                    painter.rect_stroke(stroke_r, 0.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Outside);
+                } else {
+                    crate::widgets::paint_chip(painter, fill_r, self.fill, self.fill_gradient);
+                    painter.rect_stroke(fill_r, 0.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Outside);
+                }
+            };
+            paint(!self.stroke_front);
+            paint(self.stroke_front);
+        }
+    }
+
+    /// A Color panel proxy chip: the swatch's colour or gradient, ringed in the accent while it is in front.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct ColorChip {
+        color: Option<Color32>,
+        gradient: Option<(Color32, Color32)>,
+        front: bool,
+    }
+
+    impl Glyph for ColorChip {
+        fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, _color: Color32, _mirrored: bool) {
+            crate::widgets::paint_chip(painter, rect.shrink(2.0), self.color, self.gradient);
+            if self.front {
+                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.5, Tokens::get(painter.ctx()).accent), egui::StrokeKind::Inside);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Swatches panel
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// A row of the swatch list: a swatch (top level, or in the colour group `group`) or a colour group's folder.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    enum RowKey {
+        Swatch { group: Option<String>, name: String },
+        Group(String),
+    }
+
+    impl RowKey {
+        fn swatch(&self) -> Option<&str> {
+            match self {
+                RowKey::Swatch { name, .. } => Some(name),
+                RowKey::Group(_) => None,
+            }
+        }
+
+        /// The row's depth in the tree: a colour group's swatches stand under its folder.
+        fn depth(&self) -> usize {
+            match self {
+                RowKey::Swatch { group: Some(_), .. } => 1,
+                RowKey::Swatch { group: None, .. } | RowKey::Group(_) => 0,
+            }
+        }
+    }
+
+    /// What a row shows.
+    enum RowKind {
+        Swatch { chip: (Option<Color32>, Option<(Color32, Color32)>), marks: RowMarks, note: String },
+        Group { open: bool },
+    }
+
+    struct RowData {
+        key: RowKey,
+        kind: RowKind,
+    }
+
+    /// The rows in display order: the swatches outside colour groups, then each group and, while it is open, its
+    /// swatches.
+    struct Rows(Vec<RowData>);
+
+    impl DisplayOrder<RowKey> for Rows {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        fn key(&self, at: usize) -> RowKey {
+            self.0[at].key.clone()
+        }
+
+        fn index_of(&self, key: &RowKey) -> Option<usize> {
+            self.0.iter().position(|row| row.key == *key)
+        }
+
+        fn depth(&self, at: usize) -> usize {
+            self.0.get(at).map_or(0, |row| row.key.depth())
+        }
+
+        fn has_children(&self, at: usize) -> bool {
+            self.0.get(at).is_some_and(|row| matches!(row.kind, RowKind::Group { .. }))
+        }
+
+        fn open(&self, at: usize) -> bool {
+            self.0.get(at).is_some_and(|row| matches!(row.kind, RowKind::Group { open: true }))
+        }
+
+        fn text(&self, at: usize) -> Option<Cow<'_, str>> {
+            self.0.get(at).map(|row| match &row.key {
+                RowKey::Swatch { name, .. } => Cow::Borrowed(name.as_str()),
+                RowKey::Group(name) => Cow::Borrowed(name.as_str()),
+            })
+        }
+    }
+
+    impl ItemSource<RowKey> for Rows {}
+
+    impl Rows {
+        /// The first row of the swatch `name`.
+        fn of_swatch(&self, name: &str) -> Option<RowKey> {
+            self.0.iter().find(|row| row.key.swatch() == Some(name)).map(|row| row.key.clone())
+        }
+    }
+
+    /// The temp-data key of a colour group's open state; the native list keeps the same.
+    fn open_id(group: &str) -> egui::Id {
+        egui::Id::unique(("color_group_open", group))
+    }
+
+    fn rows(ui: &Ui, lang: &str, doc: &designcraft_doc::Document) -> Rows {
+        let grouped: std::collections::HashSet<&str> = doc.color_groups.iter().flat_map(|g| g.swatches.iter().map(String::as_str)).collect();
+        let mut by_name: std::collections::HashMap<&str, &designcraft_color::swatch::Swatch> = std::collections::HashMap::new();
+        for w in &doc.swatches {
+            by_name.entry(w.name.as_str()).or_insert(w);
+        }
+        let swatch = |sw: &designcraft_color::swatch::Swatch, group: Option<&str>| {
+            let note = match &sw.value {
+                SwatchValue::Gradient { .. } => tr(lang, "Gradient").to_owned(),
+                SwatchValue::Tint { tint, .. } => format!("{:.0}%", tint * 100.0),
+                _ => String::new(),
+            };
+            RowData {
+                key: RowKey::Swatch { group: group.map(str::to_owned), name: sw.name.clone() },
+                kind: RowKind::Swatch { chip: crate::widgets::swatch_colors(doc, &sw.name, 1.0), marks: row_marks(sw), note },
+            }
+        };
+        let mut out: Vec<RowData> =
+            doc.swatches.iter().filter(|w| !w.hidden && !grouped.contains(w.name.as_str())).map(|sw| swatch(sw, None)).collect();
+        for g in &doc.color_groups {
+            let open = ui.data(|d| d.get_temp::<bool>(open_id(&g.name))).unwrap_or(true);
+            out.push(RowData { key: RowKey::Group(g.name.clone()), kind: RowKind::Group { open } });
+            if open {
+                out.extend(g.swatches.iter().filter_map(|n| by_name.get(n.as_str()).copied()).map(|sw| swatch(sw, Some(&g.name))));
+            }
+        }
+        Rows(out)
+    }
+
+    /// The marks at the end of a swatch row, outermost first: the colour mode, the colour type and whether it can be
+    /// edited. A row with any mark keeps every column, so the marks stand in line from row to row.
+    fn with_marks<'r>(mut row: ListRow<'r>, lang: &str, marks: RowMarks) -> ListRow<'r> {
+        if marks.mode.is_none() && marks.kind.is_none() && !marks.not_editable {
+            return row;
+        }
+        let blank = || Icon::new(IconSpec::glyph(&BLANK));
+        row = match marks.mode {
+            Some(RowMode::Cmyk) => row.trailing_icon(IconSpec::glyph(&CMYK), tr(lang, "CMYK").to_owned()),
+            Some(RowMode::Rgb) => row.trailing_icon(IconSpec::glyph(&RGB), tr(lang, "RGB").to_owned()),
+            Some(RowMode::Gray) => row.trailing_icon(IconSpec::glyph(&GRAY), tr(lang, "Gray").to_owned()),
+            Some(RowMode::None) => row.trailing_icon(IconSpec::glyph(&NO_COLOR), tr(lang, "None").to_owned()),
+            Some(RowMode::Registration) => row.trailing_icon(IconSpec::glyph(&REGISTRATION), tr(lang, "Registration").to_owned()),
+            None => row.trailing_space(blank()),
+        };
+        row = match marks.kind {
+            Some(ColorType::Process) => row.trailing_icon(IconSpec::glyph(&PROCESS), tr(lang, "Process").to_owned()),
+            Some(ColorType::Spot) => row.trailing_icon(IconSpec::glyph(&SPOT), tr(lang, "Spot").to_owned()),
+            None => row.trailing_space(blank()),
+        };
+        if marks.not_editable {
+            row.trailing_icon(IconSpec::glyph(&NOT_EDITABLE), tr(lang, "Cannot be edited").to_owned())
+        } else {
+            row.trailing_space(blank())
+        }
+    }
+
+    /// What a row's menu or the panel menu asks for, run after the menus are shown.
+    enum Action {
+        Run(&'static str, Value),
+        ApplyStroke(String),
+        ColorTheme,
+    }
+
+    fn run_actions(app: &mut DesignApp, actions: Vec<Action>) {
+        for action in actions {
+            match action {
+                Action::Run(id, params) => {
+                    let _ = app.run(id, params);
+                }
+                Action::ApplyStroke(name) => {
+                    let _ = crate::panels::apply_swatch(app, true, &name, None);
+                }
+                Action::ColorTheme => crate::menus::activate(app, "swatch.addColorTheme", &Value::Null),
+            }
+        }
+    }
+
+    /// The Swatches panel: the proxy, Formatting Affects and Tint row, the swatch list and the footer.
+    pub(super) fn show(app: &mut DesignApp, ui: &mut Ui) {
+        let Some(st) = app.session.active() else { return };
+        let doc = st.doc.clone();
+        let identity = (st.uid, st.identity_epoch);
+        let lang = app.ui.language.clone();
+        let target = crate::panels::color_target_or_defaults(app);
+        header(app, ui, &doc, target.as_ref());
+        let fill_cur = target.map(|(fill, _, stroke, _)| if app.ui.stroke_front { stroke } else { fill });
+        let rows = rows(ui, &lang, &doc);
+        let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED)));
+        let mut selection = picked.as_deref().and_then(|name| rows.of_swatch(name)).map_or_else(Selection::default, Selection::single);
+        let before = selection.clone();
+        let renamable = |key: &RowKey| key.swatch().and_then(|name| doc.swatch(name)).is_some_and(|sw| !sw.locked);
+        let list_id = ui.id().with(("swatches-list", identity));
+        let out = List::<RowKey>::new(tr(&lang, "Swatches").to_owned())
+            .id(list_id)
+            .select(SelectMode::Single)
+            .activate(ActivateOn::Click)
+            .tree(true)
+            .natural_height(true)
+            .sizing(Sizing::FillWidth)
+            .rename(true)
+            .slow_click_rename(true)
+            .can_rename(renamable)
+            .current(fill_cur.as_deref().and_then(|name| rows.of_swatch(name)))
+            .drag_payload(|drag: &ListDrag<RowKey>| drag.grabbed.swatch().map(|name| SwatchDrag(name.to_owned())))
+            .takes_drop(DropKind::new::<GradientDrag>(DropPlace::Onto, |_, _| true))
+            .takes_drop(DropKind::new::<GradientDrag>(DropPlace::Between, |_, _| true))
+            .selection(Bind::bound(&mut selection))
+            .show_items(ui, &rows, &mut |_, icx| {
+                let Some(data) = rows.0.get(icx.at) else { return ListRow::spacer() };
+                let name = match &data.key {
+                    RowKey::Swatch { name, .. } | RowKey::Group(name) => name.clone(),
+                };
+                let row = ListRow::new(name).depth(data.key.depth()).state(icx.row.clone());
+                match &data.kind {
+                    RowKind::Swatch { chip: (color, gradient), marks, note } => {
+                        let (color, gradient) = (*color, *gradient);
+                        let row = row.lead_painter(move |cx: &ContentPainterCx<'_>, slot: Rect| {
+                            let well = Rect::from_center_size(slot.center(), Vec2::splat(slot.width().min(slot.height())));
+                            crate::widgets::paint_chip(&cx.painter, well, color, gradient);
+                        });
+                        let row = if note.is_empty() { row } else { row.trailing(note.clone()) };
+                        with_marks(row, &lang, *marks)
+                    }
+                    RowKind::Group { open } => row.group(*open).icon(IconSpec::glyph(&FOLDER)),
+                }
+            });
+        let menu_id = list_id.with("row-menu");
+        let mut actions = Vec::new();
+        for event in &out.events {
+            match event {
+                CollectionEvent::Activate(RowKey::Group(name)) => {
+                    // A double click's first click folded the group: it stays as it was.
+                    if out.activation_clicks >= 2 {
+                        actions.push(Action::Run("app.colorGroupOptionsDialog", json!({"name": name})));
+                    } else {
+                        let open = ui.data(|d| d.get_temp::<bool>(open_id(name))).unwrap_or(true);
+                        ui.data_mut(|d| d.insert_temp(open_id(name), !open));
+                    }
+                }
+                CollectionEvent::Activate(RowKey::Swatch { name, .. }) => {
+                    if out.activation_clicks >= 2 {
+                        // Double-click: Swatch Options (the first click has applied the swatch).
+                        actions.push(Action::Run("app.swatchOptionsDialog", json!({"name": name})));
+                    } else {
+                        ui.data_mut(|d| d.insert_temp(egui::Id::unique(PICKED), name.clone()));
+                        let stroke = app.ui.stroke_front;
+                        let _ = crate::panels::apply_swatch(app, stroke, name, None);
+                    }
+                }
+                CollectionEvent::Open(change) => {
+                    let groups: Vec<&str> = if change.all { doc.color_groups.iter().map(|g| g.name.as_str()).collect() } else { Vec::new() };
+                    if let RowKey::Group(name) = &change.key {
+                        ui.data_mut(|d| d.insert_temp(open_id(name), change.open));
+                    }
+                    for name in groups {
+                        ui.data_mut(|d| d.insert_temp(open_id(name), change.open));
+                    }
+                }
+                CollectionEvent::Rename(EditEvent::Commit { after, .. }) => rename(app, ui, after.key.swatch(), &after.name),
+                CollectionEvent::ContextMenu(request) => ui.data_mut(|d| d.insert_temp(menu_id, request.key.clone())),
+                CollectionEvent::Dropped { payload, .. } => {
+                    // An unnamed gradient becomes "New Gradient Swatch"; one that is a swatch already stays one.
+                    if let Some(g) = payload.get::<GradientDrag>()
+                        && doc.swatch(&g.0).is_some_and(|w| w.hidden)
+                    {
+                        actions.push(Action::Run("swatch.new", json!({"swatch": g.0})));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A pick by the keys (the arrows move the pick) is the swatch Delete Swatch removes; a pick that ended on a
+        // folder leaves the swatch picked before.
+        if selection != before
+            && let Some(name) = selection.items.first().and_then(RowKey::swatch)
+        {
+            ui.data_mut(|d| d.insert_temp(egui::Id::unique(PICKED), name.to_owned()));
+        }
+        if let Some(key) = ui.data(|d| d.get_temp::<RowKey>(menu_id)) {
+            let shown = Menu::context(tr(&lang, "Swatches").to_owned(), &out.response)
+                .id(menu_id.with("menu"))
+                .show(ui, |ui, _| row_menu(ui, &lang, &doc, &key));
+            actions.extend(shown.inner.flatten());
+            if shown.output.closed.is_some() {
+                ui.data_mut(|d| d.remove_temp::<RowKey>(menu_id));
+            }
+        }
+        run_actions(app, actions);
+        ui.add_space(6.0);
+        footer(app, ui, &doc, identity, fill_cur.as_deref());
+    }
+
+    /// A rename in place committed `to` for the swatch `from`: blank or unchanged text renames nothing; a refusal (a
+    /// name in use) goes to the status bar.
+    fn rename(app: &mut DesignApp, ui: &Ui, from: Option<&str>, to: &str) {
+        let Some(from) = from else { return };
+        let to = to.trim();
+        if to.is_empty() || to == from {
+            return;
+        }
+        match app.run("swatch.options", json!({"name": from, "to": to})) {
+            // Still picked under its new name, unless the click that ended the rename picked another swatch.
+            Ok(_) => ui.data_mut(|d| {
+                if d.get_temp::<String>(egui::Id::unique(PICKED)).is_none_or(|p| p == from) {
+                    d.insert_temp(egui::Id::unique(PICKED), to.to_owned());
+                }
+            }),
+            Err(e) => app.status_error("Swatch Options", e),
+        }
+    }
+
+    /// A row's menu: a swatch's (options, apply to the stroke, its colour group, delete) or a colour group's.
+    fn row_menu(ui: &mut Ui, lang: &str, doc: &designcraft_doc::Document, key: &RowKey) -> Option<Action> {
+        let item = |ui: &mut Ui, label: &str| MenuItem::new(tr(lang, label).to_owned()).id_salt(label.to_owned()).show(ui).ran;
+        match key {
+            RowKey::Group(name) => {
+                if item(ui, "Color Group Options…") {
+                    return Some(Action::Run("app.colorGroupOptionsDialog", json!({"name": name})));
+                }
+                if item(ui, "Ungroup Color Group") {
+                    return Some(Action::Run("swatch.ungroupColorGroup", json!({"name": name})));
+                }
+                None
+            }
+            RowKey::Swatch { name, .. } => {
+                let mut picked = None;
+                if item(ui, "Swatch Options…") {
+                    picked = Some(Action::Run("app.swatchOptionsDialog", json!({"name": name})));
+                }
+                if item(ui, "Apply to Stroke") {
+                    picked = Some(Action::ApplyStroke(name.clone()));
+                }
+                if doc.swatch(name).is_some_and(|sw| !sw.locked) {
+                    let _ = Menu::submenu_row(ui, tr(lang, "Move to Color Group").to_owned(), |ui, _| {
+                        if MenuItem::new(tr(lang, "(Top Level)").to_owned()).id_salt("top-level").show(ui).ran {
+                            picked = Some(Action::Run("swatch.moveToGroup", json!({"swatches": [name], "group": null})));
+                        }
+                        for g in &doc.color_groups {
+                            if MenuItem::new(g.name.clone()).id_salt(("group", g.name.clone())).show(ui).ran {
+                                picked = Some(Action::Run("swatch.moveToGroup", json!({"swatches": [name], "group": g.name})));
+                            }
+                        }
+                    });
+                    if item(ui, "New Color Group with Swatch") {
+                        picked = Some(Action::Run("swatch.newColorGroup", json!({"swatches": [name]})));
+                    }
+                    Divider::horizontal().show(ui);
+                    if item(ui, "Delete Swatch") {
+                        picked = Some(Action::Run("swatch.delete", json!({"name": name})));
+                    }
+                }
+                picked
+            }
+        }
+    }
+
+    /// The top row, as InDesign's: a Fill/Stroke proxy (a click brings the other to the front), Formatting Affects
+    /// Container / Text, and the tint of the colour in front.
+    fn header(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, target: Option<&(String, f32, String, f32)>) {
+        let lang = app.ui.language.clone();
+        let (fill_sw, stroke_sw) = target.map_or(("[None]", "[Black]"), |(f, _, s, _)| (f.as_str(), s.as_str()));
+        let text = crate::panels::colors_affect_text(app) || app.ui.formatting_affects_text;
+        let stroke_front = app.ui.stroke_front;
+        // With nothing selected InDesign's field reads 100.
+        let tint = target.map_or(Some(100.0), |(_, ft, _, st)| Some((f64::from(if stroke_front { *st } else { *ft }) * 100.0).round()));
+        let (fill, fill_gradient) = crate::widgets::swatch_colors(doc, fill_sw, 1.0);
+        let (stroke, stroke_gradient) = crate::widgets::swatch_colors(doc, stroke_sw, 1.0);
+        let proxy = Proxy { fill, fill_gradient, stroke, stroke_gradient, stroke_front };
+        ui.add_space(3.0);
+        let shown = Row::new().id_salt("swatches-header").show(ui, |ui, _| {
+            let tip = tr(&lang, if stroke_front { "Stroke" } else { "Fill" }).to_owned();
+            let toggle = IconButton::new(IconSpec::glyph(&proxy)).id_salt("swatches-proxy").label(tip.clone()).tooltip(tip).show(ui).clicked();
+            let mut affects = None;
+            for (k, (icon, tip)) in
+                [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
+            {
+                let artwork = Artwork(icon);
+                let out = ToggleButton::new(tr(&lang, tip).to_owned(), Bind::given(text == (k == 1)))
+                    .icon(IconSpec::glyph(&artwork))
+                    .icon_only()
+                    .tooltip(tr(&lang, tip).to_owned())
+                    .id_salt(("swatches-affects", k))
+                    .show(ui);
+                if out.events.committed().is_some() {
+                    affects = Some(k == 1);
+                }
+            }
+            Text::new(tr(&lang, "Tint:").to_owned()).show(ui);
+            let tinted = NumberField::new(tr(&lang, "Tint").to_owned(), Bind::given(tint))
+                .id_salt("swatches_tint")
+                .unit_kind(UnitKind::Percent)
+                .range(0.0..=100.0)
+                .fixed_decimals(0)
+                .show(ui)
+                .edit
+                .events
+                .committed()
+                .copied()
+                .flatten();
+            (toggle, affects, tinted)
+        });
+        let Some((toggle, affects, tinted)) = shown.inner else { return };
+        if toggle {
+            let _ = app.run("color.toggleFillStroke", json!({}));
+        }
+        if let Some(on) = affects {
+            let _ = app.run("app.formattingAffectsText", json!({"on": on}));
+        }
+        if let Some(v) = tinted.filter(|v| v.is_finite()) {
+            let _ = set_tint(app, v);
+        }
+    }
+
+    /// InDesign's bottom row: the panel menu, New Color Group, New Swatch and Delete Swatch (the one last picked).
+    fn footer(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, identity: (u64, u64), fill_cur: Option<&str>) {
+        let lang = app.ui.language.clone();
+        let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED))).filter(|n: &String| doc.swatch(n).is_some_and(|w| !w.locked));
+        let front = if app.ui.stroke_front { "stroke" } else { "fill" };
+        let button = |ui: &mut Ui, action: FooterAction, target: Option<&str>, label: &str, enabled: bool| {
+            IconButton::new(IconSpec::glyph(&action))
+                .id_salt(("swatches-footer", identity, action.key(), target.map(str::to_owned)))
+                .label(tr(&lang, label).to_owned())
+                .tooltip(tr(&lang, label).to_owned())
+                .enabled(enabled)
+                .show(ui)
+                .clicked()
+        };
+        let mut actions = Vec::new();
+        let mut deleted = false;
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button(ui, FooterAction::Delete, picked.as_deref(), "Delete Swatch", picked.is_some()) {
+                    deleted = true;
+                }
+                // The selection's fill or stroke (whichever is in front) becomes a swatch; with nothing selected, a
+                // new colour.
+                if button(ui, FooterAction::New, Some(front), "New Swatch", true) {
+                    actions.push(Action::Run("swatch.new", json!({"target": front})));
+                }
+                if button(ui, FooterAction::Group, None, "New Color Group", true) {
+                    actions.push(Action::Run("swatch.newColorGroup", json!({})));
+                }
+                let current = fill_cur.filter(|n| doc.swatch(n).is_some_and(|w| !w.hidden)).map(str::to_owned);
+                actions.extend(panel_menu(ui, &mut app.session, &lang, identity, current));
+            });
+        });
+        if deleted
+            && let Some(name) = &picked
+            && app.run("swatch.delete", json!({"name": name})).is_ok()
+        {
+            ui.data_mut(|d| d.remove::<String>(egui::Id::unique(PICKED)));
+        }
+        run_actions(app, actions);
+    }
+
+    /// The panel menu: Swatch Options of the swatch in front, Color Theme, the Ink Manager, New Color Group and the
+    /// swatch files.
+    fn panel_menu(ui: &mut Ui, session: &mut designcraft_engine::Session, lang: &str, identity: (u64, u64), current: Option<String>) -> Vec<Action> {
+        let opener = IconButton::new(IconSpec::glyph(&Artwork("menu")))
+            .id_salt(("swatches-menu-opener", identity))
+            .label(tr(lang, "Swatches").to_owned())
+            .tooltip(tr(lang, "Swatches").to_owned())
+            .popup(PopupKind::Menu)
+            .show(ui);
+        let shown =
+            Menu::new(tr(lang, "Swatches").to_owned()).id_salt(("swatches-menu", identity)).opened_by(&opener, Trigger::Click).show(ui, |ui, _| {
+                let mut picked = Vec::new();
+                let item = |ui: &mut Ui, label: &str, enabled: bool| {
+                    MenuItem::new(tr(lang, label).to_owned()).id_salt(label.to_owned()).enabled(enabled).show(ui).ran
+                };
+                if item(ui, "Swatch Options…", current.is_some()) {
+                    picked.push(Action::Run("app.swatchOptionsDialog", json!({"name": current})));
+                }
+                if item(ui, "Color Theme…", true) {
+                    picked.push(Action::ColorTheme);
+                }
+                let _ = Menu::submenu_row(ui, tr(lang, "Ink Manager").to_owned(), |ui, _| {
+                    let Ok(l) = session.execute("ink.list", &json!({})) else { return };
+                    let all = l["allToProcess"].as_bool().unwrap_or(false);
+                    if MenuItem::new(tr(lang, "All Spots to Process").to_owned()).id_salt("all-to-process").check(all).show(ui).ran {
+                        picked.push(Action::Run("ink.options", json!({"allToProcess": !all})));
+                    }
+                    Divider::horizontal().show(ui);
+                    let inks = l["inks"].as_array().cloned().unwrap_or_default();
+                    if inks.is_empty() {
+                        let _ = MenuItem::new(tr(lang, "No spot inks").to_owned()).id_salt("no-inks").enabled(false).show(ui);
+                    }
+                    for ink in inks {
+                        let name = ink["name"].as_str().unwrap_or("").to_string();
+                        let process = ink["process"].as_bool().unwrap_or(false);
+                        if MenuItem::new(format!("{name} → process")).id_salt(("ink", name.clone())).check(process).enabled(!all).show(ui).ran {
+                            picked.push(Action::Run("ink.options", json!({"ink": name, "toProcess": !process})));
+                        }
+                    }
+                });
+                if item(ui, "New Color Group", true) {
+                    picked.push(Action::Run("swatch.newColorGroup", json!({})));
+                }
+                if item(ui, "Load Swatches…", true) {
+                    picked.push(Action::Run("app.loadSwatches", json!({})));
+                }
+                if item(ui, "Save Swatches for Exchange…", true) {
+                    picked.push(Action::Run("app.saveSwatches", json!({})));
+                }
+                picked
+            });
+        shown.inner.unwrap_or_default()
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Color panel
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// The look of a channel's track face: the line round its edge and its own size when nothing sets it.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct ChannelRampStyle {
+        edge: StyleColor,
+        length: f32,
+        thickness: f32,
+    }
+
+    impl ComponentStyle for ChannelRampStyle {
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// The colours of one channel from its lowest value to its highest, the face of the channel's slider track.
+    #[derive(Clone, craft_ui_widgets::contract::Component)]
+    #[component(content_painter)]
+    pub(super) struct ChannelRamp {
+        #[common]
+        common: Common,
+        stops: Vec<Color32>,
+    }
+
+    impl ChannelRamp {
+        fn new(stops: Vec<Color32>) -> Self {
+            ChannelRamp { common: Common::new(), stops }
+        }
+    }
+
+    impl Component for ChannelRamp {
+        const ROLE: Role = Role::IMAGE;
+        const PARTS: bool = false;
+        const STOPS: bool = false;
+        const OVERLAYS: bool = false;
+        type Style = ChannelRampStyle;
+        type Output = egui::Response;
+
+        fn style(cx: &StyleCx<'_>, _: ChannelRampStyleKey) -> ChannelRampStyle {
+            ChannelRampStyle {
+                edge: cx.color(cx.tokens.color.line.control_edge),
+                length: cx.tokens.size.length.track,
+                thickness: cx.tokens.size.ramp.bar,
+            }
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::empty()
+        }
+
+        fn measure(&mut self, cx: &MeasureCx<'_, Self>) -> Vec2 {
+            Vec2::new(cx.style.length, cx.style.thickness)
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let rect = cx.rect;
+            let last = self.stops.len().saturating_sub(1).max(1) as f32;
+            let stops: Vec<(f32, DataColor)> = self.stops.iter().enumerate().map(|(i, c)| (i as f32 / last, DataColor::new(*c))).collect();
+            let painter = ui.content_painter(cx);
+            painter.ramp(rect, CornerRadius::ZERO, &stops, Axis::X);
+            ui.draw().stroke(&PaintShape::Rect(rect, CornerRadius::ZERO), StrokeWidth::Thin, cx.style.edge);
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> egui::Response {
+            cx.response.clone()
+        }
+    }
+
+    /// One channel: its name, a slider over the channel's colours with the pointer under the track, and its number,
+    /// 0 to `scale`. The value it committed this pass (0 to 1): a slider applies on release, the field on a commit.
+    fn channel(ui: &mut Ui, id: (&str, usize), label: &str, v: f32, scale: f32, percent: bool, ramp: impl Fn(f32) -> Color32) -> Option<f32> {
+        let n = 24;
+        let stops: Vec<Color32> = (0..=n).map(|i| ramp(i as f32 / n as f32)).collect();
+        let value = f64::from((v * scale).round());
+        let shown = Row::new().id_salt(("channel", id)).show(ui, |ui, _| {
+            Text::new(label.to_owned()).show(ui);
+            let slid = Slider::new(Bind::given(value), 0.0..=f64::from(scale))
+                .step(1.0)
+                .thumb(SliderThumb::Triangle)
+                .track_face(TrackFace::new(ChannelRamp::new(stops.clone())))
+                .label(label.to_owned())
+                .id_salt(("channel-slider", id))
+                .show(ui)
+                .events
+                .committed()
+                .copied();
+            let field = NumberField::new(label.to_owned(), Bind::given(Some(value)))
+                .id_salt(("channel-field", id))
+                .range(0.0..=f64::from(scale))
+                .fixed_decimals(0);
+            let field = if percent { field.unit_kind(UnitKind::Percent) } else { field };
+            let typed = field.show(ui).edit.events.committed().copied().flatten();
+            slid.or(typed)
+        });
+        shown.inner.flatten().filter(|v| v.is_finite()).map(|v| (v.clamp(0.0, f64::from(scale)) as f32) / scale)
+    }
+
+    fn rgb_ramp(k: usize) -> impl Fn(f32) -> Color32 {
+        move |x| {
+            let mut p = [0.0; 3];
+            p[k] = x;
+            Color32::from_rgb((p[0] * 255.0) as u8, (p[1] * 255.0) as u8, (p[2] * 255.0) as u8)
+        }
+    }
+
+    /// The channels of `c` in `mode`: the colour they committed, as `object.color`'s model form and as a colour.
+    fn channels(ui: &mut Ui, salt: &str, mode: ColorMode, c: designcraft_color::Color) -> Option<(Value, designcraft_color::Color)> {
+        use designcraft_color::Color;
+        match mode {
+            ColorMode::Cmyk => {
+                let mut v = c.to_cmyk();
+                let mut done = false;
+                for (k, label) in ["C", "M", "Y", "K"].iter().enumerate() {
+                    if let Some(x) = channel(ui, (salt, k), label, v[k], 100.0, true, |x| cmyk_ramp(k, x)) {
+                        v[k] = x;
+                        done = true;
+                    }
+                }
+                done.then(|| (json!({"model": "cmyk", "c": v[0], "m": v[1], "y": v[2], "k": v[3]}), Color::cmyk(v[0], v[1], v[2], v[3])))
+            }
+            ColorMode::Rgb => {
+                let mut v = c.to_rgb();
+                let mut done = false;
+                for (k, label) in ["R", "G", "B"].iter().enumerate() {
+                    if let Some(x) = channel(ui, (salt, k), label, v[k], 255.0, false, rgb_ramp(k)) {
+                        v[k] = x;
+                        done = true;
+                    }
+                }
+                done.then(|| (json!({"model": "rgb", "r": v[0], "g": v[1], "b": v[2]}), Color::rgb(v[0], v[1], v[2])))
+            }
+            ColorMode::Lab => {
+                let lab = c.to_lab();
+                Text::new(format!("L {:.0}   a {:.0}   b {:.0}", lab.l, lab.a, lab.b)).shade(Shade::Muted).show(ui);
+                None
+            }
+        }
+    }
+
+    /// The spectrum ramp, hue across and light to dark down; the colour picked this pass (RGB, 0 to 1, in 1/255
+    /// steps).
+    fn spectrum_pick(ui: &mut Ui, lang: &str, salt: &str) -> Option<[f32; 3]> {
+        let out =
+            ColorRamp::new(tr(lang, "Color spectrum").to_owned(), RampKind::Spectrum, Bind::given(RampPick::new(Srgba::rgb(0.0, 0.0, 0.0), false)))
+                .boxes(false)
+                .id_salt(("color-spectrum", salt.to_owned()))
+                .sizing(Sizing::FillWidth)
+                .show(ui);
+        let pick = out.edit.events.committed()?;
+        Some([pick.color.r, pick.color.g, pick.color.b].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0))
+    }
+
+    /// The Color panel: the fill and stroke chips (a click brings one to the front, a double click opens the Color
+    /// Picker), the colour mode, the tint of a named swatch, the channels, the spectrum and Add to Swatches.
+    pub(super) fn color_panel(app: &mut DesignApp, ui: &mut Ui) {
+        let target = crate::panels::color_target_or_defaults(app);
+        let lang = app.ui.language.clone();
+        let Some((fill, fill_tint, stroke_sw, stroke_tint)) = target else {
+            Text::new(tr(&lang, "Select an object or text to color its fill or stroke.").to_owned()).shade(Shade::Muted).show(ui);
+            return;
+        };
+        let text = crate::panels::colors_affect_text(app);
+        let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+        let mode_id = egui::Id::unique("color_panel_mode");
+        let default_mode = if doc.settings.intent == designcraft_doc::Intent::Print { ColorMode::Cmyk } else { ColorMode::Rgb };
+        let mut mode: ColorMode = ui.data(|d| d.get_temp(mode_id)).unwrap_or(default_mode);
+        let mut stroke = app.ui.stroke_front;
+        let name = if stroke { stroke_sw.clone() } else { fill.clone() };
+        let shown = Row::new().id_salt("color-panel-proxy").show(ui, |ui, _| {
+            let mut picked: Option<(bool, bool)> = None;
+            for (k, label) in [(false, "Fill"), (true, "Stroke")] {
+                let n = if k { &stroke_sw } else { &fill };
+                let (color, gradient) = crate::widgets::swatch_colors(&doc, n, 1.0);
+                let chip = ColorChip { color, gradient, front: k == stroke };
+                let tip = tr(&lang, "{label}: {name} (double-click: Color Picker)").replace("{label}", tr(&lang, label)).replace("{name}", n);
+                let out =
+                    IconButton::new(IconSpec::glyph(&chip)).id_salt(("color-proxy", k)).label(tr(&lang, label).to_owned()).tooltip(tip).show(ui);
+                if out.clicked() {
+                    picked = Some((k, out.clicks >= 2));
+                }
+            }
+            Text::new(name.clone()).shade(Shade::Muted).show(ui);
+            let entries = [Entry::new(ColorMode::Lab, "Lab"), Entry::new(ColorMode::Cmyk, "CMYK"), Entry::new(ColorMode::Rgb, "RGB")];
+            let chosen = Select::new(tr(&lang, "Color Mode").to_owned(), Bind::given(mode), &entries)
+                .id_salt("color_mode")
+                .show(ui)
+                .events
+                .committed()
+                .copied();
+            (picked, chosen)
+        });
+        let (picked, chosen) = shown.inner.unwrap_or((None, None));
+        if let Some((k, double)) = picked {
+            stroke = k;
+            if double {
+                let n = if k { &stroke_sw } else { &fill };
+                let mut fields = picker_fields(doc.resolve_color(n, 1.0), k);
+                fields["text"] = json!(text);
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
+            }
+        }
+        if let Some(m) = chosen {
+            mode = m;
+        }
+        app.ui.stroke_front = stroke;
+        ui.data_mut(|d| d.insert_temp(mode_id, mode));
+        // The chip clicked this pass is the one edited from here on.
+        let name = if stroke { stroke_sw.clone() } else { fill.clone() };
+        let target = if stroke { "stroke" } else { "fill" };
+        // A gradient: the stop selected in the Gradient panel, as InDesign's Color panel shows it.
+        if !text && let Some(g) = designcraft_color::swatch::resolve_gradient(&doc.swatches, &name).cloned() {
+            gradient_stop(app, ui, &g, target, mode);
+            return;
+        }
+        let sw = doc.swatch(&name).cloned();
+        let Some(c) = doc.resolve_color(&name, 1.0) else {
+            Text::new(tr(&lang, "[None] — choose a colour on the ramp.").to_owned()).shade(Shade::Muted).show(ui);
+            spectrum(app, ui, target);
+            return;
+        };
+        // A named swatch shows its tint; mixing its values makes an unnamed colour.
+        if let Some(sw) = sw.as_ref().filter(|w| !w.hidden && !w.locked) {
+            let cur = f64::from(if stroke { stroke_tint } else { fill_tint }) * 100.0;
+            let shown = Row::new().id_salt("color-tint").show(ui, |ui, _| {
+                Text::new("T").show(ui);
+                // The slider applies on release; the field applies a typed value, clamped, on a commit.
+                let slid = Slider::new(Bind::given(cur.round()), 0.0..=100.0)
+                    .step(1.0)
+                    .label(tr(&lang, "Tint").to_owned())
+                    .id_salt("color_tint_slider")
+                    .show(ui)
+                    .events
+                    .committed()
+                    .copied();
+                let typed = NumberField::new(tr(&lang, "Tint").to_owned(), Bind::given(Some(cur)))
+                    .id_salt("color_tint")
+                    .unit_kind(UnitKind::Percent)
+                    .range(0.0..=100.0)
+                    .fixed_decimals(0)
+                    .show(ui)
+                    .edit
+                    .events
+                    .committed()
+                    .copied()
+                    .flatten();
+                slid.or(typed)
+            });
+            if let Some(v) = shown.inner.flatten().filter(|v| v.is_finite()) {
+                let _ = crate::panels::apply_swatch(app, stroke, &sw.name, Some((v.clamp(0.0, 100.0) / 100.0) as f32));
+            }
+        }
+        if let Some((color, _)) = channels(ui, "color", mode, c) {
+            let _ = app.run("object.color", json!({"color": color, "target": target, "text": text}));
+        }
+        spectrum(app, ui, target);
+        let unnamed = sw.as_ref().is_some_and(|w| w.hidden);
+        if Button::new(tr(&lang, "Add to Swatches").to_owned()).id_salt("add-to-swatches").enabled(unnamed).show(ui).clicked() {
+            let _ = app.run("swatch.addToSwatches", json!({"swatch": name, "target": target}));
+        }
+    }
+
+    /// The spectrum: a pick applies an unnamed colour.
+    fn spectrum(app: &mut DesignApp, ui: &mut Ui, target: &str) {
+        let lang = app.ui.language.clone();
+        if let Some([r, g, b]) = spectrum_pick(ui, &lang, "color") {
+            let text = crate::panels::colors_affect_text(app);
+            let _ = app.run("object.color", json!({"color": {"model": "rgb", "r": r, "g": g, "b": b}, "target": target, "text": text}));
+        }
+    }
+
+    /// The Color panel on a gradient fill (or stroke): the stop selected in the Gradient panel (the stop before a
+    /// selected midpoint), in the panel's colour mode. Its fields and the spectrum colour that stop.
+    fn gradient_stop(app: &mut DesignApp, ui: &mut Ui, g: &designcraft_color::Gradient, target: &str, mode: ColorMode) {
+        use designcraft_color::Color;
+        let lang = app.ui.language.clone();
+        let sel: RampSel = ui.data(|d| d.get_temp(egui::Id::unique(GRAD_SEL))).unwrap_or(RampSel::Stop(0));
+        let i = match sel {
+            RampSel::Stop(i) | RampSel::Mid(i) => i,
+        }
+        .min(g.stops.len().saturating_sub(1));
+        let Some(stop) = g.stops.get(i) else { return };
+        let c = stop.color;
+        let pct = |v: f32| (v * 100.0).round();
+        let values = match c {
+            Color::Cmyk { c, m, y, k } => format!("C={} M={} Y={} K={}", pct(c), pct(m), pct(y), pct(k)),
+            Color::Gray { k } => format!("K={}", pct(k)),
+            Color::Rgb { .. } => {
+                let [r, g, b, _] = c.to_rgba8(1.0);
+                format!("R={r} G={g} B={b}")
+            }
+        };
+        Text::new(values).shade(Shade::Muted).show(ui);
+        let mut new = channels(ui, "stop", mode, c).map(|(_, c)| c);
+        if let Some([r, gr, b]) = spectrum_pick(ui, &lang, "stop") {
+            new = Some(Color::rgb(r, gr, b));
+        }
+        if let Some(c) = new {
+            let mut stops = stops_json(g);
+            set_stop_color(&mut stops, i, color_json(&c));
+            let _ = app.run("object.gradient", json!({"stops": stops, "target": target}));
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Gradient panel
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /// The pointer's part of the thumbnail and of the ramp.
+    const AREA: PartKey = PartKey::new("area");
+
+    /// The look of the thumbnail and the ramp: no surface of their own, the painting is theirs.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct GradientPartStyle;
+
+    impl ComponentStyle for GradientPartStyle {
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// What the thumbnail reports: its response and whether it was clicked.
+    #[derive(Debug)]
+    pub(super) struct ThumbOutput {
+        response: egui::Response,
+        clicked: bool,
+    }
+
+    impl Outcome for ThumbOutput {
+        type Value = NoValue;
+
+        fn response(&self) -> &egui::Response {
+            &self.response
+        }
+    }
+
+    /// The Gradient panel's thumbnail: the gradient in a square. A click applies the gradient shown (InDesign's way to
+    /// start one); a drag carries the selection's gradient (`swatch`) to the Swatches panel, which keeps it as a
+    /// swatch.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(content_painter)]
+    pub(super) struct GradientThumb {
+        #[common]
+        common: Common,
+        gradient: designcraft_color::Gradient,
+        swatch: Option<String>,
+        clicked: bool,
+    }
+
+    impl GradientThumb {
+        fn new(label: impl Into<Label>, gradient: designcraft_color::Gradient, swatch: Option<String>) -> Self {
+            GradientThumb { common: Common::new(), gradient, swatch, clicked: false }.label(label)
+        }
+    }
+
+    impl Component for GradientThumb {
+        const ROLE: Role = Role::BUTTON;
+        const OVERLAYS: bool = false;
+        const KEYS: KeyUse = KeyUse::of(Input::Pointer);
+        type Style = GradientPartStyle;
+        type Output = ThumbOutput;
+
+        fn style(_: &StyleCx<'_>, _: GradientThumbStyleKey) -> GradientPartStyle {
+            GradientPartStyle
+        }
+
+        fn measure(&mut self, _: &MeasureCx<'_, Self>) -> Vec2 {
+            vec2(34.0, 34.0)
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::HOVER
+        }
+
+        fn parts(&mut self, rect: Rect, cx: &mut PartsCx<'_, Self>) {
+            cx.part(AREA, rect).sense(Sense::CLICK | Sense::DRAG);
+        }
+
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            match cx.part(AREA).press.phase {
+                PressPhase::DragStart { .. } => {
+                    if let Some(swatch) = self.swatch.clone() {
+                        cx.start_drag(GradientDrag(swatch), DragPreview::frame(vec2(18.0, 18.0), None));
+                    }
+                }
+                PressPhase::Release { start, click: true, .. } if start.button == PointerButton::Primary => self.clicked = true,
+                _ => {}
+            }
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let content = ui.content_painter(cx);
+            let t = Tokens::get(content.painter.ctx());
+            thumbnail(&content.painter, cx.rect.shrink(1.0), &self.gradient, t.field_border);
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> ThumbOutput {
+            ThumbOutput { response: cx.response.clone(), clicked: self.clicked }
+        }
+    }
+
+    /// What the pointer did on the ramp this pass.
+    #[derive(Clone, Copy, Debug)]
+    enum RampEdit {
+        /// A marker was clicked or began a drag.
+        Select(RampSel),
+        /// A dragged marker was let go at an offset (0 to 1), off the panel for a stop that is removed.
+        Release(RampSel, f32, bool),
+        /// A click below the ramp, away from the stops: a new stop there.
+        Add(f32),
+        /// A secondary click on a stop: its colour.
+        StopColor(usize),
+    }
+
+    /// The ramp's drag kept between passes.
+    #[derive(Clone, Default)]
+    struct RampHeld {
+        drag: Option<RampDrag>,
+    }
+
+    /// Where the ramp's parts are: the whole area and the colour bar in it.
+    #[derive(Clone, Copy)]
+    struct RampGeometry {
+        area: Rect,
+        ramp: Rect,
+    }
+
+    impl RampGeometry {
+        fn new(area: Rect) -> Self {
+            RampGeometry { area, ramp: Rect::from_min_size(area.min + vec2(6.0, 10.0), vec2((area.width() - 12.0).max(1.0), 14.0)) }
+        }
+
+        fn x_of(&self, o: f32) -> f32 {
+            self.ramp.left() + self.ramp.width() * o
+        }
+
+        fn o_of(&self, x: f32) -> f32 {
+            ((x - self.ramp.left()) / self.ramp.width()).clamp(0.0, 1.0)
+        }
+
+        fn mid_x(&self, g: &designcraft_color::Gradient, i: usize) -> Option<f32> {
+            match (g.stops.get(i), g.stops.get(i + 1)) {
+                (Some(a), Some(b)) => Some(self.x_of(a.offset + (b.offset - a.offset) * a.midpoint)),
+                _ => None,
+            }
+        }
+
+        /// The marker under the pointer: a stop below the ramp, a diamond above it.
+        fn hit(&self, g: &designcraft_color::Gradient, p: Pos2) -> Option<RampSel> {
+            let last = g.stops.len().saturating_sub(1);
+            if p.y < self.ramp.top() {
+                (0..last)
+                    .filter_map(|i| self.mid_x(g, i).map(|x| (i, (x - p.x).abs())))
+                    .filter(|(_, d)| *d < 6.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| RampSel::Mid(i))
+            } else {
+                g.stops
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (i, (self.x_of(s.offset) - p.x).abs()))
+                    .filter(|(_, d)| *d < 7.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| RampSel::Stop(i))
+            }
+        }
+
+        /// Where a swatch dropped at `p` goes: onto a stop (that stop), else a new stop at its offset.
+        fn drop_at(&self, g: &designcraft_color::Gradient, p: Pos2) -> (Option<usize>, f32) {
+            match self.hit(g, pos2(p.x, self.ramp.bottom() + 4.0)) {
+                Some(RampSel::Stop(i)) => match g.stops.get(i) {
+                    Some(s) => (Some(i), s.offset),
+                    None => (None, self.o_of(p.x)),
+                },
+                _ => (None, self.o_of(p.x)),
+            }
+        }
+
+        /// A drag of `h` at the pointer `p`: its offset, and whether a stop is off the panel.
+        fn follow(&self, g: &designcraft_color::Gradient, h: RampSel, p: Pos2) -> RampDrag {
+            match h {
+                RampSel::Stop(_) => (h, self.o_of(p.x), p.y > self.area.bottom() + 16.0 && g.stops.len() > 2),
+                RampSel::Mid(i) => {
+                    let m = match (g.stops.get(i), g.stops.get(i + 1)) {
+                        (Some(a), Some(b)) if b.offset - a.offset > 1e-6 => ((self.o_of(p.x) - a.offset) / (b.offset - a.offset)).clamp(0.13, 0.87),
+                        _ => 0.5,
+                    };
+                    (h, m, false)
+                }
+            }
+        }
+    }
+
+    /// The drop target of swatches dragged from the Swatches panel onto the ramp.
+    struct RampDrop<'g> {
+        geometry: RampGeometry,
+        gradient: &'g designcraft_color::Gradient,
+    }
+
+    impl DropTarget<SwatchDrag> for RampDrop<'_> {
+        type Drop = (SwatchDrag, Option<usize>, f32);
+
+        fn accept(&self, payload: &SwatchDrag, at: Pos2, _: DropOperation) -> Option<Self::Drop> {
+            let (stop, o) = self.geometry.drop_at(self.gradient, at);
+            Some((payload.clone(), stop, o))
+        }
+
+        fn mark(&self, drop: &Self::Drop) -> DropMark {
+            let x = self.geometry.x_of(drop.2);
+            DropMark::line(pos2(x, self.geometry.ramp.top() - 3.0), pos2(x, self.geometry.ramp.bottom() + 14.0))
+        }
+    }
+
+    /// What the ramp reports: its response, the pointer's edit and a swatch dropped on it (onto a stop, or at an
+    /// offset).
+    #[derive(Debug)]
+    pub(super) struct RampOutput {
+        response: egui::Response,
+        edit: Option<RampEdit>,
+        dropped: Option<(SwatchDrag, Option<usize>, f32)>,
+    }
+
+    impl Outcome for RampOutput {
+        type Value = NoValue;
+
+        fn response(&self) -> &egui::Response {
+            &self.response
+        }
+    }
+
+    /// The gradient's ramp, as InDesign's: midpoint diamonds above it and stops below it. Drag a stop or a diamond
+    /// to move it, click below the ramp to add a stop, drag a stop off to remove it, drop a swatch on a stop to colour
+    /// it or elsewhere to add a stop, and right-click a stop for its colour. It has no keyboard handling, as the native
+    /// ramp has none.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(content_painter)]
+    pub(super) struct GradientRampEditor {
+        #[common]
+        common: Common,
+        gradient: designcraft_color::Gradient,
+        sel: RampSel,
+        edit: Option<RampEdit>,
+        drag: Option<RampDrag>,
+        dropped: Option<(SwatchDrag, Option<usize>, f32)>,
+    }
+
+    impl GradientRampEditor {
+        fn new(label: impl Into<Label>, gradient: designcraft_color::Gradient, sel: RampSel) -> Self {
+            GradientRampEditor { common: Common::new(), gradient, sel, edit: None, drag: None, dropped: None }.label(label)
+        }
+    }
+
+    impl Component for GradientRampEditor {
+        const ROLE: Role = Role::GROUP;
+        const OVERLAYS: bool = false;
+        const KEYS: KeyUse = KeyUse::of(Input::Pointer);
+        type Style = GradientPartStyle;
+        type Output = RampOutput;
+
+        fn style(_: &StyleCx<'_>, _: GradientRampEditorStyleKey) -> GradientPartStyle {
+            GradientPartStyle
+        }
+
+        fn measure(&mut self, _: &MeasureCx<'_, Self>) -> Vec2 {
+            vec2(120.0, 40.0)
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::HOVER
+        }
+
+        fn parts(&mut self, rect: Rect, cx: &mut PartsCx<'_, Self>) {
+            cx.part(AREA, rect).sense(Sense::CLICK | Sense::DRAG | Sense::CONTEXT_CLICK);
+        }
+
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            let geo = RampGeometry::new(cx.rect);
+            let g = &self.gradient;
+            let mut held = cx.memory::<RampHeld>().clone();
+            // A drag kept from a longer gradient (the selection or its gradient changed since) is dropped.
+            held.drag = live_drag(held.drag, g.stops.len());
+            match cx.part(AREA).press.phase {
+                PressPhase::DragStart { start, pos, .. } if start.button == PointerButton::Primary => {
+                    if let Some(h) = geo.hit(g, start.origin)
+                        && let Some(o) = match h {
+                            RampSel::Stop(i) => g.stops.get(i).map(|s| s.offset),
+                            RampSel::Mid(i) => g.stops.get(i).map(|s| s.midpoint),
+                        }
+                    {
+                        self.edit = Some(RampEdit::Select(h));
+                        held.drag = Some((h, o, false));
+                    }
+                    if let Some((h, _, _)) = held.drag {
+                        held.drag = Some(geo.follow(g, h, pos));
+                    }
+                }
+                PressPhase::Drag { pos, .. } => {
+                    if let Some((h, _, _)) = held.drag {
+                        held.drag = Some(geo.follow(g, h, pos));
+                    }
+                }
+                PressPhase::Release { start, click, .. } => {
+                    if let Some((h, o, off)) = held.drag.take() {
+                        self.edit = Some(RampEdit::Release(h, o, off));
+                    } else if click && start.button == PointerButton::Primary {
+                        self.edit = match geo.hit(g, start.origin) {
+                            Some(h) => Some(RampEdit::Select(h)),
+                            None if start.origin.y > geo.ramp.bottom() => Some(RampEdit::Add(geo.o_of(start.origin.x))),
+                            None => None,
+                        };
+                    } else if click
+                        && start.button == PointerButton::Secondary
+                        && let Some(RampSel::Stop(i)) = geo.hit(g, start.origin)
+                    {
+                        self.edit = Some(RampEdit::StopColor(i));
+                    }
+                }
+                PressPhase::Cancel { .. } => held.drag = None,
+                _ => {}
+            }
+            let target = RampDrop { geometry: geo, gradient: g };
+            self.dropped = cx.drop_target::<SwatchDrag, _>(&target);
+            self.drag = held.drag;
+            *cx.memory::<RampHeld>() = held;
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let content = ui.content_painter(cx);
+            paint_ramp_editor(&content.painter, RampGeometry::new(cx.rect), &self.gradient, self.sel, self.drag);
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> RampOutput {
+            RampOutput { response: cx.response.clone(), edit: self.edit, dropped: self.dropped }
+        }
+    }
+
+    /// The ramp in bands with its edge, the diamonds and the stops; a dragged marker at its drag's place, a stop
+    /// dragged off not at all.
+    fn paint_ramp_editor(painter: &egui::Painter, geo: RampGeometry, g: &designcraft_color::Gradient, sel: RampSel, dragging: Option<RampDrag>) {
+        let t = Tokens::get(painter.ctx());
+        let ramp = geo.ramp;
+        super::paint_ramp(painter, ramp, g);
+        painter.rect_stroke(ramp, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
+        let last = g.stops.len().saturating_sub(1);
+        for i in 0..last {
+            let x = match dragging {
+                Some((RampSel::Mid(j), m, _)) if j == i => match (g.stops.get(i), g.stops.get(i + 1)) {
+                    (Some(a), Some(b)) => geo.x_of(a.offset + (b.offset - a.offset) * m),
+                    _ => ramp.left(),
+                },
+                _ => geo.mid_x(g, i).unwrap_or(ramp.left()),
+            };
+            let (cy, r) = (ramp.top() - 6.0, 4.0);
+            let pts = vec![pos2(x, cy - r), pos2(x + r, cy), pos2(x, cy + r), pos2(x - r, cy)];
+            let on = sel == RampSel::Mid(i);
+            painter.add(egui::Shape::convex_polygon(pts, if on { t.text } else { Color32::TRANSPARENT }, egui::Stroke::new(1.0, t.text_dim)));
+        }
+        for (i, s) in g.stops.iter().enumerate() {
+            let (o, off) = match dragging {
+                Some((RampSel::Stop(j), o, off)) if j == i => (o, off),
+                _ => (s.offset, false),
+            };
+            if off {
+                continue;
+            }
+            let x = geo.x_of(o);
+            let top = ramp.bottom() + 2.0;
+            let on = sel == RampSel::Stop(i);
+            let edge = if on { t.text_strong } else { t.text_dim };
+            painter.add(egui::Shape::convex_polygon(
+                vec![pos2(x, top), pos2(x + 5.0, top + 5.0), pos2(x - 5.0, top + 5.0)],
+                if on { t.text_strong } else { t.panel },
+                egui::Stroke::new(1.0, edge),
+            ));
+            let sq = Rect::from_min_size(pos2(x - 5.0, top + 5.0), vec2(10.0, 9.0));
+            painter.rect_filled(sq, 0.0, color32(&s.color, 1.0));
+            painter.rect_stroke(sq, 0.0, egui::Stroke::new(if on { 1.5 } else { 1.0 }, edge), egui::StrokeKind::Inside);
+        }
+    }
+
+    /// The Gradient panel: thumbnail, Type, Location and Angle, Reverse, and the ramp. Until the fill is a gradient
+    /// the ramp shows the default White → Black, and using it gives the fill a gradient.
+    pub(super) fn gradient_panel(app: &mut DesignApp, ui: &mut Ui) {
+        let lang = app.ui.language.clone();
+        let Some(st) = app.session.active() else { return };
+        let identity = (st.uid, st.identity_epoch);
+        let item = st.selection.items.first().and_then(|i| st.doc.item(*i));
+        let has_item = item.is_some();
+        // The fill's gradient, or the stroke's when the toolbox's Stroke box is in front.
+        let stroke_front = app.ui.stroke_front;
+        let fill = item.map(|it| if stroke_front { it.stroke.as_fill() } else { it.fill.clone() }).unwrap_or_default();
+        let cur = designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &fill.swatch).cloned();
+        let is_gradient = cur.is_some();
+        let g = cur.unwrap_or_default();
+        let radial = g.kind == designcraft_color::GradientKind::Radial;
+        let sel_id = egui::Id::unique(GRAD_SEL);
+        let mut sel: RampSel = ui.data(|d| d.get_temp(sel_id)).unwrap_or(RampSel::Stop(0));
+        let last = g.stops.len().saturating_sub(1);
+        sel = match sel {
+            RampSel::Stop(i) => RampSel::Stop(i.min(last)),
+            RampSel::Mid(i) if i < last => RampSel::Mid(i),
+            RampSel::Mid(_) => RampSel::Stop(0),
+        };
+        let mut send: Option<Value> = None;
+        let shown = Row::new().id_salt("gradient-panel-top").show(ui, |ui, _| {
+            let mut send: Option<Value> = None;
+            let thumb = GradientThumb::new(tr(&lang, "Gradient").to_owned(), g.clone(), is_gradient.then(|| fill.swatch.clone()))
+                .id_salt(("gradient-thumb", identity))
+                .enabled(has_item)
+                .show(ui);
+            if thumb.clicked && !is_gradient {
+                send = Some(json!({}));
+            }
+            craft_ui_widgets::layout_components::Stack::new().id_salt("gradient-panel-fields").show(ui, |ui, _| {
+                Row::new().id_salt("gradient-type").show(ui, |ui, _| {
+                    Text::new(tr(&lang, "Type:").to_owned()).show(ui);
+                    let entries = [Entry::new("linear", tr(&lang, "Linear").to_owned()), Entry::new("radial", tr(&lang, "Radial").to_owned())];
+                    let kind: craft_behavior::Mixed<&'static str> = if !is_gradient {
+                        craft_behavior::Mixed::Mixed
+                    } else if radial {
+                        craft_behavior::Mixed::Same("radial")
+                    } else {
+                        craft_behavior::Mixed::Same("linear")
+                    };
+                    if let Some(kind) = Select::new(tr(&lang, "Type").to_owned(), Bind::given(kind), &entries)
+                        .id_salt("grad_type")
+                        .enabled(has_item)
+                        .show(ui)
+                        .events
+                        .committed()
+                        .copied()
+                    {
+                        send = Some(json!({"kind": kind}));
+                    }
+                });
+                Row::new().id_salt("gradient-location").show(ui, |ui, _| {
+                    Text::new(tr(&lang, "Location:").to_owned()).show(ui);
+                    let loc = match sel {
+                        RampSel::Stop(i) => g.stops.get(i).map(|s| s.offset as f64 * 100.0),
+                        RampSel::Mid(i) => g.stops.get(i).map(|s| s.midpoint as f64 * 100.0),
+                    };
+                    let units = Env::of(ui).units();
+                    let codec = NumberCodec::new(units.reader(Some(UnitKind::Percent)), 3);
+                    let typed = NumberField::new(tr(&lang, "Location").to_owned(), Bind::given(loc.filter(|_| is_gradient)))
+                        .id_salt("grad_loc")
+                        .unit_kind(UnitKind::Percent)
+                        .codec(codec)
+                        .enabled(has_item)
+                        .show(ui)
+                        .edit
+                        .events
+                        .committed()
+                        .copied()
+                        .flatten();
+                    if let Some(v) = typed.filter(|v| v.is_finite()) {
+                        let mut stops = stops_json(&g);
+                        match sel {
+                            RampSel::Stop(i) => set_stop(&mut stops, i, "location", json!(v.clamp(0.0, 100.0))),
+                            RampSel::Mid(i) => set_stop(&mut stops, i, "midpoint", json!(v.clamp(13.0, 87.0))),
+                        }
+                        send = Some(json!({"stops": stops}));
+                    }
+                    Text::new(tr(&lang, "Angle:").to_owned()).show(ui);
+                    let angle =
+                        fill.gradient_vector.map(|[x0, y0, x1, y1]| (-(y1 - y0)).atan2(x1 - x0).to_degrees()).or(fill.gradient_angle).unwrap_or(0.0);
+                    let angled = NumberField::new(tr(&lang, "Angle").to_owned(), Bind::given(is_gradient.then_some(angle)))
+                        .id_salt("grad_angle")
+                        .unit_kind(UnitKind::Degrees)
+                        .enabled(has_item && is_gradient && !radial)
+                        .show(ui)
+                        .edit
+                        .events
+                        .committed()
+                        .copied()
+                        .flatten();
+                    if let Some(v) = angled.filter(|v| v.is_finite()) {
+                        send = Some(json!({"angle": v}));
+                    }
+                });
+                Row::new().id_salt("gradient-reverse").show(ui, |ui, _| {
+                    Text::new(tr(&lang, "Reverse").to_owned()).show(ui);
+                    let tip = tr(&lang, "Reverse the gradient").to_owned();
+                    if IconButton::new(IconSpec::glyph(&Artwork("swap")))
+                        .id_salt("grad_reverse")
+                        .label(tip.clone())
+                        .tooltip(tip)
+                        .enabled(has_item)
+                        .show(ui)
+                        .clicked()
+                        && is_gradient
+                    {
+                        send = Some(json!({"reverse": true}));
+                    }
+                });
+            });
+            send
+        });
+        if let Some(Some(v)) = shown.inner {
+            send = Some(v);
+        }
+        ui.add_space(6.0);
+        let ramp = GradientRampEditor::new(tr(&lang, "Gradient ramp").to_owned(), g.clone(), sel)
+            .id_salt(("gradient-ramp", identity))
+            .enabled(has_item)
+            .sizing(Sizing::FillWidth)
+            .show(ui);
+        let color_id = egui::Id::unique("grad_stop_color");
+        let mut color_open: Option<usize> = ui.data(|d| d.get_temp(color_id));
+        match ramp.edit {
+            Some(RampEdit::Select(h)) => sel = h,
+            Some(RampEdit::Release(h, o, off)) => {
+                let (stops, kept) = ramp_release(&g, h, o, off);
+                if let Some(kept) = kept {
+                    sel = kept;
+                }
+                send = Some(json!({"stops": stops}));
+            }
+            Some(RampEdit::Add(o)) => {
+                let (c, a) = g.sample(o);
+                let mut stops = stops_json(&g);
+                stops.push(json!({"location": o as f64 * 100.0, "color": color_json(&c), "opacity": a as f64 * 100.0, "midpoint": 50.0}));
+                send = Some(json!({"stops": stops}));
+                sel = RampSel::Stop(g.stops.iter().filter(|s| s.offset <= o).count());
+            }
+            // A stop's colour (InDesign takes it from the Swatches or Color panel), for a gradient only.
+            Some(RampEdit::StopColor(i)) => {
+                sel = RampSel::Stop(i);
+                if is_gradient {
+                    color_open = Some(i);
+                }
+            }
+            None => {}
+        }
+        // A swatch dropped from the Swatches panel: on a stop it colours that stop, elsewhere on the ramp it's a new
+        // stop there.
+        if let Some((sw, at, o)) = &ramp.dropped {
+            let mut stops = stops_json(&g);
+            match at {
+                Some(i) => {
+                    if let Some(s) = stops.get_mut(*i).and_then(Value::as_object_mut) {
+                        s.insert("swatch".to_string(), json!(sw.0));
+                        s.remove("color");
+                    }
+                    sel = RampSel::Stop(*i);
+                }
+                None => {
+                    stops.push(json!({"location": *o as f64 * 100.0, "swatch": sw.0, "midpoint": 50.0}));
+                    sel = RampSel::Stop(g.stops.iter().filter(|s| s.offset <= *o).count());
+                }
+            }
+            send = Some(json!({"stops": stops}));
+        }
+        if let Some(i) = color_open.filter(|i| is_gradient && *i < g.stops.len()) {
+            let [r, gg, bb] = g.stops[i].color.to_rgb();
+            let mut open = true;
+            let out = ColorPopover::new(tr(&lang, "Stop Color:").to_owned(), Bind::given(PickedColor::rgb(Srgba::rgb(r, gg, bb))))
+                .anchor(&ramp.response, Bind::bound(&mut open))
+                .show(ui);
+            if let Some(picked) = out.events.committed() {
+                let rgb = [picked.color.r, picked.color.g, picked.color.b].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                let mut stops = stops_json(&g);
+                set_stop_color(&mut stops, i, json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
+                send = Some(json!({"stops": stops}));
+            }
+            color_open = (open && out.open).then_some(i);
+        } else {
+            color_open = None;
+        }
+        ui.data_mut(|d| {
+            d.insert_temp(sel_id, sel);
+            match color_open {
+                Some(i) => {
+                    d.insert_temp(color_id, i);
+                }
+                None => {
+                    d.remove::<usize>(color_id);
+                }
+            }
+        });
+        if let Some(mut p) = send.filter(|_| has_item) {
+            if let Some(o) = p.as_object_mut() {
+                o.insert("target".to_string(), json!(if stroke_front { "stroke" } else { "fill" }));
+            }
+            let _ = app.run("object.gradient", p);
+        }
     }
 }
 
@@ -2623,9 +3979,11 @@ mod ui223_swatches_rename_apply_tests {
         idle(h, (seconds / 0.05).ceil() as usize + 2);
     }
     fn row(h: &Harness<'_, Rig>, name: &str) -> egui::Rect {
+        // The framework's swatch list is a tree of rows; the native list's rows are buttons.
+        let role = if h.state().app.framework_installed { egui::accesskit::Role::TreeItem } else { egui::accesskit::Role::Button };
         h.get_by(|node| {
             let access = node;
-            access.role() == egui::accesskit::Role::Button && access.label().is_some_and(|label| names_swatch(&label, name))
+            access.role() == role && access.label().is_some_and(|label| names_swatch(&label, name))
         })
         .rect()
     }
@@ -2654,8 +4012,9 @@ mod ui223_swatches_rename_apply_tests {
         assert!(h.state().viewport.contains(at), "the same real row must be physically visible");
         at
     }
-    fn editor_name(h: &Harness<'_, Rig>, source: &str) -> String {
-        format!("{}: {source}", crate::i18n::tr(&h.state().app.ui.language, "Name"))
+    /// The framework list's rename field is named after the name it renames.
+    fn editor_name(_: &Harness<'_, Rig>, source: &str) -> String {
+        source.to_owned()
     }
     fn editor(h: &Harness<'_, Rig>, source: &str) -> Element {
         let name = editor_name(h, source);
@@ -2677,8 +4036,16 @@ mod ui223_swatches_rename_apply_tests {
         assert!(row(h, source).contains_rect(field.rect), "the original row's actual name allocation");
         field
     }
+    /// The open rename: the name it renames and the text typed. Installed, the list's rename field (its name and value);
+    /// native, the panel's own draft.
     fn draft(h: &Harness<'_, Rig>) -> Option<(String, String)> {
-        h.ctx.data(|data| data.get_temp(egui::Id::unique(RENAMING)))
+        if !h.state().app.framework_installed {
+            return h.ctx.data(|data| data.get_temp(egui::Id::unique(RENAMING)));
+        }
+        let controls = h.state().controls.as_ref()?;
+        let field = controls.elements.iter().find(|element| element.component == "TextField")?;
+        let facts = field.facts.as_ref()?;
+        Some((facts.name.clone().unwrap_or_default(), facts.value.clone().unwrap_or_default()))
     }
     fn open(h: &mut Harness<'_, Rig>, source: &str) {
         let picked = h.ctx.data(|data| data.get_temp::<String>(egui::Id::unique(PICKED)));
@@ -3254,5 +4621,299 @@ mod ui223_swatches_rename_apply_tests {
         h.state_mut().app.run("edit.undo", json!({})).unwrap();
         idle(&mut h, 2);
         assert_eq!(h.state().app.session.active().unwrap().doc.as_ref(), before.doc.as_ref());
+    }
+}
+
+/// The framework panels' own interactions: the colour mode and gradient type `Select`s, the channel fields, the row
+/// menus, the folders, the ramp and the drags between the Swatches and Gradient panels, driven by real pointer and
+/// key events through the installed framework.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_panel_tests {
+    use super::*;
+    use egui::accesskit::Role;
+    use egui::{Event, Key, Modifiers, PointerButton};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::Value;
+
+    type Panel = fn(&mut DesignApp, &mut egui::Ui);
+
+    struct State {
+        app: DesignApp,
+        panels: Vec<Panel>,
+    }
+
+    /// A frame with its fill set, and the Swatches panel's own swatches.
+    fn app_with_frame() -> DesignApp {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("frame.create", json!({"rect": [72, 72, 300, 300], "content": "unassigned"})).unwrap();
+        app.run("swatch.create", json!({"name": "Port Fill", "color": "#108080"})).unwrap();
+        app
+    }
+
+    /// `panels` side by side, on the installed framework.
+    fn harness(mut app: DesignApp, panels: Vec<Panel>) -> Harness<'static, State> {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "");
+        app.framework_opacity = true;
+        app.install_framework(&ctx);
+        assert!(app.framework_installed);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(760.0, 900.0)).build_ui_state(
+            |ui, state: &mut State| {
+                let panels = state.panels.clone();
+                ui.horizontal_top(|ui| {
+                    for (k, panel) in panels.into_iter().enumerate() {
+                        ui.push_id(k, |ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width(360.0);
+                                panel(&mut state.app, ui);
+                            });
+                        });
+                    }
+                });
+            },
+            State { app, panels },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        steps(&mut h, 3);
+        h
+    }
+
+    fn steps(h: &mut Harness<'_, State>, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    fn event(h: &mut Harness<'_, State>, event: Event) {
+        h.input_mut().events.push(event);
+        steps(h, 1);
+    }
+
+    fn press(h: &mut Harness<'_, State>, pos: egui::Pos2, button: PointerButton, pressed: bool) {
+        event(h, Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
+    }
+
+    fn click_with(h: &mut Harness<'_, State>, pos: egui::Pos2, button: PointerButton) {
+        event(h, Event::PointerMoved(pos));
+        press(h, pos, button, true);
+        press(h, pos, button, false);
+        steps(h, 2);
+    }
+
+    fn click_at(h: &mut Harness<'_, State>, pos: egui::Pos2) {
+        click_with(h, pos, PointerButton::Primary);
+    }
+
+    /// Longer than the double-click time, so the next click is a click of its own.
+    fn wait(h: &mut Harness<'_, State>) {
+        steps(h, 40);
+    }
+
+    fn key(h: &mut Harness<'_, State>, key: Key, modifiers: Modifiers) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
+        }
+        steps(h, 2);
+    }
+
+    /// A press at `from`, a drag in steps to `to` and the release there.
+    fn drag(h: &mut Harness<'_, State>, from: egui::Pos2, to: egui::Pos2) {
+        event(h, Event::PointerMoved(from));
+        press(h, from, PointerButton::Primary, true);
+        for i in 1..=10 {
+            event(h, Event::PointerMoved(from + (to - from) * (i as f32 / 10.0)));
+        }
+        press(h, to, PointerButton::Primary, false);
+        steps(h, 4);
+    }
+
+    fn rect_of(h: &Harness<'_, State>, role: Role, label: &str) -> egui::Rect {
+        h.get_by_role_and_label(role, label).rect()
+    }
+
+    fn row(h: &Harness<'_, State>, name: &str) -> Option<egui::Rect> {
+        h.query_by(|node| node.role() == Role::TreeItem && node.label().is_some_and(|label| names_swatch(&label, name))).map(|node| node.rect())
+    }
+
+    /// Picks `option` from the `Select` named `label`.
+    fn pick(h: &mut Harness<'_, State>, label: &str, option: &str) {
+        let at = rect_of(h, Role::ComboBox, label).center();
+        click_at(h, at);
+        let at = rect_of(h, Role::ListBoxOption, option).center();
+        click_at(h, at);
+    }
+
+    fn calls(h: &Harness<'_, State>, from: usize, command: &str) -> Vec<Value> {
+        h.state().app.session.journal[from..].iter().filter(|(id, _)| id == command).map(|(_, params)| params.clone()).collect()
+    }
+
+    fn undo_len(h: &Harness<'_, State>) -> usize {
+        h.state().app.session.active().unwrap().history.undo.len()
+    }
+
+    fn gradient(h: &Harness<'_, State>) -> Option<designcraft_color::Gradient> {
+        let st = h.state().app.session.active().unwrap();
+        let id = st.selection.items[0];
+        designcraft_color::swatch::resolve_gradient(&st.doc.swatches, &st.doc.item(id).unwrap().fill.swatch).cloned()
+    }
+
+    fn fill(h: &Harness<'_, State>) -> designcraft_color::Color {
+        let st = h.state().app.session.active().unwrap();
+        let id = st.selection.items[0];
+        st.doc.resolve_color(&st.doc.item(id).unwrap().fill.swatch, 1.0).unwrap()
+    }
+
+    fn spin_buttons(h: &Harness<'_, State>, label: &str) -> usize {
+        h.query_all_by(|node| node.role() == Role::SpinButton && node.label().as_deref() == Some(label)).count()
+    }
+
+    /// The Color panel's mode is a framework Select: picking a model shows that model's channels, and the mode is
+    /// kept for the next pass.
+    #[test]
+    fn installed_colour_mode_select_shows_the_picked_models_channels() {
+        let mut app = app_with_frame();
+        app.run("object.color", json!({"color": {"c": 0, "m": 50, "y": 100, "k": 0}})).unwrap();
+        let mut h = harness(app, vec![color_panel as Panel]);
+        pick(&mut h, "Color Mode", "RGB");
+        assert!(["R", "G", "B"].iter().all(|channel| spin_buttons(&h, channel) == 1), "the RGB channels");
+        assert_eq!(spin_buttons(&h, "M"), 0);
+        pick(&mut h, "Color Mode", "CMYK");
+        assert!(["C", "M", "Y", "K"].iter().all(|channel| spin_buttons(&h, channel) == 1), "the CMYK channels");
+        assert_eq!(h.ctx.data(|d| d.get_temp::<ColorMode>(egui::Id::unique("color_panel_mode"))), Some(ColorMode::Cmyk));
+    }
+
+    /// A typed channel value applies as a percent on Enter, as one `object.color` and one undo step: M 1 is 1 %.
+    #[test]
+    fn installed_typed_channel_value_applies_once_as_a_percent() {
+        let mut app = app_with_frame();
+        app.run("object.color", json!({"color": {"c": 0, "m": 50, "y": 100, "k": 0}})).unwrap();
+        let mut h = harness(app, vec![color_panel as Panel]);
+        pick(&mut h, "Color Mode", "CMYK");
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        let field = h.get_by(|node| node.role() == Role::SpinButton && node.label().as_deref() == Some("M")).rect().center();
+        click_at(&mut h, field);
+        key(&mut h, Key::A, Modifiers::COMMAND);
+        event(&mut h, Event::Text("1".into()));
+        steps(&mut h, 2);
+        let designcraft_color::Color::Cmyk { m, .. } = fill(&h) else { panic!("not CMYK") };
+        assert!((m - 0.5).abs() < 1e-6, "nothing applies while typing: {m}");
+        key(&mut h, Key::Enter, Modifiers::NONE);
+        let designcraft_color::Color::Cmyk { c, m, y, k } = fill(&h) else { panic!("not CMYK") };
+        assert!(c == 0.0 && (m - 0.01).abs() < 1e-6 && (y - 1.0).abs() < 1e-6 && k == 0.0, "{c} {m} {y} {k}");
+        assert_eq!(calls(&h, journal, "object.color").len(), 1);
+        assert_eq!(undo_len(&h), undo + 1);
+    }
+
+    /// A row's menu moves its swatch into a colour group: one `swatch.moveToGroup`, one undo step, and the row then
+    /// stands under the group's folder.
+    #[test]
+    fn installed_row_menu_moves_the_swatch_into_a_colour_group() {
+        let mut app = app_with_frame();
+        let group = app.run("swatch.newColorGroup", json!({})).unwrap()["name"].as_str().unwrap().to_string();
+        let mut h = harness(app, vec![show as Panel]);
+        let before = row(&h, "Port Fill").expect("the swatch's row");
+        let journal = h.state().app.session.journal.len();
+        let undo = undo_len(&h);
+        click_with(&mut h, before.center(), PointerButton::Secondary);
+        let at = rect_of(&h, Role::MenuItem, "Move to Color Group").center();
+        click_at(&mut h, at);
+        let at = rect_of(&h, Role::MenuItem, &group).center();
+        click_at(&mut h, at);
+        assert_eq!(calls(&h, journal, "swatch.moveToGroup"), [json!({"swatches": ["Port Fill"], "group": group})]);
+        assert_eq!(undo_len(&h), undo + 1);
+        let doc = &h.state().app.session.active().unwrap().doc;
+        assert!(doc.color_groups.iter().any(|g| g.name == group && g.swatches.iter().any(|n| n == "Port Fill")));
+        let folder = rect_of(&h, Role::TreeItem, &group);
+        let after = row(&h, "Port Fill").expect("the swatch's row in its group");
+        assert!(after.top() >= folder.bottom(), "the row stands under its folder");
+    }
+
+    /// A click on a folder folds it and the next unfolds it; a double click opens Color Group Options and leaves the
+    /// folder as its first click left it.
+    #[test]
+    fn installed_folder_click_folds_and_double_click_opens_the_groups_options() {
+        let mut app = app_with_frame();
+        let group = app.run("swatch.newColorGroup", json!({"swatches": ["Port Fill"]})).unwrap()["name"].as_str().unwrap().to_string();
+        let mut h = harness(app, vec![show as Panel]);
+        assert!(row(&h, "Port Fill").is_some());
+        let folder = rect_of(&h, Role::TreeItem, &group).center();
+        click_at(&mut h, folder);
+        assert!(row(&h, "Port Fill").is_none(), "folded");
+        wait(&mut h);
+        click_at(&mut h, folder);
+        assert!(row(&h, "Port Fill").is_some(), "unfolded");
+        wait(&mut h);
+        event(&mut h, Event::PointerMoved(folder));
+        for _ in 0..2 {
+            press(&mut h, folder, PointerButton::Primary, true);
+            press(&mut h, folder, PointerButton::Primary, false);
+        }
+        steps(&mut h, 3);
+        assert!(h.state().app.ui.dialog.is_some(), "Color Group Options");
+        assert!(row(&h, "Port Fill").is_none(), "the double click's first click folded it");
+    }
+
+    /// The Gradient panel's Type is a framework Select: Radial makes the selection's gradient radial.
+    #[test]
+    fn installed_gradient_type_select_sets_the_kind() {
+        let mut app = app_with_frame();
+        app.run("object.gradient", json!({})).unwrap();
+        let mut h = harness(app, vec![gradient_panel as Panel]);
+        let journal = h.state().app.session.journal.len();
+        pick(&mut h, "Type", "Radial");
+        assert_eq!(gradient(&h).unwrap().kind, designcraft_color::GradientKind::Radial);
+        assert_eq!(calls(&h, journal, "object.gradient"), [json!({"kind": "radial", "target": "fill"})]);
+    }
+
+    /// A click under the ramp, away from the stops, adds a stop there; before the fill is a gradient that gives it the
+    /// default one with the new stop.
+    #[test]
+    fn installed_click_under_the_ramp_adds_a_stop() {
+        let mut h = harness(app_with_frame(), vec![gradient_panel as Panel]);
+        assert!(gradient(&h).is_none());
+        let ramp = rect_of(&h, Role::Group, "Gradient ramp");
+        click_at(&mut h, egui::pos2(ramp.center().x, ramp.bottom() - 4.0));
+        let g = gradient(&h).expect("the click gives the fill a gradient");
+        assert_eq!(g.stops.len(), 3, "White, the new stop, Black");
+        assert!(g.stops[0].offset < g.stops[1].offset && g.stops[1].offset < g.stops[2].offset);
+    }
+
+    /// A swatch row dragged from the Swatches list onto the middle of the Gradient panel's ramp is a new stop there.
+    #[test]
+    fn installed_swatch_dragged_onto_the_ramp_is_a_new_stop() {
+        let mut h = harness(app_with_frame(), vec![gradient_panel as Panel, show as Panel]);
+        let from = row(&h, "C=100 M=0 Y=0 K=0").expect("cyan's row");
+        let ramp = rect_of(&h, Role::Group, "Gradient ramp");
+        drag(&mut h, egui::pos2(from.left() + 10.0, from.center().y), egui::pos2(ramp.center().x, ramp.top() + 17.0));
+        let g = gradient(&h).expect("the drop gives the fill a gradient");
+        assert_eq!(g.stops.len(), 3, "White, cyan, Black");
+        assert_eq!(g.stops[1].color, designcraft_color::Color::cmyk(1.0, 0.0, 0.0, 0.0));
+        assert!((g.stops[1].offset - 0.5).abs() < 0.05, "{}", g.stops[1].offset);
+    }
+
+    /// The Gradient panel's thumbnail dragged onto the Swatches list keeps the selection's gradient as a swatch, which
+    /// the object then uses by name.
+    #[test]
+    fn installed_gradient_thumbnail_dropped_on_the_list_becomes_a_swatch() {
+        let mut app = app_with_frame();
+        app.run("object.gradient", json!({})).unwrap();
+        let mut h = harness(app, vec![gradient_panel as Panel, show as Panel]);
+        let named = |h: &Harness<'_, State>| h.state().app.session.active().unwrap().doc.swatches.iter().filter(|w| !w.hidden).count();
+        let before = named(&h);
+        let thumb = rect_of(&h, Role::Button, "Gradient").center();
+        let to = row(&h, "[Black]").expect("a row of the list").center();
+        drag(&mut h, thumb, to);
+        assert_eq!(named(&h), before + 1);
+        let st = h.state().app.session.active().unwrap();
+        assert!(matches!(st.doc.swatch("New Gradient Swatch").map(|w| &w.value), Some(SwatchValue::Gradient { .. })));
+        assert_eq!(st.doc.item(st.selection.items[0]).unwrap().fill.swatch, "New Gradient Swatch");
     }
 }
