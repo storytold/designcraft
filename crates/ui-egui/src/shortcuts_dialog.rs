@@ -1,4 +1,4 @@
-//! Edit › Keyboard Shortcuts: craft-keymap's shared dialog over DesignCraft's keymap and the user's
+//! Edit › Keyboard Shortcuts: the framework's dialog (`craft_menu::shortcuts`) over DesignCraft's keymap and the user's
 //! named shortcut sets.
 //!
 //! The dialog edits `DesignApp::keymap` and `UiState::shortcut_sets` in place, so menus show new
@@ -7,17 +7,27 @@
 //! `app.ui.dialog` holds a `keyboardShortcuts` entry, so the canvas, the menus' key dispatch and
 //! the control channel treat it as the open modal dialog.
 //!
+//! The framework dialog answers OK, Cancel and an import only inside a pass (it reads its words from the pass's
+//! scope), so what the app asks of it from outside a frame (`ui.dialog.confirm` and `cancel`, a file the open dialog
+//! delivered) waits in [`Host::pending`] and runs in the next frame, before the dialog is drawn.
+//!
 //! The InDesign importer stays here (`shortcut_import`): the dialog's Import offers its format
 //! next to craft-keymap's JSON, and the dialog reviews the set before it becomes a new set.
+//!
+//! The browser build has no framework dialog (craft-menu is native only): the command says so in the status bar.
 
-use std::borrow::Cow;
-
-use craft_keymap::ui::{DialogState, Format, Options, Outcome, ShortcutsDialog, Text};
-use craft_keymap::{Bindable, Overrides};
+use craft_keymap::Overrides;
+#[cfg(not(target_arch = "wasm32"))]
+use craft_keymap::{ForeignSet, ImportOptions, Keymap, Profiles};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_menu::shortcuts::{DialogState, Format, Options, Outcome, ShortcutsDialog};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Value, json};
 
 use crate::DesignApp;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::app::file_dialogs::Bound;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::i18n::tr;
 
 /// The `app.ui.dialog` id while the dialog is open.
@@ -33,17 +43,36 @@ pub const CUSTOM_SET: &str = "Custom";
 pub const PURPOSE: &str = "shortcuts";
 
 /// A set saved by InDesign's Show Set, read by `shortcut_import`.
-pub const INDESIGN_FORMAT: Format = Format { id: "indesign", label: "InDesign Shortcut Set (Show Set text)", extensions: &["txt"] };
+#[cfg(not(target_arch = "wasm32"))]
+pub const INDESIGN_FORMAT: Format = Format::new("indesign", "InDesign Shortcut Set (Show Set text)", &["txt"]);
+
+/// What the app asked of the dialog from outside a frame.
+#[cfg(not(target_arch = "wasm32"))]
+enum Pending {
+    Ok,
+    Cancel,
+    /// A craft-keymap JSON set's text: it becomes a new set.
+    Json(String),
+    /// A set from another application, read, for the import review.
+    Review(ForeignSet, ImportOptions),
+}
 
 /// The open dialog: its state and options.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Host {
     state: DialogState,
     options: Options,
+    pending: Vec<Pending>,
+    /// Whether a frame drew it: until then nothing was edited, and closing needs no pass.
+    shown: bool,
+    /// Whether OK or Cancel was asked for (it ends in the next frame).
+    closing: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Host {
     fn new() -> Host {
-        Host { state: DialogState::new(), options: options() }
+        Host { state: DialogState::new(), options: options(), pending: Vec::new(), shown: false, closing: false }
     }
 
     pub(crate) fn recording(&self) -> bool {
@@ -54,6 +83,7 @@ impl Host {
 /// The owner-approved behavior: live editing with Cancel restoring, conflicts asked about, no
 /// double presses, the US keyboard pane, InDesign sets to import, and no rows for the engine
 /// commands only scripts run.
+#[cfg(not(target_arch = "wasm32"))]
 fn options() -> Options {
     Options::default().with(|o| {
         o.keyboard = true;
@@ -62,34 +92,14 @@ fn options() -> Options {
     })
 }
 
-/// The dialog's words through DesignCraft's catalogs; strings without a translation stay English.
-pub struct DcText<'a> {
-    pub lang: &'a str,
-}
-
-impl Text for DcText<'_> {
-    fn ui<'a>(&'a self, source: &'a str) -> Cow<'a, str> {
-        tr(self.lang, source).into()
-    }
-
-    fn plural(&self, n: u64, one: &str, other: &str) -> String {
-        tr(self.lang, if n == 1 { one } else { other }).replace("{n}", &n.to_string())
-    }
-
-    fn command<'a>(&'a self, b: &'a Bindable) -> Cow<'a, str> {
-        tr(self.lang, &b.label).into()
-    }
-
-    fn segment<'a>(&'a self, s: &'a str) -> Cow<'a, str> {
-        tr(self.lang, s).into()
-    }
-
-    fn rtl(&self) -> bool {
-        crate::i18n::is_rtl(self.lang)
-    }
+/// The dialog for one call: the app's keymap and sets, with the dialog's options.
+#[cfg(not(target_arch = "wasm32"))]
+fn dialog<'a>(keymap: &'a mut Keymap, sets: &'a mut Profiles, options: &'a Options) -> ShortcutsDialog<'a> {
+    ShortcutsDialog::new(keymap).options(options).sets(sets, &BUILTINS)
 }
 
 /// Edit › Keyboard Shortcuts…; with `select`, the dialog opens on that command.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn open(app: &mut DesignApp, select: Option<&craft_keymap::CommandRef>) {
     crate::dialogs::cancel(app);
     app.sync_keymap();
@@ -101,49 +111,74 @@ pub fn open(app: &mut DesignApp, select: Option<&craft_keymap::CommandRef>) {
     app.ui.dialog = Some(crate::dialogs::Dialog::new(DIALOG_ID, json!({})));
 }
 
-/// The dialog's size: most of the window, within the dialog's own limits.
-fn size(screen: egui::Vec2) -> egui::Vec2 {
-    let max = egui::vec2(1320.0, 900.0).min(screen - egui::vec2(48.0, 96.0)).max(egui::vec2(240.0, 180.0));
-    let min = egui::vec2(640.0, 480.0).min(max);
-    (screen * 0.8).clamp(min, max)
-}
-
-/// One frame of the open dialog, drawn in DesignCraft's movable modal.
+/// One frame of the open dialog: what was asked from outside runs first, then the dialog is drawn in the framework's modal
+/// layer, in the interface's language and direction.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
-    let mut host = app.shortcut_dialog.take().unwrap_or_else(|| Box::new(Host::new()));
+    use craft_ui_widgets::runtime::env::{Direction, WordsOverride, with_env};
+
+    let wanted = app.ui.dialog.as_ref().is_some_and(|d| d.id == DIALOG_ID);
+    let mut host = match app.shortcut_dialog.take() {
+        Some(host) => host,
+        None if wanted => Box::new(Host::new()),
+        None => return,
+    };
+    if !wanted && !host.closing {
+        // Another dialog took its place: the edits are cancelled.
+        host.pending.push(Pending::Cancel);
+        host.closing = true;
+    }
+    host.shown = true;
     let lang = app.ui.language.clone();
-    let text = DcText { lang: &lang };
-    let title = tr(&lang, "Keyboard Shortcuts");
-    let area = egui::Id::unique("dialog");
-    let instance = area.with(DIALOG_ID);
-    let body = size(ctx.content_rect().size());
-    let mut out = None;
-    crate::modal_drag::modal(ctx, area, instance).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
-        let title_top = ui.cursor().top();
-        crate::rtl::label(ui, egui::RichText::new(title).font(crate::theme::semibold(16.0)));
-        let margin = egui::Frame::popup(ui.style()).inner_margin;
-        let title_row = egui::Rect::from_min_max(
-            egui::pos2(ui.max_rect().left() - margin.leftf(), title_top - margin.topf()),
-            egui::pos2(ui.max_rect().left() + body.x + margin.rightf(), ui.min_rect().bottom()),
-        );
-        crate::modal_drag::title_drag(ui, instance, title_row);
-        ui.add_space(8.0);
-        let (rect, _) = ui.allocate_exact_size(body, egui::Sense::hover());
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-        let dialog = ShortcutsDialog::new(&mut app.keymap, &text).options(&host.options).sets(&mut app.ui.shortcut_sets, &BUILTINS);
-        out = dialog.ui(&mut child, &mut host.state);
+    host.options.title = Some(tr(&lang, "Keyboard Shortcuts").to_owned());
+    host.options.custom_set_name = Some(tr(&lang, CUSTOM_SET).to_owned());
+    let words = crate::framework_host::words(&lang);
+    let direction = if crate::i18n::is_rtl(&lang) { Direction::Rtl } else { Direction::Ltr };
+    let asked_ok = host.pending.iter().any(|p| matches!(p, Pending::Ok));
+    // This area only supplies a parent: the dialog mounts its own modal layer.
+    let shown = egui::Area::new(egui::Id::new("keyboard_shortcuts_host")).order(egui::Order::Foreground).show(ctx, |ui| {
+        with_env(
+            ui,
+            |env| {
+                env.direction = Some(direction);
+                env.words = Some(WordsOverride::Replace(words));
+            },
+            |ui| {
+                let Host { state, options, pending, .. } = &mut *host;
+                for step in std::mem::take(pending) {
+                    let dialog = dialog(&mut app.keymap, &mut app.ui.shortcut_sets, options);
+                    match step {
+                        Pending::Ok => dialog.ok(ui, state),
+                        Pending::Cancel => dialog.cancel(ui, state),
+                        // A refused file is reported in the dialog.
+                        Pending::Json(text) => {
+                            let _ = dialog.import_json(ui, state, &text);
+                        }
+                        Pending::Review(set, import) => dialog.review_import(ui, state, set, import),
+                    }
+                }
+                dialog(&mut app.keymap, &mut app.ui.shortcut_sets, options).show(ui, state).outcome
+            },
+        )
     });
+    let outcome = shown.inner;
     // Live: the menus, `sync_keymap` and ui.json follow every edit, and a Cancel. The dialog
     // saves the sets itself.
     if app.ui.shortcuts != *app.keymap.overrides() {
         app.ui.shortcuts = app.keymap.overrides().clone();
     }
-    match out {
+    let refused = asked_ok && !matches!(outcome, Some(Outcome::Ok));
+    match outcome {
         Some(Outcome::Import { .. }) => request_import(app, &mut host),
-        Some(Outcome::Export { name, json }) => save_file(app, &format!("{name}.json"), json.as_bytes()),
+        Some(Outcome::Export { name, json, .. }) => save_file(app, &format!("{name}.json"), json.as_bytes()),
         Some(Outcome::Summary { name, html, .. }) => save_file(app, &format!("{name}.html"), html.as_bytes()),
         Some(Outcome::Remembered(answers)) => app.shortcut_answers = answers,
         _ => {}
+    }
+    if refused && host.state.is_open() {
+        // An OK the dialog refuses (no room for another set) leaves it open with its message.
+        host.closing = false;
+        app.ui.dialog = Some(crate::dialogs::Dialog::new(DIALOG_ID, json!({})));
     }
     if host.state.is_open() {
         app.shortcut_dialog = Some(host);
@@ -156,29 +191,23 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
 }
 
 /// OK (`ok`) or Cancel from outside the dialog: `ui.dialog.confirm` and `ui.dialog.cancel`, or
-/// another dialog taking its place. An OK the dialog refuses (no room for another set) leaves it
-/// open with its message and returns the error.
+/// another dialog taking its place. The dialog answers in the next frame; one no frame ever drew has nothing to answer.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn close(app: &mut DesignApp, ok: bool) -> Result<(), String> {
-    let Some(mut host) = app.shortcut_dialog.take() else { return Ok(()) };
-    let lang = app.ui.language.clone();
-    let text = DcText { lang: &lang };
-    let dialog = ShortcutsDialog::new(&mut app.keymap, &text).options(&host.options).sets(&mut app.ui.shortcut_sets, &BUILTINS);
-    if ok {
-        dialog.ok(&mut host.state);
-    } else {
-        dialog.cancel(&mut host.state);
+    let Some(host) = app.shortcut_dialog.as_mut() else { return Ok(()) };
+    if !host.shown {
+        app.shortcut_dialog = None;
+        crate::keys::store(app);
+        return Ok(());
     }
-    crate::keys::store(app);
-    if ok && host.state.is_open() {
-        app.shortcut_dialog = Some(host);
-        app.ui.dialog = Some(crate::dialogs::Dialog::new(DIALOG_ID, json!({})));
-        return Err("the shortcut set could not be saved".into());
-    }
+    host.pending.push(if ok { Pending::Ok } else { Pending::Cancel });
+    host.closing = true;
     Ok(())
 }
 
 /// Import: the chosen file is read when the open dialog answers, or arrives later through
 /// [`deliver`] in a browser.
+#[cfg(not(target_arch = "wasm32"))]
 fn request_import(app: &mut DesignApp, host: &mut Host) {
     let request = app.import_request(PURPOSE);
     if let Some(open) = app.services.open_async.as_mut() {
@@ -201,6 +230,7 @@ fn request_import(app: &mut DesignApp, host: &mut Host) {
 }
 
 /// A set file chosen in the browser, for the open dialog. False when the dialog is closed.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn deliver(app: &mut DesignApp, bytes: &[u8]) -> bool {
     let Some(mut host) = app.shortcut_dialog.take() else { return false };
     match crate::shortcut_import::decode(bytes) {
@@ -211,28 +241,30 @@ pub(crate) fn deliver(app: &mut DesignApp, bytes: &[u8]) -> bool {
     true
 }
 
-/// A set file's text into the dialog: craft-keymap JSON becomes a new set at once (the dialog
-/// shows why it cannot); an InDesign set opens the import review.
+/// A set file's text for the dialog: craft-keymap JSON becomes a new set at once (the dialog
+/// shows why it cannot); an InDesign set opens the import review. Both happen in the next frame.
+#[cfg(not(target_arch = "wasm32"))]
 fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
-    let lang = app.ui.language.clone();
-    let words = DcText { lang: &lang };
     if text.trim_start().starts_with('{') {
-        let dialog = ShortcutsDialog::new(&mut app.keymap, &words).options(&host.options).sets(&mut app.ui.shortcut_sets, &BUILTINS);
-        // A refused file is reported in the dialog.
-        let _ = dialog.import_json(&mut host.state, text);
+        // A set exported before panels and tools had commands of their own names them by the old keys.
+        let text = match serde_json::from_str::<Value>(text) {
+            Ok(mut set) => {
+                crate::keys::migrate_sets_value(&mut set);
+                set.to_string()
+            }
+            Err(_) => text.to_owned(),
+        };
+        host.pending.push(Pending::Json(text));
         return;
     }
     match crate::shortcut_import::read_set(text) {
-        Ok(set) => {
-            let options = crate::shortcut_import::import_options(app.shortcut_answers.clone());
-            let dialog = ShortcutsDialog::new(&mut app.keymap, &words).options(&host.options).sets(&mut app.ui.shortcut_sets, &BUILTINS);
-            dialog.review_import(&mut host.state, set, options);
-        }
+        Ok(set) => host.pending.push(Pending::Review(set, crate::shortcut_import::import_options(app.shortcut_answers.clone()))),
         Err(e) => host.state.show_error(e),
     }
 }
 
 /// Writes a file the dialog made where the user chooses (a download on the web).
+#[cfg(not(target_arch = "wasm32"))]
 fn save_file(app: &mut DesignApp, name: &str, bytes: &[u8]) {
     let name: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
     let bytes = bytes.to_vec();
@@ -252,6 +284,36 @@ fn save_file(app: &mut DesignApp, name: &str, bytes: &[u8]) {
     }
 }
 
+/// The browser build has no dialog: the keymap still applies, and `window.setShortcut` edits it.
+#[cfg(target_arch = "wasm32")]
+pub struct Host;
+
+#[cfg(target_arch = "wasm32")]
+impl Host {
+    pub(crate) fn recording(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn open(app: &mut DesignApp, _select: Option<&craft_keymap::CommandRef>) {
+    let message = crate::i18n::tr(&app.ui.language, "The Keyboard Shortcuts dialog is not available in the browser yet.").to_owned();
+    app.status(message);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn show(_app: &mut DesignApp, _ctx: &egui::Context) {}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn close(_app: &mut DesignApp, _ok: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn deliver(_app: &mut DesignApp, _bytes: &[u8]) -> bool {
+    false
+}
+
 /// Loads the active set into the keymap and `ui.shortcuts` (after an import made a new set).
 pub(crate) fn load_active_set(app: &mut DesignApp) {
     let overrides = app.ui.shortcut_sets.active_overrides(&BUILTINS).clone();
@@ -259,30 +321,41 @@ pub(crate) fn load_active_set(app: &mut DesignApp) {
     app.ui.shortcuts = overrides;
 }
 
-/// The strings the dialog looks up: `craft_keymap::ui::STRINGS` and both forms of its plurals.
-#[cfg(test)]
+/// The English strings the dialog looks up: every word of its word table and both forms of its counts.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn strings() -> impl Iterator<Item = &'static str> {
-    craft_keymap::ui::STRINGS.iter().copied().chain(craft_keymap::ui::PLURALS.iter().flat_map(|(one, other)| [*one, *other]))
+    use craft_menu::shortcuts::ShortcutWords;
+    use craft_ui_widgets::runtime::env::WordSet as _;
+    ShortcutWords::WORDS.iter().map(|word| word.english).chain(ShortcutWords::COUNTS.iter().flat_map(|count| [count.one, count.word.english]))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use craft_keymap::{CommandRef, Trigger};
-    use egui::{Key, Modifiers, vec2};
+    use craft_keymap::CommandRef;
+    use egui::{Key, Modifiers, accesskit::Role, vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
+    use crate::dialogs::table_layout_kit as kit;
     use crate::menus::shortcut_of;
 
     fn app() -> DesignApp {
-        DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.language = "en".to_owned();
+        app
     }
 
-    /// The app's frame as far as shortcuts go: key dispatch, then the open dialog.
-    fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
+    /// The app's frame as far as shortcuts go: key dispatch, then the open dialog, over the installed framework runtime.
+    fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
+        let ctx = egui::Context::default();
+        app.framework_transform = false;
+        app.framework_opacity = true;
+        app.install_framework(&ctx);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        assert!(app.framework_installed, "the framework dialog needs the installed runtime");
         let mut ready = false;
-        let mut h = Harness::builder().with_size(vec2(1280.0, 860.0)).build_ui_state(
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(1280.0, 860.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 if !ready {
                     crate::theme::install_fonts(ui.ctx(), &app.ui.language);
@@ -295,7 +368,8 @@ mod tests {
             },
             app,
         );
-        h.run();
+        h.input_mut().max_texture_side = Some(8192);
+        kit::steps(&mut h, 3);
         h
     }
 
@@ -306,31 +380,39 @@ mod tests {
     }
 
     fn click(h: &mut Harness<'_, DesignApp>, label: &str) {
-        h.get_by_label(label).click();
-        h.run();
+        kit::click_first(h, label);
     }
 
     fn press(h: &mut Harness<'_, DesignApp>, modifiers: Modifiers, key: Key) {
-        h.key_press_modifiers(modifiers, key);
-        h.run();
+        kit::key(h, key, modifiers);
     }
 
     fn has(h: &Harness<'_, DesignApp>, label: &str) -> bool {
-        h.query_by_label(label).is_some()
+        h.query_all_by_label(label).next().is_some()
     }
 
-    fn chord(h: &Harness<'_, DesignApp>, text: &str) -> String {
-        Trigger::parse(text).unwrap().display(h.state().keymap.platform())
+    /// Whether a node whose name contains `part` exists.
+    fn has_part(h: &Harness<'_, DesignApp>, part: &str) -> bool {
+        h.query_all_by_label_contains(part).next().is_some()
     }
 
-    /// Searches for a command and returns the label of its row's shortcut cell, which starts
-    /// recording.
-    fn row(h: &mut Harness<'_, DesignApp>, label: &str, id: &str) -> String {
-        h.get_by_label("Search:").focus();
-        h.run();
-        h.get_by_label("Search:").type_text(label);
-        h.run();
-        format!("{label}: {}", crate::keys::shortcut_display(&h.state().keymap, &CommandRef::new(id)).unwrap())
+    /// Whether a link whose name contains `part` exists.
+    fn has_link(h: &Harness<'_, DesignApp>, part: &str) -> bool {
+        use egui_kittest::kittest::NodeT;
+        h.query_all_by_label_contains(part).any(|node| node.accesskit_node().role() == Role::Link)
+    }
+
+    /// Searches for a command and returns the start of the name of its row's shortcut cell, which starts recording.
+    fn row(h: &mut Harness<'_, DesignApp>, label: &str) -> String {
+        kit::click_first(h, "Search:");
+        kit::key(h, Key::A, Modifiers::COMMAND);
+        kit::type_text(h, label);
+        format!("{label}: ")
+    }
+
+    /// Clicks the shortcut cell whose name starts with `start` (the chord follows it as the platform shows it).
+    fn click_cell(h: &mut Harness<'_, DesignApp>, start: &str) {
+        kit::click_containing(h, start);
     }
 
     /// A command's shortcut with no changes.
@@ -338,27 +420,27 @@ mod tests {
         crate::keys::shortcut(&crate::keys::new_keymap(Overrides::new()), &CommandRef::new(id))
     }
 
-    fn open(h: &Harness<'_, DesignApp>) -> bool {
+    fn open_now(h: &Harness<'_, DesignApp>) -> bool {
         h.state().ui.dialog.as_ref().is_some_and(|d| d.id == DIALOG_ID) && h.state().shortcut_dialog.is_some()
     }
 
     #[test]
     fn a_recorded_chord_runs_nothing_changes_the_menus_at_once_and_ok_keeps_a_custom_set() {
         let mut h = opened();
-        let quick_apply = row(&mut h, "Quick Apply…", "app.palette");
-        click(&mut h, &quick_apply);
+        let quick_apply = row(&mut h, "Quick Apply…");
+        click_cell(&mut h, &quick_apply);
         // Preferences' chord is recorded, not run.
         press(&mut h, Modifiers::COMMAND, Key::K);
-        assert!(open(&h), "Preferences did not open");
-        assert!(has(&h, &format!("⚠ {} is used by Preferences…", chord(&h, "Cmd+K"))));
+        assert!(open_now(&h), "Preferences did not open");
+        assert!(has_part(&h, "is used by Preferences…"), "the conflict is asked about");
         click(&mut h, "Take It");
         assert_eq!(shortcut_of(h.state(), "app.palette").as_deref(), Some("Cmd+K"));
         assert_eq!(shortcut_of(h.state(), "app.preferences"), None);
         assert_eq!(h.state().ui.shortcuts.get("app.palette"), Some(&["Cmd+K".to_string()][..]), "ui.json follows live");
         assert!(h.state().ui.shortcut_sets.sets().is_empty(), "the set is saved by OK");
 
-        click(&mut h, "OK");
-        assert!(!open(&h) && h.state().ui.dialog.is_none());
+        kit::click(&mut h, &[Role::Button], "OK", 0);
+        assert!(!open_now(&h) && h.state().ui.dialog.is_none());
         let sets = &h.state().ui.shortcut_sets;
         assert_eq!(sets.active(), "Custom", "edits of the built-in set become a copy");
         assert_eq!(sets.active_overrides(&BUILTINS), &h.state().ui.shortcuts);
@@ -366,7 +448,7 @@ mod tests {
         assert_eq!(saved["shortcuts"]["app.palette"], "Cmd+K", "the map earlier versions read");
         assert_eq!(saved["shortcutSets"]["active"], "Custom");
         // The next frames keep it.
-        h.run();
+        kit::steps(&mut h, 2);
         assert_eq!(shortcut_of(h.state(), "app.palette").as_deref(), Some("Cmd+K"));
     }
 
@@ -377,10 +459,10 @@ mod tests {
         let mut h = harness(app);
         click(&mut h, "New shortcut: None");
         press(&mut h, Modifiers::COMMAND, Key::P);
-        assert!(has(&h, "⚠ Print…"), "Print is listed as holding the chord");
+        assert!(has_link(&h, "Print…"), "Print is listed as holding the chord");
         click(&mut h, "Assign");
-        click(&mut h, "OK");
-        assert!(!open(&h));
+        kit::click(&mut h, &[Role::Button], "OK", 0);
+        assert!(!open_now(&h));
         let app = h.state();
         assert_eq!(shortcut_of(app, "file.print"), None, "the menus no longer show it on Print");
         let bindings: Vec<String> = app.keymap.bindings(&CommandRef::new("app.paragraphStylesPanel")).iter().map(|b| b.trigger.to_string()).collect();
@@ -395,27 +477,27 @@ mod tests {
     #[test]
     fn cancel_puts_the_keys_and_the_sets_back() {
         let mut h = opened();
-        let quick_apply = row(&mut h, "Quick Apply…", "app.palette");
-        click(&mut h, &quick_apply);
+        let quick_apply = row(&mut h, "Quick Apply…");
+        click_cell(&mut h, &quick_apply);
         press(&mut h, Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT, Key::Num9);
         assert_eq!(shortcut_of(h.state(), "app.palette").as_deref(), Some("Cmd+Alt+Shift+9"));
-        click(&mut h, "Cancel");
-        h.run();
-        assert!(!open(&h));
+        kit::click(&mut h, &[Role::Button], "Cancel", 0);
+        kit::steps(&mut h, 3);
+        assert!(!open_now(&h));
         assert_eq!(shortcut_of(h.state(), "app.palette"), default_of("app.palette"));
         assert!(h.state().ui.shortcuts.is_empty());
         assert_eq!(h.state().ui.shortcut_sets, craft_keymap::Profiles::default());
 
         // `ui.dialog.cancel` from the control channel does the same.
         h.state_mut().run("app.keyboardShortcuts", json!({"command": "app.palette"})).unwrap();
-        h.run();
-        let quick_apply = row(&mut h, "Quick Apply…", "app.palette");
-        click(&mut h, &quick_apply);
+        kit::steps(&mut h, 3);
+        let quick_apply = row(&mut h, "Quick Apply…");
+        click_cell(&mut h, &quick_apply);
         press(&mut h, Modifiers::NONE, Key::F2);
         assert_eq!(shortcut_of(h.state(), "app.palette").as_deref(), Some("F2"));
         crate::dialogs::cancel(h.state_mut());
-        h.run();
-        assert!(!open(&h));
+        kit::steps(&mut h, 3);
+        assert!(!open_now(&h));
         assert_eq!(shortcut_of(h.state(), "app.palette"), default_of("app.palette"));
     }
 
@@ -442,18 +524,18 @@ mod tests {
         let mut h = harness(app);
         click(&mut h, "Import…");
         h.state_mut().settle_dialogs();
-        h.run();
+        kit::steps(&mut h, 3);
         assert!(has(&h, "Import “Studio”"));
         assert!(h.state().ui.shortcuts.is_empty(), "the review changes nothing");
         click(&mut h, "Import as New Set");
-        assert!(has(&h, "Imported as “Studio”"));
+        assert!(has_part(&h, "Imported as “Studio”"));
         let panel = |h: &Harness<'_, DesignApp>| crate::keys::shortcut(&h.state().keymap, &crate::keys::panel("character"));
         assert_eq!(panel(&h).as_deref(), Some("Cmd+T"));
         assert_eq!(shortcut_of(h.state(), "app.characterPanel").as_deref(), Some("Cmd+T"), "the panel's twin keeps the key they share");
         assert_eq!(crate::keys::shortcut(&h.state().keymap, &crate::keys::tool("pen")).as_deref(), Some("Cmd+Shift+F3"));
         click(&mut h, "Done");
-        click(&mut h, "OK");
-        assert!(!open(&h));
+        kit::click(&mut h, &[Role::Button], "OK", 0);
+        assert!(!open_now(&h));
         assert_eq!(h.state().ui.shortcut_sets.active(), "Studio");
         assert_eq!(h.state().ui.shortcut_sets.active_overrides(&BUILTINS), &h.state().ui.shortcuts);
         // Back to the defaults by switching sets.
@@ -491,13 +573,20 @@ mod tests {
 
     #[test]
     fn every_dialog_string_reads_in_english_without_a_translation() {
-        let text = DcText { lang: "" };
+        let mut count = 0;
         for s in strings() {
-            assert_eq!(text.ui(s), s);
+            assert_eq!(tr("", s), s);
+            count += 1;
         }
-        assert_eq!(craft_keymap::ui::STRINGS.len(), 175);
-        assert_eq!(craft_keymap::ui::PLURALS.len(), 11);
-        assert_eq!(text.plural(2, "{n} command will change", "{n} commands will change"), "2 commands will change");
-        assert_eq!(DcText { lang: "fr" }.ui("Cancel"), tr("fr", "Cancel"));
+        assert!(count > 0);
+        {
+            use craft_menu::shortcuts::ShortcutWords;
+            use craft_ui_widgets::runtime::env::WordSet as _;
+            assert_eq!(ShortcutWords::COUNTS.len(), 11);
+        }
+        // One `Words` per language: a new one is a new generation, which builds every view that reads it again.
+        let (a, b) = (crate::framework_host::words("fr"), crate::framework_host::words("fr"));
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert!(std::sync::Arc::ptr_eq(&crate::framework_host::host("fr"), &crate::framework_host::host("fr")));
     }
 }

@@ -74,7 +74,7 @@ impl<'a> Attrs<'a> {
 }
 
 /// The text a draft value shows in a text field (`Dialog::s`'s reading of it).
-fn text_of(value: &Value) -> String {
+pub(super) fn text_of(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),

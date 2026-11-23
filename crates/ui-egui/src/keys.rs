@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use craft_keymap::{AssignError, Bindable, Binding, Chord, CommandRef, Key, Keymap, Kind, Mods, Overrides, Platform, Policy, Scope, Scopes, Trigger};
+use craft_keymap::{
+    AssignError, Binding, Chord, CommandDef, CommandKind, CommandRef, Key, Keymap, Mods, Overrides, Platform, Policy, Scope, Scopes, Trigger,
+};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
@@ -15,10 +17,17 @@ use crate::menus::{self, Item};
 /// The context bindings such as `Text: Cmd+B` name; active while text is being typed on the canvas.
 pub const TEXT_CONTEXT: &str = "Text";
 
-/// The command that opens a panel; a binding on it carries the panel id.
+/// The command that opens a panel. The keymap holds each panel as a command of its own, `window.panel.show.<panel id>`
+/// ([`panel`]), so every command has a unique id; the menus and the control channel still run `window.panel` with the panel in
+/// its params ([`runs`]).
 pub const PANEL_COMMAND: &str = "window.panel";
-/// The command that selects a tool; a binding on it carries the tool id.
+/// The command that selects a tool. The keymap holds each tool as a command of its own, `tool.select.<tool id>` ([`tool`]);
+/// running one is `tool.select` with the tool in its params ([`runs`]).
 pub const TOOL_COMMAND: &str = "tool.select";
+/// The id prefix of a panel's command in the keymap.
+const PANEL_PREFIX: &str = "window.panel.show.";
+/// The id prefix of a tool's command in the keymap.
+const TOOL_PREFIX: &str = "tool.select.";
 
 /// InDesign's default keys for the panels DesignCraft has, where DesignCraft's own defaults leave
 /// the key free.
@@ -77,20 +86,102 @@ const PANEL_TWINS: &[(&str, &str)] = &[
     ("textWrap", "object.textWrap"),
 ];
 
+/// The keymap's command that opens the panel `id`.
 pub fn panel(id: &str) -> CommandRef {
-    CommandRef::with_params(PANEL_COMMAND, json!({ "panel": id }))
+    CommandRef::new(format!("{PANEL_PREFIX}{id}"))
 }
 
+/// The keymap's command that selects the tool `id`.
 pub fn tool(id: &str) -> CommandRef {
-    CommandRef::with_params(TOOL_COMMAND, json!({ "tool": id }))
+    CommandRef::new(format!("{TOOL_PREFIX}{id}"))
 }
 
-/// The command a menu row or a `window.setShortcut` call names.
+/// The panel a keymap command opens, if it is a panel's.
+pub fn panel_of(command: &CommandRef) -> Option<&str> {
+    command.id.strip_prefix(PANEL_PREFIX)
+}
+
+/// The tool a keymap command selects, if it is a tool's.
+pub fn tool_of(command: &CommandRef) -> Option<&str> {
+    command.id.strip_prefix(TOOL_PREFIX)
+}
+
+/// What running a keymap command is: the command id and params the menus and the engine take. A panel's command is
+/// `window.panel` with the panel, a tool's is `tool.select` with the tool, any other is itself.
+pub fn runs(command: &CommandRef) -> (String, Value) {
+    if let Some(panel) = panel_of(command) {
+        return (PANEL_COMMAND.to_owned(), json!({ "panel": panel }));
+    }
+    if let Some(tool) = tool_of(command) {
+        return (TOOL_COMMAND.to_owned(), json!({ "tool": tool }));
+    }
+    (command.id.clone(), command.params.clone())
+}
+
+/// The keymap command a menu row or a `window.setShortcut` call names: `window.panel` with a panel and `tool.select` with a
+/// tool are that panel's and that tool's own commands.
 pub fn command_ref(id: &str, params: &Value) -> CommandRef {
-    match params {
-        Value::Null => CommandRef::new(id),
-        Value::Object(m) if m.is_empty() => CommandRef::new(id),
-        p => CommandRef::with_params(id, p.clone()),
+    match (id, params) {
+        (PANEL_COMMAND, p) if p.get("panel").and_then(Value::as_str).is_some() => panel(p["panel"].as_str().unwrap_or_default()),
+        (TOOL_COMMAND, p) if p.get("tool").and_then(Value::as_str).is_some() => tool(p["tool"].as_str().unwrap_or_default()),
+        (_, Value::Null) => CommandRef::new(id),
+        (_, Value::Object(m)) if m.is_empty() => CommandRef::new(id),
+        (_, p) => CommandRef::with_params(id, p.clone()),
+    }
+}
+
+/// The key a saved shortcut used for a panel's or a tool's command before each had an id of its own
+/// (`window.panel {"panel":"layers"}`, `tool.select {"tool":"pen"}`): the key that command has now. `None` for any other key.
+pub fn migrated_key(key: &str) -> Option<String> {
+    let (id, params) = key.split_once(' ')?;
+    if id != PANEL_COMMAND && id != TOOL_COMMAND {
+        return None;
+    }
+    let params: Value = serde_json::from_str(params).ok()?;
+    let command = command_ref(id, &params);
+    (command.params.is_null() && command.id != id).then(|| command.key())
+}
+
+/// `overrides` (a saved map or list of shortcut entries) with the keys of earlier versions replaced by the commands' keys now.
+/// An entry under a key that is already current stays; the old one is dropped.
+pub fn migrate_overrides_value(overrides: &mut Value) {
+    match overrides {
+        Value::Object(map) => {
+            let old: Vec<String> = map.keys().filter(|key| migrated_key(key).is_some()).cloned().collect();
+            for key in old {
+                let Some(value) = map.remove(&key) else { continue };
+                if let Some(now) = migrated_key(&key) {
+                    map.entry(now).or_insert(value);
+                }
+            }
+        }
+        Value::Array(items) => {
+            let current: Vec<String> = items.iter().filter_map(|item| item.get("command").and_then(Value::as_str).map(str::to_owned)).collect();
+            items.retain(|item| {
+                let Some(now) = item.get("command").and_then(Value::as_str).and_then(migrated_key) else { return true };
+                !current.contains(&now)
+            });
+            for item in items.iter_mut() {
+                if let Some(now) = item.get("command").and_then(Value::as_str).and_then(migrated_key) {
+                    item["command"] = Value::String(now);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `value` with every `overrides` it holds migrated ([`migrate_overrides_value`]): a stored set list
+/// (`{version, active, sets: [{name, overrides}]}`) and an exported set (`{format, name, overrides}`).
+pub fn migrate_sets_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, inner) in map.iter_mut() {
+                if key == "overrides" { migrate_overrides_value(inner) } else { migrate_sets_value(inner) }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(migrate_sets_value),
+        _ => {}
     }
 }
 
@@ -144,24 +235,24 @@ pub fn keymap_for(platform: Platform, overrides: Overrides) -> Keymap {
 /// Every bindable command, in dispatch order: where two share keys the earlier one runs. UI
 /// commands come first (⌘N is the New Document dialog, not a bare `file.new`), then engine
 /// commands, panels and tools.
-pub fn catalog() -> &'static [Bindable] {
+pub fn catalog() -> &'static [CommandDef] {
     &built().0
 }
 
 /// Whether the Keyboard Shortcuts dialog lists `b`. Engine commands with neither a menu row nor a
 /// default key are for scripts and the control channel (`file.save`, `selection.set`): the dialog
 /// leaves them out, and they still take keys and count in conflicts.
-pub fn listed(b: &Bindable) -> bool {
+pub fn listed(b: &CommandDef) -> bool {
     !(b.command.params.is_null() && built().1.contains(b.command.id.as_str()))
 }
 
-fn built() -> &'static (Vec<Bindable>, HashSet<&'static str>) {
-    static CATALOG: OnceLock<(Vec<Bindable>, HashSet<&'static str>)> = OnceLock::new();
+fn built() -> &'static (Vec<CommandDef>, HashSet<&'static str>) {
+    static CATALOG: OnceLock<(Vec<CommandDef>, HashSet<&'static str>)> = OnceLock::new();
     CATALOG.get_or_init(build_catalog)
 }
 
 /// The catalog and the engine commands [`listed`] leaves out.
-fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
+fn build_catalog() -> (Vec<CommandDef>, HashSet<&'static str>) {
     let paths = menu_paths();
     // An engine command's own menu placement counts only where no menu row stands: a row there
     // runs a UI command in its place (File › Save is the Save dialog when needed), and two
@@ -170,8 +261,8 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
     let rows: HashSet<Vec<String>> = paths.values().flatten().map(|p| normalized(p)).collect();
     let app = Scope::app();
     let mut out = Vec::new();
-    let mut add = |command: CommandRef, label: &str, defaults: &[&str], fallback_path: Option<Vec<String>>, kind: Kind| {
-        let mut b = Bindable::new(command, label, app.clone()).with_kind(kind);
+    let mut add = |command: CommandRef, label: &str, defaults: &[&str], fallback_path: Option<Vec<String>>, kind: CommandKind| {
+        let mut b = CommandDef::new(command, label, app.clone()).with_kind(kind);
         match paths.get(&b.command.key()) {
             Some(found) => b.paths.extend(found.iter().cloned()),
             None => b.paths.extend(fallback_path.filter(|p| !rows.contains(&normalized(p)))),
@@ -182,7 +273,7 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         out.push(b);
     };
     for (id, label, _, _) in menus::UI_COMMANDS {
-        add(CommandRef::new(*id), label, menus::default_shortcut(id).as_slice(), None, Kind::Command);
+        add(CommandRef::new(*id), label, menus::default_shortcut(id).as_slice(), None, CommandKind::Command);
     }
     // A UI command's default key runs it, never the engine command it stands in for (⌘S is the
     // Save dialog when needed, not a bare `file.save`): the engine command does not get that key.
@@ -199,7 +290,7 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
             internal.insert(c.id);
         }
         let path = (!c.menu.is_empty()).then(|| c.menu.iter().map(|s| s.to_string()).chain([c.label.to_string()]).collect());
-        add(CommandRef::new(c.id), c.label, shortcut.as_slice(), path, Kind::Command);
+        add(CommandRef::new(c.id), c.label, shortcut.as_slice(), path, CommandKind::Command);
     }
     let mut seen = Vec::new();
     for (id, label, _) in crate::dock::DOCK_TABS.iter().chain(crate::dock::ICON_PANELS) {
@@ -210,25 +301,27 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
         let own = PANEL_KEYS.iter().find(|(p, _)| p == id).map(|(_, k)| *k);
         let twin = PANEL_TWINS.iter().find(|(p, _)| p == id).and_then(|(_, c)| menus::default_shortcut(c));
         let defaults: Vec<&str> = own.into_iter().chain(twin).collect();
-        add(panel(id), label, &defaults, Some(vec!["Window".into(), (*label).into()]), Kind::Command);
+        add(panel(id), label, &defaults, Some(vec!["Window".into(), (*label).into()]), CommandKind::Command);
     }
     for group in designcraft_tools::TOOL_GROUPS {
         let Some(first) = group.first() else { continue };
         for t in group.iter() {
-            let kind = Kind::Tool { group: Some(first.id.to_string()) };
+            let kind = CommandKind::Tool { group: Some(first.id.to_string()) };
             add(tool(t.id), t.label, t.shortcut.as_slice(), None, kind);
         }
     }
     for b in &mut out {
         // Shortcut sets file tools under Tools, which is no menu here.
-        if matches!(b.kind, Kind::Tool { .. }) {
+        if matches!(b.kind, CommandKind::Tool { .. }) {
             b.import_paths.push(vec!["Tools".into(), b.label.clone()]);
         }
-        if !b.command.params.is_null() {
+        if !b.command.params.is_null() || panel_of(&b.command).is_some() || tool_of(&b.command).is_some() {
             continue;
         }
         let id = b.command.id.as_str();
-        b.is_toggle = b.label.starts_with("Show/Hide ") || TOGGLES.contains(&id);
+        if (b.label.starts_with("Show/Hide ") || TOGGLES.contains(&id)) && b.kind == CommandKind::Command {
+            b.kind = CommandKind::Toggle;
+        }
         if TYPING_COMMANDS.contains(&id)
             && let Some(text) = Scope::new(TEXT_CONTEXT)
         {
@@ -354,11 +447,7 @@ fn assign_error(keymap: &Keymap, sc: &str, e: &AssignError) -> String {
 
 /// Whether `a` and `b` are a panel and the command that opens it ([`PANEL_TWINS`]).
 pub fn twins(a: &CommandRef, b: &CommandRef) -> bool {
-    let one_way = |p: &CommandRef, c: &CommandRef| {
-        p.id == PANEL_COMMAND
-            && c.params.is_null()
-            && p.params.get("panel").and_then(Value::as_str).is_some_and(|id| PANEL_TWINS.contains(&(id, c.id.as_str())))
-    };
+    let one_way = |p: &CommandRef, c: &CommandRef| c.params.is_null() && panel_of(p).is_some_and(|id| PANEL_TWINS.contains(&(id, c.id.as_str())));
     one_way(a, b) || one_way(b, a)
 }
 
@@ -433,6 +522,28 @@ mod tests {
         let r = menus::run_ui(&mut app, "window.setShortcut", &json!({"id": "app.palette", "shortcut": sc, "steal": true})).unwrap();
         assert!(r.unwrap_err().ends_with("is reserved by the system"));
         assert_eq!(menus::shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Enter"));
+    }
+
+    /// Every command of the catalog has an id of its own and no params: the framework's command catalog indexes by id alone,
+    /// so a panel and a tool are commands of their own, and each runs what the menus and the engine take (`runs`).
+    #[test]
+    fn every_command_has_an_id_of_its_own_and_panels_and_tools_run_their_old_commands() {
+        let mut seen = HashSet::new();
+        for b in catalog() {
+            assert!(b.command.params.is_null(), "{} has params", b.command.key());
+            assert!(seen.insert(b.command.id.as_str()), "{} is in the catalog twice", b.command.id);
+        }
+        assert_eq!(runs(&tool("pen")), ("tool.select".to_owned(), json!({"tool": "pen"})));
+        assert_eq!(runs(&panel("layers")), ("window.panel".to_owned(), json!({"panel": "layers"})));
+        assert_eq!(runs(&CommandRef::new("file.save")), ("file.save".to_owned(), Value::Null));
+        assert_eq!(command_ref("tool.select", &json!({"tool": "pen"})), tool("pen"));
+        assert_eq!(command_ref("window.panel", &json!({"panel": "layers"})), panel("layers"));
+        assert_eq!(migrated_key(r#"window.panel {"panel":"layers"}"#), Some(panel("layers").key()));
+        assert_eq!(migrated_key(r#"tool.select {"tool":"pen"}"#), Some(tool("pen").key()));
+        assert_eq!(migrated_key("file.save"), None);
+        for command in [tool("pen"), panel("layers")] {
+            assert!(catalog().iter().any(|b| b.command == command), "{} is bindable", command.key());
+        }
     }
 
     /// The web build follows the operating system in the browser's user agent; an iPad counts as a
@@ -561,7 +672,7 @@ mod tests {
         let internal = find("selection.set").unwrap();
         assert!(!listed(internal));
         assert!(listed(find("edit.undo").unwrap()));
-        assert!(catalog().iter().filter(|b| matches!(b.kind, Kind::Tool { .. })).all(listed));
+        assert!(catalog().iter().filter(|b| matches!(b.kind, CommandKind::Tool { .. })).all(listed));
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         let r = menus::run_ui(&mut app, "window.setShortcut", &json!({"id": "selection.set", "shortcut": "Cmd+Z"})).unwrap().unwrap();
         assert_eq!(r["conflicts"], json!(["edit.undo"]));

@@ -235,7 +235,7 @@ fn name_of<T: serde::Serialize>(v: &T) -> Value {
 }
 
 /// The report as `window.importShortcuts` returns it. Commands are command keys (`file.save`,
-/// `window.panel {"panel":"layers"}`) under `id`.
+/// `window.panel.show.layers`) under `id`.
 fn report_json(r: &ImportReport) -> Value {
     json!({
         "set": r.set,

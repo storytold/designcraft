@@ -489,6 +489,53 @@ fn panel_shortcuts_open_their_panels() {
     assert!(shown(&app, "links"), "the new key opens Links");
 }
 
+/// Panels and tools were each one command id with the panel or tool in its params; the keymap now has a command id for each.
+/// A ui.json, a stored shortcut set and an exported set that name them the old way load with the same bindings, and the keys run
+/// the same panels and tools.
+#[test]
+fn shortcuts_saved_under_the_old_panel_and_tool_keys_load_with_the_same_bindings() {
+    let pen = r#"tool.select {"tool":"pen"}"#;
+    let layers = r#"window.panel {"panel":"layers"}"#;
+    let saved = json!({
+        "shortcuts": {(pen): "Y", (layers): "Shift+F3", "app.palette": "Cmd+Alt+Shift+9"},
+        "shortcutsMore": {(pen): ["F9"]},
+        "shortcutSets": {"version": 1, "active": "Mine", "sets": [{"name": "Mine", "overrides": [
+            {"command": pen, "keys": ["Y", "F9"]},
+            {"command": layers, "keys": ["Shift+F3"]},
+            {"command": "app.palette", "keys": ["Cmd+Alt+Shift+9"]},
+        ]}]},
+    });
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.ui = crate::UiState::from_preferences_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
+    app.sync_keymap();
+    let texts = |app: &crate::DesignApp, command: &craft_keymap::CommandRef| -> Vec<String> {
+        app.keymap.bindings(command).iter().map(|b| b.trigger.to_string()).collect()
+    };
+    assert_eq!(texts(&app, &crate::keys::tool("pen")), ["Y", "F9"]);
+    assert_eq!(texts(&app, &crate::keys::panel("layers")), ["Shift+F3"]);
+    assert_eq!(shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Alt+Shift+9"));
+    assert!(app.keymap.problems().is_empty(), "no saved key is left naming a command that is not there: {:?}", app.keymap.problems());
+    assert_eq!(app.ui.shortcut_sets.active(), "Mine");
+    assert_eq!(app.ui.shortcut_sets.active_overrides(&crate::shortcuts_dialog::BUILTINS), &app.ui.shortcuts, "the stored set migrated too");
+    assert!(app.ui.shortcuts.get(pen).is_none() && app.ui.shortcuts.get(layers).is_none(), "the old keys are gone");
+    // The same keys run the same tool and panel.
+    let ctx = egui::Context::default();
+    press_keys(&mut app, &ctx, &[(egui::Key::F9, egui::Modifiers::NONE)]);
+    assert_eq!(app.session.tool_id(), "pen", "F9 selects the Pen");
+    press_keys(&mut app, &ctx, &[(egui::Key::F3, egui::Modifiers::SHIFT)]);
+    assert!(crate::panel_docking::showing(&app, "layers"), "Shift+F3 opens Layers");
+    // An exported set that names them the old way.
+    let mut exported = json!({"format": "craft-keymap", "version": 1, "name": "Old", "overrides": [{"command": pen, "keys": ["Y"]}]});
+    crate::keys::migrate_sets_value(&mut exported);
+    assert_eq!(exported["overrides"], json!([{"command": crate::keys::tool("pen").key(), "keys": ["Y"]}]));
+    // The control channel still names them with params, and by the new key.
+    for (id, params) in [("tool.select", json!({"tool": "pen"})), ("tool.select.pen", Value::Null)] {
+        let r = run_ui(&mut app, "window.setShortcut", &json!({"id": id, "params": params, "shortcut": "Shift+F4"})).unwrap().unwrap();
+        assert_eq!(r["shortcut"], "Shift+F4", "{id}");
+    }
+}
+
 #[test]
 fn a_reassigned_tool_key_selects_the_tool_and_the_old_key_does_not() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());

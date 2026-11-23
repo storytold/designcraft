@@ -102,6 +102,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "deleteCharacterStyle" => Some(style_forms::DELETE_CHARACTER_STYLE),
         "loadStyles" => Some(style_forms::LOAD_STYLES),
         "ruby" => Some(style_forms::RUBY),
+        id if super::command_form::is_generic(id) => Some(super::command_form::COMMAND_FORM),
         _ => None,
     }
 }

@@ -11,7 +11,7 @@ use egui_kittest::{
 use serde_json::{Value, json};
 
 /// A document of `pages` pages with its canvas laid out, in English.
-pub(super) fn app(pages: u64, facing: bool) -> DesignApp {
+pub(crate) fn app(pages: u64, facing: bool) -> DesignApp {
     let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
     app.ui.language = "en".to_owned();
     app.run("file.new", json!({"pages": pages, "facingPages": facing})).unwrap();
@@ -20,13 +20,13 @@ pub(super) fn app(pages: u64, facing: bool) -> DesignApp {
 }
 
 /// Opens the dialog the menu command `command` opens.
-pub(super) fn open(app: &mut DesignApp, command: &str) {
+pub(crate) fn open(app: &mut DesignApp, command: &str) {
     crate::menus::activate(app, command, &Value::Null);
     assert!(app.ui.dialog.is_some(), "{command} opens its dialog");
 }
 
 /// The app with the framework installed, showing its active dialog every frame.
-pub(super) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
+pub(crate) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
     // The dialog router gates on the installed framework runtime; the pilot flag only asks for it.
     app.framework_transform = false;
@@ -53,7 +53,7 @@ pub(super) fn harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
 }
 
 /// Runs `count` frames, each through the app's input hook.
-pub(super) fn steps(h: &mut Harness<'_, DesignApp>, count: usize) {
+pub(crate) fn steps(h: &mut Harness<'_, DesignApp>, count: usize) {
     for _ in 0..count {
         let mut raw = std::mem::take(h.input_mut());
         let ctx = h.ctx.clone();
@@ -73,7 +73,7 @@ fn event(h: &mut Harness<'_, DesignApp>, event: Event) {
 }
 
 /// A key press and release, then a few frames.
-pub(super) fn key(h: &mut Harness<'_, DesignApp>, key: Key, modifiers: Modifiers) {
+pub(crate) fn key(h: &mut Harness<'_, DesignApp>, key: Key, modifiers: Modifiers) {
     for pressed in [true, false] {
         event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers });
     }
@@ -97,29 +97,29 @@ fn centre(h: &Harness<'_, DesignApp>, roles: &[Role], label: &str, nth: usize) -
 }
 
 /// Clicks the `nth` control named `label` that has one of `roles`.
-pub(super) fn click(h: &mut Harness<'_, DesignApp>, roles: &[Role], label: &str, nth: usize) {
+pub(crate) fn click(h: &mut Harness<'_, DesignApp>, roles: &[Role], label: &str, nth: usize) {
     let at = centre(h, roles, label, nth);
     click_at(h, at);
 }
 
 /// Opens the picker named `label` and picks the entry named `choice`.
-pub(super) fn pick(h: &mut Harness<'_, DesignApp>, label: &str, choice: &str) {
+pub(crate) fn pick(h: &mut Harness<'_, DesignApp>, label: &str, choice: &str) {
     click(h, &[Role::ComboBox], label, 0);
     let at = h.get_by_label(choice).rect().center();
     click_at(h, at);
 }
 
 /// Whether the `nth` control named `label` that has one of `roles` is disabled.
-pub(super) fn disabled(h: &Harness<'_, DesignApp>, roles: &[Role], label: &str, nth: usize) -> bool {
+pub(crate) fn disabled(h: &Harness<'_, DesignApp>, roles: &[Role], label: &str, nth: usize) -> bool {
     let found: Vec<_> = h.query_all_by_label(label).filter(|node| roles.contains(&node.accesskit_node().role())).collect();
     found.get(nth).unwrap_or_else(|| panic!("no {roles:?} named {label:?} (number {nth})")).accesskit_node().is_disabled()
 }
 
 /// The roles a text-like field can report: a plain text field, a number field and an editable picker.
-pub(super) const FIELD: &[Role] = &[Role::TextInput, Role::SpinButton, Role::ComboBox];
+pub(crate) const FIELD: &[Role] = &[Role::TextInput, Role::SpinButton, Role::ComboBox];
 
 /// Types `text` over whatever the `nth` field named `label` holds, as a user does: click, select all, type.
-pub(super) fn type_into(h: &mut Harness<'_, DesignApp>, label: &str, nth: usize, text: &str) {
+pub(crate) fn type_into(h: &mut Harness<'_, DesignApp>, label: &str, nth: usize, text: &str) {
     click(h, FIELD, label, nth);
     key(h, Key::A, Modifiers::COMMAND);
     event(h, Event::Text(text.to_owned()));
@@ -127,29 +127,29 @@ pub(super) fn type_into(h: &mut Harness<'_, DesignApp>, label: &str, nth: usize,
 }
 
 /// Types `text` into the field and leaves it with Tab, so the field commits.
-pub(super) fn type_and_commit(h: &mut Harness<'_, DesignApp>, label: &str, nth: usize, text: &str) {
+pub(crate) fn type_and_commit(h: &mut Harness<'_, DesignApp>, label: &str, nth: usize, text: &str) {
     type_into(h, label, nth, text);
     key(h, Key::Tab, Modifiers::NONE);
 }
 
 /// The open dialog's draft.
-pub(super) fn draft<'a>(h: &'a Harness<'_, DesignApp>) -> &'a super::Dialog {
+pub(crate) fn draft<'a>(h: &'a Harness<'_, DesignApp>) -> &'a super::Dialog {
     h.state().ui.dialog.as_ref().expect("the dialog is open")
 }
 
 /// The commands the journal holds under `id`.
-pub(super) fn journal(h: &Harness<'_, DesignApp>, id: &str) -> Vec<(String, Value)> {
+pub(crate) fn journal(h: &Harness<'_, DesignApp>, id: &str) -> Vec<(String, Value)> {
     h.state().session.journal.iter().filter(|(command, _)| command == id).cloned().collect()
 }
 
 /// How many undo steps the active document holds.
-pub(super) fn undo_steps(h: &Harness<'_, DesignApp>) -> usize {
+pub(crate) fn undo_steps(h: &Harness<'_, DesignApp>) -> usize {
     h.state().session.doc().unwrap().history.undo.len()
 }
 
 /// A document with a text frame of two paragraphs, "One" and "Two", the caret in the first, whose Word Spacing Minimum is
 /// 70%; and the story's id.
-pub(super) fn two_paragraphs() -> (DesignApp, u64) {
+pub(crate) fn two_paragraphs() -> (DesignApp, u64) {
     let mut app = app(1, false);
     let frame = app.run("frame.create", json!({"rect": [72, 72, 300, 400], "content": "text", "text": "One\nTwo"})).unwrap();
     app.run("text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0})).unwrap();
@@ -159,16 +159,28 @@ pub(super) fn two_paragraphs() -> (DesignApp, u64) {
 }
 
 /// The resolved paragraph attribute `key` of the paragraph at byte `at` of `story`; the caret ends there.
-pub(super) fn para_attr(h: &mut Harness<'_, DesignApp>, story: u64, at: usize, key: &str) -> Value {
+pub(crate) fn para_attr(h: &mut Harness<'_, DesignApp>, story: u64, at: usize, key: &str) -> Value {
     h.state_mut().run("text.select", json!({"story": story, "anchor": at, "focus": at})).unwrap();
     h.state_mut().run("type.selectionAttrs", json!({})).unwrap()["para"][key].clone()
 }
 
 /// Clicks the first node named `label`, whatever its role (a row of a list, a segment of a strip).
-pub(super) fn click_first(h: &mut Harness<'_, DesignApp>, label: &str) {
+pub(crate) fn click_first(h: &mut Harness<'_, DesignApp>, label: &str) {
     let at = h.query_all_by_label(label).next().unwrap_or_else(|| panic!("nothing named {label:?}")).rect().center();
     click_at(h, at);
 }
 
 /// The roles a check box, a switch and a toggle button can report.
-pub(super) const TOGGLE: &[Role] = &[Role::CheckBox, Role::Switch, Role::Button, Role::RadioButton];
+pub(crate) const TOGGLE: &[Role] = &[Role::CheckBox, Role::Switch, Role::Button, Role::RadioButton];
+
+/// Clicks the first node whose name contains `part`, whatever its role.
+pub(crate) fn click_containing(h: &mut Harness<'_, DesignApp>, part: &str) {
+    let at = h.query_all_by_label_contains(part).next().unwrap_or_else(|| panic!("nothing named like {part:?}")).rect().center();
+    click_at(h, at);
+}
+
+/// Types `text` into whatever has the keyboard, then a few frames.
+pub(crate) fn type_text(h: &mut Harness<'_, DesignApp>, text: &str) {
+    event(h, Event::Text(text.to_owned()));
+    steps(h, 3);
+}
