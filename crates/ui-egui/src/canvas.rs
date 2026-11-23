@@ -225,6 +225,9 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
 #[cfg(not(target_arch = "wasm32"))]
 const KEY_TARGET: &str = "canvas_key_target";
 
+/// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
+const CANVAS_LAST: &str = "canvas_last_response";
+
 /// The canvas is the window's default key target, as the page is in InDesign: with nothing else holding egui focus at the
 /// end of the pass, the canvas takes it. The craft UI runtime's key stage leaves Escape, Tab and the clipboard events in
 /// egui's input while egui focus is on an app widget (`FocusedRecord::foreign`), but strips them for the framework when
@@ -263,9 +266,13 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
     // Not a Tab stop: egui's Tab traversal never lands on the canvas (the framework's panels cycle among themselves and Tab on
-    // the page hides them). It takes egui focus by request (`take_key_focus`, a click), which a widget that is not
-    // `FOCUSABLE` keeps while it is drawn.
-    let resp = ui.allocate_rect(full, Sense::CLICK | Sense::DRAG);
+    // the page hides them). A widget that is not `FOCUSABLE` cannot hold focus either (egui drops it where the widget is
+    // made), so the canvas is focusable exactly while it has focus: it takes focus by request (`take_key_focus`, a click) and
+    // then keeps it, and Tab from another widget cannot reach it.
+    let last = egui::Id::new(CANVAS_LAST).with(app.pane);
+    let held = ui.data(|data| data.get_temp::<egui::Id>(last)).is_some_and(|id| ui.memory(|memory| memory.has_focus(id)));
+    let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
+    ui.data_mut(|data| data.insert_temp(last, resp.id));
     #[cfg(not(target_arch = "wasm32"))]
     if input::keyboard_pane(app) {
         ui.data_mut(|data| data.insert_temp(egui::Id::new(KEY_TARGET), resp.id));
