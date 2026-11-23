@@ -3,7 +3,7 @@
 //! the document and its undo steps are what the native windows made.
 
 use super::find_forms::picker;
-use super::frame_forms::{captioned, check, field, select, text};
+use super::frame_forms::{captioned, check, field, message, select, text};
 use super::framework::Form;
 use super::{Bound, Dialog, FILE_INFO_FIELDS, SETUP_EDGES, load_color_profile};
 use crate::DesignApp;
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 /// Color Settings.
 pub(crate) const COLOR_SETTINGS: Form = Form::new(color_settings);
 /// Document Setup.
-pub(crate) const DOCUMENT_SETUP: Form = Form::new(document_setup);
+pub(crate) const DOCUMENT_SETUP: Form = Form::new(document_setup).extra(&[("Adjust Layout", "adjustLayout")]);
 /// File Info.
 pub(crate) const FILE_INFO: Form = Form::new(file_info);
 
@@ -106,7 +106,6 @@ fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
     let orientations = [Entry::new("portrait".to_owned(), tr("Portrait")), Entry::new("landscape".to_owned(), tr("Landscape"))];
     let facing = d.b("facingPages");
     let (inside, outside) = if facing { ("Inside:", "Outside:") } else { ("Left:", "Right:") };
-    let mut adjust = false;
     Stack::new().id_salt("document_setup").fill_width().show(ui, |ui, _| {
         FieldGroup::new(tr("Document Setup")).id_salt("document_setup_fields").show(ui, |ui, _| {
             field(ui, &tr("Intent:"), "intent", |ui| select(ui, d, "intent", &tr("Intent:"), &intents, true));
@@ -185,18 +184,10 @@ fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
                 });
             }
         });
-        GroupBox::new(tr("Adjust page elements to document changes"), None).id_salt("document_setup_adjust_box").show(ui, |ui, _| {
-            adjust |= Button::new(tr("Adjust Layout"))
-                .id_salt("document_setup_adjust")
-                .tooltip(tr("Apply the changes; objects follow the new page size and margins"))
-                .show(ui)
-                .clicked();
-        });
+        // Adjust Layout is a footer button (`Form::extra`): it sets `adjustLayout` and accepts at once.
+        message(ui, &tr("Adjust page elements to document changes"));
     });
-    if adjust {
-        d.fields.insert("adjustLayout".into(), json!(true));
-    }
-    adjust.then_some(true)
+    None
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

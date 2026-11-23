@@ -253,7 +253,7 @@ mod framework {
                                 }
                             }
                         });
-                    create = create_button(app_label(&lang), ui, para, identity);
+                    create |= create_button(app_label(&lang), ui, para, identity);
                 });
             });
         });
@@ -437,7 +437,7 @@ mod framework {
                                 acts.push(Act::ObjectOptions(n.clone()));
                             }
                         });
-                    clear = glyph_button(ui, "object_styles_clear", "style-clear", &tr("Clear Overrides"), over, false).clicked() && over;
+                    clear |= glyph_button(ui, "object_styles_clear", "style-clear", &tr("Clear Overrides"), over, false).clicked() && over;
                     let new = glyph_button(ui, "object_styles_new", "style-new", &tr("Create New Style"), true, false);
                     if new.clicked() {
                         create = Some(new.mods.alt);

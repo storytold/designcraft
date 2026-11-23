@@ -131,7 +131,9 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
     let sep = app.ui.separations.clone();
     let mut run: Option<serde_json::Value> = None;
     Stack::new().id_salt("separations").fill_width().show(ui, |ui, _| {
-        run = mode_actions(ui, &lang, true, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit));
+        if let Some(p) = mode_actions(ui, &lang, true, sep.is_some(), sep.as_ref().and_then(|s| s.ink_limit)) {
+            run = Some(p);
+        }
         if let Some(limit) = sep.as_ref().and_then(|s| s.ink_limit) {
             let label = tr(&lang, "Ink Limit");
             Field::new(label.to_owned()).id_salt("separations_ink_limit_field").sizing(Sizing::Content).show(ui, |ui, _| {
@@ -194,7 +196,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             })
             .id_salt(("separations_swatch", plate))
             .show(ui);
-            clicked = ink_plate_button(app_ref, ui, &sheet, si, plate, name, selected);
+            clicked |= ink_plate_button(app_ref, ui, &sheet, si, plate, name, selected);
             Text::new(value.clone()).role(TypeRole::Caption).show(ui);
         });
         clicked

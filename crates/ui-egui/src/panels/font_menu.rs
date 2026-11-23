@@ -50,6 +50,8 @@ struct MenuState {
     show_samples: bool,
     highlight: Option<usize>,
     frame: Option<u64>,
+    /// The framework menu's search field takes the focus when the menu opens, until a pass takes the request.
+    focus_search: bool,
 }
 
 /// What the menu knows about a family it shows (read once, then kept for the session).
@@ -815,7 +817,7 @@ pub(crate) mod framework {
         }
         let mut pick = None;
         let _ = Popover::new(label, Bind::bound(&mut open)).id(id.with("popover")).opened_by(&opener.response).show(ui, |ui, _| {
-            pick = body(app, ui, &menu, current, width);
+            pick = body(app, ui, &menu, current, width).or(pick.take());
         });
         if pick.is_some() {
             open = false;
@@ -836,7 +838,7 @@ pub(crate) mod framework {
         let width = field.rect.width();
         let mut pick = None;
         let _ = Popover::new(label, Bind::bound(&mut open)).id(field.id.with("font_popover")).opened_by(field).show(ui, |ui, _| {
-            pick = body(app, ui, menu, current, width);
+            pick = body(app, ui, menu, current, width).or(pick.take());
         });
         if pick.is_some() {
             open = false;
@@ -864,6 +866,7 @@ pub(crate) mod framework {
             // Just opened: an empty search, nothing highlighted.
             st.query.clear();
             st.highlight = None;
+            st.focus_search = true;
         }
         st.frame = Some(frame);
         ui.set_width(width.max(560.0));
@@ -879,12 +882,18 @@ pub(crate) mod framework {
         Stack::new().id_salt("font_menu_header").fill_width().show(ui, |ui, _| {
             Line::new().id_salt("font_search").fill_width().show(ui, |ui, _| {
                 // Return picks the highlighted row instead of leaving the field.
-                TextField::new(tr("Search fonts"), Bind::bound(&mut st.query))
+                let search = TextField::new(tr("Search fonts"), Bind::bound(&mut st.query))
                     .id_salt("font_menu_search")
                     .placeholder(tr("Search fonts"))
                     .limit(None)
                     .sizing(Sizing::FillWidth)
                     .show(ui);
+                // Typing goes to the search, never to the document under the menu: it takes the focus as the menu opens.
+                if st.focus_search
+                    && craft_ui_widgets::runtime::focus::request(ui.ctx(), craft_ui_widgets::runtime::focus::FocusTarget::Id(search.response.id))
+                {
+                    st.focus_search = false;
+                }
                 if glyph_button(ui, "font_menu_clear", "clear", &tr("Clear"), false, !st.query.is_empty(), None).clicked() {
                     st.query.clear();
                 }
