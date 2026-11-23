@@ -44,6 +44,10 @@ pub(crate) fn form(id: &str) -> Option<Form> {
     #[allow(clippy::match_single_binding)]
     match id {
         // Ported dialogs: one arm each, `"id" => Some(module::FORM),`.
+        "insertTable" => Some(super::table_forms::INSERT),
+        "convertTextToTable" | "convertTableToText" => Some(super::table_forms::CONVERT),
+        "createGuides" => Some(super::layout_forms::CREATE_GUIDES),
+        "marginsAndColumns" => Some(super::layout_forms::MARGINS_AND_COLUMNS),
         _ => None,
     }
 }
