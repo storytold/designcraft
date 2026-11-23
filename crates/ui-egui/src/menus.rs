@@ -26,9 +26,7 @@ pub(crate) use export::{export_epub, export_pdf};
 pub use invoke::{activate, activate_native, close_document};
 #[cfg(not(target_arch = "wasm32"))]
 pub use keys::paste_chord_command;
-pub use keys::{forwarded_shortcuts, shortcuts};
-#[cfg(not(target_arch = "wasm32"))]
-pub use keys::window_escape;
+pub use keys::{forwarded_shortcuts, shortcuts, window_escape};
 #[cfg(not(target_arch = "wasm32"))]
 pub use quick_apply::quick_apply_catalog;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};

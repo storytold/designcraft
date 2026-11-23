@@ -67,9 +67,8 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
 /// runtime asks): with nothing focused and no egui widget or popup of the app's holding focus, the key stage strips Escape
 /// and routes it to the window. It does what Escape does in the app: cancels the open dialog, closes Quick Apply, leaves
 /// Presentation, and goes back to the Selection tool.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn window_escape(app: &mut DesignApp, ctx: &egui::Context) {
-    use craft_ui_widgets::runtime::keys::{Intent, with_window_intents};
+    use craft_ui::runtime::keys::{Intent, with_window_intents};
     if !with_window_intents(ctx, false, |window| window.take(Intent::Cancel)) {
         return;
     }
