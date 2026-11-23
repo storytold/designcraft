@@ -718,9 +718,9 @@ fn a_tabs_context_menu_lists_indesigns_tab_commands_and_close_works() {
     let at = tab_rect(&h, "layers").center();
     click(&mut h, at, PointerButton::Secondary);
     // The group's menu is the framework's: Float, Move Panel To, Close and Close Tab Group (and Float Tab Group) in place
-    // of the old Float Panel, Group with, Close and Close Tab Group. Minimize and Collapse to Icons are not rows of it:
-    // Minimize needs `DockConfig::group_order_items`, and Collapse to Icons is the column bar's menu (next test).
-    for item in ["Close", "Close Tab Group", "Float", "Float Tab Group", "Move Panel To"] {
+    // of the old Float Panel, Group with, Close and Close Tab Group, with Minimize (DesignCraft's dock turns on
+    // `DockConfig::group_order_items`). Collapse to Icons is the column bar's menu (next test).
+    for item in ["Close", "Close Tab Group", "Float", "Float Tab Group", "Move Panel To", "Minimize"] {
         assert!(shown(&h, item), "{item}");
     }
     assert!(!shown(&h, "Dock Panel"), "a docked panel has no Dock Panel");
