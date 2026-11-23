@@ -1196,7 +1196,7 @@ dependencies = [
  "accesskit",
  "bitflags 2.13.2",
  "craft-host",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-theme",
  "craft-tracked",
  "craft-ui-macros",
@@ -1242,7 +1242,7 @@ dependencies = [
  "craft-cms",
  "craft-host",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-platform",
  "craft-settings",
  "craft-theme",
@@ -1567,18 +1567,6 @@ dependencies = [
 [[package]]
 name = "craft-keymap"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d#33be35625e252cc4f06aa375b3b428521faea37d"
-dependencies = [
- "craft-i18n 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
- "egui",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "craft-keymap"
-version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
 dependencies = [
  "craft-host",
@@ -1606,6 +1594,24 @@ name = "craft-mcp-server"
 version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "craft-menu"
+version = "0.1.0"
+source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
+dependencies = [
+ "craft-behavior",
+ "craft-host",
+ "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
+ "craft-quit",
+ "craft-theme",
+ "craft-ui 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-window 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "egui",
+ "serde",
  "serde_json",
 ]
 
@@ -1796,6 +1802,7 @@ version = "0.1.0"
 source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59#89d0f30615ad76c06515613c5eae49eb473c4d59"
 dependencies = [
  "dispatch2",
+ "egui",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
 ]
@@ -1933,7 +1940,7 @@ source = "git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06
 dependencies = [
  "craft-behavior",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-theme",
  "craft-ui-macros",
  "craft-ui-panels",
@@ -1954,7 +1961,7 @@ dependencies = [
  "craft-fonts-build 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
  "craft-host",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-platform",
  "craft-quit",
  "craft-settings",
@@ -1998,7 +2005,7 @@ dependencies = [
  "craft-behavior",
  "craft-host",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-quit",
  "craft-theme",
  "craft-ui-macros",
@@ -2016,7 +2023,7 @@ dependencies = [
  "craft-behavior",
  "craft-host",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-pdf",
  "craft-theme",
  "craft-ui-macros",
@@ -2057,7 +2064,7 @@ dependencies = [
  "craft-behavior",
  "craft-host",
  "craft-i18n 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
- "craft-keymap 0.1.0 (git+file:///home/codex/work/CraftApps/craft-libs?rev=89d0f30615ad76c06515613c5eae49eb473c4d59)",
+ "craft-keymap",
  "craft-theme",
  "craft-ui-contract",
  "craft-ui-macros",
@@ -2668,7 +2675,8 @@ dependencies = [
  "craft-dialogs",
  "craft-file-formats",
  "craft-host",
- "craft-keymap 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
+ "craft-keymap",
+ "craft-menu",
  "craft-prepress",
  "craft-theme",
  "craft-ui 0.1.0 (git+https://github.com/storytold/craft-libs?rev=33be35625e252cc4f06aa375b3b428521faea37d)",
