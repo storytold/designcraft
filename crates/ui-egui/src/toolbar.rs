@@ -1320,7 +1320,16 @@ mod line_workflow_tests {
     }
     fn native(h: &Harness<'_, Rig>) -> Element {
         let mut elements = line_elements(h);
-        assert_eq!(elements.len(), 1, "exactly the standalone Line slot is the installed rail's Line button");
+        let buttons: Vec<(String, Option<String>)> = h
+            .state()
+            .controls
+            .as_ref()
+            .into_iter()
+            .flat_map(|r| &r.elements)
+            .filter(|e| e.component.contains("FlyoutButton") || e.component.contains("Rail"))
+            .map(|e| (e.component.clone(), e.facts.as_ref().and_then(|f| f.name.clone())))
+            .collect();
+        assert_eq!(elements.len(), 1, "exactly the standalone Line slot is the installed rail's Line button; recorded rail parts: {buttons:?}");
         let element = elements.remove(0);
         assert_eq!(element.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::Button));
         element
@@ -1351,8 +1360,19 @@ mod line_workflow_tests {
     fn tab_to_line(h: &mut Harness<'_, Rig>) {
         let mut visited = HashSet::new();
         loop {
-            if h.get_by_role_and_label(egui::accesskit::Role::Button, &label(h)).is_focused() {
-                if h.state().app.framework_installed { assert_eq!(h.ctx.memory(|m| m.focused()), Some(native(h).id)); }
+            let named = h.query_all_by_role_and_label(egui::accesskit::Role::Button, &label(h)).next().map(|n| n.is_focused());
+            let Some(focused_line) = named else {
+                let buttons: Vec<String> = h
+                    .query_all_by_role(egui::accesskit::Role::Button)
+                    .filter_map(|n| n.accesskit_node().label().map(str::to_owned))
+                    .take(80)
+                    .collect();
+                panic!("no {:?} button; the buttons: {buttons:?}", label(h));
+            };
+            if focused_line {
+                if h.state().app.framework_installed {
+                    assert_eq!(h.ctx.memory(|m| m.focused()), Some(native(h).id));
+                }
                 return;
             }
             let focused = h.ctx.memory(|m| m.focused());
@@ -1360,7 +1380,10 @@ mod line_workflow_tests {
             // The installed rail's buttons are one roving group, as a toolbar's are: Tab reaches the group, and the
             // arrow keys move between its buttons.
             let in_rail = h.state().app.framework_installed
-                && h.state().controls.as_ref().is_some_and(|r| r.elements.iter().any(|e| e.component.contains("FlyoutButton") && Some(e.id) == focused));
+                && h.state()
+                    .controls
+                    .as_ref()
+                    .is_some_and(|r| r.elements.iter().any(|e| e.component.contains("FlyoutButton") && Some(e.id) == focused));
             key(h, if in_rail { Key::ArrowDown } else { Key::Tab });
         }
     }
@@ -1990,10 +2013,14 @@ mod framework_tests {
         // The pair's wells are found by their names, whatever role the framework gives them.
         let well = |h: &Harness<'_, Rig>, label: &str| {
             let panel = h.state().panel.expect("the shipping left Tools panel persisted its rect");
-            h.query_all_by_label(label)
-                .map(|n| n.rect())
-                .find(|r| panel.contains(r.center()))
-                .unwrap_or_else(|| panic!("no {label:?} in the Tools panel"))
+            h.query_all_by_label(label).map(|n| n.rect()).find(|r| panel.contains(r.center())).unwrap_or_else(|| {
+                let names: Vec<String> = h
+                    .query_all_by_role(Role::Button)
+                    .filter(|n| panel.contains(n.rect().center()))
+                    .filter_map(|n| n.accesskit_node().label().map(str::to_owned))
+                    .collect();
+                panic!("no {label:?} in the Tools panel; its buttons: {names:?}")
+            })
         };
         let stroke = well(&h, &tr(&h, "Stroke (X)"));
         press(&mut h, stroke.center(), PointerButton::Primary, Modifiers::NONE);
@@ -2017,7 +2044,7 @@ mod framework_tests {
         let text = control(&h, &tr(&h, "Formatting affects text (J)"), BUTTONS);
         press(&mut h, text.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);
-        assert!(h.state().app.ui.formatting_affects_text, "Formatting affects text is on");
+        assert!(h.state().app.ui.formatting_affects_text, "Formatting affects text is on after a click at {:?} on {text:?}", text.center());
         let mode = control(&h, &tr(&h, "Normal (W)"), BUTTONS);
         press(&mut h, mode.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);

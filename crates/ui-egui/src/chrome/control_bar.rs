@@ -1267,7 +1267,12 @@ mod framework_tests {
         let mut h = harness(DesignApp::new_for_panel_tests(session, crate::Services::default()));
         // The rule's select is named by its caption; the framework may name it without the caption's colon.
         let rule = ["Liquid Page Rule:", "Liquid Page Rule"].iter().any(|name| has_role(&h, name, &[Role::ComboBox]));
-        assert!(rule, "the Liquid Page Rule select is in the Control panel");
+        let combos: Vec<String> = h
+            .query_all_by_role(Role::ComboBox)
+            .filter(|n| h.state().bar.unwrap().contains(n.rect().center()))
+            .map(|n| format!("{:?}", n.accesskit_node().label()))
+            .collect();
+        assert!(rule, "the Liquid Page Rule select is in the Control panel; the bar's selects: {combos:?}");
         control(&h, "Page Size", &[Role::ComboBox], 0);
         assert!(!has(&h, "Objects Move with Page"));
         let ran = press(&mut h, "Show Parent Page Overlay", &[Role::CheckBox], 0);
