@@ -2686,6 +2686,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             cur.last_reference = reference;
             cur.aki_below = (model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(lead);
             cur.last_descent = desc;
+            cur.after_table = false;
             cur.pending = 0.0;
             cur.grid_next = grid_end.map(|end| (baseline, end));
             hyphen_at =
@@ -3166,6 +3167,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
                 }
                 cur.last_baseline = Some(baseline);
                 cur.last_descent = descent;
+                cur.after_table = false;
             }
         }
     }
@@ -3218,6 +3220,7 @@ fn compose_run(
         col: 0,
         last_baseline: None,
         last_descent: 0.0,
+        after_table: false,
         last_reference: 0.0,
         aki_below: None,
         pending: 0.0,
@@ -3544,6 +3547,7 @@ fn compose_run(
                 cur.col = 0;
                 cur.last_baseline = Some(baseline);
                 cur.last_descent = descent;
+                cur.after_table = false;
                 text_above = multi;
             } else if cur.col != 0 {
                 cur.col = 0;
@@ -4305,6 +4309,8 @@ struct Cursor {
     col: usize,
     last_baseline: Option<f64>,
     last_descent: f64,
+    /// The element above is a table, whose space after does not carry into a table below it.
+    after_table: bool,
     last_reference: f64,
     /// The line above's leading when it sets the advance to the next line: under the Japanese
     /// composers' Aki Below model the leading is the space below its line.

@@ -91,6 +91,7 @@ impl Mark {
             col: self.col,
             last_baseline: self.last_baseline,
             last_descent: self.last_descent,
+            after_table: false,
             last_reference: self.last_reference,
             aki_below: self.aki_below,
             pending: self.pending,

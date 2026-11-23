@@ -400,6 +400,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-23** · A table's space before is measured from the last baseline above it, not from the bottom of that line's descent (#3191), as in InDesign: a table below text no longer sits 0.2 × the text size too low (2.12 pt under 10 pt text). A table directly below another table now uses only its own space before, not also the upper table's space after (the default 4 pt before and -4 pt after gives a 4 pt gap, not 0).
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
