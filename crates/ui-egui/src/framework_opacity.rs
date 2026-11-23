@@ -77,8 +77,9 @@ fn field(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacity:
             .range(0.0..=100.0)
             .step(1.0)
             .snap_typed(true)
-            // The whole-percent field shows no decimals and commits whole percents: the display precision is what the
-            // field's own write-back matcher compares at, so it must be the row's precision too.
+            // The whole-percent field commits whole percents, and it is given the whole percent `percent_of` rounds the
+            // document's ratio to, so its own write-back is the very number it proposed (an exact match, whatever the
+            // precision it shows). `fixed_decimals(0)` is the look only: a field that shows one decimal still matches.
             .fixed_decimals(0)
             .commit_decimals(0)
             .show_at(ui, at)
