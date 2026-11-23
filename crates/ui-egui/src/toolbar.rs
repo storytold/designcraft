@@ -1297,6 +1297,23 @@ mod line_workflow_tests {
         (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
             (st.history.undo.len(), st.history.redo.len()))
     }
+    /// Two documents (or items) are the same up to floating-point noise in their coordinates (1e-6 pt). The installed and the
+    /// legacy window lay the canvas out at slightly different offsets (the framework rail's width is not the native
+    /// panel's), so a line drawn by the same screen points lands within a few 1e-13 pt of the other.
+    fn same_document<T: serde::Serialize>(a: &T, b: &T) -> bool {
+        fn same(a: &Value, b: &Value) -> bool {
+            match (a, b) {
+                (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+                    (Some(x), Some(y)) => (x - y).abs() <= 1e-6,
+                    _ => x == y,
+                },
+                (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y)),
+                (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w))),
+                _ => a == b,
+            }
+        }
+        same(&serde_json::to_value(a).unwrap(), &serde_json::to_value(b).unwrap())
+    }
     fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
         assert_eq!(mark(h), *before, "document, incarnation, complete selection and both real history stacks remain unchanged");
     }
@@ -1505,7 +1522,7 @@ mod line_workflow_tests {
         for (a, b) in [(true, false), (false, false)] {
             event(&mut installed, Event::Key { key:Key::Escape, physical_key:None, pressed:a, repeat:b, modifiers:Modifiers::NONE });
             event(&mut legacy, Event::Key { key:Key::Escape, physical_key:None, pressed:a, repeat:b, modifiers:Modifiers::NONE });
-            assert_eq!(mark(&installed).0, mark(&legacy).0);
+            assert!(same_document(&mark(&installed).0, &mark(&legacy).0), "the installed and legacy documents match");
             assert_eq!(mark(&installed).2, mark(&legacy).2);
             let installed_state = installed.state().app.session.active().unwrap();
             let legacy_state = legacy.state().app.session.active().unwrap();
@@ -1518,24 +1535,27 @@ mod line_workflow_tests {
         pointer(&mut legacy, legacy_to, false);
         idle(&mut installed, 3);
         idle(&mut legacy, 3);
-        assert_eq!(mark(&installed).0, mark(&legacy).0, "ordinary release after Escape preserves actual native document behavior");
+        assert!(same_document(&mark(&installed).0, &mark(&legacy).0), "ordinary release after Escape preserves actual native document behavior");
         assert_eq!(mark(&installed).2, mark(&legacy).2);
-        assert_eq!(&installed.state().app.session.journal[installed_start..], &legacy.state().app.session.journal[legacy_start..]);
+        assert!(
+            same_document(&installed.state().app.session.journal[installed_start..], &legacy.state().app.session.journal[legacy_start..]),
+            "the same commands ran in both windows"
+        );
         assert_eq!(item(&installed, installed_id), first, "the first committed line is unchanged");
-        assert_eq!(item(&legacy, legacy_id), first);
+        assert!(same_document(&item(&legacy, legacy_id), &first), "the legacy window's first line is the same line");
         let after = mark(&installed).0;
         for app in [&mut installed, &mut legacy] {
             app.state_mut().app.run("edit.undo", json!({})).unwrap();
             idle(app, 2);
         }
-        assert_eq!(mark(&installed).0, mark(&legacy).0);
+        assert!(same_document(&mark(&installed).0, &mark(&legacy).0), "the installed and legacy documents match");
         assert_eq!(mark(&installed).2, mark(&legacy).2);
         for app in [&mut installed, &mut legacy] {
             app.state_mut().app.run("edit.redo", json!({})).unwrap();
             idle(app, 2);
         }
         assert_eq!(mark(&installed).0, after);
-        assert_eq!(mark(&installed).0, mark(&legacy).0);
+        assert!(same_document(&mark(&installed).0, &mark(&legacy).0), "the installed and legacy documents match");
         assert_eq!(mark(&installed).2, mark(&legacy).2);
     }
 

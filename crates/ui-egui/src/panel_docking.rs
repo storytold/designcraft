@@ -1124,6 +1124,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let specs = specs(&app.ui.language);
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
     let offered = flyout.clone();
+    let opened_before = app.ui.docking_opened.clone();
     app.ui.docking_raise = None;
     let auto_collapse = app.ui.dock_auto_collapse;
     // The dock lays out in the interface language's direction (the dock at the end edge: the left in right-to-left
@@ -1169,7 +1170,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     if let Some(panel) = output.focused.or(output.picked) {
-        if panel != CANVAS {
+        // A panel a body opened this pass (the Properties panel's Stroke link runs `window.panel`) stays the one last
+        // opened; the press that ran it focused the body's own panel.
+        if panel != CANVAS && app.ui.docking_opened == opened_before {
             app.ui.docking_opened = Some(panel.clone());
         }
         app.ui.docking_focused = Some(panel);
@@ -1317,24 +1320,30 @@ impl DockPanels<String> for PanelContent<'_> {
             .tooltip(label.clone())
             .show(ui);
         let app = &mut *self.app;
-        // The menu keeps its own open state. Its rows are the Pages panel's own egui rows, which close only their egui
-        // menu, so a row that ran is seen by what it did (a command in the journal, a dialog it opened) and the menu
-        // closes by starting over under a new id.
-        let generation_id = egui::Id::new("designcraft-pages-panel-menu-generation");
-        let generation = ui.data(|d| d.get_temp::<u64>(generation_id)).unwrap_or(0);
-        let effect = |app: &DesignApp| (app.session.journal.len(), app.ui.dialog.as_ref().map(|d| d.id.clone()));
+        // The host owns the menu's open state, as a framework menu bound to it expects: the opener toggles it. The rows
+        // are the Pages panel's own egui rows, which close only their egui menu, so a row that ran is seen by what it did
+        // (a command in the journal, a page more or less, a dialog it opened) and closes the menu.
+        let open_id = egui::Id::new("designcraft-pages-panel-menu-open");
+        let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        if opener.clicked() {
+            open = !open;
+        }
+        let effect = |app: &DesignApp| {
+            let pages = app.session.active().map(|d| d.doc.page_count());
+            (app.session.journal.len(), pages, app.ui.dialog.as_ref().map(|d| d.id.clone()))
+        };
         let before = effect(app);
         let mut ran = false;
         // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-        ui.push_id(("pages-panel-menu", generation), |ui| {
-            let _ = craft_ui::menu::Menu::new(label).opened_by(&opener, craft_ui::contract::Trigger::Click).show(ui, |ui, _| {
+        let _ =
+            craft_ui::menu::Menu::new(label).open(Bind::bound(&mut open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(ui, |ui, _| {
                 crate::panels::pages::panel_menu(app, ui);
                 ran = effect(app) != before;
             });
-        });
         if ran {
-            ui.data_mut(|d| d.insert_temp(generation_id, generation.wrapping_add(1)));
+            open = false;
         }
+        ui.data_mut(|d| d.insert_temp(open_id, open));
     }
 }
 
