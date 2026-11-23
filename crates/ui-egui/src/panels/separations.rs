@@ -905,6 +905,28 @@ mod plate_action_tests {
         for _ in 0..3 {
             step(&mut h, None);
         }
+        // The canvas separates on a background thread and may send a newer sheet while the view settles (its resolution
+        // follows the view). A plate button is bound to the sheet it was drawn for, so a press that a newer sheet
+        // interrupts is not a click: wait until the sheet has stopped changing, however loaded the machine is.
+        let mut stable = 0;
+        let mut last = None;
+        for _ in 0..3000 {
+            let now = match crate::canvas::current_spread(&h.state().app) {
+                Some(designcraft_doc::SpreadRef::Doc(si)) => match h.state().app.canvas.separations.sheet(si) {
+                    Some(Ok(sheet)) => Some(std::sync::Arc::as_ptr(sheet) as usize),
+                    _ => None,
+                },
+                _ => None,
+            };
+            stable = if now.is_some() && now == last { stable + 1 } else { 0 };
+            last = now;
+            if stable >= 40 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            step(&mut h, None);
+        }
+        assert!(stable >= 40, "the separated sheet settled");
         let label = plate_name(&h.state().app, SPOT);
         assert_eq!(h.get_all_by_role_and_label(egui::accesskit::Role::Button, &label).count(), 1);
         let before = quiet(&h.state().app);
@@ -915,20 +937,6 @@ mod plate_action_tests {
         }
         for _ in 0..2 {
             step(&mut h, None);
-        }
-        // SEPARATIONS-DEBUG: temporary, to see where the panel's rows are now.
-        {
-            use egui_kittest::kittest::NodeT as _;
-            eprintln!("SEPARATIONS-DEBUG clicked at {pos:?}, view {:?}, status {:?}", h.state().app.ui.separations, h.state().app.ui.status);
-            for n in h.query_all_by(|n| n.role() == egui::accesskit::Role::Button) {
-                let name = n.accesskit_node().label().unwrap_or_default();
-                if ["Off", "Separations", "Ink Limit", "All Inks", "Plate", "Cyan", "Magenta", "Yellow", "Black", "Gold"]
-                    .iter()
-                    .any(|k| name.contains(k))
-                {
-                    eprintln!("SEPARATIONS-DEBUG   button {name:?} rect {:?}", n.rect());
-                }
-            }
         }
         assert_view(&h.state().app, Some(SPOT), None);
         assert_quiet(&h.state().app, &before);
