@@ -361,7 +361,6 @@ impl DesignApp {
         #[cfg(not(target_arch = "wasm32"))]
         canvas::take_key_focus(self, &ctx);
         // The Escape the runtime's key stage kept from egui and nothing in this pass took.
-        #[cfg(not(target_arch = "wasm32"))]
         menus::window_escape(self, &ctx);
         // The IME is observed once, here: after the canvas, the floating panels, the story editor,
         // dialogs and Quick Apply have all applied this pass's commands and focus changes.

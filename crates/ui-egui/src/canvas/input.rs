@@ -77,21 +77,26 @@ fn modifiers_id() -> egui::Id {
     egui::Id::unique("canvas-frame-modifiers")
 }
 
-/// A canvas context menu asked for by a right-click; `open` until the popup is open after a frame.
+/// The open canvas context menu a right-click asked for: what it is for, where the click was, the last pass that
+/// asked for it or showed it, and whether a right-click asked for it in that pass. The framework menu's open state is
+/// this request: it is there while the menu is open.
 #[derive(Clone, Copy, Debug)]
 struct MenuRequest {
     kind: crate::menus::ContextMenu,
-    open: bool,
+    at: Pos2,
+    pass: u64,
+    fresh: bool,
 }
 
-/// The popup id of the canvas context menu in split-view pane `pane`.
+/// The id of the canvas context menu in split-view pane `pane`, and of its request.
 fn context_menu_id(pane: u8) -> egui::Id {
     egui::Id::unique(("canvas_context_menu", pane))
 }
 
 /// Was a canvas context menu open (in either pane of this window) when this frame began?
 /// Pane 0 shows its menu, which a click or Escape may close, before pane 1 handles input; that
-/// click or key still belongs to the menu. Popups are per window (viewport), and so is input.
+/// click or key still belongs to the menu. Menus are per window (viewport), and so is input.
+/// A request no pass showed since the last one (the canvas is gone) is no open menu.
 pub fn context_menu_open(ctx: &egui::Context) -> bool {
     let pass = ctx.cumulative_pass_nr();
     let key = egui::Id::unique("canvas_context_menu_open").with(ctx.viewport_id());
@@ -100,29 +105,36 @@ pub fn context_menu_open(ctx: &egui::Context) -> bool {
     {
         return open;
     }
-    let open = (0..2).any(|pane| egui::Popup::is_id_open(ctx, context_menu_id(pane)));
+    let open = (0..2).any(|pane| ctx.data(|d| d.get_temp::<MenuRequest>(context_menu_id(pane))).is_some_and(|req| req.pass + 1 >= pass));
     ctx.data_mut(|d| d.insert_temp(key, (pass, open)));
     open
 }
 
-/// Shows the context menu a right-click asked for. A right-click while the menu is open closes it
-/// in that frame (it was a click outside the menu), so the request stays until a frame ends with
-/// the menu open: it reopens in the next frame where the new click was.
-pub(super) fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response) {
+/// Shows the framework context menu a right-click asked for, at the click, until it closes (a row ran, Escape, a press
+/// outside). A right-click while the menu is open closes it in that pass (it was a press outside the menu), so the new
+/// request stays and the menu opens again in the next pass, where the new click was.
+pub(super) fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response) {
     let id = context_menu_id(app.pane);
     let Some(req) = ui.data(|d| d.get_temp::<MenuRequest>(id)) else { return };
-    egui::Popup::menu(resp)
-        .id(id)
-        .open_memory(req.open.then_some(egui::SetOpenCommand::Bool(true)))
-        .at_pointer_fixed()
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| crate::menus::context_menu(app, ui, req.kind));
-    if req.open {
-        if egui::Popup::is_id_open(ui.ctx(), id) {
-            ui.data_mut(|d| d.insert_temp(id, MenuRequest { open: false, ..req }));
-        } else {
-            ui.ctx().request_repaint();
-        }
+    let mut open = true;
+    let place = crate::menus::ContextPlace { id, opener: resp, at: req.at };
+    crate::menus::context_menu(app, ui, req.kind, &place, &mut open);
+    // A measuring run of the dock's body shows the canvas too; only the drawn pass says whether the menu stays.
+    #[cfg(not(target_arch = "wasm32"))]
+    let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
+    #[cfg(target_arch = "wasm32")]
+    let measuring = ui.is_sizing_pass();
+    if measuring {
+        return;
+    }
+    let pass = ui.ctx().cumulative_pass_nr();
+    if open || req.fresh {
+        ui.data_mut(|d| d.insert_temp(id, MenuRequest { pass, fresh: false, ..req }));
+    } else {
+        ui.data_mut(|d| d.remove_temp::<MenuRequest>(id));
+    }
+    if !open && req.fresh {
+        ui.ctx().request_repaint();
     }
 }
 
@@ -404,7 +416,8 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         && let Some(o) = resp.interact_pointer_pos().filter(|o| in_view(*o))
     {
         let kind = context_target(app, xf.to_canvas(o), xf.zoom);
-        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, open: true }));
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, at: o, pass, fresh: true }));
         ui.ctx().request_repaint();
     }
     if resp.clicked() || resp.drag_started() {

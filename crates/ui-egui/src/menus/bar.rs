@@ -1,5 +1,8 @@
+use std::cell::RefCell;
+
+use super::invoke::activate;
 use super::tree::{menu_items, menu_tree};
-use super::{DesignApp, Item};
+use super::{DesignApp, Item, Value};
 
 /// A menu button whose popup stays within the viewport and scrolls when needed.
 /// All menu buttons share this wrapper, including workspace, zoom and panel menus.
@@ -81,39 +84,103 @@ fn clipped_submenu<'a, R>(
     (response, inner)
 }
 
-/// The menu bar contents (inside the app bar; macOS uses the native menu instead).
-pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let lang = app.ui.language.clone();
-    let mut menus = menu_tree();
-    if crate::i18n::is_rtl(&lang) {
-        menus.reverse();
-    }
-    for (menu, entries) in menus {
-        menu_button(ui, crate::rtl::widget(ui, crate::i18n::tr(&lang, menu)), |ui| menu_column(app, ui, &[(menu, entries)]));
+/// What a row of the menu bar or of a canvas context menu asked for. The rows read the app; the caller applies the pick
+/// once the menus are drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Pick {
+    /// Run a menu command.
+    Run(String, Value),
+    /// Show All Menu Items: the rows Edit › Menus hid show again.
+    ShowAll,
+}
+
+impl Pick {
+    /// Does what the row asked: the command through the menus' own dispatch.
+    pub(super) fn apply(self, app: &mut DesignApp) {
+        match self {
+            Pick::Run(id, params) => activate(app, &id, &params),
+            Pick::ShowAll => app.ui.show_full_menus = true,
+        }
     }
 }
 
-/// One menu's rows, as the menu bar and the canvas context menus show them: runs of items, each
-/// with the menu path its rows are hidden by (Edit › Menus).
-pub(super) fn menu_column<P: AsRef<str>>(app: &mut DesignApp, ui: &mut egui::Ui, runs: &[(P, Vec<Item>)]) {
-    let lang = app.ui.language.clone();
-    let rtl = crate::i18n::is_rtl(&lang);
-    if rtl {
-        ui.set_max_width(320.0);
-    }
-    ui.with_layout(egui::Layout::top_down_justified(if rtl { egui::Align::Max } else { egui::Align::Min }), |ui| {
-        ui.set_min_width(240.0);
-        let mut hidden = 0;
-        for (path, items) in runs {
-            hidden += menu_items(app, ui, items, path.as_ref());
-        }
-        if hidden > 0 && !app.ui.show_full_menus {
-            ui.separator();
-            if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "Show All Menu Items"))).clicked() {
-                app.ui.show_full_menus = true;
+/// A label as a framework menu row or title takes it: the framework reads `&` as the mnemonic marker and `&&` as one
+/// `&`, so "Grids & Guides" keeps its ampersand.
+pub(super) fn row_label(label: &str) -> String {
+    label.replace('&', "&&")
+}
+
+/// Runs `body` with the framework's words and layout direction in the interface language `lang`, as the dock gives
+/// its panels: the menus outside the dock (the menu bar, Quick Apply) read the same words.
+pub(super) fn in_app_env<R>(ui: &mut egui::Ui, lang: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    use craft_ui::runtime::env::Direction;
+    let rtl = crate::i18n::is_rtl(lang);
+    #[cfg(not(target_arch = "wasm32"))]
+    let words = crate::framework_host::words(lang);
+    craft_ui::runtime::env::with_env(
+        ui,
+        |env| {
+            env.direction = Some(if rtl { Direction::Rtl } else { Direction::Ltr });
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                env.words = Some(craft_ui::runtime::env::WordsOverride::Replace(words));
             }
+        },
+        body,
+    )
+}
+
+/// The menu bar (inside the app bar; macOS uses the native menu instead): the framework's `MenuBar`, one title per menu
+/// of [`menu_tree`], in reading order (a right-to-left interface lays them out from the right).
+///
+/// The bar leaves F10, Alt and Alt+letter to the app: DesignCraft's keymap has F10 (Stroke panel) and Alt chords of its
+/// own, and its menus never took the keyboard.
+pub fn menu_bar(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui::contract::Show as _;
+    use craft_ui::menu::{MenuBar, MenuTitle};
+    let lang = app.ui.language.clone();
+    let picked: RefCell<Option<Pick>> = RefCell::new(None);
+    {
+        let shown: &DesignApp = app;
+        let picked = &picked;
+        let titles: Vec<MenuTitle<'_>> = menu_tree()
+            .into_iter()
+            .map(|(menu, entries)| {
+                MenuTitle::new(row_label(crate::i18n::tr(&lang, menu)), move |ui: &mut egui::Ui| {
+                    if let Some(pick) = menu_column(shown, ui, &[(menu, entries.as_slice())]) {
+                        *picked.borrow_mut() = Some(pick);
+                    }
+                })
+            })
+            .collect();
+        let _ = in_app_env(ui, &lang, |ui| MenuBar::new(crate::i18n::tr(&lang, "Menus").to_owned(), titles).keyboard(false).show(ui));
+    }
+    if let Some(pick) = picked.into_inner() {
+        pick.apply(app);
+    }
+}
+
+/// One menu's rows, as the menu bar and the canvas context menus show them inside a framework `Menu`: runs of items,
+/// each with the menu path its rows are hidden by (Edit › Menus), then Show All Menu Items when a row is hidden. The
+/// row that ran this pass, if any.
+pub(super) fn menu_column<P: AsRef<str>, I: AsRef<[Item]>>(app: &DesignApp, ui: &mut egui::Ui, runs: &[(P, I)]) -> Option<Pick> {
+    use craft_ui::contract::Show as _;
+    use craft_ui::display::Divider;
+    use craft_ui::menu::MenuItem;
+    let mut pick = None;
+    let mut hidden = 0;
+    for (path, items) in runs {
+        hidden += menu_items(app, ui, items.as_ref(), path.as_ref(), &mut pick);
+    }
+    if hidden > 0 && !app.ui.show_full_menus {
+        Divider::horizontal().show(ui);
+        // The menu stays open and shows every row, as InDesign's does.
+        let label = row_label(crate::i18n::tr(&app.ui.language, "Show All Menu Items"));
+        if MenuItem::new(label).keep_open(true).show(ui).ran {
+            pick = Some(Pick::ShowAll);
         }
-    });
+    }
+    pick
 }
 
 /// The menu bar's submenu at `Menu/Submenu`.

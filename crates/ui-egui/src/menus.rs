@@ -21,17 +21,17 @@ pub use bar::{menu_bar, menu_button};
 use bar::{menu_bar_submenu, menu_column};
 #[cfg(test)]
 use context::{CONTEXT_CANVAS, CONTEXT_GRAPHIC_FRAME, CONTEXT_OBJECT, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT, CONTEXT_TEXT_FRAME, context_parse};
-pub use context::{ContextMenu, context_menu};
+pub use context::{ContextMenu, ContextPlace, context_menu};
 pub(crate) use export::{export_epub, export_pdf};
 pub use invoke::{activate, activate_native, close_document};
 #[cfg(not(target_arch = "wasm32"))]
 pub use keys::paste_chord_command;
-pub use keys::{forwarded_shortcuts, shortcuts};
+pub use keys::{forwarded_shortcuts, shortcuts, window_escape};
 #[cfg(not(target_arch = "wasm32"))]
-pub use keys::window_escape;
-#[cfg(test)]
-use quick_apply::quick_commands;
+pub use quick_apply::quick_apply_catalog;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
+#[cfg(test)]
+use quick_apply::{picked_run, quick_commands, style_command};
 pub use run::run_ui;
 pub(crate) use run::save_then;
 pub use state::{
@@ -39,8 +39,6 @@ pub use state::{
     tool_shortcut_label,
 };
 pub use tables::{CLASSIC_GROUPS, MENUS, TYPOGRAPHY_GROUPS, WORKSPACE_OPEN_PANELS, WORKSPACES, workspace_open_panel};
-#[cfg(test)]
-use tree::menu_items;
 pub use tree::{
     AppMenuItem, MAC_APP_MENU, OPEN_RECENT, all_menu_items, has_shown_item, menu_key, menu_tree, native_label, native_menu_tree, recent_items,
     recent_label,

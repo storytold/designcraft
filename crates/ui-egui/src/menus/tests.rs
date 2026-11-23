@@ -1,4 +1,6 @@
 use super::*;
+use egui::accesskit::Role;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 /// The entries (command ids) of a menu bar menu, submenus included.
 fn menu_ids(title: &str) -> Vec<&'static str> {
@@ -194,95 +196,134 @@ fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
 }
 
 /// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+// The menus are the craft framework's: a test finds a title or a row by what the AccessKit tree calls it (a title is a
+// `MenuItem` in the `MenuBar`, a row a `MenuItem`, `MenuItemCheckBox` or `MenuItemRadio` in a `Menu`), on a context with
+// the framework's runtime, which the menus' layers need.
+
+/// The rect of the shown node of `role` named `name`: kittest also lists hidden nodes (a closing menu keeps its rows
+/// under a hidden root while it fades), so a node counts only when neither it nor a node above it is hidden.
+fn shown_rect<S>(h: &egui_kittest::Harness<'_, S>, role: Role, name: &str) -> Option<egui::Rect> {
+    h.query_all_by_role_and_label(role, name).find_map(|node| {
+        let rect = node.rect();
+        let mut at = Some(node);
+        while let Some(node) = at {
+            if node.accesskit_node().is_hidden() {
+                return None;
+            }
+            at = node.parent();
+        }
+        Some(rect)
+    })
+}
+
+/// The names of the shown menu rows, in tree order.
+fn shown_rows<S>(h: &egui_kittest::Harness<'_, S>) -> Vec<String> {
+    let rows = h.query_all_by(|n| matches!(n.role(), Role::MenuItem | Role::MenuItemCheckBox | Role::MenuItemRadio));
+    let names: Vec<(Role, String)> = rows.filter_map(|n| Some((n.accesskit_node().role(), n.accesskit_node().label()?))).collect();
+    names.into_iter().filter(|(role, name)| shown_rect(h, *role, name).is_some()).map(|(_, name)| name).collect()
+}
+
+/// A primary click at `pos`, then a few frames.
+fn click<S>(h: &mut egui_kittest::Harness<'_, S>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.drag_at(pos);
+    h.drop_at(pos);
+    h.run_steps(4);
+}
+
+/// The menu bar alone in a window of `size`, as the app bar shows it.
+fn bar_harness(app: DesignApp, size: egui::Vec2) -> egui_kittest::Harness<'static, DesignApp> {
+    let mut h = crate::test_window::builder::<DesignApp>().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            ui.horizontal(|ui| menu_bar(app, ui));
+        },
+        app,
+    );
+    h.run_steps(2);
+    h
+}
+
+/// A framework menu that stays open near the top left of a window of `size`, showing `runs` as the menu bar and the
+/// canvas context menus show them; the row that runs is applied to `app`.
+fn open_menu<'a>(app: &'a mut DesignApp, runs: Vec<(&'static str, Vec<Item>)>, size: egui::Vec2) -> egui_kittest::Harness<'a> {
+    use craft_ui::contract::overlay::Anchor;
+    use craft_ui::contract::{Bind, Props as _, ShowContainer as _, Trigger};
+    let mut h = crate::test_window::builder::<()>().with_size(size).with_step_dt(1.0 / 60.0).build_ui(move |ui| {
+        let opener = ui.allocate_response(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        let mut open = true;
+        let shown: &DesignApp = app;
+        let picked = craft_ui::menu::Menu::new("Test")
+            .id(egui::Id::new("menus-test-menu"))
+            .opened_by(&opener, Trigger::Manual)
+            .anchor(Anchor::Point(egui::pos2(20.0, 20.0)))
+            .open(Bind::bound(&mut open))
+            .show(ui, |ui, _| menu_column(shown, ui, &runs))
+            .inner
+            .flatten();
+        if let Some(pick) = picked {
+            pick.apply(app);
+        }
+    });
+    h.run_steps(3);
+    h
+}
+
 #[test]
 fn oversized_edit_menu_scrolls_to_preferences() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 260.0));
-    let mut tick = 0;
-    let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
-        tick += 1;
-        let mut output =
-            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| menu_bar(app, ui));
-            });
-        output.textures_delta.clear();
-        let mut labels = Vec::new();
-        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
-            match shape {
-                egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
-                egui::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        collect(shape, clip, labels);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for shape in output.shapes {
-            collect(&shape.shape, shape.clip_rect, &mut labels);
-        }
-        labels
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let size = egui::vec2(700.0, 260.0);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let mut h = bar_harness(app, size);
+    let edit = shown_rect(&h, Role::MenuItem, "Edit").expect("the Edit title");
+    click(&mut h, edit.center());
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "the Edit menu opened");
+    let menu = shown_rect(&h, Role::Menu, "Edit").expect("the open Edit menu");
+    // Preferences… is Edit's last row, below the window until the menu scrolls. The framework menu scrolls by the wheel
+    // (and the strips at its ends); it has no scroll bar track, which the egui menu's version of this test pressed.
+    let in_view = |h: &egui_kittest::Harness<'_, DesignApp>| {
+        let menu = shown_rect(h, Role::Menu, "Edit")?;
+        shown_rect(h, Role::MenuItem, "Preferences…").filter(|row| screen.contains_rect(*row) && menu.contains_rect(*row))
     };
-    frame(&mut app, vec![]);
-    let labels = frame(&mut app, vec![]);
-    let edit = labels.iter().find(|(text, _, _)| text == "Edit").unwrap().1.center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(edit),
-                egui::Event::PointerButton { pos: edit, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
+    assert!(in_view(&h).is_none(), "Preferences… starts out of view");
+    for _ in 0..20 {
+        if in_view(&h).is_some() {
+            break;
+        }
+        h.hover_at(menu.left_top() + egui::vec2(40.0, 60.0));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Unknown,
+        });
+        h.run_steps(10);
     }
-    for _ in 0..3 {
-        frame(&mut app, vec![]);
-    }
-    let layer = ctx.layer_id_at(egui::pos2(edit.x + 80.0, 100.0)).expect("menu layer");
-    let bounds = ctx.memory(|m| m.area_rect(layer.id)).expect("menu bounds");
-    let track = egui::pos2(bounds.right() - 9.0, bounds.bottom() - 25.0);
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(track),
-                egui::Event::PointerButton { pos: track, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
-    assert!(egui::Popup::is_any_open(&ctx), "clicking the scroll track must not dismiss the menu");
-    frame(
-        &mut app,
-        vec![
-            egui::Event::PointerMoved(egui::pos2(edit.x + 80.0, 100.0)),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -3000.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-                source: egui::MouseWheelSource::Unknown,
-            },
-        ],
-    );
-    let mut labels = Vec::new();
-    for _ in 0..60 {
-        labels = frame(&mut app, vec![]);
-    }
-    let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Preferences…").expect("Preferences is rendered");
-    assert!(screen.contains_rect(*rect) && clip.contains_rect(*rect), "Preferences must be visible after scrolling: {rect:?}, {clip:?}");
-    let pos = rect.center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
-    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
-    assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "scrolling keeps the menu open");
+    let preferences = in_view(&h).expect("Preferences… is visible after scrolling");
+    click(&mut h, preferences.center());
+    assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
+    assert!(!craft_ui::menu::bar::is_open(&h.ctx), "choosing a command dismisses the menu");
+}
+
+/// Edit › Menus hides a row; the menu then ends with Show All Menu Items, which shows it again and leaves the menu open.
+#[test]
+fn hidden_menu_rows_come_back_with_show_all_menu_items() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    run_ui(&mut app, "window.hideMenuItem", &json!({"item": menu_key("Edit", "Cut")})).unwrap().unwrap();
+    // Tall enough for the whole Edit menu, so every row is in the window.
+    let mut h = bar_harness(app, egui::vec2(900.0, 1600.0));
+    let edit = shown_rect(&h, Role::MenuItem, "Edit").expect("the Edit title");
+    click(&mut h, edit.center());
+    let rows = shown_rows(&h);
+    assert!(rows.iter().any(|r| r == "Copy") && !rows.iter().any(|r| r == "Cut"), "Cut is hidden: {rows:?}");
+    let show_all = shown_rect(&h, Role::MenuItem, "Show All Menu Items").expect("Show All Menu Items ends the menu");
+    click(&mut h, show_all.center());
+    assert!(h.state().ui.show_full_menus);
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "the menu stays open");
+    let rows = shown_rows(&h);
+    assert!(rows.iter().any(|r| r == "Cut"), "Cut is back: {rows:?}");
+    assert!(!rows.iter().any(|r| r == "Show All Menu Items"), "{rows:?}");
 }
 
 #[test]
@@ -1947,22 +1988,28 @@ fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
     assert!(!story_text(&app, &frame["story"]).is_empty(), "⌥⇧P fills the selected frame with placeholder text");
 }
 
+/// One frame of the whole window as the desktop app runs it: the raw-input hook first, which gives the framework's
+/// board the commands Quick Apply lists (its palette resolves and picks them there), then the app's logic and ui.
+fn quick_apply_frame(app: &mut crate::DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+    let mut input =
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), events, ..Default::default() };
+    app.raw_input_hook(ctx, &mut input);
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    out
+}
+
 #[test]
 fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     let ctx = crate::test_window::context();
+    // The shipping host runs the raw-input hook before every pass (`quick_apply_frame`).
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
-            events,
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        });
-        out.textures_delta.clear();
+        quick_apply_frame(app, &ctx, events);
     };
     let cmd_return =
         |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::COMMAND };
@@ -1981,41 +2028,76 @@ fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     // A plain Return still does.
     let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
     frame(&mut app, vec![enter(true), enter(false)]);
+    // The palette's list takes the Return the field hands it in the next pass.
+    frame(&mut app, vec![]);
     assert_eq!(app.ui.palette, None, "Return runs the first entry and closes Quick Apply");
     assert_eq!(app.session.documents().len(), 2);
+}
+
+/// The x of the last text shape that reads `label`: the palette is painted last, over anything else with the same text.
+fn label_x(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<f32> {
+    shapes.iter().rev().find_map(|s| match &s.shape {
+        egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
+        _ => None,
+    })
 }
 
 #[test]
 fn quick_apply_rows_are_left_aligned() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
+    app.session.execute("style.paragraph.create", &json!({"name": "Group Heading"})).unwrap();
     app.ui.palette = Some(String::new());
     let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    // A style's row shows its kind at the end; a command's row here shows nothing there (the palette shows a command's
+    // chord from the framework's board, where the app's commands have none).
+    quick_apply_frame(&mut app, &ctx, vec![egui::Event::Text("group".into())]);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        let input =
-            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(input, |ui| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        });
-        out.textures_delta.clear();
-        shapes = out.shapes;
+        shapes = quick_apply_frame(&mut app, &ctx, vec![]).shapes;
     }
-    let label_x = |label: &str| {
-        // The palette is painted last, over anything else with the same text.
-        shapes.iter().rev().find_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
-            _ => None,
-        })
-    };
-    // Rows that show a shortcut or a style kind, and rows that show neither, among the first visible ones.
-    let items = quick_apply_items(&app.session, "", false);
-    let first = items.iter().take(10);
-    let plain = first.clone().find(|it| it.shortcut.is_none() && it.kind.is_empty()).expect("a row without a shortcut");
-    let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
-    let (a, b) = (label_x(&plain.label).expect("plain row drawn"), label_x(&with_sc.label).expect("shortcut row drawn"));
-    assert!((a - b).abs() < 0.5, "{:?} at x {a}, {:?} at x {b}", plain.label, with_sc.label);
+    let group = crate::i18n::tr(&app.ui.language, "Group");
+    let (a, b) = (label_x(&shapes, "Group Heading").expect("the style's row"), label_x(&shapes, group).expect("the command's row"));
+    assert!((a - b).abs() < 0.5, "Group Heading at x {a}, {group:?} at x {b}");
+}
+
+/// Quick Apply finds a document's style by name and applies it to the selection.
+#[test]
+fn quick_apply_applies_a_style_it_finds() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.session.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap();
+    app.session.execute("style.object.create", &json!({"name": "Magenta Box"})).unwrap();
+    let b = app.session.execute("frame.create", &json!({"rect": [200, 36, 300, 136], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.ui.palette = Some(String::new());
+    let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    quick_apply_frame(&mut app, &ctx, vec![egui::Event::Text("magenta".into())]);
+    quick_apply_frame(&mut app, &ctx, vec![]);
+    let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    quick_apply_frame(&mut app, &ctx, vec![enter(true), enter(false)]);
+    quick_apply_frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.ui.palette, None, "picking closes Quick Apply");
+    let item = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().object_style.clone();
+    assert_eq!(item, "Magenta Box");
+}
+
+/// A style is a command of its own on the framework's board, whose id holds no space; picking it runs the style's apply
+/// command with its name. Other picks run as the menus run them, a searched command with `{}`.
+#[test]
+fn quick_apply_style_commands_name_their_style() {
+    for (apply, name) in [("style.paragraph.apply", "Body Copy"), ("style.character.apply", "Über_ité.2"), ("style.object.apply", "[x] y")] {
+        let command = style_command(apply, name);
+        assert!(!command.id.chars().any(char::is_whitespace), "{}", command.id);
+        assert_eq!(picked_run(&command), (apply.to_owned(), json!({ "name": name })));
+    }
+    assert_eq!(picked_run(&craft_keymap::CommandRef::new("app.preferences")), ("app.preferences".to_owned(), json!({})));
+    assert_eq!(picked_run(&crate::keys::tool("pen")), ("tool.select".to_owned(), json!({"tool": "pen"})));
 }
 
 #[test]
@@ -2213,20 +2295,32 @@ fn native_frame(app: &mut crate::DesignApp, ctx: &egui::Context, events: Vec<egu
     out
 }
 
-/// A document with two frames, nothing selected, and Quick Apply's search field focused
-/// holding `text`.
+/// A document with two frames, nothing selected, and Quick Apply's search field focused holding `text`, typed into it.
+/// The query is the framework palette's own: a test reads it from the field (`focused_text`), not from `app.ui.palette`.
 fn app_with_focused_field(ctx: &egui::Context, text: &str) -> crate::DesignApp {
+    ctx.enable_accesskit();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [236, 36, 400, 200]})).unwrap();
     app.session.execute("edit.deselectAll", &json!({})).unwrap();
-    app.ui.palette = Some(text.into());
+    app.ui.palette = Some(String::new());
     for _ in 0..3 {
         native_frame(&mut app, ctx, vec![], None);
     }
+    if !text.is_empty() {
+        native_frame(&mut app, ctx, vec![egui::Event::Text(text.into())], None);
+    }
+    let out = native_frame(&mut app, ctx, vec![], None);
     assert!(ctx.text_edit_focused());
+    assert_eq!(focused_text(&out).unwrap_or_default(), text, "the field holds the typed text");
     app
+}
+
+/// The text of the field that has the keyboard, from the frame's AccessKit tree (the context needs AccessKit on).
+fn focused_text(out: &egui::FullOutput) -> Option<String> {
+    let update = out.platform_output.accesskit_update.as_ref()?;
+    update.nodes.iter().find(|(id, _)| *id == update.focus).and_then(|(_, node)| node.value().map(str::to_owned))
 }
 
 fn field_selection(ctx: &egui::Context) -> Option<(usize, usize)> {
@@ -2266,7 +2360,7 @@ fn native_paste_and_copy_act_on_the_focused_field() {
     let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
     assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "{commands:?}");
     native_frame(&mut app, &ctx, vec![egui::Event::Paste("text".into())], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("text"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("text"));
     assert_eq!(document_items(&app), (2, 0), "nothing was pasted into the document");
 }
 
@@ -2300,14 +2394,14 @@ fn native_undo_and_redo_act_on_the_focused_field() {
     let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "");
     native_frame(&mut app, &ctx, vec![egui::Event::Text("abc".into())], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("abc"));
     native_frame(&mut app, &ctx, vec![], Some("edit.undo"));
     native_frame(&mut app, &ctx, vec![], None);
-    assert_eq!(app.ui.palette.as_deref(), Some(""), "the field's typing is undone");
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).unwrap_or_default(), "", "the field's typing is undone");
     assert_eq!(document_items(&app), (2, 0), "the document's last frame is still there");
     native_frame(&mut app, &ctx, vec![], Some("edit.redo"));
     native_frame(&mut app, &ctx, vec![], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("abc"));
     assert_eq!(document_items(&app), (2, 0));
 }
 
@@ -2534,6 +2628,47 @@ fn context_menus_hold_commands_and_menu_bar_submenus() {
             assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
         }
     }
+}
+
+/// A right-click on the page opens the canvas menu at the click: the menu bar's rows with their shortcuts and check
+/// marks. A row runs its command and closes the menu, after which the canvas has the keys again.
+#[test]
+fn a_right_click_on_the_page_opens_the_canvas_menu_and_its_rows_run() {
+    use egui::{Event, Modifiers, PointerButton};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    app.run("frame.create", json!({"rect": [236, 36, 400, 200]})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+    let at = h.state().app.canvas_rect.expect("the canvas").max - egui::vec2(30.0, 30.0);
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(4);
+    assert!(crate::canvas::context_menu_open(&h.ctx), "the canvas menu is open");
+    let menu = shown_rect(&h, Role::Menu, "View").expect("the canvas menu (nothing was hit), named for what it acts on");
+    // Near the window's corner the menu opens up and to the left of the click: a corner of it is at the click.
+    let corners = [menu.left_top(), menu.right_top(), menu.left_bottom(), menu.right_bottom()];
+    assert!(corners.iter().any(|c| (*c - at).length() < 24.0), "the menu hangs at the click: {menu:?}, {at:?}");
+    // Show/Hide Rulers is checked while the rulers show, and Select All shows the shortcut in effect.
+    let app = &h.state().app;
+    let (rulers, select_all) = (crate::i18n::tr(&app.ui.language, "Show/Hide Rulers"), crate::i18n::tr(&app.ui.language, "Select All"));
+    let shortcut = shortcut_label(app, "edit.selectAll", &Value::Null);
+    let rulers_on = app.ui.rulers;
+    let row = {
+        let checked = h.query_all_by_role_and_label(Role::MenuItemCheckBox, rulers).next().expect("the rulers' check row").accesskit_node().toggled();
+        assert_eq!(checked == Some(egui::accesskit::Toggled::True), rulers_on, "{checked:?}");
+        let row = h.query_all_by_role_and_label(Role::MenuItem, select_all).next().expect("the Select All row");
+        assert_eq!(row.accesskit_node().data().keyboard_shortcut().map(str::to_owned), shortcut);
+        row.rect()
+    };
+    click(&mut h, row.center());
+    let doc = h.state().app.session.active().unwrap();
+    assert_eq!(doc.selection.items.len(), 2, "Select All ran");
+    assert!(shown_rect(&h, Role::Menu, "View").is_none(), "running a row closed the menu");
+    assert!(!crate::canvas::context_menu_open(&h.ctx), "the canvas takes the keys again");
 }
 
 #[test]
@@ -2979,25 +3114,11 @@ fn hide_and_show_menu_items() {
     assert!(items.len() > 100, "every menu's items are listed: {}", items.len());
 }
 
-/// The Type menu as drawn: every item label.
+/// The Type menu as drawn: the name of every row it shows.
 fn drawn_type_menu(app: &mut DesignApp) -> Vec<String> {
     let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 4000.0));
-    let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
-        menu_items(app, ui, &ty, "Type");
-    });
-    out.textures_delta.clear();
-    fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(t) => out.push(t.galley.job.text.trim().to_string()),
-            egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
-            _ => {}
-        }
-    }
-    let mut labels = Vec::new();
-    out.shapes.iter().for_each(|s| collect(&s.shape, &mut labels));
-    labels
+    let h = open_menu(app, vec![("Type", ty)], egui::vec2(400.0, 4000.0));
+    shown_rows(&h)
 }
 
 /// Tate-Chu-Yoko, Ruby, Kenten and Warichu are in the Type menu of InDesign's Japanese edition
@@ -3219,10 +3340,10 @@ fn tiny_menu_viewport_does_not_force_the_default_scroll_height() {
 
 #[test]
 fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    // `menu_button`'s submenus inside an egui menu (the panels' menus that are still egui): the menu bar's own submenus
+    // are framework rows now, so the egui submenu row is `menu_button` itself, as `menu_items` drew it.
     let ctx = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
-    let entries = vec![Item::Sub("Hidden submenu".into(), vec![cmd_item("app.preferences", Value::Null)])];
     let mut tick = 0;
     let mut frame = |spacing: f32, events: Vec<egui::Event>| {
         tick += 1;
@@ -3235,7 +3356,9 @@ fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
                         egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
                             ui.add_space(spacing);
                             let button_id = ui.next_auto_id();
-                            menu_items(&mut app, ui, &entries, "Test");
+                            menu_button(ui, "Hidden submenu", |ui| {
+                                let _ = ui.button("Preferences…");
+                            });
                             let response = ui.ctx().read_response(button_id).expect("submenu button response");
                             let open = egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item.is_some());
                             hidden_submenu = Some((response.rect, ui.clip_rect(), open));
@@ -3509,37 +3632,14 @@ fn start_screen_offers_every_print_preset_including_a6() {
 #[test]
 fn menu_rows_are_selectable_across_the_full_width() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
-    let entries = vec![cmd_item("app.preferences", Value::Null)];
-    let mut tick = 0;
-    let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
-        tick += 1;
-        let mut row = egui::Rect::NOTHING;
-        let mut output =
-            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
-                egui::Area::new(egui::Id::unique("menu_rows")).fixed_pos(egui::pos2(50.0, 50.0)).show(ui.ctx(), |ui| {
-                    let before = ui.cursor().min;
-                    menu_column(app, ui, &[("Test", entries.clone())]);
-                    row = egui::Rect::from_min_max(before, ui.min_rect().max);
-                });
-            });
-        output.textures_delta.clear();
-        row
-    };
-    frame(&mut app, vec![]);
-    let row = frame(&mut app, vec![]);
-    assert!(row.width() >= 239.0, "the column is at least 240 wide: {row:?}");
-    let far = egui::pos2(row.right() - 6.0, row.top() + 8.0);
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(far),
-                egui::Event::PointerButton { pos: far, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
+    // A longer row beside Preferences… makes the menu wider than Preferences…'s own label.
+    let entries = vec![cmd_item("app.preferences", Value::Null), cmd_item("app.exportBatch", Value::Null)];
+    let mut h = open_menu(&mut app, vec![("Test", entries)], egui::vec2(600.0, 400.0));
+    let row = shown_rect(&h, Role::MenuItem, "Preferences…").expect("the Preferences… row");
+    let other = shown_rect(&h, Role::MenuItem, "Export Layouts and Versions…").expect("the longer row");
+    assert!((row.width() - other.width()).abs() < 0.5, "the rows share the menu's width: {row:?}, {other:?}");
+    click(&mut h, egui::pos2(row.right() - 6.0, row.center().y));
+    drop(h);
     assert!(app.ui.dialog.is_some(), "clicking the empty end of the Preferences… row must choose it");
 }
 

@@ -1,55 +1,191 @@
-use super::state::{shortcut_of, shortcut_text};
+use craft_keymap::CommandRef;
+use craft_ui::menu::search::HelpEntry;
+
+use super::bar::in_app_env;
+use super::state::shortcut_of;
 use super::ui_commands::{CJK_ONLY, UI_COMMANDS, shown};
 use super::{DesignApp, Value, json};
 
-/// Quick Apply (⌘Return): the document's styles and every command, searched by name.
+/// Quick Apply (⌘Return): the framework's command palette over the document's styles and every searched command. The
+/// palette lists, ranks and picks; the app runs what was picked, as Quick Apply always did (`app.run`). An empty query
+/// lists commands only: the styles need a query, else they would crowd the commands out.
 pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
-    let Some(mut q) = app.ui.palette.clone() else { return };
-    let mut close = false;
-    let mut run: Option<(String, Value)> = None;
-    egui::Modal::new(egui::Id::unique("palette")).show(ctx, |ui| {
-        ui.set_width(480.0);
-        let r = ui.add(
-            egui::TextEdit::singleline(&mut q)
-                .hint_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Search styles and commands…")))
-                .desired_width(f32::INFINITY),
-        );
-        r.request_focus();
-        let items = quick_apply_items(&app.session, &q, crate::cjk_features(app));
-        // Only a fresh Return runs the first entry: ⌘Return pressed again or held down (repeats) is
-        // the shortcut, not a choice.
-        let enter = ui.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if !modifiers.command))
-        });
-        egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-            for (i, it) in items.iter().enumerate() {
-                let mut b = egui::Button::new(it.label.as_str()).frame(false);
-                if let Some(sc) = &it.shortcut {
-                    b = b.shortcut_text(shortcut_text(sc));
-                } else if !it.kind.is_empty() {
-                    b = b.shortcut_text(crate::i18n::tr(&app.ui.language, it.kind));
-                }
-                // The button aligns its label by the layout it's in: left, like the rows with a shortcut.
-                let size = egui::vec2(460.0, 22.0);
-                let row =
-                    ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Min), |ui| {
-                        ui.add(b.min_size(size))
-                    });
-                if row.inner.clicked() || (i == 0 && enter) {
-                    run = Some((it.id.clone(), it.params.clone()));
-                }
-            }
-        });
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            close = true;
-        }
-    });
-    app.ui.palette = if close || run.is_some() { None } else { Some(q) };
-    if let Some((id, params)) = run {
-        let _ = app.run(&id, params);
+    use craft_ui::contract::Bind;
+    use craft_ui::patterns::panels::CommandPalette;
+    use craft_ui::runtime::env::Label;
+    if app.ui.palette.is_none() {
+        return;
     }
+    let lang = app.ui.language.clone();
+    let entries = palette_entries(app);
+    let suggested: Vec<CommandRef> =
+        quick_apply_items(&app.session, "", crate::cjk_features(app)).into_iter().map(|it| CommandRef::new(it.id)).collect();
+    let mut open = true;
+    // This area only supplies a parent: the palette mounts its own modal layer.
+    let shown = egui::Area::new(egui::Id::new("designcraft-quick-apply-host")).order(egui::Order::Foreground).show(ctx, |ui| {
+        in_app_env(ui, &lang, |ui| {
+            CommandPalette::new(crate::i18n::tr(&lang, "Quick Apply").to_owned(), &entries, Bind::bound(&mut open))
+                .placeholder(crate::i18n::tr(&lang, "Search styles and commands…").to_owned())
+                .suggested((Label::from(crate::i18n::tr(&lang, "Commands").to_owned()), suggested))
+                .show(ui)
+        })
+    });
+    // The palette fired its pick on the framework's board too; the app drops what the board fires
+    // (`DesignApp::raw_input_hook`), so the command runs once, here.
+    if let Some(command) = shown.inner.picked {
+        app.ui.palette = None;
+        let (id, params) = picked_run(&command);
+        let _ = app.run(&id, params);
+    } else if !open {
+        app.ui.palette = None;
+    }
+}
+
+/// The palette's entries: the document's styles (named, with their kind as the path), then the searched commands in
+/// the interface language, found by their English label too.
+fn palette_entries(app: &DesignApp) -> Vec<HelpEntry> {
+    let lang = app.ui.language.as_str();
+    let cjk = crate::cjk_features(app);
+    let mut out: Vec<HelpEntry> = Vec::new();
+    if let Some(st) = app.session.active() {
+        for (apply, kind, names) in style_names(&st.doc.styles) {
+            let kind = crate::i18n::tr(lang, kind).to_owned();
+            out.extend(names.into_iter().map(|name| HelpEntry::new(style_command(apply, &name), name).with_path([kind.clone()])));
+        }
+    }
+    let commands = quick_commands().filter(|(id, _, _)| cjk || !CJK_ONLY.contains(id));
+    out.extend(commands.map(|(id, label, _)| HelpEntry::new(CommandRef::new(id), crate::i18n::tr(lang, label).to_owned()).with_english(label)));
+    out
+}
+
+/// Each kind of style Quick Apply applies: the command that applies it, the kind's name, and the document's styles of
+/// that kind Quick Apply lists (not the bracketed built-in ones).
+fn style_names(styles: &designcraft_doc::Styles) -> [(&'static str, &'static str, Vec<String>); 3] {
+    let named = |names: Vec<&String>| names.into_iter().filter(|name| !name.starts_with('[')).cloned().collect::<Vec<String>>();
+    [
+        (PARAGRAPH, "Paragraph Style", named(styles.paragraph.iter().map(|s| &s.name).collect())),
+        (CHARACTER, "Character Style", named(styles.character.iter().map(|s| &s.name).collect())),
+        (OBJECT, "Object Style", named(styles.object.iter().map(|s| &s.name).collect())),
+    ]
+}
+
+const PARAGRAPH: &str = "style.paragraph.apply";
+const CHARACTER: &str = "style.character.apply";
+const OBJECT: &str = "style.object.apply";
+
+/// The palette's command for applying the style `name` with `apply`: a command of its own on the board, which holds no
+/// parameters (`style.paragraph.apply.Body_20Copy`). Bytes other than ASCII letters and digits are written `_XX`.
+pub(super) fn style_command(apply: &str, name: &str) -> CommandRef {
+    use std::fmt::Write as _;
+    let mut id = format!("{apply}.");
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            id.push(char::from(byte));
+        } else {
+            let _ = write!(id, "_{byte:02X}");
+        }
+    }
+    CommandRef::new(id)
+}
+
+/// The style command `command` names, as the command that applies it and the style's name.
+fn style_of(command: &CommandRef) -> Option<(&'static str, String)> {
+    let (apply, encoded) =
+        [PARAGRAPH, CHARACTER, OBJECT].into_iter().find_map(|apply| Some((apply, command.id.strip_prefix(apply)?.strip_prefix('.')?)))?;
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut rest = encoded.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        if byte == b'_' {
+            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(byte);
+            rest = tail;
+        }
+    }
+    Some((apply, String::from_utf8(bytes).ok()?))
+}
+
+/// What running the palette's pick is: a style's apply command with its name, a keymap command as the menus run it
+/// (`keys::runs`), and a searched command without parameters (`{}`), as Quick Apply has always run them.
+pub(super) fn picked_run(command: &CommandRef) -> (String, Value) {
+    if let Some((apply, name)) = style_of(command) {
+        return (apply.to_owned(), json!({ "name": name }));
+    }
+    let (id, params) = crate::keys::runs(command);
+    (id, if params.is_null() { json!({}) } else { params })
+}
+
+/// The app's commands on the framework's board while Quick Apply is open: the tools (as `toolbar::tool_catalog` has
+/// them, for the Tools rail), every command Quick Apply searches and the document's styles, so the palette resolves
+/// and picks each of them. None of them has a default chord: the app's keymap stays the one dispatcher of every key.
+/// `None` while Quick Apply is closed; the board then has the tools alone.
+///
+/// One catalog per interface language and set of style names; the generation changes whenever the rows do.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::commands::AppCatalog> {
+    use craft_ui::runtime::commands::AppCatalog;
+    use std::hash::{Hash as _, Hasher as _};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, PoisonError};
+    /// The last catalog, by language and the hash of the style names; a new generation for each one built.
+    static LAST: Mutex<Option<(String, u64, AppCatalog)>> = Mutex::new(None);
+    /// Generations apart from `tool_catalog`'s, which counts its languages from 1.
+    static GENERATION: AtomicU64 = AtomicU64::new(1 << 32);
+    app.ui.palette.as_ref()?;
+    let lang = app.ui.language.as_str();
+    let styles = app.session.active().map(|st| style_names(&st.doc.styles));
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    styles.hash(&mut hasher);
+    let key = hasher.finish();
+    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((held, held_key, catalog)) = last.as_ref()
+        && held == lang
+        && *held_key == key
+    {
+        return Some(catalog.clone());
+    }
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+    let defs = board_defs(lang, styles.as_ref());
+    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
+        log::warn!("Quick Apply's commands are not on the framework's board: {error}");
+        AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
+    });
+    *last = Some((lang.to_owned(), key, catalog.clone()));
+    Some(catalog)
+}
+
+/// The definitions of [`quick_apply_catalog`]: the keymap's tool and searched commands without their default chords,
+/// labelled in `lang`, then a command for each style.
+#[cfg(not(target_arch = "wasm32"))]
+fn board_defs(lang: &str, styles: Option<&[(&'static str, &'static str, Vec<String>); 3]>) -> Vec<craft_keymap::CommandDef> {
+    let searched: std::collections::HashSet<&str> = quick_commands().map(|(id, _, _)| id).collect();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut defs: Vec<craft_keymap::CommandDef> = Vec::new();
+    for def in crate::keys::catalog() {
+        let tool = crate::keys::tool_of(&def.command);
+        let quick = def.command.params.is_null() && searched.contains(def.command.id.as_str());
+        if !(tool.is_some() || quick) || !seen.insert(def.command.id.clone()) {
+            continue;
+        }
+        let mut def = def.clone();
+        def.defaults.clear();
+        def.label = crate::i18n::tr(lang, &def.label).to_owned();
+        if let Some(icon) = designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| Some(t.id) == tool).map(|t| t.icon) {
+            def = def.with_icon(icon);
+        }
+        defs.push(def);
+    }
+    for (apply, _, names) in styles.into_iter().flatten() {
+        for name in names {
+            let command = style_command(apply, name);
+            if seen.insert(command.id.clone()) {
+                defs.push(craft_keymap::CommandDef::new(command, name.clone(), craft_keymap::Scope::app()));
+            }
+        }
+    }
+    defs
 }
 
 /// One Quick Apply entry: a style to apply or a command to run.

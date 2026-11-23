@@ -1,4 +1,4 @@
-use super::bar::{menu_bar_submenu, menu_column, menu_max_height};
+use super::bar::{in_app_env, menu_bar_submenu, menu_column, row_label};
 use super::tree::{menu_tree, parse_entries};
 use super::{DesignApp, Item};
 
@@ -140,14 +140,44 @@ pub(super) fn context_parse(entries: &[&str]) -> Vec<(String, Vec<Item>)> {
     out
 }
 
-/// A canvas context menu: the menu bar's rows (labels, shortcuts, check marks, greyed when they
-/// can't run), scrolling when taller than the window.
-pub fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, kind: ContextMenu) {
+/// Where and how a canvas context menu shows: its id, the canvas response it hangs from and the point it hangs at (where
+/// the right-click was).
+pub struct ContextPlace<'a> {
+    pub id: egui::Id,
+    pub opener: &'a egui::Response,
+    pub at: egui::Pos2,
+}
+
+/// A canvas context menu of `kind` while `open` holds: the framework's `Menu` at the right-click, with the menu bar's
+/// rows (labels, shortcuts, check marks, greyed when they can't run), scrolling when taller than the window. Escape, a
+/// press outside or a row that runs closes it through `open`; the row runs before this returns.
+pub fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, kind: ContextMenu, place: &ContextPlace<'_>, open: &mut bool) {
+    use craft_ui::contract::overlay::Anchor;
+    use craft_ui::contract::{Bind, Props as _, ShowContainer as _, Trigger};
+    use craft_ui::menu::Menu;
     let runs = context_parse(&context_entries(app, kind));
-    let max_height = menu_max_height(ui, None);
-    let mut scroll = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(1.0);
-    if ui.is_sizing_pass() {
-        scroll = scroll.vertical_scroll_offset(0.0);
+    let lang = app.ui.language.clone();
+    // The menu is named for what it acts on, with a menu bar title the interface already translates.
+    let label = crate::i18n::tr(
+        &lang,
+        match kind {
+            ContextMenu::Object => "Object",
+            ContextMenu::Text => "Type",
+            ContextMenu::Canvas => "View",
+        },
+    );
+    let shown: &DesignApp = app;
+    let picked = in_app_env(ui, &lang, |ui| {
+        Menu::new(row_label(label))
+            .id(place.id)
+            .opened_by(place.opener, Trigger::Manual)
+            .anchor(Anchor::Point(place.at))
+            .open(Bind::bound(open))
+            .show(ui, |ui, _| menu_column(shown, ui, &runs))
+            .inner
+            .flatten()
+    });
+    if let Some(pick) = picked {
+        pick.apply(app);
     }
-    scroll.show(ui, |ui| menu_column(app, ui, &runs));
 }
