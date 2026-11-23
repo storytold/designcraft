@@ -276,7 +276,9 @@ pub(super) fn buttons(app: &mut DesignApp, ui: &mut Ui) {
     }
     if editable {
         ui.data_mut(|data| match url_draft {
-            Some(draft) => data.insert_temp(url_key, draft),
+            Some(draft) => {
+                data.insert_temp(url_key, draft);
+            }
             None => {
                 data.remove::<InteractiveDraft<String>>(url_key);
             }
