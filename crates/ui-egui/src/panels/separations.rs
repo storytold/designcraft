@@ -916,6 +916,35 @@ mod plate_action_tests {
         for _ in 0..2 {
             step(&mut h, None);
         }
+        // SEPARATIONS-DEBUG: temporary, to find why the click does not select the plate.
+        {
+            let node = h.get_by_role_and_label(egui::accesskit::Role::Button, &label);
+            eprintln!(
+                "SEPARATIONS-DEBUG after click at {pos:?}: separations {:?}, status {:?}, framework_installed {}, button rect {:?} focused {}, floating {:?}",
+                h.state().app.ui.separations,
+                h.state().app.ui.status,
+                h.state().app.framework_installed,
+                node.rect(),
+                node.is_focused(),
+                h.state().app.ui.floating.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()
+            );
+            let left = node.rect().left_center() + egui::vec2(8.0, 0.0);
+            step(&mut h, Some(Event::PointerMoved(left)));
+            for pressed in [true, false] {
+                step(&mut h, Some(Event::PointerButton { pos: left, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }));
+            }
+            for _ in 0..2 {
+                step(&mut h, None);
+            }
+            eprintln!(
+                "SEPARATIONS-DEBUG after click at {left:?}: separations {:?}, status {:?}",
+                h.state().app.ui.separations,
+                h.state().app.ui.status
+            );
+            for n in h.query_all_by(|n| n.role() == egui::accesskit::Role::Button) {
+                eprintln!("SEPARATIONS-DEBUG   button {:?} rect {:?}", n.label(), n.rect());
+            }
+        }
         assert_view(&h.state().app, Some(SPOT), None);
         assert_quiet(&h.state().app, &before);
     }
