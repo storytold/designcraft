@@ -735,6 +735,42 @@ pub(crate) fn apply_none(app: &mut DesignApp) -> Result<Value, String> {
     crate::panels::apply_swatch(app, app.ui.stroke_front, "[None]", None)
 }
 
+/// The tools as framework commands, for the board in the language `lang`: each tool's own keymap command
+/// (`keys::tool`), its translated label and its artwork's name. They carry no default chords: the app's keymap is the
+/// one dispatcher of every key, and the board only resolves and fires these for the Tools rail. One catalog per
+/// language, so its generation moves only when the language does.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tool_catalog(lang: &str) -> craft_ui_widgets::runtime::commands::AppCatalog {
+    use craft_ui_widgets::runtime::commands::AppCatalog;
+    use std::sync::{Mutex, PoisonError};
+    static CATALOGS: Mutex<Vec<(String, AppCatalog)>> = Mutex::new(Vec::new());
+    let mut catalogs = CATALOGS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, catalog)) = catalogs.iter().find(|(code, _)| code == lang) {
+        return catalog.clone();
+    }
+    let defs: Vec<craft_keymap::CommandDef> = crate::keys::catalog()
+        .iter()
+        .filter_map(|def| {
+            let tool = crate::keys::tool_of(&def.command)?;
+            let icon = TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.id == tool).map(|t| t.icon);
+            let mut def = def.clone();
+            def.defaults.clear();
+            def.label = crate::i18n::tr(lang, &def.label).to_owned();
+            if let Some(icon) = icon {
+                def = def.with_icon(icon);
+            }
+            Some(def)
+        })
+        .collect();
+    let generation = catalogs.len() as u64 + 1;
+    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
+        log::warn!("the tool commands are not on the framework's board: {error}");
+        AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
+    });
+    catalogs.push((lang.to_owned(), catalog.clone()));
+    catalog
+}
+
 #[cfg(test)]
 mod tests;
 
