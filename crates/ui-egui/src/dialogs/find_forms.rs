@@ -668,4 +668,32 @@ mod tests {
         assert_eq!(kit::journal(&h, "hyphenation.removeException").len(), 1);
         assert!(h.query_by_label("ex~am~ple").is_none());
     }
+
+    /// Regression: the character pages of the format settings write their attributes as `c.<name>` and leave the rest
+    /// unset, which is what makes a Change Format sparse.
+    #[test]
+    fn format_settings_character_pages_set_only_what_was_touched() {
+        let mut h = open(app_with_text(), "findChange", json!({}));
+        kit::click(&mut h, BUTTON, "Specify attributes to change", 0);
+        let language = crate::panels::properties::LANGUAGES[0];
+        kit::click(&mut h, RADIO, "Advanced Character Formats", 0);
+        kit::type_and_commit(&mut h, "Horizontal Scale:", 0, "120");
+        kit::pick(&mut h, "Language:", language);
+        kit::click(&mut h, RADIO, "Character Color", 0);
+        kit::click(&mut h, RADIO, "Stroke", 0);
+        kit::pick(&mut h, "Color:", "[Black]");
+        kit::click(&mut h, RADIO, "OpenType Features", 0);
+        kit::click(&mut h, CHECK, "Fractions", 0);
+        kit::click(&mut h, RADIO, "Underline Options", 0);
+        kit::click(&mut h, CHECK, "Underline On", 0);
+        kit::type_and_commit(&mut h, "Weight:", 0, "2");
+        kit::key(&mut h, Key::Enter, Modifiers::NONE);
+        let format = &kit::draft(&h).fields[CHANGE_FORMAT];
+        assert_eq!(
+            format["chars"],
+            json!({"hScale": 1.2, "language": language, "stroke": "[Black]", "otfFeatures": ["frac"], "underline": true, "underlineWeight": 2.0}),
+            "{format}"
+        );
+        assert!(kit::draft(&h).fields.get(FIND_FORMAT).is_none(), "the Find Format is untouched");
+    }
 }
