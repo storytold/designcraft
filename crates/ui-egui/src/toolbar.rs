@@ -1121,6 +1121,8 @@ mod framework {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
 
 #[cfg(test)]
 mod text_color_tests {
