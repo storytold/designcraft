@@ -77,7 +77,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
             // Named for the note, not "Note text": that is the draft field's name.
             let field_name = if author.is_empty() { tr("Note") } else { format!("{} — {author}", tr("Note")) };
             GroupBox::new(author, None).id_salt(("notes-row", identity)).show(ui, |ui, _| {
-                TextField::new(field_name, Bind::given(text.clone()))
+                TextField::new(field_name.clone(), Bind::given(text.clone()))
                     .id_salt(("note_text", identity))
                     .read_only(true)
                     .lines(2)
