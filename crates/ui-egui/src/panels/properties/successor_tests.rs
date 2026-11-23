@@ -10,6 +10,7 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+use super::ln;
 use super::object::transform_anchors;
 use super::*;
 
@@ -1554,4 +1555,93 @@ fn properties_text_frame_shows_no_insets_for_type_on_a_path() {
     assert_eq!(text_frame_fields(&h).len(), 2, "columns and gutter only");
     let (top, bottom) = text_frame_band(&h);
     assert!(h.query_all_by_label("Justify").all(|n| n.rect().center().y < top || n.rect().center().y > bottom));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Effects and Text Wrap, by accessible name
+
+/// Whether any node of the open panel is named like `part`.
+fn named_like(h: &Window, part: &str) -> bool {
+    h.query_all_by_label_contains(part).next().is_some()
+}
+
+/// Successor of `the_effects_panel_shows_the_level_and_isolate_blending_and_knockout_group_for_groups`: for a group the Effects
+/// panel shows its level (Group:), the blend mode and opacity, and Isolate Blending and Knockout Group, which set the group's
+/// flags; for another object the level is Object: and Knockout Group does nothing.
+#[test]
+fn the_framework_effects_panel_shows_the_level_and_group_blending_options() {
+    let mut app = ln::document();
+    let a = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+    let b = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [g]})).unwrap();
+    app.run("object.opacity", json!({"opacity": 1.0, "blend": "colorDodge"})).unwrap();
+    let mut h = ln::open(app, crate::panels::properties::effects_panel);
+    for expected in ["Group", "Isolate Blending", "Knockout Group"] {
+        assert!(named_like(&h, expected), "{expected} is shown");
+    }
+    assert!(h.query_all_by(|n| n.value().is_some_and(|v| v.contains("Color Dodge"))).next().is_some(), "the blend mode shows");
+    ln::click(&mut h, egui::accesskit::Role::CheckBox, "Isolate Blending");
+    assert!(ln::item(&h, g).isolate);
+    ln::click(&mut h, egui::accesskit::Role::CheckBox, "Knockout Group");
+    assert!(ln::item(&h, g).knockout);
+    // Another object: the level is Object, and the group options do nothing.
+    h.state_mut().run("selection.set", json!({"ids": [a]})).unwrap();
+    ln::steps(&mut h, 3);
+    assert!(named_like(&h, "Object"), "the level is Object");
+    if ln::has(&h, egui::accesskit::Role::CheckBox, "Knockout Group") {
+        ln::click(&mut h, egui::accesskit::Role::CheckBox, "Knockout Group");
+    }
+    assert!(!ln::item(&h, a).knockout);
+}
+
+/// Successor of `pasted_into_frames_keep_object_level_and_disable_group_blending`: a frame that holds pasted content stays an
+/// Object in the Effects panel, and its group-only options are disabled: clicking them changes nothing and makes no undo step.
+#[test]
+fn the_framework_effects_panel_keeps_a_frame_with_pasted_content_an_object() {
+    let mut app = ln::document();
+    let child = app.run("frame.create", json!({"rect": [80, 80, 120, 120]})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [child]})).unwrap();
+    app.run("edit.copy", json!({})).unwrap();
+    let container = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [container]})).unwrap();
+    app.run("edit.pasteInto", json!({})).unwrap();
+    app.run("selection.set", json!({"ids": [container]})).unwrap();
+    let mut h = ln::open(app, crate::panels::properties::effects_panel);
+    assert!(named_like(&h, "Object"), "a frame remains an object after Paste Into");
+    let undo = ln::undo_steps(&h);
+    for label in ["Isolate Blending", "Knockout Group"] {
+        if ln::has(&h, egui::accesskit::Role::CheckBox, label) {
+            ln::click(&mut h, egui::accesskit::Role::CheckBox, label);
+        }
+    }
+    let it = ln::item(&h, container);
+    assert!(it.has_nested_items());
+    assert!(!it.isolate && !it.knockout, "group-only options stay disabled for a frame holding content");
+    assert_eq!(ln::undo_steps(&h), undo, "disabled controls do not create undo steps");
+}
+
+/// Successor of `the_text_wrap_panel_shows_each_offset_and_invert`: the Text Wrap panel shows Top, Left, Bottom and Right with
+/// each offset in the ruler unit (picas here: 0p1 = 1 pt) and Wrap To, and Invert sets the wrap's invert flag.
+#[test]
+fn the_framework_text_wrap_panel_shows_each_offset_and_invert() {
+    let mut app = ln::document();
+    let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+    app.run("object.textWrap", json!({"mode": "boundingBox", "offset": [1, 2, 3, 4]})).unwrap();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    let mut h = ln::open(app, crate::panels::properties::wrap_panel);
+    for side in ["Top", "Left", "Bottom", "Right"] {
+        assert!(named_like(&h, side), "{side} is shown");
+    }
+    let shown: Vec<String> = h
+        .query_all_by(|n| n.role() == egui::accesskit::Role::TextInput || n.role() == egui::accesskit::Role::SpinButton)
+        .filter_map(|n| n.value())
+        .collect();
+    for offset in ["0p1", "0p2", "0p3", "0p4"] {
+        assert!(shown.iter().any(|v| v == offset), "{offset} in {shown:?}");
+    }
+    assert!(named_like(&h, "Wrap To"), "Wrap To is shown");
+    let invert = if ln::has(&h, egui::accesskit::Role::CheckBox, "Invert") { egui::accesskit::Role::CheckBox } else { egui::accesskit::Role::Button };
+    ln::click(&mut h, invert, "Invert");
+    assert!(ln::item(&h, id).wrap.invert);
 }

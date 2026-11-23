@@ -234,3 +234,48 @@ fn layers_a_selected_group_member_moves_its_whole_group_onto_a_locked_layer_with
     kit::drag_with(&mut h, from, to, Modifiers::COMMAND);
     assert!([g, a, b].iter().all(|id| layer_of(&h, *id) == art), "the whole group moved");
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The font style select
+
+/// Successor of `cold_style_popup_discovers_instances_and_selects_them` for what the framework select can show: its list holds
+/// the named instances of a catalogued variable font, and picking one returns it. (The old test's `closed popup must not
+/// preload the font` check needs a database of its own, and the framework select reads the app's global one.)
+#[test]
+fn the_framework_font_style_select_lists_named_instances_and_picks_one() {
+    let family = "Synthetic Style Select";
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::variable_font(family).unwrap());
+    let mut app = kit::app(1, false);
+    let ctx = egui::Context::default();
+    app.framework_transform = true;
+    app.install_framework(&ctx);
+    app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+    let mut ready = false;
+    let mut h = egui_kittest::Harness::builder().with_context(ctx).with_size(vec2(600.0, 500.0)).with_step_dt(0.05).build_ui_state(
+        move |ui, state: &mut (DesignApp, Option<String>)| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "en");
+                ready = true;
+                return;
+            }
+            let (app, picked) = state;
+            if let Some(style) = crate::framework_transform::font_style_select(app, ui, None, egui::Id::new("style_select_test"), family, "Regular") {
+                *picked = Some(style);
+            }
+        },
+        (app, None),
+    );
+    h.run_steps(4);
+    let combo = h.get_by_role_and_label(Role::ComboBox, "Font Style").rect().center();
+    h.hover_at(combo);
+    h.drag_at(combo);
+    h.drop_at(combo);
+    h.run_steps(4);
+    assert!(h.query_by_label("SemiBold").is_some(), "the named instance is listed");
+    let at = h.get_by_label("SemiBold").rect().center();
+    h.hover_at(at);
+    h.drag_at(at);
+    h.drop_at(at);
+    h.run_steps(4);
+    assert_eq!(h.state().1.as_deref(), Some("SemiBold"));
+}
