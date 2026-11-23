@@ -1,6 +1,6 @@
 use super::*;
 use crate::DesignApp;
-use craft_ui_legacy::docking::{Column, Node, Side};
+use craft_behavior::dock::{Column, DockEdge, Node};
 use serde_json::json;
 
 fn populated() -> UiState {
@@ -91,7 +91,7 @@ fn dock(layout: &Layout<String>) -> &[Column<String>] {
     assert!(crate::panel_docking::valid(layout), "{layout:?}");
     let Some(Node::Split { first, second, .. }) = &layout.root else { panic!("expected the canvas split: {layout:?}") };
     assert!(matches!(&**first, Node::Tabs { panels, .. } if panels == &["canvas"]));
-    let Node::Dock { side: Side::End, columns } = &**second else { panic!("expected an end dock: {second:?}") };
+    let Node::Dock { side: DockEdge::End, columns, .. } = &**second else { panic!("expected an end dock: {second:?}") };
     columns
 }
 
@@ -119,7 +119,7 @@ fn classic_dock_file_loads_as_its_workspace_default_layout() {
     assert!(columns[1].groups.iter().all(|g| !g.panels.iter().any(|p| p == "glyphs" || p == "swatches")));
     assert_eq!(layout.floating.len(), 1);
     assert_eq!(crate::panel_docking::window_groups(&layout.floating[0])[0].panels, ["glyphs"]);
-    assert_eq!(&layout.floating[0].rect[..2], &[100.0, 120.0]);
+    assert_eq!(layout.floating[0].rect.min, egui::pos2(100.0, 120.0));
 }
 
 /// An `openPanel` that was the flyout open at quit is not docked below Properties.
@@ -221,7 +221,7 @@ fn floating_windows_and_hidden_places_survive_the_migration() {
     assert_eq!(layout.floating.len(), 1);
     assert_eq!(crate::panel_docking::window_groups(&layout.floating[0])[0].panels, ["glyphs", "character"]);
     assert_eq!(crate::panel_docking::window_groups(&layout.floating[0])[0].active, 1);
-    assert_eq!(layout.floating[0].rect, [40.0, 60.0, 300.0, 400.0]);
+    assert_eq!(layout.floating[0].rect, egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(300.0, 400.0)));
     assert_eq!(ui.floating, [("tabs".to_string(), [10.0, 20.0])], "the layout holds the floating dock panels");
     assert!(ui.docking_hidden.contains_key("color") && !layout.contains(&"color".to_string()), "a closed panel stays closed");
     assert!(columns[1].groups.iter().all(|g| g.panels != ["glyphs"]));
@@ -235,11 +235,11 @@ fn floating_windows_and_hidden_places_survive_the_migration() {
     assert_eq!(again.docking, app.ui.docking);
 }
 
-/// Floating windows saved as a stack of groups (`groups`, before floating windows held split
-/// trees) load as a vertical split of the groups in order, sized by their heights; a window
-/// whose groups were all minimized loads minimized.
+/// Floating windows saved as a stack of groups (`groups`, before floating windows held split trees) load as one window
+/// of those groups in order, each keeping its height (a window is one column of groups now, where the earlier loader
+/// made a vertical split sized by those heights); a window whose groups were all minimized loads minimized.
 #[test]
-fn floating_stacks_of_groups_load_as_split_windows() {
+fn floating_stacks_of_groups_load_as_windows_of_stacked_groups() {
     let mut saved = serde_json::to_value(UiState::default()).unwrap();
     let mut docking = serde_json::to_value(crate::panel_docking::default_layout(&UiState::default())).unwrap();
     docking["floating"] = json!([
@@ -255,16 +255,14 @@ fn floating_stacks_of_groups_load_as_split_windows() {
     assert!(read.intact);
     let layout = read.ui.docking.clone().unwrap();
     dock(&layout);
-    let Node::Split { axis: craft_ui_legacy::layout::SplitAxis::Vertical, size: craft_ui_legacy::layout::SplitSize::Ratio(ratio), first, second } =
-        &layout.floating[0].root
-    else {
-        panic!("expected a vertical split: {:?}", layout.floating[0]);
-    };
-    assert!((ratio - 0.75).abs() < 1e-4, "{ratio}");
-    assert_eq!(**first, Node::Tabs { panels: vec!["swatches".into(), "color".into()], active: 1 });
-    assert_eq!(**second, Node::Tabs { panels: vec!["stroke".into()], active: 0 });
-    assert_eq!(layout.floating[0].rect, [400.0, 100.0, 280.0, 440.0]);
-    assert!(!layout.floating[0].minimized && layout.floating[1].minimized);
+    let stacked = crate::panel_docking::window_groups(&layout.floating[0]);
+    let held: Vec<_> = stacked.iter().map(|g| (g.panels.clone(), g.active, g.height, g.minimized)).collect();
+    assert_eq!(
+        held,
+        [(vec!["swatches".to_string(), "color".to_string()], 1, Some(300.0), false), (vec!["stroke".to_string()], 0, Some(100.0), false)]
+    );
+    assert_eq!(layout.floating[0].rect, egui::Rect::from_min_size(egui::pos2(400.0, 100.0), egui::vec2(280.0, 440.0)));
+    assert!(layout.floating[1].groups().iter().all(|g| g.minimized));
     let again = UiState::from_preferences_json(&serde_json::to_vec(&read.ui).unwrap()).unwrap();
     assert_eq!(again.docking, read.ui.docking);
 }
@@ -279,7 +277,7 @@ fn an_old_layout_that_cannot_be_converted_is_reported() {
     assert_eq!(read.ui.docking, None);
 }
 
-/// `dockingHidden` as an object keyed by panel (files before craft-ui's `Workspace::hidden`
+/// `dockingHidden` as an object keyed by panel (files before the dock model's `Workspace::hidden`
 /// list) loads as the list, drops only its unreadable entries and saves as the list.
 #[test]
 fn hidden_panels_keyed_by_panel_load_as_the_workspace_list() {
@@ -295,9 +293,9 @@ fn hidden_panels_keyed_by_panel_load_as_the_workspace_list() {
     assert_eq!(ui.custom_workspaces[0].docking_hidden.keys().collect::<Vec<_>>(), ["stroke"]);
     let written = serde_json::to_value(&ui).unwrap();
     assert_eq!(written["dockingHidden"][0][0], "color");
-    let workspace: craft_ui_legacy::docking::Workspace<String> =
+    let workspace: craft_behavior::dock::Workspace<String> =
         serde_json::from_value(json!({"layout": {"root": null, "floating": []}, "hidden": written["dockingHidden"]})).unwrap();
-    assert_eq!(workspace.hidden, ui.docking_hidden.0, "the same shape as craft-ui's Workspace::hidden");
+    assert_eq!(workspace.hidden(), ui.docking_hidden.0.as_slice(), "the same shape as the dock model's Workspace::hidden");
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
     app.ui = ui;
     app.run("window.panel", json!({"panel": "color"})).unwrap();

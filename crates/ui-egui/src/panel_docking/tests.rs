@@ -1,13 +1,73 @@
 use super::{
-    CANVAS, Column, DOCK_LABELS, DesignApp, Floating, ICON_GROUPS, Layout, Node, PanelContent, Placed, Side, Value, area_id, cancel_gesture,
-    close_visible, default_layout, dock_columns, hit_id, icon_column, in_iconic_column, json, layout_of, modal_open, open_window_drops, panel_menu,
-    set_iconic, showing, tab_group, tab_id, valid, window_groups,
+    Axis, CANVAS, Column, DOCK_LABELS, DesignApp, DockEdge, ICON_GROUPS, Layout, Node, PanelState, Placed, SplitSize, cancel_gesture, close_visible,
+    default_layout, dock_columns, icon_column, in_iconic_column, json, layout_of, modal_open, open_window_drops, set_iconic, showing, tab_group,
+    valid, window_groups,
 };
-use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
+use craft_behavior::dock::StackEntry;
+use egui::accesskit::Role;
+use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 
 fn app() -> DesignApp {
     DesignApp::new(designcraft_engine::Session::new(), Default::default())
+}
+
+// The framework's dock has no hit ids: a person finds each control by what the AccessKit tree calls it, and so do
+// these helpers. A panel's tab is a `Tab` named for the panel, a dock icon a `Button` named for the panel, a group's
+// drag band a `Button` named "Move tab group" level with the group's tabs, a floating window's title row a `Heading`
+// right above its tab strip, and a divider a `Splitter` named "Resize panels".
+
+/// The rect of the first node of `role` named `name`.
+fn find<S>(h: &Harness<'static, S>, role: Role, name: &str) -> Option<Rect> {
+    h.query_all_by_role_and_label(role, name).next().map(|node| node.rect())
+}
+
+/// Whether any node is named `name`, of any role (a menu row, say).
+fn shown<S>(h: &Harness<'static, S>, name: &str) -> bool {
+    h.query_all_by_label(name).next().is_some()
+}
+
+/// The tab named `name`.
+fn tab_named<S>(h: &Harness<'static, S>, name: &str) -> Rect {
+    find(h, Role::Tab, name).unwrap_or_else(|| panic!("no {name} tab"))
+}
+
+/// The tab of dock panel `panel`, named in the interface language of the app.
+fn tab_rect(h: &Harness<'static, DesignApp>, panel: &str) -> Rect {
+    let language = h.state().ui.language.clone();
+    tab_named(h, crate::i18n::tr(&language, crate::dock::panel_label(panel)))
+}
+
+/// The icon of dock panel `panel` in an iconic column.
+fn icon_rect(h: &Harness<'static, DesignApp>, panel: &str) -> Rect {
+    let language = h.state().ui.language.clone();
+    let name = crate::i18n::tr(&language, crate::dock::panel_label(panel));
+    find(h, Role::Button, name).unwrap_or_else(|| panic!("no {name} icon"))
+}
+
+/// The drag band of the group whose tab strip holds the tab of `panel`: the "Move tab group" button level with the tab.
+fn bar_rect(h: &Harness<'static, DesignApp>, panel: &str) -> Rect {
+    let tab = tab_rect(h, panel);
+    let mut bars = h.query_all_by(|node| node.role() == Role::Button && node.label().is_some_and(|name| name.starts_with("Move tab group")));
+    bars.find_map(|bar| Some(bar.rect()).filter(|rect| rect.y_range().contains(tab.center().y)))
+        .unwrap_or_else(|| panic!("no drag band by the {panel} tab"))
+}
+
+/// The title row of the floating window that holds the tab `tab`: the heading that ends right above it.
+fn title_rect<S>(h: &Harness<'static, S>, tab: Rect) -> Rect {
+    let rows = h.query_all_by_role(Role::Heading).map(|node| node.rect());
+    let above = rows.filter(|row| row.x_range().contains(tab.center().x) && row.bottom() <= tab.top() + 2.0);
+    above.max_by(|a, b| a.bottom().total_cmp(&b.bottom())).unwrap_or_else(|| panic!("no title row above {tab:?}"))
+}
+
+/// A point on the title row clear of the double arrow and the close button at its end.
+fn on_title(row: Rect) -> Pos2 {
+    pos2(row.left() + 40.0, row.center().y)
+}
+
+/// Whether the framework's drag session carries the tab of `panel`.
+fn dragging_tab(ctx: &egui::Context, panel: &str) -> bool {
+    craft_ui::runtime::drag::active::<craft_ui::docking::PanelDrag>(ctx).is_some_and(|drag| drag.panel == craft_ui::docking::PanelKey::of(panel))
 }
 
 #[test]
@@ -55,7 +115,7 @@ fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
 
 fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
     let mut ready = false;
-    let mut harness = Harness::builder().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut harness = crate::test_window::builder().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), &app.ui.language);
@@ -67,7 +127,8 @@ fn harness(app: DesignApp, size: egui::Vec2) -> Harness<'static, DesignApp> {
         },
         app,
     );
-    harness.run_steps(4);
+    // The framework's dock settles over a few more passes than egui's did: its tabs and menus are in the tree after them.
+    harness.run_steps(6);
     harness
 }
 
@@ -87,12 +148,12 @@ fn drag(h: &mut Harness<'static, DesignApp>, from: Pos2, to: Pos2) {
 #[test]
 fn ordinary_panel_tab_drag_enters_shared_docking_and_can_redock_into_another_tab_group() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let source = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
+    let source = tab_rect(&h, "layers").center();
     drag(&mut h, source, egui::pos2(160.0, 140.0));
     let layout = h.state().ui.docking.as_ref().expect("ordinary tab drag starts shared docking");
     assert!(layout.floating.iter().flat_map(window_groups).any(|g| g.panels.contains(&"layers".into())), "{layout:?}");
-    let source = h.ctx.read_response(tab_id("layers")).unwrap().rect.center();
-    let destination = h.ctx.read_response(tab_id("properties")).unwrap().rect.center();
+    let source = tab_rect(&h, "layers").center();
+    let destination = tab_rect(&h, "properties").center();
     drag(&mut h, source, destination);
     let layout = h.state().ui.docking.as_ref().unwrap();
     assert!(!layout.floating.iter().flat_map(window_groups).any(|g| g.panels.contains(&"layers".into())));
@@ -133,7 +194,7 @@ fn capture_custom_panel_docking_visual_fixtures() {
                 app.run("window.panel.move", json!({"panel":"swatches", "anchor":"layers", "zone":"top"})).unwrap();
                 app.run("window.panel.float", json!({"panel":"properties","x":30,"y":90,"width":300,"height":440})).unwrap();
                 let mut ready = false;
-                let mut harness = Harness::builder().with_size(vec2(width, 800.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
+                let mut harness = crate::test_window::builder().with_size(vec2(width, 800.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
                     move |ui, app: &mut DesignApp| {
                         if !ready {
                             crate::theme::install_fonts(ui.ctx(), &app.ui.language);
@@ -154,8 +215,7 @@ fn capture_custom_panel_docking_visual_fixtures() {
                     .save(directory.join(format!("designcraft-shared-docking-{}-{language}-{width}-{scale}x.png", theme.id())))
                     .unwrap();
                 if language == "ar" {
-                    let tab = tab_id("swatches");
-                    let at = harness.ctx.read_response(tab).unwrap().rect.center();
+                    let at = tab_rect(&harness, "swatches").center();
                     harness.input_mut().events.extend([
                         Event::PointerMoved(at),
                         Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE },
@@ -168,8 +228,10 @@ fn capture_custom_panel_docking_visual_fixtures() {
                         modifiers: Modifiers::NONE,
                     });
                     harness.run_steps(2);
-                    assert!(egui::Popup::is_any_open(&harness.ctx), "actual tab context menu must be open");
-                    for action in ["Float Panel", "Group with", "Close Panel"] {
+                    // The group's menu is the framework's (a craft overlay, not an egui popup): it is open when its rows are in
+                    // the tree. They are the framework's rows now: Float, Move Panel To and Close, for the old Float Panel,
+                    // Group with and Close Panel.
+                    for action in ["Float", "Move Panel To", "Close"] {
                         assert!(harness.query_all_by_label(crate::i18n::tr("ar", action)).count() >= 1, "the menu lists {action}");
                     }
                     harness.render().unwrap().save(directory.join(format!("designcraft-dock-context-{}-ar.png", theme.id()))).unwrap();
@@ -182,7 +244,7 @@ fn capture_custom_panel_docking_visual_fixtures() {
 #[test]
 fn escape_cancels_a_tab_drag_without_customizing_the_workspace() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let source = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
+    let source = tab_rect(&h, "layers").center();
     h.event(Event::PointerMoved(source));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -202,14 +264,13 @@ fn serialized_layout_actions_cover_geometry_reorder_accordion_and_atomic_rejecti
     let mut app = app();
     app.run("window.panel.move", json!({"panel":"swatches","anchor":"layers","zone":"top"})).unwrap();
     app.run("window.panel.layout", json!({"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.35}}}})).unwrap();
-    assert!(
-        matches!(app.ui.docking.as_ref().unwrap().root, Some(Node::Split { size: craft_ui_legacy::layout::SplitSize::Ratio(value), .. }) if (value - 0.35).abs() < 0.001)
-    );
+    assert!(matches!(app.ui.docking.as_ref().unwrap().root, Some(Node::Split { size: SplitSize::Ratio(value), .. }) if (value - 0.35).abs() < 0.001));
     app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
     app.run("window.panel.layout", json!({"action":{"MoveFloating":{"panel":"properties","rect":[44,66,360,450]}}})).unwrap();
+    // Rects are egui rects now, saved as [x, y, w, h].
     assert_eq!(
         app.ui.docking.as_ref().unwrap().floating.iter().find(|window| window.panels().any(|p| p == "properties")).unwrap().rect,
-        [44.0, 66.0, 360.0, 450.0]
+        Rect::from_min_size(pos2(44.0, 66.0), vec2(360.0, 450.0))
     );
     app.run("window.panel.layout", json!({"action":{"Move":{"panel":"properties","anchor":"swatches","placement":{"Tab":{"before":"swatches"}}}}}))
         .unwrap();
@@ -226,20 +287,14 @@ fn serialized_layout_actions_cover_geometry_reorder_accordion_and_atomic_rejecti
         assert_eq!(app.ui.docking, before);
         assert_eq!(app.ui.docking_hidden, hidden);
     }
-    let stack = Node::Stack { entries: vec![craft_ui_legacy::docking::StackEntry { panel: "layers".into(), open: true, height: Some(100.0) }] };
-    app.ui.docking = Some(Layout {
-        root: Some(Node::Split {
-            axis: craft_ui_legacy::layout::SplitAxis::Horizontal,
-            size: craft_ui_legacy::layout::SplitSize::Ratio(0.7),
-            first: Box::new(Node::Tabs { panels: vec![CANVAS.into()], active: 0 }),
-            second: Box::new(stack),
-        }),
-        floating: Vec::new(),
-    });
+    let mut section = StackEntry::new("layers".to_string());
+    section.height = Some(100.0);
+    let stack = Node::stack(vec![section]);
+    app.ui.docking = Some(Layout::new(Some(Node::split(Axis::X, SplitSize::Ratio(0.7), Node::tabs(vec![CANVAS.into()], 0), stack)), Vec::new()));
     app.run("window.panel.layout", json!({"action":{"SetStackOpen":{"panel":"layers","open":false}}})).unwrap();
     app.run("window.panel.layout", json!({"action":{"ResizeStack":{"panel":"layers","height":150}}})).unwrap();
     let Some(Node::Split { second, .. }) = &app.ui.docking.as_ref().unwrap().root else { panic!("expected split") };
-    let Node::Stack { entries } = &**second else { panic!("expected stack") };
+    let Node::Stack { entries, .. } = &**second else { panic!("expected stack") };
     assert!(!entries[0].open);
     assert_eq!(entries[0].height, Some(150.0));
 }
@@ -328,8 +383,8 @@ fn populated_canvas_keeps_a_real_stroke_edit_after_floating_and_redocking() {
         std::fs::create_dir_all(directory).unwrap();
         h.render().unwrap().save(directory.join("designcraft-populated-stroke-floating.png")).unwrap();
     }
-    let from = h.ctx.read_response(tab_id("stroke")).unwrap().rect.center();
-    let to = h.ctx.read_response(tab_id("properties")).unwrap().rect.center();
+    let from = tab_rect(&h, "stroke").center();
+    let to = tab_rect(&h, "properties").center();
     drag(&mut h, from, to);
     assert!(h.state().ui.docking.as_ref().unwrap().floating.is_empty());
     assert_eq!(h.state().session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().stroke.join, designcraft_doc::Join::Bevel);
@@ -378,7 +433,7 @@ fn changing_workspace_during_a_drag_cancels_the_stale_gesture() {
     app.run("window.newWorkspace", json!({"name":"Destination"})).unwrap();
     app.run("window.workspace", json!({"name":"Essentials"})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let source = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
+    let source = tab_rect(&h, "layers").center();
     h.event(Event::PointerMoved(source));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -413,7 +468,7 @@ fn hiding_before_first_destination_frame_does_not_restore_an_old_drag_snapshot()
     app.run("window.newWorkspace", json!({"name":"Destination"})).unwrap();
     app.run("window.workspace", json!({"name":"Essentials"})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let source = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
+    let source = tab_rect(&h, "layers").center();
     h.event(Event::PointerMoved(source));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
@@ -493,14 +548,14 @@ fn modal_overlay_blocks_a_real_tab_drag_release() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let source = h.ctx.read_response(tab_id("properties")).unwrap().rect.center();
+    let source = tab_rect(&h, "properties").center();
     h.event(Event::PointerMoved(source));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.run_steps(1);
     h.event(Event::PointerMoved(source - vec2(90.0, 0.0)));
     h.run_steps(2);
-    assert_eq!(h.ctx.dragged_id(), Some(tab_id("properties")), "test must start the owned tab gesture");
+    assert!(dragging_tab(&h.ctx, "properties"), "test must start the owned tab gesture");
     let before = h.state().ui.docking.clone();
     h.state_mut().ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", json!({})));
     let destination = egui::pos2(150.0, 150.0);
@@ -543,15 +598,14 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
     let doc = serde_json::to_value(&app.session.active().unwrap().doc).unwrap();
     let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
-    let tab = tab_id("properties");
-    let from = h.ctx.read_response(tab).unwrap().rect.center();
+    let from = tab_named(&h, "Properties").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.run_steps(1);
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
-    assert_eq!(h.ctx.dragged_id(), Some(tab), "must own a real tab drag before opening editor");
+    assert!(dragging_tab(&h.ctx, "properties"), "must own a real tab drag before opening editor");
     assert!(h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).is_none());
     let layout = h.state().app.ui.docking.clone();
     let frame_before = h.ctx.cumulative_frame_nr();
@@ -576,15 +630,14 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
         .find(|p| !editor.contains(*p))
         .expect("fixture has space outside editor");
     let before_outside = h.state().app.ui.docking.clone();
-    let tab = tab_id("layers");
-    let from = h.ctx.read_response(tab).unwrap().rect.center();
+    let from = tab_named(&h, "Layers").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
     h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.run_steps(1);
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
-    assert_eq!(h.ctx.dragged_id(), Some(tab));
+    assert!(dragging_tab(&h.ctx, "layers"));
     h.event(Event::PointerMoved(outside));
     h.event(Event::PointerButton { pos: outside, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
@@ -604,21 +657,15 @@ fn dock_menu_button_opens_the_active_panel_menu() {
     let pages = app.session.active().unwrap().doc.page_count();
     let mut h = harness(app, vec2(1280.0, 800.0));
     assert!(h.state().ui.docking.is_none());
-    let tab = h.query_all_by_label("Pages").find(|node| node.rect().height() <= 45.0).unwrap().rect();
-    // The outer dock column is at the window's right edge; the ≡ ends its tab strip.
-    let at = egui::pos2(1280.0 - 12.0, tab.center().y);
-    h.event(Event::PointerMoved(at));
-    h.run_steps(1);
-    for pressed in [true, false] {
-        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
-        h.run_steps(1);
-    }
-    h.run_steps(2);
-    assert!(egui::Popup::is_any_open(&h.ctx), "the three-line button must open a menu");
+    // The three-line button is the Pages panel's own menu button, ahead of its tab strip ("Pages Panel Menu"); its menu
+    // is the framework's `Menu`, not an egui popup, so it is open while its rows are in the tree.
+    let opener = find(&h, Role::Button, "Pages Panel Menu").expect("the Pages panel's menu button");
+    click(&mut h, opener.center(), PointerButton::Primary);
+    assert!(shown(&h, "Duplicate Spread"), "the three-line button must open a menu");
     h.get_by_label("Duplicate Spread").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
-    assert!(!egui::Popup::is_any_open(&h.ctx));
+    assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu");
 }
 
 /// InDesign's panel tab menu (Learn Skills Daily's InDesign course, 6:20): Close, Close Tab Group,
@@ -668,22 +715,36 @@ fn collapse_to_icons_shrinks_the_dock_to_its_icons() {
 #[test]
 fn a_tabs_context_menu_lists_indesigns_tab_commands_and_close_works() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let tab = h.query_all_by_label("Layers").find(|node| node.rect().height() <= 45.0).unwrap().rect().center();
-    h.event(Event::PointerMoved(tab));
-    h.run_steps(1);
-    h.event(Event::PointerButton { pos: tab, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
-    h.run_steps(1);
-    h.event(Event::PointerButton { pos: tab, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
-    h.run_steps(2);
-    // The column bar's » button is also labelled Collapse to Icons.
-    for item in ["Close", "Close Tab Group", "Minimize", "Collapse to Icons", "Float Panel"] {
-        assert!(h.query_all_by_label(item).next().is_some(), "{item}");
+    let at = tab_rect(&h, "layers").center();
+    click(&mut h, at, PointerButton::Secondary);
+    // The group's menu is the framework's: Float, Move Panel To, Close and Close Tab Group (and Float Tab Group) in place
+    // of the old Float Panel, Group with, Close and Close Tab Group. Minimize and Collapse to Icons are not rows of it:
+    // Minimize needs `DockConfig::group_order_items`, and Collapse to Icons is the column bar's menu (next test).
+    for item in ["Close", "Close Tab Group", "Float", "Float Tab Group", "Move Panel To"] {
+        assert!(shown(&h, item), "{item}");
     }
-    assert_eq!(h.query_all_by_label("Minimize").count(), 1, "the tab menu lists Minimize once");
-    assert!(h.query_all_by_label("Dock Panel").next().is_none(), "a docked panel has no Dock Panel");
+    assert!(!shown(&h, "Dock Panel"), "a docked panel has no Dock Panel");
     h.get_by_label("Close").click();
     h.run_steps(2);
     assert!(!h.state().ui.docking.as_ref().unwrap().contains(&"layers".to_string()));
+}
+
+/// Collapse to Icons is in the menu of the column's bar (a context request on it), where the framework's dock has it,
+/// not in the tab menu: it collapses that column to icons.
+#[test]
+fn a_column_bars_context_menu_collapses_the_column_to_icons() {
+    let mut h = harness(app(), vec2(1280.0, 800.0));
+    let properties = tab_rect(&h, "properties");
+    let bar = h
+        .query_all_by_label("Move panel column")
+        .map(|node| node.rect())
+        .find(|bar| bar.x_range().contains(properties.center().x) && bar.bottom() <= properties.top() + 2.0)
+        .expect("the Properties column's bar");
+    click(&mut h, bar.center(), PointerButton::Secondary);
+    assert!(shown(&h, "Auto-Collapse Iconic Panels"), "the bar's menu lists Auto-Collapse Iconic Panels");
+    h.get_by_role_and_label(Role::MenuItem, "Collapse column to icons").click();
+    h.run_steps(3);
+    assert!(in_iconic_column(&layout_of(h.state()), "properties"), "the column collapsed to icons");
 }
 
 /// A floating panel's tab menu and three-line menu have Dock Panel, which puts it back where it
@@ -695,18 +756,21 @@ fn dock_panel_in_a_floating_panels_menus_returns_it_to_the_dock() {
     let docked = app.ui.docking.clone().unwrap();
     app.run("window.panel.float", json!({"panel":"layers","x":200,"y":150})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let tab = h.ctx.read_response(tab_id("layers")).unwrap().rect;
+    let tab = tab_rect(&h, "layers");
     click(&mut h, tab.center(), PointerButton::Secondary);
     h.get_by_label("Dock Panel").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.docking.as_ref(), Some(&docked), "the tab menu docks it back in its group");
     let mut app = h.into_state();
     app.run("window.panel.float", json!({"panel":"layers","x":200,"y":150})).unwrap();
-    let mut menu = Harness::builder().with_size(vec2(300.0, 400.0)).build_ui_state(|ui, app: &mut DesignApp| panel_menu(app, ui, "layers"), app);
-    menu.run_steps(1);
-    menu.get_by_label("Dock Panel").click();
-    menu.run_steps(2);
-    assert_eq!(menu.state().ui.docking.as_ref(), Some(&docked), "so does the three-line menu");
+    // The framework's floating window has no three-line button (its title row is its column's bar, with the double
+    // arrow and Close); the window's menu, Dock Panel included, opens on a context request on that bar.
+    let mut h = harness(app, vec2(1280.0, 800.0));
+    let row = title_rect(&h, tab_rect(&h, "layers"));
+    click(&mut h, on_title(row), PointerButton::Secondary);
+    h.get_by_label("Dock Panel").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.docking.as_ref(), Some(&docked), "so does the window's title-row menu");
 }
 
 /// Window › Styles › Paragraph Styles opens InDesign's floating Character Styles | Paragraph Styles
@@ -720,7 +784,7 @@ fn paragraph_styles_open_floating_with_character_styles() {
     assert_eq!(group.panels, ["characterStyles", "paragraphStyles"]);
     assert_eq!(group.panels[group.active], "paragraphStyles", "the one chosen is in front");
     // The dock still shows Properties in front.
-    assert_eq!(layout.panel_state(&"properties".to_string()), craft_ui_legacy::docking::PanelState::Front, "{:?}", layout.root);
+    assert_eq!(layout.panel_state(&"properties".to_string()), PanelState::Front, "{:?}", layout.root);
     assert_eq!(layout.floating.len(), 1, "one floating window holds both tabs");
     // Other panels from Window leave it open.
     app.run("window.panel", json!({"panel":"color"})).unwrap();
@@ -796,11 +860,12 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
     app.run("window.panel", json!({"panel":"pages"})).unwrap();
     assert!(app.ui.docking.is_some());
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let tab = h.query_all_by_label("Pages").find(|node| node.rect().height() <= 45.0).unwrap().rect();
-    click(&mut h, egui::pos2(1280.0 - 12.0, tab.center().y), PointerButton::Primary);
-    assert!(egui::Popup::is_any_open(&h.ctx), "the three-line button must open a menu");
-    for item in ["Numbering & Section Options…", "Close Tab Group", "Float Panel"] {
-        assert!(h.query_by_label(item).is_some(), "{item}");
+    // The Pages panel's menu button holds the panel's own commands; the dock's rows are the group's menu (below), where
+    // the framework's dock keeps them, so the three-line menu no longer lists Close Tab Group and Float.
+    let opener = find(&h, Role::Button, "Pages Panel Menu").expect("the Pages panel's menu button");
+    click(&mut h, opener.center(), PointerButton::Primary);
+    for item in ["Numbering & Section Options…", "Panel Options…"] {
+        assert!(shown(&h, item), "{item}");
     }
     h.get_by_label("Panel Options…").click();
     h.run_steps(3);
@@ -808,12 +873,15 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
     h.state_mut().ui.dialog = None;
     h.run_steps(2);
 
+    let tab = tab_rect(&h, "pages");
     click(&mut h, tab.center(), PointerButton::Secondary);
-    for item in ["Close", "Close Tab Group", "Minimize", "Collapse to Icons", "Float Panel", "Group with"] {
-        assert!(h.query_all_by_label(item).next().is_some(), "{item}");
+    // The framework's group menu: Float, Move Panel To, Close and Close Tab Group for the old Float Panel, Group with,
+    // Close and Close Tab Group; Minimize and Collapse to Icons are not rows of it (see the tab menu test).
+    for item in ["Close", "Close Tab Group", "Float", "Float Tab Group", "Move Panel To"] {
+        assert!(shown(&h, item), "{item}");
     }
-    assert!(h.query_by_label("Close Panel").is_none());
-    assert!(h.query_by_label("Panel Options…").is_none(), "the panel's own commands stay in its panel menu");
+    assert!(!shown(&h, "Close Panel"));
+    assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu");
 }
 
 fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize) {
@@ -824,7 +892,7 @@ fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize
     while let Some(node) = visit.pop() {
         match node {
             Node::Split { first, second, .. } => visit.extend([&**first, &**second]),
-            Node::Tabs { panels, active } if panels.iter().any(|p| p == panel) => return (false, panels.clone(), *active),
+            Node::Tabs { panels, active, .. } if panels.iter().any(|p| p == panel) => return (false, panels.clone(), *active),
             Node::Dock { columns, .. } => {
                 if let Some(g) = columns.iter().flat_map(|c| &c.groups).find(|g| g.panels.iter().any(|p| p == panel)) {
                     return (false, g.panels.clone(), g.active);
@@ -834,10 +902,6 @@ fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize
         }
     }
     panic!("{panel} is not in {layout:?}");
-}
-
-fn drag_bar(h: &Harness<'static, DesignApp>, first: &str) -> egui::Rect {
-    h.ctx.read_response(hit_id(&craft_ui_legacy::docking::Hit::DragBar(first.to_string()))).expect("the group's drag bar").rect
 }
 
 /// The docked Character Styles | Paragraph Styles group moves as one by its drag bar: dropped on
@@ -853,15 +917,17 @@ fn dragging_a_docked_group_by_its_bar_moves_every_tab() {
     assert_eq!(group_with(app.ui.docking.as_ref().unwrap(), "characterStyles"), (false, styles.map(String::from).to_vec(), 1));
 
     let mut h = harness(app, vec2(1280.0, 800.0));
-    let bar = drag_bar(&h, "characterStyles");
+    let bar = bar_rect(&h, "characterStyles");
     drag(&mut h, bar.center(), egui::pos2(400.0, 400.0));
     let layout = h.state().ui.docking.as_ref().unwrap();
     assert_eq!(group_with(layout, "paragraphStyles"), (true, styles.map(String::from).to_vec(), 1), "{layout:?}");
     assert!(valid(layout));
 
-    let bar = drag_bar(&h, "characterStyles");
-    let properties = h.ctx.read_response(tab_id("properties")).unwrap().rect.center();
-    drag(&mut h, bar.center(), properties);
+    // A floating window has no drag band of its own: its title row, over the group's tabs, drags the whole window, and
+    // a drop on another strip docks the window there.
+    let row = title_rect(&h, tab_rect(&h, "characterStyles"));
+    let properties = tab_rect(&h, "properties").center();
+    drag(&mut h, on_title(row), properties);
     let layout = h.state().ui.docking.as_ref().unwrap();
     let (floating, panels, active) = group_with(layout, "characterStyles");
     assert!(!floating, "{layout:?}");
@@ -871,10 +937,10 @@ fn dragging_a_docked_group_by_its_bar_moves_every_tab() {
     assert!(layout.floating.is_empty(), "{:?}", layout.floating);
 }
 
-fn dock_of(layout: &Layout<String>) -> (Side, &[Column<String>]) {
+fn dock_of(layout: &Layout<String>) -> (DockEdge, &[Column<String>]) {
     let Some(Node::Split { first, second, .. }) = &layout.root else { panic!("root is not a split: {layout:?}") };
     assert!(matches!(&**first, Node::Tabs { panels, .. } if panels == &[CANVAS.to_string()]), "{layout:?}");
-    let Node::Dock { side, columns } = &**second else { panic!("second is not a dock: {layout:?}") };
+    let Node::Dock { side, columns, .. } = &**second else { panic!("second is not a dock: {layout:?}") };
     (*side, columns)
 }
 
@@ -884,7 +950,7 @@ fn default_workspaces_are_the_canvas_beside_an_end_dock() {
     let layout = default_layout(&app.ui);
     assert!(valid(&layout));
     let (side, columns) = dock_of(&layout);
-    assert_eq!(side, Side::End);
+    assert_eq!(side, DockEdge::End);
     let [outer, icons] = columns else { panic!("{columns:?}") };
     assert!(!outer.iconic);
     assert_eq!(outer.groups.len(), 1);
@@ -934,13 +1000,12 @@ fn placed_panels_leave_their_icon_groups() {
 
 #[test]
 fn the_dock_is_at_the_right_in_english_and_the_left_in_arabic() {
-    let tab = |h: &Harness<'static, DesignApp>| h.ctx.read_response(tab_id("properties")).map(|r| r.rect).unwrap();
     let h = harness(app(), vec2(1280.0, 800.0));
-    assert!(tab(&h).left() > 640.0, "{:?}", tab(&h));
+    assert!(tab_rect(&h, "properties").left() > 640.0, "{:?}", tab_rect(&h, "properties"));
     let mut arabic = app();
     arabic.ui.language = "ar".into();
     let h = harness(arabic, vec2(1280.0, 800.0));
-    assert!(tab(&h).right() < 640.0, "{:?}", tab(&h));
+    assert!(tab_rect(&h, "properties").right() < 640.0, "{:?}", tab_rect(&h, "properties"));
 }
 
 #[test]
@@ -962,7 +1027,7 @@ fn ui_docking_reports_the_layout_and_the_focused_panel() {
     assert!(result["focused"].is_null());
     let layout: Layout<String> = serde_json::from_value(result["layout"].clone()).unwrap();
     assert_eq!(layout, default_layout(&h.state().ui));
-    let at = h.ctx.read_response(tab_id("layers")).unwrap().rect.center();
+    let at = tab_rect(&h, "layers").center();
     click(&mut h, at, PointerButton::Primary);
     let v = docking(h.state_mut());
     assert_eq!(v["result"]["focused"], "layers", "{v}");
@@ -1025,8 +1090,14 @@ fn arrow_after_dragging_a_dock_divider_nudges_the_selection_not_the_dock() {
         app,
     );
     h.run_steps(5);
-    let column = craft_ui_legacy::docking::Hit::Divider(craft_ui_legacy::docking::Divider::Column("properties".to_string()));
-    let divider = hits(&h).into_iter().find_map(|(hit, rect)| (hit == column).then_some(rect)).expect("the main dock column's divider");
+    // The main dock column's divider is its inner edge: the vertical "Resize panels" splitter nearest the left of its tabs.
+    let properties = tab_rect(&h, "properties");
+    let divider = h
+        .query_all_by_role_and_label(Role::Splitter, "Resize panels")
+        .map(|node| node.rect())
+        .filter(|rect| rect.height() > rect.width())
+        .min_by(|a, b| (a.center().x - properties.left()).abs().total_cmp(&(b.center().x - properties.left()).abs()))
+        .expect("the main dock column's divider");
     drag(&mut h, divider.center(), divider.center() - vec2(40.0, 0.0));
     let resized = h.state().ui.docking.clone().expect("the drag customizes the layout");
     let bounds = |h: &Harness<'static, DesignApp>| h.state().session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().bounds();
@@ -1039,11 +1110,7 @@ fn arrow_after_dragging_a_dock_divider_nudges_the_selection_not_the_dock() {
     assert_eq!(h.state().ui.docking.as_ref(), Some(&resized), "the arrow doesn't resize the dock");
 }
 
-fn hits(h: &Harness<'static, DesignApp>) -> Vec<(craft_ui_legacy::docking::Hit<String>, egui::Rect)> {
-    craft_ui_legacy::docking::DockArea::<String>::hit_rects(&h.ctx, area_id())
-}
-
-/// `window.panel.*` ids and DesignCraft's aliases go through craft-ui's `DockCommand`.
+/// `window.panel.*` ids and DesignCraft's aliases go through the app's `DockCommand` layer over the framework's dock model.
 #[test]
 fn shared_panel_commands_float_dock_and_reject_atomically() {
     let mut app = app();
@@ -1051,7 +1118,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     app.run("window.floatPanel", json!({"panel": "Layers", "x": 60, "y": 90})).unwrap();
     let layout = app.ui.docking.clone().unwrap();
     let window = layout.floating.iter().find(|w| w.contains(&"layers".to_string())).expect("Layers floats");
-    assert_eq!(window.rect, [60.0, 90.0, 300.0, 420.0], "at the given place, at its own size");
+    assert_eq!(window.rect, Rect::from_min_size(pos2(60.0, 90.0), vec2(300.0, 420.0)), "at the given place, at its own size");
     app.run("window.dockPanel", json!({"panel": "layers"})).unwrap();
     let layout = app.ui.docking.clone().unwrap();
     assert!(layout.floating.is_empty());
@@ -1074,7 +1141,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     tabbed.run("window.panel.dock", json!({"panel": "layers", "side": "Start"})).unwrap();
     let layout = tabbed.ui.docking.clone().unwrap();
     assert_eq!(tab_group(&layout, "pages"), ["properties", "pages"]);
-    assert!(matches!(&layout.root, Some(Node::Split { first, .. }) if matches!(&**first, Node::Dock { side: Side::Start, .. })));
+    assert!(matches!(&layout.root, Some(Node::Split { first, .. }) if matches!(&**first, Node::Dock { side: DockEdge::Start, .. })));
     assert_eq!(tab_group(&layout, "layers"), ["layers"]);
     // A whole group, by any of its panels, then into a new column of the end dock.
     app.run("window.panel.float", json!({"panel": "pages", "group": true, "x": 80, "y": 80, "width": 300, "height": 400})).unwrap();
@@ -1089,7 +1156,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     app.run("window.panel.float", json!({"panel": "stroke"})).unwrap();
     app.run("window.panel.dock", json!({"panel": "stroke", "side": "Start"})).unwrap();
     assert!(
-        matches!(&app.ui.docking.as_ref().unwrap().root, Some(Node::Split { first, .. }) if matches!(&**first, Node::Dock { side: Side::Start, .. }))
+        matches!(&app.ui.docking.as_ref().unwrap().root, Some(Node::Split { first, .. }) if matches!(&**first, Node::Dock { side: DockEdge::Start, .. }))
     );
     // Docking it at that side again leaves it where it is.
     let before = app.ui.docking.clone();
@@ -1119,7 +1186,7 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
     let error = app.run("window.panel.dock", json!({"panel": "stroke", "zone": "right"})).unwrap_err();
     assert!(error.contains("anchor") && error.contains("side"), "{error}");
     // Every shared id is registered for the command list and MCP.
-    for id in craft_ui_legacy::docking::DockCommand::<String>::IDS {
+    for id in super::DockCommand::<String>::IDS {
         assert!(crate::menus::UI_COMMANDS.iter().any(|c| c.0 == *id), "{id} is not registered");
     }
 }
@@ -1129,17 +1196,13 @@ fn shared_panel_commands_float_dock_and_reject_atomically() {
 #[test]
 fn tabs_dropped_on_the_canvas_float_and_at_the_far_edge_make_a_dock() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let tab = |h: &Harness<'static, DesignApp>, panel: &str| {
-        hits(h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Tab(panel.into())).map(|(_, r)| r)
-    };
-    let layers = tab(&h, "layers").expect("the Layers tab");
+    let layers = tab_rect(&h, "layers");
     drag(&mut h, layers.center(), egui::pos2(500.0, 400.0));
     let layout = h.state().ui.docking.clone().unwrap();
     assert!(layout.floating.iter().any(|w| w.contains(&"layers".to_string())), "{layout:?}");
     // A new dock takes a panel that is alone in its group: the floating Layers, by its title bar.
-    // The harness's area starts 8 pt in from the window edge.
-    let title = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Title("layers".into())).expect("the title bar").1;
-    drag(&mut h, title.center(), egui::pos2(12.0, 400.0));
+    let title = title_rect(&h, tab_rect(&h, "layers"));
+    drag(&mut h, on_title(title), egui::pos2(12.0, 400.0));
     let layout = h.state().ui.docking.clone().unwrap();
     assert!(valid(&layout));
     let mut docks = Vec::new();
@@ -1147,31 +1210,28 @@ fn tabs_dropped_on_the_canvas_float_and_at_the_far_edge_make_a_dock() {
     while let Some(node) = nodes.pop() {
         match node {
             Node::Split { first, second, .. } => nodes.extend([&**first, &**second]),
-            Node::Dock { side, columns } => {
+            Node::Dock { side, columns, .. } => {
                 docks.push((*side, columns.iter().flat_map(|c| &c.groups).flat_map(|g| g.panels.clone()).collect::<Vec<_>>()))
             }
             _ => {}
         }
     }
-    assert!(docks.iter().any(|(side, panels)| *side == Side::Start && panels == &["layers"]), "{docks:?} {:?}", layout.floating);
+    assert!(docks.iter().any(|(side, panels)| *side == DockEdge::Start && panels == &["layers"]), "{docks:?} {:?}", layout.floating);
 }
 
-/// `ui.docking` lists where each gesture starts: tabs, drag bars and the iconic column's icons.
+/// Legacy `ui.docking` listed where each gesture starts (`hitRects`: tabs, drag bars and the iconic column's icons). The
+/// framework's dock has no hit rects, and `inspect` no longer reports them; the same gestures are the controls the
+/// AccessKit tree names, which is where a person (and assistive technology) finds them.
 #[test]
-fn ui_docking_reports_hit_rects() {
+fn the_docks_gesture_controls_are_named_in_the_accessibility_tree() {
     let h = harness(app(), vec2(1280.0, 800.0));
     let v = crate::panel_docking::inspect(h.state(), &h.ctx);
-    let rects = v["hitRects"].as_array().expect("hitRects");
-    let rect_of = |hit: Value| {
-        let entry = rects.iter().find(|r| r["hit"] == hit).unwrap_or_else(|| panic!("no {hit} in {rects:?}"));
-        let r: Vec<f32> = serde_json::from_value(entry["rect"].clone()).unwrap();
-        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), vec2(r[2], r[3]))
-    };
-    let tab = rect_of(json!({"Tab": "pages"}));
-    let bar = rect_of(json!({"DragBar": "properties"}));
-    let icon = rect_of(json!({"Icon": "stroke"}));
+    assert!(v.get("hitRects").is_none(), "ui.docking reports no hit rects: {v}");
+    let tab = tab_rect(&h, "pages");
+    let bar = bar_rect(&h, "properties");
+    let icon = icon_rect(&h, "stroke");
     assert!(tab.width() > 20.0 && bar.width() >= 24.0 && icon.width() > 20.0, "{tab:?} {bar:?} {icon:?}");
-    assert!((tab.center().y - bar.center().y).abs() < 1.0, "the bar is in the tab strip");
+    assert!(bar.y_range().contains(tab.center().y), "the bar is in the tab strip");
     assert!(icon.left() > 640.0, "the iconic column is at the end edge");
 }
 
@@ -1180,10 +1240,10 @@ fn ui_docking_reports_hit_rects() {
 #[test]
 fn clicking_an_iconic_column_icon_opens_its_flyout() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
-    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
+    let icon = icon_rect(&h, "swatches");
     click(&mut h, icon.center(), PointerButton::Primary);
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
-    let tab = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Tab("swatches".into())).expect("the flyout's tab").1;
+    let tab = tab_rect(&h, "swatches");
     assert!(tab.right() <= icon.left() + 1.0, "the flyout is beside the column, on the canvas side: {tab:?} {icon:?}");
     assert!(showing(h.state(), "swatches"));
     click(&mut h, icon.center(), PointerButton::Primary);
@@ -1196,7 +1256,7 @@ fn clicking_an_iconic_column_icon_opens_its_flyout() {
 fn a_canvas_click_leaves_an_open_flyout_open() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
     assert!(!h.state().ui.dock_auto_collapse);
-    let icon = hits(&h).into_iter().find(|(hit, _)| *hit == craft_ui_legacy::docking::Hit::Icon("swatches".into())).expect("the Swatches icon").1;
+    let icon = icon_rect(&h, "swatches");
     click(&mut h, icon.center(), PointerButton::Primary);
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
     click(&mut h, egui::pos2(400.0, 400.0), PointerButton::Primary);
@@ -1206,22 +1266,26 @@ fn a_canvas_click_leaves_an_open_flyout_open() {
     assert!(!saved.dock_auto_collapse, "the older key is not read");
 }
 
-/// Iconic columns paint DesignCraft's own panel icons, in the colour craft-ui passes; a panel
-/// without an icon paints nothing.
+/// Iconic columns paint DesignCraft's own panel icons: the dock reads each panel's artwork from its spec (the legacy
+/// `DockContent::paint_icon`), and the artwork draws shapes in the colour it is given; a panel without an icon, the
+/// canvas, paints nothing.
 #[test]
 fn panel_icons_are_painted_in_code() {
-    let mut app = app();
-    let mut content = PanelContent { app: &mut app };
+    use super::PanelSpecs as _;
+    let specs = super::Specs { language: "en".into() };
+    assert!(specs.spec(&"pages".to_string()).icon.is_some(), "Pages has an icon");
+    assert!(specs.spec(&CANVAS.to_string()).icon.is_none(), "the canvas has none");
     let ctx = egui::Context::default();
-    let mut paint = |panel: &str| {
-        let mut painted = false;
+    let paint = |panel: &str| {
+        // The framework glyph of an artwork paints `icons::paint` of its drawing's name.
+        let Some(artwork) = super::panel_artwork(panel) else { return (false, 0) };
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.ctx().layer_painter(egui::LayerId::background());
-            let rect = egui::Rect::from_min_size(Pos2::ZERO, vec2(20.0, 20.0));
-            painted = craft_ui_legacy::docking::DockContent::paint_icon(&mut content, &painter, rect, &panel.to_string(), egui::Color32::RED);
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(20.0, 20.0));
+            crate::icons::paint(&painter, rect, artwork.0, egui::Color32::RED);
         });
         output.textures_delta.clear();
-        (painted, output.shapes.len())
+        (true, output.shapes.len())
     };
     let (painted, shapes) = paint("pages");
     assert!(painted && shapes > 0, "{painted} {shapes}");
@@ -1240,42 +1304,52 @@ fn docking_labels_are_translated() {
 
 /// With DesignCraft's title bar under macOS's transparent one, a floating window saved in the
 /// title-bar strip is drawn below it, where its title bar can't move the app window.
+///
+/// The dock area starts below the app bar in the whole window and the framework keeps a window inside its area, so this
+/// runs on the whole window (a dock-only harness has no bar, and no strip) and reads where the window's title row is
+/// drawn instead of the legacy layer's rect.
 #[test]
 fn a_floating_window_saved_in_the_title_bar_strip_is_drawn_below_it() {
     let mut app = app();
     app.integrated_titlebar = true;
     app.run("window.panel.float", json!({"panel":"properties"})).unwrap();
     let window = app.ui.docking.as_mut().unwrap().floating.iter_mut().find(|w| w.panels().any(|p| p == "properties")).unwrap();
-    window.rect = [200.0, 0.0, 280.0, 360.0];
-    let h = harness(app, egui::vec2(1400.0, 900.0));
-    let drawn = h.ctx.memory(|m| m.area_rect(crate::panel_docking::floating_layer("properties").id)).unwrap();
-    assert!(drawn.min.y >= crate::chrome::MAC_APP_BAR - 0.5, "{drawn:?}");
+    window.rect = Rect::from_min_size(pos2(200.0, 0.0), vec2(280.0, 360.0));
+    let h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let row = title_rect(&h, tab_named(&h, "Properties"));
+    assert!(row.min.y >= crate::chrome::MAC_APP_BAR - 0.5, "{row:?}");
 }
 
-/// A floating window holds splits like the dock: a panel docked below another one in the
-/// window splits it, the divider between them drags, and the new size is saved.
+/// A floating window stacks groups like a dock column does: a panel docked below another one in the window becomes a
+/// group of its own (the legacy window split its tree instead), the divider between the groups drags, and the new size
+/// is saved as the group's height (the legacy split saved a ratio).
 #[test]
 fn a_split_inside_a_floating_window_resizes_and_is_saved() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"swatches", "x":300, "y":120, "width":300, "height":500})).unwrap();
     app.run("window.panel.move", json!({"panel":"color", "anchor":"swatches", "zone":"bottom"})).unwrap();
     let window = |app: &DesignApp| app.ui.docking.as_ref().unwrap().floating.iter().find(|w| w.contains("swatches")).cloned().unwrap();
-    let ratio = |window: &Floating<String>| match window.root {
-        Node::Split { size: craft_ui_legacy::layout::SplitSize::Ratio(r), .. } => r,
-        ref root => panic!("expected a split window: {root:?}"),
-    };
     assert_eq!(window_groups(&window(&app)).into_iter().map(|g| g.panels).collect::<Vec<_>>(), [["swatches"], ["color"]]);
-    let before = ratio(&window(&app));
     let mut h = harness(app, vec2(1400.0, 900.0));
-    let divider = hits(&h)
-        .into_iter()
-        .find_map(|(hit, rect)| {
-            matches!(&hit, craft_ui_legacy::docking::Hit::Divider(craft_ui_legacy::docking::Divider::WindowSplit(_, path)) if path.is_empty()).then_some(rect)
+    // The first group's height, with its tab strip: from its tab to the next group's tab.
+    let stacked = |h: &Harness<'static, DesignApp>| (tab_rect(h, "swatches"), tab_rect(h, "color"));
+    let (swatches, color) = stacked(&h);
+    let before = color.top() - swatches.top();
+    let divider = h
+        .query_all_by_role_and_label(Role::Splitter, "Resize panels")
+        .map(|node| node.rect())
+        .find(|rect| {
+            rect.width() > rect.height()
+                && rect.x_range().contains(swatches.center().x)
+                && rect.center().y > swatches.center().y
+                && rect.center().y < color.center().y
         })
         .expect("the window's divider");
     drag(&mut h, divider.center(), divider.center() + vec2(0.0, 60.0));
-    let after = ratio(&window(h.state()));
-    assert!(after > before + 0.05, "{before} -> {after}");
+    let (swatches, color) = stacked(&h);
+    let after = color.top() - swatches.top();
+    assert!(after > before + 30.0, "{before} -> {after}");
+    assert!(window(h.state()).groups()[0].height.is_some(), "the first group's new height is kept in the layout");
     let saved = serde_json::to_vec(&h.state().ui).unwrap();
     let loaded = crate::UiState::from_preferences_json(&saved).unwrap();
     assert_eq!(loaded.docking, h.state().ui.docking);
@@ -1312,17 +1386,8 @@ fn dialogs_about_and_quick_apply_block_native_floating_windows() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+#[allow(clippy::field_reassign_with_default, reason = "OsFile is non-exhaustive: it has no struct expression outside its crate")]
 fn a_document_dropped_on_a_floating_panel_window_opens() {
-    #[derive(Debug)]
-    struct Dropped(std::path::PathBuf);
-    impl egui::DroppedFile for Dropped {
-        fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-        fn bytes(&self) -> Result<Vec<u8>, String> {
-            std::fs::read(&self.0).map_err(|e| e.to_string())
-        }
-    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dropped.designcraft");
     let mut saved = app();
@@ -1331,14 +1396,10 @@ fn a_document_dropped_on_a_floating_panel_window_opens() {
 
     let mut app = app();
     assert!(app.session.documents().is_empty());
-    let files = craft_ui_legacy::docking::WindowFiles {
-        window: 1,
-        viewport: egui::ViewportId::from_hash_of("float"),
-        panel: "layers".to_owned(),
-        pos: None,
-        hovered: Vec::new(),
-        dropped: vec![std::sync::Arc::new(Dropped(path.clone())) as egui::DroppedFileHandle],
-    };
-    open_window_drops(&mut app, &[files]);
+    // The files the floating panel window's OS window reports dropped: the framework's `OsFile`, by path.
+    let mut file = craft_ui::runtime::drag::OsFile::default();
+    file.name = "dropped.designcraft".to_owned();
+    file.path = Some(path.clone());
+    open_window_drops(&mut app, &[file]);
     assert_eq!(app.session.documents().len(), 1, "the dropped document opens");
 }
