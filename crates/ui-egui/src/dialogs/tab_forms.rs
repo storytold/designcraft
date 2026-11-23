@@ -328,11 +328,12 @@ fn paint_ruler(painter: &egui::Painter, r: &TabRuler, g: &Geometry, drag: Option
 }
 
 /// A tab alignment as a glyph on a toggle button: the app's own artwork.
-struct AlignGlyph(TabAlign);
+#[derive(craft_ui::contract::MemoProps)]
+struct AlignGlyph(&'static str);
 
 impl craft_ui_widgets::primitives::Glyph for AlignGlyph {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: Rect, color: Color32, _mirrored: bool) {
-        crate::icons::paint(painter, rect, tab_icon(self.0), color);
+        crate::icons::paint(painter, rect, self.0, color);
     }
 }
 
@@ -359,7 +360,7 @@ pub(crate) fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value, doc
     Stack::new().id_salt("style_tabs").fill_width().show(ui, |ui, _| {
         Row::new().id_salt("style_tabs_controls").fill_width().show(ui, |ui, _| {
             for (a, tip) in crate::panels::tabs::ALIGNS {
-                let glyph = AlignGlyph(a);
+                let glyph = AlignGlyph(tab_icon(a));
                 let shown = stop.as_ref().map_or(align, |s| s.align) == a;
                 let out = ToggleButton::new(tr(tip), Bind::given(shown)).icon(IconSpec::glyph(&glyph)).icon_only().id_salt(("style_tab_align", tab_icon(a))).show(ui);
                 if out.events.committed().copied() == Some(true) && !shown {

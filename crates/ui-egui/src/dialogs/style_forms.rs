@@ -872,7 +872,7 @@ mod tests {
         let expected = f64::from(((at.x - (rect.min.x + PAD_FOR_TEST)) / scale * 2.0).round() / 2.0);
         assert!((stops[0]["position"].as_f64().unwrap() - expected).abs() < 1.0, "{stops:?} at {expected}");
         click(&mut h, Role::Button, "OK");
-        assert_eq!(para_style(&h, "Body").para.tabs.len(), 1, "OK keeps the stop in the style");
+        assert_eq!(para_style(&h, "Body").para.tabs.as_ref().map(Vec::len), Some(1), "OK keeps the stop in the style");
     }
 
     /// The ruler's inset of position 0 from its left edge.

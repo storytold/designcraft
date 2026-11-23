@@ -25,6 +25,8 @@ pub(crate) mod import_forms;
 #[cfg(not(target_arch = "wasm32"))]
 mod cell_options_form;
 #[cfg(not(target_arch = "wasm32"))]
+mod color_forms;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework;
 #[cfg(not(target_arch = "wasm32"))]
 mod layout_forms;
