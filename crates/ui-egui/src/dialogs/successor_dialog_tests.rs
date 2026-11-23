@@ -830,3 +830,86 @@ fn new_document_form_window_drags_mostly_aside_and_keeps_its_preview() {
     assert_eq!(app.session.new_document_preview(), preview, "moving the window keeps the preview");
     assert_eq!(app.session.documents().len(), 2);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Text Frame Options
+
+/// The text of the field named like `part` (a text field, a number field or a picker).
+fn value_of(h: &egui_kittest::Harness<'_, DesignApp>, part: &str) -> String {
+    h.query_all_by_label_contains(part)
+        .find(|node| kit::FIELD.contains(&node.accesskit_node().role()))
+        .unwrap_or_else(|| panic!("no field named like {part:?}"))
+        .value()
+        .unwrap_or_default()
+}
+
+/// Successor of `text_frame_options_dims_the_sides_for_a_non_rectangular_frame`: the four sides are dimmed and one Inset
+/// field takes their place for a non-rectangular frame (and the reverse for a rectangle), the General page fits above the
+/// buttons, which stay put on the other pages, and the link toggles only for a rectangle.
+#[test]
+fn text_frame_options_form_dims_the_sides_for_a_non_rectangular_frame() {
+    for shaped in [true, false] {
+        let mut app = kit::app(1, false);
+        let shape = if shaped { "ellipse" } else { "rectangle" };
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        app.run("selection.set", json!({"ids": [r["id"]]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        let mut h = kit::harness_sized(app, vec2(1000.0, 800.0));
+        for name in ["Columns:", "Align:"] {
+            let _ = h.get_by_role_and_label(Role::ComboBox, name);
+        }
+        for side in ["Top", "Left", "Bottom", "Right"] {
+            assert_eq!(kit::disabled(&h, kit::FIELD, &format!("{side}:"), 0), shaped, "{shape}: {side}");
+        }
+        assert_eq!(kit::shows(&h, "Inset:"), shaped, "{shape}: the Inset caption");
+        // The General page fits in the dialog's fixed height: the buttons stay put on another page.
+        let (wrap, cancel) = (kit::rect_of(&h, "Ignore Text Wrap").unwrap().bottom(), kit::rect_of(&h, "Cancel").unwrap().top());
+        assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
+        for tab in ["Column Rules", "Baseline Options", "Auto-Size"] {
+            kit::click(&mut h, &[Role::RadioButton], tab, 0);
+        }
+        assert_eq!(kit::rect_of(&h, "Cancel").unwrap().top(), cancel, "{shape}: the buttons stay put on another page");
+        kit::click(&mut h, &[Role::RadioButton], "General", 0);
+        // The link toggles only for a rectangle.
+        let before = kit::draft(&h).b("insetLinked");
+        kit::click(&mut h, kit::TOGGLE, "Make all settings the same", 0);
+        assert_eq!(kit::draft(&h).b("insetLinked") != before, !shaped, "{shape}: the link");
+    }
+}
+
+/// Successor of `text_frame_options_follow_the_ruler_units`: with millimetre rulers the inset, gutter and paragraph spacing
+/// limit show in millimetres, the column width has the unit, and bare numbers typed in the fields are millimetres.
+#[test]
+fn text_frame_options_form_follow_the_ruler_units() {
+    use designcraft_geom::{Unit, format_measure};
+    let mm = |pt: f64| format_measure(pt, Unit::Millimeters);
+    for shape in ["rectangle", "ellipse"] {
+        let mut app = kit::app(1, false);
+        app.run("document.preferences", json!({"horizontalUnits": "millimeters", "verticalUnits": "millimeters"})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "shape": shape, "content": "text", "text": "Hello"})).unwrap();
+        let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+        app.run("object.textFrameOptions", json!({"ids": [id.0], "columns": 2, "gutter": 18, "inset": [9, 9, 9, 9]})).unwrap();
+        app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+        app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+        let mut h = kit::harness_sized(app, vec2(1000.0, 800.0));
+        let sides: &[&str] = if shape == "ellipse" { &["Inset"] } else { &["Top", "Left", "Bottom", "Right"] };
+        for side in sides {
+            assert_eq!(value_of(&h, &format!("{side}:")), mm(9.0), "{shape}: {side}");
+        }
+        assert_eq!(value_of(&h, "Gutter:"), mm(18.0), "{shape}: the gutter");
+        assert_eq!(value_of(&h, "Paragraph Spacing Limit"), mm(0.0), "{shape}: the paragraph spacing limit");
+        let width = value_of(&h, "Width:");
+        assert!(width.ends_with(" mm"), "{shape}: the column width {width:?} in millimetres");
+        // Bare numbers typed in the fields are millimetres.
+        assert_eq!(kit::draft(&h).unit, Unit::Millimeters, "{shape}");
+        let inset = if shape == "ellipse" { "Inset:" } else { "Top:" };
+        kit::type_and_commit(&mut h, inset, 0, "5");
+        kit::type_and_commit(&mut h, "Gutter:", 0, "4");
+        kit::click(&mut h, &[Role::Button], "OK", 0);
+        assert!(h.state().ui.dialog.is_none(), "{shape}");
+        let o = h.state().session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.clone();
+        let pt = |n: f64| Unit::Millimeters.to_pt(n);
+        assert!((o.inset[0] - pt(5.0)).abs() < 1e-6, "{shape}: the inset {:?}", o.inset);
+        assert!((o.gutter - pt(4.0)).abs() < 1e-6, "{shape}: the gutter {}", o.gutter);
+    }
+}
