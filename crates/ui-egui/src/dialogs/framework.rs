@@ -44,6 +44,11 @@ pub(crate) fn form(id: &str) -> Option<Form> {
     #[allow(clippy::match_single_binding)]
     match id {
         // Ported dialogs: one arm each, `"id" => Some(module::FORM),`.
+        "textFrameOptions" => Some(super::frame_forms::TEXT_FRAME_OPTIONS),
+        "fittingOptions" => Some(super::frame_forms::FITTING_OPTIONS),
+        "polygonSettings" => Some(super::frame_forms::POLYGON_SETTINGS),
+        "qrCode" => Some(super::frame_forms::QR_CODE),
+        "layerOptions" => Some(super::frame_forms::LAYER_OPTIONS),
         _ => None,
     }
 }
