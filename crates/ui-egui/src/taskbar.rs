@@ -61,6 +61,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context, sel: Rect, canvas: Rect) {
             .inner_margin(egui::Margin { left: 4, right: 8, top: 0, bottom: 0 })
             .show(ui, |ui| {
                 ui.set_height(HEIGHT);
+                #[cfg(not(target_arch = "wasm32"))]
+                if app.framework_installed {
+                    let text_frame = panels::sel_info(app).is_some_and(|i| i.is_text && i.count == 1);
+                    let place = [at.x - canvas.min.x, at.y - canvas.min.y];
+                    framework::body(app, ui, (grip_id, at, w, canvas), (has_text, text_frame), place);
+                    return;
+                }
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     // Dragging the grip moves the bar, and pins it where it is dropped.
@@ -286,6 +293,268 @@ fn sep(ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(1.0, 24.0), Sense::hover());
     ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.border));
+}
+
+/// The bar's members on the framework: the same grip, controls and More menu, with the same commands.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{DesignApp, Rect, Sense, Tokens, Ui, inside, json, panels, vec2, widgets};
+    use craft_ui_widgets::bars::{Bar, BarKind};
+    use craft_ui_widgets::buttons::{Button, IconButton, SplitButton};
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Sizing, Trigger};
+    use craft_ui_widgets::display::{Divider, Picture};
+    use craft_ui_widgets::list::ThumbAspect;
+    use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::primitives::IconSpec;
+    use craft_ui_widgets::style::Variant;
+    use craft_ui_widgets::text::{NumberField, NumberPick};
+
+    /// The bar's artwork: the app's icons, and the three dots of the More menu.
+    #[derive(craft_ui::contract::MemoProps)]
+    struct TabGlyph(&'static str);
+
+    impl craft_ui_widgets::primitives::Glyph for TabGlyph {
+        fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+            if self.0 == "task-more" {
+                for k in 0..3 {
+                    painter.circle_filled(egui::pos2(rect.min.x + 3.0 + k as f32 * 5.0, rect.center().y), 1.8, color);
+                }
+            } else {
+                crate::icons::paint(painter, rect, self.0, color);
+            }
+        }
+    }
+
+    /// What a pass of the bar asks for, run after its components are shown.
+    enum Ask {
+        Run(&'static str, serde_json::Value),
+        Hide,
+        Dialog(&'static str),
+        Font(panels::FontPick),
+    }
+
+    /// A button with the app's artwork on it; whether it was clicked.
+    fn icon(ui: &mut Ui, salt: &str, glyph: &'static str, label: &str) -> craft_ui_widgets::buttons::ButtonOutput {
+        let face = TabGlyph(glyph);
+        IconButton::new(IconSpec::glyph(&face)).id_salt(salt.to_owned()).label(label.to_owned()).tooltip(label.to_owned()).show(ui)
+    }
+
+    /// A swatch button (its chip) and the menu of the document's swatches it opens: the swatch picked.
+    fn swatch_menu(ui: &mut Ui, salt: &str, label: &str, tip: &str, doc: &designcraft_doc::Document, current: &str, stroke: bool) -> Option<String> {
+        let (col, grad) = widgets::swatch_colors(doc, current, 1.0);
+        let inner = egui::Color32::from_gray(20);
+        let opener = Button::new(label.to_owned())
+            .painted(" ".to_owned())
+            .id_salt(format!("{salt}_button"))
+            .tooltip(tip.to_owned())
+            .variant(Variant::GHOST)
+            .picture(
+                ThumbAspect::SQUARE,
+                Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
+                    if stroke {
+                        widgets::paint_stroke_chip(&cx.painter, rect, col, inner);
+                    } else {
+                        widgets::paint_chip(&cx.painter, rect, col, grad);
+                    }
+                }),
+            )
+            .show(ui);
+        let mut picked = None;
+        let _ = Menu::new(label.to_owned()).id_salt(format!("{salt}_menu")).opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
+            for sw in &doc.swatches {
+                let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
+                let row =
+                    MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(Some(sw.name == current)).sample(move |cx, rect| {
+                        widgets::paint_chip(&cx.painter, rect, c, g);
+                    });
+                if row.show(ui).ran {
+                    picked = Some(sw.name.clone());
+                }
+            }
+        });
+        picked
+    }
+
+    pub(super) fn body(
+        app: &mut DesignApp,
+        ui: &mut Ui,
+        (grip_id, at, w, canvas): (egui::Id, egui::Pos2, f32, Rect),
+        (has_text, text_frame): (bool, bool),
+        place: [f32; 2],
+    ) {
+        let t = Tokens::get(ui.ctx());
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
+        let mut asks: Vec<Ask> = Vec::new();
+        let pinned = app.ui.task_bar_pin.is_some();
+        Bar::new(tr("Contextual Task Bar"), BarKind::Tool).sizing(Sizing::Content).show(ui, |ui, _| {
+            // Dragging the grip moves the bar, and pins it where it is dropped.
+            let (_, g) = ui.allocate_space(vec2(12.0, 20.0));
+            let grip = ui.interact(g, grip_id, Sense::drag());
+            let ink = if grip.hovered() || grip.dragged() { t.text_strong } else { t.icon };
+            Picture::painter(tr("Move"), ThumbAspect::SQUARE, move |cx, rect| crate::icons::paint(&cx.painter, rect, "grip", ink))
+                .id_salt("task_bar_grip_art")
+                .show_at(ui, g);
+            if grip.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                let to = inside(at + grip.drag_delta(), w, canvas) - canvas.min;
+                asks.push(Ask::Run("window.taskBarPin", json!({"at": [to.x, to.y]})));
+            } else if grip.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            if has_text || text_frame {
+                text_controls(app, ui, has_text, &tr, &mut asks);
+            } else {
+                object_controls(app, ui, &tr, &mut asks);
+            }
+            // More Options.
+            let more = icon(ui, "task_bar_more", "task-more", &tr("More Options"));
+            let _ = Menu::new(tr("More Options")).id_salt("task_bar_more_menu").opened_by(&more.response, Trigger::Click).show(ui, |ui, _| {
+                if MenuItem::new(tr("Hide Bar")).id_salt("hide").show(ui).ran {
+                    asks.push(Ask::Hide);
+                }
+                let pin = MenuItem::new(tr("Pin Bar Position")).id_salt("pin").check(Some(pinned)).show(ui);
+                if pin.ran {
+                    asks.push(Ask::Run("window.taskBarPin", if pinned { json!({"on": false}) } else { json!({"on": true, "at": place}) }));
+                }
+                if MenuItem::new(tr("Reset Bar Position")).id_salt("reset").enabled(pinned).show(ui).ran {
+                    asks.push(Ask::Run("window.taskBarReset", json!({})));
+                }
+            });
+        });
+        for ask in asks {
+            match ask {
+                Ask::Run(id, params) => {
+                    let _ = app.run(id, params);
+                }
+                Ask::Hide => app.ui.task_bar = false,
+                Ask::Dialog(id) => app.ui.dialog = Some(crate::dialogs::Dialog::new(id, json!({}))),
+                Ask::Font(f) => panels::apply_font(app, &f),
+            }
+        }
+    }
+
+    fn text_controls(app: &mut DesignApp, ui: &mut Ui, in_text: bool, tr: &dyn Fn(&str) -> String, asks: &mut Vec<Ask>) {
+        if !in_text {
+            let modes = [("off", "Off"), ("heightOnly", "Height Only"), ("widthOnly", "Width Only"), ("heightAndWidth", "Height and Width")];
+            let entries: Vec<Entry<String>> = modes.iter().map(|(v, l)| Entry::new((*v).to_owned(), tr(l))).collect();
+            let face = TabGlyph("fit-text");
+            let out = SplitButton::new(tr("Fit Text"), &entries)
+                .icon(IconSpec::glyph(&face))
+                .id_salt("task_bar_fit_text")
+                .tooltip(tr("Fit frame height to text"))
+                .show(ui);
+            if out.response.clicked() {
+                asks.push(Ask::Run("object.textFrameOptions", json!({"autoSize": "heightOnly"})));
+            }
+            if let Some(mode) = out.chosen {
+                asks.push(Ask::Run("object.textFrameOptions", json!({"autoSize": mode})));
+            }
+            Divider::vertical().show(ui);
+        }
+        let Some(a) = panels::text_attrs(app) else { return };
+        let c = a["chars"].clone();
+        let fam = c["fontFamily"].as_str().unwrap_or("").to_string();
+        let sty = c["fontStyle"].as_str().unwrap_or("").to_string();
+        if let Some(f) = panels::font_combo(app, ui, "task_bar_font", &fam, 150.0) {
+            asks.push(Ask::Font(f));
+        }
+        panels::font_style_picker(app, ui, &fam, &sty, 90.0);
+        let size_label = tr("Font Size");
+        const SIZES: &[f64] = &[6.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
+        let presets: Vec<Entry<NumberPick>> = SIZES.iter().map(|v| Entry::new(NumberPick::Number(*v), format!("{v}"))).collect();
+        let out = NumberField::new(size_label.clone(), Bind::given(c["size"].as_f64()))
+            .id_salt("task_bar_size")
+            .unit("pt".to_owned())
+            .range(0.1..=1296.0)
+            .step(1.0)
+            .presets(&presets)
+            .show(ui);
+        if let Some(v) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
+            asks.push(Ask::Run("type.char", json!({"attrs": {"size": v}})));
+        }
+        Divider::vertical().show(ui);
+        // Text fill.
+        if let Some(doc) = app.session.active().map(|d| d.doc.clone()) {
+            let sw = c["fill"].as_str().unwrap_or("[Black]").to_string();
+            let tip = format!("{}: {sw}", tr("Fill"));
+            if let Some(p) = swatch_menu(ui, "task_bar_fill", "Task Bar fill", &tip, &doc, &sw, false) {
+                asks.push(Ask::Run("type.char", json!({"attrs": {"fill": p}})));
+            }
+        }
+        // Paragraph alignment.
+        let al = a["para"]["align"].as_str().unwrap_or("left").to_string();
+        let glyph = match al.as_str() {
+            "center" => "palign-center",
+            "right" => "palign-right",
+            "leftJustified" | "centerJustified" | "rightJustified" | "fullyJustified" => "palign-justify-left",
+            _ => "palign-left",
+        };
+        let opener = icon(ui, "task_bar_align", glyph, &tr("Paragraph alignment"));
+        let _ = Menu::new(tr("Paragraph alignment")).id_salt("task_bar_align_menu").opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
+            for (label, v) in [
+                ("Align Left", "left"),
+                ("Align Center", "center"),
+                ("Align Right", "right"),
+                ("Justify", "leftJustified"),
+                ("Justify All", "fullyJustified"),
+            ] {
+                if MenuItem::new(tr(label)).id_salt(v).check(Some(al == v)).show(ui).ran {
+                    asks.push(Ask::Run("type.para", json!({"attrs": {"align": v}})));
+                }
+            }
+        });
+        if icon(ui, "task_bar_frame_options", "frame-options", &tr("Text Frame Options")).clicked() {
+            asks.push(Ask::Dialog("textFrameOptions"));
+        }
+    }
+
+    fn object_controls(app: &mut DesignApp, ui: &mut Ui, tr: &dyn Fn(&str) -> String, asks: &mut Vec<Ask>) {
+        let Some(i) = panels::sel_info(app) else { return };
+        let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
+        if i.is_graphic {
+            for (glyph, mode, tip) in [
+                ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
+                ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
+                ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
+                ("fit-center", "centerContent", "Center Content"),
+            ] {
+                if icon(ui, &format!("task_bar_{mode}"), glyph, &tr(tip)).clicked() {
+                    asks.push(Ask::Run("object.fit", json!({"mode": mode})));
+                }
+            }
+            Divider::vertical().show(ui);
+        }
+        for (k, (cmd, sw)) in [("object.fill", i.fill.clone()), ("object.stroke", i.stroke.clone())].into_iter().enumerate() {
+            let tip = format!("{}: {sw}", if k == 0 { "Fill" } else { "Stroke" });
+            let name = format!("Task Bar {}", if k == 0 { "fill" } else { "stroke" });
+            if let Some(p) = swatch_menu(ui, &format!("task_bar_object_{k}"), &name, &tip, &doc, &sw, k == 1) {
+                asks.push(Ask::Run(cmd, json!({"swatch": p})));
+            }
+        }
+        const WEIGHTS: &[f64] = &[0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0];
+        let presets: Vec<Entry<NumberPick>> = WEIGHTS.iter().map(|v| Entry::new(NumberPick::Number(*v), format!("{v}"))).collect();
+        let out = NumberField::new(tr("Stroke Weight"), Bind::given(Some(i.stroke_weight)))
+            .id_salt("task_bar_stroke_weight")
+            .unit("pt".to_owned())
+            .range(0.0..=800.0)
+            .step(1.0)
+            .presets(&presets)
+            .show(ui);
+        if let Some(v) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
+            asks.push(Ask::Run("object.stroke", json!({"weight": v})));
+        }
+        Divider::vertical().show(ui);
+        for (cmd, glyph, tip) in [("object.bringToFront", "objalign-top", "Bring to Front"), ("object.sendToBack", "objalign-bottom", "Send to Back")]
+        {
+            if icon(ui, &format!("task_bar_{cmd}"), glyph, &tr(tip)).clicked() {
+                asks.push(Ask::Run(cmd, json!({})));
+            }
+        }
+        if i.count > 1 && Button::new(tr("Group")).id_salt("task_bar_group").show(ui).clicked() {
+            asks.push(Ask::Run("object.group", json!({})));
+        }
+    }
 }
 
 #[cfg(test)]
