@@ -674,7 +674,7 @@ mod framework {
 
     /// What a drag of a layer row carries for the footer's Create New Layer, which duplicates the layer.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct DragLayer(LayerId);
+    pub(super) struct DragLayer(pub(super) LayerId);
 
     /// What a drag of a filled selection square carries: the selection, for the layer rows to take.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2148,8 +2148,28 @@ mod framework_tests {
         let (app, _, _) = two_layers();
         let mut h = open(app);
         let (from, to) = (center(&h, "Layer 1"), center(&h, "Create New Layer"));
-        drag(&mut h, from, to);
-        assert_eq!(layer_names(&h), ["Art", "Layer 1 copy", "Layer 1"]);
+        let start = h.state().session.journal.len();
+        // The drag by hand, to see what the framework holds before the release.
+        event(&mut h, Event::PointerMoved(from));
+        steps(&mut h, 2);
+        event(&mut h, button(from, PointerButton::Primary, true, Modifiers::NONE));
+        steps(&mut h, 1);
+        for k in 1..=8 {
+            event(&mut h, Event::PointerMoved(from.lerp(to, k as f32 / 8.0)));
+        }
+        steps(&mut h, 2);
+        assert!(
+            craft_ui_widgets::runtime::drag::active::<framework::DragLayer>(&h.ctx).is_some(),
+            "a layer row drag carries the layer for Create New Layer"
+        );
+        event(&mut h, button(to, PointerButton::Primary, false, Modifiers::NONE));
+        steps(&mut h, 3);
+        assert_eq!(
+            layer_names(&h),
+            ["Art", "Layer 1 copy", "Layer 1"],
+            "dragged from {from:?} to {to:?}; commands since: {:?}",
+            &h.state().session.journal[start..]
+        );
     }
 
     #[test]

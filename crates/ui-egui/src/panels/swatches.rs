@@ -4108,9 +4108,11 @@ mod ui223_swatches_rename_apply_tests {
             journal: h.state().app.session.journal.len(),
         }
     }
+    #[track_caller]
     fn unchanged(h: &Harness<'_, Rig>, before: &Snapshot) {
         let now = snapshot(h);
-        assert!(Arc::ptr_eq(&now.doc, &before.doc));
+        let since = &h.state().app.session.journal[before.journal.min(h.state().app.session.journal.len())..];
+        assert!(Arc::ptr_eq(&now.doc, &before.doc), "the document was replaced; commands since: {since:?}");
         assert!(Arc::ptr_eq(&now.saved, &before.saved));
         assert_eq!(
             (now.owner, now.revisions, now.selection, now.history, now.journal),
@@ -4274,7 +4276,7 @@ mod ui223_swatches_rename_apply_tests {
         let before = snapshot(&h);
         let at = h.state().outside.center();
         click(&mut h, at);
-        assert!(draft(&h).is_none());
+        assert!(draft(&h).is_none(), "the editor is still open: {:?}; egui focus: {:?}", draft(&h), h.ctx.memory(|memory| memory.focused()));
         unchanged(&h, &before);
         assert!(rename_calls(&h, before.journal).is_empty());
         idle(&mut h, 5);
