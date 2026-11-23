@@ -989,17 +989,22 @@ mod framework {
                 fields["text"] = json!(crate::panels::colors_affect_text(app));
                 app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
             }
-            // Formatting affects container / text.
-            Row::new().show(ui, |ui, _| {
+            // Formatting affects container / text: side by side in two columns; in one, the two buttons don't fit the
+            // rail's width beside each other (the second was clipped off the rail and took no pointer), so they stack.
+            let mut formatting = |ui: &mut Ui| {
                 for (k, (icon, tip)) in
                     [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
                 {
-                    let out = button(ui, icon, icon, &tr(tip), text_mode == (k == 1));
-                    if out.clicked() {
+                    if button(ui, icon, icon, &tr(tip), text_mode == (k == 1)).clicked() {
                         let _ = app.run("app.formattingAffectsText", json!({"on": k == 1}));
                     }
                 }
-            });
+            };
+            if at.columns > 1 {
+                Row::new().show(ui, |ui, _| formatting(ui));
+            } else {
+                Stack::new().show(ui, |ui, _| formatting(ui));
+            }
             // Apply Color / Apply Gradient / Apply None: three buttons in two columns, as InDesign lays them out; one
             // with the kind in front, and a menu of the three, in one column.
             let front_sw = if stroke_front { &stroke_sw } else { &fill_sw };
