@@ -317,57 +317,17 @@ pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, fir
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(craft_ui::contract::MemoProps)]
-struct PageFooterIcon(&'static str);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl craft_ui_widgets::primitives::Glyph for PageFooterIcon {
-    fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
-        icons::paint(painter, rect, self.0, color);
-    }
-}
-
-/// The SDK owns ordinary input; its public response retains the app's existing drag/popup bindings.
-fn page_footer_button(app: &DesignApp, ui: &mut egui::Ui, icon: &'static str, selected: bool, label: &str, id: egui::Id) -> egui::Response {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::buttons::IconButton;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::IconSpec;
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::style::{Variant};
-        let glyph = PageFooterIcon(icon);
-        return IconButton::new(IconSpec::glyph(&glyph))
-            .label(label.to_owned())
-            .id(id)
-            .size(ControlSize::Sm)
-            .variant(Variant::GHOST)
-            .selected(selected)
-            .tooltip(label.to_owned())
-            .show(ui)
-            .response;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, id);
-    icons::button(ui, icon, 20.0, selected, label)
-}
-
+/// The footer's page count and buttons: a page dropped on Create new page is duplicated at the end of the document.
 fn pages_footer(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
-        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
-        with_env(ui, |scope| scope.direction = Some(direction), |ui| pages_footer_contents(app, ui, doc, cur, t, dragging));
+        framework::footer(app, ui, doc, cur);
         return;
     }
-    pages_footer_contents(app, ui, doc, cur, t, dragging);
+    native_footer(app, ui, doc, cur, t, dragging);
 }
 
-fn pages_footer_contents(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
-    // A page has an absolute index: retire held input when its document, revision or current-page target changes.
-    let target = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision, st.editing_parents));
-    let footer_id = ui.scope_id().with(("pages-footer", target, cur));
+fn native_footer(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, cur: usize, t: &Tokens, dragging: bool) {
     ui.horizontal(|ui| {
         ui.set_min_height(FOOTER_H - 4.0);
         crate::rtl::label(
@@ -381,13 +341,11 @@ fn pages_footer_contents(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcra
             .color(t.text_dim),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if page_footer_button(app, ui, "trash", false, crate::i18n::tr(&app.ui.language, "Delete selected pages"), footer_id.with("trash"))
-                .clicked()
-            {
+            if icons::button(ui, "trash", 20.0, false, crate::i18n::tr(&app.ui.language, "Delete selected pages")).clicked() {
                 let _ = crate::dialogs::delete_pages(app, vec![cur]);
             }
             // Create new page; a page dropped on it is duplicated at the end of the document.
-            let plus = page_footer_button(app, ui, "plus", dragging, crate::i18n::tr(&app.ui.language, "Create new page"), footer_id.with("plus"));
+            let plus = icons::button(ui, "plus", 20.0, dragging, crate::i18n::tr(&app.ui.language, "Create new page"));
             if let Some(payload) = plus.dnd_release_payload::<PageDrag>() {
                 if let PageDrag::Page(from) = *payload
                     && let Some((si, _)) = doc.page_loc(from)
@@ -398,8 +356,7 @@ fn pages_footer_contents(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcra
                 let _ = app.run("layout.pages.insert", json!({"after": cur, "count": 1}));
             }
             // Edit page size: InDesign's presets for the current page, or Custom Page Size….
-            let size =
-                page_footer_button(app, ui, "panel-pages", false, crate::i18n::tr(&app.ui.language, "Edit page size"), footer_id.with("panel-pages"));
+            let size = icons::button(ui, "panel-pages", 20.0, false, crate::i18n::tr(&app.ui.language, "Edit page size"));
             egui::Popup::menu(&size).show(|ui| {
                 let Some((si, pi)) = doc.page_loc(cur) else { return };
                 let pg = &doc.spreads[si].pages[pi];
@@ -479,76 +436,204 @@ fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &Pare
     }
 }
 
+/// What the Pages panel shows this frame and how its parts share the room: the same for the native and the framework
+/// drawing.
+struct Plan {
+    uid: u64,
+    editing_parents: bool,
+    /// The [None] row, then each parent.
+    rows: Vec<ParentRow>,
+    opts: PanelOptions,
+    /// A parent's row and the height of its icon.
+    row_h: f32,
+    icon_h: f32,
+    parent_thumbnails: bool,
+    /// How far the divider can move, and the heights the parents and the pages get.
+    parents_min: f32,
+    parents_max: f32,
+    parents_h: f32,
+    space: f32,
+    pages_h: f32,
+    /// The current page and its spread.
+    cur: usize,
+    cur_spread: Option<usize>,
+    /// The parent (index in `doc.parents`) the canvas shows while parents are edited.
+    cur_parent: Option<usize>,
+    /// Outside Edit Parents, the parent clicked in the list (the panel menu acts on it).
+    selected_parent: Option<SpreadId>,
+    tallest: f64,
+    /// A page thumbnail's height.
+    th: f32,
+    thumbnails: bool,
+    layouts: Vec<designcraft_doc::LayoutRange>,
+    columns: bool,
+}
+
+/// The width of a parent's tile when the parents lie side by side (Show Vertically off): its icon and the prefix.
+fn tile_width(icon_h: f32, unit_w: f32) -> f32 {
+    (icon_h * unit_w + 16.0).max(44.0)
+}
+
+impl Plan {
+    fn new(app: &DesignApp, ui: &egui::Ui, doc: &designcraft_doc::Document, uid: u64, editing_parents: bool) -> Plan {
+        let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
+        // While parents are edited, the row of the parent the canvas shows is selected.
+        let cur_parent = if editing_parents {
+            let layout = designcraft_tools::CanvasLayout::new(doc, true);
+            crate::canvas::current_slot(app, &layout).and_then(|i| layout.slots.get(i)).and_then(|s| match s.spread {
+                SpreadRef::Parent(i) => Some(i),
+                SpreadRef::Doc(_) => None,
+            })
+        } else {
+            None
+        };
+        let selected_parent = selected_parent(app).filter(|id| !editing_parents && doc.parent_index(*id).is_some());
+        let mut rows = vec![ParentRow::none(aspect)];
+        rows.extend(doc.parents.iter().enumerate().map(|(i, p)| ParentRow::new(i, p, aspect)));
+        // As in InDesign: parents and pages each scroll on their own (parents on top unless Panel
+        // Options says pages), a divider between them resizes them, the footer stays at the bottom.
+        let opts = app.ui.pages_panel.clone();
+        let total = {
+            let h = ui.available_height();
+            if h.is_finite() && h < 4000.0 { h } else { 480.0 }
+        }
+        .max(160.0);
+        let row_h = opts.parent_size.row_h();
+        let icon_h = row_h - 5.0;
+        // Extra Small has no room for a thumbnail; Show Thumbnails off draws blank pages.
+        let parent_thumbnails = opts.parent_thumbnails && opts.parent_size != IconSize::ExtraSmall;
+        let natural = if opts.parents_vertical {
+            rows.len() as f32 * row_h
+        } else {
+            let width = (ui.available_width() - 4.0).max(1.0);
+            let (mut lines, mut x) = (1.0_f32, 0.0_f32);
+            for row in &rows {
+                let w = tile_width(icon_h, row.unit_w) + 6.0;
+                if x > 0.0 && x + w > width {
+                    lines += 1.0;
+                    x = 0.0;
+                }
+                x += w;
+            }
+            lines * (icon_h + 22.0)
+        } + NEW_PARENT_H;
+        let space = (total - FOOTER_H - DIVIDER_H).max(2.0 * ROW_H);
+        let parents_max = (space - 2.0 * ROW_H).max(ROW_H);
+        // A row taller than the room left (large icons in a short panel) gets that room.
+        let parents_min = row_h.min(natural).min(parents_max);
+        // The divider's place as last dragged, and how a change of the panel's height is shared.
+        let parents_h = match app.ui.pages_parents_height {
+            None => natural.min(PARENTS_DEFAULT_ROWS * ROW_H),
+            Some([h, at]) => match opts.resize {
+                PanelResize::ParentsFixed => h,
+                PanelResize::PagesFixed => h + (space - at),
+                PanelResize::Proportional => h * space / at.max(1.0),
+            },
+        }
+        .clamp(parents_min, parents_max)
+        .min(natural);
+        let pages_h = (space - parents_h).max(ROW_H);
+        let cur = crate::canvas::current_page(app).unwrap_or(0);
+        let cur_spread = doc.page_loc(cur).map(|l| l.0);
+        let tallest = doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.height)).fold(doc.settings.page_height, f64::max).max(1.0);
+        let th = opts.page_size.page_h();
+        // Extra Small has no room for a thumbnail; Show Thumbnails off draws blank pages.
+        let thumbnails = opts.page_thumbnails && opts.page_size != IconSize::ExtraSmall;
+        let layouts = doc.layouts();
+        let columns = layouts.len() > 1;
+        Plan {
+            uid,
+            editing_parents,
+            rows,
+            opts,
+            row_h,
+            icon_h,
+            parent_thumbnails,
+            parents_min,
+            parents_max,
+            parents_h,
+            space,
+            pages_h,
+            cur,
+            cur_spread,
+            cur_parent,
+            selected_parent,
+            tallest,
+            th,
+            thumbnails,
+            layouts,
+            columns,
+        }
+    }
+
+    /// One scale for the whole document (pages of their own size show in proportion): the document's page size at the
+    /// panel's size, unless a taller page would pass 1.8 times it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scale(&self, doc: &designcraft_doc::Document) -> f32 {
+        (self.th / doc.settings.page_height.max(1.0) as f32).min(1.8 * self.th / self.tallest as f32)
+    }
+}
+
+/// A page or a parent dropped on a page: what was dragged, the page it landed on and whether the drop copies (Alt).
+type PageDrop = (PageDrag, usize, bool);
+
+/// Applies a drop on a page: pages reorder (Alt copies a page that is a spread of its own to where it is dropped, in one
+/// undo step; a page from a larger spread moves as usual), parents apply.
+fn apply_drop(app: &mut DesignApp, doc: &designcraft_doc::Document, drop: Option<PageDrop>) {
+    match drop {
+        Some((PageDrag::Page(from), to, alt)) => {
+            let copy = doc.page_loc(from).and_then(|(si, _)| (alt && doc.spreads.get(si).is_some_and(|s| s.pages.len() == 1)).then_some(si));
+            if let Some(si) = copy {
+                let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "to": to}));
+            } else if from != to {
+                let _ = app.run("layout.pages.move", json!({"from": from, "to": to}));
+            }
+        }
+        Some((PageDrag::Parent(parent), to, _)) => {
+            let _ = app.run("layout.pages.applyParent", json!({"pages": [to], "parent": parent.map(|id| id.0)}));
+        }
+        None => {}
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
-    let uid = st.uid;
     let doc = st.doc.clone();
-    let editing_parents = st.editing_parents;
-    let aspect = (doc.settings.page_width / doc.settings.page_height.max(1.0)) as f32;
+    let plan = Plan::new(app, ui, &doc, st.uid, st.editing_parents);
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ui, &doc, &plan);
+        return;
+    }
+    let Plan {
+        uid,
+        editing_parents,
+        rows,
+        opts,
+        row_h,
+        icon_h,
+        parent_thumbnails,
+        parents_min,
+        parents_max,
+        parents_h,
+        space,
+        pages_h,
+        cur,
+        cur_spread,
+        cur_parent,
+        selected_parent,
+        tallest,
+        th,
+        thumbnails,
+        layouts,
+        columns,
+        ..
+    } = plan;
     let mut drop: Option<(PageDrag, usize)> = None;
     ui.spacing_mut().item_spacing.y = 0.0;
-    // ---- Parents: [None] and each parent, rows with the parent's thumbnail at the right.
-    // While parents are edited, the row of the parent the canvas shows is selected.
-    let cur_parent = if editing_parents {
-        let layout = designcraft_tools::CanvasLayout::new(&doc, true);
-        crate::canvas::current_slot(app, &layout).and_then(|i| layout.slots.get(i)).and_then(|s| match s.spread {
-            SpreadRef::Parent(i) => Some(i),
-            SpreadRef::Doc(_) => None,
-        })
-    } else {
-        None
-    };
-    // Outside Edit Parents, the parent clicked in the list (the panel menu acts on it).
-    let selected_parent = selected_parent(app).filter(|id| !editing_parents && doc.parent_index(*id).is_some());
-    let mut rows = vec![ParentRow::none(aspect)];
-    rows.extend(doc.parents.iter().enumerate().map(|(i, p)| ParentRow::new(i, p, aspect)));
-    // As in InDesign: parents and pages each scroll on their own (parents on top unless Panel
-    // Options says pages), a divider between them resizes them, the footer stays at the bottom.
-    let opts = app.ui.pages_panel.clone();
-    let total = {
-        let h = ui.available_height();
-        if h.is_finite() && h < 4000.0 { h } else { 480.0 }
-    }
-    .max(160.0);
-    let row_h = opts.parent_size.row_h();
-    let icon_h = row_h - 5.0;
-    // Extra Small has no room for a thumbnail; Show Thumbnails off draws blank pages.
-    let parent_thumbnails = opts.parent_thumbnails && opts.parent_size != IconSize::ExtraSmall;
     // Parents side by side (Show Vertically off): tiles of the icon and the prefix, wrapping.
-    let tile_w = |unit_w: f32| (icon_h * unit_w + 16.0).max(44.0);
-    let natural = if opts.parents_vertical {
-        rows.len() as f32 * row_h
-    } else {
-        let width = (ui.available_width() - 4.0).max(1.0);
-        let (mut lines, mut x) = (1.0_f32, 0.0_f32);
-        for row in &rows {
-            let w = tile_w(row.unit_w) + 6.0;
-            if x > 0.0 && x + w > width {
-                lines += 1.0;
-                x = 0.0;
-            }
-            x += w;
-        }
-        lines * (icon_h + 22.0)
-    } + NEW_PARENT_H;
-    let space = (total - FOOTER_H - DIVIDER_H).max(2.0 * ROW_H);
-    let parents_max = (space - 2.0 * ROW_H).max(ROW_H);
-    // A row taller than the room left (large icons in a short panel) gets that room.
-    // A row taller than the room left (large icons in a short panel) gets that room.
-    let parents_min = row_h.min(natural).min(parents_max);
-    // The divider's place as last dragged, and how a change of the panel's height is shared.
-    let parents_h = match app.ui.pages_parents_height {
-        None => natural.min(PARENTS_DEFAULT_ROWS * ROW_H),
-        Some([h, at]) => match opts.resize {
-            PanelResize::ParentsFixed => h,
-            PanelResize::PagesFixed => h + (space - at),
-            PanelResize::Proportional => h * space / at.max(1.0),
-        },
-    }
-    .clamp(parents_min, parents_max)
-    .min(natural);
-    let pages_h = (space - parents_h).max(ROW_H);
+    let tile_w = |unit_w: f32| tile_width(icon_h, unit_w);
     let parents_part = |app: &mut DesignApp, ui: &mut egui::Ui| {
         egui::ScrollArea::vertical().id_salt("pages_parents").max_height(parents_h).min_scrolled_height(parents_h).auto_shrink([false, true]).show(
             ui,
@@ -641,16 +726,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         );
     };
     // ---- Document spreads.
-    let cur = crate::canvas::current_page(app).unwrap_or(0);
-    let cur_spread = doc.page_loc(cur).map(|l| l.0);
     let followed_id = egui::Id::unique("pages_panel_followed");
     let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
-    let tallest = doc.spreads.iter().flat_map(|sp| sp.pages.iter().map(|p| p.height)).fold(doc.settings.page_height, f64::max).max(1.0);
-    let th = opts.page_size.page_h();
-    // Extra Small has no room for a thumbnail; Show Thumbnails off draws blank pages.
-    let thumbnails = opts.page_thumbnails && opts.page_size != IconSize::ExtraSmall;
-    let layouts = doc.layouts();
-    let columns = layouts.len() > 1;
     let mut pages_part = |app: &mut DesignApp, ui: &mut egui::Ui| {
         // The document's spreads `spreads`, each a row centred on its spine.
         let mut draw_spreads = |app: &mut DesignApp, ui: &mut egui::Ui, spreads: std::ops::Range<usize>| {
@@ -823,7 +900,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             // Right-click on the empty part of the panel: the short menu.
             let rest = ui.available_rect_before_wrap();
             let (_, empty) = ui.allocate_exact_size(vec2(ui.available_width(), rest.height().max(8.0)), Sense::click());
-            empty.context_menu(|ui| empty_menu(app, ui));
+            empty.context_menu(|ui| {
+                let entries = empty_entries(&app.ui.language, cur);
+                native_entries(app, ui, &doc, &layouts, entries);
+            });
         });
     };
     // The divider: drag it to show more or fewer parents.
@@ -849,26 +929,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     ui.spacing_mut().item_spacing.y = 4.0;
     pages_footer(app, ui, &doc, cur, &t, dragging);
-    // Alt-drag copies a page that is a spread of its own to where it's dropped, in one undo
-    // step; a page from a larger spread moves as usual.
     let alt = ui.input(|i| i.modifiers.alt);
-    let copy = |from: usize| {
-        let (si, _) = doc.page_loc(from)?;
-        (alt && doc.spreads.get(si).is_some_and(|s| s.pages.len() == 1)).then_some(si)
-    };
-    match drop {
-        Some((PageDrag::Page(from), to)) => {
-            if let Some(si) = copy(from) {
-                let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "to": to}));
-            } else if from != to {
-                let _ = app.run("layout.pages.move", json!({"from": from, "to": to}));
-            }
-        }
-        Some((PageDrag::Parent(parent), to)) => {
-            let _ = app.run("layout.pages.applyParent", json!({"pages": [to], "parent": parent.map(|id| id.0)}));
-        }
-        _ => {}
-    }
+    apply_drop(app, &doc, drop.map(|(payload, to)| (payload, to, alt)));
 }
 
 /// The panel menu's page commands, acting on the current page and its spread.
@@ -879,26 +941,6 @@ pub fn panel_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some((si, _)) = doc.page_loc(cur) else { return };
     let layouts = doc.layouts();
     page_menu(app, ui, &doc, &layouts, cur, si);
-}
-
-/// Right-click on the panel's empty part, as InDesign's: the commands that need no page.
-fn empty_menu(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let lang = app.ui.language.clone();
-    let cur = crate::canvas::current_page(app).unwrap_or(0);
-    let item = |ui: &mut egui::Ui, label: &str| ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, label))).clicked();
-    if item(ui, "Insert Pages…") {
-        crate::dialogs::open_insert_pages(app, cur);
-        ui.close();
-    }
-    if item(ui, "Move Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": cur, "to": cur})));
-        ui.close();
-    }
-    ui.separator();
-    if item(ui, "Panel Options…") {
-        open_panel_options(app);
-        ui.close();
-    }
 }
 
 /// Panel Options…, with the panel's current options.
@@ -988,36 +1030,10 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>()) }
 }
 
-/// The commands on layout `k`: in its column header's menu and in the panel menu.
+/// The commands on layout `k` as a native menu: in its column header's menu and in the panel menu.
 fn layout_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, layouts: &[designcraft_doc::LayoutRange], k: usize) {
-    let count = layouts.len();
-    let lang = app.ui.language.clone();
-    let item = |ui: &mut egui::Ui, label: &str, on: bool| {
-        ui.add_enabled(on, egui::Button::new(crate::rtl::widget(ui, crate::i18n::tr(&lang, label)))).clicked()
-    };
-    if item(ui, "Create Alternate Layout…", true) {
-        open_create_alternate(app, doc, layouts, k);
-        ui.close();
-    }
-    if item(ui, "Duplicate Alternate Layout", true) {
-        let _ = app.run("layout.alternate.duplicate", json!({"layout": k}));
-        ui.close();
-    }
-    if item(ui, "Alternate Layout Options…", true) {
-        open_layout_options(app, doc, layouts, k);
-        ui.close();
-    }
-    if item(ui, "Export Layout…", true) {
-        let name = layouts.get(k).map(|l| l.name.clone());
-        crate::export_batch_dialog::open(app, name.map(|n| vec![n]));
-        ui.close();
-    }
-    if item(ui, "Delete Alternate Layout", count > 1) {
-        if app.run("layout.alternate.delete", json!({"layout": k})).is_ok() {
-            app.views.clear();
-        }
-        ui.close();
-    }
+    let entries = layout_entries(&app.ui.language, layouts.len(), k);
+    native_entries(app, ui, doc, layouts, entries);
 }
 
 /// Create Alternate Layout…, from layout `k`, at its pages' other orientation.
@@ -1123,45 +1139,289 @@ impl ParentAction {
     }
 }
 
-/// The parent commands. `target` set: each acts on that parent (named in the item when `named`);
-/// unset: each is a submenu of the parents.
-fn parent_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, target: Option<SpreadId>, named: bool) {
-    let lang = app.ui.language.clone();
-    if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&lang, "New Parent…"))).clicked() {
-        crate::menus::activate(app, "layout.parents.new", &serde_json::Value::Null);
-        ui.close();
+/// What an entry of a Pages panel menu does.
+#[derive(Clone)]
+enum Act {
+    InsertPages(usize),
+    MovePages(usize),
+    DuplicateSpread {
+        si: usize,
+        at_end: bool,
+    },
+    DeletePages(Vec<usize>),
+    NewParent,
+    Parent(ParentAction, SpreadId),
+    ApplyParent {
+        page: usize,
+        parent: Option<SpreadId>,
+    },
+    /// A command on a page's parent items: Override All, Remove All Local Overrides, Detach All.
+    PageCommand {
+        id: &'static str,
+        page: usize,
+    },
+    CreateAlternate(usize),
+    DuplicateAlternate(usize),
+    AlternateOptions(usize),
+    ExportLayout(usize),
+    DeleteAlternate(usize),
+    Section,
+    Shuffle {
+        si: usize,
+        allow: bool,
+    },
+    ToPreviousSpread {
+        page: usize,
+        si: usize,
+    },
+    PanelOptions,
+}
+
+impl Act {
+    /// Does it. `layouts` are the document's layouts, for the layout commands.
+    fn run(self, app: &mut DesignApp, doc: &designcraft_doc::Document, layouts: &[designcraft_doc::LayoutRange]) {
+        match self {
+            Act::InsertPages(page) => {
+                crate::dialogs::open_insert_pages(app, page);
+            }
+            Act::MovePages(page) => {
+                app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": page, "to": page})));
+            }
+            Act::DuplicateSpread { si, at_end } => {
+                let params = if at_end { json!({"spread": si, "atEnd": true}) } else { json!({"spread": si}) };
+                let _ = app.run("layout.pages.duplicateSpread", params);
+            }
+            Act::DeletePages(pages) => {
+                let _ = crate::dialogs::delete_pages(app, pages);
+            }
+            Act::NewParent => {
+                crate::menus::activate(app, "layout.parents.new", &serde_json::Value::Null);
+            }
+            Act::Parent(action, id) => action.run(app, doc, id),
+            Act::ApplyParent { page, parent } => {
+                let _ = app.run("layout.pages.applyParent", json!({"pages": [page], "parent": parent.map(|id| id.0)}));
+            }
+            Act::PageCommand { id, page } => {
+                let _ = app.run(id, json!({"page": page}));
+            }
+            Act::CreateAlternate(k) => open_create_alternate(app, doc, layouts, k),
+            Act::DuplicateAlternate(k) => {
+                let _ = app.run("layout.alternate.duplicate", json!({"layout": k}));
+            }
+            Act::AlternateOptions(k) => open_layout_options(app, doc, layouts, k),
+            Act::ExportLayout(k) => {
+                let name = layouts.get(k).map(|l| l.name.clone());
+                crate::export_batch_dialog::open(app, name.map(|n| vec![n]));
+            }
+            Act::DeleteAlternate(k) => {
+                if app.run("layout.alternate.delete", json!({"layout": k})).is_ok() {
+                    app.views.clear();
+                }
+            }
+            Act::Section => {
+                crate::menus::activate(app, "layout.section", &serde_json::Value::Null);
+            }
+            Act::Shuffle { si, allow } => {
+                let _ = app.run("layout.spreadShuffle", json!({"spread": si, "allow": allow}));
+            }
+            Act::ToPreviousSpread { page, si } => {
+                let _ = app.run("layout.pages.toSpread", json!({"page": page + 1, "spread": si.saturating_sub(1)}));
+            }
+            Act::PanelOptions => open_panel_options(app),
+        }
     }
+}
+
+/// An entry of a Pages panel menu. The framework and the native drawing of a menu show the same entries.
+enum MenuEntry {
+    Item {
+        label: String,
+        enabled: bool,
+        check: Option<bool>,
+        hint: Option<String>,
+        act: Act,
+    },
+    Sep,
+    /// A submenu, which is a row that opens `items`.
+    Sub {
+        label: String,
+        enabled: bool,
+        items: Vec<MenuEntry>,
+    },
+}
+
+impl MenuEntry {
+    fn item(label: impl Into<String>, act: Act) -> MenuEntry {
+        MenuEntry::Item { label: label.into(), enabled: true, check: None, hint: None, act }
+    }
+
+    fn enabled(mut self, on: bool) -> MenuEntry {
+        if let MenuEntry::Item { enabled, .. } = &mut self {
+            *enabled = on;
+        }
+        self
+    }
+}
+
+/// The entries of the menu on the panel's empty part, as InDesign's: the commands that need no page.
+fn empty_entries(lang: &str, cur: usize) -> Vec<MenuEntry> {
+    let tr = |label: &str| crate::i18n::tr(lang, label).to_owned();
+    vec![
+        MenuEntry::item(tr("Insert Pages…"), Act::InsertPages(cur)),
+        MenuEntry::item(tr("Move Pages…"), Act::MovePages(cur)),
+        MenuEntry::Sep,
+        MenuEntry::item(tr("Panel Options…"), Act::PanelOptions),
+    ]
+}
+
+/// The entries of the commands on layout `k` of `count`: in its column header's menu and in the panel menu.
+fn layout_entries(lang: &str, count: usize, k: usize) -> Vec<MenuEntry> {
+    let tr = |label: &str| crate::i18n::tr(lang, label).to_owned();
+    vec![
+        MenuEntry::item(tr("Create Alternate Layout…"), Act::CreateAlternate(k)),
+        MenuEntry::item(tr("Duplicate Alternate Layout"), Act::DuplicateAlternate(k)),
+        MenuEntry::item(tr("Alternate Layout Options…"), Act::AlternateOptions(k)),
+        MenuEntry::item(tr("Export Layout…"), Act::ExportLayout(k)),
+        MenuEntry::item(tr("Delete Alternate Layout"), Act::DeleteAlternate(k)).enabled(count > 1),
+    ]
+}
+
+/// The parent commands. `target` set: each acts on that parent (named in the entry when `named`); unset: each is a
+/// submenu of the parents.
+fn parent_entries(lang: &str, doc: &designcraft_doc::Document, target: Option<SpreadId>, named: bool) -> Vec<MenuEntry> {
+    let tr = |label: &str| crate::i18n::tr(lang, label).to_owned();
     let label_of = |id: SpreadId| doc.parent_index(id).and_then(|i| doc.parents.get(i)).and_then(|p| p.parent.as_ref()).map(|i| i.label());
+    let mut entries = vec![MenuEntry::item(tr("New Parent…"), Act::NewParent)];
     for action in ParentAction::ALL {
-        let label = crate::i18n::tr(&lang, action.label()).to_string();
-        match target {
+        let label = tr(action.label());
+        entries.push(match target {
             Some(id) => {
                 let shown = match label_of(id) {
                     Some(name) if named => format!("{} “{name}”", label.trim_end_matches('…')) + if label.ends_with('…') { "…" } else { "" },
                     _ => label,
                 };
-                if ui.button(crate::rtl::widget(ui, shown)).clicked() {
-                    action.run(app, doc, id);
+                MenuEntry::item(shown, Act::Parent(action, id))
+            }
+            None => MenuEntry::Sub {
+                label: label.trim_end_matches('…').to_owned(),
+                enabled: !doc.parents.is_empty(),
+                items: doc
+                    .parents
+                    .iter()
+                    .filter_map(|p| p.parent.as_ref().map(|info| MenuEntry::item(info.label(), Act::Parent(action, p.id))))
+                    .collect(),
+            },
+        });
+    }
+    entries
+}
+
+/// The entries of the menu of page `abs` in spread `si`, in InDesign's order: pages, parents, layouts and numbering,
+/// shuffling.
+fn page_entries(app: &DesignApp, doc: &designcraft_doc::Document, layouts: &[designcraft_doc::LayoutRange], abs: usize, si: usize) -> Vec<MenuEntry> {
+    let lang = app.ui.language.as_str();
+    let tr = |label: &str| crate::i18n::tr(lang, label).to_owned();
+    let pages_in_spread = doc.spreads.get(si).map_or(1, |sp| sp.pages.len());
+    let mut entries = vec![
+        MenuEntry::item(tr("Insert Pages…"), Act::InsertPages(abs)),
+        MenuEntry::item(tr("Move Pages…"), Act::MovePages(abs)),
+        MenuEntry::item(tr("Duplicate Spread"), Act::DuplicateSpread { si, at_end: false }),
+        MenuEntry::item(tr("Duplicate Spread at End of Document"), Act::DuplicateSpread { si, at_end: true }),
+        MenuEntry::item(tr("Delete Page"), Act::DeletePages(vec![abs])),
+    ];
+    if pages_in_spread > 1 {
+        let first = doc.first_page_of_spread(si);
+        entries.push(MenuEntry::item(tr("Delete Spread"), Act::DeletePages((first..first.saturating_add(pages_in_spread)).collect())));
+    }
+    entries.push(MenuEntry::Sep);
+    entries.extend(parent_entries(lang, doc, target_parent(app, doc), true));
+    let mut apply = vec![MenuEntry::item(tr("[None]"), Act::ApplyParent { page: abs, parent: None })];
+    for pp in &doc.parents {
+        let label = pp.parent.as_ref().map(|i| i.label()).unwrap_or_default();
+        apply.push(MenuEntry::item(label, Act::ApplyParent { page: abs, parent: Some(pp.id) }));
+    }
+    entries.push(MenuEntry::Sub { label: tr("Apply Parent to Pages"), enabled: true, items: apply });
+    entries.push(MenuEntry::item(tr("Override All Parent Page Items"), Act::PageCommand { id: "layout.overrideParentItems", page: abs }));
+    entries.push(MenuEntry::Sub {
+        label: tr("Parent Pages"),
+        enabled: true,
+        items: [("layout.removeOverrides", "Remove All Local Overrides"), ("layout.detachAll", "Detach All Objects from Parent")]
+            .into_iter()
+            .map(|(id, label)| MenuEntry::item(tr(label), Act::PageCommand { id, page: abs }))
+            .collect(),
+    });
+    entries.push(MenuEntry::Sep);
+    entries.extend(layout_entries(lang, layouts.len(), layout_index(layouts, abs)));
+    entries.push(MenuEntry::item(tr("Numbering & Section Options…"), Act::Section));
+    entries.push(MenuEntry::Sep);
+    let shuffle = doc.spreads.get(si).is_none_or(|sp| sp.allow_shuffle);
+    entries.push(MenuEntry::Item {
+        label: tr("Allow Selected Spread to Shuffle"),
+        enabled: true,
+        check: Some(shuffle),
+        hint: None,
+        act: Act::Shuffle { si, allow: !shuffle },
+    });
+    // Not in InDesign's menu (it drags pages into spreads): kept for spreads of up to 10 pages.
+    if si > 0 {
+        entries.push(MenuEntry::Item {
+            label: tr("Add to Previous Spread"),
+            enabled: true,
+            check: None,
+            hint: Some(tr("Spreads of up to 10 pages")),
+            act: Act::ToPreviousSpread { page: abs, si },
+        });
+    }
+    entries.push(MenuEntry::Sep);
+    entries.push(MenuEntry::item(tr("Panel Options…"), Act::PanelOptions));
+    entries
+}
+
+/// Shows `entries` as the rows of a native menu `ui`; the one clicked runs and closes the menu.
+fn native_entries(
+    app: &mut DesignApp,
+    ui: &mut egui::Ui,
+    doc: &designcraft_doc::Document,
+    layouts: &[designcraft_doc::LayoutRange],
+    entries: Vec<MenuEntry>,
+) {
+    for entry in entries {
+        match entry {
+            MenuEntry::Sep => {
+                ui.separator();
+            }
+            MenuEntry::Item { label, enabled, check, hint, act } => {
+                let text = crate::rtl::widget(ui, label);
+                let mut response = match check {
+                    Some(mut on) => ui.add_enabled_ui(enabled, |ui| ui.checkbox(&mut on, text)).inner,
+                    None => ui.add_enabled(enabled, egui::Button::new(text)),
+                };
+                if let Some(hint) = hint {
+                    response = response.on_hover_ui(|ui| {
+                        crate::rtl::label(ui, hint);
+                    });
+                }
+                if response.clicked() {
+                    act.run(app, doc, layouts);
                     ui.close();
                 }
             }
-            None => {
-                ui.add_enabled_ui(!doc.parents.is_empty(), |ui| {
-                    crate::menus::menu_button(ui, crate::rtl::widget(ui, label.trim_end_matches('…')), |ui| {
-                        for p in &doc.parents {
-                            let Some(name) = p.parent.as_ref().map(|i| i.label()) else { continue };
-                            if ui.button(name).clicked() {
-                                action.run(app, doc, p.id);
-                                ui.close();
-                            }
-                        }
-                    });
+            MenuEntry::Sub { label, enabled, items } => {
+                ui.add_enabled_ui(enabled, |ui| {
+                    crate::menus::menu_button(ui, crate::rtl::widget(ui, label), |ui| native_entries(app, ui, doc, layouts, items));
                 });
             }
         }
     }
 }
 
+/// The parent commands as a native menu.
+fn parent_menu(app: &mut DesignApp, ui: &mut egui::Ui, doc: &designcraft_doc::Document, target: Option<SpreadId>, named: bool) {
+    let entries = parent_entries(&app.ui.language, doc, target, named);
+    native_entries(app, ui, doc, &[], entries);
+}
+
+/// The menu of page `abs` in spread `si`, as a native menu.
 fn page_menu(
     app: &mut DesignApp,
     ui: &mut egui::Ui,
@@ -1170,93 +1430,8 @@ fn page_menu(
     abs: usize,
     si: usize,
 ) {
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
-    let pages_in_spread = doc.spreads.get(si).map_or(1, |sp| sp.pages.len());
-    let item = |ui: &mut egui::Ui, label: &str| ui.button(crate::rtl::widget(ui, tr(label))).clicked();
-    // InDesign's order: pages, parents, layouts and numbering, shuffling.
-    if item(ui, "Insert Pages…") {
-        crate::dialogs::open_insert_pages(app, abs);
-        ui.close();
-    }
-    if item(ui, "Move Pages…") {
-        app.ui.dialog = Some(crate::dialogs::Dialog::new("cmd:layout.pages.move", json!({"from": abs, "to": abs})));
-        ui.close();
-    }
-    if item(ui, "Duplicate Spread") {
-        let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si}));
-        ui.close();
-    }
-    if item(ui, "Duplicate Spread at End of Document") {
-        let _ = app.run("layout.pages.duplicateSpread", json!({"spread": si, "atEnd": true}));
-        ui.close();
-    }
-    if item(ui, "Delete Page") {
-        let _ = crate::dialogs::delete_pages(app, vec![abs]);
-        ui.close();
-    }
-    if pages_in_spread > 1 && item(ui, "Delete Spread") {
-        let first = doc.first_page_of_spread(si);
-        let _ = crate::dialogs::delete_pages(app, (first..first.saturating_add(pages_in_spread)).collect());
-        ui.close();
-    }
-    ui.separator();
-    let target = target_parent(app, doc);
-    parent_menu(app, ui, doc, target, true);
-    crate::menus::menu_button(ui, crate::rtl::widget(ui, tr("Apply Parent to Pages")), |ui| {
-        if ui.button(crate::rtl::widget(ui, tr("[None]"))).clicked() {
-            let _ = app.run("layout.pages.applyParent", json!({"pages": [abs], "parent": null}));
-            ui.close();
-        }
-        for pp in &doc.parents {
-            let l = pp.parent.as_ref().map(|i| i.label()).unwrap_or_default();
-            if ui.button(&l).clicked() {
-                let _ = app.run("layout.pages.applyParent", json!({"pages": [abs], "parent": pp.id.0}));
-                ui.close();
-            }
-        }
-    });
-    if item(ui, "Override All Parent Page Items") {
-        let _ = app.run("layout.overrideParentItems", json!({"page": abs}));
-        ui.close();
-    }
-    crate::menus::menu_button(ui, crate::rtl::widget(ui, tr("Parent Pages")), |ui| {
-        for (id, label) in [("layout.removeOverrides", "Remove All Local Overrides"), ("layout.detachAll", "Detach All Objects from Parent")] {
-            if ui.button(crate::rtl::widget(ui, tr(label))).clicked() {
-                let _ = app.run(id, json!({"page": abs}));
-                ui.close();
-            }
-        }
-    });
-    ui.separator();
-    layout_menu(app, ui, doc, layouts, layout_index(layouts, abs));
-    if item(ui, "Numbering & Section Options…") {
-        crate::menus::activate(app, "layout.section", &serde_json::Value::Null);
-        ui.close();
-    }
-    ui.separator();
-    let mut shuffle = doc.spreads.get(si).is_none_or(|sp| sp.allow_shuffle);
-    if ui.checkbox(&mut shuffle, crate::rtl::widget(ui, tr("Allow Selected Spread to Shuffle"))).clicked() {
-        let _ = app.run("layout.spreadShuffle", json!({"spread": si, "allow": shuffle}));
-        ui.close();
-    }
-    // Not in InDesign's menu (it drags pages into spreads): kept for spreads of up to 10 pages.
-    if si > 0
-        && ui
-            .button(crate::rtl::widget(ui, tr("Add to Previous Spread")))
-            .on_hover_ui(|ui| {
-                crate::rtl::label(ui, tr("Spreads of up to 10 pages"));
-            })
-            .clicked()
-    {
-        let _ = app.run("layout.pages.toSpread", json!({"page": abs + 1, "spread": si - 1}));
-        ui.close();
-    }
-    ui.separator();
-    if item(ui, "Panel Options…") {
-        open_panel_options(app);
-        ui.close();
-    }
+    let entries = page_entries(app, doc, layouts, abs, si);
+    native_entries(app, ui, doc, layouts, entries);
 }
 
 /// A small label following the pointer while dragging.
@@ -1268,6 +1443,9 @@ pub(crate) fn drag_ghost(ui: &egui::Ui, label: &str, t: &Tokens) {
     painter.rect(r, 2.0, t.panel_darker, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     painter.galley(r.min + vec2(5.0, 3.0), g, t.text_strong);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod framework;
 
 #[cfg(test)]
 mod tests;
@@ -1817,7 +1995,7 @@ mod pages_footer_workflow_tests {
         assert_eq!(sizes(&h)[1], (hh, w));
     }
     #[test]
-    fn installed_pages_footer_native_size_menu_escape_and_custom_boundary_keep_history() {
+    fn installed_pages_footer_size_menu_escape_and_custom_boundary_keep_history() {
         let mut h = harness(fixture(), true, false);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
@@ -1850,7 +2028,10 @@ mod pages_footer_workflow_tests {
         pointer(&mut h, from, true);
         event(&mut h, Event::PointerMoved(from + vec2(10.0, 0.0)));
         idle(&mut h, 2);
-        assert!(matches!(egui::DragAndDrop::payload::<PageDrag>(&h.ctx).as_deref(), Some(PageDrag::Page(1))), "actual app thumbnail drag source");
+        assert!(
+            matches!(craft_ui_widgets::runtime::drag::active::<PageDrag>(&h.ctx).as_deref(), Some(PageDrag::Page(1))),
+            "actual app thumbnail drag source"
+        );
         for n in 1..=5 {
             event(&mut h, Event::PointerMoved(from + (to - from) * (n as f32 / 5.0)));
         }
