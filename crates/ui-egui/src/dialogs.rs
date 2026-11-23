@@ -12,6 +12,7 @@ use crate::theme::semibold;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod frame_forms;
+mod cell_options_form;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod framework;
 #[cfg(not(target_arch = "wasm32"))]

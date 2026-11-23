@@ -48,9 +48,17 @@ pub fn edges_from(v: &Value) -> Edges {
     }
 }
 
+const PROXY_HELP: &str =
+    "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.";
+
 /// The proxy's lines (start, end) inside its rect, in [`EDGE_NAMES`] order.
 pub fn proxy_lines(r: Rect) -> [(Pos2, Pos2); 6] {
-    let i = r.shrink(PROXY_INSET);
+    lines_in(r, PROXY_INSET)
+}
+
+/// The proxy's lines in `r`, the cell grid `inset` inside it.
+fn lines_in(r: Rect, inset: f32) -> [(Pos2, Pos2); 6] {
+    let i = r.shrink(inset);
     let c = i.center();
     [
         (i.left_top(), i.right_top()),
@@ -112,10 +120,7 @@ pub fn edge_proxy(ui: &mut Ui, id: &str, edges: &mut Edges, lang: &str) -> bool 
     let (r, resp) = ui.allocate_exact_size(vec2(PROXY_SIZE, PROXY_SIZE), Sense::click());
     let label = tr(lang, "Cell edges").to_string();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, &label));
-    let resp = resp.on_hover_text(tr(
-        lang,
-        "Click a line to include or exclude it. Double-click selects all outer or all inner lines; triple-click selects or clears all.",
-    ));
+    let resp = resp.on_hover_text(tr(lang, PROXY_HELP));
     let hit = resp.interact_pointer_pos().or_else(|| resp.hover_pos()).and_then(|p| line_at(r, p));
     let mut changed = false;
     if resp.clicked() {
@@ -180,61 +185,8 @@ fn type_label(lang: &str, v: &Value) -> String {
 fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[String], lang: &str) -> Option<Value> {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-        // Values are serialized type identities, never translated captions or row ordinals.
-        // A built-in and a named style may legitimately have the same displayed name.
-        let choices: Vec<(String, String, Value)> = TYPES
-            .iter()
-            .map(|kind| (json!(builtin(kind)).to_string(), tr(lang, builtin(kind).label()).to_owned(), json!(kind)))
-            .chain(custom.iter().map(|name| {
-                let payload = json!({"kind": "style", "name": name});
-                (payload.to_string(), name.clone(), payload)
-            }))
-            .collect();
-        let mut entries: Vec<_> = choices[..TYPES.len()].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())).collect();
-        if !custom.is_empty() {
-            entries.push(Entry::separator());
-            entries.extend(choices[TYPES.len()..].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())));
-        }
-        let target = app.session.active().and_then(|st| {
-            let (story, table, range) = if let Some(cells) = st.selection.cells {
-                (cells.story, cells.table, cells.range)
-            } else {
-                let text = st.selection.text?;
-                let cell = text.cell?;
-                (text.story, cell.table, designcraft_doc::CellRange::cell(cell.row, cell.col))
-            };
-            let grid = st.doc.story(story)?.tables.get(&table)?;
-            (range.r0 <= range.r1 && range.c0 <= range.c1 && range.r1 < grid.rows.len() && range.c1 < grid.columns.len())
-                .then_some((story.0, table, range.r0, range.r1, range.c0, range.c1))
-        });
-        let edges = if id == "csp" {
-            ui.data(|data| data.get_temp::<Edges>(egui::Id::unique("cell_stroke_edges"))).unwrap_or([true; 6])
-        } else {
-            edges_from(&v["edges"])
-        };
-        let valid = target.is_some() && edges.iter().any(|on| *on);
-        let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision));
-        // Native Type selects by builtin kind even when a dashed value carries an explicit
-        // pattern. Activating that same popup row still commits the original scalar payload,
-        // so the native command can restore its weight-scaled dash pattern.
-        let current = v["type"]["kind"]
-            .as_str()
-            .filter(|kind| TYPES.contains(kind))
-            .map_or_else(|| v["type"].to_string(), |kind| json!(builtin(kind)).to_string());
-        let identity = ui.make_persistent_id(("cell-stroke-type", id, owner, target, edges, custom, &current, lang));
-        let binding = if v["type"].is_null() { craft_behavior::Mixed::Mixed } else { craft_behavior::Mixed::Same(current) };
         let (rect, _) = ui.allocate_exact_size(vec2(140.0, 20.0), Sense::hover());
-        return craft_ui_widgets::pickers::Select::new(tr(lang, "Type").to_owned(), Bind::given(binding), &entries)
-            .id(identity)
-            .enabled(valid)
-            .size(craft_theme::ControlSize::Sm)
-            // An orphan is shown verbatim but is never synthesized as an enabled catalog row.
-            .placeholder(type_label(lang, &v["type"]))
-            .show_at(ui, rect)
-            .events
-            .committed()
-            .and_then(|key| choices.iter().find(|(actual, _, _)| actual == key).map(|(_, _, payload)| payload.clone()));
+        return type_select(app, ui, id, v, custom, lang, Some(rect));
     }
     #[cfg(target_arch = "wasm32")]
     let _ = app;
@@ -260,6 +212,64 @@ fn stroke_type_choice(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom:
     picked
 }
 // CELL_STROKE_TYPE_APPLICATION_END
+
+/// The framework's Type select over the stroke attributes `v`: at `at` in a native parent (the Stroke panel), else in the
+/// flow of a framework form. Returns the `type` payload of a committed pick.
+#[cfg(not(target_arch = "wasm32"))]
+fn type_select(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, custom: &[String], lang: &str, at: Option<Rect>) -> Option<Value> {
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    // Values are serialized type identities, never translated captions or row ordinals.
+    // A built-in and a named style may legitimately have the same displayed name.
+    let choices: Vec<(String, String, Value)> = TYPES
+        .iter()
+        .map(|kind| (json!(builtin(kind)).to_string(), tr(lang, builtin(kind).label()).to_owned(), json!(kind)))
+        .chain(custom.iter().map(|name| {
+            let payload = json!({"kind": "style", "name": name});
+            (payload.to_string(), name.clone(), payload)
+        }))
+        .collect();
+    let mut entries: Vec<_> = choices[..TYPES.len()].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())).collect();
+    if !custom.is_empty() {
+        entries.push(Entry::separator());
+        entries.extend(choices[TYPES.len()..].iter().map(|(key, label, _)| Entry::new(key.clone(), label.clone())));
+    }
+    let target = app.session.active().and_then(|st| {
+        let (story, table, range) = if let Some(cells) = st.selection.cells {
+            (cells.story, cells.table, cells.range)
+        } else {
+            let text = st.selection.text?;
+            let cell = text.cell?;
+            (text.story, cell.table, designcraft_doc::CellRange::cell(cell.row, cell.col))
+        };
+        let grid = st.doc.story(story)?.tables.get(&table)?;
+        (range.r0 <= range.r1 && range.c0 <= range.c1 && range.r1 < grid.rows.len() && range.c1 < grid.columns.len())
+            .then_some((story.0, table, range.r0, range.r1, range.c0, range.c1))
+    });
+    let edges = if id == "csp" {
+        ui.data(|data| data.get_temp::<Edges>(egui::Id::unique("cell_stroke_edges"))).unwrap_or([true; 6])
+    } else {
+        edges_from(&v["edges"])
+    };
+    let valid = target.is_some() && edges.iter().any(|on| *on);
+    let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, st.revision));
+    // Native Type selects by builtin kind even when a dashed value carries an explicit
+    // pattern. Activating that same popup row still commits the original scalar payload,
+    // so the native command can restore its weight-scaled dash pattern.
+    let current =
+        v["type"]["kind"].as_str().filter(|kind| TYPES.contains(kind)).map_or_else(|| v["type"].to_string(), |kind| json!(builtin(kind)).to_string());
+    let identity = ui.make_persistent_id(("cell-stroke-type", id, owner, target, edges, custom, &current, lang));
+    let binding = if v["type"].is_null() { craft_behavior::Mixed::Mixed } else { craft_behavior::Mixed::Same(current) };
+    let select = craft_ui_widgets::pickers::Select::new(tr(lang, "Type").to_owned(), Bind::given(binding), &entries)
+        .id(identity)
+        .enabled(valid)
+        // An orphan is shown verbatim but is never synthesized as an enabled catalog row.
+        .placeholder(type_label(lang, &v["type"]));
+    let shown = match at {
+        Some(rect) => select.size(craft_theme::ControlSize::Sm).show_at(ui, rect),
+        None => select.show(ui),
+    };
+    shown.events.committed().and_then(|key| choices.iter().find(|(actual, _, _)| actual == key).map(|(_, _, payload)| payload.clone()))
+}
 
 /// Weight, type, colour, tint, gap colour and gap tint for the stroke attributes in `v`
 /// (`table.getCellStroke` keys; null shows as mixed). Returns the attribute the user changed.
@@ -323,6 +333,309 @@ pub fn panel(app: &mut DesignApp, ui: &mut Ui) {
         && let Err(e) = app.run("table.setCell", json!({"stroke": {k: v, "edges": edges_param(&edges)}}))
     {
         app.status(format!("Stroke: {e}"));
+    }
+}
+
+/// Cell strokes on the craft framework, for the framework dialog forms (Cell Options › Strokes and Fills and
+/// Diagonal Lines): the edge proxy as a framework component, the stroke fields and the swatch select.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod framework {
+    use super::{EDGE_NAMES, Edges, PROXY_HELP, ProxyClick, WEIGHTS, lines_in, proxy_click};
+    use crate::DesignApp;
+    use crate::i18n::tr;
+    use craft_behavior::{HitShape, Metrics, Mixed, NavShape, NumberCodec, PartKey, PartRef, PressPhase, Roving, Sense};
+    use craft_ui_widgets::contract::{
+        Access, Bind, BindMut, Common, Component, Cx, Edit as _, EditResponse, Entry, Input, MeasureCx, Name, PaintUi, PartsCx, Pointer as _,
+        Props as _, Remember as _, Role, SetPosition, Show as _, ShowContainer as _, Styled as _,
+    };
+    use craft_ui_widgets::form::{Field, FieldGroup};
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::primitives::{ContentPainterCx, PaintShape, StrokeWidth};
+    use craft_ui_widgets::runtime::env::{Env, Label, UnitKind};
+    use craft_ui_widgets::runtime::focus::{ActivateKeys, KeyUse};
+    use craft_ui_widgets::style::{ComponentStyle, Flags, FocusLook, Stateful, States, StyleColor, StyleCx, SurfaceKind, SurfaceLook};
+    use craft_ui_widgets::text::{NumberField, NumberPick};
+    use egui::{Rect, Ui, Vec2};
+    use serde_json::{Value, json};
+
+    const LINE: PartKey = PartKey::new("line");
+
+    /// The proxy lines' names, in [`EDGE_NAMES`] order.
+    const EDGE_LABELS: [&str; 6] = ["Top", "Bottom", "Left", "Right", "Inner Horizontal", "Inner Vertical"];
+
+    /// The look of the edge proxy: a well around a cell grid, its lines in the accent colour while chosen.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct EdgeProxyStyle {
+        surface: SurfaceLook,
+        focus: FocusLook,
+        /// The side of one of the grid's 2 × 2 cells.
+        cell: f32,
+        /// Between the well's edge and the grid; a press this close to a line takes it.
+        inset: f32,
+        /// The cells inside the lines.
+        paper: Stateful<StyleColor>,
+        /// A chosen line.
+        on: Stateful<StyleColor>,
+        /// A line that is not chosen.
+        off: Stateful<StyleColor>,
+    }
+
+    impl ComponentStyle for EdgeProxyStyle {
+        fn surface(&self) -> Option<&SurfaceLook> {
+            Some(&self.surface)
+        }
+
+        fn focus(&self) -> Option<&FocusLook> {
+            Some(&self.focus)
+        }
+
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// The click sequence the proxy is in: the choice before its first click and the line of the click before.
+    #[derive(Clone, Default)]
+    struct ClickRun {
+        start: Edges,
+        last: Option<usize>,
+    }
+
+    /// The edge proxy: a drawn 2 × 2 cell grid whose six lines choose the cell edges a change applies to, in
+    /// [`EDGE_NAMES`] order. The lines are one Tab stop; the arrows move between them and Space includes or excludes
+    /// the focused one, as on a check box, while Enter stays the dialog's. A click toggles a line, a double-click on a
+    /// line chooses all outer or all inner lines, and a triple-click chooses all lines, or none when all were chosen.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    pub(crate) struct EdgeProxy<'a> {
+        #[common]
+        common: Common,
+        value: Bind<'a, Edges>,
+        names: [String; 6],
+    }
+
+    impl<'a> EdgeProxy<'a> {
+        /// A proxy named `label` over `value`, its lines named `names`.
+        pub(crate) fn new(label: impl Into<Label>, value: Bind<'a, Edges>, names: [String; 6]) -> Self {
+            EdgeProxy { common: Common::new(), value, names }.label(label)
+        }
+
+        fn part(at: usize) -> PartRef {
+            LINE.at(at as u64)
+        }
+    }
+
+    impl Component for EdgeProxy<'_> {
+        const ROLE: Role = Role::GROUP;
+        const OVERLAYS: bool = false;
+        const KEYS: KeyUse = KeyUse::of(Input::Pointer).with_activate(ActivateKeys::Space);
+        type Style = EdgeProxyStyle;
+        type Output = EditResponse<Edges>;
+
+        fn style(cx: &StyleCx<'_>, _: EdgeProxyStyleKey) -> EdgeProxyStyle {
+            let well = cx.surface(SurfaceKind::Well);
+            let paper = cx.surface(SurfaceKind::Raised);
+            let colors = &cx.tokens.color;
+            let disabled = cx.color(colors.text.disabled);
+            let look = |rest: StyleColor| Stateful::new(rest).off(States::new(rest, rest, rest, disabled));
+            EdgeProxyStyle {
+                surface: SurfaceLook::new(Stateful::new(StyleColor(well.fill)))
+                    .kind(SurfaceKind::Well)
+                    .radius(well.radius)
+                    .border(Stateful::new(cx.color(colors.line.control_edge)), cx.tokens.stroke.thin),
+                focus: cx.focus_look(),
+                cell: cx.tokens.size.control.md,
+                inset: cx.tokens.space.gap.item,
+                paper: Stateful::new(StyleColor(paper.fill)),
+                on: look(cx.color(colors.accent.text)),
+                off: look(cx.color(colors.text.muted)),
+            }
+        }
+
+        fn measure(&mut self, cx: &MeasureCx<'_, Self>) -> Vec2 {
+            Vec2::splat(cx.style.cell * 2.0 + cx.style.inset * 2.0)
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::HOVER
+        }
+
+        fn parts(&mut self, rect: Rect, cx: &mut PartsCx<'_, Self>) {
+            let current = cx.value().copied().unwrap_or([false; 6]);
+            let inset = cx.style.inset;
+            for (at, (a, b)) in lines_in(rect, inset).into_iter().enumerate() {
+                let part =
+                    cx.part(Self::part(at), HitShape::polyline_within(vec![a, b], false, inset)).sense(Sense::CLICK | Sense::FOCUS).focusable();
+                if current[at] {
+                    part.flags(Flags::CHECKED).selected();
+                }
+            }
+            cx.roving(Roving::new(NavShape::Flat));
+        }
+
+        fn bind(&mut self) -> Option<BindMut<'_, Edges>> {
+            Some(self.value.reborrow())
+        }
+
+        /// A click or Space on a line applies a proxy click to the choice: the press's click count makes it a
+        /// double or triple click, which the run of clicks before it completes.
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            let Some(current) = cx.value().copied() else { return };
+            let Some(at) = (0..EDGE_NAMES.len()).find(|at| cx.part_activated(Self::part(*at)).is_some()) else { return };
+            let clicks = match cx.part(Self::part(at)).press.phase {
+                PressPhase::Release { start, .. } => start.clicks,
+                _ => 1,
+            };
+            let (double, triple) = (clicks == 2, clicks >= 3);
+            let run = cx.memory_at::<ClickRun>("clicks").clone();
+            let start = if double || triple { run.start } else { current };
+            let mut edges = current;
+            proxy_click(&mut edges, ProxyClick { start, hit: Some(at), last: run.last, double, triple });
+            *cx.memory_at::<ClickRun>("clicks") = ClickRun { start, last: Some(at) };
+            if edges != current {
+                cx.set(edges);
+            }
+        }
+
+        fn access(&self, access: &mut Access, _: &Cx<'_, Self>) {
+            for (at, name) in self.names.iter().enumerate() {
+                let node = access.node(Self::part(at), Role::CHECK_BOX);
+                node.name = Name::Text(name.clone());
+                node.position = Some(SetPosition::new(at).of(EDGE_NAMES.len()));
+            }
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let current = cx.value().copied().unwrap_or([false; 6]);
+            let inset = cx.style.inset;
+            let draw = ui.draw();
+            draw.fill(&PaintShape::Rect(cx.rect.shrink(inset), egui::CornerRadius::ZERO), cx.resolve(&cx.style.paper));
+            for (at, (a, b)) in lines_in(cx.rect, inset).into_iter().enumerate() {
+                let ink = if current[at] { &cx.style.on } else { &cx.style.off };
+                let width = if cx.part(Self::part(at)).hovered {
+                    StrokeWidth::Heavy
+                } else if current[at] {
+                    StrokeWidth::Thick
+                } else {
+                    StrokeWidth::Thin
+                };
+                draw.stroke(&PaintShape::Path(vec![a, b]), width, cx.resolve(ink));
+            }
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> EditResponse<Edges> {
+            cx.edit_response()
+        }
+    }
+
+    /// The edge proxy over `edges`. Returns whether the choice changed.
+    pub(crate) fn edge_proxy(ui: &mut Ui, id: &str, edges: &mut Edges, lang: &str) -> bool {
+        let names = EDGE_LABELS.map(|label| tr(lang, label).to_owned());
+        let shown = EdgeProxy::new(tr(lang, "Cell edges").to_owned(), Bind::given(*edges), names)
+            .id_salt(("cell_edges", id))
+            .tooltip(tr(lang, PROXY_HELP).to_owned())
+            // The lines are positions in the table, not reading order: the left line stays on the left.
+            .ltr_axis()
+            .show(ui);
+        match shown.events.committed() {
+            Some(next) if *next != *edges => {
+                *edges = *next;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A stroke weight in points, with the weight presets. Returns the weight committed.
+    fn weight_field(ui: &mut Ui, id: &str, label: &str, weight: Option<f64>) -> Option<f64> {
+        let units = Env::of(ui).units();
+        let symbol = units.symbol(UnitKind::Points);
+        let presets: Vec<Entry<NumberPick>> =
+            WEIGHTS.iter().map(|w| Entry::new(NumberPick::Number(*w), format!("{} {symbol}", units.number_ungrouped(*w, 0..=2)))).collect();
+        // Weights keep the native field's three decimals; typed text may name any length unit.
+        let codec = NumberCodec::new(units.reader(Some(UnitKind::Points)), 3);
+        NumberField::new(label.to_owned(), Bind::given(weight))
+            .id_salt(("cell_stroke_weight", id))
+            .unit_kind(UnitKind::Points)
+            .codec(codec)
+            .range(0.0..=1000.0)
+            .presets(presets.as_slice())
+            .show(ui)
+            .edit
+            .events
+            .committed()
+            .copied()
+            .flatten()
+    }
+
+    /// A tint as whole percents over the ratio `tint` (0 to 1). Returns the percent committed.
+    pub(crate) fn percent_field(ui: &mut Ui, id: &str, label: &str, tint: Option<f64>) -> Option<f64> {
+        let percent = tint.map(|t| (t * 100.0).round());
+        NumberField::new(label.to_owned(), Bind::given(percent))
+            .id_salt(("cell_stroke_percent", id))
+            .unit_kind(UnitKind::Percent)
+            .range(0.0..=100.0)
+            .fixed_decimals(0)
+            .show(ui)
+            .edit
+            .events
+            .committed()
+            .copied()
+            .flatten()
+    }
+
+    /// A select of the active document's swatches, its face the chip of `current` (mixed when `None`). Returns the
+    /// swatch picked; shows nothing without a document.
+    pub(crate) fn swatch_select(app: &DesignApp, ui: &mut Ui, id: &str, label: &str, current: Option<&str>) -> Option<String> {
+        let doc = app.session.active().map(|st| st.doc.clone())?;
+        let entries: Vec<Entry<String>> = doc.swatches.iter().map(|sw| Entry::new(sw.name.clone(), sw.name.clone())).collect();
+        let value = current.map_or(Mixed::Mixed, |name| Mixed::Same(name.to_owned()));
+        Select::new(label.to_owned(), Bind::given(value), &entries)
+            .id_salt(("swatch_select", id))
+            .picture(move |name: &String, cx: &ContentPainterCx, rect: Rect| {
+                let (color, gradient) = crate::widgets::swatch_colors(&doc, name, 1.0);
+                crate::widgets::paint_chip(&cx.painter, rect, color, gradient);
+            })
+            .picture_only()
+            .show(ui)
+            .events
+            .committed()
+            .cloned()
+    }
+
+    /// Weight, type, colour, tint, gap colour and gap tint for the stroke attributes in `v` (`table.getCellStroke`
+    /// keys; null shows as mixed), as the native [`stroke_fields`](super::stroke_fields). Returns the attribute the
+    /// user changed.
+    pub(crate) fn stroke_fields(app: &DesignApp, ui: &mut Ui, id: &str, v: &Value, enabled: bool) -> Option<(&'static str, Value)> {
+        let lang = app.ui.language.clone();
+        let custom: Vec<String> = app.session.active().map(|d| d.doc.stroke_styles.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
+        let mut out = None;
+        FieldGroup::new(tr(&lang, "Stroke").to_owned()).id_salt((id, "stroke_fields")).enabled(enabled).show(ui, |ui, _| {
+            Field::new(tr(&lang, "Weight:").to_owned()).id_salt((id, "weight_field")).show(ui, |ui, _| {
+                if let Some(w) = weight_field(ui, id, tr(&lang, "Weight"), v["weight"].as_f64()) {
+                    out = Some(("weight", json!(w)));
+                }
+            });
+            Field::new(tr(&lang, "Type:").to_owned()).id_salt((id, "type_field")).show(ui, |ui, _| {
+                if let Some(value) = super::type_select(app, ui, id, v, &custom, &lang, None) {
+                    out = Some(("type", value));
+                }
+            });
+            for (caption, name, key, tint_caption, tint_name, tint_key) in
+                [("Color:", "Color", "color", "Tint:", "Tint", "tint"), ("Gap Color:", "Gap Color", "gapColor", "Gap Tint:", "Gap Tint", "gapTint")]
+            {
+                Field::new(tr(&lang, caption).to_owned()).id_salt((id, key)).show(ui, |ui, _| {
+                    if let Some(swatch) = swatch_select(app, ui, &format!("{id}_{key}"), tr(&lang, name), v[key].as_str()) {
+                        out = Some((key, json!(swatch)));
+                    }
+                });
+                Field::new(tr(&lang, tint_caption).to_owned()).id_salt((id, tint_key)).show(ui, |ui, _| {
+                    if let Some(t) = percent_field(ui, &format!("{id}_{tint_key}"), tr(&lang, tint_name), v[tint_key].as_f64()) {
+                        out = Some((tint_key, json!(t / 100.0)));
+                    }
+                });
+            }
+        });
+        out
     }
 }
 
@@ -741,6 +1054,27 @@ mod type_style_sdk_tests {
         open(h);
         click_popup_option(h, label, None);
     }
+    /// The uninstalled route's legacy Type menu is a scroll area as tall as egui's combo height, and the named styles
+    /// follow eleven built-in rows below it: the row is reached as a user reaches it, with the wheel over the open menu.
+    fn reveal_native_row(h: &mut Harness<'_, State>, label: &str) -> Pos2 {
+        let dotted = tr(&h.state().app.ui.language, builtin("dotted").label()).to_owned();
+        let over = h.get_by_label(&dotted).rect().center();
+        frame(h, Some(Event::PointerMoved(over)));
+        for phase in [egui::TouchPhase::Start, egui::TouchPhase::Move, egui::TouchPhase::End] {
+            frame(
+                h,
+                Some(Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: if phase == egui::TouchPhase::Move { vec2(0.0, -2000.0) } else { egui::Vec2::ZERO },
+                    phase,
+                    modifiers: Modifiers::NONE,
+                    source: egui::MouseWheelSource::Wheel,
+                }),
+            );
+        }
+        idle(h, 20);
+        h.get_by_label(label).rect().center()
+    }
     #[derive(Clone)]
     struct Quiet {
         docs: Vec<DocState>,
@@ -1022,7 +1356,7 @@ mod type_style_sdk_tests {
         pick(&mut h, "Dotted");
         assert_quiet(&h.state().app, &before);
         assert!(h.state().app.ui.dialog.is_some(), "picking a row is not dialog confirmation");
-        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        click(&mut h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().app.ui.dialog.is_none());
         assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
         undo_redo(&mut h, &before);
@@ -1038,13 +1372,13 @@ mod type_style_sdk_tests {
         idle(&mut h, 2);
         let before = quiet(&h.state().app);
         let draft = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
-        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        click(&mut h, egui::accesskit::Role::Button, "OK");
         assert_quiet(&h.state().app, &before);
         let retained = h.state().app.ui.dialog.as_ref().unwrap();
         assert_eq!(retained.id, "cellOptions");
         assert_eq!(retained.fields, draft, "real rejected confirmation preserves the complete correction draft");
         pick(&mut h, "Dotted");
-        click(&mut h, egui::accesskit::Role::Button, "  OK  ");
+        click(&mut h, egui::accesskit::Role::Button, "OK");
         assert_edit(&h.state().app, &before, payload(json!("dotted"), [true; 6]));
         undo_redo(&mut h, &before);
     }
@@ -1168,7 +1502,7 @@ mod type_style_sdk_tests {
         assert!(!h.state().app.framework_installed, "genuinely uninstalled native route");
         let before = quiet(&h.state().app);
         click(&mut h, egui::accesskit::Role::ComboBox, "Type");
-        let at = h.get_by_label(STYLE).rect().center();
+        let at = reveal_native_row(&mut h, STYLE);
         click_at(&mut h, at);
         assert_edit(&h.state().app, &before, payload(json!({"kind": "style", "name": STYLE}), [true; 6]));
         undo_redo(&mut h, &before);
@@ -1316,5 +1650,55 @@ mod type_style_sdk_tests {
             assert!(h.state().app.ui.dialog.is_none());
             assert_quiet(&h.state().app, &before);
         }
+    }
+
+    #[test]
+    fn cell_stroke_framework_cell_options_edge_proxy_reseeds_the_draft_and_limits_the_type_to_the_chosen_edges() {
+        let (mut app, _) = fixture();
+        crate::dialogs::open_cell_options(&mut app).unwrap();
+        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let before = quiet(&h.state().app);
+        let lang = h.state().app.ui.language.clone();
+        // The framework proxy's lines are its own accessible check boxes, not guessed coordinates.
+        for line in ["Top", "Bottom", "Left", "Right", "Inner Vertical"] {
+            click(&mut h, egui::accesskit::Role::CheckBox, tr(&lang, line));
+        }
+        let inner = [false, false, false, false, true, false];
+        let fields = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+        assert_eq!(fields["edges"], edges_param(&inner), "only the inner horizontal lines are chosen");
+        let shown = current(&mut h.state_mut().app, &inner);
+        for key in ["weight", "type", "color", "tint", "gapColor", "gapTint"] {
+            assert_eq!(fields["seed"][key], shown[key], "{key} reseeds from the chosen edges");
+            assert_eq!(fields[key], shown[key], "untouched {key} shows the chosen edges' value");
+        }
+        assert_quiet(&h.state().app, &before);
+        pick(&mut h, "Dotted");
+        assert_quiet(&h.state().app, &before);
+        click(&mut h, egui::accesskit::Role::Button, "OK");
+        assert!(h.state().app.ui.dialog.is_none());
+        assert_edit(&h.state().app, &before, payload(json!("dotted"), inner));
+        undo_redo(&mut h, &before);
+    }
+
+    #[test]
+    fn cell_stroke_framework_diagonal_lines_segment_and_draw_order_apply_as_one_cell_options_edit() {
+        let (mut app, _) = fixture();
+        crate::dialogs::open_diagonal_lines(&mut app).unwrap();
+        let mut h = harness(app, true, Parent::Dialog, 640.0);
+        let before = quiet(&h.state().app);
+        let lang = h.state().app.ui.language.clone();
+        click(&mut h, egui::accesskit::Role::RadioButton, tr(&lang, "Crossed Diagonal Lines"));
+        click(&mut h, egui::accesskit::Role::ComboBox, tr(&lang, "Draw"));
+        click(&mut h, egui::accesskit::Role::ListBoxOption, tr(&lang, "Content In Front"));
+        assert_quiet(&h.state().app, &before);
+        let fields = h.state().app.ui.dialog.as_ref().unwrap().fields.clone();
+        assert_eq!((&fields["lines"], &fields["inFront"]), (&json!("crossed"), &json!(false)), "picks are draft edits only");
+        // OK applies exactly the two changed values to the cells the dialog opened for.
+        let mut expected = fields["cells"].clone();
+        expected["diagonal"] = json!({"lines": "crossed", "inFront": false});
+        click(&mut h, egui::accesskit::Role::Button, "OK");
+        assert!(h.state().app.ui.dialog.is_none());
+        assert_edit(&h.state().app, &before, expected);
+        undo_redo(&mut h, &before);
     }
 }
