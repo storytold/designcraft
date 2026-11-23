@@ -27,6 +27,8 @@ pub use invoke::{activate, activate_native, close_document};
 #[cfg(not(target_arch = "wasm32"))]
 pub use keys::paste_chord_command;
 pub use keys::{forwarded_shortcuts, shortcuts};
+#[cfg(not(target_arch = "wasm32"))]
+pub use keys::window_escape;
 #[cfg(test)]
 use quick_apply::quick_commands;
 pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};

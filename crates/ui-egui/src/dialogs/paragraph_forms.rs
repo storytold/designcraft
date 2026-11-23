@@ -730,15 +730,7 @@ fn corners(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, units:
 
 /// The colour and tint rows of a border, its gap or shading (`keys`: colour, tint, overprint; `labels` likewise); Overprint
 /// follows the tint.
-fn color_tint(
-    ui: &mut Ui,
-    d: &mut Dialog,
-    a: &Attrs,
-    swatches: &Swatches,
-    keys: (&str, &str, &str),
-    labels: (&str, &str, &str),
-    enabled: bool,
-) {
+fn color_tint(ui: &mut Ui, d: &mut Dialog, a: &Attrs, swatches: &Swatches, keys: (&str, &str, &str), labels: (&str, &str, &str), enabled: bool) {
     let (color_key, tint_key, overprint_key) = keys;
     field(ui, labels.0, color_key, |ui| {
         if let Some(picked) = swatch_choice(ui, d, a, color_key, labels.0, swatches, enabled) {
@@ -885,6 +877,9 @@ mod tests {
         assert!(kit::disabled(&h, &[Role::SpinButton], "Start:", 0), "Keep Lines Together is off");
         kit::type_and_commit(&mut h, "Keep with Next:", 0, "2");
         kit::click(&mut h, &[Role::CheckBox], "Keep Lines Together", 0);
+        // A paragraph keeps its first and last lines by default (`keepAllLines` is false until chosen).
+        assert!(!kit::disabled(&h, &[Role::SpinButton], "Start:", 0), "At Start/End of Paragraph is the default choice");
+        kit::click(&mut h, &[Role::RadioButton], "All Lines in Paragraph", 0);
         assert!(kit::disabled(&h, &[Role::SpinButton], "Start:", 0), "All Lines in Paragraph is chosen");
         kit::click(&mut h, &[Role::RadioButton], "At Start/End of Paragraph", 0);
         assert!(!kit::disabled(&h, &[Role::SpinButton], "Start:", 0));

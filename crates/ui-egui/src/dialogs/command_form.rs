@@ -78,26 +78,29 @@ mod tests {
     use egui::accesskit::Role;
 
     /// Guards the generic command form: every documented parameter has a control, what is typed and checked stays in the
-    /// draft until OK, and OK runs the command with the parameters the native form gave it.
+    /// draft until OK, and OK runs the command with the parameters the native form gave it. `facingPages` has no documented
+    /// type, so it is a text field the command reads as JSON, as in the native form.
     #[test]
     fn command_form_edits_the_documented_parameters_and_ok_runs_the_command() {
         let fields = command_fields(designcraft_engine::find_command("file.new").unwrap().params);
-        assert!(fields.iter().any(|f| f.key == "title") && fields.iter().any(|f| f.key == "facingPages" && f.boolean), "{fields:?}");
+        assert!(fields.iter().any(|f| f.key == "title") && fields.iter().any(|f| f.key == "primaryTextFrame" && f.boolean), "{fields:?}");
         let mut app = kit::app(1, false);
         app.ui.dialog = Some(Dialog::new("cmd:file.new", json!({})));
         let mut h = kit::harness(app);
         let documents = h.state().session.documents().len();
         kit::type_into(&mut h, "Title", 0, "Flyer");
         kit::type_into(&mut h, "Pages", 0, "3");
-        kit::click(&mut h, &[Role::CheckBox], "Facing pages", 0);
+        kit::type_into(&mut h, "Facing pages", 0, "false");
+        kit::click_first(&mut h, "Primary text frame");
         let d = kit::draft(&h);
-        assert_eq!((d.s("title"), d.s("pages")), ("Flyer".to_owned(), "3".to_owned()));
-        assert!(d.b("facingPages"));
+        assert_eq!((d.s("title"), d.s("pages"), d.s("facingPages")), ("Flyer".to_owned(), "3".to_owned(), "false".to_owned()));
+        assert!(d.b("primaryTextFrame"));
         assert_eq!(h.state().session.documents().len(), documents, "the fields only edit the draft");
         kit::click(&mut h, &[Role::Button], "OK", 0);
         assert!(h.state().ui.dialog.is_none());
         let doc = &h.state().session.active().unwrap().doc;
-        assert_eq!((doc.title.as_str(), doc.page_count(), doc.settings.facing_pages), ("Flyer", 3, true));
+        assert_eq!((doc.title.as_str(), doc.page_count(), doc.settings.facing_pages), ("Flyer", 3, false));
+        assert!(doc.spreads.iter().any(|s| !s.items.is_empty()), "primaryTextFrame reaches the command");
     }
 
     /// Guards the refusal path of the generic form: a command that refuses its parameters keeps the dialog open with the

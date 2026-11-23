@@ -221,6 +221,20 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
     }
 }
 
+/// Tells the craft UI runtime's key stage that this egui widget is the window's document canvas. With nothing focused the
+/// canvas is the key target: a bare Tab (Tab hides the panels here) and the clipboard events (Copy, Cut and Paste, also with
+/// more modifiers held, which the shortcut dispatcher reads) stay in egui's input for the app instead of being stripped for
+/// the framework, as they stay when egui focus is on any widget of the app's.
+#[cfg(not(target_arch = "wasm32"))]
+fn key_target(ctx: &egui::Context, id: egui::Id) {
+    use craft_behavior::EditCommand;
+    use craft_ui_widgets::runtime::focus::{EditSet, KeepKeys, KeyUse, host_canvas};
+    const KEYS: KeyUse = KeyUse::CANVAS
+        .with_keep(KeepKeys::Tab)
+        .with_edits(EditSet::NONE.with(EditCommand::Copy).with(EditCommand::Cut).with(EditCommand::Paste));
+    host_canvas(ctx, id, KEYS);
+}
+
 /// Lay out the canvas, scrollbars and rulers, presentation mode, fit/view state, input handling and painting.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -236,6 +250,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    #[cfg(not(target_arch = "wasm32"))]
+    key_target(ui.ctx(), resp.id);
     if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,
         // Shift-click the previous one. Tools and selection don't see the input.
