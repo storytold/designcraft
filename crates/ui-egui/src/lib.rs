@@ -157,7 +157,7 @@ struct ShotRequest {
     epoch: u64,
     geometry: ScreenshotGeometry,
     reserved_bytes: usize,
-    slot: Option<craft_ui_legacy::capture::CaptureSlot>,
+    slot: Option<craft_ui::runtime::windows::ScreenshotSlot>,
 }
 
 /// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
