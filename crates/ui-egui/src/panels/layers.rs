@@ -2035,8 +2035,21 @@ mod framework_tests {
         drag_with(h, from, to, Modifiers::NONE);
     }
 
+    /// The centre of the node named `label`. A row names several nodes (the row, its cells, its toggles' button and switch
+    /// views): the row itself when `label` is a row, else the button.
     fn center(h: &Window, label: &str) -> egui::Pos2 {
-        h.get_by_label(label).rect().center()
+        rect_of(h, label).center()
+    }
+
+    /// The rectangle of the node named `label`; see [`center`].
+    fn rect_of(h: &Window, label: &str) -> egui::Rect {
+        let nodes: Vec<_> = h.query_all_by_label(label).collect();
+        let pick = [egui::accesskit::Role::TreeItem, egui::accesskit::Role::Button]
+            .into_iter()
+            .find_map(|role| nodes.iter().find(|n| n.role() == role))
+            .or(nodes.first())
+            .unwrap_or_else(|| panic!("no node named {label}"));
+        pick.rect()
     }
 
     fn shows(h: &Window, label: &str) -> bool {
@@ -2120,7 +2133,7 @@ mod framework_tests {
         let (app, _, _) = two_layers();
         let mut h = open(app);
         assert_eq!(layer_names(&h), ["Art", "Layer 1"]);
-        let (from, last) = (center(&h, "Art"), h.get_by_label("Layer 1").rect());
+        let (from, last) = (center(&h, "Art"), rect_of(&h, "Layer 1"));
         drag(&mut h, from, egui::pos2(last.center().x, last.bottom() - 1.0));
         assert_eq!(layer_names(&h), ["Layer 1", "Art"]);
         h.state_mut().run("edit.undo", json!({})).unwrap();
@@ -2163,7 +2176,7 @@ mod framework_tests {
     #[test]
     fn dragging_an_object_row_below_another_moves_it_behind_it_on_that_layer() {
         let (mut h, a, x, _, l1) = objects_on_two_layers();
-        let a_row = h.get_by_label("A").rect();
+        let a_row = rect_of(&h, "A");
         let at = center(&h, "X");
         drag(&mut h, at, egui::pos2(a_row.center().x, a_row.bottom() - 1.0));
         assert_eq!(layer_of(&h, x), l1);

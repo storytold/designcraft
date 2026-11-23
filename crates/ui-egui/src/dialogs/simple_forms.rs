@@ -760,6 +760,9 @@ mod tests {
     #[test]
     fn insert_pages_inserts_the_count_where_asked_in_one_undo_step() {
         let mut app = app_of(3);
+        // The dialog opens with the parent of the page it opens on, as InDesign's (a new document's pages have the first one).
+        let parent = app.session.doc().unwrap().doc.page(0).unwrap().parent.map(|p| p.0);
+        assert!(parent.is_some(), "the new document's pages have a parent");
         crate::dialogs::open_insert_pages(&mut app, 0);
         let mut h = open(app);
         assert!(!h.get_by_role_and_label(Role::ComboBox, "Page").accesskit_node().is_disabled(), "After Page takes a page");
@@ -773,7 +776,7 @@ mod tests {
         click(&mut h, Role::Button, "OK");
         assert!(h.state().ui.dialog.is_none());
         assert_eq!(pages(&h), 5);
-        assert_eq!(journal(&h, "layout.pages.insert"), vec![json!({"count": 2, "after": 2, "parent": null})]);
+        assert_eq!(journal(&h, "layout.pages.insert"), vec![json!({"count": 2, "after": 2, "parent": parent})]);
         h.state_mut().run("edit.undo", json!({})).unwrap();
         assert_eq!(pages(&h), 3);
     }

@@ -648,6 +648,23 @@ mod tests {
         click_at(h, at);
     }
 
+    /// Scrolls the section list by real wheel events over it until the radio button named `label` is in its 380 pt window,
+    /// then clicks it.
+    fn click_section(h: &mut Window, label: &str) {
+        let top = h.query_all_by_role_and_label(Role::RadioButton, "General").next().expect("the first section").rect().top();
+        for _ in 0..20 {
+            let target = h.query_all_by_role_and_label(Role::RadioButton, label).next().unwrap_or_else(|| panic!("no section {label}")).rect();
+            if target.top() >= top && target.bottom() <= top + 360.0 {
+                break;
+            }
+            event(h, Event::PointerMoved(egui::pos2(target.center().x, top + 100.0)));
+            let delta = (target.center().y - (top + 180.0)).clamp(-300.0, 300.0);
+            event(h, Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -delta), modifiers: Modifiers::NONE });
+            steps(h, 2);
+        }
+        click(h, Role::RadioButton, label);
+    }
+
     /// Chooses `option` in the menu named `label`.
     fn choose(h: &mut Window, label: &str, option: &str) {
         click(h, Role::ComboBox, label);
@@ -954,7 +971,7 @@ mod tests {
         let mut h = open(app);
         choose(&mut h, "Kenten Type:", "Black Circle");
         assert_eq!((dialog(&h).fields["c.kenten"].clone(), dialog(&h).fields["c.kentenKind"].clone()), (json!(true), json!("blackCircle")));
-        click(&mut h, Role::RadioButton, "Japanese Composition Settings");
+        click_section(&mut h, "Japanese Composition Settings");
         choose(&mut h, "Hanging Type:", "Standard");
         assert_eq!(dialog(&h).s("p.kinsokuHang"), "regular");
         click(&mut h, Role::Button, "OK");
