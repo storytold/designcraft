@@ -1273,7 +1273,7 @@ impl DockPanels<String> for PanelContent<'_> {
     /// A panel's body: content taller than the group scrolls in a framework scrolling stack (an egui scroll area
     /// would take the pointer from the framework controls inside it). The Pages panel scrolls its own parts.
     fn body(&mut self, panel: &String, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
-        use craft_ui::contract::ShowContainer as _;
+        use craft_ui::contract::{Props as _, ShowContainer as _};
         if crate::dock::scrolls_itself(panel) {
             crate::dock::panel_body(self.app, ui, panel);
             return;
