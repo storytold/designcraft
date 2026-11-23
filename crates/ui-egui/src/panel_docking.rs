@@ -1123,6 +1123,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     let specs = specs(&app.ui.language);
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
+    let offered = flyout.clone();
     app.ui.docking_raise = None;
     let auto_collapse = app.ui.dock_auto_collapse;
     // The dock lays out in the interface language's direction (the dock at the end edge: the left in right-to-left
@@ -1149,7 +1150,11 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             area.show(ui)
         },
     );
-    app.ui.docking_flyout = flyout;
+    // The dock's own change of the flyout (an icon click, Escape, Auto-Collapse) is written back; a panel body that
+    // opened a flyout itself this pass (the Properties panel's Stroke link runs `window.panel`) keeps its request.
+    if flyout != offered {
+        app.ui.docking_flyout = flyout;
+    }
     ui.ctx().data_mut(|data| {
         data.insert_temp(
             drawn_key(),
@@ -1159,7 +1164,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     for event in output.events {
         match event {
             DockEvent::ToggleAutoCollapse => app.ui.dock_auto_collapse = !app.ui.dock_auto_collapse,
-            DockEvent::FlyoutChanged { panel } => app.ui.docking_flyout = panel,
+            // The bound flyout above already took the change the event reports.
             _ => {}
         }
     }
@@ -1313,15 +1318,19 @@ impl DockPanels<String> for PanelContent<'_> {
             .tooltip(label.clone())
             .show(ui);
         let app = &mut *self.app;
-        // The menu's open state is the dock's: a row that ran (it closes its egui menu) closes the framework menu too.
+        // The menu's open state is the dock's: a row that ran closes the framework menu too. The rows are the Pages
+        // panel's own egui rows, which close only their egui menu, so a row that ran is seen by what it did: a command
+        // in the journal, or a dialog it opened.
         let open_id = egui::Id::new("designcraft-pages-panel-menu-open");
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        let effect = |app: &DesignApp| (app.session.journal.len(), app.ui.dialog.as_ref().map(|d| d.id.clone()));
+        let before = effect(app);
         let mut ran = false;
         // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
         let _ =
             craft_ui::menu::Menu::new(label).opened_by(&opener, craft_ui::contract::Trigger::Click).open(Bind::bound(&mut open)).show(ui, |ui, _| {
                 crate::panels::pages::panel_menu(app, ui);
-                ran = ui.should_close();
+                ran = effect(app) != before;
             });
         if ran {
             open = false;

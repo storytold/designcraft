@@ -1,7 +1,7 @@
 use super::{
-    Axis, CANVAS, Column, DOCK_LABELS, DesignApp, DockEdge, ICON_GROUPS, Layout, Node, PanelState, Placed, SplitSize, cancel_gesture, close_visible,
-    default_layout, dock_columns, icon_column, in_iconic_column, json, layout_of, modal_open, open_window_drops, set_iconic, showing, tab_group,
-    valid, window_groups,
+    Action, Axis, CANVAS, Column, DOCK_LABELS, DesignApp, DockEdge, ICON_GROUPS, Layout, Node, PanelState, Placed, SplitSize, apply, cancel_gesture,
+    close_visible, default_layout, dock_columns, icon_column, in_iconic_column, json, layout_of, modal_open, open_window_drops, set_iconic, showing,
+    tab_group, valid, window_groups,
 };
 use craft_behavior::dock::StackEntry;
 use egui::accesskit::Role;
@@ -249,14 +249,20 @@ fn escape_cancels_a_tab_drag_without_customizing_the_workspace() {
     h.run_steps(1);
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
     h.run_steps(1);
+    // The framework's tab selects its panel on the press (the legacy tab did on the click): that press may bring
+    // Layers to the front of its group, and nothing else. What the drag and Escape do is measured from there.
+    let mut selected = layout_of(h.state());
+    apply(&mut selected, Action::activate("layers".to_string())).unwrap();
+    let pressed = h.state().ui.docking.clone();
+    assert!(pressed.is_none() || pressed.as_ref() == Some(&selected), "the press only selects the tab: {pressed:?}");
     h.event(Event::PointerMoved(source - vec2(90.0, 0.0)));
     h.run_steps(2);
     h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(1);
-    assert!(h.state().ui.docking.is_none());
+    assert_eq!(h.state().ui.docking, pressed, "Escape ends the drag without a drop");
     h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert!(h.state().ui.docking.is_none());
+    assert_eq!(h.state().ui.docking, pressed, "the release after Escape drops nothing");
 }
 
 #[test]
