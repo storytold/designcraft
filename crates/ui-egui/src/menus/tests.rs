@@ -1740,6 +1740,44 @@ fn tool_shortcuts_work_after_drawing_on_the_canvas() {
     assert_eq!(app.session.tool_id(), "rectangleFrame");
 }
 
+/// The canvas is the window's default key target: with nothing else focused it takes egui focus, so the craft UI runtime
+/// leaves Escape, Tab and the clipboard events in egui's input for the app, as it does once a click focused the canvas.
+#[test]
+fn the_canvas_takes_egui_focus_when_nothing_else_has_it() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = crate::test_window::context();
+    let frame = |app: &mut crate::DesignApp| {
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    assert!(ctx.memory(|memory| memory.focused()).is_none());
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    assert!(ctx.memory(|memory| memory.focused()).is_some(), "the canvas holds egui focus");
+    // Escape reaches the app's own code and leaves Presentation.
+    app.run("view.screenMode", json!({"mode": "presentation"})).unwrap();
+    frame(&mut app);
+    let escape = |pressed| egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+        events: vec![escape(true), escape(false)],
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    assert_ne!(app.ui.screen_mode, ScreenMode::Presentation, "Escape left Presentation");
+}
+
 #[test]
 fn escape_and_shift_w_leave_presentation_for_the_previous_mode() {
     // Presentation hides every control, so the keyboard must get out of it (#493).

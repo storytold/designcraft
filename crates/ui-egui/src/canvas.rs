@@ -221,18 +221,25 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
     }
 }
 
-/// Tells the craft UI runtime's key stage that this egui widget is the window's document canvas. With nothing focused the
-/// canvas is the key target: a bare Tab (Tab hides the panels here) and the clipboard events (Copy, Cut and Paste, also with
-/// more modifiers held, which the shortcut dispatcher reads) stay in egui's input for the app instead of being stripped for
-/// the framework, as they stay when egui focus is on any widget of the app's.
+/// The canvas is the window's default key target, as the page is in InDesign: with nothing else holding egui focus, the
+/// canvas takes it. The craft UI runtime's key stage leaves Escape, Tab and the clipboard events in egui's input while egui
+/// focus is on an app widget (`FocusedRecord::foreign`), but strips them for the framework when nothing has focus, which
+/// is what the app's own canvas code (tool keys, text editing, Presentation, the shortcut dispatcher) cannot read. Not
+/// while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys, or in the pane that
+/// does not have the keyboard; the focus a click gave stays where it is.
 #[cfg(not(target_arch = "wasm32"))]
-fn key_target(ctx: &egui::Context, id: egui::Id) {
-    use craft_behavior::EditCommand;
-    use craft_ui_widgets::runtime::focus::{EditSet, KeepKeys, KeyUse, host_canvas};
-    const KEYS: KeyUse = KeyUse::CANVAS
-        .with_keep(KeepKeys::Tab)
-        .with_edits(EditSet::NONE.with(EditCommand::Copy).with(EditCommand::Cut).with(EditCommand::Paste));
-    host_canvas(ctx, id, KEYS);
+fn take_key_focus(app: &DesignApp, ctx: &egui::Context, canvas: &egui::Response) {
+    use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
+    if ctx.memory(|memory| memory.focused().is_some())
+        || app.ui.dialog.is_some()
+        || app.ui.palette.is_some()
+        || app.ui.about
+        || !input::keyboard_pane(app)
+        || any_open(ctx, OpenFilter::Keys)
+    {
+        return;
+    }
+    canvas.request_focus();
 }
 
 /// Lay out the canvas, scrollbars and rulers, presentation mode, fit/view state, input handling and painting.
@@ -251,7 +258,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     app.canvas_rect = Some(rect);
     let resp = ui.allocate_rect(full, Sense::click_and_drag());
     #[cfg(not(target_arch = "wasm32"))]
-    key_target(ui.ctx(), resp.id);
+    take_key_focus(app, ui.ctx(), &resp);
     if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,
         // Shift-click the previous one. Tools and selection don't see the input.
