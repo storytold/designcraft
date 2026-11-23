@@ -173,7 +173,7 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         Some(Err(e)) => {
             let message = e.to_string();
-            Stack::new().id_salt("separations_error").fill_width().show(ui, |ui, _| note(ui, message));
+            Stack::new().id_salt("separations_error").fill_width().show(ui, |ui, _| note(ui, message.clone()));
             return;
         }
         Some(Ok(sheet)) => sheet.clone(),
