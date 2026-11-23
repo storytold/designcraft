@@ -897,5 +897,10 @@ pub(crate) fn body(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog, width: f32,
     create
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod form;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use form::FORM;
+
 #[cfg(test)]
 mod tests;

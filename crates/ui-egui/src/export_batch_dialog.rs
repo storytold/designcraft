@@ -12,6 +12,17 @@ use crate::dialogs::Dialog;
 pub const ID: &str = "exportBatch";
 /// The most files the preview lists.
 const PREVIEW_ROWS: usize = 200;
+/// How high the list of files may grow before it scrolls.
+const PREVIEW_ROOM: f32 = 150.0;
+
+/// How a line of text reads.
+#[derive(Clone, Copy)]
+enum Note {
+    Plain,
+    Muted,
+    Error,
+    Strong,
+}
 
 /// Open the dialog: the last job used (or the Print + Screen preset), on `layouts` when given.
 pub fn open(app: &mut DesignApp, layouts: Option<Vec<String>>) {
@@ -65,8 +76,8 @@ fn set_pdf_kind(v: &mut ExportVersion, kind: &str) {
     };
 }
 
-/// Only the body is migrated here. The shared native dialog owns Export/Cancel and its
-/// result/keyboard policy in dialogs.rs; no host event is fabricated by this renderer.
+/// The body's controls: the framework's on the desktop (`sdk`), egui's in the browser. Export and Cancel are the dialog
+/// host's.
 struct ExportControls {
     sdk: bool,
     document: Option<(u64, u64)>,
@@ -86,6 +97,137 @@ impl ExportControls {
         ui.make_persistent_id((ID, self.document, kind, label))
     }
 
+    /// A line of controls, `wrap`ping onto more lines when the room runs out, its ids scoped by `scope`.
+    fn row<R>(
+        &self,
+        ui: &mut egui::Ui,
+        scope: impl std::hash::Hash + std::fmt::Debug,
+        wrap: bool,
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<R> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+            let mut add = Some(add);
+            let mut out = None;
+            craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(wrap).show(ui, |ui, _| {
+                if let Some(add) = add.take() {
+                    out = Some(add(ui));
+                }
+            });
+            return out;
+        }
+        Some(ui.push_id(scope, |ui| if wrap { ui.horizontal_wrapped(add).inner } else { ui.horizontal(add).inner }).inner)
+    }
+
+    /// Ids scoped by `scope` for what `add` shows, one under another.
+    fn scope(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+            let mut add = Some(add);
+            craft_ui_widgets::layout_components::Stack::new().id_salt(scope).fill_width().show(ui, |ui, _| {
+                if let Some(add) = add.take() {
+                    add(ui);
+                }
+            });
+            return;
+        }
+        ui.push_id(scope, add);
+    }
+
+    /// A wrapping line of options, indented under the line they belong to.
+    fn options(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+            let mut add = Some(add);
+            craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(true).indent(1).show(ui, |ui, _| {
+                if let Some(add) = add.take() {
+                    add(ui);
+                }
+            });
+            return;
+        }
+        ui.push_id(scope, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(12.0);
+                add(ui);
+            })
+        });
+    }
+
+    /// A section's title.
+    fn heading(&self, ui: &mut egui::Ui, text: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::Show as _;
+            craft_ui_widgets::display::Text::new(text.to_owned()).role(craft_ui_widgets::style::TypeRole::BodyStrong).show(ui);
+            return;
+        }
+        ui.add_space(6.0);
+        crate::rtl::label(ui, egui::RichText::new(text).strong());
+    }
+
+    /// A line of text: a note in the muted colour, a refusal in the error colour, or a count in the strong weight.
+    fn note(&self, ui: &mut egui::Ui, text: &str, kind: Note) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::Show as _;
+            use craft_ui_widgets::display::{Shade, Text};
+            let line = Text::new(text.to_owned());
+            match kind {
+                Note::Plain => line,
+                Note::Muted => line.shade(Shade::Muted),
+                Note::Error => line.tone(craft_theme::variant::Tone::Bad),
+                Note::Strong => line.role(craft_ui_widgets::style::TypeRole::BodyStrong),
+            }
+            .show(ui);
+            return;
+        }
+        let rich = egui::RichText::new(text);
+        let rich = match kind {
+            Note::Plain => rich,
+            Note::Muted => rich.color(crate::theme::Tokens::get(ui.ctx()).text_dim),
+            Note::Error => rich.color(ui.visuals().error_fg_color),
+            Note::Strong => rich.strong(),
+        };
+        crate::rtl::label(ui, rich);
+    }
+
+    /// The files the export will write, at most [`PREVIEW_ROWS`] of them, in a list that scrolls.
+    fn files(&self, ui: &mut egui::Ui, files: &[String]) {
+        let more = (files.len() > PREVIEW_ROWS).then(|| format!("… {}", files.len() - PREVIEW_ROWS));
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.sdk {
+            use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _};
+            use craft_ui_widgets::display::{Shade, Text};
+            craft_ui_widgets::layout_components::Stack::new()
+                .id_salt("export_batch_preview")
+                .fill_width()
+                .scroll(Scroll::vertical())
+                .room_height(PREVIEW_ROOM)
+                .show(ui, |ui, _| {
+                    for f in files.iter().take(PREVIEW_ROWS) {
+                        Text::new(f.clone()).role(craft_ui_widgets::style::TypeRole::Mono).shade(Shade::Muted).show(ui);
+                    }
+                    if let Some(more) = &more {
+                        Text::new(more.clone()).show(ui);
+                    }
+                });
+            return;
+        }
+        let t = crate::theme::Tokens::get(ui.ctx());
+        egui::ScrollArea::vertical().id_salt("export_batch_preview").max_height(PREVIEW_ROOM).auto_shrink([false, true]).show(ui, |ui| {
+            for f in files.iter().take(PREVIEW_ROWS) {
+                ui.label(egui::RichText::new(f).monospace().size(11.0).color(t.text_dim));
+            }
+            if let Some(more) = more {
+                ui.label(more);
+            }
+        });
+    }
+
     fn button(&self, ui: &mut egui::Ui, label: &str, enabled: bool) -> ExportButton {
         let id = self.id(ui, "button", label);
         #[cfg(not(target_arch = "wasm32"))]
@@ -100,12 +242,16 @@ impl ExportControls {
         ExportButton { response, clicked }
     }
 
-    fn small_button(&self, ui: &mut egui::Ui, label: &str) -> ExportButton {
+    /// A small button with the tooltip `tip`.
+    fn small_button(&self, ui: &mut egui::Ui, label: &str, tip: &str) -> ExportButton {
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
-            return self.button(ui, label, true);
+            use craft_ui_widgets::contract::{Props as _, Show as _};
+            let out = craft_ui_widgets::buttons::Button::new(label.to_owned()).id(self.id(ui, "button", label)).tooltip(tip.to_owned()).show(ui);
+            let clicked = out.clicked();
+            return ExportButton { response: out.response, clicked };
         }
-        let response = ui.push_id(self.id(ui, "small", label), |ui| ui.small_button(crate::rtl::widget(ui, label))).inner;
+        let response = ui.push_id(self.id(ui, "small", label), |ui| ui.small_button(crate::rtl::widget(ui, label))).inner.on_hover_text(tip);
         let clicked = response.clicked();
         ExportButton { response, clicked }
     }
@@ -132,20 +278,9 @@ impl ExportControls {
         let id = self.id(ui, "text", label);
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
-            let out = ui
-                .allocate_ui_with_layout(egui::vec2(width, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let field = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(value.clone()))
-                        .id(id)
-                        .limit(None)
-                        .sizing(Sizing::FillWidth);
-                    if hint {
-                        field.placeholder(label.to_owned()).show(ui)
-                    } else {
-                        field.show(ui)
-                    }
-                })
-                .inner;
+            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+            let field = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(value.clone())).id(id).limit(None);
+            let out = if hint { field.placeholder(label.to_owned()).show(ui) } else { field.show(ui) };
             if let Some(next) = out.value().filter(|next| next.as_str() != value.as_str()) {
                 *value = next.clone();
                 return true;
@@ -179,17 +314,12 @@ impl ExportControls {
         let id = self.id(ui, "choice", label);
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, Sizing};
+            use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
             let choices: Vec<_> = entries.iter().enumerate().map(|(i, name)| Entry::new(i, name.clone())).collect();
-            let out = ui
-                .allocate_ui_with_layout(egui::vec2(width, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices)
-                        .id(id)
-                        .placeholder(placeholder.to_owned())
-                        .sizing(Sizing::FillWidth)
-                        .show(ui)
-                })
-                .inner;
+            let out = craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices)
+                .id(id)
+                .placeholder(placeholder.to_owned())
+                .show(ui);
             return out.events.committed().copied().filter(|i| *i < entries.len());
         }
         let mut picked = None;
@@ -215,7 +345,7 @@ impl ExportControls {
             use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
             let out =
                 craft_ui_widgets::choice::RadioGroup::new(label.to_owned(), Bind::given(*value)).id(self.id(ui, "radio", label)).show(ui, |ui, _| {
-                    ui.horizontal(|ui| {
+                    craft_ui_widgets::layout_components::Row::new().show(ui, |ui, _| {
                         craft_ui_widgets::choice::Radio::new(false).label(per_layout.to_owned()).show(ui);
                         craft_ui_widgets::choice::Radio::new(true).label(all_layouts.to_owned()).show(ui);
                     });
@@ -239,24 +369,12 @@ impl ExportControls {
         let id = self.id(ui, "number", label);
         #[cfg(not(target_arch = "wasm32"))]
         if self.sdk {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _, Sizing};
+            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
             if integer {
-                crate::rtl::label(ui, label);
+                craft_ui_widgets::display::Text::new(label.to_owned()).show(ui);
             }
-            let out = ui
-                .allocate_ui_with_layout(egui::vec2(88.0, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value)))
-                        .id(id)
-                        .range(range.clone())
-                        .step(1.0)
-                        .sizing(Sizing::FillWidth);
-                    if integer {
-                        field.snap_typed(true).fixed_decimals(0).commit_decimals(0).show(ui)
-                    } else {
-                        field.unit("ppi").show(ui)
-                    }
-                })
-                .inner;
+            let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value))).id(id).range(range.clone()).step(1.0);
+            let out = if integer { field.snap_typed(true).fixed_decimals(0).commit_decimals(0).show(ui) } else { field.unit("ppi").show(ui) };
             if let Some(Some(next)) = out.edit.events.landed().filter(|next| next.is_some_and(f64::is_finite)) {
                 let next = next.clamp(*range.start(), *range.end());
                 if next != *value {
@@ -304,10 +422,24 @@ impl ExportControls {
     }
 }
 
+/// Export Layouts and Versions on the framework's dialog host.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(form).width(660.0);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn form(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> Option<bool> {
+    show(app, ui, d);
+    None
+}
+
+/// The dialog's body: the framework form's on the desktop, the browser window's otherwise.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
-        let _ = craft_ui_widgets::runtime::inspect::record(ui, workflow_region(), |ui| show_body(app, ui, d));
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        let _ = craft_ui_widgets::runtime::inspect::record(ui, workflow_region(), |ui| {
+            craft_ui_widgets::layout_components::Stack::new().id_salt("export_batch_body").fill_width().show(ui, |ui, _| show_body(app, ui, d));
+        });
         return;
     }
     show_body(app, ui, d);
@@ -316,7 +448,6 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    let t = crate::theme::Tokens::get(ui.ctx());
     #[cfg(not(target_arch = "wasm32"))]
     let sdk = app.framework_installed;
     #[cfg(target_arch = "wasm32")]
@@ -326,16 +457,12 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut job = job_of(d);
     let before = job.clone();
     let layout_names: Vec<String> = app.session.active().map(|st| st.doc.layouts().into_iter().map(|l| l.name).collect()).unwrap_or_default();
-    let section = |ui: &mut egui::Ui, title: &str| {
-        ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(tr(title)).strong());
-    };
 
     // ---- Preset.
     let all = presets(app);
     let mut preset = d.s("preset");
-    ui.horizontal(|ui| {
-        crate::rtl::label(ui, tr("Preset:"));
+    controls.row(ui, "export_preset", false, |ui| {
+        controls.note(ui, &tr("Preset:"), Note::Plain);
         let current = all.iter().position(|p| p.name == preset).unwrap_or(usize::MAX);
         let names: Vec<String> = all.iter().map(|p| p.name.clone()).collect();
         if let Some(at) = controls.choice(ui, &tr("Preset:"), current, &names, 200.0, &tr("[Custom]")) {
@@ -353,7 +480,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             }
         }
     });
-    ui.horizontal(|ui| {
+    controls.row(ui, "export_preset_name", false, |ui| {
         let mut name = d.s("presetName");
         let changed = controls.text(ui, &tr("Preset name"), &mut name, 200.0, true);
         if changed {
@@ -374,9 +501,9 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 
     // ---- Layouts.
-    section(ui, "Layouts");
+    controls.heading(ui, &tr("Layouts"));
     if layout_names.len() > 1 {
-        ui.horizontal_wrapped(|ui| {
+        controls.row(ui, "export_layouts", true, |ui| {
             for name in &layout_names {
                 let mut on = job.layouts.is_empty() || job.layouts.contains(name);
                 if controls.check(ui, name, &mut on) {
@@ -400,17 +527,17 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         });
         controls.combine(ui, &mut job.combine, &tr("Layouts"), &tr("A file per layout"), &tr("All layouts in one PDF"));
     } else {
-        crate::rtl::label(ui, egui::RichText::new(tr("The document has one layout: all its pages are exported.")).color(t.text_dim));
+        controls.note(ui, &tr("The document has one layout: all its pages are exported."), Note::Muted);
     }
 
     // ---- Versions.
-    section(ui, "Versions");
+    controls.heading(ui, &tr("Versions"));
     let mut remove = None;
     let mut duplicate = None;
     let mut expanded: Vec<u64> = d.fields.get("expanded").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     for (i, v) in job.versions.iter_mut().enumerate() {
-        ui.push_id(("export_version", version_generation, i), |ui| {
-            ui.horizontal(|ui| {
+        controls.scope(ui, ("export_version", version_generation, i), |ui| {
+            controls.row(ui, "export_version_line", false, |ui| {
                 controls.text(ui, &tr("Folder name"), &mut v.name, 170.0, true);
                 let formats = [ExportFormat::Pdf, ExportFormat::Png, ExportFormat::Jpeg];
                 let names: Vec<String> = ["PDF", "PNG", "JPEG"].into_iter().map(str::to_string).collect();
@@ -451,9 +578,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         }
                     }
                 }
-                let duplicate_button = controls.small_button(ui, &tr("Duplicate"));
-                duplicate_button.response.on_hover_text(tr("Duplicate version"));
-                if duplicate_button.clicked {
+                if controls.small_button(ui, &tr("Duplicate"), &tr("Duplicate version")).clicked {
                     duplicate = Some(i);
                 }
                 if controls.remove_button(ui, &tr("Remove version")).clicked {
@@ -461,8 +586,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 }
             });
             if v.format == ExportFormat::Pdf && (expanded.contains(&(i as u64)) || pdf_kind(v) == "custom") {
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(12.0);
+                controls.options(ui, "export_version_pdf", |ui| {
                     controls.check(ui, &tr("Bleed"), &mut v.bleed);
                     controls.check(ui, &tr("Crop Marks"), &mut v.marks.crop);
                     controls.check(ui, &tr("Bleed Marks"), &mut v.marks.bleed);
@@ -496,7 +620,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         version_generation = version_generation.wrapping_add(1);
     }
     d.fields.insert("expanded".into(), json!(expanded));
-    ui.horizontal(|ui| {
+    controls.row(ui, "export_add_version", false, |ui| {
         if let Some(version) = controls.add_version(ui, &tr("+ Add Version")) {
             job.versions.push(version);
             version_generation = version_generation.wrapping_add(1);
@@ -505,13 +629,11 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 
     // ---- File names.
-    section(ui, "File Names");
-    ui.horizontal(|ui| {
+    controls.heading(ui, &tr("File Names"));
+    controls.row(ui, "export_file_names", false, |ui| {
         controls.text(ui, &tr("File Names"), &mut job.file_name, 240.0, false);
         for token in ["{document}", "{layout}", "{version}", "{date}"] {
-            let add = controls.small_button(ui, token);
-            add.response.on_hover_text(tr("Add to the name"));
-            if add.clicked {
+            if controls.small_button(ui, token, &tr("Add to the name")).clicked {
                 job.file_name.push_str(if job.file_name.is_empty() || job.file_name.ends_with(' ') { "" } else { " " });
                 job.file_name.push_str(token);
             }
@@ -540,25 +662,15 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         d.fields.insert("previewFor".into(), json!(key));
     }
     let files: Vec<String> = d.fields.get("preview").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-    ui.add_space(6.0);
     match d.fields.get("previewError").and_then(Value::as_str) {
-        Some(e) => {
-            crate::rtl::label(ui, egui::RichText::new(e).color(ui.visuals().error_fg_color));
-        }
+        Some(e) => controls.note(ui, e, Note::Error),
         None => {
-            crate::rtl::label(ui, egui::RichText::new(tr("Files to export: {n}").replace("{n}", &files.len().to_string())).strong());
-            egui::ScrollArea::vertical().id_salt("export_batch_preview").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
-                for f in files.iter().take(PREVIEW_ROWS) {
-                    ui.label(egui::RichText::new(f).monospace().size(11.0).color(t.text_dim));
-                }
-                if files.len() > PREVIEW_ROWS {
-                    ui.label(format!("… {}", files.len() - PREVIEW_ROWS));
-                }
-            });
+            controls.note(ui, &tr("Files to export: {n}").replace("{n}", &files.len().to_string()), Note::Strong);
+            controls.files(ui, &files);
         }
     }
     if let Some(status) = d.fields.get("status").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        crate::rtl::label(ui, egui::RichText::new(status).color(t.text_dim));
+        controls.note(ui, status, Note::Muted);
     }
     d.fields.insert("job".into(), json!(job));
     d.fields.insert("preset".into(), json!(preset));
@@ -789,8 +901,7 @@ mod ui223_export_batch_workflow_tests {
     }
 
     /// Body cases call the real production body with its actual Dialog. Only explicit host
-    /// cases call dialogs::show and its unchanged native footer. Body keyboard results must
-    /// not be advertised as integrated host Enter/Escape acceptance.
+    /// cases call dialogs::show, whose framework host draws Export and Cancel.
     fn harness(mut app: DesignApp, sdk: bool, native_host: bool) -> Harness<'static, DesignApp> {
         let ctx = egui::Context::default();
         if sdk {
@@ -1297,7 +1408,7 @@ mod ui223_export_batch_workflow_tests {
     }
 
     #[test]
-    fn ui223_export_native_host_pointer_cancel_has_no_export_or_preference_side_effect() {
+    fn ui223_export_host_pointer_cancel_has_no_export_or_preference_side_effect() {
         let mut h = harness(app(), true, true);
         let document = h.state().session.active().unwrap().doc.clone();
         let steps = undo(&h);
@@ -1315,14 +1426,14 @@ mod ui223_export_batch_workflow_tests {
     }
 
     #[test]
-    fn ui223_export_native_host_empty_versions_refused_then_pointer_cancel() {
+    fn ui223_export_host_empty_versions_refused_then_pointer_cancel() {
         let mut h = harness(app(), true, true);
         for _ in 0..3 {
             sdk_click(&mut h, "IconButton", "Remove version", 0);
         }
         assert!(job(&h).versions.is_empty());
         assert!(dialog(&h).s("previewError").contains("version"));
-        click(&mut h, "  Export…  ");
+        click(&mut h, "Export…");
         assert!(h.state().ui.dialog.is_some());
         assert_eq!(dialog(&h).s("status"), "Add at least one version.");
         assert!(h.state().ui.export_batch.is_none());
@@ -1333,12 +1444,12 @@ mod ui223_export_batch_workflow_tests {
     }
 
     #[test]
-    fn ui223_export_native_host_queued_folder_cancel_remembers_without_exporting() {
+    fn ui223_export_host_queued_folder_cancel_remembers_without_exporting() {
         let mut app = app();
         app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
         let mut h = harness(app, true, true);
         let chosen = job(&h);
-        click(&mut h, "  Export…  ");
+        click(&mut h, "Export…");
         assert!(h.state().ui.dialog.is_none());
         assert_eq!(h.state().ui.export_batch.as_ref(), Some(&chosen));
         assert_eq!(actual_exports(&h), 0, "the folder callback has not run an export during rendering");

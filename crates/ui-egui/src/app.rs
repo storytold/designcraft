@@ -350,16 +350,7 @@ impl DesignApp {
             dock::float_only_windows(self, &ctx);
         }
         story_editor::show(self, &ctx);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if self.framework_installed && self.ui.dialog.as_ref().is_some_and(|d| d.id == crate::package_dialog::INSTRUCTIONS) {
-                crate::package_dialog::show_framework_instructions(self, ui);
-            } else {
-                dialogs::show(self, &ctx);
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        dialogs::show(self, &ctx);
+        dialogs::show_in(self, &ctx, ui.is_enabled());
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);

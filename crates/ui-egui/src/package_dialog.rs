@@ -109,6 +109,11 @@ fn same_document(app: &DesignApp, d: &Dialog) -> Result<(), String> {
     }
 }
 
+/// The page the dialog shows.
+fn page_of(d: &Dialog) -> String {
+    d.fields.get("page").and_then(Value::as_str).unwrap_or("summary").to_string()
+}
+
 fn rows(d: &Dialog, key: &str) -> Vec<Value> {
     d.fields.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
 }
@@ -175,6 +180,59 @@ fn status_text(lang: &str, status: &str) -> (String, Option<Level>) {
     }
 }
 
+/// A page's list: its id, column headers and rows (each with the level of its status, which is its last cell).
+struct Listed {
+    id: &'static str,
+    header: Vec<String>,
+    rows: Vec<(Vec<String>, Option<Level>)>,
+}
+
+/// The list the page `page` shows (Fonts, Links and Images, Colors and Inks); `None` for the Summary.
+fn page_table(lang: &str, d: &Dialog, page: &str) -> Option<Listed> {
+    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    let problems_only = d.b("problemsOnly");
+    Some(match page {
+        "fonts" => {
+            let rows = rows(d, "fonts")
+                .iter()
+                .filter(|f| !problems_only || f["status"] != "ok")
+                .map(|f| {
+                    let (status, level) = status_text(lang, f["status"].as_str().unwrap_or("ok"));
+                    let source = match f["source"].as_str().unwrap_or("") {
+                        "bundled" => tr("Bundled"),
+                        "installed" => tr("Installed"),
+                        "document" => tr("Document"),
+                        "added" => tr("Added"),
+                        _ => String::new(),
+                    };
+                    (vec![f["name"].as_str().unwrap_or("").to_string(), source, status], level)
+                })
+                .collect();
+            Listed { id: "package_fonts", header: vec![tr("Name"), tr("Source"), tr("Status")], rows }
+        }
+        "links" => {
+            let rows = rows(d, "links")
+                .iter()
+                .filter(|l| !problems_only || matches!(l["status"].as_str(), Some("missing" | "modified")))
+                .map(|l| {
+                    let (status, level) = status_text(lang, l["status"].as_str().unwrap_or("ok"));
+                    (vec![l["name"].as_str().unwrap_or("").to_string(), l["page"].as_str().unwrap_or("").to_string(), status], level)
+                })
+                .collect();
+            Listed { id: "package_links", header: vec![tr("Name"), tr("Page"), tr("Status")], rows }
+        }
+        "inks" => {
+            let spot = rows(d, "spot");
+            let mut inks: Vec<_> = PROCESS_INKS.iter().map(|n| (vec![tr(n), tr("Process")], None)).collect();
+            inks.extend(spot.iter().filter_map(Value::as_str).map(|n| (vec![n.to_string(), tr("Spot")], None)));
+            // The ink's kind: the "Type:" key (the "Type" key is the menu's, which reads Text).
+            let kind = tr("Type:").trim_end_matches([':', '：']).trim_end().to_string();
+            Listed { id: "package_inks", header: vec![tr("Name"), kind], rows: inks }
+        }
+        _ => return None,
+    })
+}
+
 /// A table: a header row and `cells` rows (each with an optional level colouring its last cell).
 fn table(ui: &mut egui::Ui, id: &str, header: &[String], cells: &[(Vec<String>, Option<Level>)]) {
     let t = crate::theme::Tokens::get(ui.ctx());
@@ -202,29 +260,13 @@ fn table(ui: &mut egui::Ui, id: &str, header: &[String], cells: &[(Vec<String>, 
     });
 }
 
-/// The Package dialog: the pages on the left, the page on the right.
+/// The Package dialog: the pages on the left, the page on the right. The browser build's window; the desktop shows
+/// [`FORM`] on the framework's dialog host.
 pub fn show(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
-        let doc = d.fields.get("doc").and_then(Value::as_u64);
-        let live = app.session.active().map(|st| (st.uid, st.identity_epoch));
-        let rtl = crate::i18n::is_rtl(&app.ui.language);
-        ui.push_id(("package-framework", doc, live), |ui| {
-            with_env(ui, |env| env.direction = Some(if rtl { Direction::Rtl } else { Direction::Ltr }), |ui| show_form(app, ui, d));
-        });
-        return;
-    }
-    show_form(app, ui, d);
-}
-
-fn show_form(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    let page = d.fields.get("page").and_then(Value::as_str).unwrap_or("summary").to_string();
+    let page = page_of(d);
     let body_height = 320.0;
-    #[cfg(not(target_arch = "wasm32"))]
-    let body_height = if app.framework_installed { 400.0 } else { body_height };
     ui.horizontal_top(|ui| {
         // A fixed height, as Preferences': the divider between the pages and the page fills it,
         // and the dialog keeps its size from page to page.
@@ -240,47 +282,9 @@ fn show_form(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             let title = PAGES.iter().find(|p| p.0 == page).map_or("Summary", |p| p.1);
             crate::rtl::label(ui, egui::RichText::new(tr(title)).font(semibold(13.0)));
             ui.add_space(6.0);
-            let problems_only = d.b("problemsOnly");
-            match page.as_str() {
-                "fonts" => {
-                    let fonts = rows(d, "fonts");
-                    let cells: Vec<_> = fonts
-                        .iter()
-                        .filter(|f| !problems_only || f["status"] != "ok")
-                        .map(|f| {
-                            let (status, color) = status_text(&lang, f["status"].as_str().unwrap_or("ok"));
-                            let source = match f["source"].as_str().unwrap_or("") {
-                                "bundled" => tr("Bundled"),
-                                "installed" => tr("Installed"),
-                                "document" => tr("Document"),
-                                "added" => tr("Added"),
-                                _ => String::new(),
-                            };
-                            (vec![f["name"].as_str().unwrap_or("").to_string(), source, status], color)
-                        })
-                        .collect();
-                    table(ui, "package_fonts", &[tr("Name"), tr("Source"), tr("Status")], &cells);
-                }
-                "links" => {
-                    let links = rows(d, "links");
-                    let cells: Vec<_> = links
-                        .iter()
-                        .filter(|l| !problems_only || matches!(l["status"].as_str(), Some("missing" | "modified")))
-                        .map(|l| {
-                            let (status, color) = status_text(&lang, l["status"].as_str().unwrap_or("ok"));
-                            (vec![l["name"].as_str().unwrap_or("").to_string(), l["page"].as_str().unwrap_or("").to_string(), status], color)
-                        })
-                        .collect();
-                    table(ui, "package_links", &[tr("Name"), tr("Page"), tr("Status")], &cells);
-                }
-                "inks" => {
-                    let mut cells: Vec<_> = PROCESS_INKS.iter().map(|n| (vec![tr(n), tr("Process")], None)).collect();
-                    cells.extend(rows(d, "spot").iter().filter_map(Value::as_str).map(|n| (vec![n.to_string(), tr("Spot")], None)));
-                    // The ink's kind: the "Type:" key (the "Type" key is the menu's, which reads Text).
-                    let kind = tr("Type:").trim_end_matches([':', '：']).trim_end().to_string();
-                    table(ui, "package_inks", &[tr("Name"), kind], &cells);
-                }
-                _ => {
+            match page_table(&lang, d, &page) {
+                Some(listed) => table(ui, listed.id, &listed.header, &listed.rows),
+                None => {
                     ui.horizontal(|ui| {
                         crate::rtl::label(ui, tr("Scope:"));
                         crate::rtl::label(ui, tr("Entire Publication"));
@@ -330,17 +334,9 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     package_to_folder(app, idml, pdf, None, d.clone())
 }
 
-/// The Printing Instructions dialog, as InDesign's: who to contact and what to do.
+/// The Printing Instructions dialog, as InDesign's: who to contact and what to do. The browser build's window; the
+/// desktop shows [`INSTRUCTIONS_FORM`].
 pub fn show_instructions(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework_instructions(app, ui, d);
-        return;
-    }
-    fallback_instructions(app, ui, d);
-}
-
-fn fallback_instructions(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     egui::Grid::new("printing_instructions").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         for (key, label, lines) in INSTRUCTION_FIELDS {
@@ -417,13 +413,7 @@ pub fn package_to_folder(app: &mut DesignApp, idml: bool, pdf: Value, instructio
     })
 }
 
-/// Page selection and options edit only this dialog's draft. Queries and package callbacks stay above/below.
 fn page_controls(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        framework_pages(app, ui, d, page);
-        return;
-    }
     for (key, label) in PAGES {
         if ui.selectable_label(page == key, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
             d.fields.insert("page".into(), json!(key));
@@ -433,16 +423,6 @@ fn page_controls(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str)
 
 fn package_check(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
     let label = crate::i18n::tr(&app.ui.language, label).to_string();
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::choice::Checkbox;
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let out = Checkbox::new(Bind::given(d.b(key))).id_salt(key).label(label).show(ui);
-        if let Some(value) = out.events.committed() {
-            d.fields.insert(key.into(), json!(value));
-        }
-        return;
-    }
     let mut on = d.b(key);
     if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
         d.fields.insert(key.into(), json!(on));
@@ -453,20 +433,6 @@ fn pdf_control(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
     let name = crate::rtl::label(ui, tr("PDF Preset:"));
     let cur = d.s("pdfPreset");
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-        use craft_ui_widgets::pickers::Select;
-        let entries: Vec<_> = crate::dialogs::pdf_presets().map(|p| Entry::new(p.to_string(), tr(p))).collect();
-        let mut select = Select::new(tr("PDF Preset:"), Bind::given(cur), &entries).id_salt("package_pdf_preset");
-        let height = select.measure_in(ui, craft_behavior::Proposal::Width(180.0)).y;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(180.0, height), egui::Sense::hover());
-        let out = select.show_at(ui, rect);
-        if let Some(value) = out.events.committed() {
-            d.fields.insert("pdfPreset".into(), json!(value));
-        }
-        return;
-    }
     craft_ui_legacy::ComboBox::from_id_salt("package_pdf_preset")
         .selected_text(crate::rtl::widget(ui, tr(&cur)))
         .width(180.0)
@@ -481,137 +447,202 @@ fn pdf_control(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         .labelled_by(name.id);
 }
 
+/// The Package dialog on the framework's dialog host.
 #[cfg(not(target_arch = "wasm32"))]
-struct PackagePages(Vec<String>);
+pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework_form::package).width(720.0);
+/// The Printing Instructions dialog on the framework's dialog host.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const INSTRUCTIONS_FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework_form::instructions).width(520.0);
 
+/// The framework forms of Package and Printing Instructions. They edit the same draft fields the browser windows do;
+/// Package… and Continue go through the host to [`confirm`] and [`confirm_instructions`], which alone ask for a folder.
 #[cfg(not(target_arch = "wasm32"))]
-impl craft_behavior::DisplayOrder<usize> for PackagePages {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    fn key(&self, at: usize) -> usize {
-        at
-    }
-    fn index_of(&self, key: &usize) -> Option<usize> {
-        (*key < self.0.len()).then_some(*key)
-    }
-    fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
-        self.0.get(at).map(|label| std::borrow::Cow::Borrowed(label.as_str()))
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl craft_behavior::ItemSource<usize> for PackagePages {}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn framework_pages(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
-    use craft_ui_widgets::contract::{Bind, Props as _, SelectMode, ShowCollection as _, Sizing};
+mod framework_form {
+    use super::{INSTRUCTION_FIELDS, PAGES, page_of, page_table, summary_lines};
+    use crate::DesignApp;
+    use crate::dialogs::Dialog;
+    use craft_behavior::{ColumnKey, ColumnWidth, DisplayOrder, ItemSource, Selection};
+    use craft_theme::variant::Tone;
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{
+        Bind, ColumnSpec, Entry, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
+    };
+    use craft_ui_widgets::display::{Divider, Text};
+    use craft_ui_widgets::form::{Field, FieldGroup};
+    use craft_ui_widgets::layout_components::{Row, Stack};
     use craft_ui_widgets::list::{List, ListRow};
-    let labels = PackagePages(PAGES.iter().map(|(_, label)| crate::i18n::tr(&app.ui.language, label).to_string()).collect());
-    let at = PAGES.iter().position(|(key, _)| *key == page).unwrap_or(0);
-    let mut selected = craft_behavior::Selection::single(at);
-    let _shown = List::<usize>::new(crate::i18n::tr(&app.ui.language, "Package"))
-        .id_salt("package_pages")
-        .select(SelectMode::Single)
-        .arrows_select(true)
-        .natural_height(true)
-        .sizing(Sizing::FillWidth)
-        .selection(Bind::bound(&mut selected))
-        .show_items(ui, &labels, &mut |key, _| ListRow::new(labels.0.get(*key).cloned().unwrap_or_default()));
-    if let Some((key, _)) = selected.items.first().and_then(|at| PAGES.get(*at)) {
-        if *key != page {
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::style::TypeRole;
+    use craft_ui_widgets::table::Table;
+    use craft_ui_widgets::text::TextField;
+    use egui::Ui;
+    use serde_json::{Value, json};
+
+    /// The columns of a page's list, in order.
+    const COLUMNS: [ColumnKey; 3] = [ColumnKey::new("name"), ColumnKey::new("second"), ColumnKey::new("status")];
+    /// How high a page's list may grow before it scrolls.
+    const LIST_ROOM: f32 = 220.0;
+
+    /// Rows shown by their first cell's text.
+    struct Texts(Vec<String>);
+
+    impl DisplayOrder<usize> for Texts {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+        fn key(&self, at: usize) -> usize {
+            at
+        }
+        fn index_of(&self, key: &usize) -> Option<usize> {
+            (*key < self.0.len()).then_some(*key)
+        }
+        fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+            self.0.get(at).map(|text| std::borrow::Cow::Borrowed(text.as_str()))
+        }
+    }
+    impl ItemSource<usize> for Texts {}
+
+    fn tr(app: &DesignApp, s: &str) -> String {
+        crate::i18n::tr(&app.ui.language, s).to_owned()
+    }
+
+    /// A check box over the bool draft field `key`.
+    fn check(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
+        let out = Checkbox::new(Bind::given(d.b(key))).id_salt(("package_check", key)).label(tr(app, label)).show(ui);
+        if let Some(value) = out.events.committed() {
+            d.fields.insert(key.into(), json!(value));
+        }
+    }
+
+    /// The pages, one selected; picking one shows it.
+    fn pages(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, page: &str) {
+        let labels = Texts(PAGES.iter().map(|(_, label)| tr(app, label)).collect());
+        let at = PAGES.iter().position(|(key, _)| *key == page).unwrap_or(0);
+        let mut selected = Selection::single(at);
+        let _ = List::<usize>::new(tr(app, "Package"))
+            .id_salt("package_pages")
+            .select(SelectMode::Single)
+            .arrows_select(true)
+            .natural_height(true)
+            .sizing(Sizing::FillWidth)
+            .selection(Bind::bound(&mut selected))
+            .show_items(ui, &labels, &mut |key, _| ListRow::new(labels.0.get(*key).cloned().unwrap_or_default()));
+        if let Some((key, _)) = selected.items.first().and_then(|at| PAGES.get(*at))
+            && *key != page
+        {
             d.fields.insert("page".into(), json!(key));
         }
     }
-}
 
-/// Printing Instructions alone uses the SDK's real modal/default-action route on the normal app Ui.
-/// The body can be measured/repeated; only the controller after `show` may ask for a folder.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn show_framework_instructions(app: &mut DesignApp, ui: &mut egui::Ui) {
-    use craft_ui_panels::dialog::Dialog as FrameworkDialog;
-    use craft_ui_panels::sections::{DialogRole, FooterButton};
-    use craft_ui_widgets::contract::{Bind, Props as _, ShowContainer as _};
-    use craft_ui_widgets::runtime::env::{Direction, with_env};
-    use craft_ui_widgets::runtime::overlay::Backdrop;
-
-    let Some(mut draft) = app.ui.dialog.clone().filter(|d| d.id == INSTRUCTIONS) else { return };
-    // The opening document is part of this logical instance; a refused active-document change
-    // must not give the existing modal a new identity or discard its unsaved draft.
-    let doc = draft.fields.get("doc").and_then(Value::as_u64);
-    let mut opened = true;
-    let tr = |s: &'static str| crate::i18n::tr(&app.ui.language, s).to_owned();
-    let rtl = crate::i18n::is_rtl(&app.ui.language);
-    let enabled = ui.is_enabled();
-    let out = with_env(
-        ui,
-        |env| env.direction = Some(if rtl { Direction::Rtl } else { Direction::Ltr }),
-        |ui| {
-            FrameworkDialog::new(tr("Printing Instructions"))
-                .id_salt(("printing_instructions_dialog", doc))
-                .opened(Bind::bound(&mut opened))
-                .enabled(enabled)
-                .backdrop(Backdrop::None)
-                .closable(false)
-                .outer_gesture(false)
-                .close_on_enter(enabled)
-                .buttons([
-                    FooterButton::new(tr("Continue"), DialogRole::Accept).enabled(enabled).stays_open(true),
-                    FooterButton::new(tr("Cancel"), DialogRole::Cancel).enabled(enabled),
-                ])
-                .show(ui, |ui, _| {
-                    ui.set_width(400.0);
-                    framework_instructions(app, ui, &mut draft);
-                    if let Some(status) = draft.fields.get("status").and_then(Value::as_str) {
-                        crate::rtl::label(ui, egui::RichText::new(status).color(ui.visuals().error_fg_color));
+    /// The list of a page: its header over its rows, scrolling past [`LIST_ROOM`].
+    fn list(ui: &mut Ui, id: &'static str, label: String, header: &[String], rows: &[(Vec<String>, Option<super::Level>)]) {
+        let columns: Vec<ColumnSpec> =
+            header.iter().zip(COLUMNS).map(|(title, key)| ColumnSpec::new(key, title.clone(), ColumnWidth::Content)).collect();
+        let source = Texts(rows.iter().map(|(cells, _)| cells.first().cloned().unwrap_or_default()).collect());
+        Stack::new().id_salt((id, "room")).fill_width().scroll(Scroll::vertical()).room_height(LIST_ROOM).show(ui, |ui, _| {
+            let _ = Table::<usize>::new(label.clone(), columns.clone())
+                .id_salt(id)
+                .select(SelectMode::Single)
+                .striped(true)
+                .natural_height(true)
+                .sizing(Sizing::FillWidth)
+                .show_items(ui, &source, &mut |key, icx| {
+                    let cells = &rows[*key].0;
+                    let mut row = ListRow::new(cells.first().cloned().unwrap_or_default()).cells(icx.cells()).striped(icx.row.striped);
+                    for (column, text) in COLUMNS.iter().zip(cells).skip(1) {
+                        row = row.cell(column.clone(), text.clone());
                     }
-                })
-                .output
-        },
-    );
-
-    // `picked` indexes the supplied buttons, not platform display order. Accept deliberately
-    // stays open so a refused controller keeps this modal's draft, focus scope and status.
-    app.ui.dialog = Some(draft);
-    if enabled && out.picked == Some(0) {
-        let _ = crate::dialogs::confirm(app);
-    } else if enabled && out.closed.is_some() {
-        crate::dialogs::cancel(app);
+                    row
+                });
+        });
     }
-}
 
-/// The seven fields keep exact unrestricted text. No footer action, host Escape bridge or IO lives here.
-#[cfg(not(target_arch = "wasm32"))]
-fn framework_instructions(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-    use craft_ui_widgets::runtime::env::{Direction, with_env};
-    use craft_ui_widgets::text::TextField;
-    let doc = d.fields.get("doc").and_then(Value::as_u64);
-    let live = app.session.active().map(|st| (st.uid, st.identity_epoch));
-    let rtl = crate::i18n::is_rtl(&app.ui.language);
-    ui.push_id(("printing-instructions-framework", doc, live), |ui| {
-        with_env(
-            ui,
-            |env| env.direction = Some(if rtl { Direction::Rtl } else { Direction::Ltr }),
-            |ui| {
-                egui::Grid::new("printing_instructions").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    for (key, label, lines) in INSTRUCTION_FIELDS {
-                        let label = crate::i18n::tr(&app.ui.language, label).to_string();
-                        crate::rtl::label(ui, &label);
+    /// The Package dialog: the pages beside the page shown.
+    pub(super) fn package(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
+        let page = page_of(d);
+        // The document the dialog summarises and the active one: a change of either retires the old controls.
+        let doc = d.fields.get("doc").and_then(Value::as_u64);
+        let live = app.session.active().map(|st| (st.uid, st.identity_epoch));
+        Row::new().id_salt(("package_form", doc, live)).fill_width().show(ui, |ui, _| {
+            Stack::new().id_salt("package_pages_column").show(ui, |ui, _| pages(app, ui, d, &page));
+            Divider::vertical().show(ui);
+            Stack::new().id_salt("package_page").fill_width().show(ui, |ui, _| {
+                let title = PAGES.iter().find(|p| p.0 == page).map_or("Summary", |p| p.1);
+                Text::new(tr(app, title)).role(TypeRole::BodyStrong).show(ui);
+                match page_table(&app.ui.language, d, &page) {
+                    Some(listed) => list(ui, listed.id, tr(app, title), &listed.header, &listed.rows),
+                    None => summary(app, ui, d),
+                }
+                if matches!(page.as_str(), "fonts" | "links") {
+                    check(app, ui, d, "problemsOnly", "Show Problems Only");
+                }
+            });
+        });
+        None
+    }
+
+    /// The Summary: the scope, the counts (a warning sign on those that need attention), what the package includes
+    /// and the PDF's preset.
+    fn summary(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
+        Row::new().id_salt("package_scope").show(ui, |ui, _| {
+            Text::new(tr(app, "Scope:")).show(ui);
+            Text::new(tr(app, "Entire Publication")).show(ui);
+        });
+        for (at, (line, warn)) in summary_lines(&app.ui.language, d).into_iter().enumerate() {
+            Row::new().id_salt(("package_summary", at)).show(ui, |ui, _| {
+                if warn {
+                    Text::new("\u{26A0}").tone(Tone::Warn).show(ui);
+                }
+                Text::new(line.clone()).show(ui);
+            });
+        }
+        for (key, label) in [("instructions", "Create Printing Instructions"), ("idml", "Include IDML"), ("pdf", "Include PDF (Print)")] {
+            check(app, ui, d, key, label);
+        }
+        // The PDF's preset, as InDesign's Select PDF Preset.
+        let name = tr(app, "PDF Preset:");
+        Field::new(name.clone()).id_salt("package_pdf_preset_field").enabled(d.b("pdf")).show(ui, |ui, _| {
+            let current = d.s("pdfPreset");
+            let entries: Vec<_> = crate::dialogs::pdf_presets().map(|p| Entry::new(p.to_string(), tr(app, p))).collect();
+            let out = Select::new(name.clone(), Bind::given(current), &entries).id_salt("package_pdf_preset").enabled(d.b("pdf")).show(ui);
+            if let Some(value) = out.events.committed() {
+                d.fields.insert("pdfPreset".into(), json!(value));
+            }
+        });
+    }
+
+    /// Printing Instructions: who to contact and what to do. Address and Instructions take several lines, and Enter
+    /// there makes a new line.
+    pub(super) fn instructions(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
+        // The opening document is part of the dialog: a refused change of the active document keeps the draft.
+        let doc = d.fields.get("doc").and_then(Value::as_u64);
+        let live = app.session.active().map(|st| (st.uid, st.identity_epoch));
+        let status = d.fields.get("status").and_then(Value::as_str).map(str::to_owned);
+        Stack::new().id_salt(("printing_instructions", doc, live)).fill_width().show(ui, |ui, _| {
+            FieldGroup::new(tr(app, "Printing Instructions")).show(ui, |ui, _| {
+                for (key, label, lines) in INSTRUCTION_FIELDS {
+                    let label = tr(app, label);
+                    Field::new(label.clone()).id_salt(("printing_instructions_field", key)).show(ui, |ui, _| {
                         let before = d.s(key);
                         let mut text = before.clone();
-                        let mut field = TextField::new(label, Bind::bound(&mut text)).id_salt(key).lines(lines).limit(None::<usize>);
-                        let height = field.measure_in(ui, craft_behavior::Proposal::Width(320.0)).y;
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(320.0, height), egui::Sense::hover());
-                        let _out = field.show_at(ui, rect);
+                        TextField::new(label.clone(), Bind::bound(&mut text))
+                            .id_salt(key)
+                            .lines(lines)
+                            .limit(None::<usize>)
+                            .sizing(Sizing::FillWidth)
+                            .show(ui);
                         if text != before {
                             d.fields.insert(key.into(), json!(text));
                         }
-                        ui.end_row();
-                    }
-                });
-            },
-        );
-    });
+                    });
+                }
+            });
+            if let Some(status) = &status {
+                Text::new(status.clone()).tone(Tone::Bad).show(ui);
+            }
+        });
+        None
+    }
 }
 
 #[cfg(test)]
