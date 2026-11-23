@@ -21,7 +21,7 @@ pub use bar::{menu_bar, menu_button};
 use bar::{menu_bar_submenu, menu_column};
 #[cfg(test)]
 use context::{CONTEXT_CANVAS, CONTEXT_GRAPHIC_FRAME, CONTEXT_OBJECT, CONTEXT_OBJECT_TAIL, CONTEXT_TEXT, CONTEXT_TEXT_FRAME, context_parse};
-pub use context::{ContextMenu, context_menu};
+pub use context::{ContextMenu, ContextPlace, context_menu};
 pub(crate) use export::{export_epub, export_pdf};
 pub use invoke::{activate, activate_native, close_document};
 #[cfg(not(target_arch = "wasm32"))]
