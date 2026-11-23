@@ -8,70 +8,28 @@ use crate::DesignApp;
 use crate::theme::Tokens;
 use crate::widgets::{caption, divider, measure, number};
 
-/// App-owned table identity and the existing installed-runtime boundary. The SDK owns input,
-/// focus, hit testing and control styling; command/selection/Undo policy remains below.
-struct Actions {
-    framework: bool,
-    identity: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
-}
+/// The fallback's actions: egui's controls, for the browser and an uninstalled runtime. The desktop's are in
+/// [`framework`].
+struct Actions;
 
 impl Actions {
-    fn new(app: &DesignApp, info: &Value) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        let framework = app.framework_installed;
-        #[cfg(target_arch = "wasm32")]
-        let framework = false;
-        Self {
-            framework,
-            identity: (
-                app.session.active().map(|st| st.uid),
-                app.session.active().map(|st| st.identity_epoch),
-                info["story"].as_u64(),
-                info["table"].as_u64(),
-            ),
-        }
+    fn new(_app: &DesignApp, _info: &Value) -> Self {
+        Actions
     }
 
     fn button(
         &self,
         ui: &mut egui::Ui,
-        key: &'static str,
-        label: &str,
-        (enabled, selected): (bool, bool),
-        tooltip: Option<&str>,
+        _key: &'static str,
+        _label: &str,
+        _state: (bool, bool),
+        _tooltip: Option<&str>,
         legacy: impl FnOnce(&mut egui::Ui) -> egui::Response,
     ) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.framework {
-            use craft_ui_widgets::buttons::Button;
-            use craft_ui_widgets::contract::{Props as _, Show as _};
-
-            let button = Button::new(label.to_owned()).id_salt(("table-action", self.identity, key)).enabled(enabled).selected(selected);
-            return match tooltip {
-                Some(tooltip) => button.tooltip(tooltip.to_owned()).show(ui).clicked(),
-                None => button.show(ui).clicked(),
-            };
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = (self.framework, self.identity, key, label, enabled, selected, tooltip);
         legacy(ui).clicked()
     }
 
-    fn check(&self, ui: &mut egui::Ui, key: &'static str, label: &str, value: &mut bool) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.framework {
-            use craft_ui_widgets::choice::Checkbox;
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-
-            let out = Checkbox::new(Bind::given(*value)).id_salt(("table-option", self.identity, key)).label(label.to_owned()).show(ui);
-            if let Some(after) = out.events.committed() {
-                *value = *after;
-                return true;
-            }
-            return false;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = (self.framework, self.identity, key);
+    fn check(&self, ui: &mut egui::Ui, _key: &'static str, label: &str, value: &mut bool) -> bool {
         ui.checkbox(value, crate::rtl::widget(ui, label)).changed()
     }
 }
@@ -166,7 +124,17 @@ fn table_new_style(app: &DesignApp, ui: &mut egui::Ui, info: &Value, kind: &str,
 }
 // TABLE_STYLE_CONTROLS_END
 
+/// The Table panel: the framework's controls on the desktop, egui's in the browser and before the runtime is installed.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        framework::show(app, ui);
+        return;
+    }
+    show_fallback(app, ui);
+}
+
+fn show_fallback(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Ok(info) = app.session.execute("table.get", &json!({})) else {
         ui.label(crate::rtl::widget(
@@ -419,6 +387,278 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             run(app, "table.options", json!({"footerRows": v.max(0.0) as u64}));
         }
     });
+}
+
+/// The Table panel on the craft framework: the same commands and payloads as the fallback, run once the panel is
+/// drawn. Every control's id carries the table's identity (document uid and epoch, story and table), so a press held
+/// over one table's control never acts on another's.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{table_committed_choice, table_new_style};
+    use crate::DesignApp;
+    use craft_behavior::EditEvent;
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Divider, Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::TypeRole;
+    use craft_ui_widgets::text::{NumberField, TextField};
+    use designcraft_geom::{Unit, format_measure, units::parse_measure};
+    use egui::Ui;
+    use serde_json::{Value, json};
+
+    type Identity = (Option<u64>, Option<u64>, Option<u64>, Option<u64>);
+
+    /// A command to run after the pass, and whether a refusal shows in the status line as the Table panel's.
+    type Commands = Vec<(String, Value, bool)>;
+
+    fn identity(app: &DesignApp, info: &Value) -> Identity {
+        (app.session.active().map(|st| st.uid), app.session.active().map(|st| st.identity_epoch), info["story"].as_u64(), info["table"].as_u64())
+    }
+
+    fn caption(ui: &mut Ui, text: String) {
+        Text::new(text).role(TypeRole::Caption).shade(Shade::Muted).show(ui);
+    }
+
+    fn button(ui: &mut Ui, identity: Identity, key: &str, label: String, (enabled, selected): (bool, bool), tooltip: Option<String>) -> bool {
+        let button = Button::new(label).id_salt(("table-action", identity, key)).enabled(enabled).selected(selected);
+        match tooltip {
+            Some(tooltip) => button.tooltip(tooltip).show(ui).clicked(),
+            None => button.show(ui).clicked(),
+        }
+    }
+
+    fn check(ui: &mut Ui, identity: Identity, key: &str, label: String, value: bool) -> Option<bool> {
+        Checkbox::new(Bind::given(value)).id_salt(("table-option", identity, key)).label(label).show(ui).events.committed().copied()
+    }
+
+    /// A whole number (rows, columns, header and footer rows), committed with Enter or when the field is left.
+    fn count(ui: &mut Ui, identity: Identity, key: &str, label: String, value: Option<f64>) -> Option<f64> {
+        let out = NumberField::new(label, Bind::given(value))
+            .id_salt(("table-count", identity, key))
+            .step(1.0)
+            .fixed_decimals(0)
+            .commit_decimals(0)
+            .show(ui);
+        out.edit.events.committed().copied().flatten().filter(|v| v.is_finite())
+    }
+
+    /// A length in points, shown and typed in the document's unit (`3p6`, `2c4`), committed with Enter or when the
+    /// field is left; a text that is no measure, or the value it already has, commits nothing.
+    fn measure(ui: &mut Ui, identity: Identity, key: &str, label: String, points: Option<f64>, unit: Unit) -> Option<f64> {
+        let text = points.filter(|v| v.is_finite()).map(|v| format_measure(v, unit)).unwrap_or_default();
+        let out = TextField::new(label, Bind::given(text)).id_salt(("table-measure", identity, key)).limit(None::<usize>).show(ui);
+        let Some(EditEvent::Commit { after, .. } | EditEvent::Set { after, .. }) = out.events.ended() else { return None };
+        let value = parse_measure(after, unit).ok().filter(|v| v.is_finite())?;
+        points.is_none_or(|before| (before - value).abs() > 1e-9).then_some(value)
+    }
+
+    pub(super) fn show(app: &mut DesignApp, ui: &mut Ui) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let Ok(info) = app.session.execute("table.get", &json!({})) else {
+            let identity = identity(app, &Value::Null);
+            let mut create = false;
+            Stack::new().id_salt(("table-panel", identity)).fill_width().show(ui, |ui, _| {
+                Text::new(tr("Place the insertion point in a table, or create one.")).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+                create = button(ui, identity, "create", tr("Create Table…"), (true, false), None);
+            });
+            if create {
+                let _ = app.run("app.insertTableDialog", json!({}));
+            }
+            return;
+        };
+        let identity = identity(app, &info);
+        let unit = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas);
+        let rows = info["rows"].as_array().cloned().unwrap_or_default();
+        let cols = info["columns"].as_array().cloned().unwrap_or_default();
+        let range = info["range"].clone();
+        let (r0, c0) = (range["r0"].as_u64().unwrap_or(0) as usize, range["c0"].as_u64().unwrap_or(0) as usize);
+        let sid = info["story"].clone();
+        let tid = info["table"].clone();
+        let cell = info["cells"].as_array().and_then(|cs| cs.iter().find(|c| c["row"] == r0 && c["col"] == c0)).cloned().unwrap_or(Value::Null);
+        let mut commands = Commands::new();
+        let mut run = |id: &str, params: Value, report: bool| commands.push((id.to_owned(), params, report));
+        Stack::new().id_salt(("table-panel", identity)).fill_width().show(ui, |ui, _| {
+            Row::new().id_salt("cell-type").wrap(true).show(ui, |ui, _| {
+                caption(ui, tr("Cell Type"));
+                if button(ui, identity, "graphic-cell", tr("Graphic…"), (true, false), None) {
+                    run("app.graphicCell", json!({}), true);
+                }
+                if button(ui, identity, "text-cell", tr("Text"), (true, false), None) {
+                    run("table.textCell", json!({}), false);
+                }
+            });
+            // Move the target row / column (InDesign drags them).
+            Row::new().id_salt("move").wrap(true).show(ui, |ui, _| {
+                caption(ui, tr("Move"));
+                let (nr, nc) = (rows.len(), cols.len());
+                for (label, id, from, to, ok) in [
+                    ("Row ↑", "table.moveRow", r0, r0.saturating_sub(1), r0 > 0),
+                    ("Row ↓", "table.moveRow", r0, r0 + 1, r0 + 1 < nr),
+                    ("Col ←", "table.moveColumn", c0, c0.saturating_sub(1), c0 > 0),
+                    ("Col →", "table.moveColumn", c0, c0 + 1, c0 + 1 < nc),
+                ] {
+                    if button(ui, identity, label, tr(label), (ok, false), None) {
+                        run(id, json!({"from": from, "to": to}), true);
+                    }
+                }
+            });
+            // Table and cell styles: pick to apply, + to save the current look as a new style.
+            if let Some(st) = app.session.active() {
+                let styles = &st.doc.styles;
+                let tnames: Vec<String> = styles.table.iter().map(|s| s.name.clone()).collect();
+                let cnames: Vec<String> = styles.cell.iter().map(|s| s.name.clone()).collect();
+                let tcur = info["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::BASIC_TABLE).to_string();
+                let ccur = cell["style"].as_str().filter(|s| !s.is_empty()).unwrap_or(designcraft_doc::NO_CELL_STYLE).to_string();
+                for (label, kind, names, cur) in [("Table Style", "table", tnames, tcur), ("Cell Style", "cell", cnames, ccur)] {
+                    let choices: Vec<_> = names.into_iter().map(|name| (name.clone(), name)).collect();
+                    Row::new().id_salt(("style", kind)).show(ui, |ui, _| {
+                        let label = tr(label);
+                        caption(ui, label.clone());
+                        if let Some(name) = table_committed_choice(app, ui, &info, kind, &label, &choices, &cur, 130.0) {
+                            run(
+                                &format!("style.{kind}.apply"),
+                                json!({"name": name, "story": sid, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]}),
+                                false,
+                            );
+                        }
+                        let new_label = tr(if kind == "cell" { "New Cell Style" } else { "New Table Style" });
+                        if table_new_style(app, ui, &info, kind, &choices, &cur, &new_label) {
+                            if kind == "cell" {
+                                run("style.cell.create", json!({"name": "Cell Style 1", "fromSelection": true}), false);
+                            } else {
+                                run("style.table.create", json!({"name": "Table Style 1"}), false);
+                            }
+                        }
+                    });
+                }
+            }
+            Row::new().id_salt("counts").wrap(true).show(ui, |ui, _| {
+                caption(ui, tr("Rows"));
+                if let Some(v) = count(ui, identity, "rows", tr("Rows"), Some(rows.len() as f64)) {
+                    let n = v.round().max(1.0) as usize;
+                    if n > rows.len() {
+                        let last = rows.len() - 1;
+                        run("table.insertRow", json!({"story": sid, "table": tid, "rows": [last, last], "where": "below", "count": n - rows.len()}), false);
+                    } else if n < rows.len() {
+                        run("table.deleteRow", json!({"story": sid, "table": tid, "rows": [n, rows.len() - 1]}), false);
+                    }
+                }
+                let columns = crate::i18n::tr_context(&lang, "Columns", "table").to_owned();
+                caption(ui, columns.clone());
+                if let Some(v) = count(ui, identity, "columns", columns, Some(cols.len() as f64)) {
+                    let n = v.round().max(1.0) as usize;
+                    if n > cols.len() {
+                        let last = cols.len() - 1;
+                        run("table.insertColumn", json!({"story": sid, "table": tid, "cols": [last, last], "where": "right", "count": n - cols.len()}), false);
+                    } else if n < cols.len() {
+                        run("table.deleteColumn", json!({"story": sid, "table": tid, "cols": [n, cols.len() - 1]}), false);
+                    }
+                }
+            });
+            let row = rows.get(r0).cloned().unwrap_or(Value::Null);
+            let exactly = row["mode"] == "exactly";
+            Row::new().id_salt("row-height").wrap(true).show(ui, |ui, _| {
+                let row_label = tr("Row Height");
+                caption(ui, row_label.clone());
+                let modes: Vec<_> = [("At Least", "atLeast"), ("Exactly", "exactly")].into_iter().map(|(label, mode)| (mode.to_owned(), tr(label))).collect();
+                if let Some(mode) =
+                    table_committed_choice(app, ui, &info, "row-height-mode", &row_label, &modes, if exactly { "exactly" } else { "atLeast" }, 70.0)
+                {
+                    run("table.setRowHeight", json!({"mode": mode}), false);
+                }
+                if let Some(h) = measure(ui, identity, "row-height", row_label, row["height"].as_f64(), unit) {
+                    run("table.setRowHeight", json!({"height": h}), false);
+                }
+            });
+            Row::new().id_salt("column-width").show(ui, |ui, _| {
+                let label = tr("Column Width");
+                caption(ui, label.clone());
+                if let Some(w) = measure(ui, identity, "column-width", label, cols.get(c0).and_then(|c| c["width"].as_f64()), unit) {
+                    run("table.setColumnWidth", json!({"width": w}), false);
+                }
+            });
+            let tip = tr("Equal fixed heights for the selected rows; cell text may become overset.");
+            if button(ui, identity, "distribute-rows", tr("Distribute Rows Evenly"), (true, false), Some(tip)) {
+                run("table.distributeRows", json!({}), true);
+            }
+            Divider::horizontal().show(ui);
+            caption(ui, tr("Cell Text"));
+            Row::new().id_salt("vertical-justification").wrap(true).show(ui, |ui, _| {
+                for (label, vj) in [("Top", "top"), ("Center", "center"), ("Bottom", "bottom"), ("Justify", "justify")] {
+                    if button(ui, identity, vj, tr(label), (true, cell["vj"] == vj), None) {
+                        run("table.setCell", json!({"vj": vj}), false);
+                    }
+                }
+            });
+            let insets: Vec<f64> = cell["insets"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_else(|| vec![4.0; 4]);
+            for pair in [[0, 1], [2, 3]] {
+                Row::new().id_salt(("insets", pair[0])).wrap(true).show(ui, |ui, _| {
+                    for i in pair {
+                        let label = tr(["Top", "Left", "Bottom", "Right"][i]);
+                        caption(ui, label.clone());
+                        if let Some(v) = measure(ui, identity, &format!("inset{i}"), label, insets.get(i).copied(), unit) {
+                            let mut n = insets.clone();
+                            n.resize(4, 4.0);
+                            n[i] = v.max(0.0);
+                            run("table.setCell", json!({"insets": n}), false);
+                        }
+                    }
+                });
+            }
+            Divider::horizontal().show(ui);
+            for (salt, pair) in [
+                ("merge", [("merge", "Merge Cells", "table.merge"), ("unmerge", "Unmerge", "table.unmerge")]),
+                ("insert", [("insert-row", "Insert Row", "table.insertRowBelow"), ("insert-column", "Insert Column", "table.insertColumnRight")]),
+                ("delete", [("delete-row", "Delete Row", "table.deleteRow"), ("delete-column", "Delete Column", "table.deleteColumn")]),
+            ] {
+                Row::new().id_salt(salt).wrap(true).show(ui, |ui, _| {
+                    for (key, label, command) in pair {
+                        if button(ui, identity, key, tr(label), (true, false), None) {
+                            run(command, json!({}), false);
+                        }
+                    }
+                });
+            }
+            Divider::horizontal().show(ui);
+            // Column order: right to left puts the first column on the right.
+            let rtl = info["options"]["direction"] == "rightToLeft";
+            Row::new().id_salt("direction").wrap(true).show(ui, |ui, _| {
+                caption(ui, tr("Direction"));
+                for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+                    if button(ui, identity, dir, tr(label), (true, on), None) && !on {
+                        run("table.options", json!({"direction": dir}), false);
+                    }
+                }
+            });
+            let alt = !info["options"]["altRows"].is_null();
+            if let Some(on) = check(ui, identity, "alternating-rows", tr("Alternating Row Fills"), alt) {
+                let v = if on { json!({"first": 1, "firstColor": "[Black]", "firstTint": 0.1, "next": 1, "nextColor": "[None]"}) } else { Value::Null };
+                run("table.options", json!({"altRows": v}), false);
+            }
+            let repeat = info["options"]["repeatHeader"].as_bool().unwrap_or(true);
+            if let Some(on) = check(ui, identity, "repeat-header", tr("Repeat Header Rows"), repeat) {
+                run("table.options", json!({"repeatHeader": on}), false);
+            }
+            Row::new().id_salt("header-footer").wrap(true).show(ui, |ui, _| {
+                for (label, key, option) in [("Header Rows", "header-rows", "headerRows"), ("Footer Rows", "footer-rows", "footerRows")] {
+                    caption(ui, tr(label));
+                    if let Some(v) = count(ui, identity, key, tr(label), info[option].as_f64()) {
+                        run("table.options", json!({ (option): v.max(0.0) as u64 }), false);
+                    }
+                }
+            });
+        });
+        for (id, params, report) in commands {
+            if let Err(e) = app.run(&id, params)
+                && report
+            {
+                app.status_error("Table", e);
+            }
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -55,9 +55,16 @@ fn key(h: &mut Harness<'_, Window>, key: Key) {
 
 fn button(h: &Harness<'_, Window>, label: &str) -> Element {
     let name = tr(&h.state().app.ui.language, label);
-    let found: Vec<_> = h.state().controls.as_ref().unwrap().elements.iter().filter(|element| {
-        element.facts.as_ref().is_some_and(|facts| facts.role == "Button" && facts.name.as_deref() == Some(name))
-    }).cloned().collect();
+    let found: Vec<_> = h
+        .state()
+        .controls
+        .as_ref()
+        .unwrap()
+        .elements
+        .iter()
+        .filter(|element| element.facts.as_ref().is_some_and(|facts| facts.role == "Button" && facts.name.as_deref() == Some(name)))
+        .cloned()
+        .collect();
     assert_eq!(found.len(), 1, "one installed SDK Button named {label}, not an egui fallback or a caption");
     found[0].clone()
 }
@@ -127,10 +134,14 @@ fn fixture(preview: bool) -> Harness<'static, Window> {
     // Install a refusing/canceling fake BEFORE any frames; never open native UI.
     app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
     app.run("file.new", json!({})).unwrap();
-    app.run("data.source.select", json!({
-        "bytes": designcraft_engine::cmd::base64_encode(b"Name\nAda\nGrace\nKatherine\n"),
-        "name": "people.csv"
-    })).unwrap();
+    app.run(
+        "data.source.select",
+        json!({
+            "bytes": designcraft_engine::cmd::base64_encode(b"Name\nAda\nGrace\nKatherine\n"),
+            "name": "people.csv"
+        }),
+    )
+    .unwrap();
     assert_eq!(app.session.active().unwrap().doc.data_merge.sources[0].rows.len(), 3);
     assert!(app.session.active().unwrap().doc.data_merge.placeholders.is_empty());
     if preview {
@@ -168,10 +179,9 @@ fn fixture(preview: bool) -> Harness<'static, Window> {
 #[test]
 fn installed_datamerge_preview_pointer_actions_apply_exact_records_once_without_history() {
     let mut h = fixture(true);
-    for (name, record, applications) in [
-        ("Next", 3, 1), ("Last", 3, 0), ("Previous", 2, 1),
-        ("First", 1, 1), ("Previous", 1, 0), ("Last", 3, 1), ("Next", 3, 0),
-    ] {
+    for (name, record, applications) in
+        [("Next", 3, 1), ("Last", 3, 0), ("Previous", 2, 1), ("First", 1, 1), ("Previous", 1, 0), ("Last", 3, 1), ("Next", 3, 0)]
+    {
         let target = button(&h, name);
         assert!(!target.facts.as_ref().unwrap().disabled);
         let before = effects(&h);
@@ -185,10 +195,7 @@ fn installed_datamerge_preview_pointer_actions_apply_exact_records_once_without_
 #[test]
 fn installed_datamerge_preview_natural_tab_space_enter_preserve_query_policy() {
     let mut h = fixture(true);
-    for (name, activation, record) in [
-        ("First", Key::Space, 1), ("Next", Key::Enter, 2),
-        ("Last", Key::Space, 3), ("Previous", Key::Enter, 2),
-    ] {
+    for (name, activation, record) in [("First", Key::Space, 1), ("Next", Key::Enter, 2), ("Last", Key::Space, 3), ("Previous", Key::Enter, 2)] {
         let before = effects(&h);
         let current = h.state().app.session.active().unwrap().preview_record;
         let target = button(&h, name);
