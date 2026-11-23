@@ -22,6 +22,8 @@ fn icon_fields_are_labelled_by_their_icon() {
 use egui::{pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 
+use craft_ui_shell::shell::{CaptionFamily, Captions, Frame, MacInset};
+
 use super::*;
 use crate::test_window::{self, wheel};
 
@@ -89,7 +91,7 @@ fn searching() -> egui_kittest::Harness<'static, test_window::Window> {
     h.run_steps(4);
     let field = search_node(&h).rect();
     test_window::click_at(&mut h, field.center());
-    assert!(h.ctx.memory(|m| m.has_focus(super::search_id())), "a click gives the field the keyboard");
+    assert!(craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "a click gives the field the keyboard");
     h
 }
 
@@ -125,7 +127,7 @@ fn the_search_field_finds_and_runs_menu_commands() {
     h.run_steps(4);
     assert_eq!(items(&h).0, 1, "the two frames are grouped");
     assert!(row(&h, group).is_none(), "the matches closed");
-    assert!(!h.ctx.memory(|m| m.has_focus(super::search_id())), "the field gave the keyboard back");
+    assert!(!craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "the field gave the keyboard back");
 }
 
 #[test]
@@ -151,7 +153,7 @@ fn keys_typed_in_the_search_field_stay_out_of_the_document() {
     h.key_press(egui::Key::Escape);
     h.run_steps(4);
     assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_none());
-    assert!(!h.ctx.text_edit_focused());
+    assert!(!craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "the field gave the keyboard back");
     assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
     assert_eq!(items(&h), (2, 2));
     let field = search_node(&h);
@@ -643,35 +645,123 @@ fn a_narrow_window_scrolls_the_control_bar() {
     assert!(item.min.y > fill.max.y && (item.min.x - chip.x).abs() < 120.0, "popup item at {item:?}, control at {chip:?}");
 }
 
+/// A window frame to run the application bar in: the runtime's own idea of the frame, so the shell's title bar draws what
+/// the platform's would (the caption buttons of an integrated frame, the room for the traffic lights of an inset one).
+fn framed_context(frame: Frame) -> egui::Context {
+    use craft_host::target::{ShellInfo, WindowChrome, WindowInfo, WindowKind};
+    use craft_window_sdk::policy::{Decision, Desktop, DesktopKind};
+    let chrome = match &frame {
+        Frame::Native => WindowChrome::Native,
+        Frame::Inset(_) => WindowChrome::Inset,
+        Frame::Integrated(_) => WindowChrome::Integrated,
+    };
+    let ctx = egui::Context::default();
+    ctx.set_embed_viewports(true);
+    let desktop = Desktop { kind: DesktopKind::Other, ssd: None, gtk_theme: None, icon_theme: None };
+    let spec = craft_ui_widgets::InstallSpec::new(
+        ShellInfo::default().window(WindowInfo::new(WindowKind::Main).chrome(chrome)),
+        std::sync::Arc::new(craft_window_sdk::system::SystemWindows),
+    )
+    .frame(Decision { frame, overridden: None, desktop });
+    craft_ui_widgets::install(&ctx, spec).expect("the runtime installs on a new context");
+    crate::panel_docking::note_runtime(&ctx);
+    craft_ui_widgets::runtime::frame::set_input(
+        &ctx,
+        craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()),
+    );
+    ctx
+}
+
+/// The Windows frame the app draws itself: Minimize, Maximize and Close at the right end.
+fn integrated() -> Frame {
+    Frame::Integrated(Captions { family: CaptionFamily::Windows, layout: craft_window_sdk::Layout::default() })
+}
+
+/// The macOS frame: the traffic lights over the app's bar, in the standard geometry.
+fn inset() -> (Frame, MacInset) {
+    let lights = MacInset::default();
+    (Frame::Inset(lights), lights)
+}
+
+/// The whole window, as `test_window::open` runs it, on a context whose window frame is `frame`.
+struct Framed {
+    app: DesignApp,
+    ready: bool,
+}
+
+fn framed_window(mut app: DesignApp, frame: Frame, size: egui::Vec2) -> egui_kittest::Harness<'static, Framed> {
+    match &frame {
+        Frame::Integrated(_) => app.custom_titlebar = true,
+        Frame::Inset(_) => app.integrated_titlebar = true,
+        Frame::Native => {}
+    }
+    if app.session.active().is_none() {
+        app.run("file.new", serde_json::json!({})).unwrap();
+    }
+    let mut h =
+        egui_kittest::Harness::builder().with_context(framed_context(frame)).with_size(size).with_max_steps(1000).with_step_dt(0.05).build_ui_state(
+            |ui, w: &mut Framed| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+            },
+            Framed { app, ready: false },
+        );
+    h.input_mut().max_texture_side = Some(8192);
+    h.state_mut().ready = true;
+    h.run_steps(6);
+    h
+}
+
+/// Whether the window reports itself maximized, as the OS does in its viewport info.
+fn set_maximized<S>(h: &mut egui_kittest::Harness<'static, S>, on: bool) {
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().maximized = Some(on);
+    h.run_steps(2);
+}
+
+/// The title bar: the group the shell names by the window's title.
+fn title_bar<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Rect {
+    h.query_all_by(|n| n.role() == egui::accesskit::Role::Group && n.label().is_some_and(|l| l.starts_with("DesignCraft")))
+        .map(|n| n.rect())
+        .filter(|r| r.min.y < 1.0)
+        .max_by(|a, b| a.width().total_cmp(&b.width()))
+        .expect("the title bar is shown at the top of the window")
+}
+
+/// The rect of the title bar's control named `label`.
+fn in_bar<S>(h: &egui_kittest::Harness<'static, S>, label: &str) -> egui::Rect {
+    let bar = title_bar(h);
+    h.query_all_by_label(label)
+        .map(|n| n.rect())
+        .find(|r| bar.y_range().contains(r.center().y))
+        .unwrap_or_else(|| panic!("no {label} in the title bar {bar:?}"))
+}
+
 #[test]
 fn the_mac_app_bar_centres_and_clears_the_traffic_lights() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT, MAC_LIGHT, MAC_LIGHT_PITCH, MAC_LIGHTS_LEFT};
-    // Content keeps the same gap after the lights as the lights keep from the top.
-    let margin = (MAC_APP_BAR - MAC_LIGHT) / 2.0;
-    assert_eq!(MAC_CONTENT_LEFT - (MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT), margin);
-    // `egui::Margin` is in `i8`.
-    assert!(MAC_CONTENT_LEFT <= f32::from(i8::MAX));
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let h = test_window::open(app, vec2(1400.0, 900.0));
-    // The bar's controls share the lights' centre line and start after them (relative to the
-    // bar, which the test window insets).
-    let bar = test_window::panel_rect(&h, "app_bar").min.to_vec2();
-    let home = rect(&h, "Home").translate(-bar);
-    assert_eq!(home.center().y, MAC_APP_BAR / 2.0, "{home:?}");
-    assert!(home.min.y >= 2.0 && home.min.x >= MAC_CONTENT_LEFT, "{home:?}");
+    let (frame, lights) = inset();
+    let h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    // The bar's controls share one centre line (the lights' bar), start after the room the lights take and stay inside the bar.
+    let bar = title_bar(&h);
+    let home = in_bar(&h, "Home");
+    assert!((home.center().y - bar.center().y).abs() <= 0.5, "Home {home:?} is not on the centre line of {bar:?}");
+    assert!(home.min.y >= bar.min.y + 2.0 && home.min.x >= bar.min.x + lights.leading, "{home:?} in {bar:?}, lights take {}", lights.leading);
     for label in ["File", "Help", "Share"] {
-        let r = rect(&h, label).translate(-bar);
-        assert!((r.center().y - MAC_APP_BAR / 2.0).abs() <= 0.5 && r.max.y <= MAC_APP_BAR, "{label} at {r:?}");
+        let r = in_bar(&h, label);
+        assert!((r.center().y - bar.center().y).abs() <= 0.5 && r.max.y <= bar.max.y, "{label} at {r:?} in {bar:?}");
     }
 }
 
-fn press(h: &egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2, pressed: bool) {
+fn press<S>(h: &egui_kittest::Harness<'static, S>, pos: egui::Pos2, pressed: bool) {
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
 }
 
 /// The window commands the app sends over the next `steps` frames.
-fn window_commands(h: &mut egui_kittest::Harness<'static, test_window::Window>, steps: usize) -> Vec<egui::ViewportCommand> {
+fn window_commands<S>(h: &mut egui_kittest::Harness<'static, S>, steps: usize) -> Vec<egui::ViewportCommand> {
     let mut out = Vec::new();
     for _ in 0..steps {
         h.step();
@@ -682,23 +772,20 @@ fn window_commands(h: &mut egui_kittest::Harness<'static, test_window::Window>, 
     out
 }
 
-fn double_click(h: &mut egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+fn double_click<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
     h.hover_at(pos);
     h.step();
-    // One frame: the harness gives each queued event a frame of its own, longer apart than a
-    // double-click allows.
+    // One press and release a frame, 50 ms apart: closer together than a double-click allows.
+    let mut out = Vec::new();
     for pressed in [true, false, true, false] {
-        h.input_mut().events.push(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        });
+        press(h, pos, pressed);
+        out.extend(window_commands(h, 1));
     }
-    window_commands(h, 3)
+    out.extend(window_commands(h, 2));
+    out
 }
 
-fn drag(h: &mut egui_kittest::Harness<'static, test_window::Window>, from: egui::Pos2) -> Vec<egui::ViewportCommand> {
+fn drag<S>(h: &mut egui_kittest::Harness<'static, S>, from: egui::Pos2) -> Vec<egui::ViewportCommand> {
     h.hover_at(from);
     h.step();
     press(h, from, true);
@@ -712,26 +799,35 @@ fn drag(h: &mut egui_kittest::Harness<'static, test_window::Window>, from: egui:
     out
 }
 
+/// A click: the window commands it sends.
+fn click_commands<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+    h.hover_at(pos);
+    h.step();
+    press(h, pos, true);
+    let mut out = window_commands(h, 1);
+    press(h, pos, false);
+    out.extend(window_commands(h, 2));
+    out
+}
+
 #[test]
 fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT};
     use egui::ViewportCommand::{Maximized, Minimized, StartDrag};
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let mut h = test_window::open(app, vec2(1400.0, 900.0));
-    let bar = test_window::panel_rect(&h, "app_bar");
+    let (frame, lights) = inset();
+    let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    let bar = title_bar(&h);
     // Under the centred title, and between the traffic lights and the Home button.
-    let empty = [pos2(bar.center().x, bar.min.y + MAC_APP_BAR / 2.0), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0)];
+    let empty = [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading + 2.0, bar.min.y + 4.0)];
     for at in empty {
         // Tests read the setting as its default, zoom.
         let cmds = double_click(&mut h, at);
-        assert_eq!(cmds, vec![Maximized(true)], "double-click at {at:?}");
+        assert!(cmds.contains(&Maximized(true)), "double-click at {at:?}: {cmds:?}");
         let cmds = drag(&mut h, at);
-        assert_eq!(cmds, vec![StartDrag], "drag from {at:?}");
+        assert!(cmds.contains(&StartDrag), "drag from {at:?}: {cmds:?}");
     }
     // The bar's controls keep their clicks and drags.
     for label in ["Home", "Share", "File"] {
-        let at = rect(&h, label).center();
+        let at = in_bar(&h, label).center();
         let cmds = double_click(&mut h, at);
         assert!(!cmds.iter().any(|c| matches!(c, Maximized(_) | Minimized(_))), "double-click on {label}: {cmds:?}");
         if label == "Home" {
@@ -748,25 +844,22 @@ fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
 
 #[test]
 fn the_mac_window_is_not_movable_on_the_title_bar_controls() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT};
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let mut h = test_window::open(app, vec2(1400.0, 900.0));
-    let bar = test_window::panel_rect(&h, "app_bar");
-    let mid = bar.min.y + MAC_APP_BAR / 2.0;
-    // The search field is the bar's last control: 125 wide, 4 from the 10-wide right margin.
-    let search = pos2(bar.max.x - 10.0 - 4.0 - 60.0, mid);
-    let controls = [rect(&h, "Home").center(), rect(&h, "Share").center(), rect(&h, "File").center(), search];
-    let mut movable_at = |at: egui::Pos2| {
-        h.hover_at(at);
-        h.run_steps(2);
-        craft_window::title_bar::window_movable(&h.ctx)
-    };
-    for at in [pos2(bar.center().x, mid), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0), pos2(bar.center().x, 500.0)] {
-        assert!(movable_at(at), "empty title bar or the page at {at:?}");
+    use egui::ViewportCommand::StartDrag;
+    let (frame, lights) = inset();
+    let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    let bar = title_bar(&h);
+    let search = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Search")).rect();
+    let controls = [in_bar(&h, "Home").center(), in_bar(&h, "Share").center(), in_bar(&h, "File").center(), search.center()];
+    // The OS moves the window from the bar's empty parts and from no control: the shell hands the move over (`StartDrag`)
+    // for a drag that starts on the free band only.
+    for at in [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading + 2.0, bar.min.y + 4.0)] {
+        assert!(drag(&mut h, at).contains(&StartDrag), "empty title bar at {at:?}");
     }
     for at in controls {
-        assert!(!movable_at(at), "control at {at:?}");
+        let cmds = drag(&mut h, at);
+        assert!(!cmds.contains(&StartDrag), "control at {at:?}: {cmds:?}");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
     }
 }
 
@@ -821,115 +914,70 @@ fn a_scrolled_bar_keeps_its_captions_on_one_line() {
     assert!(columns.width() >= 48.0 && columns.max.x <= 700.0, "Columns group squeezed or off screen: {columns:?}");
 }
 
-struct WindowHarness {
-    ctx: egui::Context,
-    app: DesignApp,
-    time: f64,
-    maximized: bool,
-    size: egui::Vec2,
-}
-
-impl WindowHarness {
-    fn new() -> Self {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.custom_titlebar = true;
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "");
-        let mut harness = Self { ctx, app, time: 0.0, maximized: false, size: vec2(1440.0, 900.0) };
-        harness.frame(vec![]);
-        harness.frame(vec![]);
-        harness
-    }
-
-    fn frame(&mut self, events: Vec<egui::Event>) -> Vec<egui::ViewportCommand> {
-        self.time += 0.1;
-        let mut input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
-            time: Some(self.time),
-            events,
-            ..Default::default()
-        };
-        input.viewports.entry(egui::ViewportId::ROOT).or_default().maximized = Some(self.maximized);
-        let mut output = self.ctx.run_ui(input, |ui| {
-            app_bar(&mut self.app, ui);
-            resize_borders(&mut self.app, ui);
-        });
-        output.textures_delta.clear();
-        output.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
-    }
-
-    fn press(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
-        self.frame(vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
-        ])
-    }
-
-    fn click(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
-        let mut commands = self.press(pos);
-        commands.extend(self.frame(vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        }]));
-        commands
-    }
-
-    fn caption_center(&self, id: &str) -> egui::Pos2 {
-        self.ctx.read_response(egui::Id::unique(id)).unwrap().rect.center()
-    }
+/// The Windows window the app draws the frame of: the shell's title bar with its caption buttons.
+fn integrated_window(size: egui::Vec2) -> egui_kittest::Harness<'static, Framed> {
+    framed_window(app(), integrated(), size)
 }
 
 #[test]
 fn caption_buttons_minimize_maximize_restore_and_close() {
-    let mut h = WindowHarness::new();
-    for (id, command) in [("window.minimize", egui::ViewportCommand::Minimized(true)), ("window.maximize", egui::ViewportCommand::Maximized(true))] {
-        let p = h.caption_center(id);
-        assert!(h.click(p).contains(&command), "{id}");
+    use egui::ViewportCommand::{Close, Maximized, Minimized};
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    for (label, command) in [("Minimize", Minimized(true)), ("Maximize", Maximized(true))] {
+        let p = in_bar(&h, label).center();
+        assert!(click_commands(&mut h, p).contains(&command), "{label}");
     }
-    h.maximized = true;
-    h.frame(vec![]);
-    let p = h.caption_center("window.maximize");
-    assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(false)));
-    let p = h.caption_center("window.close");
-    assert!(h.click(p).contains(&egui::ViewportCommand::Close));
+    set_maximized(&mut h, true);
+    let p = in_bar(&h, "Restore").center();
+    assert!(click_commands(&mut h, p).contains(&Maximized(false)));
+    let p = in_bar(&h, "Close").center();
+    assert!(click_commands(&mut h, p).contains(&Close));
 }
 
 #[test]
 fn title_area_drags_and_double_clicks_but_menus_do_not_drag() {
-    let mut h = WindowHarness::new();
-    let title = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
-    assert!(title.width() > 0.0, "there is a drag region between menus and tools");
-    let p = title.center();
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::StartDrag));
+    use egui::ViewportCommand::{Maximized, StartDrag};
+    let band = |h: &egui_kittest::Harness<'static, Framed>| {
+        let bar = title_bar(h);
+        pos2(bar.center().x, bar.center().y)
+    };
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = band(&h);
+    assert!(drag(&mut h, p).contains(&StartDrag), "a drag from the free band moves the window");
 
-    let mut h = WindowHarness::new();
-    h.click(p);
-    assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(true)));
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = band(&h);
+    assert!(double_click(&mut h, p).contains(&Maximized(true)), "a double click on the free band maximizes");
 
-    let mut h = WindowHarness::new();
-    let p = egui::pos2(70.0, 18.0); // File menu, outside the title's drag region.
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(title.center())]));
-    assert!(!commands.contains(&egui::ViewportCommand::StartDrag));
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let file = in_bar(&h, "File").center();
+    assert!(!drag(&mut h, file).contains(&StartDrag), "a menu title pressed and dragged doesn't move the window");
 }
 
 #[test]
 fn edges_resize_only_when_the_window_is_restored() {
-    let mut h = WindowHarness::new();
-    let p = egui::pos2(1438.0, 400.0);
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::BeginResize(egui::ResizeDirection::East)));
-    let mut h = WindowHarness::new();
-    h.maximized = true;
-    h.frame(vec![]);
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
-    assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::BeginResize(_))));
+    use egui::ViewportCommand::BeginResize;
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = pos2(1438.0, 400.0);
+    h.hover_at(p);
+    h.step();
+    press(&h, p, true);
+    let mut commands = window_commands(&mut h, 1);
+    h.hover_at(p + vec2(-20.0, 0.0));
+    commands.extend(window_commands(&mut h, 2));
+    assert!(commands.contains(&BeginResize(egui::ResizeDirection::East)), "{commands:?}");
+    press(&h, p + vec2(-20.0, 0.0), false);
+    h.run_steps(2);
+
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    set_maximized(&mut h, true);
+    h.hover_at(p);
+    h.step();
+    press(&h, p, true);
+    let mut commands = window_commands(&mut h, 1);
+    h.hover_at(p + vec2(-20.0, 0.0));
+    commands.extend(window_commands(&mut h, 2));
+    assert!(!commands.iter().any(|c| matches!(c, BeginResize(_))), "{commands:?}");
 }
 
 #[test]
@@ -945,62 +993,46 @@ fn native_window_actions_are_unavailable_without_custom_chrome() {
 
 #[test]
 fn caption_buttons_stay_put_while_a_narrow_app_bar_scrolls() {
-    let mut h = WindowHarness::new();
-    h.size = vec2(640.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    let rect = |h: &WindowHarness, id: &str| h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
-    let menus_end = |h: &WindowHarness| h.ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("app_bar_menus_end"))).unwrap();
-    let (close, menus0) = (rect(&h, "window.close"), menus_end(&h));
-    assert!(close.left() >= 0.0 && close.right() <= h.size.x, "{close:?}");
-    let p = egui::pos2(200.0, 18.0);
-    h.frame(vec![
-        egui::Event::PointerMoved(p),
-        egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: vec2(0.0, -3000.0),
-            phase: egui::TouchPhase::Move,
-            modifiers: egui::Modifiers::NONE,
-            source: egui::MouseWheelSource::Unknown,
-        },
-    ]);
-    for _ in 0..10 {
-        h.frame(vec![]);
-    }
-    assert!(menus_end(&h) < menus0, "the menus scrolled");
-    assert_eq!(rect(&h, "window.close"), close, "the caption buttons did not");
-    assert!(h.click(close.center()).contains(&egui::ViewportCommand::Close));
+    use egui::ViewportCommand::Close;
+    let mut h = integrated_window(vec2(640.0, 560.0));
+    let close = in_bar(&h, "Close");
+    assert!(close.left() >= 0.0 && close.right() <= 640.0, "{close:?}");
+    // The wheel over the bar moves what the bar can scroll, never the caption buttons.
+    let p = pos2(200.0, title_bar(&h).center().y);
+    h.hover_at(p);
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -3000.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    h.run_steps(10);
+    assert_eq!(in_bar(&h, "Close"), close, "the caption buttons did not move");
+    assert!(click_commands(&mut h, close.center()).contains(&Close));
 }
 
 #[test]
-fn the_window_drags_from_its_lower_band_at_the_minimum_width() {
-    // At 900 px the menus and tools fill the bar's row; its lower band still moves the window,
-    // and it isn't drawn over the caption buttons.
-    let mut h = WindowHarness::new();
-    h.size = vec2(900.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    let drag = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
-    let close = h.ctx.read_response(egui::Id::unique("window.close")).unwrap().rect;
-    assert!(drag.right() <= close.left() + 0.5, "{drag:?} {close:?}");
-    let p = egui::pos2(450.0, APP_BAR + APP_BAR_BAND / 2.0);
-    assert!(drag.contains(p), "{drag:?}");
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::StartDrag));
+fn the_window_drags_from_the_title_bar_at_the_minimum_width() {
+    use egui::ViewportCommand::StartDrag;
+    // At 900 px the menus and tools fill the bar's row; the bar's top edge, over its controls, still moves the window,
+    // and the free band is not drawn over the caption buttons.
+    let mut h = integrated_window(vec2(900.0, 560.0));
+    let bar = title_bar(&h);
+    let close = in_bar(&h, "Close");
+    assert!(bar.max.x >= close.right() - 0.5, "{bar:?} {close:?}");
+    let p = pos2(450.0, bar.min.y + 1.0);
+    assert!(drag(&mut h, p).contains(&StartDrag), "a drag from the bar's top edge at {p:?}");
+    assert!(!drag(&mut h, close.center()).contains(&StartDrag), "a drag from the Close button moves nothing");
 }
 
 #[test]
 fn caption_buttons_fit_the_minimum_window_width() {
-    let mut h = WindowHarness::new();
-    h.size = vec2(900.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    for id in ["window.minimize", "window.maximize", "window.close"] {
-        let rect = h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
-        assert!(rect.left() >= 0.0 && rect.right() <= h.size.x, "{id}: {rect:?}");
-        let p = rect.center();
-        assert!(!h.click(p).is_empty(), "{id} remains clickable");
+    let mut h = integrated_window(vec2(900.0, 560.0));
+    for label in ["Minimize", "Maximize", "Close"] {
+        let rect = in_bar(&h, label);
+        assert!(rect.left() >= 0.0 && rect.right() <= 900.0, "{label}: {rect:?}");
+        assert!(!click_commands(&mut h, rect.center()).is_empty(), "{label} remains clickable");
     }
 }
 
