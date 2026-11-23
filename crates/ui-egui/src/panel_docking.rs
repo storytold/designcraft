@@ -1342,7 +1342,7 @@ impl DockPanels<String> for PanelContent<'_> {
             let before = effect(app);
             let mut ran = false;
             // The page commands' rows are the Pages panel's own; they come to the framework with that panel.
-            let _ = craft_ui::menu::Menu::new(label).open(Bind::bound(&mut *open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(
+            let _ = craft_ui::menu::Menu::new(label.clone()).open(Bind::bound(&mut *open)).opened_by(&opener, craft_ui::contract::Trigger::Click).show(
                 ui,
                 |ui, _| {
                     crate::panels::pages::panel_menu(app, ui);
