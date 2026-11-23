@@ -81,7 +81,9 @@ pub use services::{
     WriteFn,
 };
 pub(crate) use state::second_window_viewport;
-pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
+pub use state::{
+    CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View, WindowState,
+};
 
 /// The bounded admission policy for `ui.screenshot` captures.
 pub(crate) const SCREENSHOT_MAX_REQUESTS: usize = 4;
@@ -247,6 +249,14 @@ pub struct DesignApp {
     fonts_system: bool,
     pub restyle: bool,
     fonts_ready: bool,
+    /// The window was checked against its monitor after it opened (see [`WindowState::restore`]).
+    window_fitted: bool,
+    window_frames: u8,
+    /// The window opened before its monitor's size was known: fitted to it once it is.
+    window_fit_pending: bool,
+    /// Passes left to wait for the window to show the maximized or full screen state restored:
+    /// meanwhile it shows as created, which must not be saved over that state.
+    window_awaiting: u8,
     /// Files the operating system asked to open (macOS Finder, Dock, Open With), opened once the
     /// window is ready; see [`DesignApp::open_documents_later`].
     os_documents: Vec<String>,
@@ -445,5 +455,116 @@ pub(crate) mod test_window {
         h.drag_at(pos);
         h.drop_at(pos);
         h.run_steps(4);
+    }
+}
+
+#[cfg(test)]
+mod window_state_tests {
+    use super::WindowState;
+
+    fn vp(inner: [f32; 2], monitor: [f32; 2], maximized: bool) -> egui::ViewportInfo {
+        egui::ViewportInfo {
+            inner_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(inner[0], inner[1]))),
+            outer_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(inner[0], inner[1] + 30.0))),
+            monitor_size: Some(egui::vec2(monitor[0], monitor[1])),
+            maximized: Some(maximized),
+            fullscreen: Some(false),
+            ..Default::default()
+        }
+    }
+
+    /// The window is remembered as left: the ordinary size, kept while it is maximized, so
+    /// restoring it gets that size back.
+    #[test]
+    fn the_window_is_remembered_as_left() {
+        let w = WindowState::default().observe(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO, 1.0);
+        assert_eq!(w, WindowState { size: Some([1200.0, 800.0]), maximized: false, fullscreen: false });
+        let max = w.observe(&vp([1920.0, 1050.0], [1920.0, 1080.0], true), egui::Vec2::ZERO, 1.0);
+        assert_eq!(max, WindowState { size: Some([1200.0, 800.0]), maximized: true, fullscreen: false });
+        // A file from before the window was kept loads without it.
+        let ui: super::UiState = serde_json::from_str("{}").unwrap();
+        assert!(ui.window.is_none() && ui.panel_sizes.is_empty());
+    }
+
+    /// A size saved on a bigger screen is made to fit a smaller one (or a lower resolution), so the
+    /// window never reaches past it; one that fits, or a maximized one, is left as it is.
+    #[test]
+    fn a_window_saved_on_a_bigger_screen_fits_a_smaller_one() {
+        let Some(egui::ViewportCommand::InnerSize(s)) = WindowState::fit(&vp([2400.0, 1400.0], [1366.0, 768.0], false), egui::Vec2::ZERO) else {
+            panic!("a command to fit")
+        };
+        assert!(s.x <= 1366.0 && s.y + 30.0 <= 768.0, "{s:?}");
+        assert!(WindowState::fit(&vp([1200.0, 700.0], [1366.0, 768.0], false), egui::Vec2::ZERO).is_none());
+        assert!(WindowState::fit(&vp([2400.0, 1400.0], [1366.0, 768.0], true), egui::Vec2::ZERO).is_none());
+    }
+
+    /// Left maximized (or full screen), the window is told so again once it shows, as Wayland
+    /// ignores it at creation; already so, nothing is sent.
+    #[test]
+    fn a_window_left_maximized_opens_maximized() {
+        let max = WindowState { size: Some([1200.0, 800.0]), maximized: true, fullscreen: false };
+        assert_eq!(max.restore(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO), vec![egui::ViewportCommand::Maximized(true)]);
+        assert!(max.restore(&vp([1920.0, 1050.0], [1920.0, 1080.0], true), egui::Vec2::ZERO).is_empty());
+        let full = WindowState { fullscreen: true, ..max };
+        assert_eq!(full.restore(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO), vec![egui::ViewportCommand::Fullscreen(true)]);
+        let plain = WindowState { size: Some([1200.0, 800.0]), ..Default::default() };
+        assert!(plain.restore(&vp([1200.0, 800.0], [1920.0, 1080.0], false), egui::Vec2::ZERO).is_empty());
+        // Until the window reports the state asked for, it isn't observed (it would save the
+        // unmaximized window over the maximized one).
+        assert!(!max.arrived(&vp([1200.0, 800.0], [1920.0, 1080.0], false)));
+        assert!(max.arrived(&vp([1920.0, 1050.0], [1920.0, 1080.0], true)));
+        assert!(!full.arrived(&vp([1920.0, 1050.0], [1920.0, 1080.0], true)), "maximized is not full screen");
+        assert!(plain.arrived(&vp([1200.0, 800.0], [1920.0, 1080.0], false)));
+    }
+
+    /// Wayland reports no window rect: the size comes from the window's content, so a resize is
+    /// still remembered, and a window too big for the monitor still made to fit.
+    #[test]
+    fn without_a_window_rect_the_content_size_counts() {
+        let wayland = |maximized| egui::ViewportInfo {
+            monitor_size: Some(egui::vec2(1366.0, 768.0)),
+            maximized: Some(maximized),
+            fullscreen: Some(false),
+            ..Default::default()
+        };
+        let w = WindowState::default().observe(&wayland(false), egui::vec2(1000.0, 700.0), 1.0);
+        assert_eq!(w.size, Some([1000.0, 700.0]));
+        let Some(egui::ViewportCommand::InnerSize(s)) = WindowState::fit(&wayland(false), egui::vec2(2400.0, 1400.0)) else {
+            panic!("a command to fit")
+        };
+        assert!(s.x <= 1366.0 && s.y <= 768.0, "{s:?}");
+        assert!(WindowState::fit(&wayland(false), egui::vec2(1000.0, 700.0)).is_none());
+    }
+
+    /// With UI Scaling at 150 %, egui's points are 1.5 times the window system's: the size is
+    /// kept in the window system's, so the window doesn't shrink with every restart.
+    #[test]
+    fn ui_scaling_does_not_shrink_the_window_on_restart() {
+        // A 1500 × 900 window shows 1000 × 600 egui points at 150 %.
+        let w = WindowState::default().observe(&vp([1000.0, 600.0], [1920.0, 1080.0], false), egui::Vec2::ZERO, 1.5);
+        assert_eq!(w.size, Some([1500.0, 900.0]));
+    }
+
+    /// Leaving maximized or full screen is noticed, so the ordinary size is fitted to the monitor
+    /// again; other changes are not.
+    #[test]
+    fn leaving_maximized_is_noticed() {
+        let max = WindowState { size: Some([3000.0, 2000.0]), maximized: true, fullscreen: false };
+        let plain = WindowState { maximized: false, ..max };
+        assert!(max.unmaximized_to(plain));
+        assert!(WindowState { fullscreen: true, maximized: false, ..max }.unmaximized_to(plain));
+        assert!(!plain.unmaximized_to(max) && !plain.unmaximized_to(plain) && !max.unmaximized_to(max));
+    }
+
+    /// A workspace saved with no panel sizes brings none (the current ones go); one from before
+    /// sizes were kept leaves them.
+    #[test]
+    fn a_workspace_tells_none_from_absent_panel_sizes() {
+        let new: crate::SavedWorkspace = serde_json::from_str(r#"{"name": "A", "panelSizes": {}}"#).unwrap();
+        assert_eq!(new.panel_sizes, Some(Default::default()));
+        let old: crate::SavedWorkspace = serde_json::from_str(r#"{"name": "B"}"#).unwrap();
+        assert_eq!(old.panel_sizes, None);
+        let saved = serde_json::to_value(&new).unwrap();
+        assert_eq!(saved["panelSizes"], serde_json::json!({}));
     }
 }
