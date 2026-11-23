@@ -292,7 +292,7 @@ pub(super) fn text_gradient(s: &mut Session, p: &Value) -> Result<Value> {
     // own frame's text space, where they are drawn, also when the selection lies wholly in a
     // later threaded frame.
     if let Some(t) = st.selection.text.filter(|t| st.selection.cells.is_none() && t.cell.is_none() && t.anchor != t.focus) {
-        let parts = frame_parts(s, t.story, t.anchor.min(t.focus)..t.anchor.max(t.focus), false);
+        let parts = frame_parts(s, t.story, t.anchor.min(t.focus)..t.anchor.max(t.focus), true);
         if !parts.is_empty() {
             return set_vectors(s, &parts, from, to);
         }
