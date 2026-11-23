@@ -114,6 +114,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         crate::export_batch_dialog::ID => Some(crate::export_batch_dialog::FORM),
         "newDocument" => Some(crate::new_document::FORM),
         crate::package_dialog::INSTRUCTIONS => Some(crate::package_dialog::INSTRUCTIONS_FORM),
+        "preferences" => Some(super::preferences::FORM),
         _ => None,
     }
 }

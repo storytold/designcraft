@@ -4,11 +4,119 @@ use super::{
     icons, json, measure, number, outline_button, pos2, rule, section, section_row, sel_info, text_attrs, units, vec2, widgets,
 };
 
+/// The Stroke panel's cap, join and alignment choices: label, the value the engine takes, and the stroke's own.
+const CAPS: [(&str, &str, Cap); 3] = [("Butt", "butt", Cap::Butt), ("Round", "round", Cap::Round), ("Projecting", "projecting", Cap::Projecting)];
+const JOINS: [(&str, &str, Join); 3] = [("Miter", "miter", Join::Miter), ("Round", "round", Join::Round), ("Bevel", "bevel", Join::Bevel)];
+const STROKE_ALIGNS: [(&str, &str, StrokeAlign); 3] =
+    [("Center", "center", StrokeAlign::Center), ("Inside", "inside", StrokeAlign::Inside), ("Outside", "outside", StrokeAlign::Outside)];
+/// The built-in stroke types the Type list offers, before the document's own stroke styles.
+const BUILT_IN_STROKES: [&str; 11] =
+    ["solid", "dashed", "dotted", "thickThin", "thinThick", "thinThin", "thickThick", "thinThickThin", "thickThinThick", "wavy", "hashed"];
+
+/// The `type` a built-in stroke type sets (a dash its default pattern), and its label.
+fn built_in_stroke(kind: &str) -> (Value, &'static str) {
+    let ty = if kind == "dashed" { json!({"kind": kind, "pattern": [12.0, 4.0]}) } else { json!({"kind": kind}) };
+    let label = serde_json::from_value::<StrokeType>(ty.clone()).map(|k| k.label()).unwrap_or("");
+    (ty, label)
+}
+
+/// The Effects panel's blend modes, in InDesign's order.
+const BLEND_MODES: [designcraft_color::BlendMode; 16] = {
+    use designcraft_color::BlendMode as B;
+    [
+        B::Normal,
+        B::Multiply,
+        B::Screen,
+        B::Overlay,
+        B::SoftLight,
+        B::HardLight,
+        B::ColorDodge,
+        B::ColorBurn,
+        B::Darken,
+        B::Lighten,
+        B::Difference,
+        B::Exclusion,
+        B::Hue,
+        B::Saturation,
+        B::Color,
+        B::Luminosity,
+    ]
+};
+
+/// The Align panel's buttons: the edge, icon and name; then the two distribute buttons.
+const ALIGN_EDGES: [(&str, &str, &str); 6] = [
+    ("left", "objalign-left", "Align left edges"),
+    ("hcenter", "objalign-hcenter", "Align horizontal centers"),
+    ("right", "objalign-right", "Align right edges"),
+    ("top", "objalign-top", "Align top edges"),
+    ("vcenter", "objalign-vcenter", "Align vertical centers"),
+    ("bottom", "objalign-bottom", "Align bottom edges"),
+];
+const DISTRIBUTE: [(&str, &str, &str); 2] = [("horizontal", "objdistribute-h", "Distribute ↔"), ("vertical", "objdistribute-v", "Distribute ↕")];
+
+/// The Text Wrap modes: icon, mode and name.
+const WRAP_MODES: [(&str, &str, &str); 5] = [
+    ("wrap-none", "none", "No Text Wrap"),
+    ("wrap-bbox", "boundingBox", "Wrap Around Bounding Box"),
+    ("wrap-contour", "contour", "Wrap Around Object Shape"),
+    ("wrap-jump", "jumpObject", "Jump Object"),
+    ("wrap-next", "jumpToNextColumn", "Jump to Next Column"),
+];
+/// Wrap To's sides.
+const WRAP_SIDES: [(&str, &str); 6] = [
+    ("bothSides", "Both Right & Left Sides"),
+    ("rightSide", "Right Side"),
+    ("leftSide", "Left Side"),
+    ("towardsSpine", "Side Towards Spine"),
+    ("awayFromSpine", "Side Away from Spine"),
+    ("largestArea", "Largest Area"),
+];
+/// The contour types offered. Detected edges and image paths aren't: they need the image's own analysis or paths. An
+/// imported one shows by name ([`CONTOUR_SHOWN_ONLY`]) and wraps around the frame.
+const CONTOUR_TYPES: [(&str, &str); 4] =
+    [("boundingBox", "Bounding Box"), ("alphaChannel", "Alpha Channel"), ("graphicFrame", "Graphic Frame"), ("sameAsClipping", "Same as Clipping")];
+const CONTOUR_SHOWN_ONLY: [(&str, &str); 2] = [("detectEdges", "Detect Edges"), ("photoshopPath", "Photoshop Path")];
+
+/// The Attributes panel's rows: attribute and label, with the selected object's value.
+fn attribute_rows(it: &designcraft_doc::Item) -> [(&'static str, &'static str, bool); 4] {
+    [
+        ("overprintFill", "Overprint Fill", it.fill.overprint),
+        ("overprintStroke", "Overprint Stroke", it.stroke.overprint),
+        ("nonprinting", "Nonprinting", it.nonprinting),
+        ("overprintGap", "Overprint Gap", it.stroke.gap_overprint),
+    ]
+}
+
+/// The key the Text Wrap offsets' link keeps its state under.
+fn wrap_link_id() -> egui::Id {
+    egui::Id::unique("wrap_offsets_linked")
+}
+
+/// Whether the Text Wrap offsets start linked: while they are all the same, until the link is clicked.
+fn wrap_linked(ui: &Ui, offsets: Option<[f64; 4]>) -> bool {
+    ui.data(|d| d.get_temp::<bool>(wrap_link_id())).unwrap_or_else(|| offsets.is_none_or(|o| o.iter().all(|v| (v - o[0]).abs() < 1e-9)))
+}
+
+/// The offsets an edit of the offset `side` to `v` sets: all four while linked, else that side alone.
+fn wrap_offsets_set(offsets: Option<[f64; 4]>, linked: bool, side: usize, v: f64) -> [f64; 4] {
+    let mut o = offsets.unwrap_or([0.0; 4]);
+    if linked {
+        o = [v; 4];
+    } else {
+        o[side] = v;
+    }
+    o
+}
+
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
 pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     if crate::panels::cell_stroke::in_cells(app) {
         crate::panels::cell_stroke::panel(app, ui);
         return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::stroke_panel(app, ui);
     }
     if crate::panels::colors_affect_text(app)
         && let Some(a) = text_attrs(app)
@@ -32,7 +140,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Cap:"));
         ui.horizontal(|ui| {
-            for (label, v, cur) in [("Butt", "butt", Cap::Butt), ("Round", "round", Cap::Round), ("Projecting", "projecting", Cap::Projecting)] {
+            for (label, v, cur) in CAPS {
                 if ui.selectable_label(st.cap == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     let _ = app.run("object.stroke", json!({"cap": v}));
                 }
@@ -41,7 +149,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Join:"));
         ui.horizontal(|ui| {
-            for (label, v, cur) in [("Miter", "miter", Join::Miter), ("Round", "round", Join::Round), ("Bevel", "bevel", Join::Bevel)] {
+            for (label, v, cur) in JOINS {
                 if ui.selectable_label(st.join == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     let _ = app.run("object.stroke", json!({"join": v}));
                 }
@@ -55,9 +163,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Align Stroke:"));
         ui.horizontal(|ui| {
-            for (label, a, cur) in
-                [("Center", "center", StrokeAlign::Center), ("Inside", "inside", StrokeAlign::Inside), ("Outside", "outside", StrokeAlign::Outside)]
-            {
+            for (label, a, cur) in STROKE_ALIGNS {
                 if ui.selectable_label(st.align == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                     let _ = app.run("object.stroke", json!({"align": a}));
                 }
@@ -77,22 +183,8 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             ))
             .width(140.0)
             .show_ui(ui, |ui| {
-                let built_in = [
-                    "solid",
-                    "dashed",
-                    "dotted",
-                    "thickThin",
-                    "thinThick",
-                    "thinThin",
-                    "thickThick",
-                    "thinThickThin",
-                    "thickThinThick",
-                    "wavy",
-                    "hashed",
-                ];
-                for k in built_in {
-                    let ty = if k == "dashed" { json!({"kind": k, "pattern": [12.0, 4.0]}) } else { json!({"kind": k}) };
-                    let label = serde_json::from_value::<StrokeType>(ty.clone()).map(|k| k.label()).unwrap_or("");
+                for k in BUILT_IN_STROKES {
+                    let (ty, label) = built_in_stroke(k);
                     if ui.selectable_label(shown == label, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
                         let _ = app.run("object.stroke", json!({"type": ty}));
                     }
@@ -165,8 +257,13 @@ fn text_stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui, c: &Value) {
 
 /// A short line ending in arrowhead `a` (pointing left for Start, right for End).
 fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Color32) {
-    use designcraft_geom::kurbo;
     let (r, _) = ui.allocate_exact_size(vec2(56.0, 14.0), Sense::hover());
+    paint_arrow(ui.painter(), r, a, start, color);
+}
+
+/// Paints in `r` a short line ending in arrowhead `a` (pointing left for Start, right for End).
+fn paint_arrow(painter: &egui::Painter, r: egui::Rect, a: Arrowhead, start: bool, color: egui::Color32) {
+    use designcraft_geom::kurbo;
     let mut line = kurbo::BezPath::new();
     let (y, x0, x1) = (r.center().y as f64, r.left() as f64 + 6.0, r.right() as f64 - 6.0);
     if start {
@@ -186,7 +283,6 @@ fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Colo
         });
         v
     };
-    let painter = ui.painter();
     painter.add(egui::Shape::line(pts(&line), Stroke::new(1.5, color)));
     for h in heads {
         let p = pts(&h.path);
@@ -228,11 +324,11 @@ fn wrap_control_id(app: &DesignApp, ui: &egui::Ui) -> egui::Id {
 fn wrap_mode_button(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, icon: &str, selected: bool, label: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if app.framework_installed {
+        use craft_theme::ControlSize;
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_ui_widgets::primitives::IconSpec;
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::style::{Variant};
+        use craft_ui_widgets::style::Variant;
 
         // Keep the original compact row and selected plate, not a six-wide row of painted labels.
         let (_, rect) = ui.allocate_space(vec2(26.0, 26.0));
@@ -280,13 +376,7 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // As InDesign's Text Wrap panel: the five wrap buttons and Invert, then the four offsets
     // (top and bottom, left and right) with the link button that makes them all the same.
     ui.horizontal(|ui| {
-        for (icon, m, tip) in [
-            ("wrap-none", "none", "No Text Wrap"),
-            ("wrap-bbox", "boundingBox", "Wrap Around Bounding Box"),
-            ("wrap-contour", "contour", "Wrap Around Object Shape"),
-            ("wrap-jump", "jumpObject", "Jump Object"),
-            ("wrap-next", "jumpToNextColumn", "Jump to Next Column"),
-        ] {
+        for (icon, m, tip) in WRAP_MODES {
             if wrap_mode_button(app, ui, input_id.with(m), icon, mode == m, crate::i18n::tr(&app.ui.language, tip)) {
                 let _ = app.run("object.textWrap", json!({"mode": m}));
             }
@@ -302,11 +392,16 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let _ = app.run("object.textWrap", json!({"mode": mode, "invert": inv}));
         }
     });
+    // The mode buttons and Invert above are the framework's once it is installed; so is the rest.
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::wrap_options(app, ui, info.as_ref(), mode);
+    }
     let u = units(app);
     let offsets = info.as_ref().map(|i| i.wrap_offsets);
     // Linked while the offsets are all the same, until the link is clicked.
-    let linked_id = egui::Id::unique("wrap_offsets_linked");
-    let linked = ui.data(|d| d.get_temp::<bool>(linked_id)).unwrap_or_else(|| offsets.is_none_or(|o| o.iter().all(|v| (v - o[0]).abs() < 1e-9)));
+    let linked_id = wrap_link_id();
+    let linked = wrap_linked(ui, offsets);
     let mut set: Option<[f64; 4]> = None;
     ui.add_enabled_ui(mode != "none" && info.is_some(), |ui| {
         // Two rows of fixed-width cells: Top | Left, then Bottom | Right; the link between them.
@@ -328,13 +423,7 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                     }
                     cell(ui, if k == 0 { 56.0 } else { 40.0 }, label);
                     if let Some(v) = measure(ui, &format!("wo{side}"), offsets.map(|o| o[side]), u, 60.0) {
-                        let mut o = offsets.unwrap_or([0.0; 4]);
-                        if linked {
-                            o = [v; 4];
-                        } else {
-                            o[side] = v;
-                        }
-                        set = Some(o);
+                        set = Some(wrap_offsets_set(offsets, linked, side, v));
                     }
                     if k == 0 && r == 0 {
                         let tip = crate::i18n::tr(&app.ui.language, "Make all settings the same");
@@ -351,26 +440,9 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
     }
     let Some(i) = info.as_ref().filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
-    let sides = [
-        ("bothSides", "Both Right & Left Sides"),
-        ("rightSide", "Right Side"),
-        ("leftSide", "Left Side"),
-        ("towardsSpine", "Side Towards Spine"),
-        ("awayFromSpine", "Side Away from Spine"),
-        ("largestArea", "Largest Area"),
-    ];
-    wrap_combo(app, ui, "wrap_side", "Wrap To", &sides, &[], &i.wrap_side, "side");
+    wrap_combo(app, ui, "wrap_side", "Wrap To", &WRAP_SIDES, &[], &i.wrap_side, "side");
     if i.wrap == "contour" && i.is_graphic {
-        // Detected edges and image paths aren't offered: they need the image's own analysis or
-        // paths. An imported one shows by name and wraps around the frame.
-        let types = [
-            ("boundingBox", "Bounding Box"),
-            ("alphaChannel", "Alpha Channel"),
-            ("graphicFrame", "Graphic Frame"),
-            ("sameAsClipping", "Same as Clipping"),
-        ];
-        let shown_only = [("detectEdges", "Detect Edges"), ("photoshopPath", "Photoshop Path")];
-        wrap_combo(app, ui, "wrap_contour", "Contour Type", &types, &shown_only, &i.wrap_contour, "contour");
+        wrap_combo(app, ui, "wrap_contour", "Contour Type", &CONTOUR_TYPES, &CONTOUR_SHOWN_ONLY, &i.wrap_contour, "contour");
         if i.wrap_contour == "alphaChannel" {
             let mut inside = i.wrap_inside_edges;
             if widgets::checkbox(ui, &mut inside, crate::i18n::tr(&app.ui.language, "Include Inside Edges")).changed() {
@@ -420,6 +492,10 @@ const PATHFINDER: [(&str, &str, &str); 5] = [
 
 /// Properties › Pathfinder (several objects selected): combine them into one shape.
 pub(super) fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::pathfinder_row(app, ui);
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         for (icon, op, tip) in PATHFINDER {
@@ -454,6 +530,10 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
 /// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
 /// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
 pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::anchor_point_sections(app, ui, i);
+    }
     section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
     anchor_transform_section(app, ui, i);
     divider(ui);
@@ -493,6 +573,10 @@ const CONVERT_POINT: [(&str, &str, &str); 4] = [
 /// Pathfinder panel, as InDesign's: Paths, Pathfinder, Convert Shape and Convert Point, each a row of
 /// icon buttons acting on the selection.
 pub fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::pathfinder_panel(app, ui);
+    }
     let section = |ui: &mut egui::Ui, app: &DesignApp, title: &str| {
         ui.add_space(4.0);
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, title));
@@ -539,61 +623,42 @@ pub fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 }
 
 pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::align_panel(app, ui);
+    }
     ui.horizontal(|ui| {
-        for (edge, icon, tip) in [
-            ("left", "objalign-left", "Align left edges"),
-            ("hcenter", "objalign-hcenter", "Align horizontal centers"),
-            ("right", "objalign-right", "Align right edges"),
-            ("top", "objalign-top", "Align top edges"),
-            ("vcenter", "objalign-vcenter", "Align vertical centers"),
-            ("bottom", "objalign-bottom", "Align bottom edges"),
-        ] {
+        for (edge, icon, tip) in ALIGN_EDGES {
             if widgets::icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
                 let _ = app.run("object.align", json!({"edge": edge}));
             }
         }
     });
     ui.horizontal(|ui| {
-        if widgets::icon_toggle(ui, "objdistribute-h", false, crate::i18n::tr(&app.ui.language, "Distribute ↔")).clicked() {
-            let _ = app.run("object.distribute", json!({"axis": "horizontal"}));
-        }
-        if widgets::icon_toggle(ui, "objdistribute-v", false, crate::i18n::tr(&app.ui.language, "Distribute ↕")).clicked() {
-            let _ = app.run("object.distribute", json!({"axis": "vertical"}));
+        for (axis, icon, tip) in DISTRIBUTE {
+            if widgets::icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.distribute", json!({"axis": axis}));
+            }
         }
     });
 }
 
 pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        return framework::effects_panel(app, ui);
+    }
     let Some(st) = app.session.active() else { return };
     let Some(it) = st.selection.items.first().and_then(|i| st.doc.item(*i)).cloned() else {
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
     };
-    use designcraft_color::BlendMode as B;
-    const MODES: [B; 16] = [
-        B::Normal,
-        B::Multiply,
-        B::Screen,
-        B::Overlay,
-        B::SoftLight,
-        B::HardLight,
-        B::ColorDodge,
-        B::ColorBurn,
-        B::Darken,
-        B::Lighten,
-        B::Difference,
-        B::Exclusion,
-        B::Hue,
-        B::Saturation,
-        B::Color,
-        B::Luminosity,
-    ];
     ui.horizontal(|ui| {
         let combo = craft_ui_legacy::ComboBox::from_id_salt("blend")
             .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, it.blend.label())))
             .width(130.0)
             .show_ui(ui, |ui| {
-                for m in MODES {
+                for m in BLEND_MODES {
                     if ui.selectable_label(m == it.blend, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, m.label()))).clicked() {
                         let _ = app.run("object.opacity", json!({"opacity": it.opacity, "blend": m}));
                     }
@@ -725,15 +790,15 @@ pub fn attributes_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(it) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).cloned()) else {
+        #[cfg(not(target_arch = "wasm32"))]
+        if app.framework_installed {
+            crate::framework_transform::caption(ui, None, crate::i18n::tr(&app.ui.language, "Select an object."));
+            return;
+        }
         crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
     };
-    let rows = [
-        ("overprintFill", "Overprint Fill", it.fill.overprint),
-        ("overprintStroke", "Overprint Stroke", it.stroke.overprint),
-        ("nonprinting", "Nonprinting", it.nonprinting),
-        ("overprintGap", "Overprint Gap", it.stroke.gap_overprint),
-    ];
+    let rows = attribute_rows(&it);
     let target =
         app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
     let id = ui.scope_id().with(("attributes", target));
@@ -758,6 +823,496 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), show_grid);
     } else {
         show_grid(ui);
+    }
+}
+
+/// The object panels on the craft UI framework: the same rows over the same engine commands as the native bodies above,
+/// every control a framework component. The Text Wrap mode buttons and Invert, and the Attributes check boxes, were
+/// already the framework's (see `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`).
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::*;
+    use crate::framework_transform::{
+        Letters, MenuRow, Number, Quantity, button, caption as text, check, choice, icon_button, menu, number_field, swatch_select,
+    };
+    use crate::panels::properties::{block, sub};
+    use craft_behavior::Mixed;
+    use craft_ui_widgets::choice::Segmented;
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::primitives::ContentPainterCx;
+    use craft_ui_widgets::text::link_toggle;
+    use egui::Rect;
+
+    /// The id of the control `key` of the panel the `ui` shows.
+    fn cid(ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+        ui.id().with(("object-panels", key))
+    }
+
+    /// The width of the widest of `labels` in the interface language, for a column of captions.
+    fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
+        let t = Tokens::get(ui.ctx());
+        labels
+            .iter()
+            .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(&app.ui.language, l).to_string(), egui::FontId::proportional(11.5), t.text).size().x)
+            .fold(0.0, f32::max)
+            .ceil()
+    }
+
+    /// A row of `label_w` caption then a field `width` wide: the caption is shown, and the field's rect returned.
+    fn labelled(ui: &mut Ui, caption: &str, label_w: f32, width: f32) -> Rect {
+        let b = block(ui, FIELD_H);
+        text(ui, Some(sub(b, 0.0, 0.0, label_w, FIELD_H)), caption);
+        let field = sub(b, label_w + 8.0, 0.0, width, FIELD_H);
+        ui.add_space(6.0);
+        field
+    }
+
+    /// A row of icon buttons wrapped to the panel's width, 23 pt each at `pitch`: the index of the one clicked.
+    fn icon_row(app: &DesignApp, ui: &mut Ui, key: &str, buttons: &[(&'static str, &str)], pitch: f32) -> Option<usize> {
+        let width = full_width(ui);
+        let per_row = ((width + pitch - 23.0) / pitch).floor().max(1.0) as usize;
+        let rows = buttons.len().div_ceil(per_row);
+        let b = block(ui, rows as f32 * 29.0 - 8.0);
+        let mut clicked = None;
+        for (k, (artwork, tip)) in buttons.iter().enumerate() {
+            let (row, col) = (k / per_row, k % per_row);
+            let (at, id) = (sub(b, col as f32 * pitch, row as f32 * 29.0, 23.0, 21.0), cid(ui, (key, k)));
+            if icon_button(ui, at, id, artwork, crate::i18n::tr(&app.ui.language, tip), false) {
+                clicked = Some(k);
+            }
+        }
+        clicked
+    }
+
+    /// A segmented choice of `choices` (label and value) at `at`, named `label`, showing `current`: the value picked.
+    fn segmented(
+        app: &DesignApp,
+        ui: &mut Ui,
+        at: Rect,
+        id: egui::Id,
+        label: &str,
+        current: Option<&'static str>,
+        choices: &[(&str, &'static str)],
+    ) -> Option<&'static str> {
+        let entries: Vec<Entry<&'static str>> =
+            choices.iter().map(|(l, v)| Entry::new(*v, crate::i18n::tr(&app.ui.language, l).to_owned())).collect();
+        let held = current.map_or(Mixed::Mixed, Mixed::Same);
+        Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied()
+    }
+
+    pub(super) fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        if crate::panels::colors_affect_text(app)
+            && let Some(a) = text_attrs(app)
+        {
+            text_stroke_panel(app, ui, &a["chars"]);
+            return;
+        }
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let Some(i) = sel_info(app) else {
+            text(ui, None, &tr("Select an object."));
+            return;
+        };
+        let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
+            return;
+        };
+        let doc = app.session.active().map(|d| d.doc.clone());
+        let label_w =
+            caption_width(app, ui, &["Weight:", "Cap:", "Join:", "Miter Limit:", "Align Stroke:", "Type:", "Start/End:", "Gap Color:", "Color:"]);
+        let wide = (full_width(ui) - label_w - 8.0).clamp(60.0, 220.0);
+        let at = labelled(ui, &tr("Weight:"), label_w, 60.0);
+        let id = cid(ui, "weight");
+        if let Some(Some(v)) = number_field(ui, Some(at), id, Number::new(&tr("Weight:"), Some(i.stroke_weight), Quantity::Points)) {
+            let _ = app.run("object.stroke", json!({"weight": v.clamp(0.0, 1000.0)}));
+        }
+        let at = labelled(ui, &tr("Cap:"), label_w, wide);
+        let caps: Vec<(&str, &'static str)> = CAPS.iter().map(|(l, v, _)| (*l, *v)).collect();
+        let cur = CAPS.iter().find(|c| c.2 == st.cap).map(|c| c.1);
+        let id = cid(ui, "cap");
+        if let Some(v) = segmented(app, ui, at, id, &tr("Cap:"), cur, &caps) {
+            let _ = app.run("object.stroke", json!({"cap": v}));
+        }
+        let at = labelled(ui, &tr("Join:"), label_w, wide);
+        let joins: Vec<(&str, &'static str)> = JOINS.iter().map(|(l, v, _)| (*l, *v)).collect();
+        let cur = JOINS.iter().find(|c| c.2 == st.join).map(|c| c.1);
+        let id = cid(ui, "join");
+        if let Some(v) = segmented(app, ui, at, id, &tr("Join:"), cur, &joins) {
+            let _ = app.run("object.stroke", json!({"join": v}));
+        }
+        let at = labelled(ui, &tr("Miter Limit:"), label_w, 60.0);
+        let id = cid(ui, "miter");
+        let miter = tr("Miter Limit:");
+        let n = Number::new(&miter, Some(st.miter_limit), Quantity::Plain { decimals: 0 });
+        if let Some(Some(v)) = number_field(ui, Some(at), id, n) {
+            let _ = app.run("object.stroke", json!({"miterLimit": v.clamp(1.0, 500.0)}));
+        }
+        let at = labelled(ui, &tr("Align Stroke:"), label_w, wide);
+        let aligns: Vec<(&str, &'static str)> = STROKE_ALIGNS.iter().map(|(l, v, _)| (*l, *v)).collect();
+        let cur = STROKE_ALIGNS.iter().find(|c| c.2 == st.align).map(|c| c.1);
+        let id = cid(ui, "align");
+        if let Some(v) = segmented(app, ui, at, id, &tr("Align Stroke:"), cur, &aligns) {
+            let _ = app.run("object.stroke", json!({"align": v}));
+        }
+        // Type: the built-in types, then the document's own stroke styles.
+        let at = labelled(ui, &tr("Type:"), label_w, wide.min(140.0));
+        let custom: Vec<String> = doc.as_ref().map(|d| d.stroke_styles.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
+        let mut entries: Vec<Entry<Value>> = BUILT_IN_STROKES
+            .iter()
+            .map(|k| {
+                let (ty, label) = built_in_stroke(k);
+                Entry::new(ty, tr(label))
+            })
+            .collect();
+        if !custom.is_empty() {
+            entries.push(Entry::separator());
+        }
+        entries.extend(custom.iter().map(|n| Entry::new(json!({"kind": "style", "name": n}), n.clone())));
+        // The stroke's type as the list holds it: a built-in by its kind (a dash with any pattern is Dashed), a style
+        // by its name.
+        let held = match &st.kind {
+            StrokeType::Style { name } => Some(json!({"kind": "style", "name": name})),
+            k => {
+                let label = k.label();
+                BUILT_IN_STROKES.iter().map(|b| built_in_stroke(b)).find(|(_, l)| *l == label).map(|(ty, _)| ty)
+            }
+        };
+        let shown = match &st.kind {
+            StrokeType::Style { name } => name.clone(),
+            k => tr(k.label()),
+        };
+        let id = cid(ui, "type");
+        let picked = Select::new(tr("Type"), Bind::given(held.map_or(Mixed::Mixed, Mixed::Same)), &entries)
+            .id(id)
+            .placeholder(shown)
+            .show_at(ui, at)
+            .events
+            .committed()
+            .cloned();
+        if let Some(ty) = picked {
+            let _ = app.run("object.stroke", json!({"type": ty}));
+        }
+        // Start and End arrowheads, each previewed in its list.
+        let arrows: Vec<Entry<Arrowhead>> = Arrowhead::ALL.iter().map(|a| Entry::new(*a, tr(a.label()))).collect();
+        let ink = Tokens::get(ui.ctx()).text_strong;
+        for (key, label, name, cur, flip) in [("start", "Start/End:", "Start/End", st.start, true), ("end", "", "End", st.end, false)] {
+            let at = labelled(ui, &tr(label), label_w, wide.min(140.0));
+            let id = cid(ui, ("arrowhead", key));
+            let picked = Select::new(tr(name), Bind::given(Mixed::Same(cur)), &arrows)
+                .id(id)
+                .picture(move |a: &Arrowhead, cx: &ContentPainterCx<'_>, rect: Rect| paint_arrow(&cx.painter, rect, *a, flip, ink))
+                .show_at(ui, at)
+                .events
+                .committed()
+                .copied();
+            if let Some(a) = picked {
+                let _ = app.run("object.stroke", json!({key: a}));
+            }
+        }
+        if let Some(doc) = &doc {
+            for (label, key, cur) in [("Gap Color:", "gapSwatch", st.gap_swatch.clone()), ("Color:", "swatch", i.stroke.clone())] {
+                let at = labelled(ui, &tr(label), label_w, wide.min(180.0));
+                let id = cid(ui, key);
+                if let Some(n) = swatch_select(ui, Some(at), id, &tr(label), doc, Some(&cur), Some(&cur)) {
+                    let _ = app.run("object.stroke", json!({key: n}));
+                }
+            }
+        }
+    }
+
+    /// The Stroke panel while text is selected: the text's outline weight and colour, and whether it sits behind the fill.
+    fn text_stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui, c: &Value) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let swatch = c["stroke"].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
+        let label_w = caption_width(app, ui, &["Weight:", "Color:"]);
+        let at = labelled(ui, &tr("Weight:"), label_w, 60.0);
+        let id = cid(ui, "text-stroke-weight");
+        if let Some(Some(v)) = number_field(ui, Some(at), id, Number::new(&tr("Weight:"), c["strokeWeight"].as_f64(), Quantity::Points)) {
+            // The character stroke weight's range, as the character style's Weight field has it.
+            let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v.clamp(0.0, 800.0)}}));
+        }
+        if let Some(doc) = app.session.active().map(|d| d.doc.clone()) {
+            let at = labelled(ui, &tr("Color:"), label_w, 180.0);
+            let id = cid(ui, "text-stroke-color");
+            if let Some(n) = swatch_select(ui, Some(at), id, &tr("Color:"), &doc, Some(&swatch), Some(&swatch)) {
+                let _ = crate::panels::apply_swatch(app, true, &n, None);
+            }
+        }
+        let id = cid(ui, "text-stroke-behind");
+        if let Some(on) = check(ui, None, id, &tr("Stroke Behind Fill"), c["strokeBehindFill"].as_bool().unwrap_or(false), true) {
+            let _ = app.run("type.char", json!({"attrs": {"strokeBehindFill": on}}));
+        }
+    }
+
+    /// The Text Wrap panel under its mode buttons and Invert: the four offsets with their link, Wrap To, and for a
+    /// graphic's contour the Contour Type and Include Inside Edges.
+    pub(super) fn wrap_options(app: &mut DesignApp, ui: &mut egui::Ui, info: Option<&SelInfo>, mode: &str) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let u = units(app);
+        let enabled = mode != "none" && info.is_some();
+        let offsets = info.map(|i| i.wrap_offsets);
+        let linked = wrap_linked(ui, offsets);
+        let mut set = None;
+        // Two rows: Top | Left, then Bottom | Right; the link between the columns.
+        let b = block(ui, 2.0 * FIELD_H + 5.0);
+        for (side, label, x, y) in
+            [(0, "Top", 0.0, 0.0), (1, "Left", 150.0, 0.0), (2, "Bottom", 0.0, FIELD_H + 5.0), (3, "Right", 150.0, FIELD_H + 5.0)]
+        {
+            let name = tr(label);
+            text(ui, Some(sub(b, x, y, if x == 0.0 { 54.0 } else { 38.0 }, FIELD_H)), &name);
+            let fx = if x == 0.0 { 56.0 } else { 190.0 };
+            let id = cid(ui, ("wrap-offset", side));
+            let n = Number::new(&name, offsets.map(|o| o[side]), Quantity::Length(u)).enabled(enabled);
+            if let Some(Some(v)) = number_field(ui, Some(sub(b, fx, y, 60.0, FIELD_H)), id, n) {
+                set = Some(wrap_offsets_set(offsets, linked, side, v));
+            }
+        }
+        let tip = tr("Make all settings the same");
+        let id = cid(ui, "wrap-link");
+        let toggled = link_toggle(tip.clone(), Bind::given(linked))
+            .id(id)
+            .tooltip(tip)
+            .enabled(enabled)
+            .show_at(ui, sub(b, 122.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H))
+            .events
+            .committed()
+            .copied();
+        if let Some(on) = toggled {
+            ui.data_mut(|d| d.insert_temp(wrap_link_id(), on));
+        }
+        if let Some(o) = set {
+            let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
+        }
+        ui.add_space(6.0);
+        let Some(i) = info.filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
+        wrap_choice(app, ui, "Wrap To", &WRAP_SIDES, &[], &i.wrap_side, "side");
+        if i.wrap == "contour" && i.is_graphic {
+            wrap_choice(app, ui, "Contour Type", &CONTOUR_TYPES, &CONTOUR_SHOWN_ONLY, &i.wrap_contour, "contour");
+            if i.wrap_contour == "alphaChannel" {
+                let id = cid(ui, "inside-edges");
+                if let Some(on) = check(ui, None, id, &tr("Include Inside Edges"), i.wrap_inside_edges, true) {
+                    let _ = app.run("object.textWrap", json!({"insideEdges": on}));
+                }
+            }
+        }
+    }
+
+    /// A Text Wrap choice: `opts` are offered, `shown_only` only name the current value.
+    fn wrap_choice(
+        app: &mut DesignApp,
+        ui: &mut Ui,
+        caption: &str,
+        opts: &[(&'static str, &str)],
+        shown_only: &[(&str, &str)],
+        cur: &str,
+        key: &str,
+    ) {
+        let lang = app.ui.language.clone();
+        let name = crate::i18n::tr(&lang, caption).to_owned();
+        let label_w = caption_width(app, ui, &["Wrap To", "Contour Type"]);
+        let at = labelled(ui, &name, label_w, 170.0);
+        let choices: Vec<(&'static str, String)> = opts.iter().map(|(v, l)| (*v, crate::i18n::tr(&lang, l).to_owned())).collect();
+        let held = opts.iter().map(|o| o.0).find(|v| *v == cur);
+        let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1);
+        let id = cid(ui, ("wrap-choice", key));
+        if let Some(v) = choice(ui, Some(at), id, &name, held, &choices, Some(crate::i18n::tr(&lang, shown))) {
+            let _ = app.run("object.textWrap", json!({ key: v }));
+        }
+    }
+
+    pub(super) fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
+        let buttons: Vec<(&'static str, &str)> = PATHFINDER.iter().map(|(icon, _, tip)| (*icon, *tip)).collect();
+        if let Some(k) = icon_row(app, ui, "pathfinder-row", &buttons, 31.0) {
+            let _ = app.run("object.pathfinder", json!({"op": PATHFINDER[k].1}));
+        }
+    }
+
+    pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
+        let lang = app.ui.language.clone();
+        section(ui, crate::i18n::tr(&lang, "Transform"), true);
+        anchor_transform_section(app, ui, i);
+        divider(ui);
+        section(ui, crate::i18n::tr(&lang, "Appearance"), true);
+        appearance_section(app, ui, i);
+        divider(ui);
+        // Convert Points: the title, and the point types at the row's end (Plain … Symmetrical).
+        ui.add_space(8.0);
+        let b = block(ui, 23.0);
+        text(ui, Some(sub(b, 0.0, 0.0, 100.0, 23.0)), crate::i18n::tr(&lang, "Convert Points"));
+        let start = b.width() - 4.0 - (CONVERT_POINT.len() as f32 * 23.0 + (CONVERT_POINT.len() - 1) as f32 * 14.0);
+        for (k, (artwork, kind, tip)) in CONVERT_POINT.into_iter().enumerate() {
+            let (at, id) = (sub(b, start + k as f32 * 37.0, 1.0, 23.0, 21.0), cid(ui, ("convert-point", kind)));
+            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+                let _ = app.run("path.convertPoints", json!({"kind": kind}));
+            }
+        }
+        ui.add_space(6.0);
+        rule(ui);
+        section(ui, crate::i18n::tr(&lang, "Quick Actions"), true);
+        let fw = full_width(ui);
+        let b = block(ui, widgets::BUTTON_H);
+        let id = cid(ui, "delete-points");
+        if button(ui, Some(sub(b, 0.0, 0.0, fw, widgets::BUTTON_H)), id, crate::i18n::tr(&lang, "Delete Point(s)"), true).clicked() {
+            let _ = app.run("path.deletePoints", json!({}));
+        }
+    }
+
+    pub(super) fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let title = |ui: &mut egui::Ui, app: &DesignApp, title: &str| {
+            ui.add_space(4.0);
+            text(ui, None, crate::i18n::tr(&app.ui.language, title));
+            ui.add_space(2.0);
+        };
+        title(ui, app, "Paths:");
+        let paths: Vec<(&'static str, &str)> = PATHS.iter().map(|(icon, _, _, tip)| (*icon, *tip)).collect();
+        if let Some(k) = icon_row(app, ui, "paths", &paths, 35.0) {
+            let (_, cmd, params, _) = PATHS[k];
+            let _ = app.run(cmd, serde_json::from_str(params).unwrap_or_default());
+        }
+        title(ui, app, "Pathfinder:");
+        let ops: Vec<(&'static str, &str)> = PATHFINDER.iter().map(|(icon, _, tip)| (*icon, *tip)).collect();
+        if let Some(k) = icon_row(app, ui, "pathfinder", &ops, 35.0) {
+            let _ = app.run("object.pathfinder", json!({"op": PATHFINDER[k].1}));
+        }
+        title(ui, app, "Convert Shape:");
+        let shapes: Vec<(&'static str, &str)> = CONVERT_SHAPE.iter().map(|(icon, _, tip)| (*icon, *tip)).collect();
+        if let Some(k) = icon_row(app, ui, "convert-shape", &shapes, 35.0) {
+            let _ = app.run("object.convertShape", json!({"to": CONVERT_SHAPE[k].1}));
+        }
+        title(ui, app, "Convert Point:");
+        let points: Vec<(&'static str, &str)> = CONVERT_POINT.iter().map(|(icon, _, tip)| (*icon, *tip)).collect();
+        if let Some(k) = icon_row(app, ui, "convert-point", &points, 35.0) {
+            let _ = app.run("path.convertPoints", json!({"kind": CONVERT_POINT[k].1}));
+        }
+    }
+
+    pub(super) fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let lang = app.ui.language.clone();
+        let b = block(ui, 2.0 * 21.0 + 6.0);
+        for (k, (edge, artwork, tip)) in ALIGN_EDGES.into_iter().enumerate() {
+            let (at, id) = (sub(b, k as f32 * 27.0, 0.0, 23.0, 21.0), cid(ui, ("align", edge)));
+            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+                let _ = app.run("object.align", json!({"edge": edge}));
+            }
+        }
+        for (k, (axis, artwork, tip)) in DISTRIBUTE.into_iter().enumerate() {
+            let (at, id) = (sub(b, k as f32 * 27.0, 27.0, 23.0, 21.0), cid(ui, ("distribute", axis)));
+            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+                let _ = app.run("object.distribute", json!({"axis": axis}));
+            }
+        }
+    }
+
+    pub(super) fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        let lang = app.ui.language.clone();
+        let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
+        let Some(st) = app.session.active() else { return };
+        let Some(it) = st.selection.items.first().and_then(|i| st.doc.item(*i)).cloned() else {
+            text(ui, None, &tr("Select an object."));
+            return;
+        };
+        let global = st.doc.settings.global_light;
+        // Blending and Opacity.
+        let b = block(ui, FIELD_H);
+        let modes: Vec<(designcraft_color::BlendMode, String)> = BLEND_MODES.iter().map(|m| (*m, tr(m.label()))).collect();
+        let id = cid(ui, "blend");
+        if let Some(m) = choice(ui, Some(sub(b, 0.0, 0.0, 130.0, FIELD_H)), id, &tr("Blending"), Some(it.blend), &modes, None) {
+            let _ = app.run("object.opacity", json!({"opacity": it.opacity, "blend": m}));
+        }
+        text(ui, Some(sub(b, 138.0, 0.0, 50.0, FIELD_H)), &tr("Opacity"));
+        let id = cid(ui, "opacity");
+        let opacity = tr("Opacity");
+        let n = Number::new(&opacity, Some(f64::from(it.opacity) * 100.0), Quantity::Percent).range(0.0, 100.0);
+        if let Some(Some(v)) = number_field(ui, Some(sub(b, 192.0, 0.0, 52.0, FIELD_H)), id, n) {
+            let _ = app.run("object.opacity", json!({"opacity": (v / 100.0).clamp(0.0, 1.0)}));
+        }
+        ui.add_space(4.0);
+        // The level the settings apply to, with its blend mode and opacity ("Group: Color Dodge 100%").
+        let group = it.is_group();
+        let level = format!("{} {} {}%", tr(if group { "Group:" } else { "Object:" }), tr(it.blend.label()), (it.opacity * 100.0).round());
+        text(ui, None, &level);
+        divider(ui);
+        let ds = it.effects.drop_shadow.clone();
+        let id = cid(ui, "drop-shadow");
+        if let Some(on) = check(ui, None, id, &tr("Drop Shadow"), ds.on, true) {
+            let _ = app.run("object.dropShadow", json!({"on": on}));
+        }
+        if ds.on {
+            // Distance and Size in the document's unit, as in the Effects dialog.
+            let u = units(app);
+            let row = FIELD_H + 4.0;
+            let b = block(ui, 3.0 * row);
+            let cell = |x: f32, y: f32, w: f32| sub(b, x, y, w, FIELD_H);
+            text(ui, Some(cell(0.0, 0.0, 52.0)), &tr("Distance"));
+            let id = cid(ui, "shadow-distance");
+            if let Some(Some(v)) =
+                number_field(ui, Some(cell(56.0, 0.0, 56.0)), id, Number::new(&tr("Distance"), Some(ds.distance), Quantity::Length(u)))
+            {
+                let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
+            }
+            text(ui, Some(cell(120.0, 0.0, 40.0)), &tr("Angle"));
+            let id = cid(ui, ("shadow-angle", ds.global_light));
+            let angle = if ds.global_light { global } else { ds.angle };
+            if let Some(Some(v)) = number_field(ui, Some(cell(164.0, 0.0, 50.0)), id, Number::new(&tr("Angle"), Some(angle), Quantity::Degrees)) {
+                // With Use Global Light on, the angle is the document's (every such shadow moves).
+                let _ = if ds.global_light {
+                    app.run("object.globalLight", json!({"angle": v}))
+                } else {
+                    app.run("object.dropShadow", json!({"on": true, "angle": v}))
+                };
+            }
+            let id = cid(ui, "shadow-global-light");
+            if let Some(on) = check(ui, Some(cell(120.0, row, 130.0)), id, &tr("Use Global Light"), ds.global_light, true) {
+                let _ = app.run("object.dropShadow", json!({"on": true, "globalLight": on}));
+            }
+            text(ui, Some(cell(0.0, 2.0 * row, 52.0)), &tr("Opacity"));
+            let id = cid(ui, "shadow-opacity");
+            let opacity = tr("Opacity");
+            let n = Number::new(&opacity, Some(f64::from(ds.opacity) * 100.0), Quantity::Percent);
+            if let Some(Some(v)) = number_field(ui, Some(cell(56.0, 2.0 * row, 56.0)), id, n) {
+                let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
+            }
+            text(ui, Some(cell(120.0, 2.0 * row, 40.0)), &tr("Size"));
+            let id = cid(ui, "shadow-size");
+            if let Some(Some(v)) =
+                number_field(ui, Some(cell(164.0, 2.0 * row, 56.0)), id, Number::new(&tr("Size"), Some(ds.size), Quantity::Length(u)))
+            {
+                let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
+            }
+        }
+        divider(ui);
+        // Groups only, as in InDesign (greyed for other objects).
+        let b = block(ui, FIELD_H);
+        let id = cid(ui, "isolate");
+        if let Some(on) = check(ui, Some(sub(b, 0.0, 0.0, 120.0, FIELD_H)), id, &tr("Isolate Blending"), it.isolate, group) {
+            let _ = app.run("object.transparencyGroup", json!({"isolate": on}));
+        }
+        let id = cid(ui, "knockout");
+        if let Some(on) = check(ui, Some(sub(b, 126.0, 0.0, 120.0, FIELD_H)), id, &tr("Knockout Group"), it.knockout, group) {
+            let _ = app.run("object.transparencyGroup", json!({"knockout": on}));
+        }
+        ui.add_space(4.0);
+        // The fx button, as at the bottom of InDesign's Effects panel: each effect opens the Effects dialog on its
+        // page.
+        let b = block(ui, 20.0);
+        let id = cid(ui, "fx");
+        let tip = tr("Add an object effect to the selected target");
+        let opener =
+            craft_ui_widgets::buttons::IconButton::new(craft_ui_widgets::primitives::IconSpec::glyph(&Letters { text: "fx", struck: false }))
+                .id(id)
+                .label(tip.clone())
+                .tooltip(tip.clone())
+                .popup(craft_ui_widgets::contract::PopupKind::Menu)
+                .show_at(ui, sub(b, 0.0, 0.0, 28.0, 20.0));
+        let labels: Vec<String> = crate::effects_dialog::PAGES.iter().map(|(_, label)| format!("{}…", tr(label))).collect();
+        let rows: Vec<MenuRow<'_, usize>> =
+            labels.iter().enumerate().map(|(k, label)| MenuRow { key: k, label, checked: None, enabled: true, shortcut: None }).collect();
+        let id = cid(ui, "fx-menu");
+        if let Some(k) = menu(ui, id, &tip, &opener, &[rows]) {
+            crate::effects_dialog::open(app, crate::effects_dialog::PAGES[k].0);
+        }
     }
 }
 
@@ -2180,5 +2735,66 @@ mod ui223_text_wrap_mode_invert_tests {
         undo(&mut h);
         undo(&mut h);
         domain(&h, &before.doc, &before, (before.history.0, 2));
+    }
+}
+
+/// The Stroke, Effects, Align and Pathfinder panels on the framework, driven with real pointer and key events.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod framework_panel_tests {
+    use super::super::framework_test_kit::*;
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::json;
+
+    #[test]
+    fn the_stroke_panels_weight_and_cap_run_object_stroke_once_each() {
+        let mut app = document();
+        let id = rectangle(&mut app);
+        let mut h = open(app, crate::panels::properties::stroke_panel);
+        let steps = undo_steps(&h);
+        type_into(&mut h, "Weight:", "3");
+        assert_eq!(journal(&h, "object.stroke").last(), Some(&json!({"weight": 3.0})));
+        assert_eq!(item(&h, id).stroke.weight, 3.0);
+        let at = h.query_all_by_label("Projecting").next().expect("the Projecting cap").rect().center();
+        click_at(&mut h, at);
+        assert_eq!(journal(&h, "object.stroke").last(), Some(&json!({"cap": "projecting"})));
+        assert_eq!(item(&h, id).stroke.cap, designcraft_doc::Cap::Projecting);
+        assert_eq!(undo_steps(&h), steps + 2, "one undo step each");
+    }
+
+    #[test]
+    fn the_effects_panels_drop_shadow_check_box_turns_it_on() {
+        let mut app = document();
+        let id = rectangle(&mut app);
+        let mut h = open(app, crate::panels::properties::effects_panel);
+        click(&mut h, Role::CheckBox, "Drop Shadow");
+        assert_eq!(journal(&h, "object.dropShadow").last(), Some(&json!({"on": true})));
+        assert!(item(&h, id).effects.drop_shadow.on);
+        assert!(has(&h, Role::CheckBox, "Use Global Light"), "the shadow's options show once it is on");
+    }
+
+    #[test]
+    fn the_align_panels_left_edges_button_aligns_the_selection() {
+        let mut app = document();
+        let a = rectangle(&mut app);
+        let b = app.run("frame.create", serde_json::json!({"rect": [120, 200, 220, 260]})).expect("a frame")["id"].as_u64().expect("an id");
+        app.run("selection.set", serde_json::json!({"ids": [a, b]})).expect("both are selected");
+        let mut h = open(app, crate::panels::properties::align_panel);
+        click(&mut h, Role::Button, "Align left edges");
+        assert_eq!(journal(&h, "object.align").last(), Some(&json!({"edge": "left"})));
+    }
+
+    #[test]
+    fn the_pathfinder_panels_buttons_are_framework_buttons_that_run_their_commands() {
+        let mut app = document();
+        let a = rectangle(&mut app);
+        let b = app.run("frame.create", serde_json::json!({"rect": [120, 100, 320, 200]})).expect("a frame")["id"].as_u64().expect("an id");
+        app.run("selection.set", serde_json::json!({"ids": [a, b]})).expect("both are selected");
+        let mut h = open(app, crate::panels::properties::pathfinder_panel);
+        for label in ["Join Path", "Add", "Rectangle", "Smooth"] {
+            assert!(has(&h, Role::Button, label), "{label}");
+        }
+        click(&mut h, Role::Button, "Add");
+        assert_eq!(journal(&h, "object.pathfinder").last(), Some(&json!({"op": "add"})));
     }
 }
