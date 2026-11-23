@@ -1,6 +1,6 @@
 //! Compatibility recovery at the saved-preferences boundary. Command deserialization stays strict.
 
-use craft_ui_legacy::docking::{Layout, Location};
+use craft_behavior::dock::{Layout, Location};
 use serde_json::Value;
 
 use crate::{HiddenPanels, SavedWorkspace, UiState, panel_docking};

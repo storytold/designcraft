@@ -12,6 +12,9 @@ workspace = true
 [dependencies]
 craft-ui-legacy = { workspace = true, features = ["native-windows"] }
 craft-ui = { workspace = true }
+# The panel dock's model and its JSON commands, on every target.
+craft-behavior = { workspace = true }
+craft-ui-panels = { workspace = true }
 craft-window = { workspace = true }
 craft-window-sdk = { workspace = true }
 craft-keymap = { workspace = true }
@@ -57,10 +60,8 @@ toml = "1"
 # The craft UI framework's own components (Properties > Transform's pilot rows). The browser build
 # keeps the bespoke fields, so the framework is not a wasm dependency.
 craft-ui-widgets = { workspace = true }
-craft-ui-panels = { workspace = true }
 craft-color-ui = { workspace = true }
 craft-theme = { workspace = true }
-craft-behavior = { workspace = true }
 craft-host = { workspace = true }
 craft-window-sdk = { workspace = true }
 craft-update = { workspace = true }
