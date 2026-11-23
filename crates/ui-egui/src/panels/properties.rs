@@ -45,6 +45,13 @@ pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_pane
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
 pub(crate) use typography::{composer_choice, para_field_min};
+/// The framework versions of the kerning field, the language select and the reference-point picker, for the Control
+/// bar as well as this panel.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use {
+    object::framework::reference_point,
+    text::framework::{kerning_field, language_select},
+};
 
 /// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
 /// that panel stays: `window.panel` would close it.
@@ -204,34 +211,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     } else {
         if i.is_graphic {
             section(ui, crate::i18n::tr(&app.ui.language, "Frame Fitting"), true);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for (icon, mode, tip) in [
-                    ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
-                    ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
-                    ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
-                    ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
-                    ("fit-center", "centerContent", "Center Content"),
-                ] {
-                    if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                        let _ = app.run("object.fit", json!({"mode": mode}));
-                    }
-                }
-                // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
-                if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
-                    crate::menus::activate(app, "app.fittingOptions", &Value::Null);
-                }
-            });
-            // Auto-Fit: the graphic is refitted whenever its frame is resized.
-            let mut auto = app
-                .session
-                .active()
-                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
-                .and_then(|it| it.graphic())
-                .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
-            if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
-                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
-            }
+            frame_fitting_section(app, ui);
             divider(ui);
         }
         section(ui, crate::i18n::tr(&app.ui.language, "Text Wrap"), true);
@@ -240,6 +220,66 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
     quick_actions_object(app, ui, &i);
+}
+
+/// The fitting buttons, as InDesign's Properties panel shows them for a graphic frame.
+const FITTINGS: [(&str, &str, &str); 5] = [
+    ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
+    ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
+    ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
+    ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
+    ("fit-center", "centerContent", "Center Content"),
+];
+
+/// Whether the first selected frame's graphic is refitted whenever the frame is resized (Auto-Fit).
+fn auto_fit(app: &DesignApp) -> bool {
+    app.session
+        .active()
+        .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+        .and_then(|it| it.graphic())
+        .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None)
+}
+
+/// Frame Fitting for a graphic frame: the fitting buttons, Frame Fitting Options… beside them, then Auto-Fit.
+fn frame_fitting_section(app: &mut DesignApp, ui: &mut Ui) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed {
+        use crate::framework_transform::{button, check, icon_button};
+        let lang = app.ui.language.clone();
+        let b = block(ui, FIELD_H);
+        for (k, (icon, mode, tip)) in FITTINGS.into_iter().enumerate() {
+            let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.id().with(("frame-fitting", mode)));
+            if icon_button(ui, at, id, icon, crate::i18n::tr(&lang, tip), false) {
+                let _ = app.run("object.fit", json!({"mode": mode}));
+            }
+        }
+        let id = ui.id().with("frame-fitting-options");
+        if button(ui, Some(sub(b, 5.0 * 31.0, 0.0, 64.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
+            crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+        }
+        ui.add_space(5.0);
+        let id = ui.id().with("frame-fitting-auto");
+        if let Some(on) = check(ui, None, id, crate::i18n::tr(&lang, "Auto-Fit"), auto_fit(app), true) {
+            let _ = app.run("object.fittingOptions", json!({"autoFit": on}));
+        }
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (icon, mode, tip) in FITTINGS {
+            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
+                let _ = app.run("object.fit", json!({"mode": mode}));
+            }
+        }
+        // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
+        if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
+            crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+        }
+    });
+    let mut auto = auto_fit(app);
+    if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
+        let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
+    }
 }
 
 #[cfg(test)]
