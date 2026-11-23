@@ -26,7 +26,7 @@ fn group(s: &mut Session, ids: &[u64]) -> u64 {
 
 fn dark_coverage(s: &Session) -> usize {
     let image = Renderer::new().render_page(&s.doc().unwrap().doc, &s.cache, 0, 1.0, false, &Default::default()).unwrap();
-    image.pixels.chunks_exact(4).filter(|p| p[..3].iter().any(|c| *c < 220)).count()
+    image.pixels.as_chunks::<4>().0.iter().filter(|p| p[..3].iter().any(|c| *c < 220)).count()
 }
 
 fn items(d: &Document) -> Vec<&Item> {
