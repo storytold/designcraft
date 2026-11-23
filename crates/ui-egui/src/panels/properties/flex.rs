@@ -416,7 +416,7 @@ mod framework {
     }
 
     /// The id of the control `key` of the section the `ui` shows, for the selected container.
-    fn cid(app: &DesignApp, ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+    fn cid(app: &DesignApp, ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
         ui.make_persistent_id(("flex-section", key, owner))
     }

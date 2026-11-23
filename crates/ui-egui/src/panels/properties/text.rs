@@ -838,7 +838,7 @@ pub(crate) mod framework {
     use craft_ui_widgets::text::{NamedOr, NumberField, NumberName, NumberPick, link_toggle};
 
     /// The id of the control `key` of the text sections the panel's `ui` shows.
-    fn cid(ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+    fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         ui.id().with(("properties-text", key))
     }
 

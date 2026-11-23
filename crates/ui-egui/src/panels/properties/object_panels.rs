@@ -836,6 +836,7 @@ mod framework {
         Letters, MenuRow, Number, Quantity, button, caption as text, check, choice, icon_button, menu, number_field, swatch_select,
     };
     use crate::panels::properties::{block, sub};
+    use crate::widgets::FIELD_H;
     use craft_behavior::Mixed;
     use craft_ui_widgets::choice::Segmented;
     use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
@@ -845,7 +846,7 @@ mod framework {
     use egui::Rect;
 
     /// The id of the control `key` of the panel the `ui` shows.
-    fn cid(ui: &Ui, key: impl std::hash::Hash) -> egui::Id {
+    fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         ui.id().with(("object-panels", key))
     }
 
