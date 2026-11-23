@@ -3,9 +3,9 @@
 //! applied as minimal range replacements, so formatting around them is kept.
 //!
 //! The editor is a float-only panel of the dock (`dock::FLOATING_PANELS`): a floating window that takes no other
-//! panel. Where the dock cannot draw (no craft UI runtime on the context) it is a window of its own.
+//! panel.
 
-use egui::{pos2, vec2};
+use egui::pos2;
 use serde_json::json;
 
 use designcraft_compose::ComposedStory;
@@ -144,7 +144,7 @@ fn parked_id() -> egui::Id {
 }
 
 /// Keeps the editor with its story: it closes with its document or story, and hides while another document is active.
-/// The dock draws its panel; without the dock it is a window of its own.
+/// The dock draws its panel.
 pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     if let Some(target) = app.story_editor {
         let doc = app.session.documents().iter().find(|d| d.uid == target.doc);
@@ -153,11 +153,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             app.story_editor = None;
         }
     }
-    if crate::panel_docking::runtime_on(ctx) {
-        sync_panel(app, ctx);
-    } else {
-        native_window(app, ctx);
-    }
+    sync_panel(app, ctx);
 }
 
 /// The editor's panel follows its story: it closes while another document is active and opens again where it was
@@ -200,29 +196,11 @@ fn sync_panel(app: &mut DesignApp, ctx: &egui::Context) {
     }
 }
 
-/// The editor's contents in its panel: framework components while the framework is installed.
+/// The editor's contents in its panel.
 pub fn body(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(s) = Snapshot::of(app) else { return };
-    #[cfg(not(target_arch = "wasm32"))]
-    let changes = if app.framework_installed { framework::body(app, ui, &s) } else { native_body(app, ui, &s) };
-    #[cfg(target_arch = "wasm32")]
-    let changes = native_body(app, ui, &s);
+    let changes = framework::body(app, ui, &s);
     apply(app, s.sid, changes);
-}
-
-/// The editor as a window of its own, where the dock cannot draw.
-fn native_window(app: &mut DesignApp, ctx: &egui::Context) {
-    let Some(s) = Snapshot::of(app) else { return };
-    let mut open = true;
-    let mut changes = Changes::default();
-    let title = title(app).unwrap_or_default();
-    egui::Window::new(title).id(egui::Id::unique("story_editor")).open(&mut open).default_size(vec2(560.0, 520.0)).show(ctx, |ui| {
-        changes = native_body(app, ui, &s);
-    });
-    apply(app, s.sid, changes);
-    if !open {
-        app.story_editor = None;
-    }
 }
 
 /// The edit that turns `old` into `new` as one range replacement: the bytes of `old` between their common prefix and
@@ -237,102 +215,6 @@ fn minimal_edit(old: &str, new: &str) -> Option<(usize, usize, String)> {
     let suf = old.bytes().rev().zip(new.bytes().rev()).take(max_suf).take_while(|(a, b)| a == b).count();
     let suf = (0..=suf).rev().find(|&k| old.is_char_boundary(old.len() - k) && new.is_char_boundary(new.len() - k)).unwrap_or(0);
     Some((pre, old.len() - suf, new[pre..new.len() - suf].to_string()))
-}
-
-/// The editor's contents with egui's own widgets: the native path, for the browser build and a context without the
-/// framework.
-fn native_body(app: &DesignApp, ui: &mut egui::Ui, s: &Snapshot) -> Changes {
-    let t = Tokens::get(ui.ctx());
-    let mut changes = Changes::default();
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            // Style column: the labels are painted after the text, at the rows the text really wraps to,
-            // and so is the bar that resizes it.
-            let column = s.style_width.map(|w| {
-                let column = ui.allocate_exact_size(vec2(w, 0.0), egui::Sense::hover()).0;
-                let bar = ui.allocate_exact_size(vec2(STYLE_BAR_WIDTH, 0.0), egui::Sense::hover()).0;
-                (column, bar)
-            });
-            // Depth ruler: painted after the text too, beside the rows the lines start on.
-            let ruler = s.depths.as_ref().map(|_| ui.allocate_exact_size(vec2(RULER_WIDTH, 0.0), egui::Sense::hover()).0);
-            let mut text = s.text.clone();
-            // The text field has a fixed id, so it keeps its focus and caret when the columns before it
-            // are shown or hidden.
-            let out = egui::TextEdit::multiline(&mut text)
-                .id(egui::Id::unique("story_editor_text"))
-                .font(egui::FontId::proportional(s.size))
-                .desired_width(f32::INFINITY)
-                .desired_rows(TEXT_ROWS)
-                .frame(egui::Frame::NONE)
-                .show(ui);
-            let r = out.response;
-            let changed = r.changed();
-            if let Some((column, bar)) = column {
-                let starts = paragraph_start_offsets(out.galley.rows.iter().map(|row| (row.pos.y, row.ends_with_newline)));
-                for (name, y) in s.styles.iter().zip(starts) {
-                    let rect = egui::Rect::from_min_size(egui::pos2(column.min.x, out.galley_pos.y + y), vec2(column.width(), LABEL_HEIGHT));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                        crate::rtl::label(ui, egui::RichText::new(name).size(LABEL_SIZE).color(t.text_dim));
-                    });
-                }
-                // The bar between the column and the text: drag it to make the column wider or narrower.
-                let bar = egui::Rect::from_x_y_ranges(bar.x_range(), r.rect.y_range());
-                let drag = ui.interact(bar, egui::Id::unique("story_editor_style_bar"), egui::Sense::drag());
-                let line = egui::Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
-                ui.painter().rect_filled(line, 0.0, if drag.hovered() || drag.dragged() { t.text_dim } else { t.section_divider });
-                let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                // The width follows the pointer from where the drag started, so the bar comes back
-                // with the pointer after the drag passes the narrowest or widest width.
-                if drag.drag_started() {
-                    let origin = ui.input(|i| i.pointer.press_origin()).or(drag.interact_pointer_pos());
-                    if let Some(origin) = origin {
-                        ui.data_mut(|d| d.insert_temp(drag.id, (column.width(), origin.x)));
-                    }
-                }
-                if drag.dragged() {
-                    let start = ui.data(|d| d.get_temp::<(f32, f32)>(drag.id));
-                    let width = match (start, drag.interact_pointer_pos()) {
-                        (Some((width, origin)), Some(pos)) => width + pos.x - origin,
-                        _ => column.width() + drag.drag_delta().x,
-                    };
-                    changes.width = Some(style_column_width(width));
-                }
-                drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
-            }
-            let overset_y = s.overset.filter(|_| !changed).map(|o| {
-                let ci = char_offsets(&s.text, std::iter::once(o));
-                out.galley_pos.y + start_rows(&out.galley, &ci).first().map_or(0.0, |row| row.0)
-            });
-            if let (Some(ruler), Some(depths)) = (ruler, s.depths.as_ref().filter(|_| !changed)) {
-                let bottom = overset_y.unwrap_or(out.galley_pos.y + out.galley.size().y);
-                let bar = egui::Rect::from_min_max(pos2(ruler.min.x, out.galley_pos.y), pos2(ruler.min.x + RULER_WIDTH, bottom));
-                paint_ruler(ui.painter(), s, depths, bar, &out.galley, out.galley_pos.y);
-            }
-            // The overset line: across the text, and the ruler when it shows, above the first character that doesn't fit.
-            if let Some(y) = overset_y {
-                let x0 = ruler.map_or(r.rect.min.x, |rr| rr.min.x);
-                ui.painter().line_segment([pos2(x0, y), pos2(r.rect.max.x, y)], egui::Stroke::new(1.5, OVERSET_RED));
-            }
-            if changed {
-                changes.edit = minimal_edit(&s.text, &text);
-            }
-        });
-        if let Some(o) = s.overset {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "OVERSET")).color(OVERSET_RED).strong()));
-                crate::rtl::label(
-                    ui,
-                    egui::RichText::new(
-                        crate::i18n::tr(&app.ui.language, "{count} characters don't fit").replace("{count}", &s.overset_chars(o).to_string()),
-                    )
-                    .color(t.text_dim),
-                );
-            });
-        }
-    });
-    changes
 }
 
 /// The depth ruler of `s` in `bar`, beside its text laid out as `galley` from screen y `top`: its strip, and a tick and
@@ -502,7 +384,6 @@ fn char_offsets(text: &str, bytes: impl Iterator<Item = usize>) -> Vec<usize> {
 /// The editor's body on the craft UI framework, while it is installed: one app-defined component holds the story's
 /// text part and paints the style name column, its bar, the depth ruler and the overset line beside the rows the text
 /// part laid out; the OVERSET line under it is framework text.
-#[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::{
         Changes, LABEL_HEIGHT, LABEL_SIZE, OVERSET_RED, RULER_WIDTH, STYLE_BAR_WIDTH, Snapshot, TEXT_ROWS, char_offsets, minimal_edit, paint_ruler,
@@ -1102,44 +983,6 @@ mod tests {
         assert_eq!((app.ui.story_editor_style_column, app.ui.story_editor_style_width), (true, 400.0));
     }
 
-    #[test]
-    fn depth_marks_wait_for_composition_after_editing() {
-        fn marks(shape: &egui::epaint::Shape, tick: egui::Color32) -> usize {
-            match shape {
-                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(|s| marks(s, tick)).sum(),
-                egui::epaint::Shape::LineSegment { points, stroke }
-                    if stroke.color == super::OVERSET_RED || (stroke.color == tick && (points[1].x - points[0].x - 8.0).abs() < 0.01) =>
-                {
-                    1
-                }
-                _ => 0,
-            }
-        }
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({})).unwrap();
-        let text = "First line\nSecond line\nThird line\n".repeat(4);
-        let r = app.run("frame.create", json!({"rect": [72, 72, 372, 172], "content": "text", "text": text, "caret": false})).unwrap();
-        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 700.0))
-            .with_accessibility_check(false)
-            .build_ui_state(|ui, app| super::show(app, ui.ctx()), app);
-        h.run_steps(3);
-        let tick = crate::theme::Tokens::get(&h.ctx).ruler_tick;
-        let count = |h: &egui_kittest::Harness<'_, DesignApp>| h.output().shapes.iter().map(|s| marks(&s.shape, tick)).sum::<usize>();
-        assert!(count(&h) >= 2, "the fixture paints ruler ticks and an overset line");
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput).focus();
-        h.run_steps(2);
-        h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
-        h.run_steps(2);
-        h.event(egui::Event::Text("Inserted line\n".into()));
-        h.step();
-        assert_eq!(story_text(h.state(), 0), format!("Inserted line\n{text}"));
-        assert_eq!(count(&h), 0, "the edit frame must not map old composition offsets to new text");
-        h.step();
-        assert!(count(&h) >= 2, "the next frame paints the updated composition");
-    }
-
     /// The Show/Hide Depth Ruler menu label is translated in every interface language.
     #[test]
     fn depth_ruler_menu_label_is_translated_in_every_language() {
@@ -1263,9 +1106,7 @@ mod framework_tests {
         let r = app.run("frame.create", json!({"rect": frame, "content": "text", "text": text, "caret": false})).unwrap();
         app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
         let ctx = egui::Context::default();
-        app.framework_transform = true;
         app.install_framework(&ctx);
-        assert!(app.framework_installed, "the framework body needs the installed runtime");
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(size).with_step_dt(0.05).build_ui_state(
             move |ui, app: &mut DesignApp| {
