@@ -131,7 +131,7 @@ pub(super) fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     if open || req.fresh {
         ui.data_mut(|d| d.insert_temp(id, MenuRequest { pass, fresh: false, ..req }));
     } else {
-        ui.data_mut(|d| d.remove_temp::<MenuRequest>(id));
+        ui.data_mut(|d| d.remove::<MenuRequest>(id));
     }
     if !open && req.fresh {
         ui.ctx().request_repaint();
