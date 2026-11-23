@@ -45,11 +45,12 @@ pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_pane
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
 pub(crate) use typography::{composer_choice, para_field_min};
-/// The framework versions of the kerning field, the language select and the reference-point picker, for the Control
+/// The framework versions of the kerning field, the language select, the reference-point picker and the stroke type and
+/// corner shape pickers, for the Control
 /// bar as well as this panel.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use {
-    object::framework::reference_point,
+    object::framework::{corner_shape_select, reference_point, stroke_type_select},
     text::framework::{kerning_field, language_select},
 };
 
