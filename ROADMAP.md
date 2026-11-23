@@ -400,6 +400,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-23** · A table row is the last baseline plus the insets (#3178), as in InDesign: a descender, a lowered baseline shift or a larger font no longer grows a row to keep the descender inside the cell, so rows are the same height as InDesign's (a 20 pt line at 4 pt insets 22.56 pt, not 22.80; at 48 pt 42.95 pt, not 49.12) and descenders may hang over the next row. Inline objects still stay inside their cell. The four tests that required the descender to stay inside the cell now require the InDesign row height.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
