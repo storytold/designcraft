@@ -304,7 +304,12 @@ impl Notes {
                 let m = NoteMetrics { first: a.baseline, last: z.baseline, lead: a.leading, descent: z.descent };
                 let mut frame = ft.clone();
                 // Body frame ranges exclude paragraph separators; parts own those bytes too.
-                frame.range.end = cs.frames.iter().skip(i.saturating_add(1)).find(|f| !f.lines.is_empty()).map_or(note.text.len(), |f| f.range.start);
+                frame.range.end = cs
+                    .frames
+                    .iter()
+                    .skip(i.saturating_add(1))
+                    .find(|f| !f.lines.is_empty())
+                    .map_or(cs.overset_at.unwrap_or(note.text.len()), |f| f.range.start);
                 let text = ComposedStory { frames: vec![frame], ..cs.clone() };
                 Some((Arc::new(text), m))
             })
@@ -616,6 +621,23 @@ pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64
 mod tests {
     use super::*;
     use designcraft_doc::{ParaFormat, SpreadRef, build::NewDocument, story};
+
+    #[test]
+    fn note_part_stops_at_nested_overset() {
+        let mut doc = Document::new(&NewDocument::default());
+        let (_, sid) =
+            doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 80.0, 500.0), doc.default_layer(), "Body", ParaFormat::default()).unwrap();
+        let prefix = format!("Fits.{}", story::FRAME_BREAK);
+        let text = format!("{prefix}Overflow");
+        doc.story_mut(sid).unwrap().insert_note(0, &text, ParaFormat::default()).unwrap();
+        let mut notes = Notes::new(&doc, doc.story(sid).unwrap());
+        let frame = crate::frame_specs(&doc, sid).remove(0);
+        let opts = ComposeOptions::default();
+        let parts = notes.compose_parts(&doc, 0, 80.0, &frame, &opts, &[], &[]);
+        let part = &parts[0].as_ref().unwrap().0;
+        assert_eq!(part.overset_at, Some(prefix.len()));
+        assert_eq!(part.frames[0].range.end, prefix.len());
+    }
 
     #[test]
     fn note_cache_distinguishes_parent_prefixes_in_current_and_earlier_parts() {
