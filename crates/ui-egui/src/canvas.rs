@@ -239,13 +239,10 @@ const CANVAS_LAST: &str = "canvas_last_response";
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
-    let Some(canvas) = ctx.data_mut(|data| {
-        let id = data.get_temp::<egui::Id>(egui::Id::new(KEY_TARGET));
-        data.remove::<egui::Id>(egui::Id::new(KEY_TARGET));
-        id
-    }) else {
-        return;
-    };
+    // `egui::Id` has no `Default`, so `remove_temp` cannot take it: read it, then remove it.
+    let key = egui::Id::new(KEY_TARGET);
+    let Some(canvas) = ctx.data(|data| data.get_temp::<egui::Id>(key)) else { return };
+    ctx.data_mut(|data| data.remove::<egui::Id>(key));
     if ctx.memory(|memory| memory.focused().is_some())
         || app.ui.dialog.is_some()
         || app.ui.palette.is_some()
