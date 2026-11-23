@@ -1949,7 +1949,10 @@ mod framework {
                     }
                 }
                 CollectionEvent::Rename(EditEvent::Commit { after, .. }) => rename(app, ui, after.key.swatch(), &after.name),
-                CollectionEvent::ContextMenu(request) => ui.data_mut(|d| d.insert_temp(menu_id, request.key.clone())),
+                CollectionEvent::ContextMenu(request) => {
+                    let key = request.key.clone();
+                    ui.data_mut(|d| d.insert_temp(menu_id, key));
+                }
                 CollectionEvent::Dropped { payload, .. } => {
                     // An unnamed gradient becomes "New Gradient Swatch"; one that is a swatch already stays one.
                     if let Some(g) = payload.get::<GradientDrag>()
@@ -1974,7 +1977,7 @@ mod framework {
                 .show(ui, |ui, _| row_menu(ui, &lang, &doc, &key));
             actions.extend(shown.inner.flatten());
             if shown.output.closed.is_some() {
-                ui.data_mut(|d| d.remove_temp::<RowKey>(menu_id));
+                ui.data_mut(|d| d.remove::<RowKey>(menu_id));
             }
         }
         run_actions(app, actions);

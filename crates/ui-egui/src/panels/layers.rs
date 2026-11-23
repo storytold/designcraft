@@ -2085,10 +2085,12 @@ mod framework_tests {
         let mut h = open(app);
         assert!(shows(&h, "Art") && shows(&h, "Layer 1"));
         assert!(!shows(&h, "A"), "Layer 1 starts closed: only the active layer shows its objects");
-        click_at(&mut h, center(&h, "Layer 1"));
+        let at = center(&h, "Layer 1");
+        click_at(&mut h, at);
         assert_eq!(h.state().session.active().unwrap().active_layer, l1, "a click on a layer row activates it");
         assert!(shows(&h, "A"), "and the active layer shows its objects");
-        click_at(&mut h, center(&h, "A"));
+        let at = center(&h, "A");
+        click_at(&mut h, at);
         assert_eq!(h.state().session.active().unwrap().selection.items, vec![a], "a click on an object row selects it");
     }
 
@@ -2098,14 +2100,18 @@ mod framework_tests {
         app.run("layer.activate", json!({"id": app.session.active().unwrap().doc.layers[1].id.0})).unwrap();
         let mut h = open(app);
         let before = journal(&h, "layer.set");
-        click_at(&mut h, center(&h, "Visibility Art"));
+        let at = center(&h, "Visibility Art");
+        click_at(&mut h, at);
         assert!(!doc(&h).layer(art).unwrap().visible);
-        click_at(&mut h, center(&h, "Lock Art"));
+        let at = center(&h, "Lock Art");
+        click_at(&mut h, at);
         assert!(doc(&h).layer(art).unwrap().locked);
         assert_eq!(journal(&h, "layer.set") - before, 2, "one command for each flip");
-        click_at(&mut h, center(&h, "Visibility A"));
+        let at = center(&h, "Visibility A");
+        click_at(&mut h, at);
         assert!(doc(&h).item(a).unwrap().hidden);
-        click_at(&mut h, center(&h, "Lock A"));
+        let at = center(&h, "Lock A");
+        click_at(&mut h, at);
         assert!(doc(&h).item(a).unwrap().locked);
     }
 
@@ -2134,9 +2140,11 @@ mod framework_tests {
     fn the_footer_buttons_create_and_delete_layers() {
         let (app, _, _) = two_layers();
         let mut h = open(app);
-        click_at(&mut h, center(&h, "Create New Layer"));
+        let at = center(&h, "Create New Layer");
+        click_at(&mut h, at);
         assert_eq!(doc(&h).layers.len(), 3);
-        click_at(&mut h, center(&h, "Delete Layer"));
+        let at = center(&h, "Delete Layer");
+        click_at(&mut h, at);
         assert_eq!(doc(&h).layers.len(), 2, "the active layer goes");
     }
 
@@ -2147,7 +2155,8 @@ mod framework_tests {
         let x = frame(&mut app);
         name(&mut app, x, "X");
         let mut h = open(app);
-        click_at(&mut h, center(&h, "Expand Layer 1"));
+        let at = center(&h, "Expand Layer 1");
+        click_at(&mut h, at);
         (h, a, x, art, l1)
     }
 
@@ -2155,7 +2164,8 @@ mod framework_tests {
     fn dragging_an_object_row_below_another_moves_it_behind_it_on_that_layer() {
         let (mut h, a, x, _, l1) = objects_on_two_layers();
         let a_row = h.get_by_label("A").rect();
-        drag(&mut h, center(&h, "X"), egui::pos2(a_row.center().x, a_row.bottom() - 1.0));
+        let at = center(&h, "X");
+        drag(&mut h, at, egui::pos2(a_row.center().x, a_row.bottom() - 1.0));
         assert_eq!(layer_of(&h, x), l1);
         let order: Vec<ItemId> = doc(&h).spreads[0].items.iter().map(|i| i.id).collect();
         assert_eq!(order, [x, a], "X is behind A");
@@ -2169,7 +2179,8 @@ mod framework_tests {
         h.state_mut().run("selection.set", json!({"ids": [a.0]})).unwrap();
         steps(&mut h, 3);
         let square = h.get_by_label("Select; drag to move the selection to another layer").rect().center();
-        drag(&mut h, square, center(&h, "Art"));
+        let at = center(&h, "Art");
+        drag(&mut h, square, at);
         assert_eq!(layer_of(&h, a), art);
         assert_eq!(layer_of(&h, x), art);
         assert_ne!(layer_of(&h, a), l1);
@@ -2182,10 +2193,12 @@ mod framework_tests {
         h.state_mut().run("selection.set", json!({"ids": [a.0]})).unwrap();
         steps(&mut h, 3);
         let square = h.get_by_label("Select; drag to move the selection to another layer").rect().center();
-        drag(&mut h, square, center(&h, "Art"));
+        let at = center(&h, "Art");
+        drag(&mut h, square, at);
         assert_eq!(layer_of(&h, a), l1, "a locked layer refuses the drop");
         let square = h.get_by_label("Select; drag to move the selection to another layer").rect().center();
-        drag_with(&mut h, square, center(&h, "Art"), Modifiers::COMMAND);
+        let at = center(&h, "Art");
+        drag_with(&mut h, square, at, Modifiers::COMMAND);
         assert_eq!(layer_of(&h, a), art, "Cmd forces it");
     }
 
@@ -2202,7 +2215,8 @@ mod framework_tests {
         steps(&mut h, 3);
         assert!(shows(&h, "Collapse Layer 1"), "selecting the object opens its layer");
         // Closed again by hand, it stays closed while the selection stays the same.
-        click_at(&mut h, center(&h, "Collapse Layer 1"));
+        let at = center(&h, "Collapse Layer 1");
+        click_at(&mut h, at);
         assert!(shows(&h, "Expand Layer 1"));
         steps(&mut h, 3);
         assert!(shows(&h, "Expand Layer 1"));
@@ -2291,15 +2305,19 @@ mod framework_tests {
     fn a_layer_rows_menu_runs_the_layer_commands_and_an_object_row_has_none() {
         let (app, _, _) = two_layers();
         let mut h = open(app);
-        click_with(&mut h, center(&h, "Art"), PointerButton::Secondary);
+        let at = center(&h, "Art");
+        click_with(&mut h, at, PointerButton::Secondary);
         assert!(shows(&h, "Duplicate Layer \"Art\""));
         assert!(shows(&h, "Delete Unused Layers"));
         assert!(!shows(&h, "Merge into Active Layer"), "Art is the active layer");
-        click_at(&mut h, center(&h, "Duplicate Layer \"Art\""));
+        let at = center(&h, "Duplicate Layer \"Art\"");
+        click_at(&mut h, at);
         assert_eq!(layer_names(&h), ["Art copy", "Art", "Layer 1"]);
         // A right-click on an object row asks for no layer menu.
-        click_at(&mut h, center(&h, "Layer 1"));
-        click_with(&mut h, center(&h, "A"), PointerButton::Secondary);
+        let at = center(&h, "Layer 1");
+        click_at(&mut h, at);
+        let at = center(&h, "A");
+        click_with(&mut h, at, PointerButton::Secondary);
         assert!(!shows(&h, "Delete Unused Layers"));
     }
 }

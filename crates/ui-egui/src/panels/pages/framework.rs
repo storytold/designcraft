@@ -245,7 +245,7 @@ impl Component for PageCell<'_> {
         self.look.hovered = cx.hit();
         self.look.held = phase.button_down();
         match phase {
-            PressPhase::DragStart { start, pos } if start.button == PointerButton::Primary => {
+            PressPhase::DragStart { start, pos, .. } if start.button == PointerButton::Primary => {
                 if self.kind == Kind::Handle {
                     self.moved = Some(pos.y - start.origin.y);
                 } else if let Some((payload, name)) = self.drag.clone() {

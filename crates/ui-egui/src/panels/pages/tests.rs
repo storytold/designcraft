@@ -626,8 +626,8 @@ mod framework_path {
 
     fn event(h: &mut Installed, event: Event, modifiers: Modifiers) {
         let mut raw = std::mem::take(h.input_mut());
+        raw.events.push(Event::ModifiersChanged(modifiers));
         raw.events.push(event);
-        raw.modifiers = modifiers;
         let ctx = h.ctx.clone();
         h.state_mut().raw_input_hook(&ctx, &mut raw);
         *h.input_mut() = raw;
