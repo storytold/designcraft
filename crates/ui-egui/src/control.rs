@@ -71,30 +71,15 @@ pub fn all_commands(app: &DesignApp) -> Value {
     Value::Array(v)
 }
 
-/// The Transform pilot's field rects from the last pass: `{"x": [left, top, width, height], …}`, empty
-/// unless `DESIGNCRAFT_FRAMEWORK_TRANSFORM` is on and a selection shows the Transform section.
+/// The Transform fields' rects from the last pass: `{"x": [left, top, width, height], …}`, empty unless a selection
+/// shows the Transform section.
 fn framework_transform(app: &DesignApp) -> Value {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::framework_transform::inspect(app)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = app;
-        Value::Null
-    }
+    crate::framework_transform::inspect(app)
 }
 
+/// The Opacity row's field rects from the last pass, as [`framework_transform`] gives the Transform fields'.
 fn framework_opacity(app: &DesignApp) -> Value {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::framework_opacity::inspect(app)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = app;
-        Value::Null
-    }
+    crate::framework_opacity::inspect(app)
 }
 
 pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
@@ -123,9 +108,9 @@ pub fn inspect(app: &DesignApp, ctx: &egui::Context) -> Value {
         "dialog": app.ui.dialog.as_ref().map(|d| serde_json::to_value(d).unwrap_or_default()),
         "activeDocument": app.session.active_index(),
         "perf": {"frameMs": app.perf.frame_ms, "renderMs": app.perf.render_ms, "fps": app.perf.fps, "patches": app.canvas.patches},
-        // The Transform pilot's own field rects, as the craft UI framework laid them out (`DESIGNCRAFT_FRAMEWORK_TRANSFORM=1`).
+        // The Transform fields' rects, as the craft UI framework laid them out.
         "frameworkTransform": framework_transform(app),
-        // The Opacity pilot's row rects (`DESIGNCRAFT_FRAMEWORK_OPACITY=1`): the field, the chevron and the slider.
+        // The Opacity row's rects: the field, the chevron and the slider.
         "frameworkOpacity": framework_opacity(app),
     })
 }
@@ -559,7 +544,7 @@ mod automation_contract_tests {
     #[test]
     fn replacing_a_style_preview_dialog_restores_the_document_and_undo_recording() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let before = app.session.doc().unwrap().doc.clone();
         let history = app.session.doc().unwrap().history.undo.len();
         app.session.begin_interaction("Style Options").unwrap();
@@ -582,7 +567,7 @@ mod automation_contract_tests {
     #[test]
     fn diagonal_lines_opened_through_the_control_channel_applies_to_its_target_cells() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
         let tid = app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap()["table"].as_u64().unwrap();
         app.run("table.select", json!({"rows": [0, 0], "cols": [0, 0]})).unwrap();
@@ -603,7 +588,7 @@ mod automation_contract_tests {
     #[test]
     fn a_contact_sheet_opened_over_the_control_channel_uses_the_document_unit() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         app.run("document.preferences", json!({"horizontalUnits": "inches"})).unwrap();
         let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id": "contactSheet", "fields": {"margin": "1"}}));
         assert_eq!(response["ok"], true, "{response}");
@@ -639,7 +624,7 @@ mod automation_contract_tests {
     #[test]
     fn oversized_pointer_requests_leave_pending_events_unchanged() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let pending = vec![egui::Event::PointerMoved(egui::pos2(12.0, 34.0))];
         for (method, params) in [
             ("ui.click", json!({"count": 5002})),
@@ -658,7 +643,7 @@ mod automation_contract_tests {
     #[test]
     fn pointer_counts_require_positive_json_integers() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let pending = vec![egui::Event::PointerMoved(egui::pos2(12.0, 34.0))];
         app.control_synthetic = pending.clone();
         for value in [json!(0), json!(-1), json!(1.5), Value::Null, json!("2"), json!(true), json!(18446744073709551616_f64)] {
@@ -675,7 +660,7 @@ mod automation_contract_tests {
     #[test]
     fn pointer_gestures_accept_the_exact_event_budget() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         for (method, params) in [
             ("ui.click", json!({"count": 255})),
             ("ui.drag", json!({"steps": 9492, "count": 255})),
@@ -696,7 +681,7 @@ mod automation_contract_tests {
     #[test]
     fn pointer_budget_counts_pending_input_and_recovers_when_it_drains() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         assert_eq!(call(&mut app, &ctx, "ui.drag", json!({"steps": 9998}))["ok"], true);
         assert_eq!(app.control_synthetic.len(), 10001);
         let queued = app.control_synthetic.clone();
@@ -720,7 +705,7 @@ mod automation_contract_tests {
     #[test]
     fn ordinary_pointer_gestures_keep_their_defaults_and_event_order() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let a = egui::pos2(10.0, 20.0);
         let end = egui::pos2(30.0, 40.0);
         assert_eq!(call(&mut app, &ctx, "ui.click", json!({"x": 10, "y": 20}))["ok"], true);
@@ -790,7 +775,7 @@ mod automation_contract_tests {
     #[test]
     fn parent_resize_no_canvas_render_keeps_document_page_zero_default() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         app.run("layout.pageSize", json!({"pages": [2], "width": 700})).unwrap();
         assert!(app.canvas_rect.is_none());
         let before = app.session.doc().unwrap().doc.clone();
@@ -852,7 +837,7 @@ mod automation_contract_tests {
     fn parent_resize_mode_does_not_default_document_actions_to_page_zero() {
         for canvas in [None, Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)))] {
             let mut app = app();
-            let ctx = egui::Context::default();
+            let ctx = crate::test_window::context();
             app.canvas_rect = canvas;
             app.run("layout.parents.edit", json!({"on":true,"parent":"A"})).unwrap();
             let before = app.session.doc().unwrap().doc.clone();
@@ -867,7 +852,7 @@ mod automation_contract_tests {
     #[test]
     fn control_pages_validate_before_writer_and_preserve_omission() {
         let mut app = app();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = writes.clone();
         app.services.write = Some(Box::new(move |_, bytes| {
@@ -922,7 +907,7 @@ mod tests {
         let sid = r["story"].as_u64().unwrap();
         assert!(app.session.active().unwrap().selection.text.is_some(), "the new frame is being typed in");
         let text = |app: &DesignApp| app.session.active().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().text.clone();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let (req, _rx) = ControlRequest::new("engine.execute", json!({"command": "edit.paste"}));
         let _ = handle(&mut app, &ctx, &req);
         assert_eq!(calls.load(Ordering::SeqCst), 0, "the control channel must not read the system clipboard");
@@ -961,7 +946,7 @@ mod deferred_clipboard_tests {
         let frame = app.run("frame.create", json!({"content":"text", "text":"Original", "rect":[72,72,200,100], "caret":false})).unwrap();
         app.run("selection.set", json!({"ids":[frame["id"]]})).unwrap();
         assert!(!app.session.wants_text());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let (req, _) = ControlRequest::new("ui.key", json!({"key":"V", "cmd":true}));
         assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(v) if v["ok"]==true));
         assert!(!app.in_control);
@@ -982,7 +967,7 @@ mod deferred_clipboard_tests {
     #[test]
     fn deferred_control_widget_copy_leaves_native_clipboard_output_alone() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let (req, _) = ControlRequest::new("ui.move", json!({"x":10,"y":10}));
         let _ = handle(&mut app, &ctx, &req);
         let mut raw = egui::RawInput::default();
@@ -1000,7 +985,7 @@ mod deferred_clipboard_tests {
     #[test]
     fn control_click_rejects_unbounded_counts_before_queuing_input() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         for count in [json!(u64::MAX), json!(256), json!(0), json!(-1), json!(1.5)] {
             let (req, _) = ControlRequest::new("ui.click", json!({"x":10,"y":10,"count":count}));
             assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(v) if v["ok"]==false));
@@ -1013,7 +998,7 @@ mod deferred_clipboard_tests {
     #[test]
     fn control_ime_and_paste_keep_their_order_with_control_keys() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         for (method, params) in [("ui.ime", json!({"preedit":"ni"})), ("ui.key", json!({"key":"A"})), ("ui.paste", json!({"text":"p"}))] {
             let (req, _) = ControlRequest::new(method, params);
             assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(v) if v["ok"]==true), "{method}");

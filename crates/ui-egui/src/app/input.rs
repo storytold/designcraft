@@ -22,7 +22,6 @@ impl DesignApp {
 
     /// The framework's root values for this frame, from the app's: the layout direction of the interface language,
     /// and light or dark (high contrast) as the interface brightness, so framework surfaces match the native ones.
-    #[cfg(not(target_arch = "wasm32"))]
     fn root_env(&self) -> craft_ui_widgets::runtime::env::RootEnv {
         use craft_theme::{ContrastChoice, ModeChoice};
         use craft_ui_widgets::runtime::env::{Direction, RootEnv};
@@ -45,8 +44,8 @@ impl DesignApp {
         //
         // The app keeps every native authority: the framework's fired commands are taken and dropped, not
         // re-dispatched into the engine, and neither the close path nor window fitting is taken over.
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.framework_installed || crate::panel_docking::runtime_on(ctx) {
+        // Only a context the runtime is installed on has the services to route the frame in.
+        if crate::panel_docking::runtime_on(ctx) {
             use craft_ui_widgets::runtime::env::RootEnv;
             use craft_ui_widgets::runtime::frame::{FrameInput, set_input, take_output};
             let _fired = take_output(ctx);

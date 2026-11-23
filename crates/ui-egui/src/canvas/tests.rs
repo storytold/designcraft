@@ -11,7 +11,7 @@ fn a_short_place_cursor_drag_places_the_frame_it_previews() {
     app.run("file.new", json!({})).unwrap();
     let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
     app.run("place.load", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -74,7 +74,7 @@ fn a_press_after_a_drag_is_not_a_double_click() {
 /// The shapes the canvas paints for a new document with every spread in view, after two frames
 /// (the first lays out).
 fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut shapes = Vec::new();
     for _ in 0..2 {
         shapes = canvas_frame_shapes(app, &ctx);
@@ -210,7 +210,7 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", serde_json::json!({"bleed": 9, "slug": 18})).unwrap();
     let strokes = |app: &mut DesignApp, want: [u8; 3]| -> usize {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut shapes = Vec::new();
         for _ in 0..2 {
             let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
@@ -314,7 +314,7 @@ fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
     app.run("edit.pasteInto", json!({})).unwrap();
     app.run("edit.deselectAll", json!({})).unwrap();
     assert!(app.ui.frame_edges);
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut shapes = Vec::new();
     for _ in 0..2 {
         let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
@@ -398,7 +398,7 @@ fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
 /// rate: egui ends a scroll action after 150 ms without wheel events, so quarter-second
 /// frames would split every motion into separate actions.
 fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(step_dt).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(step_dt).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -742,7 +742,7 @@ fn canvas_frame(app: &mut DesignApp, ctx: &egui::Context, m: egui::Modifiers, mu
 /// The cursor icon the canvas sets for `c` on this platform (bitmap and painted cursors
 /// report their own icon).
 fn shown(c: Cursor) -> egui::CursorIcon {
-    crate::cursors::show(&egui::Context::default(), &mut crate::cursors::Images::default(), c, Pos2::ZERO)
+    crate::cursors::show(&crate::test_window::context(), &mut crate::cursors::Images::default(), c, Pos2::ZERO)
 }
 
 fn space_key(pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
@@ -769,7 +769,7 @@ fn spring_zoom_click_is_anchored_view_only_and_release_restores_previous_tool() 
             let frame = app.run("frame.create", json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
             app.run("text.select", json!({"story":frame["story"],"anchor":5})).unwrap();
         }
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let p = pos2(300.0, 250.0);
         hover(&mut app, &ctx, p);
         let before = *app.view().unwrap();
@@ -797,7 +797,7 @@ fn spring_zoom_click_is_anchored_view_only_and_release_restores_previous_tool() 
 #[test]
 fn spring_zoom_alt_clicks_out_and_modifier_release_switches_back_to_hand() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let z = app.view().unwrap().zoom;
@@ -820,7 +820,7 @@ fn spring_zoom_alt_clicks_out_and_modifier_release_switches_back_to_hand() {
 #[test]
 fn spring_zoom_scrubs_and_owns_pointer_release_after_shortcut_release() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let z = app.view().unwrap().zoom;
@@ -850,7 +850,7 @@ fn spring_zoom_is_suppressed_while_typing_in_a_text_frame() {
     let frame = app.run("frame.create", json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
     app.run("text.select", json!({"story":frame["story"],"anchor":5})).unwrap();
     assert!(app.session.wants_text());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let before = *app.view().unwrap();
@@ -870,7 +870,7 @@ fn spring_zoom_is_suppressed_while_typing_in_a_text_frame() {
 #[test]
 fn spring_zoom_is_suppressed_while_a_text_field_has_focus() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut text = String::new();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
@@ -899,7 +899,7 @@ fn spring_zoom_is_suppressed_while_a_text_field_has_focus() {
 #[test]
 fn spring_zoom_does_not_interrupt_an_existing_tool_drag() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let before = *app.view().unwrap();
@@ -917,7 +917,7 @@ fn spring_zoom_does_not_interrupt_an_existing_tool_drag() {
 fn spring_zoom_does_not_zoom_on_the_rulers() {
     let mut app = zoom_app("rectangleFrame");
     app.ui.rulers = true;
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     hover(&mut app, &ctx, pos2(300.0, 250.0));
     let rect = app.canvas_rect.unwrap();
     let p = pos2(rect.min.x - RULER / 2.0, rect.center().y);
@@ -960,7 +960,7 @@ fn mouse_double_clicking_a_frame_handle_fits_with_one_undo_step() {
     app.run("selection.set", json!({"ids": [id.0]})).unwrap();
     let original = app.session.doc().unwrap().doc.item(id).unwrap().bounds();
     // 60 frames a second: the default 0.25 s step puts two clicks past egui's double-click delay.
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1293,7 +1293,7 @@ fn selected_merged_owners_paint_the_same_row_and_column_targets() {
                     ]
                 })
                 .collect();
-            let ctx = egui::Context::default();
+            let ctx = crate::test_window::context();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 draw_text_selection(&app, ui.painter(), &xf, &st.doc, &layout, ts, Some(selected));
             });
@@ -1354,7 +1354,7 @@ fn a_selected_group_paints_both_ports_of_its_text_frame() {
     let doc = app.session.doc().unwrap().doc.clone();
     let layout = CanvasLayout::new(&doc, false);
     let xf = Xf { min: pos2(0.0, 0.0), origin: Point::new(0.0, 0.0), zoom: 1.0, rot: 0, pivot: pos2(0.0, 0.0) };
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         draw_selection(&app, ui.painter(), &xf, &doc, &layout);
     });
@@ -1479,7 +1479,7 @@ fn an_idle_canvas_frame_does_the_same_work_for_a_longer_document() {
             app.run("frame.create", json!({"spread": page, "rect": [36, 300, 200, 340], "content": "text", "text": text})).unwrap();
         }
         app.run("edit.deselectAll", json!({})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         canvas_frame_shapes(&mut app, &ctx);
         go_to_page(&mut app, 0);
         canvas_frame_shapes(&mut app, &ctx);
@@ -1515,7 +1515,7 @@ fn frame_edges_are_painted_for_the_frames_in_view() {
     assert!(frame.x1 < layout.slots[0].bounds.x0 - 150.0, "the frame is on the pasteboard, left of the page");
     let window = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
     let edges = |xf: Xf| {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(window), ..Default::default() }, |ui| {
             draw_frames(&app, &ui.painter_at(window), &xf, &doc, &layout);
         });
@@ -1584,7 +1584,7 @@ fn live_corner_widget_and_diamonds_draw() {
     app.run("frame.create", json!({"rect": [100, 100, 300, 250], "content": "graphic"})).unwrap();
     let id = app.session.doc().unwrap().doc.spreads[0].items[0].id;
     app.run("selection.set", json!({"ids": [id.0]})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1628,7 +1628,7 @@ fn live_corner_widget_and_diamonds_draw() {
 
 /// A harness whose frames are 1 ms apart, so two clicks make a double-click.
 fn fast_harness(app: DesignApp) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -2098,7 +2098,7 @@ fn typing(text: &str) -> (Harness<'static, DesignApp>, u64) {
     let r = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": text})).unwrap();
     let id = r["id"].as_u64().unwrap();
     app.run("tool.select", json!({"tool": "type"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -2206,7 +2206,7 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(width, 900.0)).build_ui_state(
+        let mut h = crate::test_window::builder().with_size(vec2(width, 900.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -2409,7 +2409,7 @@ fn ime_frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>)
 fn edits_patch_the_canvas_only_at_full_resolution() {
     for (max_side, patches) in [(None, true), (Some(1024), false)] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let frame = |app: &mut DesignApp| {
             // Wider than the limit (egui's font atlas needs at least 1024).
             let mut raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1900.0, 900.0))), ..Default::default() };
@@ -2439,7 +2439,7 @@ fn edits_patch_the_canvas_only_at_full_resolution() {
 #[test]
 fn moving_a_frame_with_a_drop_shadow_patches_the_canvas() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut DesignApp| {
         let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 900.0))), ..Default::default() };
         let mut out = ctx.run_ui(raw, |ui| {
@@ -2513,7 +2513,7 @@ struct NativeClickFixture {
 /// Build the old and target stories, measure an interior target caret, and leave the old story selected before the click.
 fn native_gui_click_fixture() -> NativeClickFixture {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let old = typing_app(&mut app, &ctx, "Old story");
     let frame = app.run("frame.create", json!({"rect": [36, 280, 300, 400], "content": "text", "text": "Target story"})).unwrap();
     let target = frame["story"].clone();
@@ -2928,7 +2928,7 @@ fn native_gui_font_inventory_keeps_exact_regular_and_missing_style_diagnostics()
 #[allow(deprecated)] // `ImeEvent::Enabled` / `Disabled`: egui no longer sends them, other integrations may.
 fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "曲:");
     // At a text caret the IME is allowed, its window on the caret as the canvas draws it.
     let ime = ime_frame(&mut app, &ctx, vec![]).expect("IME allowed at a text caret");
@@ -2986,7 +2986,7 @@ fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
 #[test]
 fn a_split_window_types_once() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     app.run("window.split", json!({"on": true})).unwrap();
     for _ in 0..3 {
@@ -3010,7 +3010,7 @@ fn a_split_window_types_once() {
 #[test]
 fn ime_reports_the_committed_story_and_excludes_the_pre_edit() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "a😀b");
     let len = "a😀b".len();
     text_selection(&mut app, &sid, 0, len);
@@ -3036,7 +3036,7 @@ fn ime_reports_the_committed_story_and_excludes_the_pre_edit() {
 #[test]
 fn ime_empty_story_is_available_and_wide_text_is_bounded() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "");
     let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
     assert_eq!(ime_payload(&ime), Some(("", 0, 0)), "an empty document is available, not unavailable");
@@ -3056,7 +3056,7 @@ fn ime_empty_story_is_available_and_wide_text_is_bounded() {
 #[test]
 fn ime_owner_follows_the_story_and_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "ab");
     let first = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
     app.session.execute("text.move", &json!({"dir": "left"})).unwrap();
@@ -3082,7 +3082,7 @@ fn ime_owner_follows_the_story_and_the_document() {
 #[test]
 fn ime_cause_distinguishes_commits_from_application_edits() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "a");
     let committed = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into()))]).expect("a text caret");
     assert_eq!(committed.change_cause, egui::output::ImeChangeCause::InputMethod);
@@ -3111,7 +3111,7 @@ fn ime_cause_distinguishes_commits_from_application_edits() {
 #[test]
 fn ime_cause_and_context_survive_a_discarded_pass() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "a");
     let raw = egui::RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
@@ -3138,7 +3138,7 @@ fn ime_cause_and_context_survive_a_discarded_pass() {
 #[test]
 fn ime_autocorrect_is_not_an_input_method_cause() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.session.prefs.autocorrect = true;
     let sid = typing_app(&mut app, &ctx, "teh");
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit(" ".into()))]).expect("a text caret");
@@ -3150,7 +3150,7 @@ fn ime_autocorrect_is_not_an_input_method_cause() {
 #[test]
 fn ime_delete_surrounding_excludes_the_selection_and_rounds_bytes_inward() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "aé😀b");
     // Select é, which keeps its bytes and direction; 'a' before and 😀 after go.
     text_selection(&mut app, &sid, 1, 3);
@@ -3192,7 +3192,7 @@ fn ime_delete_surrounding_excludes_the_selection_and_rounds_bytes_inward() {
 #[test]
 fn ime_delete_surrounding_has_no_sixty_four_character_cap() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, &"x".repeat(100));
     ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars: 200, after_chars: 0 })]);
     assert_eq!(story_text(&mut app, &sid), "");
@@ -3202,7 +3202,7 @@ fn ime_delete_surrounding_has_no_sixty_four_character_cap() {
 #[test]
 fn ime_delete_and_commit_are_one_undo_step() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     text_selection(&mut app, &sid, 1, 2);
     ime_frame(&mut app, &ctx, vec![]);
@@ -3229,7 +3229,7 @@ fn ime_delete_and_commit_are_one_undo_step() {
 #[test]
 fn a_commit_after_a_click_in_the_same_batch_is_not_typed_twice() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
     assert_eq!(story_text(&mut app, &sid), "abい");
@@ -3254,7 +3254,7 @@ fn a_delete_and_commit_after_a_click_in_the_same_batch_are_dropped() {
         egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 1, after_bytes: 0 },
     ] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let sid = typing_app(&mut app, &ctx, "ab");
         ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
         let p = on_screen(&app, Point::new(150.0, 120.0));
@@ -3278,7 +3278,7 @@ fn a_delete_and_commit_after_a_click_in_the_same_batch_are_dropped() {
 #[test]
 fn a_delete_beyond_the_surrounding_window_is_still_an_input_method_cause() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, &"x".repeat(5000));
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 4500, after_bytes: 0 })])
         .expect("a text caret");
@@ -3324,7 +3324,7 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
 #[test]
 fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "");
     ime_frame(&mut app, &ctx, vec![preedit("しょうこ", 4)]);
     assert!(app.session.tool_composing());
@@ -3445,7 +3445,7 @@ fn table_cells_show_their_hidden_characters() {
 
 #[test]
 fn the_caret_blink_restarts_on_input_and_caret_changes() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
 
     let shown = |t: f64, caret: designcraft_doc::TextSel, reset: bool| {

@@ -73,6 +73,9 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    // The craft UI framework's runtime, before the context's first pass (it refuses to install inside
+                    // one): the whole interface is the framework's, in the browser as on the desktop.
+                    app.install_framework(&cc.egui_ctx);
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }

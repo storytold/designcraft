@@ -1,9 +1,9 @@
-//! Headless proof of the Transform pilot in the whole DesignCraft window: a real pointer click into the
+//! Headless proof of Properties > Transform in the whole DesignCraft window: a real pointer click into the
 //! craft framework's W field, typed text and Return (egui events, as a person sends them), the frame's
 //! bounds and undo depth read from the document, and the window rendered offscreen (wgpu) before,
 //! after the edit and after `edit.undo`.
 //!
-//! `DESIGNCRAFT_FRAMEWORK_TRANSFORM=1 cargo run -p designcraft-ui-egui --example transform_shot -- <out-dir>`
+//! `cargo run -p designcraft-ui-egui --example transform_shot -- <out-dir>`
 
 use designcraft_engine::Session;
 use designcraft_ui_egui::{ControlRequest, DesignApp, Services};

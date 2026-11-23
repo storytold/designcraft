@@ -29,31 +29,22 @@ pub(crate) use files::browser_import_tests;
 pub use files::opens_as_document;
 
 impl DesignApp {
-    /// Installs the craft UI framework's runtime on `ctx` when the Transform pilot is on.
+    /// Installs the craft UI framework's runtime on `ctx`, on every target: the whole UI is the framework's.
     ///
     /// The runtime's pass hooks are what give the framework's components an env, a pointer snapshot and
     /// key state, and it refuses to install inside a pass, so a host calls this once after it made the
-    /// context and before the first pass: the desktop shell with the eframe creation context, a test with
-    /// its own. With the pilot off nothing is installed, so the app's context, input options and wheel
-    /// modifiers stay exactly what they were.
+    /// context and before the first pass: the desktop shell and the browser runner with their creation
+    /// context, a test with its own. A context that already has the runtime keeps it.
     pub fn install_framework(&mut self, ctx: &egui::Context) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.framework_transform || self.framework_opacity {
-            // The main window's frame: the app's own title bar where decorations are off, the bar under the macOS traffic lights.
-            let chrome = if self.custom_titlebar {
-                craft_host::target::WindowChrome::Integrated
-            } else if self.integrated_titlebar {
-                craft_host::target::WindowChrome::Inset
-            } else {
-                craft_host::target::WindowChrome::Native
-            };
-            crate::framework_transform::install_with(ctx, chrome);
-            // A context that already had the runtime is fine; the fields draw either way. Without it they
-            // would paint and take no input, so the panel keeps the bespoke fields instead.
-            self.framework_installed = true;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = ctx;
+        // The main window's frame: the app's own title bar where decorations are off, the bar under the macOS traffic lights.
+        let chrome = if self.custom_titlebar {
+            craft_host::target::WindowChrome::Integrated
+        } else if self.integrated_titlebar {
+            craft_host::target::WindowChrome::Inset
+        } else {
+            craft_host::target::WindowChrome::Native
+        };
+        crate::framework_transform::install_with(ctx, chrome);
     }
 
     /// Start the background font scan, establish the monotonic timing origin, and initialize document, view, input, screenshot, dialog and control state.
@@ -134,17 +125,7 @@ impl DesignApp {
             #[cfg(test)]
             input_ticks: 0,
             styled: false,
-            // the framework draws the Transform and Opacity fields on the desktop
-            #[cfg(not(target_arch = "wasm32"))]
-            framework_transform: crate::framework_transform::enabled(),
-            #[cfg(target_arch = "wasm32")]
-            framework_transform: false,
-            framework_installed: false,
             framework_fields: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            framework_opacity: crate::framework_opacity::enabled(),
-            #[cfg(target_arch = "wasm32")]
-            framework_opacity: false,
             framework_opacity_fields: Vec::new(),
             framework_opacity_component_stops: Vec::new(),
             fonts_lang: String::new(),
@@ -358,7 +339,6 @@ impl DesignApp {
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);
         // Nothing else holds egui focus: the canvas does, so the runtime leaves Escape, Tab and the clipboard to the app.
-        #[cfg(not(target_arch = "wasm32"))]
         canvas::take_key_focus(self, &ctx);
         // The Escape the runtime's key stage kept from egui and nothing in this pass took.
         menus::window_escape(self, &ctx);
