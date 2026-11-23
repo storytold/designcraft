@@ -26,6 +26,12 @@ pub(super) fn text_frame(app: &mut DesignApp, text: &str) -> (u64, u64) {
     (id, story)
 }
 
+/// Selects the first `len` characters of `story` with the Type tool's text selection, so the Properties panel shows
+/// the text's sections (Appearance, Bullets and Numbering, Text Frame) as it does while editing text.
+pub(super) fn select_text(app: &mut DesignApp, story: u64, len: usize) {
+    app.run("text.select", json!({"story": story, "anchor": 0, "focus": len})).expect("the text is selected");
+}
+
 /// A selected rectangle; its id.
 pub(super) fn rectangle(app: &mut DesignApp) -> u64 {
     let id = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).expect("a frame")["id"].as_u64().expect("an id");
@@ -42,7 +48,7 @@ pub(super) fn open(mut app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui))
     app.raw_input_hook(&ctx, &mut egui::RawInput::default());
     assert!(app.framework_installed, "the framework bodies need the installed runtime");
     let mut ready = false;
-    let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 1200.0)).build_ui_state(
+    let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 2000.0)).build_ui_state(
         move |ui, app: &mut DesignApp| {
             if !ready {
                 crate::theme::install_fonts(ui.ctx(), &app.ui.language);
