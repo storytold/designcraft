@@ -10,6 +10,8 @@ use crate::DesignApp;
 use crate::app::file_dialogs::{Bound, with_path};
 use crate::theme::semibold;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod framework;
 mod options;
 mod style_cjk;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
@@ -3297,30 +3299,8 @@ fn object_style_untaken_cancel(app: &DesignApp, ui: &egui::Ui, dialog: &str, blo
     true
 }
 
-/// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
-pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
-    let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
-    if shortcuts {
-        crate::shortcuts_dialog::show(app, ctx);
-        return;
-    }
-    if app.shortcut_dialog.is_some() {
-        // Another dialog took its place: its edits are cancelled.
-        let _ = crate::shortcuts_dialog::close(app, false);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed && app.ui.dialog.as_ref().is_some_and(|d| d.id == "numberingSection") {
-        crate::section_options::show_framework(app, ctx);
-        return;
-    }
-    let Some(mut d) = app.ui.dialog.clone() else { return };
-    // Enter and Escape belong to an open popup (a menu, a name field) or to Find/Change's Change
-    // Format Settings rather than the dialog. Read before the dialog draws: a popup closed by this
-    // frame's Escape is still open here.
-    let popup_open = egui::Popup::is_any_open(ctx) || d.fields.get(FORMAT_EDIT).is_some_and(Value::is_object);
-    #[cfg(not(target_arch = "wasm32"))]
-    let popup_open = popup_open || (app.framework_installed && d.id == crate::object_style_dialog::ID && craft_ui_widgets::runtime::overlay::top(ctx).is_some());
-    let mut result: Option<bool> = None;
+/// The dialog's localized window title.
+pub(crate) fn dialog_title(app: &DesignApp, d: &Dialog) -> String {
     let alert_title = d.s("title");
     let title = match d.id.as_str() {
         "alert" => crate::i18n::tr(&app.ui.language, &alert_title),
@@ -3403,6 +3383,62 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             None => crate::i18n::tr(&app.ui.language, "Dialog"),
         },
     };
+    title.to_string()
+}
+
+/// The labels of the dialog's accept and cancel buttons.
+pub(crate) fn footer_labels(app: &DesignApp, d: &Dialog) -> (String, &'static str) {
+    let ok_label = match d.id.as_str() {
+        "colorTheme" => crate::i18n::tr(&app.ui.language, "Add to Swatches").to_string(),
+        "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
+        "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
+        "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
+        "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
+        crate::export_batch_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
+        crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package…").to_string(),
+        crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Continue").to_string(),
+        _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
+    };
+    let cancel_label = match d.id.as_str() {
+        "newDocument" => "Close",
+        "findFont" => "Done",
+        _ => "Cancel",
+    };
+    (ok_label, cancel_label)
+}
+
+/// Draw the active localized dialog; open popups own Enter/Escape, and result handling drives confirm or cancel.
+pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    let shortcuts = app.ui.dialog.as_ref().is_some_and(|d| d.id == crate::shortcuts_dialog::DIALOG_ID);
+    if shortcuts {
+        crate::shortcuts_dialog::show(app, ctx);
+        return;
+    }
+    if app.shortcut_dialog.is_some() {
+        // Another dialog took its place: its edits are cancelled.
+        let _ = crate::shortcuts_dialog::close(app, false);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed && app.ui.dialog.as_ref().is_some_and(|d| d.id == "numberingSection") {
+        crate::section_options::show_framework(app, ctx);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.framework_installed
+        && let Some(form) = app.ui.dialog.as_ref().and_then(|d| framework::form(&d.id))
+    {
+        framework::show(app, ctx, form);
+        return;
+    }
+    let Some(mut d) = app.ui.dialog.clone() else { return };
+    // Enter and Escape belong to an open popup (a menu, a name field) or to Find/Change's Change
+    // Format Settings rather than the dialog. Read before the dialog draws: a popup closed by this
+    // frame's Escape is still open here.
+    let popup_open = egui::Popup::is_any_open(ctx) || d.fields.get(FORMAT_EDIT).is_some_and(Value::is_object);
+    #[cfg(not(target_arch = "wasm32"))]
+    let popup_open = popup_open || (app.framework_installed && d.id == crate::object_style_dialog::ID && craft_ui_widgets::runtime::overlay::top(ctx).is_some());
+    let mut result: Option<bool> = None;
+    let title = dialog_title(app, &d);
     // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
     let host = egui::Id::unique("dialog");
     let instance = host.with(&d.id);
@@ -4266,22 +4302,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             return;
         }
         ui.add_space(12.0);
-        let ok_label = match d.id.as_str() {
-            "colorTheme" => crate::i18n::tr(&app.ui.language, "Add to Swatches").to_string(),
-            "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
-            "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
-            "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
-            "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
-            crate::export_batch_dialog::ID => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Export…")),
-            crate::package_dialog::ID => crate::i18n::tr(&app.ui.language, "Package…").to_string(),
-            crate::package_dialog::INSTRUCTIONS => crate::i18n::tr(&app.ui.language, "Continue").to_string(),
-            _ => crate::i18n::tr(&app.ui.language, "  OK  ").to_string(),
-        };
-        let cancel_label = match d.id.as_str() {
-            "newDocument" => "Close",
-            "findFont" => "Done",
-            _ => "Cancel",
-        };
+        let (ok_label, cancel_label) = footer_labels(app, &d);
         ui.horizontal(|ui| {
             if matches!(d.id.as_str(), "paragraphStyleOptions" | "characterStyleOptions") && !d.b("new") {
                 check(ui, &mut d, "preview", crate::i18n::tr(&app.ui.language, "Preview"));
