@@ -142,7 +142,15 @@ fn shading_deco(s: &Shading, part: &Part<'_>, frames: &[FrameSpec], first_part: 
         // Corners stay square where the box is cut by a split.
         let corners = cut_corners(s.corners, !first_part, !last_part);
         let path = (!corners.iter().all(Corner::is_none)).then(|| box_outline(rect, &corners, [true; 4]));
-        return Some(Deco { rect, color: s.color.clone(), tint: s.tint, path, nonprinting: s.nonprinting, overprint: s.overprint });
+        return Some(Deco {
+            rect,
+            color: s.color.clone(),
+            tint: s.tint,
+            path,
+            nonprinting: s.nonprinting,
+            overprint: s.overprint,
+            footnote_rule: false,
+        });
     }
     None
 }
@@ -157,11 +165,19 @@ fn border_decos(bd: &Border, part: &Part<'_>, first_part: bool, last_part: bool,
     for (path, gap) in border_paths(bd, o, open_top, open_bottom) {
         let (color, tint, overprint) =
             if gap { (bd.gap_color.clone(), bd.gap_tint, bd.gap_overprint) } else { (bd.color.clone(), bd.tint, bd.overprint) };
-        decos.push((part.fi, false, Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false, overprint }));
+        decos.push((
+            part.fi,
+            false,
+            Deco { rect: path.bounding_box(), color, tint, path: Some(path), nonprinting: false, overprint, footnote_rule: false },
+        ));
     }
     if is_plain(bd, open_top, open_bottom) {
         decos.extend(plain_edges(bd, o, open_top, open_bottom).into_iter().map(|rect| {
-            (part.fi, false, Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false, overprint: bd.overprint })
+            (
+                part.fi,
+                false,
+                Deco { rect, color: bd.color.clone(), tint: bd.tint, path: None, nonprinting: false, overprint: bd.overprint, footnote_rule: false },
+            )
         }));
     }
 }

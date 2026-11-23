@@ -1,12 +1,13 @@
 # DesignCraft roadmap
 
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- 2026-11-19: repeated table-footer footnotes number on their first emitted page, preserving the final body page's counter for following notes (#2612).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-15 · **Change:** minor (obsolete CI gap removed; tracked-change selection mapping; Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-16 · **Change:** minor (table-cell notes share column-foot placement and story numbering (#2611, #2612); obsolete CI gap removed; tracked-change selection mapping; Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -14,6 +15,15 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-16** · Table-cell footnotes share the column-foot stack with body notes (#2611).
+  Row-group fitting reserves their height, and repeated headers and footers place each note
+  once. Page-dependent notes recompose after row movement; header notes follow the first body
+  group, and non-repeating footer notes reserve space only for the final group. Cell notes use
+  the story's numbering sequence in logical reading order, including RTL and nested tables
+  (#2612). Page/spread/section restarts follow placed rows. Spanning cell notes rewind earlier
+  columns when their enlarged area overlaps body text; clipped fixed-height cells still print
+  their notes. Editing cell-note text with the canvas caret is not supported.
+  No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot
@@ -28,9 +38,9 @@ DesignCraft aims at full Adobe InDesign parity — and to be better: faster, ope
   blocked for 109 ms instead, and Save, Close and Revert cancel a snapshot still being written.
   No readiness percentage change.
 - **2026-10-28** · Inline table rows leave room for column and spanning footnotes, continuing in
-  the next column or frame when needed (#1901). Cell-local footnotes contribute to row height
-  and sit inside the cell rather than outside its measuring frame. Vertical justification keeps
-  paragraphs and table fragments above the footnote area. No readiness percentage change.
+  the next column or frame when needed (#1901). Cell-note placement was subsequently corrected
+  to the column foot (#2611), with numbering in the story's sequence (#2612). Vertical justification
+  keeps paragraphs and table fragments above the footnote area. No readiness percentage change.
 - **2026-10-28** · Duplicate, paste, parent overrides and data merge give anchored objects in the
   copied story fresh ids (#1522). Copies used to keep the original's ids, and the saved file then
   failed to open with "duplicate item id". Files already saved that way still don't open; no

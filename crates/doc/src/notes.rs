@@ -225,6 +225,27 @@ impl Story {
     }
 }
 
+/// Deepest nested table (a table in a cell of a table) whose cell notes still count toward a
+/// story's footnote numbering. A file is hostile input; deeper nesting counts only the notes
+/// above it rather than recursing without a bound.
+const MAX_NOTE_TABLE_DEPTH: usize = 32;
+
+/// Footnotes a story holds: its own, then those in its table cells in reading order. A table cell
+/// is a frameless story of its own, so its notes are not in the host story's list.
+fn note_count(story: &Story, depth: usize) -> usize {
+    let mut n = story.notes.len();
+    if depth >= MAX_NOTE_TABLE_DEPTH {
+        return n;
+    }
+    for pi in 0..story.paras.len() {
+        let Some(table) = story.para_table(pi) else { continue };
+        for cell in &table.cells {
+            n = n.saturating_add(note_count(&cell.text, depth + 1));
+        }
+    }
+    n
+}
+
 impl crate::Document {
     /// The numbering of list `name` after the stories before `sid` (page order), so `sid`'s
     /// numbering carries on; a fresh count for lists that don't continue across stories.
@@ -254,6 +275,9 @@ impl crate::Document {
 
     /// Number of the first footnote of story `sid` when numbering runs through the document:
     /// the start number plus the footnotes of stories that start on earlier pages.
+    ///
+    /// A story's footnotes include those in its table cells: cell notes are numbered in the
+    /// story's sequence, at the table's place in reading order.
     pub fn footnote_start(&self, sid: StoryId) -> u32 {
         let o = &self.footnote_options;
         if o.restart != NoteRestart::Never {
@@ -265,7 +289,8 @@ impl crate::Document {
         };
         let Some(me) = self.story(sid) else { return o.start_at };
         let mine = key(me);
-        let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
+        let before: usize =
+            self.stories.values().filter(|st| st.id != sid && key(st) < mine).map(|st| note_count(st, 0)).fold(0, usize::saturating_add);
         o.start_at.saturating_add(before as u32)
     }
 
@@ -314,6 +339,23 @@ mod tests {
         s.delete(0..n);
         s.check().unwrap();
         assert!(s.notes.is_empty());
+    }
+
+    #[test]
+    fn later_story_footnote_start_counts_earlier_cell_notes() {
+        use crate::{Document, SpreadRef, Table, build::NewDocument};
+        use designcraft_geom::Rect;
+        let mut doc = Document::new(&NewDocument::default());
+        let layer = doc.default_layer();
+        let (_, first) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 200.0), layer, "", ParaFormat::default()).unwrap();
+        let (_, later) = doc.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 0.0, 200.0, 200.0), layer, "", ParaFormat::default()).unwrap();
+        let mut table = Table::new(1, 1, 2, 0, 0, 100.0);
+        for cell in &mut table.cells {
+            cell.text.insert_note(0, "Cell note", ParaFormat::default()).unwrap();
+        }
+        doc.story_mut(first).unwrap().insert_table(0, table);
+        doc.story_mut(later).unwrap().insert_note(0, "Later note", ParaFormat::default()).unwrap();
+        assert_eq!(doc.footnote_start(later), 3);
     }
 
     #[test]
