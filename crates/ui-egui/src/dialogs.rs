@@ -3256,20 +3256,8 @@ fn alert_message(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
 }
 
-// Keep Object Styles actions in the same SDK Tab lane as its body; legacy buttons cannot join it.
-fn dialog_action_clicked(app: &DesignApp, ui: &mut egui::Ui, dialog: &str, caption: &str, primary: bool) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed && dialog == crate::object_style_dialog::ID {
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::style::Variant;
-        return craft_ui_widgets::buttons::Button::new(caption.to_owned())
-            .id_salt(("object_style_footer", primary))
-            .variant(if primary { Variant::PRIMARY } else { Variant::SECONDARY })
-            .show(ui)
-            .clicked();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, dialog);
+/// A footer button of the native dialog window: the primary one filled with the accent.
+fn dialog_action_clicked(ui: &mut egui::Ui, caption: &str, primary: bool) -> bool {
     if primary {
         ui.add(
             egui::Button::new(crate::rtl::widget(ui, egui::RichText::new(caption).color(egui::Color32::WHITE)))
@@ -3278,33 +3266,6 @@ fn dialog_action_clicked(app: &DesignApp, ui: &mut egui::Ui, dialog: &str, capti
     } else {
         ui.button(crate::rtl::widget(ui, caption)).clicked()
     }
-}
-
-// Pinned SDK fields consume raw Escape. Offer only this modal's leftover Cancel to its host,
-// after children have had their draft/gesture/popup cancellation and before normal result handling.
-#[cfg(not(target_arch = "wasm32"))]
-fn object_style_untaken_cancel(app: &DesignApp, ui: &egui::Ui, dialog: &str, blocked_before_children: bool) -> bool {
-    use craft_ui_widgets::runtime::{focus, keys, measure, overlay};
-    let ctx = ui.ctx();
-    if !app.framework_installed || dialog != crate::object_style_dialog::ID || !ui.is_enabled()
-        || ui.is_sizing_pass() || measure::active(ctx) || blocked_before_children
-        || egui::Popup::is_any_open(ctx) || overlay::top(ctx).is_some()
-    {
-        return false;
-    }
-    let Some(rec) = focus::focused_rec(ctx) else {
-        if ctx.memory(|memory| memory.focused()).is_some() { return false; }
-        return keys::with_window_intents(ctx, false, |intents| intents.take(keys::Intent::Cancel));
-    };
-    // A text part / arena member's actual egui focus holder is root, not its component id.
-    if rec.stop.host || ctx.read_response(rec.stop.root).is_none_or(|response| response.layer_id != ui.layer_id()) {
-        return false;
-    }
-    let target = Some(rec.stop.id);
-    let mut intents = keys::intents_of(ctx, target, false);
-    if !intents.take(keys::Intent::Cancel) { return false; }
-    keys::settle(ctx, target, &intents);
-    true
 }
 
 /// The dialog's localized window title.
@@ -3443,8 +3404,6 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     // Format Settings rather than the dialog. Read before the dialog draws: a popup closed by this
     // frame's Escape is still open here.
     let popup_open = egui::Popup::is_any_open(ctx) || d.fields.get(FORMAT_EDIT).is_some_and(Value::is_object);
-    #[cfg(not(target_arch = "wasm32"))]
-    let popup_open = popup_open || (app.framework_installed && d.id == crate::object_style_dialog::ID && craft_ui_widgets::runtime::overlay::top(ctx).is_some());
     let mut result: Option<bool> = None;
     let title = dialog_title(app, &d);
     // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
@@ -4320,18 +4279,14 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             // A multi-line field with focus (set by the dialog this frame) takes Enter as a new line.
             let multiline = take_multiline_focus(ui.ctx(), &d.id);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if dialog_action_clicked(app, ui, &d.id, &ok_label, true)
+                if dialog_action_clicked(ui, &ok_label, true)
                     || (!popup_open && !multiline && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     result = Some(true);
                 }
                 // An alert only has OK.
-                let cancel = d.id != "alert" && dialog_action_clicked(app, ui, &d.id, crate::i18n::tr(&app.ui.language, cancel_label), false);
-                #[cfg(not(target_arch = "wasm32"))]
-                let sdk_cancel = object_style_untaken_cancel(app, ui, &d.id, popup_open);
-                #[cfg(target_arch = "wasm32")]
-                let sdk_cancel = false;
-                if cancel || sdk_cancel || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+                let cancel = d.id != "alert" && dialog_action_clicked(ui, crate::i18n::tr(&app.ui.language, cancel_label), false);
+                if cancel || (!popup_open && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                     result = Some(false);
                 }
                 if d.id == "newDocument" {

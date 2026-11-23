@@ -284,55 +284,9 @@ fn get<'a>(d: &'a Dialog, path: &[&str]) -> &'a Value {
     v
 }
 
-/// Native controls consume SDK events into this dialog's existing draft only.
-fn framework(app: &DesignApp) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    { app.framework_installed }
-    #[cfg(target_arch = "wasm32")]
-    { let _ = app; false }
-}
-
-fn draft_check(ui: &mut egui::Ui, native: bool, label: &str, key: &str, value: &mut bool) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(*value))
-            .label(label.to_owned()).id_salt(("object_style_check", key)).show(ui);
-        for event in out.events { event.apply(value); }
-        return;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (native, key);
-    ui.checkbox(value, crate::rtl::widget(ui, label));
-}
-
 /// A row of the left-hand lists: a checkbox (when `check` is given) and the label, which shows
 /// `page`.
-fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: Option<bool>, native: bool) -> Option<bool> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        use craft_ui_widgets::contract::{Bind, LabelKind, Props as _, Show as _, ShowContainer as _, SideLabel, Sizing};
-        use craft_ui_widgets::choice::{Checkbox, Radio};
-        use craft_ui_widgets::form::Field;
-        use craft_ui_widgets::layout_components::Row;
-        let mut result = None;
-        Row::new().id_salt(("object_style_row", page)).show(ui, |ui, _| {
-            if let Some(before) = check {
-                // The hidden Field label names the mark without duplicating the visible page caption.
-                Field::new(label.to_owned()).side(SideLabel::new().kind(LabelKind::Hidden))
-                    .sizing(Sizing::Content).id_salt(("object_style_include", page)).show(ui, |ui, _| {
-                        let mut next = before;
-                        let out = Checkbox::new(Bind::given(before)).show(ui);
-                        for event in out.events { event.apply(&mut next); }
-                        if next != before { result = Some(next); }
-                    });
-            } else { ui.add_space(24.0); }
-            Radio::new(page.to_owned()).label(label.to_owned()).id_salt(("object_style_page", page)).show(ui);
-        });
-        return result;
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = native;
+fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: Option<bool>) -> Option<bool> {
     let mut out = None;
     ui.horizontal(|ui| {
         match check {
@@ -349,6 +303,14 @@ fn list_row(ui: &mut egui::Ui, d: &mut Dialog, page: &str, label: &str, check: O
         }
     });
     out
+}
+
+/// A check box of the draft's flag `key`.
+fn check(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str) {
+    let mut on = d.b(key);
+    if ui.checkbox(&mut on, crate::rtl::widget(ui, label)).changed() {
+        d.fields.insert(key.into(), json!(on));
+    }
 }
 
 /// The document's swatches, as a list to pick from (InDesign's Fill and Stroke pages).
@@ -537,30 +499,12 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     let cur = d.s("paragraphStyle");
                     let shown = if cur.is_empty() { String::new() } else { crate::i18n::style_name(&app.ui.language, &cur).to_string() };
                     let mut picked = None;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if framework(app) {
-                        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
-                        let entries: Vec<_> = doc.styles.paragraph.iter().map(|s| {
-                            Entry::new(s.name.clone(), crate::i18n::style_name(&app.ui.language, &s.name).to_owned())
-                        }).collect();
-                        let mut next = cur.clone();
-                        let out = ui.allocate_ui(egui::vec2(240.0, 0.0), |ui| {
-                            craft_ui_widgets::pickers::Select::new(tr("Paragraph Style:"), Bind::given(cur.clone()), &entries)
-                                .id_salt("os_paragraph_style").sizing(craft_ui_widgets::contract::Sizing::FillWidth).show(ui)
-                        }).inner;
-                        crate::control::object_style_witness::chooser(ui, &out.response);
-                        for event in out.events { event.apply(&mut next); }
-                        if next != cur { picked = Some(next); }
-                    } else {
-                        legacy_paragraph_menu(ui, &app.ui.language, &doc.styles.paragraph, &cur, &shown, &mut picked);
-                    }
-                    #[cfg(target_arch = "wasm32")]
                     legacy_paragraph_menu(ui, &app.ui.language, &doc.styles.paragraph, &cur, &shown, &mut picked);
-                    if let Some(name) = picked { d.fields.insert("paragraphStyle".into(), json!(name)); }
+                    if let Some(name) = picked {
+                        d.fields.insert("paragraphStyle".into(), json!(name));
+                    }
                 });
-                let mut next = d.b("applyNext");
-                draft_check(ui, framework(app), &tr("Apply Next Style"), "applyNext", &mut next);
-                if next != d.b("applyNext") { d.fields.insert("applyNext".into(), json!(next)); }
+                check(ui, d, "applyNext", &tr("Apply Next Style"));
             });
         }
         "textFrame" => {
@@ -570,12 +514,13 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
     }
 }
 
-fn navigation_contents(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, native: bool) {
+/// Basic Attributes and the effects, each with its checkbox; a click on a name shows its page.
+fn navigation(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
     crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
     for (key, label) in ATTRIBUTES {
         let check = (key != "general").then(|| included(d, key));
-        if let Some(on) = list_row(ui, d, key, &tr(label), check, native) {
+        if let Some(on) = list_row(ui, d, key, &tr(label), check) {
             set(d, &["inc", key], json!(on));
         }
     }
@@ -589,38 +534,12 @@ fn navigation_contents(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, nativ
     });
     for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
         let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
-        if let Some(on) = list_row(ui, d, key, &tr(label), Some(crate::effects_dialog::is_on(&fx, key)), native)
+        if let Some(on) = list_row(ui, d, key, &tr(label), Some(crate::effects_dialog::is_on(&fx, key)))
             && let Some(f) = d.fields.get_mut("fx")
         {
-            if on {
-                crate::effects_dialog::turn_on(f, key);
-            } else if *key == "feather" {
-                f["feather"] = json!(0.0);
-            } else {
-                f[*key]["on"] = json!(false);
-            }
+            crate::effects_dialog::switch(f, key, on);
         }
     }
-}
-
-fn navigation(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
-    let native = framework(app);
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        use craft_ui_widgets::contract::{Bind, Props as _, ShowContainer as _};
-        let before = d.s("page");
-        let mut page = before.clone();
-        let shown = craft_ui_widgets::choice::RadioGroup::new(
-            crate::i18n::tr(&app.ui.language, "Basic Attributes").to_owned(), Bind::given(before.clone()),
-        ).id_salt("object_style_pages").show(ui, |ui, _| {
-            // RadioGroup owns navigation; Stack preserves the existing vertical page list.
-            craft_ui_widgets::layout_components::Stack::new().show(ui, |ui, _| navigation_contents(app, ui, d, true));
-        });
-        for event in shown.output.events { event.apply(&mut page); }
-        if page != before { d.fields.insert("page".into(), json!(page)); }
-        return;
-    }
-    navigation_contents(app, ui, d, native);
 }
 
 /// The dialog's body.
@@ -630,23 +549,6 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         crate::rtl::label(ui, tr("Style Name:"));
         let mut name = d.s("name");
-        #[cfg(not(target_arch = "wasm32"))]
-        if app.framework_installed {
-            use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-            let out = ui.allocate_ui(egui::vec2(300.0, 0.0), |ui| {
-                craft_ui_widgets::text::TextField::new(tr("Style Name:"), Bind::given(name.clone()))
-                    .id_salt("object_style_name")
-                    .sizing(craft_ui_widgets::contract::Sizing::FillWidth)
-                    .limit(None::<usize>)
-                    .show(ui)
-            }).inner;
-            for event in out.events {
-                event.apply(&mut name);
-            }
-        } else {
-            ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
-        }
-        #[cfg(target_arch = "wasm32")]
         ui.add(egui::TextEdit::singleline(&mut name).desired_width(300.0));
         if name != d.s("name") {
             d.fields.insert("name".into(), json!(name));
@@ -672,9 +574,279 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     });
     ui.add_space(10.0);
     if d.b("new") {
-        let mut apply = d.b("apply");
-        draft_check(ui, framework(app), &tr("Apply Style to Selection"), "apply", &mut apply);
-        if apply != d.b("apply") { d.fields.insert("apply".into(), json!(apply)); }
+        check(ui, d, "apply", &tr("Apply Style to Selection"));
+    }
+}
+
+/// The dialog's form under the framework's dialog host.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(framework::show).width(760.0);
+
+/// The dialog on the framework's components: the same draft fields as the native body, with OK, Cancel, Enter and
+/// Escape the host's.
+#[cfg(not(target_arch = "wasm32"))]
+mod framework {
+    use super::{ATTRIBUTES, get, included, set, settings};
+    use crate::DesignApp;
+    use crate::dialogs::Dialog;
+    use crate::effects_dialog::form::{check, choose, edited, level, number, page_row};
+    use craft_behavior::{ColumnWidth, Selection};
+    use craft_ui_panels::sections::GroupBox;
+    use craft_ui_widgets::choice::RadioGroup;
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::{Shade, Text};
+    use craft_ui_widgets::form::Field;
+    use craft_ui_widgets::layout::CellAlign;
+    use craft_ui_widgets::layout_components::{Grid, Row, Stack};
+    use craft_ui_widgets::list::{List, ListRow};
+    use craft_ui_widgets::pickers::Select;
+    use craft_ui_widgets::primitives::ContentPainterCx;
+    use craft_ui_widgets::runtime::env::UnitKind;
+    use craft_ui_widgets::style::{DataColor, TypeRole};
+    use craft_ui_widgets::text::TextField;
+    use egui::{Color32, CornerRadius, Rect, Ui};
+    use serde_json::{Value, json};
+
+    /// The page list beside the page shown, each at the top of its column.
+    const COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::Content];
+
+    /// The form: the style's name (and why OK was refused), its pages beside the page shown, and Apply Style to
+    /// Selection for a new style.
+    pub(super) fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
+        let app: &DesignApp = app;
+        let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_owned();
+        let page = d.fields.get("page").and_then(Value::as_str).unwrap_or("general").to_owned();
+        Stack::new().id_salt("object_style_form").fill_width().show(ui, |ui, _| {
+            Field::new(tr("Style Name:")).id_salt("object_style_name_field").show(ui, |ui, _| {
+                let name = d.s("name");
+                let out = TextField::new(tr("Style Name:"), Bind::given(name.clone()))
+                    .id_salt("object_style_name")
+                    .sizing(Sizing::FillWidth)
+                    .limit(None::<usize>)
+                    .show(ui);
+                if let Some(name) = edited(out.events, name) {
+                    d.fields.insert("name".into(), json!(name));
+                }
+            });
+            // Why OK was refused (an empty or taken name), until the next try.
+            let status = d.s("status");
+            if !status.is_empty() {
+                Text::new(status).show(ui);
+            }
+            Grid::new(&COLUMNS).id_salt("object_style_columns").cells(CellAlign::Top).show(ui, |ui, _| {
+                Stack::new().id_salt("object_style_list").show(ui, |ui, _| navigation(app, ui, d));
+                Stack::new().id_salt("object_style_page").show(ui, |ui, _| page_form(app, ui, d, &page));
+            });
+            if d.b("new")
+                && let Some(on) = check(ui, "object_style_apply", &tr("Apply Style to Selection"), d.b("apply"))
+            {
+                d.fields.insert("apply".into(), json!(on));
+            }
+        });
+        None
+    }
+
+    /// Basic Attributes and the effects: a box includes one in the style, its name shows its page.
+    fn navigation(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
+        let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_owned();
+        let before = d.s("page");
+        let shown = RadioGroup::new(tr("Basic Attributes"), Bind::given(before.clone())).id_salt("object_style_pages").show(ui, |ui, _| {
+            Stack::new().show(ui, |ui, _| {
+                Text::new(tr("Basic Attributes")).role(TypeRole::BodyStrong).show(ui);
+                for (key, label) in ATTRIBUTES {
+                    let check = (key != "general").then(|| included(d, key));
+                    if let Some(on) = page_row(ui, "object_style", key, &tr(label), check) {
+                        set(d, &["inc", key], json!(on));
+                    }
+                }
+                Field::new(tr("Effects for:")).id_salt("object_style_fx_level").show(ui, |ui, _| {
+                    level(ui, "os_fx_level", &tr("Effects for:"), &tr("Object"));
+                });
+                for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
+                    let on = crate::effects_dialog::is_on(d.fields.get("fx").unwrap_or(&Value::Null), key);
+                    if let Some(on) = page_row(ui, "object_style", key, &tr(label), Some(on))
+                        && let Some(f) = d.fields.get_mut("fx")
+                    {
+                        crate::effects_dialog::switch(f, key, on);
+                    }
+                }
+            });
+        });
+        if let Some(page) = edited(shown.output.events, before) {
+            d.fields.insert("page".into(), json!(page));
+        }
+    }
+
+    /// The settings of the attribute shown.
+    fn page_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, page: &str) {
+        let lang = app.ui.language.as_str();
+        let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
+        if let Some((_, title)) = ATTRIBUTES.iter().find(|a| a.0 == page) {
+            Text::new(tr(title)).role(TypeRole::Heading).show(ui);
+        }
+        match page {
+            "general" => {
+                Field::new(tr("Based On:")).id_salt("os_based_on_field").show(ui, |ui, _| {
+                    // Based On isn't editable yet: the style's parent, as it is.
+                    let based = d.s("basedOn");
+                    let entries = [Entry::new(based.clone(), crate::i18n::style_name(lang, &based).to_owned())];
+                    Select::new(tr("Based On:"), Bind::given(based.clone()), &entries).id_salt("os_based_on").enabled(false).show(ui);
+                });
+                let lines = settings(app, d);
+                GroupBox::new(tr("Style Settings:"), None).id_salt("os_style_settings").show(ui, |ui, _| {
+                    if lines.is_empty() {
+                        Text::new(tr("(no attributes)")).shade(Shade::Muted).show(ui);
+                    }
+                    for line in &lines {
+                        Text::new(line.clone()).show(ui);
+                    }
+                });
+            }
+            "fill" | "stroke" => {
+                let key = page;
+                ui.add_enabled_ui(included(d, key), |ui| {
+                    swatches(app, ui, d, key);
+                    Row::new().id_salt(("os_paint", key.to_owned())).show(ui, |ui, _| {
+                        if key == "stroke" {
+                            Field::new(tr("Weight:")).id_salt("os_weight_field").show(ui, |ui, _| {
+                                let weight = get(d, &["stroke", "weight"]).as_f64().unwrap_or(0.0);
+                                if let Some(v) = number(ui, "os_stroke_weight", &tr("Weight:"), weight, UnitKind::Points, 0.0..=1000.0, 2) {
+                                    set(d, &["stroke", "weight"], json!(v));
+                                }
+                            });
+                        }
+                        Field::new(tr("Tint:")).id_salt(("os_tint_field", key.to_owned())).show(ui, |ui, _| {
+                            let tint = (get(d, &[key, "tint"]).as_f64().unwrap_or(0.0) * 100.0).round();
+                            if let Some(v) = number(ui, ("os_tint", key.to_owned()), &tr("Tint:"), tint, UnitKind::Percent, 0.0..=100.0, 0) {
+                                set(d, &[key, "tint"], json!(v / 100.0));
+                            }
+                        });
+                    });
+                });
+            }
+            "corners" => {
+                ui.add_enabled_ui(included(d, "corners"), |ui| {
+                    Text::new(tr("Corner Options")).role(TypeRole::BodyStrong).show(ui);
+                    Row::new().id_salt("os_corners").show(ui, |ui, _| {
+                        Field::new(tr("Size:")).id_salt("os_corner_size_field").show(ui, |ui, _| {
+                            let size = get(d, &["corners", "corners"])[0]["size"].as_f64().unwrap_or(0.0);
+                            if let Some(v) = number(ui, "os_corner_size", &tr("Size:"), size, UnitKind::Points, 0.0..=10_000.0, 2) {
+                                every_corner(d, "size", json!(v));
+                            }
+                        });
+                        Field::new(tr("Shape:")).id_salt("os_corner_shape_field").show(ui, |ui, _| {
+                            let cur: designcraft_geom::corners::CornerShape =
+                                serde_json::from_value(get(d, &["corners", "corners"])[0]["shape"].clone()).unwrap_or_default();
+                            let entries: Vec<Entry<designcraft_geom::corners::CornerShape>> =
+                                designcraft_geom::corners::CornerShape::ALL.iter().map(|s| Entry::new(*s, tr(s.label()))).collect();
+                            if let Some(s) = choose(ui, "os_corner_shape", &tr("Shape:"), cur, &entries) {
+                                every_corner(d, "shape", json!(s));
+                            }
+                        });
+                    });
+                });
+            }
+            "paragraph" => {
+                let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+                ui.add_enabled_ui(included(d, "paragraph"), |ui| {
+                    Field::new(tr("Paragraph Style:")).id_salt("os_paragraph_style_field").show(ui, |ui, _| {
+                        let cur = d.s("paragraphStyle");
+                        let entries: Vec<Entry<String>> = doc
+                            .styles
+                            .paragraph
+                            .iter()
+                            .map(|s| Entry::new(s.name.clone(), crate::i18n::style_name(lang, &s.name).to_owned()))
+                            .collect();
+                        let out = Select::new(tr("Paragraph Style:"), Bind::given(cur.clone()), &entries)
+                            .id_salt("os_paragraph_style")
+                            .sizing(Sizing::FillWidth)
+                            .show(ui);
+                        crate::control::object_style_witness::chooser(ui, &out.response);
+                        if let Some(name) = edited(out.events, cur) {
+                            d.fields.insert("paragraphStyle".into(), json!(name));
+                        }
+                    });
+                    if let Some(on) = check(ui, "os_apply_next", &tr("Apply Next Style"), d.b("applyNext")) {
+                        d.fields.insert("applyNext".into(), json!(on));
+                    }
+                });
+            }
+            "textFrame" => {
+                // Text Frame Options › General on the framework: `frame_forms` comes with the Text Frame Options port
+                // (wave2/dialogs-frame), merged together with this dialog.
+                ui.add_enabled_ui(included(d, "textFrame"), |ui| crate::dialogs::frame_forms::general(app, ui, d));
+            }
+            p => crate::effects_dialog::form::page(app, ui, d, p),
+        }
+    }
+
+    /// Sets `field` of every corner of the style's corner options.
+    fn every_corner(d: &mut Dialog, field: &str, value: Value) {
+        let mut c = get(d, &["corners"]).clone();
+        if let Some(cs) = c["corners"].as_array_mut() {
+            cs.iter_mut().for_each(|k| k[field] = value.clone());
+        }
+        d.fields.insert("corners".into(), c);
+    }
+
+    /// The swatches a Fill or Stroke page lists: the document's, hidden ones but the current one left out.
+    struct Swatches(Vec<String>);
+
+    impl craft_behavior::DisplayOrder<usize> for Swatches {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        fn key(&self, at: usize) -> usize {
+            at
+        }
+
+        fn index_of(&self, key: &usize) -> Option<usize> {
+            (*key < self.0.len()).then_some(*key)
+        }
+
+        fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+            self.0.get(at).map(|name| std::borrow::Cow::Borrowed(name.as_str()))
+        }
+    }
+
+    impl craft_behavior::ItemSource<usize> for Swatches {}
+
+    /// The document's swatches as a list to pick from (InDesign's Fill and Stroke pages), each with its chip.
+    fn swatches(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, key: &str) {
+        let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+        let cur = get(d, &[key, "swatch"]).as_str().unwrap_or("").to_owned();
+        let names = Swatches(doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
+        let mut selected = names.0.iter().position(|name| *name == cur).map_or_else(Selection::default, Selection::single);
+        let label = crate::i18n::tr(&app.ui.language, if key == "fill" { "Fill" } else { "Stroke" }).to_owned();
+        List::<usize>::new(label)
+            .id_salt(("os_swatches", key.to_owned()))
+            .select(SelectMode::Single)
+            .arrows_select(true)
+            .max_rows(10)
+            .sizing(Sizing::FillWidth)
+            .selection(Bind::bound(&mut selected))
+            .show_items(ui, &names, &mut |at, _| {
+                let name = names.0.get(*at).cloned().unwrap_or_default();
+                let (color, gradient) = crate::widgets::swatch_colors(doc, &name, 1.0);
+                ListRow::new(name).lead_painter(move |cx: &ContentPainterCx<'_>, slot: Rect| chip(cx, slot, color, gradient))
+            });
+        if let Some(name) = selected.items.first().and_then(|at| names.0.get(*at))
+            && *name != cur
+        {
+            set(d, &[key, "swatch"], json!(name));
+        }
+    }
+
+    /// A swatch's chip in a row's leading slot: its colour, the empty well of [None], or its gradient's ramp.
+    fn chip(cx: &ContentPainterCx<'_>, slot: Rect, color: Option<Color32>, gradient: Option<(Color32, Color32)>) {
+        let well = Rect::from_center_size(slot.center(), egui::Vec2::splat(slot.width().min(slot.height())));
+        match gradient {
+            Some((start, end)) => {
+                cx.ramp(well, CornerRadius::ZERO, &[(0.0, DataColor::new(start)), (1.0, DataColor::new(end))], craft_behavior::Axis::X);
+            }
+            None => cx.with_draw(|draw| draw.swatch_well(well, CornerRadius::ZERO, color.map(craft_theme::Srgba::from))),
+        }
     }
 }
 
@@ -1175,7 +1347,7 @@ mod tests {
                                         craft_ui_widgets::runtime::measure::run(&ctx, || {
                                             assert!(craft_ui_widgets::runtime::measure::active(&ctx));
                                             assert!(ui.is_sizing_pass(), "SDK measurement pairs its context guard with a sizing Ui");
-                                            show(&mut self.app, ui, &mut d);
+                                            framework::show(&mut self.app, ui, &mut d);
                                             assert_eq!(d.fields, fields, "measurement must not consume draft events inside the guarded callback");
                                             assert_eq!(effects(&self.app), before, "measurement callback must not mutate any document/history/journal");
                                             self.guarded += 1;
@@ -1183,7 +1355,7 @@ mod tests {
                                     } else {
                                         if self.pass == Pass::Sizing { assert!(ui.is_sizing_pass()); }
                                         if self.pass == Pass::Disabled { assert!(!ui.is_enabled()); }
-                                        show(&mut self.app, ui, &mut d);
+                                        framework::show(&mut self.app, ui, &mut d);
                                         if guarded {
                                             assert_eq!(d.fields, fields, "{:#?}: guard must refuse edits during the callback", self.pass);
                                             assert_eq!(effects(&self.app), before);
@@ -1244,8 +1416,7 @@ mod tests {
                 }
             }
             fn footer(&mut self, name: &str) {
-                let caption = if name == "OK" { "  OK  " } else { name };
-                let (_, rect) = self.ax_control(Role::Button, caption);
+                let (_, rect) = self.ax_control(Role::Button, name);
                 self.click_at(rect.center());
             }
             fn tab_to(&mut self, role: Role, name: &str) {
@@ -1396,14 +1567,10 @@ mod tests {
             assert!(w.app.ui.dialog.is_none());
             w.quiet(&before);
             w.open(None);
-            let original_name = w.app.ui.dialog.as_ref().unwrap().s("name");
             w.name("Canceled field draft");
+            // One Escape cancels the field's draft and the dialog with it (the framework's dialog rule, as in InDesign).
             w.key(Key::Escape);
-            assert!(w.app.ui.dialog.is_some(), "the active SDK text draft owns the first Escape");
-            assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("name"), original_name);
-            w.quiet(&before);
-            w.key(Key::Escape);
-            assert!(w.app.ui.dialog.is_none(), "after its draft is canceled, the host owns Escape");
+            assert!(w.app.ui.dialog.is_none(), "one Escape over a text draft cancels the draft and the dialog");
             w.quiet(&before);
             w.open(None);
             w.click(Role::TextInput, "Style Name:");
