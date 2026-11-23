@@ -982,9 +982,9 @@ fn specs(language: &str) -> Arc<Tracked<Specs>> {
 
 /// How DesignCraft's dock behaves, as InDesign's: new docks at the docked area's free sides but no full-height column
 /// from the window's edges, a drop on no target (the canvas) floats, a floating window's title bar docks the whole
-/// window, Minimize and the group order in a group's menu, no Maximize Frame or Close Others items and no wheel or
-/// tab close gestures. Floating windows get OS windows
-/// of their own on the desktop.
+/// window, a panel menu button on every group (as InDesign's panel menus) with Minimize and the group order in it,
+/// no Maximize Frame or Close Others items and no wheel or tab close gestures. Floating windows get OS windows of
+/// their own on the desktop.
 fn dock_config() -> DockConfig {
     DockConfig::default()
         .side_edge_zones(false)
@@ -996,6 +996,7 @@ fn dock_config() -> DockConfig {
         .wheel_selects_tabs(false)
         .tab_close_buttons(false)
         .group_order_items(true)
+        .menu_button(true)
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
