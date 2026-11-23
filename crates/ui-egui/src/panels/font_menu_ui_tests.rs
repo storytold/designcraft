@@ -271,6 +271,10 @@ fn every_font_field_searches_in_every_workspace() {
             }
             h.run_steps(4);
             let at = fields(&h, designcraft_fonts::DEFAULT_FAMILY)[k];
+            // Temporary: the dock groups the field sits among, for the red-round diagnosis.
+            for group in h.query_all_by(|n| n.role() == egui::accesskit::Role::TabPanel) {
+                eprintln!("DOCK-DEBUG {name}, field {k} at {at:?}: group {:?} rect {:?}", group.accesskit_node().label(), group.rect());
+            }
             search_in_menu(&mut h, at, &format!("{name}, field {k}"));
             assert_eq!(family(&mut h), "Source Sans 3", "{name}, field {k}");
             assert_eq!(story_text(&mut h, story), before, "{name}, field {k}");
