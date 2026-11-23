@@ -134,6 +134,14 @@ fn slider(ui: &mut egui::Ui, label: &str, opacity: f64) -> (Option<Gesture>, Opt
         }
     }
     let held = out.edit.response.is_pointer_button_down_on() || out.edit.response.dragged();
+    // TEMPORARY (opacity drag diagnosis, remove once the red is understood): every slider event of the pass.
+    #[cfg(test)]
+    eprintln!(
+        "OPACITY-DEBUG slider pass: held={held} pointer_down_on={} dragged={} events={:?}",
+        out.edit.response.is_pointer_button_down_on(),
+        out.edit.response.dragged(),
+        out.edit.events.iter().collect::<Vec<_>>()
+    );
     let mut gesture = None;
     for event in out.edit.events {
         match event {
@@ -162,6 +170,8 @@ fn chevron(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacit
         .overlay(|overlay| overlay.opened_by(&opener.response, Trigger::Click))
         .show(ui, |ui, _| slider(ui, label, opacity));
     // The body's last run is the pass's real one: its gesture is the one to apply.
+    #[cfg(test)]
+    let body_ran = shown.inner.is_some(); // TEMPORARY, opacity drag diagnosis
     let (gesture, rect, held) = shown.inner.unwrap_or((None, None, false));
     let closed = shown.output.closed.is_some() || !shown.output.open;
     if let Some(rect) = rect {
@@ -170,6 +180,15 @@ fn chevron(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacit
     // Whether the open preview is this row's drag: the marker is true only while the preview the row opened is still
     // open, and both cancel branches below are guarded by it.
     let owned = app.live_preview_open() && ui.ctx().data(|d| d.get_temp::<bool>(owned_marker()).unwrap_or(false));
+    // TEMPORARY (opacity drag diagnosis, remove once the red is understood): the popover's state and what the row does.
+    #[cfg(test)]
+    eprintln!(
+        "OPACITY-DEBUG popover pass: open={} closed_reported={} body_ran={} gesture={gesture:?} held={held} owned={owned} preview_open={} closed={closed}",
+        shown.output.open,
+        shown.output.closed.is_some(),
+        body_ran,
+        app.live_preview_open()
+    );
     match gesture {
         Some(Gesture::Update(v)) => {
             if let Some(r) = ratio(v) {
