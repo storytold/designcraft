@@ -4519,6 +4519,18 @@ mod ui223_swatches_rename_apply_tests {
         click(&mut h, group);
         key(&mut h, Key::Enter);
         unchanged(&h, &before);
+        // Enter on the folder the click focused is the list's own keyboard activation: it folds the group again. The folder
+        // is open for the rename that follows.
+        let brand_shown = |h: &Harness<'_, Rig>| {
+            h.query_all_by(|node| node.role() == egui::accesskit::Role::TreeItem && node.label().is_some_and(|label| names_swatch(&label, "Brand")))
+                .next()
+                .is_some()
+        };
+        if !brand_shown(&h) {
+            wait_click_interval(&mut h);
+            click(&mut h, group);
+        }
+        assert!(brand_shown(&h), "the folder is open again");
         open(&mut h, "Brand");
         type_name(&mut h, "Returned");
         let fresh = snapshot(&h);
