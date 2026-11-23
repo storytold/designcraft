@@ -1918,6 +1918,8 @@ mod framework {
             });
         let menu_id = list_id.with("row-menu");
         let mut actions = Vec::new();
+        // The renames the pass committed, and the groups it folded: a rename commits only where its row is still there.
+        let (mut renames, mut folded) = (Vec::new(), Vec::new());
         for event in &out.events {
             match event {
                 CollectionEvent::Activate(RowKey::Group(name)) => {
@@ -1927,6 +1929,9 @@ mod framework {
                     } else {
                         let open = ui.data(|d| d.get_temp::<bool>(open_id(name))).unwrap_or(true);
                         ui.data_mut(|d| d.insert_temp(open_id(name), !open));
+                        if open {
+                            folded.push(name.as_str());
+                        }
                     }
                 }
                 CollectionEvent::Activate(RowKey::Swatch { name, .. }) => {
@@ -1948,7 +1953,7 @@ mod framework {
                         ui.data_mut(|d| d.insert_temp(open_id(name), change.open));
                     }
                 }
-                CollectionEvent::Rename(EditEvent::Commit { after, .. }) => rename(app, ui, after.key.swatch(), &after.name),
+                CollectionEvent::Rename(EditEvent::Commit { after, .. }) => renames.push(after),
                 CollectionEvent::ContextMenu(request) => {
                     let key = request.key.clone();
                     ui.data_mut(|d| d.insert_temp(menu_id, key));
@@ -1962,6 +1967,18 @@ mod framework {
                     }
                 }
                 _ => {}
+            }
+        }
+        for after in renames {
+            let Some(name) = after.key.swatch() else { continue };
+            // A name field that was retired (the panel disabled or being measured, the swatch gone, renamed outside, hidden
+            // or locked, or its folder folded away) applies nothing.
+            let alive = ui.is_enabled()
+                && !ui.is_sizing_pass()
+                && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden)
+                && !matches!(&after.key, RowKey::Swatch { group: Some(group), .. } if folded.contains(&group.as_str()));
+            if alive {
+                rename(app, ui, Some(name), &after.name);
             }
         }
         // A pick by the keys (the arrows move the pick) is the swatch Delete Swatch removes; a pick that ended on a
@@ -3205,9 +3222,14 @@ mod gradient_panel_tests {
     /// Drag the Gradient panel's thumbnail onto the Swatches panel row labelled `label`.
     fn drag_gradient_to(h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, label: &str) {
         use egui::{Event, Modifiers, PointerButton};
-        // The thumbnail sits left of the Type row.
-        let ty = h.get_by_label("Type:").rect();
-        let from = egui::pos2(ty.min.x - 21.0, ty.min.y + 12.0);
+        // The thumbnail: the framework's button named Gradient, else (native) the square left of the Type row.
+        let from = match h.query_all_by_role_and_label(egui::accesskit::Role::Button, "Gradient").next() {
+            Some(thumb) => thumb.rect().center(),
+            None => {
+                let ty = h.get_by_label("Type:").rect();
+                egui::pos2(ty.min.x - 21.0, ty.min.y + 12.0)
+            }
+        };
         let to = h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, label))).rect().center();
         h.event(Event::PointerMoved(from));
         h.step();
@@ -4663,7 +4685,8 @@ mod framework_panel_tests {
         app.install_framework(&ctx);
         assert!(app.framework_installed);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
-        let mut h = Harness::builder().with_context(ctx).with_size(vec2(760.0, 900.0)).build_ui_state(
+        // Frames 50 ms apart: a double click's two presses fall within the double-click time.
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(760.0, 900.0)).with_step_dt(0.05).build_ui_state(
             |ui, state: &mut State| {
                 let panels = state.panels.clone();
                 ui.horizontal_top(|ui| {
