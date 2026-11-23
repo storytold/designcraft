@@ -421,6 +421,7 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             match target {
                 Some(t) => {
                     app.story_editor = if app.story_editor == Some(t) { None } else { Some(t) };
+                    crate::story_editor::follow_target(app);
                     Ok(Value::Null)
                 }
                 None => Err("select a text frame or place the cursor in text".into()),
