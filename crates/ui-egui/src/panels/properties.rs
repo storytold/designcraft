@@ -10,10 +10,7 @@ use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
 use crate::theme::Tokens;
-use crate::widgets::{
-    self, FIELD_H, NumField, button_pair, caption, divider, dropdown, full_width, icon_toggle, link_label, measure, more_options, number,
-    outline_button, rule, section, section_row, selection_band,
-};
+use crate::widgets::{self, FIELD_H, NumField, caption, divider, full_width, more_options, rule, section, selection_band};
 use crate::{DesignApp, icons};
 
 mod document;
@@ -35,7 +32,7 @@ pub use links::{info_panel, links_panel, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
 use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
-pub(crate) use object::{corner_shape_button, corner_type_dropdown, paint_corner_shape, preview_row, ref_point_proxy, stroke_type_dropdown};
+pub(crate) use object::{corner_shape_button, paint_corner_shape, preview_row};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 use object_panels::{anchor_point_sections, pathfinder_row};
 pub(crate) use text::{LANGUAGES, kerning_control, language_menu};

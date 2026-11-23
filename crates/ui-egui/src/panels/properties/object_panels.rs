@@ -1,7 +1,7 @@
 use super::object::{anchor_transform_section, appearance_section};
 use super::{
-    Arrowhead, Cap, DesignApp, Join, SelInfo, Sense, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, caption, divider, full_width, icon_toggle,
-    icons, json, measure, number, outline_button, pos2, rule, section, section_row, sel_info, text_attrs, units, vec2, widgets,
+    Arrowhead, Cap, DesignApp, Join, SelInfo, Stroke, StrokeAlign, StrokeType, Tokens, Ui, Value, divider, full_width, icons, json, pos2, rule,
+    section, sel_info, text_attrs, units, vec2, widgets,
 };
 
 /// The Stroke panel's cap, join and alignment choices: label, the value the engine takes, and the stroke's own.
@@ -114,151 +114,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::panels::cell_stroke::panel(app, ui);
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::stroke_panel(app, ui);
-    }
-    if crate::panels::colors_affect_text(app)
-        && let Some(a) = text_attrs(app)
-    {
-        text_stroke_panel(app, ui, &a["chars"]);
-        return;
-    }
-    let Some(i) = sel_info(app) else {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
-        return;
-    };
-    let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
-        return;
-    };
-    let t = Tokens::get(ui.ctx());
-    egui::Grid::new("stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
-        if let Some(v) = number(ui, "sw", Some(i.stroke_weight), " pt", 60.0, 3) {
-            let _ = app.run("object.stroke", json!({"weight": v.clamp(0.0, 1000.0)}));
-        }
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Cap:"));
-        ui.horizontal(|ui| {
-            for (label, v, cur) in CAPS {
-                if ui.selectable_label(st.cap == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("object.stroke", json!({"cap": v}));
-                }
-            }
-        });
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Join:"));
-        ui.horizontal(|ui| {
-            for (label, v, cur) in JOINS {
-                if ui.selectable_label(st.join == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("object.stroke", json!({"join": v}));
-                }
-            }
-        });
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Miter Limit:"));
-        if let Some(v) = number(ui, "smiter", Some(st.miter_limit), " x", 60.0, 0) {
-            let _ = app.run("object.stroke", json!({"miterLimit": v.clamp(1.0, 500.0)}));
-        }
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Align Stroke:"));
-        ui.horizontal(|ui| {
-            for (label, a, cur) in STROKE_ALIGNS {
-                if ui.selectable_label(st.align == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                    let _ = app.run("object.stroke", json!({"align": a}));
-                }
-            }
-        });
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Type:"));
-        let custom: Vec<String> = app.session.active().map(|d| d.doc.stroke_styles.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
-        let shown = match &st.kind {
-            StrokeType::Style { name } => name.clone(),
-            k => k.label().to_string(),
-        };
-        let combo = craft_ui_legacy::ComboBox::from_id_salt("stype")
-            .selected_text(crate::rtl::widget(
-                ui,
-                if matches!(st.kind, StrokeType::Style { .. }) { &shown } else { crate::i18n::tr(&app.ui.language, &shown) },
-            ))
-            .width(140.0)
-            .show_ui(ui, |ui| {
-                for k in BUILT_IN_STROKES {
-                    let (ty, label) = built_in_stroke(k);
-                    if ui.selectable_label(shown == label, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() {
-                        let _ = app.run("object.stroke", json!({"type": ty}));
-                    }
-                }
-                if !custom.is_empty() {
-                    ui.separator();
-                }
-                for n in &custom {
-                    if ui.selectable_label(shown == *n, n).clicked() {
-                        let _ = app.run("object.stroke", json!({"type": {"kind": "style", "name": n}}));
-                    }
-                }
-            });
-        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Type"));
-        ui.end_row();
-        for (key, label, cur, flip) in [("start", "Start/End:", st.start, true), ("end", "", st.end, false)] {
-            caption(ui, crate::i18n::tr(&app.ui.language, label));
-            let combo = craft_ui_legacy::ComboBox::from_id_salt(key)
-                .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur.label())))
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for a in Arrowhead::ALL {
-                        ui.horizontal(|ui| {
-                            arrow_preview(ui, a, flip, t.text_strong);
-                            if ui.selectable_label(a == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, a.label()))).clicked() {
-                                let _ = app.run("object.stroke", json!({key: a}));
-                            }
-                        });
-                    }
-                });
-            // The second arrowhead reuses the shared caption, so it needs its own semantic name.
-            let name = crate::i18n::tr(&app.ui.language, if flip { "Start/End" } else { "End" }).to_owned();
-            let _ = crate::widgets::name_combo(combo, name);
-            ui.end_row();
-        }
-        caption(ui, crate::i18n::tr(&app.ui.language, "Gap Color:"));
-        crate::panels::swatch_picker(app, ui, "sgap", Some(st.gap_swatch.clone()), |app, n| {
-            let _ = app.run("object.stroke", json!({"gapSwatch": n}));
-        });
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
-        crate::panels::swatch_picker(app, ui, "spick", Some(i.stroke.clone()), |app, n| {
-            let _ = app.run("object.stroke", json!({"swatch": n}));
-        });
-        ui.end_row();
-    });
-}
-
-/// Stroke panel while text is selected: the text's outline colour, weight and whether it sits behind the fill.
-fn text_stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui, c: &Value) {
-    let swatch = c["stroke"].as_str().unwrap_or(designcraft_color::swatch::NONE).to_string();
-    egui::Grid::new("text_stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
-        if let Some(v) = number(ui, "tsw_panel", c["strokeWeight"].as_f64(), " pt", 60.0, 3) {
-            // The character stroke weight's range, as the character style's Weight field has it.
-            let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v.clamp(0.0, 800.0)}}));
-        }
-        ui.end_row();
-        caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
-        crate::panels::swatch_picker(app, ui, "tspick", Some(swatch), |app, n| {
-            let _ = crate::panels::apply_swatch(app, true, &n, None);
-        });
-        ui.end_row();
-    });
-    let mut behind = c["strokeBehindFill"].as_bool().unwrap_or(false);
-    if ui.checkbox(&mut behind, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Stroke Behind Fill"))).changed() {
-        let _ = app.run("type.char", json!({"attrs": {"strokeBehindFill": behind}}));
-    }
-}
-
-/// A short line ending in arrowhead `a` (pointing left for Start, right for End).
-fn arrow_preview(ui: &mut egui::Ui, a: Arrowhead, start: bool, color: egui::Color32) {
-    let (r, _) = ui.allocate_exact_size(vec2(56.0, 14.0), Sense::hover());
-    paint_arrow(ui.painter(), r, a, start, color);
+    framework::stroke_panel(app, ui);
 }
 
 /// Paints in `r` a short line ending in arrowhead `a` (pointing left for Start, right for End).
@@ -301,11 +157,9 @@ fn paint_arrow(painter: &egui::Painter, r: egui::Rect, a: Arrowhead, start: bool
 }
 
 /// Text Wrap keeps its existing artwork; only discrete input moves through the installed SDK.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
 struct WrapModeArtwork(String);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for WrapModeArtwork {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
         icons::paint(painter, rect, &self.0, color);
@@ -321,52 +175,40 @@ fn wrap_control_id(app: &DesignApp, ui: &egui::Ui) -> egui::Id {
     ui.scope_id().with(("text-wrap-mode-invert", target))
 }
 
-fn wrap_mode_button(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, icon: &str, selected: bool, label: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::buttons::Button;
-        use craft_ui_widgets::contract::{Props as _, Show as _};
-        use craft_ui_widgets::primitives::IconSpec;
-        use craft_ui_widgets::style::Variant;
+fn wrap_mode_button(ui: &mut egui::Ui, id: egui::Id, icon: &str, selected: bool, label: &str) -> bool {
+    use craft_theme::ControlSize;
+    use craft_ui_widgets::buttons::Button;
+    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::primitives::IconSpec;
+    use craft_ui_widgets::style::Variant;
 
-        // Keep the original compact row and selected plate, not a six-wide row of painted labels.
-        let (_, rect) = ui.allocate_space(vec2(26.0, 26.0));
-        if selected {
-            ui.painter().rect_filled(rect, 3.0, Tokens::get(ui.ctx()).tool_active);
-        }
-        let artwork = WrapModeArtwork(icon.to_owned());
-        return Button::new(label.to_owned())
-            .id(id)
-            .painted("")
-            .icon(IconSpec::glyph(&artwork))
-            .size(ControlSize::Sm)
-            .variant(Variant::GHOST)
-            .selected(selected)
-            .tooltip(label.to_owned())
-            .show_at(ui, rect)
-            .clicked();
+    // Keep the original compact row and selected plate, not a six-wide row of painted labels.
+    let (_, rect) = ui.allocate_space(vec2(26.0, 26.0));
+    if selected {
+        ui.painter().rect_filled(rect, 3.0, Tokens::get(ui.ctx()).tool_active);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    ui.push_id(id, |ui| icons::button(ui, icon, 26.0, selected, label)).inner.clicked()
+    let artwork = WrapModeArtwork(icon.to_owned());
+    Button::new(label.to_owned())
+        .id(id)
+        .painted("")
+        .icon(IconSpec::glyph(&artwork))
+        .size(ControlSize::Sm)
+        .variant(Variant::GHOST)
+        .selected(selected)
+        .tooltip(label.to_owned())
+        .show_at(ui, rect)
+        .clicked()
 }
 
-fn wrap_invert_checkbox(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, value: &mut bool, label: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::choice::Checkbox;
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let output = Checkbox::new(Bind::given(*value)).id(id).size(craft_theme::ControlSize::Sm).label(label.to_owned()).show(ui);
-        if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
-            *value = next;
-            return true;
-        }
-        return false;
+fn wrap_invert_checkbox(ui: &mut egui::Ui, id: egui::Id, value: &mut bool, label: &str) -> bool {
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    let output = Checkbox::new(Bind::given(*value)).id(id).size(craft_theme::ControlSize::Sm).label(label.to_owned()).show(ui);
+    if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
+        *value = next;
+        return true;
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    ui.push_id(id, |ui| widgets::checkbox(ui, value, label)).inner.changed()
+    false
 }
 
 pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -377,7 +219,7 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     // (top and bottom, left and right) with the link button that makes them all the same.
     ui.horizontal(|ui| {
         for (icon, m, tip) in WRAP_MODES {
-            if wrap_mode_button(app, ui, input_id.with(m), icon, mode == m, crate::i18n::tr(&app.ui.language, tip)) {
+            if wrap_mode_button(ui, input_id.with(m), icon, mode == m, crate::i18n::tr(&app.ui.language, tip)) {
                 let _ = app.run("object.textWrap", json!({"mode": m}));
             }
         }
@@ -385,100 +227,14 @@ pub fn wrap_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let mut inv = info.as_ref().is_some_and(|i| i.wrap_invert);
         let changed = ui
             .add_enabled_ui(mode != "none", |ui| {
-                wrap_invert_checkbox(app, ui, input_id.with("invert"), &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))
+                wrap_invert_checkbox(ui, input_id.with("invert"), &mut inv, crate::i18n::tr(&app.ui.language, "Invert"))
             })
             .inner;
         if changed {
             let _ = app.run("object.textWrap", json!({"mode": mode, "invert": inv}));
         }
     });
-    // The mode buttons and Invert above are the framework's once it is installed; so is the rest.
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::wrap_options(app, ui, info.as_ref(), mode);
-    }
-    let u = units(app);
-    let offsets = info.as_ref().map(|i| i.wrap_offsets);
-    // Linked while the offsets are all the same, until the link is clicked.
-    let linked_id = wrap_link_id();
-    let linked = wrap_linked(ui, offsets);
-    let mut set: Option<[f64; 4]> = None;
-    ui.add_enabled_ui(mode != "none" && info.is_some(), |ui| {
-        // Two rows of fixed-width cells: Top | Left, then Bottom | Right; the link between them.
-        let cell = |ui: &mut Ui, w: f32, label: &str| {
-            let x0 = ui.cursor().min.x;
-            caption(ui, crate::i18n::tr(&app.ui.language, label));
-            ui.add_space((w - (ui.cursor().min.x - x0)).max(0.0));
-        };
-        // The second column starts where the first row's does (after the link button).
-        let mut col2_x: Option<f32> = None;
-        for (r, row) in [[(0, "Top"), (1, "Left")], [(2, "Bottom"), (3, "Right")]].into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                for (k, (side, label)) in row.into_iter().enumerate() {
-                    if k == 1 {
-                        match col2_x {
-                            Some(x) => ui.add_space((x - ui.cursor().min.x).max(0.0)),
-                            None => col2_x = Some(ui.cursor().min.x),
-                        }
-                    }
-                    cell(ui, if k == 0 { 56.0 } else { 40.0 }, label);
-                    if let Some(v) = measure(ui, &format!("wo{side}"), offsets.map(|o| o[side]), u, 60.0) {
-                        set = Some(wrap_offsets_set(offsets, linked, side, v));
-                    }
-                    if k == 0 && r == 0 {
-                        let tip = crate::i18n::tr(&app.ui.language, "Make all settings the same");
-                        let link = widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, tip, vec2(22.0, 21.0));
-                        if link.clicked() {
-                            ui.data_mut(|d| d.insert_temp(linked_id, !linked));
-                        }
-                    }
-                }
-            });
-        }
-    });
-    if let Some(o) = set {
-        let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
-    }
-    let Some(i) = info.as_ref().filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
-    wrap_combo(app, ui, "wrap_side", "Wrap To", &WRAP_SIDES, &[], &i.wrap_side, "side");
-    if i.wrap == "contour" && i.is_graphic {
-        wrap_combo(app, ui, "wrap_contour", "Contour Type", &CONTOUR_TYPES, &CONTOUR_SHOWN_ONLY, &i.wrap_contour, "contour");
-        if i.wrap_contour == "alphaChannel" {
-            let mut inside = i.wrap_inside_edges;
-            if widgets::checkbox(ui, &mut inside, crate::i18n::tr(&app.ui.language, "Include Inside Edges")).changed() {
-                let _ = app.run("object.textWrap", json!({"insideEdges": inside}));
-            }
-        }
-    }
-}
-
-/// A Text Wrap panel choice: `opts` are offered, `shown_only` only name the current value.
-#[allow(clippy::too_many_arguments)]
-fn wrap_combo(
-    app: &mut DesignApp,
-    ui: &mut egui::Ui,
-    salt: &str,
-    caption_text: &str,
-    opts: &[(&str, &str)],
-    shown_only: &[(&str, &str)],
-    cur: &str,
-    key: &str,
-) {
-    ui.horizontal(|ui| {
-        caption(ui, crate::i18n::tr(&app.ui.language, caption_text));
-        let shown = opts.iter().chain(shown_only).find(|o| o.0 == cur).map_or(cur, |o| o.1).to_string();
-        let combo = craft_ui_legacy::ComboBox::from_id_salt(salt)
-            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, &shown)))
-            .width(170.0)
-            .show_ui(ui, |ui| {
-                for (k, l) in opts {
-                    if ui.selectable_label(*k == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-                        let _ = app.run("object.textWrap", json!({ key: k }));
-                    }
-                }
-            });
-        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, caption_text));
-    });
+    framework::wrap_options(app, ui, info.as_ref(), mode);
 }
 
 /// The Pathfinder operations, in the order of InDesign's Pathfinder buttons.
@@ -492,18 +248,7 @@ const PATHFINDER: [(&str, &str, &str); 5] = [
 
 /// Properties › Pathfinder (several objects selected): combine them into one shape.
 pub(super) fn pathfinder_row(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::pathfinder_row(app, ui);
-    }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        for (icon, op, tip) in PATHFINDER {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.pathfinder", json!({"op": op}));
-            }
-        }
-    });
+    framework::pathfinder_row(app, ui);
 }
 
 /// Pathfinder panel › Paths: (icon, command, params, tooltip).
@@ -530,36 +275,7 @@ const CONVERT_SHAPE: [(&str, &str, &str); 9] = [
 /// Points selected with Direct Selection, as InDesign's Properties shows them: Transform,
 /// Appearance, Convert Points (the point type of the selected points) and Delete Point(s).
 pub(super) fn anchor_point_sections(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::anchor_point_sections(app, ui, i);
-    }
-    section(ui, crate::i18n::tr(&app.ui.language, "Transform"), true);
-    anchor_transform_section(app, ui, i);
-    divider(ui);
-    section(ui, crate::i18n::tr(&app.ui.language, "Appearance"), true);
-    appearance_section(app, ui, i);
-    divider(ui);
-    let mut kind = None;
-    let lang = app.ui.language.clone();
-    section_row(ui, crate::i18n::tr(&lang, "Convert Points"), |ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
-        // Laid out from the right: last first, so the row reads Plain … Symmetrical.
-        for (icon, k, tip) in CONVERT_POINT.iter().rev() {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&lang, tip)).clicked() {
-                kind = Some(k);
-            }
-        }
-    });
-    if let Some(k) = kind {
-        let _ = app.run("path.convertPoints", json!({"kind": k}));
-    }
-    rule(ui);
-    section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
-    let fw = full_width(ui);
-    if outline_button(ui, crate::i18n::tr(&app.ui.language, "Delete Point(s)"), fw).clicked() {
-        let _ = app.run("path.deletePoints", json!({}));
-    }
+    framework::anchor_point_sections(app, ui, i);
 }
 
 /// Pathfinder panel › Convert Point: (icon, kind, tooltip).
@@ -573,229 +289,47 @@ const CONVERT_POINT: [(&str, &str, &str); 4] = [
 /// Pathfinder panel, as InDesign's: Paths, Pathfinder, Convert Shape and Convert Point, each a row of
 /// icon buttons acting on the selection.
 pub fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::pathfinder_panel(app, ui);
-    }
-    let section = |ui: &mut egui::Ui, app: &DesignApp, title: &str| {
-        ui.add_space(4.0);
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, title));
-        ui.add_space(2.0);
-    };
-    let row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(12.0, 8.0);
-            add(ui);
-        });
-    };
-    section(ui, app, "Paths:");
-    row(ui, &mut |ui| {
-        for (icon, cmd, params, tip) in PATHS {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run(cmd, serde_json::from_str(params).unwrap_or_default());
-            }
-        }
-    });
-    section(ui, app, "Pathfinder:");
-    row(ui, &mut |ui| {
-        for (icon, op, tip) in PATHFINDER {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.pathfinder", json!({"op": op}));
-            }
-        }
-    });
-    section(ui, app, "Convert Shape:");
-    row(ui, &mut |ui| {
-        for (icon, to, tip) in CONVERT_SHAPE {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.convertShape", json!({"to": to}));
-            }
-        }
-    });
-    section(ui, app, "Convert Point:");
-    row(ui, &mut |ui| {
-        for (icon, kind, tip) in CONVERT_POINT {
-            if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("path.convertPoints", json!({"kind": kind}));
-            }
-        }
-    });
+    framework::pathfinder_panel(app, ui);
 }
 
 pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::align_panel(app, ui);
-    }
-    ui.horizontal(|ui| {
-        for (edge, icon, tip) in ALIGN_EDGES {
-            if widgets::icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.align", json!({"edge": edge}));
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        for (axis, icon, tip) in DISTRIBUTE {
-            if widgets::icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                let _ = app.run("object.distribute", json!({"axis": axis}));
-            }
-        }
-    });
+    framework::align_panel(app, ui);
 }
 
 pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::effects_panel(app, ui);
-    }
-    let Some(st) = app.session.active() else { return };
-    let Some(it) = st.selection.items.first().and_then(|i| st.doc.item(*i)).cloned() else {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
-        return;
-    };
-    ui.horizontal(|ui| {
-        let combo = craft_ui_legacy::ComboBox::from_id_salt("blend")
-            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, it.blend.label())))
-            .width(130.0)
-            .show_ui(ui, |ui| {
-                for m in BLEND_MODES {
-                    if ui.selectable_label(m == it.blend, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, m.label()))).clicked() {
-                        let _ = app.run("object.opacity", json!({"opacity": it.opacity, "blend": m}));
-                    }
-                }
-            });
-        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Blending"));
-        caption(ui, crate::i18n::tr(&app.ui.language, "Opacity"));
-        if let Some(v) = number(ui, "eop", Some(it.opacity as f64 * 100.0), "%", 46.0, 0) {
-            let _ = app.run("object.opacity", json!({"opacity": (v / 100.0).clamp(0.0, 1.0)}));
-        }
-    });
-    // The level the settings apply to, with its blend mode and opacity ("Group: Color Dodge 100%").
-    let group = it.is_group();
-    ui.horizontal(|ui| {
-        let level = crate::i18n::tr(&app.ui.language, if group { "Group:" } else { "Object:" });
-        crate::rtl::label(ui, egui::RichText::new(level).font(crate::theme::semibold(12.0)));
-        crate::rtl::label(ui, format!("{} {}%", crate::i18n::tr(&app.ui.language, it.blend.label()), (it.opacity * 100.0).round()));
-    });
-    divider(ui);
-    let ds = it.effects.drop_shadow.clone();
-    let mut on = ds.on;
-    if ui.checkbox(&mut on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Drop Shadow"))).changed() {
-        let _ = app.run("object.dropShadow", json!({"on": on}));
-    }
-    if ds.on {
-        // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
-        // same in both.
-        let u = units(app);
-        egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
-            caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
-            }
-            caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
-            let global = app.session.active().map_or(120.0, |st| st.doc.settings.global_light);
-            if let Some(v) = number(ui, "dsa", Some(if ds.global_light { global } else { ds.angle }), "°", 50.0, 0) {
-                // With Use Global Light on, the angle is the document's (every such shadow moves).
-                let _ = if ds.global_light {
-                    app.run("object.globalLight", json!({"angle": v}))
-                } else {
-                    app.run("object.dropShadow", json!({"on": true, "angle": v}))
-                };
-            }
-            ui.end_row();
-            crate::rtl::label(ui, "");
-            crate::rtl::label(ui, "");
-            caption(ui, "");
-            let mut gl = ds.global_light;
-            if ui.checkbox(&mut gl, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Use Global Light"))).changed() {
-                let _ = app.run("object.dropShadow", json!({"on": true, "globalLight": gl}));
-            }
-            ui.end_row();
-            caption(ui, crate::i18n::tr(&app.ui.language, "Opacity"));
-            if let Some(v) = number(ui, "dso", Some(ds.opacity as f64 * 100.0), "%", 56.0, 0) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
-            }
-            caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
-                let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
-            }
-            ui.end_row();
-        });
-    }
-    divider(ui);
-    // Groups only, as in InDesign (greyed for other objects).
-    ui.horizontal(|ui| {
-        let mut iso = it.isolate;
-        let label = crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Isolate Blending"));
-        if ui.add_enabled(group, egui::Checkbox::new(&mut iso, label)).changed() {
-            let _ = app.run("object.transparencyGroup", json!({"isolate": iso}));
-        }
-        let mut ko = it.knockout;
-        let label = crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Knockout Group"));
-        if ui.add_enabled(group, egui::Checkbox::new(&mut ko, label)).changed() {
-            let _ = app.run("object.transparencyGroup", json!({"knockout": ko}));
-        }
-    });
-    // The fx button, as at the bottom of InDesign's Effects panel: each effect opens the Effects
-    // dialog on its page.
-    let fx = ui
-        .add(egui::Button::new(egui::RichText::new("fx").italics().strong()).min_size(vec2(28.0, 20.0)))
-        .on_hover_text(crate::i18n::tr(&app.ui.language, "Add an object effect to the selected target"));
-    egui::Popup::menu(&fx).show(|ui| {
-        for (page, label) in crate::effects_dialog::PAGES {
-            let text = format!("{}…", crate::i18n::tr(&app.ui.language, label));
-            if ui.button(crate::rtl::widget(ui, text)).clicked() {
-                crate::effects_dialog::open(app, page);
-                ui.close();
-            }
-        }
-    });
+    framework::effects_panel(app, ui);
 }
 
 /// Ordinary boolean input only; the engine retains ownership of the selected objects and Undo.
 fn attribute_checkbox(app: &DesignApp, ui: &mut egui::Ui, id: egui::Id, value: &mut bool, label: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::choice::Checkbox;
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        attributes_workflow_tests::observe_geometry(app, ui, "before SDK checkbox", label, None);
-        let output = Checkbox::new(Bind::given(*value)).id(id).label(label.to_owned()).show(ui);
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        attributes_workflow_tests::observe_geometry(app, ui, "after SDK checkbox", label, Some(output.response.rect));
-        if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
-            *value = next;
-            return true;
-        }
-        return false;
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    // The geometry observers below are the tests' alone.
+    let _ = app;
+    #[cfg(test)]
+    attributes_workflow_tests::observe_geometry(app, ui, "before SDK checkbox", label, None);
+    let output = Checkbox::new(Bind::given(*value)).id(id).label(label.to_owned()).show(ui);
+    #[cfg(test)]
+    attributes_workflow_tests::observe_geometry(app, ui, "after SDK checkbox", label, Some(output.response.rect));
+    if let Some(next) = output.events.committed().copied().filter(|next| *next != *value) {
+        *value = next;
+        return true;
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, id);
-    ui.checkbox(value, crate::rtl::widget(ui, label)).changed()
+    false
 }
 
 /// Window › Output › Attributes: overprint fill, stroke and gap; nonprinting.
 pub fn attributes_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
     attributes_workflow_tests::observe_geometry(app, ui, "before direction scope", "", None);
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::runtime::env::{Direction, with_env};
-        let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
-        with_env(ui, |scope| scope.direction = Some(direction), |ui| attributes_contents(app, ui));
-        return;
-    }
-    attributes_contents(app, ui);
+    use craft_ui_widgets::runtime::env::{Direction, with_env};
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+    with_env(ui, |scope| scope.direction = Some(direction), |ui| attributes_contents(app, ui));
 }
 
 fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     let Some(it) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).cloned()) else {
-        #[cfg(not(target_arch = "wasm32"))]
-        if app.framework_installed {
-            crate::framework_transform::caption(ui, None, crate::i18n::tr(&app.ui.language, "Select an object."));
-            return;
-        }
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
+        crate::framework_transform::caption(ui, None, crate::i18n::tr(&app.ui.language, "Select an object."));
         return;
     };
     let rows = attribute_rows(&it);
@@ -803,7 +337,7 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
         app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
     let id = ui.scope_id().with(("attributes", target));
     let mut show_grid = |ui: &mut egui::Ui| {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(test)]
         attributes_workflow_tests::observe_geometry(app, ui, "before native Grid", "", None);
         egui::Grid::new("attributes_panel").num_columns(2).spacing(vec2(16.0, 6.0)).show(ui, |ui| {
             for (i, (key, label, on)) in rows.into_iter().enumerate() {
@@ -826,10 +360,8 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The object panels on the craft UI framework: the same rows over the same engine commands as the native bodies above,
-/// every control a framework component. The Text Wrap mode buttons and Invert, and the Attributes check boxes, were
-/// already the framework's (see `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`).
-#[cfg(not(target_arch = "wasm32"))]
+/// The object panels on the craft UI framework: every control a framework component. The Text Wrap mode buttons and
+/// Invert, and the Attributes check boxes, are drawn by `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`.
 mod framework {
     use super::*;
     use crate::framework_transform::{
@@ -1361,7 +893,7 @@ mod effects_panel_tests {
         let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
         app.run("selection.set", json!({"ids": [g]})).unwrap();
         app.run("object.opacity", json!({"opacity": 1.0, "blend": "colorDodge"})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         crate::theme::install_fonts(&ctx, "en");
         crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
         let texts: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect();
@@ -1392,7 +924,7 @@ mod effects_panel_tests {
         app.run("selection.set", json!({"ids": [container]})).unwrap();
         app.run("edit.pasteInto", json!({})).unwrap();
         app.run("selection.set", json!({"ids": [container]})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         crate::theme::install_fonts(&ctx, "en");
         crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
         let texts: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect();
@@ -1431,7 +963,7 @@ mod wrap_panel_tests {
         app.run("file.new", json!({})).unwrap();
         let id = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
         app.run("object.textWrap", json!({"mode": "boundingBox", "offset": [1, 2, 3, 4]})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         crate::theme::install_fonts(&ctx, "en");
         // Top and Left, then Bottom and Right, each with its own value (picas here: 0p1 = 1 pt),
         // then the Wrap To side.
@@ -1453,7 +985,7 @@ mod wrap_panel_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod attributes_workflow_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
@@ -1549,9 +1081,8 @@ mod attributes_workflow_tests {
     /// Read-only boundary evidence for the original negative-child-size failure. Never repairs a rectangle.
     pub(super) fn observe_geometry(app: &DesignApp, ui: &egui::Ui, stage: &str, label: &str, reply: Option<egui::Rect>) {
         eprintln!(
-            "Attributes geometry: stage={stage} locale={:?} installed={} label={label:?} layout={:?} cursor={:?} max={:?} min={:?} clip={:?} available={:?} sizing={} reply={reply:?}",
+            "Attributes geometry: stage={stage} locale={:?} label={label:?} layout={:?} cursor={:?} max={:?} min={:?} clip={:?} available={:?} sizing={} reply={reply:?}",
             app.ui.language,
-            app.framework_installed,
             ui.layout(),
             ui.cursor(),
             ui.max_rect(),
@@ -1562,12 +1093,9 @@ mod attributes_workflow_tests {
         );
     }
 
-    fn harness(mut app: DesignApp, installed: bool) -> Harness<'static, Rig> {
-        app.framework_opacity = true;
+    fn harness(mut app: DesignApp) -> Harness<'static, Rig> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
+        app.install_framework(&ctx);
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut ready = false;
         let mut locale_fonts_ready = false;
@@ -1709,7 +1237,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_idle_keeps_real_model_identity_nonempty_undo_redo_and_four_ids() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
         let controls: Vec<_> = ROWS.iter().map(|r| checkbox(&h, r.0).id).collect();
@@ -1726,7 +1254,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_each_pointer_action_has_exact_payload_one_undo_and_real_redo() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         for (index, (key, _)) in ROWS.iter().enumerate() {
             let before = mark(&h);
             let other = [item(&h, ids[1]), item(&h, ids[2])];
@@ -1762,7 +1290,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_natural_tab_space_and_enter_use_real_focus_once() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         for (index, (key_name, _)) in ROWS.iter().enumerate() {
             let start = h.state().app.session.journal.len();
             let before = mark(&h);
@@ -1782,7 +1310,7 @@ mod attributes_workflow_tests {
         let (mut app, ids) = fixture();
         app.run("object.attributes", json!({"ids":[ids[1]],"overprintFill":true})).unwrap();
         app.run("selection.set", json!({"ids":[ids[0],ids[1]]})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let untouched = item(&h, ids[2]);
         checked(&h, "overprintFill", false);
@@ -1810,7 +1338,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_model_refresh_uses_current_boolean_without_a_draft_or_extra_command() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let field = checkbox(&h, "overprintGap").id;
         h.state_mut().app.run("object.attributes", json!({"overprintGap":true})).unwrap();
         let before = mark(&h);
@@ -1834,7 +1362,7 @@ mod attributes_workflow_tests {
         let (mut app, ids) = fixture();
         let group = app.run("object.group", json!({"ids":[ids[0],ids[1]]})).unwrap()["id"].as_u64().unwrap();
         app.run("selection.set", json!({"ids":[group]})).unwrap();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let children = [item(&h, ids[0]), item(&h, ids[1])];
         let untouched = item(&h, ids[2]);
@@ -1857,7 +1385,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_held_press_cannot_follow_an_expanded_or_reordered_selection() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         for selected in [vec![ids[0], ids[1]], vec![ids[1], ids[0]]] {
             let old = checkbox(&h, "overprintFill");
             let label = name(&h, "overprintFill");
@@ -1885,7 +1413,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_held_press_cannot_cross_documents_with_identical_object_ids() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let original = mark(&h);
         let old = checkbox(&h, "nonprinting");
         let label = name(&h, "nonprinting");
@@ -1918,7 +1446,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_empty_selection_and_no_document_keep_the_real_engine_refusal() {
         let (app, _) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let label = name(&h, "overprintFill");
         let pos = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some(label.as_str())).rect().center();
         pointer(&mut h, pos, true);
@@ -1936,7 +1464,7 @@ mod attributes_workflow_tests {
         assert!(h.state_mut().app.run("object.attributes", json!({"overprintFill":true})).is_err());
         unchanged(&h, &before);
         let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-        let mut empty = harness(app, true);
+        let mut empty = harness(app);
         let start = empty.state().app.session.journal.len();
         assert_eq!(empty.query_all_by_role(egui::accesskit::Role::CheckBox).count(), 0);
         key(&mut empty, Key::Tab);
@@ -1950,7 +1478,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_disabled_and_sizing_passes_cannot_commit_then_recover() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let before = mark(&h);
         let label = name(&h, "overprintFill");
         let pos = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some(label.as_str())).rect().center();
@@ -1994,7 +1522,7 @@ mod attributes_workflow_tests {
         for language in ["de", "ar"] {
             let (mut app, ids) = fixture();
             app.ui.language = language.to_owned();
-            let mut h = harness(app, true);
+            let mut h = harness(app);
             let before = mark(&h);
             let mut seen = HashSet::new();
             for row in ROWS {
@@ -2016,7 +1544,7 @@ mod attributes_workflow_tests {
     #[test]
     fn installed_attributes_saved_document_reopens_with_all_four_flags_and_unselected_item_intact() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true);
+        let mut h = harness(app);
         let untouched = item(&h, ids[2]);
         for row in ROWS {
             let start = h.state().app.session.journal.len();
@@ -2035,26 +1563,9 @@ mod attributes_workflow_tests {
         assert!(it.fill.overprint && it.stroke.overprint && it.nonprinting && it.stroke.gap_overprint);
         assert_eq!(doc.item(designcraft_doc::ItemId(ids[2])).unwrap(), &untouched);
     }
-
-    #[test]
-    fn uninstalled_attributes_retains_native_checkbox_input_and_exact_commands() {
-        let (app, ids) = fixture();
-        let mut h = harness(app, false);
-        assert!(h.state().controls.as_ref().is_none_or(|recorded| recorded.elements.iter().all(|e| e.component != "Checkbox")));
-        for (index, row) in ROWS.iter().enumerate() {
-            let label = name(&h, row.0);
-            let pos = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some(label.as_str())).rect().center();
-            let start = h.state().app.session.journal.len();
-            pointer(&mut h, pos, true);
-            pointer(&mut h, pos, false);
-            journal_one(&h, start, row.0, true);
-            assert!(flags(&h, ids[0])[index]);
-        }
-        assert_eq!(flags(&h, ids[0]), [true; 4]);
-    }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod ui223_text_wrap_mode_invert_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
@@ -2121,14 +1632,9 @@ mod ui223_text_wrap_mode_invert_tests {
         }
         idle(h, 2);
     }
-    fn harness(mut app: DesignApp, installed: bool, width: f32) -> Harness<'static, Rig> {
-        app.framework_transform = false;
-        app.framework_opacity = installed;
+    fn harness(mut app: DesignApp, width: f32) -> Harness<'static, Rig> {
         let ctx = egui::Context::default();
-        if installed {
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed);
+        app.install_framework(&ctx);
         app.egui_ctx = Some(ctx.clone());
         app.raw_input_hook(&ctx, &mut egui::RawInput::default());
         let mut fonts = false;
@@ -2319,35 +1825,6 @@ mod ui223_text_wrap_mode_invert_tests {
         assert_eq!(node.accesskit_node().toggled(), Some(if invert { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False }));
         assert_eq!(node.accesskit_node().is_disabled(), disabled);
     }
-    /// The actual retained native icon button uses WidgetInfo::selected -> AccessKit Toggled,
-    /// not the installed SDK button's is_selected property. Keep both exact contracts strict.
-    fn native_shown(h: &Harness<'_, Rig>, mode: &str, invert: bool, disabled: bool) {
-        assert!(!h.state().app.framework_installed);
-        for (key, _) in MODES {
-            let name = label(h, key);
-            assert_eq!(
-                h.query_all_by(|n| n.role() == role(key) && n.label().as_deref() == Some(name.as_str())).count(),
-                1,
-                "one full native mode identity"
-            );
-            let node = h.get_by(|n| n.role() == role(key) && n.label().as_deref() == Some(name.as_str()));
-            assert_eq!(node.accesskit_node().is_selected(), None, "the actual native route does not publish the SDK-only property");
-            assert_eq!(
-                node.accesskit_node().toggled(),
-                Some(if key == mode { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False }),
-                "the exact real native selected mode, not an absent-property false default"
-            );
-        }
-        let name = label(h, "invert");
-        assert_eq!(
-            h.query_all_by(|n| n.role() == role("invert") && n.label().as_deref() == Some(name.as_str())).count(),
-            1,
-            "one full native Invert identity"
-        );
-        let node = h.get_by(|n| n.role() == role("invert") && n.label().as_deref() == Some(name.as_str()));
-        assert_eq!(node.accesskit_node().toggled(), Some(if invert { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False }));
-        assert_eq!(node.accesskit_node().is_disabled(), disabled);
-    }
     fn tab_to(h: &mut Harness<'_, Rig>, action: &str) {
         let name = label(h, action);
         let id = control(h, action).id;
@@ -2378,7 +1855,7 @@ mod ui223_text_wrap_mode_invert_tests {
     #[test]
     fn installed_mode_then_invert_then_undo_redo_preserves_the_complete_document_and_idle_identity() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let before = snapshot(&h);
         let original_ids: Vec<_> = MODES.iter().map(|(mode, _)| control(&h, mode).id).chain([control(&h, "invert").id]).collect();
         assert_eq!(original_ids.iter().copied().collect::<HashSet<_>>().len(), 6);
@@ -2413,7 +1890,7 @@ mod ui223_text_wrap_mode_invert_tests {
     fn installed_all_five_mode_actions_keep_offsets_custom_boundary_and_unselected_items_with_one_undo_each() {
         for (mode, _) in MODES {
             let (app, ids) = fixture();
-            let mut h = harness(app, true, 280.0);
+            let mut h = harness(app, 280.0);
             let before = snapshot(&h);
             for (action, _) in MODES {
                 let button = control(&h, action);
@@ -2437,7 +1914,7 @@ mod ui223_text_wrap_mode_invert_tests {
     #[test]
     fn installed_natural_tab_enter_and_space_drive_mode_invert_and_two_real_undos() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let before = snapshot(&h);
         tab_to(&mut h, "jumpToNextColumn");
         key(&mut h, Key::Enter);
@@ -2457,7 +1934,7 @@ mod ui223_text_wrap_mode_invert_tests {
     #[test]
     fn installed_real_graphic_content_and_frame_are_distinct_live_mode_invert_targets_with_full_undo() {
         let (app, ids) = graphic_fixture();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let content = snapshot(&h);
         let content_id = control(&h, "boundingBox").id;
         shown(&h, "jumpObject", false, false);
@@ -2488,7 +1965,7 @@ mod ui223_text_wrap_mode_invert_tests {
         for action in ["boundingBox", "invert"] {
             for change in ["selection", "content", "document", "epoch", "no-selection"] {
                 let (app, ids) = graphic_fixture();
-                let mut h = harness(app, true, 360.0);
+                let mut h = harness(app, 360.0);
                 let original = snapshot(&h);
                 let old = control(&h, action);
                 let at = position(&h, action);
@@ -2540,7 +2017,7 @@ mod ui223_text_wrap_mode_invert_tests {
         for held_action in ["boundingBox", "invert"] {
             for phase in ["hidden", "disabled", "sizing"] {
                 let (app, ids) = fixture();
-                let mut h = harness(app, true, 360.0);
+                let mut h = harness(app, 360.0);
                 let before = snapshot(&h);
                 let at = position(&h, held_action);
                 pointer(&mut h, at, true);
@@ -2581,7 +2058,7 @@ mod ui223_text_wrap_mode_invert_tests {
     fn installed_closing_the_document_retires_both_held_input_types_without_recreating_an_owner() {
         for action in ["boundingBox", "invert"] {
             let (app, _) = fixture();
-            let mut h = harness(app, true, 360.0);
+            let mut h = harness(app, 360.0);
             let old = control(&h, action).id;
             let at = position(&h, action);
             pointer(&mut h, at, true);
@@ -2604,7 +2081,7 @@ mod ui223_text_wrap_mode_invert_tests {
     fn installed_none_mode_disables_invert_without_clearing_its_stored_value_or_dispatching_a_second_edit() {
         let (mut app, ids) = fixture();
         app.run("selection.set", json!({"ids":[ids[1]]})).unwrap();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let before = snapshot(&h);
         click(&mut h, "none");
         let none = expected(&before.doc, &ids[1..2], false, Some("none"), None);
@@ -2624,7 +2101,7 @@ mod ui223_text_wrap_mode_invert_tests {
     fn installed_no_selection_and_no_document_keep_the_actual_engine_refusal_and_never_create_history() {
         let (mut app, _) = fixture();
         app.run("selection.set", json!({"ids":[]})).unwrap();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let before = snapshot(&h);
         shown(&h, "none", false, true);
         assert!(!control(&h, "boundingBox").facts.as_ref().unwrap().disabled, "preserve existing active mode/refused-command policy");
@@ -2632,7 +2109,7 @@ mod ui223_text_wrap_mode_invert_tests {
         unchanged(&h, &before);
         assert!(h.state_mut().app.run("object.textWrap", json!({"mode":"boundingBox"})).is_err());
         unchanged(&h, &before);
-        let mut empty = harness(DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default()), true, 360.0);
+        let mut empty = harness(DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default()), 360.0);
         let journal = empty.state().app.session.journal.len();
         shown(&empty, "none", false, true);
         click(&mut empty, "boundingBox");
@@ -2643,7 +2120,7 @@ mod ui223_text_wrap_mode_invert_tests {
     #[test]
     fn installed_real_parent_wheel_moves_the_same_physical_controls_without_model_edits_then_input_still_works() {
         let (app, ids) = fixture();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         h.state_mut().height = 72.0;
         idle(&mut h, 2);
         let viewport = h.state().viewport.unwrap();
@@ -2688,28 +2165,10 @@ mod ui223_text_wrap_mode_invert_tests {
     }
 
     #[test]
-    fn uninstalled_native_mode_invert_and_undo_keep_the_actual_artwork_and_engine_route() {
-        let (app, ids) = fixture();
-        let mut h = harness(app, false, 360.0);
-        let before = snapshot(&h);
-        assert!(h.state().controls.as_ref().unwrap().elements.iter().all(|e| e.component != "Button" && e.component != "Checkbox"));
-        native_shown(&h, "contour", false, false);
-        click(&mut h, "boundingBox");
-        click(&mut h, "invert");
-        let changed = expected(&before.doc, &ids[..2], false, Some("boundingBox"), Some(true));
-        domain(&h, &changed, &before, (before.history.0 + 2, 0));
-        native_shown(&h, "boundingBox", true, false);
-        assert_eq!(calls(&h, before.journal), [json!({"mode":"boundingBox"}), json!({"mode":"boundingBox","invert":true})]);
-        undo(&mut h);
-        undo(&mut h);
-        domain(&h, &before.doc, &before, (before.history.0, 2));
-    }
-
-    #[test]
     fn installed_german_full_names_remain_compact_real_parent_controls_and_drive_the_complete_workflow() {
         let (mut app, ids) = fixture();
         app.ui.language = "de".to_owned();
-        let mut h = harness(app, true, 360.0);
+        let mut h = harness(app, 360.0);
         let before = snapshot(&h);
         let mut rectangles = Vec::new();
         let translated =
@@ -2740,7 +2199,7 @@ mod ui223_text_wrap_mode_invert_tests {
 }
 
 /// The Stroke, Effects, Align and Pathfinder panels on the framework, driven with real pointer and key events.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod framework_panel_tests {
     use super::super::framework_test_kit::*;
     use egui::accesskit::Role;

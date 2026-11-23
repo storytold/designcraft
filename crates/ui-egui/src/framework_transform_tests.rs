@@ -1,5 +1,3 @@
-#![cfg(not(target_arch = "wasm32"))]
-
 //! Properties › Transform's X/Y/W/H on the craft UI framework, in the real section of a real document, driven with
 //! real pointer and key events.
 //!
@@ -46,7 +44,6 @@ fn app_with_frame() -> (DesignApp, designcraft_doc::ItemId) {
 /// shell does it.
 fn properties_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_transform = true;
     app.install_framework(&ctx);
     let mut ready = false;
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 900.0)).build_ui_state(
@@ -223,7 +220,6 @@ fn constrain_links_width_and_height_but_not_x_or_y() {
 /// The whole window, as the desktop shell runs it each frame (`logic` then `ui`), with the framework's runtime.
 fn window_harness(mut app: DesignApp) -> Harness<'static, DesignApp> {
     let ctx = egui::Context::default();
-    app.framework_transform = true;
     app.install_framework(&ctx);
     let mut h = Harness::builder().with_context(ctx).with_size(vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {

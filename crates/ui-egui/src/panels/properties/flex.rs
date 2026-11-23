@@ -1,7 +1,6 @@
-use super::object::preview_dropdown;
 use super::{
-    DesignApp, FIELD_H, NumField, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, icons, json, place, section, set_temp_bool, sub,
-    temp_bool, units, vec2, widgets,
+    DesignApp, FIELD_H, Rect, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, icons, json, place, section, set_temp_bool, sub, temp_bool, units,
+    vec2,
 };
 
 // ---------------------------------------------------------------- Flex Layout
@@ -119,60 +118,22 @@ fn flex_grid_choice(f: Option<&designcraft_doc::FlexLayout>) -> ((usize, usize),
 
 /// The alignment grid: 3 × 3 cells (one column or row of three when a space justification spreads
 /// the objects along the main axis); the chosen cell shows the direction's arrow.
-fn flex_grid(ui: &mut Ui, r: Rect, f: Option<&designcraft_doc::FlexLayout>) -> Option<u8> {
-    let t = Tokens::get(ui.ctx());
-    let resp = ui.interact(r, ui.scope_id().with("flex_grid"), Sense::click());
-    ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    let cell = r.width() / 3.0;
-    let (_, spread_row) = flex_grid_choice(f);
-    let mut picked = None;
-    for row in 0..3usize {
-        for col in 0..3usize {
-            match spread_row {
-                Some(true) if col != 0 => continue,
-                Some(false) if row != 0 => continue,
-                _ => {}
-            }
-            let c = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
-            let on = flex_cell(f, col, row).unwrap_or(false);
-            if on && f.is_some() {
-                ui.painter().rect_filled(c.shrink(2.0), 2.0, t.well);
-                let icon = flex_arrow(f.map(|f| f.direction));
-                icons::paint(ui.painter(), c.shrink(3.0), icon, t.text_strong);
-            } else {
-                ui.painter().circle_filled(c.center(), 1.5, t.icon);
-            }
-            if resp.clicked() && resp.interact_pointer_pos().is_some_and(|p| c.contains(p)) {
-                picked = Some((row * 3 + col) as u8);
-            }
-        }
-    }
-    picked
-}
 
 // FLEX_CREATE_DIRECTION_WRAP_APPLICATION_BEGIN
 fn flex_create_choice(app: &DesignApp, ui: &mut Ui, on: &mut bool, label: &str) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
-        let id = ui.make_persistent_id(("flex-create", owner));
-        let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(*on)).id(id).label(label.to_owned()).show(ui);
-        if let Some(after) = out.events.committed() {
-            *on = *after;
-            return true;
-        }
-        return false;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
+    let id = ui.make_persistent_id(("flex-create", owner));
+    let out = craft_ui_widgets::choice::Checkbox::new(Bind::given(*on)).id(id).label(label.to_owned()).show(ui);
+    if let Some(after) = out.events.committed() {
+        *on = *after;
+        return true;
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = app;
-    widgets::checkbox(ui, on, label).changed()
+    false
 }
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(craft_ui::contract::MemoProps)]
 struct FlexChoiceGlyph(String);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl craft_ui_widgets::primitives::Glyph for FlexChoiceGlyph {
     fn paint(&self, painter: &egui::Painter, _tokens: &craft_ui_widgets::style::UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
         // These are physical layout directions, just as in the original app artwork.
@@ -181,198 +142,31 @@ impl craft_ui_widgets::primitives::Glyph for FlexChoiceGlyph {
 }
 
 fn flex_icon_choice(app: &DesignApp, ui: &mut Ui, key: &str, icon: &str, on: bool, label: &str, size: egui::Vec2) -> Option<bool> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
-        use craft_ui_widgets::primitives::{IconSpec, Mirror};
-        // Keep focus through authoritative direction/wrap updates. Actual selection and document
-        // epochs retire old input; value/revision changes are not a different physical control.
-        let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
-        let id = ui.make_persistent_id(("flex-icon-choice", key, owner));
-        let glyph = FlexChoiceGlyph(icon.to_owned());
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        return craft_ui_widgets::buttons::ToggleButton::new(label.to_owned(), Bind::given(on))
-            .id(id)
-            .icon(IconSpec::glyph(&glyph).mirror(Mirror::Never))
-            .icon_only()
-            .tooltip(label.to_owned())
-            .size(craft_theme::ControlSize::Sm)
-            .show_at(ui, rect)
-            .events
-            .committed()
-            .copied();
-    }
-    #[cfg(target_arch = "wasm32")]
-    let _ = (app, key);
-    widgets::icon_toggle_sized(ui, icon, on, label, size).clicked().then_some(!on)
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
+    use craft_ui_widgets::primitives::{IconSpec, Mirror};
+    // Keep focus through authoritative direction/wrap updates. Actual selection and document
+    // epochs retire old input; value/revision changes are not a different physical control.
+    let owner = app.session.active().map(|st| (st.uid, st.identity_epoch, &st.selection.items));
+    let id = ui.make_persistent_id(("flex-icon-choice", key, owner));
+    let glyph = FlexChoiceGlyph(icon.to_owned());
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    craft_ui_widgets::buttons::ToggleButton::new(label.to_owned(), Bind::given(on))
+        .id(id)
+        .icon(IconSpec::glyph(&glyph).mirror(Mirror::Never))
+        .icon_only()
+        .tooltip(label.to_owned())
+        .size(craft_theme::ControlSize::Sm)
+        .show_at(ui, rect)
+        .events
+        .committed()
+        .copied()
 }
 // FLEX_CREATE_DIRECTION_WRAP_APPLICATION_END
 
 /// Flex Layout controls, as InDesign's panel: Create Flex Layout; alignment grid, width and height
 /// (Auto/Fixed); justification, direction and wrap; padding and spacing.
 pub(super) fn flex_section(app: &mut DesignApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if app.framework_installed {
-        return framework::flex_section(app, ui);
-    }
-    use designcraft_doc::{FlexSize, flex};
-    let t = Tokens::get(ui.ctx());
-    let lang = app.ui.language.clone();
-    let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
-    let u = units(app);
-    let has_sel = app.session.active().is_some_and(|s| !s.selection.items.is_empty());
-    let container = selected_container(app);
-    let f = container.as_ref().and_then(|(it, _)| it.flex.clone());
-    let mut on = f.is_some();
-    let changed = ui.add_enabled_ui(has_sel, |ui| flex_create_choice(app, ui, &mut on, &tr("Create Flex Layout"))).inner;
-    if changed {
-        let _ = app.run(if on { "flex.add" } else { "flex.remove" }, json!({}));
-        return;
-    }
-    ui.add_space(4.0);
-    let enabled = f.is_some();
-    let rect = container.as_ref().map(|(it, _)| it.inner_bounds());
-    let arranged = container.as_ref().and_then(|(it, kids)| it.flex.as_ref().map(|f| flex::arrange(f, it.inner_bounds(), kids)));
-    let mut set: Option<Value> = None;
-    // Alignment grid, W and H with Auto/Fixed, constrain proportions.
-    let b = block(ui, 2.0 * FIELD_H + 5.0);
-    ui.add_enabled_ui(enabled, |ui| {
-        if let Some(c) = flex_grid(ui, sub(b, 0.0, 0.0, 48.0, 48.0), f.as_ref()) {
-            set = Some(json!({"cell": c}));
-        }
-        let linked = temp_bool(ui, "flex_size_linked", false);
-        for (k, (label, key, mode, len)) in [
-            ("W:", "width", f.as_ref().map(|f| f.width), rect.map(|r| r.width())),
-            ("H:", "height", f.as_ref().map(|f| f.height), rect.map(|r| r.height())),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let y = k as f32 * (FIELD_H + 5.0);
-            ui.painter().text(
-                sub(b, 56.0, y, 18.0, FIELD_H).right_center(),
-                egui::Align2::RIGHT_CENTER,
-                tr(label),
-                egui::FontId::proportional(11.5),
-                t.text,
-            );
-            let nv = place(ui, sub(b, 78.0, y, 66.0, FIELD_H), |ui| NumField::measure(key, len, u).width(66.0).range(0.0, 100_000.0).show(ui));
-            if let Some(v) = nv {
-                set = Some(flex_size_set(key, v, linked, rect, len));
-            }
-            let names = [tr("Fixed"), tr("Auto")];
-            let cur = if mode == Some(FlexSize::Auto) { 1 } else { 0 };
-            if let Some(i) = place(ui, sub(b, 148.0, y, 62.0, FIELD_H), |ui| widgets::dropdown_list(ui, &names[cur], 62.0, &names, Some(cur))) {
-                set = Some(json!({ key: if i == 1 { "auto" } else { "fixed" } }));
-            }
-        }
-        let clicked = place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Constrain proportions"), vec2(22.0, 21.0))
-                .clicked()
-        });
-        if clicked {
-            set_temp_bool(ui, "flex_size_linked", !linked);
-        }
-    });
-    ui.add_space(6.0);
-    // Justification, direction, wrap.
-    let b = block(ui, FIELD_H);
-    ui.add_enabled_ui(enabled, |ui| {
-        let cur = f.as_ref().map(|f| f.justify).unwrap_or_default();
-        let cur = serde_json::to_value(cur).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-        let icon = FLEX_JUSTIFY.iter().find(|j| j.0 == cur).map(|j| j.1).unwrap_or("flex-start");
-        let resp = place(ui, sub(b, 0.0, 0.0, 58.0, FIELD_H), |ui| {
-            preview_dropdown(ui, 58.0, &tr("Justification"), |p, r| icons::paint(p, r.shrink2(vec2(6.0, 2.0)), icon, egui::Color32::from_gray(60)))
-        });
-        egui::Popup::menu(&resp).show(|ui| {
-            ui.set_min_width(150.0);
-            for (id, icon, label) in FLEX_JUSTIFY {
-                let r = ui.horizontal(|ui| {
-                    let (ir, _) = ui.allocate_exact_size(vec2(22.0, 16.0), Sense::hover());
-                    icons::paint(ui.painter(), ir, icon, t.icon);
-                    ui.selectable_label(id == cur, crate::rtl::widget(ui, tr(label)))
-                });
-                if r.inner.clicked() {
-                    set = Some(json!({"justify": id}));
-                    ui.close();
-                }
-            }
-        });
-        let dir = f.as_ref().map(|f| f.direction).unwrap_or_default();
-        place(ui, sub(b, 78.0, 0.0, 132.0, FIELD_H), |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (d, icon, tip) in FLEX_DIRECTIONS {
-                if let Some(after) = flex_icon_choice(app, ui, tip, icon, enabled && dir == d, &tr(tip), vec2(31.0, 21.0))
-                    // The four choices are exclusive. Activating the current one retains its
-                    // direction, like the original action, rather than turning the enum off.
-                    && (after || dir == d)
-                {
-                    set = Some(json!({"direction": d}));
-                }
-            }
-        });
-        let wrap = f.as_ref().is_some_and(|f| f.wrap);
-        if let Some(after) = place(ui, sub(b, 214.0, 0.0, 22.0, FIELD_H), |ui| {
-            flex_icon_choice(app, ui, "wrap", "flex-wrap", wrap, &tr("Wrap Content"), vec2(22.0, 21.0))
-        }) {
-            set = Some(json!({"wrap": after}));
-        }
-    });
-    // Spacing: padding (linked by default) and the spacing between objects.
-    section(ui, &tr("Spacing"), true);
-    let b = block(ui, 3.0 * FIELD_H + 10.0);
-    ui.add_enabled_ui(enabled, |ui| {
-        let pad = f.as_ref().map(|f| f.padding).unwrap_or_default();
-        let linked = temp_bool(ui, "flex_padding_linked", true);
-        for (k, (icon, tip, x, y)) in FLEX_PADDING.into_iter().enumerate() {
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
-            icons::paint(ui.painter(), ir, icon, t.icon);
-            ui.interact(ir, ui.scope_id().with(("flex_pad", k)), Sense::hover()).on_hover_ui(|ui| {
-                crate::rtl::label(ui, tr(tip));
-            });
-            let value = f.as_ref().map(|_| pad[k]);
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(tip, value, u).width(76.0).spinner().range(0.0, 8000.0).show(ui)
-            });
-            if let Some(v) = nv {
-                set = Some(json!({"padding": flex_padding_set(pad, linked, k, v)}));
-            }
-        }
-        if place(ui, sub(b, 214.0, 12.5, 22.0, FIELD_H), |ui| {
-            widgets::icon_toggle_sized(ui, if linked { "link" } else { "link-broken" }, linked, &tr("Make all settings the same"), vec2(22.0, 21.0))
-                .clicked()
-        }) {
-            set_temp_bool(ui, "flex_padding_linked", !linked);
-        }
-        // Spacing between objects: a space justification works the main axis' out (shown greyed);
-        // the cross axis' only counts when objects wrap.
-        let (row, distributes, wrap) = f.as_ref().map(|f| (f.direction.is_row(), f.justify.distributes(), f.wrap)).unwrap_or((true, false, false));
-        let main_gap = arranged.as_ref().map(|a| a.main_gap);
-        for (k, (icon, key, tip, x)) in FLEX_GAPS.into_iter().enumerate() {
-            let main = (k == 0) == row;
-            let live = if main { !distributes } else { wrap };
-            let value = match &f {
-                Some(_) if main && distributes => main_gap,
-                Some(f) => Some(if k == 0 { f.gap_h } else { f.gap_v }),
-                None => None,
-            };
-            let y = 2.0 * FIELD_H + 10.0;
-            let ir = sub(b, x, y + 2.0, 17.0, 17.0);
-            icons::paint(ui.painter(), ir, icon, if live { t.icon } else { t.text_dim });
-            ui.interact(ir, ui.scope_id().with(("flex_gap", k)), Sense::hover()).on_hover_ui(|ui| {
-                crate::rtl::label(ui, tr(tip));
-            });
-            let nv = place(ui, sub(b, x + 20.0, y, 76.0, FIELD_H), |ui| {
-                NumField::measure(key, value, u).width(76.0).spinner().range(0.0, 8000.0).enabled(live).show(ui)
-            });
-            if let Some(v) = nv {
-                set = Some(json!({ key: v }));
-            }
-        }
-    });
-    if let Some(p) = set {
-        let _ = app.run("flex.set", p);
-    }
+    framework::flex_section(app, ui)
 }
 
 /// Window › Flex Layout.
@@ -381,10 +175,8 @@ pub fn flex_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     flex_section(app, ui);
 }
 
-/// The Flex Layout section on the craft UI framework: the same rows over the same `flex` commands as the native body
-/// above, every control a framework component. Create Flex Layout and the direction and wrap buttons were already the
+/// The Flex Layout section on the craft UI framework: every control a framework component over the `flex` commands. Create Flex Layout and the direction and wrap buttons were already the
 /// framework's (`flex_create_choice`, `flex_icon_choice`) and keep their ids and geometry.
-#[cfg(not(target_arch = "wasm32"))]
 mod framework {
     use super::*;
     use crate::framework_transform::{Number, Quantity, choice, icon_number, number_field};
@@ -609,7 +401,7 @@ mod framework {
 
 // FLEX_CREATE_DIRECTION_WRAP_TESTS_BEGIN
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod application_flex_create_direction_wrap {
     use super::*;
     use designcraft_engine::{DocState, HistoryEntry};
@@ -667,13 +459,9 @@ mod application_flex_create_direction_wrap {
         app.run("flex.set", json!({"width": 90, "height": 76, "justify": "flexStart", "direction": "row", "wrap": false, "padding": [5, 7, 8, 9], "gapH": 10, "gapV": 6})).unwrap();
         id
     }
-    fn harness(mut app: DesignApp, installed: bool, parent: Parent, width: f32) -> Harness<'static, State> {
+    fn harness(mut app: DesignApp, parent: Parent, width: f32) -> Harness<'static, State> {
         let ctx = egui::Context::default();
-        if installed {
-            app.framework_opacity = true;
-            app.install_framework(&ctx);
-        }
-        assert_eq!(app.framework_installed, installed);
+        app.install_framework(&ctx);
         let mut ready = false;
         let mut h = Harness::builder().with_context(ctx).with_size(vec2(width, 1000.0)).build_ui_state(
             move |ui, state: &mut State| {
@@ -990,7 +778,7 @@ mod application_flex_create_direction_wrap {
     fn flex_complete_create_detect_four_directions_wrap_remove_and_undo_through_actual_flex_and_properties_parents() {
         for parent in [Parent::Flex, Parent::Properties] {
             let (app, made) = fixture();
-            let mut h = harness(app, true, parent, 380.0);
+            let mut h = harness(app, parent, 380.0);
             let untouched = item(&h.state().app, made.untouched).clone();
             let before = quiet(&h.state().app);
             click_choice(&mut h, CREATE);
@@ -1069,7 +857,7 @@ mod application_flex_create_direction_wrap {
             if !grouped {
                 app.run("object.fill", json!({"swatch":"[Paper]"})).unwrap();
             }
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             let before = quiet(&h.state().app);
             click_choice(&mut h, CREATE);
             assert_command(&h.state().app, &before, "flex.add", json!({}), true);
@@ -1098,7 +886,7 @@ mod application_flex_create_direction_wrap {
     fn flex_natural_keyboard_repeated_wrap_and_all_direction_activations_preserve_focus_and_exact_geometry() {
         let (mut app, made) = fixture();
         let container = configured_container(&mut app);
-        let mut h = harness(app, true, Parent::Flex, 300.0);
+        let mut h = harness(app, Parent::Flex, 300.0);
         let ids: Vec<_> = DIRECTIONS.iter().map(|(label, _)| control(&h, label).id).collect();
         for (index, (label, direction)) in DIRECTIONS.iter().enumerate() {
             tab_to(&mut h, label);
@@ -1135,7 +923,7 @@ mod application_flex_create_direction_wrap {
         app.run("flex.set", json!({"direction":"column","wrap":true})).unwrap();
         let plain = app.run("frame.create", json!({"rect":[440,180,490,200]})).unwrap()["id"].as_u64().unwrap();
         select(&mut app, &[second, first, plain]);
-        let mut h = harness(app, true, Parent::Properties, 380.0);
+        let mut h = harness(app, Parent::Properties, 380.0);
         assert_eq!(selected_container(&h.state().app).unwrap().0.id.0, second);
         assert_eq!(
             h.get_by_role_and_label(role("Column"), &translated(&h, "Column")).accesskit_node().toggled(),
@@ -1165,7 +953,7 @@ mod application_flex_create_direction_wrap {
         for change in ["selection", "document", "epoch", "disabled", "hidden", "no-selection"] {
             let (mut app, made) = fixture();
             let original = configured_container(&mut app);
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             let old = control(&h, "Column");
             let at = old.rect.center();
             frame(&mut h, Some(Event::PointerMoved(at)));
@@ -1215,7 +1003,7 @@ mod application_flex_create_direction_wrap {
         for epoch in [false, true] {
             let (mut app, made) = fixture();
             let original = configured_container(&mut app);
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             tab_to(&mut h, "Wrap Content");
             let owner = control(&h, "Wrap Content").id;
             let key_down_before = quiet(&h.state().app);
@@ -1260,7 +1048,7 @@ mod application_flex_create_direction_wrap {
             if absent == "selection" {
                 select(&mut app, &[]);
             }
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             h.state_mut().disabled = absent == "disabled";
             idle(&mut h, 2);
             let before = quiet(&h.state().app);
@@ -1290,7 +1078,7 @@ mod application_flex_create_direction_wrap {
         for sizing in [false, true] {
             let (mut app, _) = fixture();
             configured_container(&mut app);
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             let at = control(&h, "Column").rect.center();
             frame(&mut h, Some(Event::PointerMoved(at)));
             pointer(&mut h, at, true);
@@ -1322,7 +1110,7 @@ mod application_flex_create_direction_wrap {
             let (mut app, made) = fixture();
             let container = configured_container(&mut app);
             app.ui.language = language.into();
-            let mut h = harness(app, true, Parent::Flex, width);
+            let mut h = harness(app, Parent::Flex, width);
             let numbers = |h: &Harness<'_, State>| {
                 h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| (n.accesskit_node().label(), n.value())).collect::<Vec<_>>()
             };
@@ -1380,7 +1168,7 @@ mod application_flex_create_direction_wrap {
             let (mut app, _) = fixture();
             configured_container(&mut app);
             app.run("flex.set", json!({"direction":direction})).unwrap();
-            let mut h = harness(app, true, Parent::Flex, 300.0);
+            let mut h = harness(app, Parent::Flex, 300.0);
             for cell in 0..9 {
                 let grid = h.state().grid.expect("actual painted 48-point native alignment grid");
                 let at = grid.min + vec2((cell % 3) as f32 * 16.0 + 8.0, (cell / 3) as f32 * 16.0 + 8.0);
@@ -1402,35 +1190,6 @@ mod application_flex_create_direction_wrap {
     }
 
     #[test]
-    fn flex_genuinely_uninstalled_native_create_direction_wrap_remove_recovers_to_installed_public_controls() {
-        let (app, _) = fixture();
-        let mut h = harness(app, false, Parent::Flex, 300.0);
-        assert!(!h.state().app.framework_installed);
-        for (label, command, payload) in [
-            (CREATE, "flex.add", json!({})),
-            ("Column", "flex.set", json!({"direction":"column"})),
-            ("Wrap Content", "flex.set", json!({"wrap":true})),
-            (CREATE, "flex.remove", json!({})),
-        ] {
-            let before = quiet(&h.state().app);
-            let at = h.get_by_role_and_label(role(label), &translated(&h, label)).rect().center();
-            click_at(&mut h, at);
-            assert_command(&h.state().app, &before, command, payload, true);
-            undo_redo(&mut h, &before);
-        }
-        let ctx = h.ctx.clone();
-        h.state_mut().app.framework_opacity = true;
-        h.state_mut().app.install_framework(&ctx);
-        assert!(h.state().app.framework_installed);
-        let before = quiet(&h.state().app);
-        idle(&mut h, 3);
-        assert_quiet(&h.state().app, &before);
-        click_choice(&mut h, CREATE);
-        assert_command(&h.state().app, &before, "flex.add", json!({}), true);
-        undo_redo(&mut h, &before);
-    }
-
-    #[test]
     fn flex_real_nested_plain_container_removal_refusal_keeps_full_domain_and_history_then_a_valid_target_recovers() {
         let (mut app, made) = fixture();
         let inner = configured_container(&mut app);
@@ -1438,7 +1197,7 @@ mod application_flex_create_direction_wrap {
         app.run("object.group", json!({})).unwrap();
         let outer = selected(&app);
         select(&mut app, &[inner]);
-        let mut h = harness(app, true, Parent::Flex, 300.0);
+        let mut h = harness(app, Parent::Flex, 300.0);
         let before = quiet(&h.state().app);
         let mut oracle = designcraft_engine::Session::new();
         oracle.add_document(before.docs[before.active.unwrap()].clone());
