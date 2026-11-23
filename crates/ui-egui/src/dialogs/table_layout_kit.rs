@@ -317,3 +317,61 @@ pub(crate) fn drag(h: &mut Harness<'_, DesignApp>, from: egui::Pos2, to: egui::P
 pub(crate) fn dialog_rect(h: &Harness<'_, DesignApp>, title: &str) -> egui::Rect {
     h.get_by_role_and_label(Role::Dialog, title).rect()
 }
+
+/// A panel alone on an installed framework: `show` draws it in a window of `size`, frames 50 ms apart, every frame through
+/// the app's input hook (use [`steps`], [`event`] and the click helpers).
+pub(crate) fn panel_harness(mut app: DesignApp, size: egui::Vec2, show: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
+    let ctx = egui::Context::default();
+    app.framework_transform = true;
+    app.framework_opacity = true;
+    app.install_framework(&ctx);
+    app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+    assert!(app.framework_installed, "a framework panel needs the installed runtime");
+    let mut ready = false;
+    let mut h = Harness::builder().with_context(ctx).with_size(size).with_step_dt(0.05).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            show(app, ui);
+        },
+        app,
+    );
+    h.input_mut().max_texture_side = Some(8192);
+    steps(&mut h, 4);
+    h
+}
+
+/// A press at `from`, a drag in eight steps to `to` and the release there, with `mods` held throughout.
+pub(crate) fn drag_with(h: &mut Harness<'_, DesignApp>, from: egui::Pos2, to: egui::Pos2, mods: Modifiers) {
+    if mods != Modifiers::NONE {
+        event(h, Event::ModifiersChanged(mods));
+    }
+    event(h, Event::PointerMoved(from));
+    steps(h, 2);
+    event(h, Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: mods });
+    steps(h, 1);
+    for step in 1..=8 {
+        event(h, Event::PointerMoved(from.lerp(to, step as f32 / 8.0)));
+    }
+    steps(h, 2);
+    event(h, Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: mods });
+    if mods != Modifiers::NONE {
+        event(h, Event::ModifiersChanged(Modifiers::NONE));
+    }
+    steps(h, 3);
+}
+
+/// The centre of the node named `label`, preferring a row or a button when several nodes share the name.
+pub(crate) fn centre_of(h: &Harness<'_, DesignApp>, label: &str) -> egui::Pos2 {
+    let nodes: Vec<_> = h.query_all_by_label(label).collect();
+    let pick = [Role::TreeItem, Role::Button]
+        .into_iter()
+        .find_map(|role| nodes.iter().find(|n| n.accesskit_node().role() == role))
+        .or(nodes.first())
+        .unwrap_or_else(|| panic!("no node named {label:?}"));
+    pick.rect().center()
+}

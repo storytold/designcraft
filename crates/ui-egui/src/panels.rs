@@ -22,6 +22,8 @@ pub mod typography;
 
 #[cfg(test)]
 mod color_panel_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
 
 use designcraft_doc::{Content, StrokeAlign, WrapMode};
 use designcraft_geom::Rect;

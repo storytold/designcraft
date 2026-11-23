@@ -66,6 +66,8 @@ fn cmd_item(id: &str, params: Value) -> Item {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
 
 #[cfg(test)]
 mod swedish_tests {
