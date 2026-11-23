@@ -1092,29 +1092,30 @@ mod framework_tests {
         for (line, _) in &expected {
             assert!(h.get_by_label(line).rect().is_positive());
         }
+        // A table row is a list item; its first cell carries the same name.
         page(&mut h, "Fonts");
         assert_eq!(draft(&h).s("page"), "fonts");
-        assert!(h.query_by_label("Fixture Installed Font").is_some());
+        assert!(h.query_by_role_and_label(Role::ListItem, "Fixture Installed Font").is_some());
         click(&mut h, Role::CheckBox, "Show Problems Only");
         assert!(draft(&h).b("problemsOnly"));
-        assert!(h.query_by_label("Fixture Installed Font").is_none());
+        assert!(h.query_by_role_and_label(Role::ListItem, "Fixture Installed Font").is_none());
         for label in ["Fixture Missing Font", "Fixture Substituted Font"] {
-            assert!(h.get_by_label(label).rect().is_positive());
+            assert!(h.get_by_role_and_label(Role::ListItem, label).rect().is_positive());
         }
         page(&mut h, "Links and Images");
         for label in ["fixture-ok.png", "fixture-embedded.png"] {
-            assert!(h.query_by_label(label).is_none());
+            assert!(h.query_by_role_and_label(Role::ListItem, label).is_none());
         }
         for label in ["fixture-missing.png", "fixture-modified.png"] {
-            assert!(h.get_by_label(label).rect().is_positive());
+            assert!(h.get_by_role_and_label(Role::ListItem, label).rect().is_positive());
         }
         click(&mut h, Role::CheckBox, "Show Problems Only");
         for label in ["fixture-ok.png", "fixture-embedded.png"] {
-            assert!(h.get_by_label(label).rect().is_positive());
+            assert!(h.get_by_role_and_label(Role::ListItem, label).rect().is_positive());
         }
         page(&mut h, "Colors and Inks");
         for label in ["Process Cyan", "Process Magenta", "Process Yellow", "Process Black", "Fixture Spot Blue", "Fixture Spot Orange"] {
-            assert!(h.get_by_label(label).rect().is_positive());
+            assert!(h.get_by_role_and_label(Role::ListItem, label).rect().is_positive());
         }
         page(&mut h, "Summary");
         assert_eq!(draft(&h).s("page"), "summary");

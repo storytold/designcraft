@@ -4308,6 +4308,9 @@ mod ui223_tags_xml_workflow_tests {
         parent: egui::Rect,
         enabled: bool,
         measuring: bool,
+        /// A click reached a pass of the frame. A framework layout that changes on the click runs the frame again
+        /// (a discarded pass), and the last pass no longer holds the input.
+        clicked: bool,
     }
     fn app() -> DesignApp {
         let services = crate::Services {
@@ -4387,6 +4390,7 @@ mod ui223_tags_xml_workflow_tests {
                     return;
                 }
                 state.parent = ui.max_rect();
+                state.clicked |= ui.input(|i| i.pointer.any_click());
                 ui.add_enabled_ui(state.enabled, |ui| {
                     let ctx = ui.ctx().clone();
                     let mut render = || {
@@ -4399,7 +4403,7 @@ mod ui223_tags_xml_workflow_tests {
                     }
                 });
             },
-            Window { app, controls: None, parent: egui::Rect::NOTHING, enabled: true, measuring: false },
+            Window { app, controls: None, parent: egui::Rect::NOTHING, enabled: true, measuring: false, clicked: false },
         );
         h.input_mut().max_texture_side = Some(8192);
         idle(&mut h, 4);
@@ -4437,8 +4441,9 @@ mod ui223_tags_xml_workflow_tests {
         let pos = rect.center();
         event(h, Event::PointerMoved(pos));
         event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.state_mut().clicked = false;
         event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-        assert!(h.ctx.input(|i| i.pointer.any_click()), "a genuine short native click must have occurred");
+        assert!(h.state().clicked, "a genuine short native click must have occurred");
         idle(h, 2);
     }
     fn click(h: &mut Harness<'_, Window>, name: &str) {

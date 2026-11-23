@@ -166,6 +166,8 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         .deletable(saved)
         .rows_stamp(list.len() as u64)
         .selection(Bind::given(selection))
+        // The presets column scrolls; the grid takes its whole height inside it.
+        .natural_height(true)
         .show_items(ui, &Cards(&list), &mut |at, _| tile(&list[*at], card_units));
     let mut create = false;
     let mut delete = None;

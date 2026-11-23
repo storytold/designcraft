@@ -342,7 +342,8 @@ pub(super) fn liquid(app: &mut DesignApp, ui: &mut Ui) {
     let t = |text: &str| crate::i18n::tr(&lang, text).to_string();
     // The Page tool's page, the page in view, or (before the canvas lays out) the first.
     let Some(page) = app.session.active().map(|s| s.selection.page.or_else(|| crate::canvas::current_page(app)).unwrap_or(0)) else {
-        Stack::new().id_salt("interactive_liquid_empty").fill_width().show(ui, |ui, _| hint(ui, "liquid_empty", t("No document.")));
+        // The notice alone, with no container: there is nothing else to show or act on.
+        hint(ui, "liquid_empty", t("No document."));
         return;
     };
     let Some(d) = app.session.active().map(|d| d.doc.clone()) else { return };

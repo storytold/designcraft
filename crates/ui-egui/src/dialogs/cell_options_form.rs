@@ -46,13 +46,13 @@ fn cell_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
         });
         GroupBox::new(tr("Cell Fill"), None).id_salt("cell_options_fill").show(ui, |ui, _| {
             FieldGroup::new(tr("Cell Fill")).id_salt("cell_fill_fields").show(ui, |ui, _| {
-                Field::new(tr("Color:")).id_salt("cell_fill_color_field").show(ui, |ui, _| {
+                Field::new(tr("Color")).id_salt("cell_fill_color_field").show(ui, |ui, _| {
                     let current = d.fields.get("fill").and_then(Value::as_str).map(str::to_owned);
                     if let Some(name) = stroke::swatch_select(app, ui, "cell_fill_color", tr("Color"), current.as_deref()) {
                         d.fields.insert("fill".into(), json!(name));
                     }
                 });
-                Field::new(tr("Tint:")).id_salt("cell_fill_tint_field").show(ui, |ui, _| {
+                Field::new(tr("Tint")).id_salt("cell_fill_tint_field").show(ui, |ui, _| {
                     let tint = d.fields.get("fillTint").and_then(Value::as_f64);
                     if let Some(t) = stroke::percent_field(ui, "cell_fill_tint", tr("Tint"), tint) {
                         d.fields.insert("fillTint".into(), json!(t / 100.0));
@@ -110,8 +110,9 @@ fn diagonal_lines(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 d.fields.insert(k.into(), v);
             }
         });
-        FieldGroup::new(tr("Draw:")).id_salt("diagonal_draw_fields").show(ui, |ui, _| {
-            Field::new(tr("Draw:")).id_salt("diagonal_draw_field").show(ui, |ui, _| {
+        FieldGroup::new(tr("Draw")).id_salt("diagonal_draw_fields").show(ui, |ui, _| {
+            // The field names its select with its label and adds the colon itself.
+            Field::new(tr("Draw")).id_salt("diagonal_draw_field").show(ui, |ui, _| {
                 let orders = [Entry::new(true, tr("Diagonal In Front").to_owned()), Entry::new(false, tr("Content In Front").to_owned())];
                 let front = d.fields.get("inFront").and_then(Value::as_bool).map_or(Mixed::Mixed, Mixed::Same);
                 let order = Select::new(tr("Draw"), Bind::given(front), &orders).id_salt("diagonal_draw_order").show(ui);
