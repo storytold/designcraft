@@ -898,7 +898,9 @@ mod framework {
         fn paint(&self, painter: &egui::Painter, _: &UiTokens, rect: Rect, _: Color32, _: bool) {
             let chip = Rect::from_center_size(rect.center(), vec2(13.0, 13.0));
             match self.kind {
-                0 => painter.rect_filled(chip, 0.0, if self.last { Color32::from_rgb(self.r, self.g, self.b) } else { Color32::BLACK }),
+                0 => {
+                    painter.rect_filled(chip, 0.0, if self.last { Color32::from_rgb(self.r, self.g, self.b) } else { Color32::BLACK });
+                }
                 1 => crate::widgets::paint_chip(painter, chip, None, Some((Color32::WHITE, Color32::BLACK))),
                 _ => crate::widgets::paint_chip(painter, chip, None, None),
             }
@@ -1911,7 +1913,7 @@ mod framework_tests {
     fn journal_since(h: &Harness<'_, Rig>, start: usize) -> Vec<(String, Value)> {
         h.state().app.session.journal[start..].to_vec()
     }
-    const BUTTONS: &[Role] = &[Role::Button, Role::ToggleButton];
+    const BUTTONS: &[Role] = &[Role::Button];
 
     #[test]
     fn installed_tools_rail_selects_cycles_with_alt_and_picks_from_a_flyout() {
@@ -1977,7 +1979,7 @@ mod framework_tests {
         idle(&mut h, 2);
         assert_eq!(paint(&h), ("[None]".to_owned(), "[Black]".to_owned()), "the default button gives a frame no fill and a black stroke");
         assert!(!h.state().app.ui.stroke_front);
-        let wells = &[Role::Button, Role::ToggleButton, Role::RadioButton];
+        let wells = &[Role::Button, Role::RadioButton];
         let stroke = control(&h, &tr(&h, "Stroke (X)"), wells);
         press(&mut h, stroke.center(), PointerButton::Primary, Modifiers::NONE);
         idle(&mut h, 2);

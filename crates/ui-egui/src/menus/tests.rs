@@ -2132,7 +2132,7 @@ fn panels_float_and_dock() {
     let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "swatches", "x": 50, "y": 60})).unwrap().unwrap();
     assert_eq!(r["floating"], json!(["swatches"]));
     let window = &app.ui.docking.as_ref().unwrap().floating[0];
-    assert_eq!([window.rect[0], window.rect[1]], [50.0, 60.0]);
+    assert_eq!([window.rect.min.x, window.rect.min.y], [50.0, 60.0]);
     // Showing a floating panel leaves it where it is.
     run_ui(&mut app, "window.panel", &json!({"panel": "swatches"})).unwrap().unwrap();
     assert_eq!(app.ui.open_panel, None);
