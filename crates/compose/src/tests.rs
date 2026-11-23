@@ -2434,6 +2434,36 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// InDesign sets a table inside its frame with the outer edge of the border on the frame edge: the
+/// grid starts half the top and left strokes in, and the paragraph after the table follows half
+/// the bottom stroke below it. Inner and right edges do not move anything. Measured with 1 to 8 pt
+/// borders against InDesign 2026: text and the following paragraph agreed to 0.01 pt.
+#[test]
+fn a_table_starts_half_its_outer_strokes_inside_the_frame() {
+    let compose_with = |top: f64, left: f64, bottom: f64, right: f64| {
+        let mut t = filled(2, 2, 0, 100.0);
+        let stroke = |weight: f64| Some(designcraft_doc::CellStroke { weight, ..Default::default() });
+        t.options.borders = [stroke(top), stroke(left), stroke(bottom), stroke(right)];
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        let cell = ft.tables[0].cell(0, 0).unwrap().rect;
+        let len = d.story(sid).unwrap().len();
+        let after = ft.lines.iter().find(|l| l.range.start == len - 5).unwrap().baseline;
+        (cell.x0, cell.y0, after)
+    };
+    let (x, y, after) = compose_with(1.0, 1.0, 1.0, 1.0);
+    let (xt, yt, at) = compose_with(9.0, 1.0, 1.0, 1.0);
+    assert!((yt - y - 4.0).abs() < 1e-6 && (xt - x).abs() < 1e-6, "a heavier top border moves the table down, not across");
+    assert!((at - after - 4.0).abs() < 1e-6, "and the text after it with it");
+    let (xl, yl, al) = compose_with(1.0, 9.0, 1.0, 1.0);
+    assert!((xl - x - 4.0).abs() < 1e-6 && (yl - y).abs() < 1e-6 && (al - after).abs() < 1e-6, "a heavier left border moves it across only");
+    let (xb, yb, ab) = compose_with(1.0, 1.0, 9.0, 1.0);
+    assert!((xb - x).abs() < 1e-6 && (yb - y).abs() < 1e-6 && (ab - after - 4.0).abs() < 1e-6, "a heavier bottom border moves only the text after");
+    let (xr, yr, ar) = compose_with(1.0, 1.0, 1.0, 9.0);
+    assert!((xr - x).abs() < 1e-6 && (yr - y).abs() < 1e-6 && (ar - after).abs() < 1e-6, "the right border moves nothing");
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
