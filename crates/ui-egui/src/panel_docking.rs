@@ -1166,16 +1166,10 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             return;
         }
     };
-    // Under a modal (a dialog, About, Quick Apply) or an open popup the dock takes no gesture, and a release over the
-    // story editor, which draws after the dock (its first, unmeasured frame: over the whole window), drops nothing.
+    // Under a modal (a dialog, About, Quick Apply) or an open popup the dock takes no gesture.
     let ctx = ui.ctx().clone();
     if modal_open(app) || egui::Popup::is_any_open(&ctx) {
         cancel_gesture(&ctx);
-    } else if crate::story_editor::visible(app) {
-        let editor = ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap_or_else(|| ctx.content_rect());
-        if ctx.input(|i| i.pointer.any_released() && i.pointer.interact_pos().is_some_and(|at| editor.contains(at))) {
-            cancel_gesture(&ctx);
-        }
     }
     let specs = specs(&app.ui.language, crate::dock::panel_titles(app));
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
@@ -1329,6 +1323,7 @@ fn floating_size(panel: &str) -> egui::Vec2 {
         "glyphs" | "library" | "links" | "preflight" | "dataMerge" => egui::vec2(320.0, 400.0),
         // The Tabs panel spans a text column: its window moves over the frame at the column's width (`TABS_PLACE`).
         "tabs" => egui::vec2(560.0, 150.0),
+        crate::story_editor::PANEL => egui::vec2(560.0, 520.0),
         _ => egui::vec2(280.0, 360.0),
     }
 }

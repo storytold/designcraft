@@ -52,7 +52,7 @@ pub const ICON_PANELS: &[(&str, &str, &str)] = &[
 
 /// (id, label, icon) of the panels that only float (they open from a menu): floating windows of the docking layout
 /// that take no other panel and never dock.
-pub const FLOATING_PANELS: &[(&str, &str, &str)] = &[("tabs", "Tabs", "tab-left")];
+pub const FLOATING_PANELS: &[(&str, &str, &str)] = &[("tabs", "Tabs", "tab-left"), (crate::story_editor::PANEL, "Story Editor", "story-editor")];
 
 /// Every panel: the default dock's, the iconic column's and the float-only ones.
 pub fn all_panels() -> impl Iterator<Item = &'static (&'static str, &'static str, &'static str)> {
@@ -68,8 +68,10 @@ pub fn panel_label(id: &str) -> &'static str {
 /// shows the panel's translated name. The dock reads the titles each frame and builds its panel specs again only when
 /// one of them changed.
 pub fn panel_title(app: &DesignApp, id: &str) -> Option<String> {
-    let _ = (app, id);
-    None
+    match id {
+        crate::story_editor::PANEL => crate::story_editor::title(app),
+        _ => None,
+    }
 }
 
 /// The panels showing a changing title ([`panel_title`]), with that title.
@@ -77,15 +79,17 @@ pub fn panel_titles(app: &DesignApp) -> Vec<(String, String)> {
     all_panels().filter_map(|(id, _, _)| panel_title(app, id).map(|title| ((*id).to_owned(), title))).collect()
 }
 
-/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer).
+/// Panels that lay out their own scrolling parts (the Pages panel: parents, pages, footer; the Story Editor, whose text
+/// scrolls inside it).
 pub fn scrolls_itself(id: &str) -> bool {
-    id == "pages"
+    matches!(id, "pages" | crate::story_editor::PANEL)
 }
 
 /// The contents of an icon-column panel.
 pub fn panel_body(app: &mut DesignApp, ui: &mut egui::Ui, id: &str) {
     match id {
         "properties" => panels::properties::show(app, ui),
+        crate::story_editor::PANEL => crate::story_editor::body(app, ui),
         "pages" => panels::pages::show(app, ui),
         "layers" => panels::layers::show(app, ui),
         "swatches" => panels::swatches::show(app, ui),

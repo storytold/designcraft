@@ -606,7 +606,7 @@ fn shift_f9_toggles_table_after_customization_through_the_real_shortcut_path() {
 }
 
 #[test]
-fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
+fn a_tab_released_over_the_story_editor_window_neither_joins_nor_moves_it() {
     let mut app = app();
     app.run("file.new", json!({})).unwrap();
     let story = app.run("frame.create", json!({"rect":[72,72,300,200],"content":"text","text":"Story editor overlay fixture"})).unwrap()["story"]
@@ -615,6 +615,11 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     app.run("window.panel.float", json!({"panel":"layers"})).unwrap();
     let doc = serde_json::to_value(&app.session.active().unwrap().doc).unwrap();
     let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
+    let editor_key = crate::story_editor::PANEL.to_string();
+    // The editor's floating window: the panels it holds and where it is.
+    let editor_window = |h: &Harness<'static, crate::test_window::Window>| {
+        layout_of(&h.state().app).floating.iter().find(|w| w.contains(&editor_key)).map(|w| (w.panels().cloned().collect::<Vec<_>>(), w.rect))
+    };
     let from = tab_named(&h, "Properties").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
@@ -623,30 +628,23 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
     assert!(dragging_tab(&h.ctx, "properties"), "must own a real tab drag before opening editor");
-    assert!(h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).is_none());
-    let layout = h.state().app.ui.docking.clone();
+    assert!(editor_window(&h).is_none());
     let frame_before = h.ctx.cumulative_frame_nr();
     h.state_mut().app.run("app.storyEditor", json!({"story":story})).unwrap();
-    // The unmeasured first frame blocks the full content, even outside the eventual editor.
-    let release = egui::pos2(150.0, 150.0);
+    let opened = editor_window(&h).expect("the editor opens as a floating window of the dock");
+    // Released over the editor in the frame its window first draws.
+    let release = opened.1.center();
     h.input_mut().events.extend([
         Event::PointerMoved(release),
         Event::PointerButton { pos: release, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
     ]);
     h.run_steps(1);
     assert_eq!(h.ctx.cumulative_frame_nr() - frame_before, 1, "release must occur in the first editor frame");
-    let measured = h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap();
-    assert!(!measured.contains(release), "fixture exercises the conservative first-frame guard outside eventual editor bounds");
-    assert_eq!(h.state().app.ui.docking, layout, "first editor frame must block release before it has a measured rectangle");
+    assert_eq!(editor_window(&h), Some((vec![editor_key.clone()], opened.1)), "the tab neither joins the editor's window nor moves it");
     assert_eq!(serde_json::to_value(&h.state().app.session.active().unwrap().doc).unwrap(), doc);
     h.run_steps(3);
-    let editor = h.ctx.memory(|m| m.area_rect(egui::Id::unique("story_editor"))).unwrap();
-    let screen = h.ctx.content_rect();
-    let outside = [screen.left_bottom() + vec2(80.0, -80.0), screen.right_bottom() + vec2(-450.0, -80.0)]
-        .into_iter()
-        .find(|p| !editor.contains(*p))
-        .expect("fixture has space outside editor");
-    let before_outside = h.state().app.ui.docking.clone();
+    // A tab dragged over the drawn editor and released there leaves it alone too.
+    let shown = editor_window(&h).expect("the editor stays open");
     let from = tab_named(&h, "Layers").center();
     h.event(Event::PointerMoved(from));
     h.run_steps(1);
@@ -655,14 +653,37 @@ fn first_story_editor_frame_conservatively_blocks_owned_tab_release() {
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
     assert!(dragging_tab(&h.ctx, "layers"));
+    let over = shown.1.center();
+    h.event(Event::PointerMoved(over));
+    h.event(Event::PointerButton { pos: over, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(editor_window(&h), Some((vec![editor_key.clone()], shown.1)), "a drawn editor's window takes no tab and stays put");
+    // A release outside the editor still docks or floats the tab as before.
+    let screen = h.ctx.content_rect();
+    let outside = [screen.left_bottom() + vec2(80.0, -80.0), screen.right_bottom() + vec2(-450.0, -80.0)]
+        .into_iter()
+        .find(|p| !shown.1.contains(*p))
+        .expect("fixture has space outside editor");
+    let before_outside = h.state().app.ui.docking.clone();
+    let from = tab_named(&h, "Properties").center();
+    h.event(Event::PointerMoved(from));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
+    h.run_steps(2);
+    assert!(dragging_tab(&h.ctx, "properties"));
     h.event(Event::PointerMoved(outside));
     h.event(Event::PointerButton { pos: outside, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_ne!(h.state().app.ui.docking, before_outside, "measured editor must permit ordinary releases outside its bounds");
-    let after = h.state().app.ui.docking.clone();
+    assert_ne!(h.state().app.ui.docking, before_outside, "a release outside the editor moves the tab");
+    assert_eq!(editor_window(&h).map(|w| w.0), Some(vec![editor_key.clone()]), "and leaves the editor's window alone");
+    // Closing the editor takes its window away and nothing else.
+    let mut after = layout_of(&h.state().app);
+    after.floating.retain(|w| !w.contains(&editor_key));
     h.state_mut().app.run("app.storyEditor", json!({"story":story})).unwrap();
     h.run_steps(3);
-    assert_eq!(h.state().app.ui.docking, after, "closing editor must not revive a blocked drag");
+    assert_eq!(layout_of(&h.state().app), after, "closing the editor removes only its window");
     assert_eq!(serde_json::to_value(&h.state().app.session.active().unwrap().doc).unwrap(), doc);
 }
 
