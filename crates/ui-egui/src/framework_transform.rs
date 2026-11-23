@@ -145,6 +145,7 @@ pub(crate) struct Number<'a> {
     presets: &'a [f64],
     ignore: Option<&'a str>,
     enabled: bool,
+    derived: bool,
 }
 
 /// The presets row that empties a field that may be unset (`Number::ignore`).
@@ -153,7 +154,7 @@ const IGNORE: u32 = 0;
 impl<'a> Number<'a> {
     /// A field named `label` over `value` (`None` shows the blank), counting `quantity`.
     pub(crate) fn new(label: &'a str, value: Option<f64>, quantity: Quantity) -> Self {
-        Number { label, value, quantity, range: None, step: None, presets: &[], ignore: None, enabled: true }
+        Number { label, value, quantity, range: None, step: None, presets: &[], ignore: None, enabled: true, derived: false }
     }
 
     /// The range a committed value stays in (in points for a length).
@@ -185,6 +186,12 @@ impl<'a> Number<'a> {
         self.enabled = on;
         self
     }
+
+    /// Whether the value is derived (automatic leading): it shows in parentheses until the person types a value.
+    pub(crate) fn derived(mut self, on: bool) -> Self {
+        self.derived = on;
+        self
+    }
 }
 
 /// A text field over the app's own spelling of a length in `unit`, at `at` or in the flow: the value it committed
@@ -214,7 +221,7 @@ fn measure_text(
 /// The number field `n` at `at` (or in the flow when `None`), with the id `id`: `Some(Some(v))` when it committed
 /// `v`, `Some(None)` when a field that may be unset (`Number::ignore`) was emptied or its Ignore row picked.
 pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n: Number<'_>) -> Option<Option<f64>> {
-    let Number { label, value, quantity, range, step, presets, ignore, enabled } = n;
+    let Number { label, value, quantity, range, step, presets, ignore, enabled, derived } = n;
     let clamp = |v: f64| range.as_ref().map_or(v, |r| v.clamp(*r.start(), *r.end()));
     if let Quantity::Length(unit) = quantity
         && unit_kind(unit).is_none()
@@ -240,7 +247,7 @@ pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n:
         Quantity::Degrees => NumberField::new(label.to_owned(), Bind::given(value)).unit_kind(UnitKind::Degrees),
         Quantity::Plain { decimals } => NumberField::new(label.to_owned(), Bind::given(value)).commit_decimals(decimals),
     };
-    let mut field = field.id(id).enabled(enabled);
+    let mut field = field.id(id).enabled(enabled).derived(derived);
     if let Some(range) = range.clone() {
         field = field.range(range);
     }
