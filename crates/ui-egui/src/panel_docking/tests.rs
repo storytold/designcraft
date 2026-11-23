@@ -6,7 +6,7 @@ use super::{
 use craft_behavior::dock::StackEntry;
 use egui::accesskit::Role;
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{Harness, kittest::NodeT as _, kittest::Queryable};
 
 fn app() -> DesignApp {
     DesignApp::new(designcraft_engine::Session::new(), Default::default())
@@ -22,9 +22,20 @@ fn find<S>(h: &Harness<'static, S>, role: Role, name: &str) -> Option<Rect> {
     h.query_all_by_role_and_label(role, name).next().map(|node| node.rect())
 }
 
-/// Whether any node is named `name`, of any role (a menu row, say).
+/// Whether a node named `name`, of any role (a menu row, say), is shown: kittest's queries also return hidden nodes,
+/// and a closing menu keeps its rows in the tree under a hidden root while it fades, so a row counts only when neither
+/// it nor any node above it is hidden.
 fn shown<S>(h: &Harness<'static, S>, name: &str) -> bool {
-    h.query_all_by_label(name).next().is_some()
+    h.query_all_by_label(name).any(|node| {
+        let mut at = Some(node);
+        while let Some(node) = at {
+            if node.accesskit_node().is_hidden() {
+                return false;
+            }
+            at = node.parent();
+        }
+        true
+    })
 }
 
 /// The tab named `name`.
@@ -671,8 +682,7 @@ fn dock_menu_button_opens_the_active_panel_menu() {
     h.get_by_label("Duplicate Spread").click();
     h.run_steps(3);
     assert_eq!(h.state().session.active().unwrap().doc.page_count(), pages + 1);
-    let open = h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("designcraft-pages-panel-menu-open")));
-    assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu (its open state: {open:?})");
+    assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu");
 }
 
 /// InDesign's panel tab menu (Learn Skills Daily's InDesign course, 6:20): Close, Close Tab Group,
@@ -888,8 +898,7 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
         assert!(shown(&h, item), "{item}");
     }
     assert!(!shown(&h, "Close Panel"));
-    let open = h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("designcraft-pages-panel-menu-open")));
-    assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu (its open state: {open:?})");
+    assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu");
 }
 
 fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize) {

@@ -1363,8 +1363,6 @@ impl DockPanels<String> for PanelContent<'_> {
                 state.at = None;
             }
             state.open = open;
-            // What the tests read of the menu: its open state.
-            ui.data_mut(|d| d.insert_temp(egui::Id::new("designcraft-pages-panel-menu-open"), open));
         });
     }
 }
