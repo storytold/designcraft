@@ -13,6 +13,7 @@
 //! the element whose access node is the field's text part (the record's hit area), never a guessed percentage of the
 //! panel.
 
+use egui_kittest::kittest::Queryable as _;
 use crate::DesignApp;
 use crate::panels::sel_info;
 use designcraft_geom::Rect;

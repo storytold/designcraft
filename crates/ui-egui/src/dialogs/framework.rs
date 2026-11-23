@@ -12,6 +12,8 @@ use egui::Ui;
 
 #[path = "simple_forms.rs"]
 mod simple_forms;
+#[path = "style_forms.rs"]
+mod style_forms;
 
 /// A dialog's framework form.
 #[derive(Clone, Copy)]
@@ -62,11 +64,30 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "convertTextToTable" | "convertTableToText" => Some(super::table_forms::CONVERT),
         "createGuides" => Some(super::layout_forms::CREATE_GUIDES),
         "marginsAndColumns" => Some(super::layout_forms::MARGINS_AND_COLUMNS),
+        "footnoteOptions" => Some(super::text_forms::FOOTNOTE_OPTIONS),
+        "paragraphRules" => Some(super::text_forms::PARAGRAPH_RULES),
+        "justification" => Some(super::text_forms::JUSTIFICATION),
+        "hyphenation" => Some(super::text_forms::HYPHENATION),
+        "insertXref" => Some(super::text_forms::INSERT_XREF),
+        "paragraphLocal" => Some(super::paragraph_forms::PARAGRAPH_LOCAL),
         "textFrameOptions" => Some(super::frame_forms::TEXT_FRAME_OPTIONS),
         "fittingOptions" => Some(super::frame_forms::FITTING_OPTIONS),
         "polygonSettings" => Some(super::frame_forms::POLYGON_SETTINGS),
         "qrCode" => Some(super::frame_forms::QR_CODE),
         "layerOptions" => Some(super::frame_forms::LAYER_OPTIONS),
+        "pdfExport" => Some(super::export_forms::PDF_EXPORT),
+        "epubExport" => Some(super::export_forms::EPUB_EXPORT),
+        "print" => Some(super::export_forms::PRINT),
+        "colorSettings" => Some(super::document_forms::COLOR_SETTINGS),
+        "documentSetup" => Some(super::document_forms::DOCUMENT_SETUP),
+        "fileInfo" => Some(super::document_forms::FILE_INFO),
+        "findChange" => Some(super::find_forms::FIND_CHANGE),
+        "findFont" => Some(super::find_forms::FIND_FONT),
+        "userDictionary" => Some(super::find_forms::USER_DICTIONARY),
+        "menus" => Some(super::import_forms::MENUS),
+        "importOptions" => Some(super::import_forms::IMPORT_OPTIONS),
+        "contactSheet" => Some(super::import_forms::CONTACT_SHEET),
+        "pdfImport" => Some(super::import_forms::PDF_IMPORT),
         crate::effects_dialog::ID => Some(crate::effects_dialog::FORM),
         crate::object_style_dialog::ID => Some(crate::object_style_dialog::FORM),
         "cellOptions" | "diagonalLines" => Some(super::cell_options_form::FORM),
@@ -75,6 +96,12 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "colorGroupOptions" => Some(super::color_forms::COLOR_GROUP_OPTIONS),
         "layerSettings" => Some(super::color_forms::LAYER_SETTINGS),
         "colorTheme" => Some(super::color_forms::COLOR_THEME),
+        "paragraphStyleOptions" => Some(style_forms::PARAGRAPH_STYLE_OPTIONS),
+        "characterStyleOptions" => Some(style_forms::CHARACTER_STYLE_OPTIONS),
+        "deleteParagraphStyle" => Some(style_forms::DELETE_PARAGRAPH_STYLE),
+        "deleteCharacterStyle" => Some(style_forms::DELETE_CHARACTER_STYLE),
+        "loadStyles" => Some(style_forms::LOAD_STYLES),
+        "ruby" => Some(style_forms::RUBY),
         _ => None,
     }
 }
@@ -102,23 +129,21 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form) {
     let mut opened = true;
     let mut from_form = None;
     // The area only gives the dialog a parent: the framework mounts its own modal layer.
-    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str())))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            FrameworkDialog::new(title)
-                .id_salt(("framework_dialog", d.id.clone()))
-                .opened(Bind::bound(&mut opened))
-                .enabled(ui.is_enabled())
-                // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
-                .backdrop(Backdrop::None)
-                .closable(false)
-                .outer_gesture(false)
-                .close_on_enter(true)
-                .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
-                .buttons(buttons)
-                .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
-                .output
-        });
+    let shown = egui::Area::new(egui::Id::unique(("framework_dialog_host", d.id.as_str()))).order(egui::Order::Foreground).show(ctx, |ui| {
+        FrameworkDialog::new(title)
+            .id_salt(("framework_dialog", d.id.clone()))
+            .opened(Bind::bound(&mut opened))
+            .enabled(ui.is_enabled())
+            // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
+            .backdrop(Backdrop::None)
+            .closable(false)
+            .outer_gesture(false)
+            .close_on_enter(true)
+            .least_width(if form.width >= 700.0 { LeastWidth::WideDialog } else { LeastWidth::Dialog })
+            .buttons(buttons)
+            .show(ui, |ui, _| from_form = (form.show)(app, ui, &mut d))
+            .output
+    });
     let out = shown.inner;
     let picked_extra = out.picked.and_then(|picked| picked.checked_sub(if d.id == "alert" { 1 } else { 2 }));
     if let Some((_, field)) = picked_extra.and_then(|at| form.extra.get(at)) {

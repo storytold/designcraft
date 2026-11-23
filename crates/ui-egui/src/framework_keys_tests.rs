@@ -16,6 +16,7 @@
 //! - Shift+Tab must come back to the framework field's own stop;
 //! - Escape must leave a typed draft uncommitted.
 
+use egui_kittest::kittest::Queryable as _;
 use crate::DesignApp;
 use egui::{Event, Key, Modifiers, PointerButton, vec2};
 use egui_kittest::Harness;
@@ -259,7 +260,7 @@ fn tab_from_the_chevron_goes_on_to_the_rows_frame_fitting_button() {
     assert_ne!(next, on_chevron, "the keyboard left the chevron");
     let rect = h.ctx.read_response(next).map(|r| r.rect).expect("the stop that took the keyboard is an identified control");
     let fitting = h.get_by_role_and_label(egui::accesskit::Role::Button, "Frame Fitting").rect();
-    assert!((rect.center() - fitting.center()).length() < 1.5, "the keyboard went on to the row's Frame Fitting button at {fitting:?}, not {rect:?}");
+    assert!((rect.center() - fitting.center()).length() < 1.5_f32, "the keyboard went on to the row's Frame Fitting button at {fitting:?}, not {rect:?}");
 }
 
 #[test]

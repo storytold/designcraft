@@ -1465,7 +1465,9 @@ mod tests {
                         max_texture_side: Some(8192),
                         ..Default::default()
                     },
-                    |ui| crate::theme::install_fonts(ui.ctx(), ""),
+                    |ui| {
+                        crate::theme::install_fonts(ui.ctx(), "");
+                    },
                 );
                 out.drop_without_applying_deltas();
                 let mut w = Window { app, ctx, ax: None, time: 1.0 };
