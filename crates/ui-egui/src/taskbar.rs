@@ -495,7 +495,7 @@ mod tests {
             eprintln!("TASKBAR-DEBUG bar {:?} canvas {canvas:?} pin {:?}", bar(&h), h.state().app.ui.task_bar_pin);
             for n in h.query_all_by(|n| n.label().is_some_and(|l| l.contains("Bar") || l.contains("More") || l.contains("Pin") || l.contains("Hide")))
             {
-                eprintln!("TASKBAR-DEBUG   {:?} {:?} {:?}", n.accesskit_node().role(), n.label(), n.rect());
+                eprintln!("TASKBAR-DEBUG   {:?} {:?} {:?}", n.accesskit_node().role(), n.accesskit_node().label(), n.rect());
             }
         }
         let at = h.get_by_label("Reset Bar Position").rect().center();

@@ -1245,7 +1245,8 @@ mod type_style_sdk_tests {
                 assert_eq!(actual["type"], json!({"kind": "style", "name": "Missing imported rule"}));
                 assert_eq!(type_label("", &actual["type"]), "Missing imported rule", "the complete orphan is the actual placeholder, never Solid");
                 // The Select shows an orphan's own name as its value (its placeholder text), and claims no catalog ordinal.
-                let select = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h));
+                let select_name = name(&h);
+                let select = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &select_name);
                 assert!(
                     select.value().is_none_or(|v| v.is_empty() || v == "Missing imported rule"),
                     "public Select reports no catalog value for an orphan, only its own name"
