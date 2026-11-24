@@ -2672,9 +2672,16 @@ fn native_gui_second_click_target(f: &mut NativeClickFixture) -> (Value, Pos2, u
     (story, at, focus)
 }
 
-/// Two completed clicks in one batch use the last press once, emit one caret/release pair, add no history, and type at the final caret.
+/// Two completed clicks in one OS batch each count once, in order: two caret/release pairs, no history, no word
+/// selection, and typing goes to the second click's caret.
+///
+/// The craft UI runtime's one-press rule (H0) gives a frame at most one pointer press, as its last pointer event, and
+/// holds the events after it for the next frame. So the batch reaches the canvas as two clicks in successive frames,
+/// the first press, then its release with the second press, then the second release, and each click is handled on its
+/// own (before the runtime, egui coalesced the batch into one pass, and the canvas used its last press once). A
+/// discarded pass replays neither press.
 #[test]
-fn native_gui_two_completed_clicks_use_last_primary_press_once() {
+fn native_gui_two_completed_clicks_count_once_each_in_order() {
     for reverse in [false, true] {
         for discard in [false, true] {
             let mut f = native_gui_click_fixture();
@@ -2698,25 +2705,25 @@ fn native_gui_two_completed_clicks_use_last_primary_press_once() {
                 discard,
             );
             assert_eq!(batch_edges(&edges), (true, true, false), "both completed clicks leave no held origin");
-            assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay either press");
+            assert_eq!(edges.iter().filter(|e| e.0).count(), 2, "each press is seen once; discard replays neither");
+            assert_eq!(edges.iter().filter(|e| e.1).count(), 2, "each release is seen once");
             let sel = f.app.session.doc().unwrap().selection.text.unwrap();
             assert_eq!(
                 (sel.story.0, sel.anchor, sel.focus),
                 (final_story.as_u64().unwrap(), final_focus, final_focus),
-                "reverse={reverse}, discard={discard}"
+                "the second click's caret, reverse={reverse}, discard={discard}"
             );
-            let commands = &f.app.session.journal[journal..];
+            let pointer: Vec<&str> = f.app.session.journal[journal..]
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .filter(|id| matches!(*id, "text.placeCaret" | "text.release"))
+                .collect();
             assert_eq!(
-                commands.iter().filter(|(id, _)| id == "text.placeCaret").count(),
-                1,
-                "one aggregate canvas selection, reverse={reverse}, discard={discard}"
+                pointer,
+                ["text.placeCaret", "text.release", "text.placeCaret", "text.release"],
+                "one caret and one release for each click, in order, reverse={reverse}, discard={discard}"
             );
-            assert_eq!(
-                commands.iter().filter(|(id, _)| id == "text.release").count(),
-                1,
-                "one corresponding release, reverse={reverse}, discard={discard}"
-            );
-            let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("one recovered canvas press");
+            let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("the canvas's clicks");
             assert_eq!(clicks.n, 1, "separated clicks and discarded passes must not select a word");
             assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo, "pointer selection adds no document history");
             native_gui_released(&f);
@@ -2737,13 +2744,18 @@ fn native_gui_two_completed_clicks_use_last_primary_press_once() {
     }
 }
 
-/// A non-finite final press rejects the click instead of reviving an earlier valid press; later motion cannot drag.
+/// A malformed (non-finite) final press cannot revive the earlier click or make one of its own, and later motion
+/// cannot drag.
+///
+/// The craft UI runtime's one-press rule (H0) gives a frame at most one pointer press, as its last pointer event, and
+/// holds the events after it for the next frame. So the valid click completes first (its release arrives in the frame
+/// that also carries the malformed press) and counts once, as a click: its caret and release. The malformed press is
+/// then rejected: no second caret or release, no history, no drag from it. A discarded pass replays neither press.
 #[test]
 fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
     for discard in [false, true] {
         let mut f = native_gui_click_fixture();
         let at = f.at;
-        let initial = f.app.session.doc().unwrap().selection.text;
         let undo = f.app.session.doc().unwrap().history.undo.len();
         let journal = f.app.session.journal.len();
         let edges = native_gui_input(
@@ -2759,19 +2771,22 @@ fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
             discard,
         );
         assert_eq!(batch_edges(&edges), (true, true, false));
-        assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay malformed input");
-        assert_eq!(
-            f.app.session.doc().unwrap().selection.text,
-            initial,
-            "discard={discard}: reject the last press instead of reviving an earlier valid one"
-        );
-        assert!(f.app.session.journal[journal..].iter().all(|(id, _)| id != "text.placeCaret" && id != "text.release"));
+        assert_eq!(edges.iter().filter(|e| e.0).count(), 2, "each press is seen once; discard must not replay malformed input");
+        let clicked = f.app.session.doc().unwrap().selection.text.map(|t| (t.story.0, t.anchor, t.focus));
+        assert_eq!(clicked, Some((f.target.as_u64().unwrap(), f.focus, f.focus)), "discard={discard}: the completed click's caret");
+        let pointer: Vec<&str> = f.app.session.journal[journal..]
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .filter(|id| matches!(*id, "text.placeCaret" | "text.release"))
+            .collect();
+        assert_eq!(pointer, ["text.placeCaret", "text.release"], "discard={discard}: the malformed press neither revives the click nor makes one");
         assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo);
         assert_eq!(story_text(&mut f.app, &f.target), "Target story");
         assert_eq!(story_text(&mut f.app, &f.old), "Old story");
         native_gui_released(&f);
+        let after = f.app.session.doc().unwrap().selection.text;
         native_gui_input(&mut f, vec![egui::Event::PointerMoved(at + vec2(90.0, 0.0))], false);
-        assert_eq!(f.app.session.doc().unwrap().selection.text, initial, "motion after the invalid released press cannot drag");
+        assert_eq!(f.app.session.doc().unwrap().selection.text, after, "motion after the invalid released press cannot drag");
         native_gui_released(&f);
     }
 }

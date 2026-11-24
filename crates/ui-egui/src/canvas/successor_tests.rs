@@ -284,39 +284,35 @@ fn screen_of(h: &Harness<'_, DesignApp>, x: f64, y: f64) -> Pos2 {
     xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
 }
 
-/// Whether `node` is shown: kittest also lists hidden nodes (a closing menu keeps its rows under a hidden root while it
-/// fades, and the runtime keeps a hidden hit-test node beside some components), so a node counts only when neither it nor
-/// a node above it is hidden.
-fn shown_node(node: &egui_kittest::Node<'_>) -> bool {
-    if node.accesskit_node().is_hidden() {
-        return false;
-    }
-    let mut at = node.parent();
-    while let Some(up) = at {
-        if up.accesskit_node().is_hidden() {
-            return false;
+/// A shown row of the canvas context menu, named by its label: the framework menu's rows are menu items (a check row
+/// is a `MenuItemCheckBox`, its state in `toggled`; the shortcut is the row's keyboard shortcut, not part of its name).
+/// A row counts only while neither it nor a node above it is hidden (a closing menu keeps its rows under a hidden root
+/// while it fades), and only left of the canvas's right edge (not the Properties panel's rows).
+fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
+    use egui_kittest::kittest::NodeT;
+    let right = f64::from(h.state().canvas_rect.map_or(f32::INFINITY, |r| r.max.x));
+    h.query_all_by(move |n| {
+        matches!(n.role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemCheckBox | egui::accesskit::Role::MenuItemRadio)
+            && n.bounding_box().is_none_or(|b| b.x0 < right)
+            && n.label().is_some_and(|l| l == label)
+    })
+    .find(|node| {
+        let mut shown = !node.accesskit_node().is_hidden();
+        let mut at = node.parent();
+        while shown && let Some(parent) = at {
+            shown = !parent.accesskit_node().is_hidden();
+            at = parent.parent();
         }
-        at = up.parent();
-    }
-    true
+        shown
+    })
 }
 
-/// A shown row of an open framework menu named `label`: a MenuItem, MenuItemCheckBox or MenuItemRadio node (the
-/// framework names a row by its label alone; its shortcut is a child). Buttons with the same name (the Task Bar's
-/// Bring to Front, the Properties panel's Arrange) are not rows, nor is anything right of the canvas.
-fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
-    use egui::accesskit::Role;
-    let right = f64::from(h.state().canvas_rect.map_or(f32::INFINITY, |r| r.max.x));
-    let mut rows = h
-        .query_all_by(move |n| {
-            matches!(n.role(), Role::MenuItem | Role::MenuItemCheckBox | Role::MenuItemRadio)
-                && n.bounding_box().is_none_or(|b| b.x0 < right)
-                && n.label().is_some_and(|l| l == label)
-        })
-        .filter(shown_node);
-    let row = rows.next();
-    assert!(rows.next().is_none(), "two or more shown menu rows named {label:?}");
-    row
+/// A pointer click on the context menu row `label`.
+fn click_row(h: &mut Harness<'_, DesignApp>, label: &str) {
+    let at = menu_row(h, label).unwrap_or_else(|| panic!("no menu row {label}")).rect().center();
+    h.hover_at(at);
+    h.drag_at(at);
+    h.drop_at(at);
 }
 
 fn enabled(h: &Harness<'_, DesignApp>, label: &str) -> bool {
@@ -348,9 +344,9 @@ fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
     assert!(menu_row(&h, "Fitting").is_none() && menu_row(&h, "Text Frame Options…").is_none());
     // Paste is available with nothing copied here: the system clipboard may hold another app's text.
     assert!(enabled(&h, "Copy") && enabled(&h, "Paste"));
-    menu_row(&h, "Arrange").unwrap().click();
+    click_row(&mut h, "Arrange");
     h.run_steps(3);
-    menu_row(&h, "Bring to Front").unwrap().click();
+    click_row(&mut h, "Bring to Front");
     h.run_steps(3);
     assert_eq!(spread_items(&h), [b, a]);
     assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
@@ -370,11 +366,11 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert_eq!(selected(&h), [a], "a right-click on nothing keeps the selection");
     assert!(menu_row(&h, "Arrange").is_none(), "the page menu, not the object menu");
     assert!(enabled(&h, "Paste in Place"));
-    // A toggle row shows its state: Show/Hide Rulers is a check row, checked while the rulers show.
-    let rulers = menu_row(&h, "Show/Hide Rulers").expect("the Show/Hide Rulers row");
-    assert_eq!(
-        (rulers.accesskit_node().role(), rulers.accesskit_node().toggled()),
-        (egui::accesskit::Role::MenuItemCheckBox, Some(egui::accesskit::Toggled::True)),
+    assert!(
+        menu_row(&h, "Show/Hide Rulers").is_some_and(|row| {
+            use egui_kittest::kittest::NodeT;
+            row.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+        }),
         "toggles show their state"
     );
     // Escape closes the menu and does nothing else: the tool would deselect, the shortcuts
@@ -384,7 +380,7 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert!(menu_row(&h, "Paste in Place").is_none());
     assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
     right_click(&mut h, empty);
-    menu_row(&h, "Paste").unwrap().click();
+    click_row(&mut h, "Paste");
     h.run_steps(3);
     assert_eq!(spread_items(&h).len(), 2);
 }
@@ -463,11 +459,11 @@ fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
     let mut h = harness(app);
     let on_frame = screen_of(&h, 60.0, 60.0);
     right_click(&mut h, on_frame);
-    menu_row(&h, "Arrange").unwrap().click();
+    click_row(&mut h, "Arrange");
     h.run_steps(3);
     assert!(menu_row(&h, "Bring to Front").is_none());
     assert!(menu_row(&h, "Send to Back").is_some());
-    assert!(h.query_by_label("Show All Menu Items").is_some());
+    assert!(menu_row(&h, "Show All Menu Items").is_some());
 }
 
 /// A text frame holding `text`, the Type tool, and a harness stepping at 60 fps (clicks in a
@@ -752,6 +748,7 @@ fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
 /// Successor of `enter_or_tab_in_a_panel_field_leave_the_selected_text_alone` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
+    use egui_kittest::kittest::NodeT as _;
     for key in [egui::Key::Enter, egui::Key::Tab] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -760,14 +757,18 @@ fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
         app.run("text.select", json!({"story": f["story"], "anchor": 1, "focus": 4})).unwrap();
         assert!(app.session.wants_text());
         let mut h = harness(app);
-        // The framework's size field is a SpinButton named Font Size whose value is the number; its unit is apart.
+        // The Control panel's Font Size field, the topmost of that name (the Properties panel has one too): the
+        // framework's number field, a spin button showing the size.
         let size = h
-            .get_all_by_role(egui::accesskit::Role::SpinButton)
-            .find(|n| {
-                shown_node(n) && n.accesskit_node().label().as_deref() == Some("Font Size") && n.accesskit_node().value().as_deref() == Some("12")
-            })
-            .expect("a shown Font Size field showing 12");
-        size.focus();
+            .query_all_by_label("Font Size")
+            .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .map(|n| n.rect())
+            .min_by(|a, b| a.min.y.total_cmp(&b.min.y).then(a.min.x.total_cmp(&b.min.x)))
+            .expect("the Control panel's Font Size field");
+        let at = size.center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
         h.run_steps(1);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.run_steps(1);
