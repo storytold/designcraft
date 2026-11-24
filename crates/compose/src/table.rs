@@ -379,6 +379,36 @@ pub(crate) fn place_table(
     true
 }
 
+/// A cell's text with Vertical Justification Justify: the first line stays at the top, the last
+/// baseline moves down to the bottom of the text area (its descent hangs out, as in the row height),
+/// and the lines between are spread evenly: the room is shared equally by the gaps between lines
+/// (a cell has no Paragraph Spacing Limit). A single line stays at the top, as does text that fills
+/// the area. Measured in InDesign 2026 with three lines of 10 pt Arial in 12 pt leading in a 60 pt
+/// cell, with 0 pt and 2 / 6 pt top / bottom insets.
+fn justify_lines(text: &Arc<ComposedStory>, height: f64) -> Arc<ComposedStory> {
+    let Some(lines) = text.frames.first().map(|f| &f.lines) else { return text.clone() };
+    let mut rows: Vec<f64> = lines.iter().map(|l| l.baseline).collect();
+    rows.sort_by(f64::total_cmp);
+    rows.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let (Some(&last), n) = (rows.last(), rows.len().saturating_sub(1)) else { return text.clone() };
+    let space = height - last;
+    if n == 0 || space <= 0.01 || !text.frames[0].decos.is_empty() {
+        return text.clone();
+    }
+    let mut moved = (**text).clone();
+    for l in &mut moved.frames[0].lines {
+        let k = rows.iter().position(|b| (b - l.baseline).abs() < 1e-9).unwrap_or(0);
+        let dy = space * k as f64 / n as f64;
+        l.baseline += dy;
+        if let Some(dc) = &mut l.drop_cap {
+            dc.baseline += dy;
+            dc.rect.y0 += dy;
+            dc.rect.y1 += dy;
+        }
+    }
+    Arc::new(moved)
+}
+
 /// A cell's text cut to the lines that fit `clip_height`, with where the overset text begins.
 /// Uses the same baseline/bounds test as auto-growth, and retains a prefix: overset text cannot
 /// reappear after a line that did not fit.
@@ -469,7 +499,13 @@ fn emit(
                 _ => 0.0,
             };
             let overset = space < -0.01 || lay.text.is_overset();
-            let text = if overset { clip_overset(lay, clip.height()) } else { lay.text.clone() };
+            let text = if overset {
+                clip_overset(lay, clip.height())
+            } else if cell.vj == VerticalJustification::Justify {
+                justify_lines(&lay.text, clip.height())
+            } else {
+                lay.text.clone()
+            };
             cells.push(PlacedCell {
                 row: r,
                 col: c,
