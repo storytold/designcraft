@@ -805,7 +805,12 @@ mod framework {
         let fill_cur = target.map(|(fill, _, stroke, _)| if app.ui.stroke_front { stroke } else { fill });
         let rows = rows(ui, &lang, &doc);
         let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED)));
-        let mut selection = picked.as_deref().and_then(|name| rows.of_swatch(name)).map_or_else(Selection::default, Selection::single);
+        // The row picked, else the swatch the selection has in front: that row shows as the current one.
+        let mut selection = picked
+            .as_deref()
+            .or(fill_cur.as_deref())
+            .and_then(|name| rows.of_swatch(name))
+            .map_or_else(Selection::default, Selection::single);
         let before = selection.clone();
         let renamable = |key: &RowKey| key.swatch().and_then(|name| doc.swatch(name)).is_some_and(|sw| !sw.locked);
         let list_id = ui.id().with(("swatches-list", identity));

@@ -20,7 +20,7 @@ use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::Swatch;
 use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
 use craft_ui_widgets::display::{Shade, Text};
-use craft_ui_widgets::form::{Field, SliderField, SliderFieldLayout};
+use craft_ui_widgets::form::{Field, FieldGroup, SliderField, SliderFieldLayout};
 use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::runtime::env::UnitKind;
@@ -261,69 +261,71 @@ fn swatch_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
         d.fields.insert("swatchName".into(), json!(designcraft_color::swatch::value_name(c)));
     }
     Stack::new().id_salt("swatch_options").fill_width().show(ui, |ui, _| {
-        let editable = !d.b("locked") && !auto;
-        Field::new(tr(app, "Swatch Name:")).id_salt("swatch_name_field").show(ui, |ui, _| {
-            text_field(ui, d, "swatchName", tr(app, "Swatch Name"), editable);
-        });
-        if kind == "color" {
-            flag(ui, d, "nameWithValue", tr(app, "Name with Color Value"));
-        }
-        match kind.as_str() {
-            "color" | "paper" => {
-                if kind == "color" {
-                    Field::new(tr(app, "Color Type:")).id_salt("swatch_color_type_field").show(ui, |ui, _| {
-                        let entries = [Entry::new("process".to_owned(), tr(app, "Process")), Entry::new("spot".to_owned(), tr(app, "Spot"))];
-                        let cur = if d.s("colorType") == "spot" { "spot" } else { "process" }.to_owned();
-                        if let Some(t) = choose(ui, "swatch_color_type", &tr(app, "Color Type"), cur, &entries) {
-                            d.fields.insert("colorType".into(), json!(t));
+        FieldGroup::new(tr(app, "Swatch Options")).id_salt("swatch_options_fields").show(ui, |ui, _| {
+            let editable = !d.b("locked") && !auto;
+            Field::new(tr(app, "Swatch Name:")).id_salt("swatch_name_field").show(ui, |ui, _| {
+                text_field(ui, d, "swatchName", tr(app, "Swatch Name"), editable);
+            });
+            if kind == "color" {
+                flag(ui, d, "nameWithValue", tr(app, "Name with Color Value"));
+            }
+            match kind.as_str() {
+                "color" | "paper" => {
+                    if kind == "color" {
+                        Field::new(tr(app, "Color Type:")).id_salt("swatch_color_type_field").show(ui, |ui, _| {
+                            let entries = [Entry::new("process".to_owned(), tr(app, "Process")), Entry::new("spot".to_owned(), tr(app, "Spot"))];
+                            let cur = if d.s("colorType") == "spot" { "spot" } else { "process" }.to_owned();
+                            if let Some(t) = choose(ui, "swatch_color_type", &tr(app, "Color Type"), cur, &entries) {
+                                d.fields.insert("colorType".into(), json!(t));
+                            }
+                        });
+                    }
+                    Field::new(tr(app, "Color Mode:")).id_salt("swatch_color_mode_field").show(ui, |ui, _| {
+                        let entries = [("cmyk", "CMYK"), ("rgb", "RGB"), ("gray", "Gray")].map(|(m, l)| Entry::new(m.to_owned(), tr(app, l)));
+                        let cur = match d.s("mode").as_str() {
+                            m @ ("rgb" | "gray") => m.to_owned(),
+                            _ => "cmyk".to_owned(),
+                        };
+                        if let Some(m) = choose(ui, "swatch_color_mode", &tr(app, "Color Mode"), cur, &entries)
+                            && let Some(c) = dialog_color(&d.fields)
+                        {
+                            set_color(&mut d.fields, c, Some(&m));
+                        }
+                    });
+                    match d.s("mode").as_str() {
+                        "rgb" => ["r", "g", "b"].into_iter().for_each(|k| channel(ui, d, k, &k.to_uppercase(), 255.0, false)),
+                        "gray" => channel(ui, d, "gray", "K", 100.0, true),
+                        _ => ["c", "m", "y", "k"].into_iter().for_each(|k| channel(ui, d, k, &k.to_uppercase(), 100.0, true)),
+                    }
+                    if let Some(c) = dialog_color(&d.fields) {
+                        Swatch::new(tr(app, "Color"), srgb(c.to_rgb())).id_salt("swatch_options_color").show(ui);
+                    }
+                }
+                "tint" => {
+                    Field::new(tr(app, "Base Color:")).id_salt("swatch_base_field").value(d.s("base")).show(ui, |ui, _| {
+                        Text::new(d.s("base")).show(ui);
+                    });
+                    Field::new(tr(app, "Tint:")).id_salt("swatch_tint_field").show(ui, |ui, _| {
+                        let tint = d.n("tint").unwrap_or(100.0);
+                        let out = SliderField::new(tr(app, "Tint"), Bind::given(tint), 0.0..=100.0)
+                            .id_salt("swatch_tint")
+                            .layout(SliderFieldLayout::Inline)
+                            .unit_kind(UnitKind::Percent)
+                            .step(1.0)
+                            .show(ui);
+                        if let Some(v) = edited(out.edit.events, tint) {
+                            d.fields.insert("tint".into(), json!(v.round()));
                         }
                     });
                 }
-                Field::new(tr(app, "Color Mode:")).id_salt("swatch_color_mode_field").show(ui, |ui, _| {
-                    let entries = [("cmyk", "CMYK"), ("rgb", "RGB"), ("gray", "Gray")].map(|(m, l)| Entry::new(m.to_owned(), tr(app, l)));
-                    let cur = match d.s("mode").as_str() {
-                        m @ ("rgb" | "gray") => m.to_owned(),
-                        _ => "cmyk".to_owned(),
-                    };
-                    if let Some(m) = choose(ui, "swatch_color_mode", &tr(app, "Color Mode"), cur, &entries)
-                        && let Some(c) = dialog_color(&d.fields)
-                    {
-                        set_color(&mut d.fields, c, Some(&m));
-                    }
-                });
-                match d.s("mode").as_str() {
-                    "rgb" => ["r", "g", "b"].into_iter().for_each(|k| channel(ui, d, k, &k.to_uppercase(), 255.0, false)),
-                    "gray" => channel(ui, d, "gray", "K", 100.0, true),
-                    _ => ["c", "m", "y", "k"].into_iter().for_each(|k| channel(ui, d, k, &k.to_uppercase(), 100.0, true)),
+                "gradient" => {
+                    Text::new(tr(app, "Edit the gradient's stops in the Gradient panel.")).show(ui);
                 }
-                if let Some(c) = dialog_color(&d.fields) {
-                    Swatch::new(tr(app, "Color"), srgb(c.to_rgb())).id_salt("swatch_options_color").show(ui);
+                _ => {
+                    Text::new(tr(app, "This swatch can't be edited.")).show(ui);
                 }
             }
-            "tint" => {
-                Field::new(tr(app, "Base Color:")).id_salt("swatch_base_field").value(d.s("base")).show(ui, |ui, _| {
-                    Text::new(d.s("base")).show(ui);
-                });
-                Field::new(tr(app, "Tint:")).id_salt("swatch_tint_field").show(ui, |ui, _| {
-                    let tint = d.n("tint").unwrap_or(100.0);
-                    let out = SliderField::new(tr(app, "Tint"), Bind::given(tint), 0.0..=100.0)
-                        .id_salt("swatch_tint")
-                        .layout(SliderFieldLayout::Inline)
-                        .unit_kind(UnitKind::Percent)
-                        .step(1.0)
-                        .show(ui);
-                    if let Some(v) = edited(out.edit.events, tint) {
-                        d.fields.insert("tint".into(), json!(v.round()));
-                    }
-                });
-            }
-            "gradient" => {
-                Text::new(tr(app, "Edit the gradient's stops in the Gradient panel.")).show(ui);
-            }
-            _ => {
-                Text::new(tr(app, "This swatch can't be edited.")).show(ui);
-            }
-        }
+        });
         status(ui, d);
     });
     None
@@ -339,7 +341,7 @@ fn color_group_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Opti
 }
 
 /// The layer's flags as InDesign lays them out: the layer's own on the left, its guides' on the right.
-const FLAG_COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::Content];
+const FLAG_COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Fixed(150.0), ColumnWidth::Content];
 
 /// Layer Options: name, colour (InDesign's named layer colours, or any colour from the well's picker) and the flags.
 fn layer_settings(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {

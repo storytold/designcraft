@@ -21,9 +21,9 @@ use serde_json::{Value, json};
 use text_forms::{field, heading, line, message, pick, push, toggle};
 
 /// Paragraph Style Options, with its live preview.
-pub(crate) const PARAGRAPH_STYLE_OPTIONS: Form = Form::new(paragraph_style_options).width(760.0);
+pub(crate) const PARAGRAPH_STYLE_OPTIONS: Form = Form::new(paragraph_style_options).width(760.0).footer(preview);
 /// Character Style Options, with its live preview.
-pub(crate) const CHARACTER_STYLE_OPTIONS: Form = Form::new(character_style_options).width(760.0);
+pub(crate) const CHARACTER_STYLE_OPTIONS: Form = Form::new(character_style_options).width(760.0).footer(preview);
 /// Delete Paragraph Style: what the text using it is reassigned to.
 pub(crate) const DELETE_PARAGRAPH_STYLE: Form = Form::new(delete_paragraph_style).width(380.0);
 /// Delete Character Style: what the text using it is reassigned to.
@@ -37,7 +37,7 @@ fn tr(app: &DesignApp, s: &str) -> String {
     crate::i18n::tr(&app.ui.language, s).to_string()
 }
 
-/// The Preview check box under the options, and the preview it turns on: the changed attributes go through the
+/// The Preview check box in the footer, level with the buttons, and the preview it turns on: the changed attributes go through the
 /// same engine commands as OK, on the page, until Cancel or OK takes the preview back.
 fn preview(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     if d.b("new") {
@@ -54,7 +54,9 @@ fn preview(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
 /// The sections beside the page they show: a list of radio buttons that scrolls at the dialog's fixed height.
 fn section_nav(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, sections: &[(&str, &str)], title: &str) {
     let before = d.s("section");
-    Stack::new().id_salt("style_sections_box").scroll(Scroll::vertical()).room_height(380.0).show(ui, |ui, _| {
+    // Every section shows: a radio and its gap are about 28 points, and the box grows with the list.
+    let room = (sections.len() as f32 * 28.0).max(380.0);
+    Stack::new().id_salt("style_sections_box").scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
         let shown = RadioGroup::new(title.to_owned(), Bind::given(before.clone())).id_salt("style_sections").show(ui, |ui, _| {
             Stack::new().id_salt("style_section_list").show(ui, |ui, _| {
                 for (id, caption) in sections {
@@ -194,7 +196,6 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
             status_line(ui, d);
         });
     }
-    preview(app, ui, d);
     None
 }
 
@@ -377,7 +378,6 @@ fn character_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
             });
         });
     }
-    preview(app, ui, d);
     None
 }
 

@@ -3478,9 +3478,14 @@ pub fn command_fields(doc: &str) -> Vec<CommandField> {
         }
         let word = spec.split_whitespace().next().unwrap_or("");
         let choices: Vec<String> =
-            if word.contains('|') && word.split('|').all(ident) { word.split('|').map(str::to_string).collect() } else { vec![] };
+            // `name|index` says how the value may be written, not what it is: a layout, a page or a style named in a text field.
+            if word.contains('|') && word.split('|').all(ident) && !matches!(word, "name|index" | "index|name") {
+                word.split('|').map(str::to_string).collect()
+            } else {
+                vec![]
+            };
         let boolean = spec.starts_with("bool") || spec.starts_with("true|false") || spec.starts_with("true") && spec.len() <= 5;
-        out.push(CommandField { key: key.into(), optional, choices: if boolean { vec![] } else { choices }, boolean, hint: spec.into() });
+        out.push(CommandField { key: key.into(), optional, choices: if boolean { vec![] } else { choices }, boolean, hint: spec.trim_start_matches(['|', ' ']).into() });
     }
     out
 }

@@ -699,7 +699,8 @@ fn pages(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, p: &
         }
         // Right-click on the empty part of the panel: the short menu.
         let rest = ui.available_rect_before_wrap();
-        let (_, empty) = ui.allocate_space(vec2(ui.available_width(), rest.height().max(8.0)));
+        // A point short of the view, so the empty part never makes the region scroll that has nothing to scroll to.
+        let (_, empty) = ui.allocate_space(vec2(ui.available_width(), (rest.height() - 1.0).max(8.0)));
         let out = PageCell::plain().id_salt("pages_empty").show_at(ui, empty);
         let lang = app.ui.language.clone();
         let label = crate::i18n::tr(&lang, "Pages").to_owned();

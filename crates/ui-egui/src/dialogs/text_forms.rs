@@ -181,6 +181,8 @@ pub(super) fn measure_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f
     let text = shown.map(|v| format_measure(v, unit)).unwrap_or_default();
     let out = TextField::new(label.to_owned(), Bind::given(text))
         .id_salt(("text_form_measure", salt.to_owned()))
+        // As wide as the number fields it stands among.
+        .width_chars(8)
         .limit(None::<usize>)
         .enabled(enabled)
         .show(ui);
@@ -647,7 +649,8 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
             });
             // A solid rule has no gaps.
             field(ui, &tr("Gap Color:"), "gapColor", |ui| {
-                if let Some(picked) = swatch_choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps) {
+                // A rule with no gap colour has [None] there, as the rule is drawn.
+                if let Some(picked) = swatch_value(ui, &a.field("gapColor"), &tr("Gap Color:"), &swatches, &json!(gap_color), on && gaps) {
                     a.set(d, "gapColor", picked);
                 }
             });
