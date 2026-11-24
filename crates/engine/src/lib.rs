@@ -411,6 +411,9 @@ pub struct Session {
     /// The selection tool (`selection` or `directSelection`) chosen last: the one Cmd borrows.
     pub(crate) last_selection_tool: &'static str,
     pub journal: Vec<(String, Value)>,
+    /// A document read ahead of `file.open` ([`Session::stage_open`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) staged_open: Option<cmd::ReadDocument>,
     pub(crate) find_context: Option<cmd::find::FindContext>,
     pub clipboard: Option<Arc<Document>>,
     /// The x the clipboard's objects are measured from on their spread: its spine, or the left edge of
@@ -486,6 +489,8 @@ impl Session {
             temp_tool: None,
             last_selection_tool: "selection",
             journal: vec![],
+            #[cfg(not(target_arch = "wasm32"))]
+            staged_open: None,
             find_context: None,
             clipboard: None,
             clipboard_origin: 0.0,
@@ -561,6 +566,14 @@ impl Session {
         if self.find_context.as_ref().is_some_and(|c| self.active().is_none_or(|st| !c.is_current(st))) {
             self.reset_find_scope();
         }
+    }
+
+    /// Hand `file.open` a document [`cmd::read_document`] read: the next `file.open` of its path
+    /// opens it instead of reading the file, so the slow read can run on another thread. Any other
+    /// `file.open` drops it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stage_open(&mut self, read: cmd::ReadDocument) {
+        self.staged_open = Some(read);
     }
 
     pub fn set_active(&mut self, i: usize) {
@@ -706,6 +719,14 @@ impl Session {
     /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
         if let Err(e) = (spec.enabled)(self) {
+            // Explicit story/frame targets do not need a selection. Keep menu enablement
+            // selection-based; these handlers validate even malformed non-null targets.
+            if matches!(id, "file.exportText" | "type.fillWithPlaceholder")
+                && self.active().is_some()
+                && ["story", "frame"].iter().any(|key| params.get(*key).is_some_and(|v| !v.is_null()))
+            {
+                return Ok(());
+            }
             // A table command that takes `story` and `table` acts on the table the call names, so
             // the selection doesn't matter: with nothing selected, the caret outside a table, or
             // selected rows the command can't act on, `{"table": 3}` still runs.
