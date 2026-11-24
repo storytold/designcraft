@@ -506,10 +506,9 @@ pub(super) mod framework {
         ui.id().with(("properties-object", key))
     }
 
-    /// A link to another panel at `at`: whether it was clicked this pass. It is the panel's text colour, underlined, as
-    /// the app's panel links have always been, not the accent of a web link.
+    /// A link to another panel at `at`: whether it was clicked this pass.
     fn link(ui: &mut Ui, at: Rect, id: egui::Id, label: &str) -> bool {
-        Link::new(label.to_owned()).id(id).tone(Tone::Neutral).show_at(ui, at).clicked()
+        Link::new(label.to_owned()).id(id).show_at(ui, at).clicked()
     }
 
     /// The `•••` button at the end of its own row under the section `section`: whether it was clicked this pass.
