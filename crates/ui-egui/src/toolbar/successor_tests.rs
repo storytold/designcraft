@@ -77,6 +77,21 @@ fn flyout_row(h: &Win, label: &str) -> Option<egui::Rect> {
         .map(|node| node.rect())
 }
 
+/// Diagnostic for a failed shortcut check (the failure message only): every node whose label holds the chord's key, with
+/// its role, rect and whether it is shown; the menus' rects, the row named `label` and the viewport.
+fn shortcut_layout(h: &Win, shortcut: &str, viewport: egui::Rect, label: &str) -> String {
+    let key = shortcut.rsplit('+').next().unwrap_or(shortcut);
+    let nodes: Vec<String> = h
+        .query_all_by_label_contains(key)
+        .map(|node| {
+            let access = node.accesskit_node();
+            format!("{:?} {:?} {:?} shown {}", access.role(), access.label(), node.rect(), shown_node(&node))
+        })
+        .collect();
+    let menus: Vec<egui::Rect> = h.query_all_by_role(egui::accesskit::Role::Menu).map(|node| node.rect()).collect();
+    format!("nodes with {key:?}: [{}]; menus {menus:?}; row {:?}; viewport {viewport:?}", nodes.join("; "), flyout_row(h, label))
+}
+
 /// Successor of `hungarian_flyout_scrolls_horizontally_in_narrow_windows`: with the Hungarian interface and a shortcut on the
 /// Ellipse Frame tool, in one and two columns and in windows 180 and 240 points wide, the framework flyout of the frame group
 /// opens inside the window, the translated label is readable, the whole shortcut can be brought into view by scrolling
@@ -115,7 +130,11 @@ fn hungarian_framework_flyout_stays_usable_in_narrow_windows() {
             let shown = |h: &Win| h.query_all_by_label_contains(&shortcut).any(|node| viewport.expand(0.5).contains_rect(node.rect()));
             if !shown(&h) {
                 wheel(&mut h, row.center(), vec2(-1000.0, 0.0));
-                assert!(shown(&h), "scrolling sideways makes the complete shortcut readable ({width}, double {double})");
+                assert!(
+                    shown(&h),
+                    "scrolling sideways makes the complete shortcut readable ({width}, double {double}); {}",
+                    shortcut_layout(&h, &shortcut, viewport, label)
+                );
             }
             assert_eq!(crate::menus::tool_shortcut_label(&h.state().app, "ellipseFrame"), Some(shortcut));
             // The row is still reachable after the scroll: a click on it selects the tool and closes the flyout.

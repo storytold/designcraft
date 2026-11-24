@@ -150,9 +150,9 @@ mod framework {
     use craft_color_ui::ui::{Paint, PairWell, SwatchPair, Well};
     use craft_theme::{ControlSize, Srgba};
     use craft_ui_panels::docking::{DockGrid, DockSizes};
-    use craft_ui_panels::rails::{LastUsed, RailFooter, RailTool, ToolRail, ToolSlot};
+    use craft_ui_panels::rails::{LastUsed, RailDensity, RailFooter, RailTool, ToolRail, ToolSlot};
     use craft_ui_widgets::buttons::{ButtonOutput, IconButton};
-    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Tracked, Trigger};
+    use craft_ui_widgets::contract::{Bind, Pad, Props as _, Show as _, ShowContainer as _, Tracked, Trigger};
     use craft_ui_widgets::display::Divider;
     use craft_ui_widgets::layout::RowAlign;
     use craft_ui_widgets::layout_components::{Row, Stack};
@@ -229,12 +229,19 @@ mod framework {
         SLOTS.with(|slots| {
             LAST_USED.with(|last| {
                 let sizes = DockSizes::of_scope(ui);
-                let grid = |cols: usize| DockGrid::rail(slots[cols - 1].len()).resolved(&sizes);
+                // InDesign's tools are a control high (the native panel's 24 pt buttons), denser than the rail's regular
+                // step: the dense grid sizes the panel's columns as the dense rail lays them out.
+                let grid = |cols: usize| DockGrid::rail(slots[cols - 1].len()).density(RailDensity::Dense).resolved(&sizes);
+                // The rail in `cols` columns. The grid centres its buttons in the column's padding already, so the rail
+                // takes no padding of its own: its footer gets the column's whole width, which the Fill and Stroke pair
+                // (wider than a dense button) needs to show whole in one column, as the native panel's did.
+                let rail = |cols: usize| {
+                    ToolRail::new(tr("Tools"), &slots[cols - 1], &current, last).id(rail_id(cols)).density(RailDensity::Dense).pad(Pad::None)
+                };
                 // A single column that doesn't fit the window's height becomes two, without changing the preference.
                 let crowded = !app.ui.tools_double_column && {
                     let width = grid(1).width(1);
-                    let tall =
-                        ToolRail::new(tr("Tools"), &slots[0], &current, last).id(rail_id(1)).measure_rail(ui, width, |ui, at| footer(app, ui, at)).y;
+                    let tall = rail(1).measure_rail(ui, width, |ui, at| footer(app, ui, at)).y;
                     tall > ui.available_height() - toggle_h
                 };
                 let cols = if app.ui.tools_double_column || crowded { 2 } else { 1 };
@@ -260,8 +267,7 @@ mod framework {
                             app.ui.tools_double_column = !app.ui.tools_double_column;
                         }
                     });
-                    let out =
-                        ToolRail::new(tr("Tools"), &slots[cols - 1], &current, last).id(rail_id(cols)).show_rail(ui, |ui, at| footer(app, ui, at));
+                    let out = rail(cols).show_rail(ui, |ui, at| footer(app, ui, at));
                     if let Some(at) = out.select {
                         app.select_tool(all[usize::from(at)].id);
                     }
@@ -365,34 +371,38 @@ mod framework {
         Stack::new().fill_width().show(ui, |ui, _| {
             // The Fill and Stroke proxy with Default Fill and Stroke and Swap over it; a click brings a box to the
             // front, a double click opens the Color Picker for it.
-            let wells = [
-                // A None swatch shows the "no colour" face, as the native panel's red slash did.
-                PairWell::paint(tr("Fill (X)"), Mixed::Same(paint_of(doc.as_deref(), &fill_sw))),
-                PairWell::paint(tr("Stroke (X)"), Mixed::Same(paint_of(doc.as_deref(), &stroke_sw))).ring(true),
-            ];
             let active = if stroke_front { Well::Secondary } else { Well::Primary };
-            let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
-                .id(egui::Id::new("tools-fill-stroke"))
-                .default_button(tr("Default Fill and Stroke (D)"))
-                .swap_button(tr("Swap Fill and Stroke (Shift+X)"))
-                .popover(false)
-                .show(ui);
-            if pair.defaults {
-                let _ = app.run("color.defaultFillStroke", json!({}));
-            }
-            if pair.swap {
-                let _ = app.run("color.swapFillStroke", json!({}));
-            }
-            if pair.activated {
-                app.ui.stroke_front = pair.active == Well::Secondary;
-            }
-            if let Some(well) = pair.double_clicked {
-                let stroke = well == Well::Secondary;
-                let current = if stroke { &stroke_sw } else { &fill_sw };
-                let mut fields = crate::panels::swatches::picker_fields(doc.as_ref().and_then(|d| d.resolve_color(current, 1.0)), stroke);
-                fields["text"] = json!(crate::panels::colors_affect_text(app));
-                app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
-            }
+            // The rail has no padding (see `show`): the footer's members sit at the middle of the column, under the
+            // buttons, and the pair, wider than a dense button, keeps its whole width inside the column.
+            Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                let wells = [
+                    // A None swatch shows the "no colour" face, as the native panel's red slash did.
+                    PairWell::paint(tr("Fill (X)"), Mixed::Same(paint_of(doc.as_deref(), &fill_sw))),
+                    PairWell::paint(tr("Stroke (X)"), Mixed::Same(paint_of(doc.as_deref(), &stroke_sw))).ring(true),
+                ];
+                let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
+                    .id(egui::Id::new("tools-fill-stroke"))
+                    .default_button(tr("Default Fill and Stroke (D)"))
+                    .swap_button(tr("Swap Fill and Stroke (Shift+X)"))
+                    .popover(false)
+                    .show(ui);
+                if pair.defaults {
+                    let _ = app.run("color.defaultFillStroke", json!({}));
+                }
+                if pair.swap {
+                    let _ = app.run("color.swapFillStroke", json!({}));
+                }
+                if pair.activated {
+                    app.ui.stroke_front = pair.active == Well::Secondary;
+                }
+                if let Some(well) = pair.double_clicked {
+                    let stroke = well == Well::Secondary;
+                    let current = if stroke { &stroke_sw } else { &fill_sw };
+                    let mut fields = crate::panels::swatches::picker_fields(doc.as_ref().and_then(|d| d.resolve_color(current, 1.0)), stroke);
+                    fields["text"] = json!(crate::panels::colors_affect_text(app));
+                    app.ui.dialog = Some(crate::dialogs::Dialog::new("colorPicker", fields));
+                }
+            });
             // Formatting affects container / text: side by side in two columns; in one, the two buttons don't fit the
             // rail's width beside each other (the second was clipped off the rail and took no pointer), so they stack.
             let mut formatting = |ui: &mut Ui| {
@@ -404,11 +414,13 @@ mod framework {
                     }
                 }
             };
-            if at.columns > 1 {
-                Row::new().show(ui, |ui, _| formatting(ui));
-            } else {
-                Stack::new().show(ui, |ui, _| formatting(ui));
-            }
+            Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                if at.columns > 1 {
+                    Row::new().show(ui, |ui, _| formatting(ui));
+                } else {
+                    Stack::new().show(ui, |ui, _| formatting(ui));
+                }
+            });
             // Apply Color / Apply Gradient / Apply None: three buttons in two columns, as InDesign lays them out; one
             // with the kind in front, and a menu of the three, in one column.
             let front_sw = if stroke_front { &stroke_sw } else { &fill_sw };
@@ -426,7 +438,7 @@ mod framework {
             };
             let mut run = None;
             if at.columns > 1 {
-                Row::new().show(ui, |ui, _| {
+                Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                     for (k, (tip, id)) in applies.into_iter().enumerate() {
                         let face = glyph(k as u8);
                         let label = tr(tip);
@@ -446,17 +458,19 @@ mod framework {
                 let (tip, id) = applies[front_kind];
                 let face = glyph(front_kind as u8);
                 let label = tr(tip);
-                let out = IconButton::new(IconSpec::glyph(&face))
-                    .id(egui::Id::new("tools-apply"))
-                    .label(label.clone())
-                    .tooltip(label.clone())
-                    .size(ControlSize::Sm)
-                    .show(ui);
-                if out.clicked() {
-                    run = Some(id);
-                }
-                let rows: Vec<(String, &str)> = applies.iter().map(|(tip, id)| (tr(tip), *id)).collect();
-                run = context_menu(ui, egui::Id::new("tools-apply-menu"), &label, &out, &rows).or(run);
+                Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                    let out = IconButton::new(IconSpec::glyph(&face))
+                        .id(egui::Id::new("tools-apply"))
+                        .label(label.clone())
+                        .tooltip(label.clone())
+                        .size(ControlSize::Sm)
+                        .show(ui);
+                    if out.clicked() {
+                        run = Some(id);
+                    }
+                    let rows: Vec<(String, &str)> = applies.iter().map(|(tip, id)| (tr(tip), *id)).collect();
+                    run = context_menu(ui, egui::Id::new("tools-apply-menu"), &label, &out, &rows).or(run);
+                });
             }
             if let Some(id) = run {
                 let _ = app.run(id, json!({}));
@@ -465,7 +479,6 @@ mod framework {
             // View Options: Frame Edges, Rulers, Guides, Smart Guides, Baseline Grid, Hidden Characters, each checked
             // when shown.
             let label = tr("View Options");
-            let opener = button(ui, "view-options", "view-options", &label, false);
             let ids = ["view.frameEdges", "view.rulers", "-", "view.guides", "view.smartGuides", "view.baselineGrid", "-", "view.hiddenCharacters"];
             let labels: Vec<String> = VIEW_OPTIONS.iter().map(|l| tr(l)).collect();
             let mut groups: Vec<Vec<MenuRow<'_, &str>>> = vec![Vec::new()];
@@ -480,9 +493,12 @@ mod framework {
                     group.push(MenuRow { key: id, label: &labels[k], checked: Some(checked), enabled: true, shortcut });
                 }
             }
-            if let Some(id) = kit::menu(ui, egui::Id::new("tools-view-options"), &label, &opener, &groups) {
-                let _ = app.run(id, json!({}));
-            }
+            Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                let opener = button(ui, "view-options", "view-options", &label, false);
+                if let Some(id) = kit::menu(ui, egui::Id::new("tools-view-options"), &label, &opener, &groups) {
+                    let _ = app.run(id, json!({}));
+                }
+            });
             Divider::horizontal().show(ui);
             // Screen Mode: Normal and Preview (with Bleed, Slug and Presentation) side by side in two columns, as
             // InDesign's; one button with the five in its menu in one column.
@@ -491,7 +507,7 @@ mod framework {
             let mut screen = None;
             if at.columns > 1 {
                 let normal = mode == crate::ScreenMode::Normal;
-                Row::new().show(ui, |ui, _| {
+                Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                     if button(ui, "screen-normal", "screen-normal", &tr("Normal"), normal).clicked() {
                         screen = Some("normal");
                     }
@@ -506,12 +522,14 @@ mod framework {
             } else {
                 let preview = mode == crate::ScreenMode::Preview;
                 let label = tr(if preview { "Preview (W)" } else { "Normal (W)" });
-                let out = button(ui, "screen-mode", if preview { "screen-preview" } else { "screen-normal" }, &label, true);
-                if out.clicked() {
-                    let _ = app.run("view.togglePreview", json!({}));
-                }
-                let rows: Vec<(String, &str)> = std::iter::once(("Normal", "normal")).chain(modes).map(|(l, m)| (tr(l), m)).collect();
-                screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &label, &out, &rows);
+                Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
+                    let out = button(ui, "screen-mode", if preview { "screen-preview" } else { "screen-normal" }, &label, true);
+                    if out.clicked() {
+                        let _ = app.run("view.togglePreview", json!({}));
+                    }
+                    let rows: Vec<(String, &str)> = std::iter::once(("Normal", "normal")).chain(modes).map(|(l, m)| (tr(l), m)).collect();
+                    screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &label, &out, &rows);
+                });
             }
             if let Some(mode) = screen {
                 let _ = app.run("view.screenMode", json!({"mode": mode}));
