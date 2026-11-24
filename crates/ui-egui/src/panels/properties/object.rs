@@ -853,6 +853,8 @@ pub(super) mod framework {
         let mut open = true;
         let shown =
             Popover::new(tr(if stroke { "Stroke" } else { "Fill" }), Bind::bound(&mut open)).id(id).opened_by(&opener.response).show(ui, |ui, _| {
+                // As wide as the native swatch menu was, so a swatch row is the full width, chip and name.
+                ui.set_min_width(200.0);
                 let (mut switch, mut new_tint, mut picked) = (None, None, None);
                 if text_frame {
                     Row::new().id(id.with("apply-to")).show(ui, |ui, _| {
@@ -872,6 +874,8 @@ pub(super) mod framework {
                         .range(0.0..=100.0)
                         .step(1.0)
                         .fixed_decimals(0)
+                        // Whole percents, as "100%": not the one-decimal percent look.
+                        .exact_decimals(true)
                         .commit_decimals(0)
                         .show(ui);
                     if let Some(v) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {

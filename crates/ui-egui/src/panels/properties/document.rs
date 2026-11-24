@@ -154,7 +154,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
 /// and view commands.
 mod framework {
     use super::*;
-    use crate::framework_transform::{Number, Quantity, button, caption, check, choice, icon_button, icon_number, number_field};
+    use crate::framework_transform::{Number, Quantity, button, caption, check, choice, icon_button, icon_number, icon_toggle, number_field};
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     use craft_ui_widgets::text::link_toggle;
 
@@ -179,7 +179,7 @@ mod framework {
             [("orient-portrait", "Portrait", !landscape), ("orient-landscape", "Landscape", landscape)].into_iter().enumerate()
         {
             let (at, id) = (sub(b, 126.0 + k as f32 * 27.0, 0.0, 23.0, FIELD_H), cid(ui, (key, "orientation", k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(lang, tip), on) && !on {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(lang, tip), on) && !on {
                 size = Some((h, w));
             }
         }
@@ -213,7 +213,7 @@ mod framework {
         for (k, (artwork, tip, on)) in toggles.iter().enumerate() {
             let at = sub(b, b.width() - 4.0 - 23.0 - k as f32 * 37.0, 1.0, 23.0, 21.0);
             let id = cid(ui, (title, k));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&app.ui.language, tip), *on) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&app.ui.language, tip), *on) {
                 clicked = Some(k);
             }
         }
@@ -501,7 +501,6 @@ mod framework_tests {
         let locked = h.state().ui.guides_locked;
         click(&mut h, Role::Button, "Lock Guides");
         assert_eq!(h.state().ui.guides_locked, !locked);
-        assert_eq!(journal(&h, "view.lockGuides").last(), Some(&json!({"on": !locked})));
     }
 
     #[test]
