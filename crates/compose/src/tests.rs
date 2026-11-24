@@ -2509,8 +2509,9 @@ fn a_table_that_breaks_keeps_the_row_heights_it_has_whole() {
     plain.options.border.weight = 0.0;
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), plain);
     let no_border = compose_story(&d, sid, &ComposeOptions::default());
-    for r in 1..7 {
-        assert!((heights(&no_border)[r] - w[r]).abs() < 1e-6, "row {r}: {} without a border, {} with", heights(&no_border)[r], w[r]);
+    let plain_heights = heights(&no_border);
+    for (r, (p, w)) in plain_heights.iter().zip(&w).enumerate().take(7).skip(1) {
+        assert!((p - w).abs() < 1e-6, "row {r}: {p} without a border, {w} with");
     }
 }
 
