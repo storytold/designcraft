@@ -10,6 +10,11 @@ use crate::DesignApp;
 use crate::dialogs::Dialog;
 use crate::theme::Tokens;
 
+/// How wide, in characters, the page and chapter number fields and the prefix are (about 80 points, as the old window drew
+/// them); the section marker takes [`MARKER_CHARS`] (about 125).
+const NUMBER_CHARS: u16 = 11;
+const MARKER_CHARS: u16 = 19;
+
 /// The page numbering styles and how the Style menus show them.
 const STYLES: [(NumberStyle, &str); 8] = [
     (NumberStyle::Arabic, "1, 2, 3, 4…"),
@@ -78,10 +83,15 @@ pub(crate) fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> 
     app.run("layout.numberingOptions", params)
 }
 
-fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) -> bool {
+/// A text field over the draft text of `key`, `chars` characters wide (the old window's narrow fields: a prefix, a marker).
+fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, chars: u16) -> bool {
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     let mut s = d.s(key);
-    let out = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(s.clone())).id_salt(("section_text", key)).limit(None::<usize>).show(ui);
+    let out = craft_ui_widgets::text::TextField::new(label.to_owned(), Bind::given(s.clone()))
+        .width_chars(chars)
+        .id_salt(("section_text", key))
+        .limit(None::<usize>)
+        .show(ui);
     for event in out.events {
         event.apply(&mut s);
     }
@@ -129,6 +139,7 @@ impl<M: craft_behavior::Value> craft_behavior::Codec for NumberDraftCodec<M> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn number_draft<M: craft_behavior::Value + serde::Serialize>(
     ui: &mut Ui,
     d: &mut Dialog,
@@ -137,6 +148,7 @@ fn number_draft<M: craft_behavior::Value + serde::Serialize>(
     mode_key: &str,
     mode: M,
     explicit: M,
+    chars: u16,
 ) {
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     // Number and choice belong to the same gesture: Cancel must restore both,
@@ -144,6 +156,7 @@ fn number_draft<M: craft_behavior::Value + serde::Serialize>(
     let mut draft = NumberDraft { text: d.s(key), mode };
     let before = draft.clone();
     let out = craft_ui_widgets::text::TextField::with_codec(label.to_owned(), Bind::given(draft.clone()), NumberDraftCodec(explicit))
+        .width_chars(chars)
         .id_salt(("section_text", key))
         .limit(None::<usize>)
         .show(ui);
@@ -160,11 +173,11 @@ fn number_text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
     match key {
         "startNumber" => {
             let mode = d.b("automatic");
-            number_draft(ui, d, key, label, "automatic", mode, false);
+            number_draft(ui, d, key, label, "automatic", mode, false, NUMBER_CHARS);
         }
         "chapterStart" => {
             let mode = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-            number_draft(ui, d, key, label, "chapterSource", mode, ChapterSource::UserDefined);
+            number_draft(ui, d, key, label, "chapterSource", mode, ChapterSource::UserDefined, NUMBER_CHARS);
         }
         _ => {}
     }
@@ -215,6 +228,7 @@ fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_u
     use craft_ui_panels::dialog::Dialog as FrameworkDialog;
     use craft_ui_panels::sections::{DialogRole, FooterButton};
     use craft_ui_widgets::contract::{Bind, Props as _, ShowContainer as _};
+    use craft_ui_widgets::runtime::focus::Initial;
     use craft_ui_widgets::runtime::overlay::Backdrop;
 
     let mut opened = true;
@@ -222,8 +236,12 @@ fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_u
     let tr = |s: &'static str| crate::i18n::tr(lang, s).to_owned();
     // On a page that doesn't start a section yet, InDesign titles the window New Section.
     let title = if draft.b("newSection") { tr("New Section") } else { tr("Numbering & Section Options") };
+    // While Automatic Page Numbering is chosen, the Start Page Numbering at field is not what the user is about to edit,
+    // so nothing takes the focus when the window opens; with a number chosen, the first field does.
+    let initial = if draft.b("automatic") { Initial::Keep } else { Initial::FirstField };
     FrameworkDialog::new(title)
         .id_salt("numbering_section")
+        .initial_focus(initial)
         .opened(Bind::bound(&mut opened))
         .enabled(ui.is_enabled())
         .backdrop(Backdrop::None)
@@ -251,22 +269,23 @@ fn settle_framework(app: &mut DesignApp, draft: Dialog, out: craft_ui_panels::di
 }
 
 fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
-    use craft_ui_panels::sections::GroupBox;
     use craft_ui_widgets::choice::{Radio, RadioGroup};
-    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+    use craft_ui_widgets::contract::{Bind, Gap, Pad, Props as _, Show as _, ShowContainer as _};
     use craft_ui_widgets::display::Text;
     use craft_ui_widgets::form::{Field, FieldGroup};
     use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::style::{SurfaceKind, TypeRole};
 
     let lang = app.ui.language.as_str();
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let first_page = number(d, "page") == Some(1);
-    Stack::new().id_salt("section_form").fill_width().show(ui, |ui, _| {
-        // The first page cannot stop being a section.
-        ui.add_enabled_ui(!first_page, |ui| checkbox(ui, d, "startSection", tr("Start Section")));
-        let section = first_page || d.b("startSection");
-        GroupBox::new(tr("Page Numbering"), None).id_salt("section_page").enabled(section).show(ui, |ui, _| {
-            FieldGroup::new(tr("Page Numbering")).show(ui, |ui, _| {
+    Stack::new().id_salt("section_form").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+        // Start Section with the page numbering it begins, indented under it.
+        Stack::new().id_salt("section_start").fill_width().show(ui, |ui, _| {
+            ui.add_enabled_ui(!first_page, |ui| checkbox(ui, d, "startSection", tr("Start Section")));
+            // The first page cannot stop being a section.
+            let section = first_page || d.b("startSection");
+            Stack::new().id_salt("section_numbering").indent(1).fill_width().enabled(section).show(ui, |ui, _| {
                 let before = d.b("automatic");
                 let shown = RadioGroup::new(tr("Page Numbering"), Bind::given(before)).id_salt("section_automatic").show(ui, |ui, _| {
                     Stack::new().show(ui, |ui, _| {
@@ -284,49 +303,64 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 if next != before {
                     d.fields.insert("automatic".into(), json!(next));
                 }
-                Field::new(tr("Section Prefix:")).id_salt("section_prefix_field").show(ui, |ui, _| {
-                    text(ui, d, "prefix", tr("Section Prefix:"));
+            });
+        });
+        // Page Numbering: its heading over an inset box, the box indented under the section.
+        let section = first_page || d.b("startSection");
+        Stack::new().id_salt("section_page").indent(1).fill_width().enabled(section).show(ui, |ui, _| {
+            Text::new(tr("Page Numbering").to_owned()).role(TypeRole::BodyStrong).show(ui);
+            Stack::new().id_salt("section_page_box").fill_width().surface(SurfaceKind::Frame).pad(Pad::Regular).show(ui, |ui, _| {
+                FieldGroup::new(tr("Page Numbering")).show(ui, |ui, _| {
+                    Field::new(tr("Section Prefix:")).id_salt("section_prefix_field").show(ui, |ui, _| {
+                        text(ui, d, "prefix", tr("Section Prefix:"), NUMBER_CHARS);
+                    });
+                    Field::new(tr("Style:")).id_salt("section_style_field").show(ui, |ui, _| {
+                        style_menu(ui, d, "style", tr("Page Numbering"));
+                    });
+                    Field::new(tr("Section Marker:")).id_salt("section_marker_field").show(ui, |ui, _| {
+                        text(ui, d, "marker", tr("Section Marker:"), MARKER_CHARS);
+                    });
                 });
-                Field::new(tr("Style:")).id_salt("section_style_field").show(ui, |ui, _| {
-                    style_menu(ui, d, "style", tr("Page Numbering"));
-                });
-                Field::new(tr("Section Marker:")).id_salt("section_marker_field").show(ui, |ui, _| {
-                    text(ui, d, "marker", tr("Section Marker:"));
-                });
+                // Under the labels, not the fields: the check box starts where the box's content does.
                 checkbox(ui, d, "includePrefix", tr("Include Prefix when Numbering Pages"));
             });
         });
-        GroupBox::new(tr("Document Chapter Numbering"), None).id_salt("section_chapter").show(ui, |ui, _| {
-            FieldGroup::new(tr("Document Chapter Numbering")).show(ui, |ui, _| {
-                Field::new(tr("Style:")).id_salt("chapter_style_field").show(ui, |ui, _| {
-                    style_menu(ui, d, "chapterStyle", tr("Document Chapter Numbering"));
-                });
-                let before: ChapterSource = d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-                let book = d.fields.get("book").and_then(Value::as_str).map(str::to_owned);
-                let shown =
-                    RadioGroup::new(tr("Document Chapter Numbering"), Bind::given(before)).id_salt("section_chapter_source").show(ui, |ui, _| {
-                        Stack::new().show(ui, |ui, _| {
-                            Radio::new(ChapterSource::Automatic).label(tr("Automatic Chapter Numbering")).show(ui);
-                            Row::new().fill_width().show(ui, |ui, _| {
-                                Radio::new(ChapterSource::UserDefined).label(tr("Start Chapter Numbering at:")).show(ui);
-                                number_text(ui, d, "chapterStart", tr("Start Chapter Numbering at:"));
-                            });
-                            Radio::new(ChapterSource::SameAsPrevious)
-                                .label(tr("Same as Previous Document in the Book"))
-                                .enabled(book.is_some())
-                                .show(ui);
-                        });
+        // Document Chapter Numbering: its heading over its box, flush with the section.
+        Stack::new().id_salt("section_chapter").fill_width().show(ui, |ui, _| {
+            Text::new(tr("Document Chapter Numbering").to_owned()).role(TypeRole::BodyStrong).show(ui);
+            Stack::new().id_salt("section_chapter_box").fill_width().surface(SurfaceKind::Frame).pad(Pad::Regular).show(ui, |ui, _| {
+                FieldGroup::new(tr("Document Chapter Numbering")).show(ui, |ui, _| {
+                    Field::new(tr("Style:")).id_salt("chapter_style_field").show(ui, |ui, _| {
+                        style_menu(ui, d, "chapterStyle", tr("Document Chapter Numbering"));
                     });
-                let mut next = before;
-                for event in shown.output.events {
-                    event.apply(&mut next);
-                }
-                if next != before {
-                    d.fields.insert("chapterSource".into(), json!(next));
-                }
-                let name = book.as_deref().map_or_else(|| tr("N/A").to_owned(), crate::rtl::isolate);
-                Field::new(tr("Book Name:")).id_salt("section_book").value(name.clone()).show(ui, |ui, _| {
-                    Text::new(name.clone()).show(ui);
+                    let before: ChapterSource =
+                        d.fields.get("chapterSource").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                    let book = d.fields.get("book").and_then(Value::as_str).map(str::to_owned);
+                    let shown =
+                        RadioGroup::new(tr("Document Chapter Numbering"), Bind::given(before)).id_salt("section_chapter_source").show(ui, |ui, _| {
+                            Stack::new().show(ui, |ui, _| {
+                                Radio::new(ChapterSource::Automatic).label(tr("Automatic Chapter Numbering")).show(ui);
+                                Row::new().fill_width().show(ui, |ui, _| {
+                                    Radio::new(ChapterSource::UserDefined).label(tr("Start Chapter Numbering at:")).show(ui);
+                                    number_text(ui, d, "chapterStart", tr("Start Chapter Numbering at:"));
+                                });
+                                Radio::new(ChapterSource::SameAsPrevious)
+                                    .label(tr("Same as Previous Document in the Book"))
+                                    .enabled(book.is_some())
+                                    .show(ui);
+                            });
+                        });
+                    let mut next = before;
+                    for event in shown.output.events {
+                        event.apply(&mut next);
+                    }
+                    if next != before {
+                        d.fields.insert("chapterSource".into(), json!(next));
+                    }
+                    let name = book.as_deref().map_or_else(|| tr("N/A").to_owned(), crate::rtl::isolate);
+                    Field::new(tr("Book Name:")).id_salt("section_book").value(name.clone()).show(ui, |ui, _| {
+                        Text::new(name.clone()).show(ui);
+                    });
                 });
             });
         });

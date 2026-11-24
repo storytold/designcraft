@@ -10,9 +10,9 @@ use crate::DesignApp;
 use craft_ui_panels::dialog::Dialog as FrameworkDialog;
 use craft_ui_panels::sections::{DialogRole, FooterButton};
 use craft_ui_widgets::buttons::Button;
-use craft_ui_widgets::choice::{Radio, RadioGroup, Segmented};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
-use craft_ui_widgets::display::Text;
+use craft_ui_widgets::choice::Segmented;
+use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+use craft_ui_widgets::display::{Divider, Text};
 use craft_ui_widgets::form::{Field, FieldGroup, Help};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
@@ -298,18 +298,15 @@ fn format_settings(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
         .close_on_enter(true)
         .buttons([FooterButton::new(tr("OK"), DialogRole::Accept).stays_open(true), FooterButton::new(tr("Cancel"), DialogRole::Cancel)])
         .show(ui, |ui, _| {
-            Row::new().id_salt("find_format_layout").fill_width().show(ui, |ui, _| {
-                let before = fd.s("section");
-                let shown = RadioGroup::new(tr("Format Settings"), Bind::given(before.clone())).id_salt("find_format_sections").show(ui, |ui, _| {
-                    Stack::new().id_salt("find_format_section_list").show(ui, |ui, _| {
-                        for (id, caption) in FORMAT_SECTIONS {
-                            Radio::new((*id).to_owned()).label(tr(*caption)).id_salt(("find_format_section", *id)).show(ui);
-                        }
-                    });
+            Row::new().id_salt("find_format_layout").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+                let sections: Vec<(&str, String)> = FORMAT_SECTIONS.iter().map(|(id, caption)| (*id, tr(*caption))).collect();
+                Stack::new().id_salt("find_format_section_list").show(ui, |ui, _| {
+                    if let Some(next) = super::framework::section_list(ui, "find_format_sections", tr("Format Settings"), &sections, &fd.s("section"))
+                    {
+                        fd.fields.insert("section".into(), json!(next));
+                    }
                 });
-                if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
-                    fd.fields.insert("section".into(), json!(next));
-                }
+                Divider::vertical().show(ui);
                 Stack::new().id_salt("find_format_page").fill_width().show(ui, |ui, _| match fd.s("section").as_str() {
                     "chars" => char_sections::basic(app, ui, &mut fd, &cf),
                     "advanced" => char_sections::advanced(app, ui, &mut fd, &cf),
@@ -436,59 +433,66 @@ fn find_font(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
             font["resolvedStyle"].as_str().unwrap_or("")
         )
     });
-    Stack::new().id_salt("find_font").fill_width().show(ui, |ui, _| {
-        if d.b("onOpen") && fonts.iter().any(missing) {
-            line(ui, &tr("This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts."));
-        }
-        if !d.s("error").is_empty() {
-            line(ui, &d.s("error"));
-        }
-        line(
-            &mut *ui,
-            &tr("Fonts in Document: {count}    Missing: {missing}")
-                .replace("{count}", &fonts.len().to_string())
-                .replace("{missing}", &missing_count.to_string()),
-        );
-        let before = at;
-        let shown = RadioGroup::new(tr("Fonts in Document"), Bind::given(before)).id_salt("find_font_list").show(ui, |ui, _| {
+    // The fonts as a list with the selected one highlighted, keyed by position.
+    let keys: Vec<String> = (0..fonts.len()).map(|i| i.to_string()).collect();
+    let rows: Vec<(&str, String)> = fonts
+        .iter()
+        .zip(&keys)
+        .map(|(f, key)| {
+            let label =
+                format!("{}{} {}", if missing(f) { "\u{26A0} " } else { "" }, f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""));
+            (key.as_str(), label)
+        })
+        .collect();
+    // Two groups a section gap apart: the document's fonts, then Replace With.
+    Stack::new().id_salt("find_font").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+        Stack::new().id_salt("find_font_document").fill_width().show(ui, |ui, _| {
+            if d.b("onOpen") && fonts.iter().any(missing) {
+                line(ui, &tr("This document uses unavailable fonts. Choose replacements, or select Done to continue with fallback fonts."));
+            }
+            if !d.s("error").is_empty() {
+                line(ui, &d.s("error"));
+            }
+            line(
+                &mut *ui,
+                &tr("Fonts in Document: {count}    Missing: {missing}")
+                    .replace("{count}", &fonts.len().to_string())
+                    .replace("{missing}", &missing_count.to_string()),
+            );
+            // The list scrolls past 180 pt.
+            let mut picked = None;
             Stack::new().id_salt("find_font_rows").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| {
-                for (i, f) in fonts.iter().enumerate() {
-                    let label = format!(
-                        "{}{} {}",
-                        if missing(f) { "\u{26A0} " } else { "" },
-                        f["family"].as_str().unwrap_or(""),
-                        f["style"].as_str().unwrap_or("")
-                    );
-                    Radio::new(i).label(label).id_salt(("find_font_row", i)).show(ui);
+                if let Some(next) = super::framework::section_list(ui, "find_font_list", tr("Fonts in Document"), &rows, &at.to_string()) {
+                    picked = Some(next);
                 }
             });
+            if let Some(font) = picked.and_then(|next| next.parse::<usize>().ok()).and_then(|next| fonts.get(next)) {
+                d.fields.insert("family".into(), font["family"].clone());
+                d.fields.insert("style".into(), font["style"].clone());
+            }
+            if let Some(rendered) = &rendered {
+                line(ui, rendered);
+            }
         });
-        if let Some(next) = shown.output.events.landed().copied().filter(|next| *next != before)
-            && let Some(font) = fonts.get(next)
-        {
-            d.fields.insert("family".into(), font["family"].clone());
-            d.fields.insert("style".into(), font["style"].clone());
-        }
-        if let Some(rendered) = &rendered {
-            line(ui, rendered);
-        }
-        heading(ui, &tr("Replace With"));
-        FieldGroup::new(tr("Replace With")).id_salt("find_font_replace").show(ui, |ui, _| {
-            field(ui, &tr("Font Family:"), "to_family", |ui| {
-                if let Some(family) = picker(ui, "toFamily", &tr("Font Family:"), &d.s("toFamily"), &families, true) {
-                    let styles = crate::panels::fonts(app).styles(&family);
-                    let style = if styles.iter().any(|s| s == "Regular") { Some("Regular".to_owned()) } else { styles.first().cloned() };
-                    d.fields.insert("toFamily".into(), json!(family));
-                    d.fields.insert("toStyle".into(), json!(style.unwrap_or_default()));
-                }
+        Stack::new().id_salt("find_font_replace_with").fill_width().show(ui, |ui, _| {
+            heading(ui, &tr("Replace With"));
+            FieldGroup::new(tr("Replace With")).id_salt("find_font_replace").show(ui, |ui, _| {
+                field(ui, &tr("Font Family:"), "to_family", |ui| {
+                    if let Some(family) = picker(ui, "toFamily", &tr("Font Family:"), &d.s("toFamily"), &families, true) {
+                        let styles = crate::panels::fonts(app).styles(&family);
+                        let style = if styles.iter().any(|s| s == "Regular") { Some("Regular".to_owned()) } else { styles.first().cloned() };
+                        d.fields.insert("toFamily".into(), json!(family));
+                        d.fields.insert("toStyle".into(), json!(style.unwrap_or_default()));
+                    }
+                });
+                field(ui, &tr("Font Style:"), "to_style", |ui| {
+                    if let Some(style) = picker(ui, "toStyle", &tr("Font Style:"), &d.s("toStyle"), &style_options, false) {
+                        d.fields.insert("toStyle".into(), json!(style));
+                    }
+                });
             });
-            field(ui, &tr("Font Style:"), "to_style", |ui| {
-                if let Some(style) = picker(ui, "toStyle", &tr("Font Style:"), &d.s("toStyle"), &style_options, false) {
-                    d.fields.insert("toStyle".into(), json!(style));
-                }
-            });
+            message(ui, &tr("Replace All updates this font throughout text and styles. Done keeps remaining fallback fonts."));
         });
-        message(ui, &tr("Replace All updates this font throughout text and styles. Done keeps remaining fallback fonts."));
     });
     None
 }
@@ -547,6 +551,8 @@ mod tests {
     const BUTTON: &[Role] = &[Role::Button];
     const CHECK: &[Role] = &[Role::CheckBox];
     const RADIO: &[Role] = &[Role::RadioButton];
+    /// A row of a dialog's section list.
+    const SECTION: &[Role] = &[Role::ListItem];
 
     fn open(app: DesignApp, id: &str, fields: Value) -> egui_kittest::Harness<'static, DesignApp> {
         let mut app = app;
@@ -597,7 +603,7 @@ mod tests {
         assert!(kit::draft(&h).fields.get(FORMAT_EDIT).is_some_and(Value::is_object), "the settings are open");
         let _ = h.get_by_role_and_label(Role::Dialog, "Find Format Settings");
         kit::pick(&mut h, "Character Style:", "Emph");
-        kit::click(&mut h, RADIO, "Basic Character Formats", 0);
+        kit::click(&mut h, SECTION, "Basic Character Formats", 0);
         // A character attribute cycles unset, on, off, unset.
         kit::click(&mut h, CHECK, "Underline", 0);
         assert_eq!(kit::draft(&h).fields[FORMAT_EDIT]["c.underline"], true);
@@ -630,7 +636,7 @@ mod tests {
         let d = kit::draft(&h);
         assert!(!d.s("family").is_empty() && !d.s("toFamily").is_empty(), "a font is selected and a replacement chosen");
         let label = format!("{} {}", d.s("family"), d.s("style"));
-        let listed = h.query_all_by_role(Role::RadioButton).any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
+        let listed = h.query_all_by_role(Role::ListItem).any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
         assert!(listed, "the selected font is a row of the list");
         kit::click(&mut h, BUTTON, "Done", 0);
         assert!(h.state().ui.dialog.is_none());
@@ -676,15 +682,15 @@ mod tests {
         let mut h = open(app_with_text(), "findChange", json!({}));
         kit::click(&mut h, BUTTON, "Specify attributes to change", 0);
         let language = crate::panels::properties::LANGUAGES[0];
-        kit::click(&mut h, RADIO, "Advanced Character Formats", 0);
+        kit::click(&mut h, SECTION, "Advanced Character Formats", 0);
         kit::type_and_commit(&mut h, "Horizontal Scale:", 0, "120");
         kit::pick(&mut h, "Language:", language);
-        kit::click(&mut h, RADIO, "Character Color", 0);
+        kit::click(&mut h, SECTION, "Character Color", 0);
         kit::click(&mut h, RADIO, "Stroke", 0);
         kit::pick(&mut h, "Color:", "[Black]");
-        kit::click(&mut h, RADIO, "OpenType Features", 0);
+        kit::click(&mut h, SECTION, "OpenType Features", 0);
         kit::click(&mut h, CHECK, "Fractions", 0);
-        kit::click(&mut h, RADIO, "Underline Options", 0);
+        kit::click(&mut h, SECTION, "Underline Options", 0);
         kit::click(&mut h, CHECK, "Underline On", 0);
         kit::type_and_commit(&mut h, "Weight:", 0, "2");
         kit::key(&mut h, Key::Enter, Modifiers::NONE);

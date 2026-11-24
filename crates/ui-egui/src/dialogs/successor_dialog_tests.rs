@@ -903,10 +903,10 @@ fn text_frame_options_form_dims_the_sides_for_a_non_rectangular_frame() {
         let (wrap, cancel) = (kit::rect_of(&h, "Ignore Text Wrap").unwrap().bottom(), kit::rect_of(&h, "Cancel").unwrap().top());
         assert!(wrap < cancel, "{shape}: Ignore Text Wrap ends at {wrap}, below the top of Cancel at {cancel}");
         for tab in ["Column Rules", "Baseline Options", "Auto-Size"] {
-            kit::click(&mut h, &[Role::RadioButton], tab, 0);
+            kit::click(&mut h, &[Role::ListItem], tab, 0);
         }
         assert_eq!(kit::rect_of(&h, "Cancel").unwrap().top(), cancel, "{shape}: the buttons stay put on another page");
-        kit::click(&mut h, &[Role::RadioButton], "General", 0);
+        kit::click(&mut h, &[Role::ListItem], "General", 0);
         // The link toggles only for a rectangle.
         let before = kit::draft(&h).b("insetLinked");
         kit::click(&mut h, kit::TOGGLE, "Make all settings the same", 0);

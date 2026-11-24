@@ -5,9 +5,9 @@
 
 use craft_behavior::{EditEvents, Value as Bindable};
 use craft_theme::{Rgba, Srgba};
-use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup, Swatch};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Scroll, Show as _, ShowContainer as _};
-use craft_ui_widgets::display::{Shade, Text};
+use craft_ui_widgets::choice::{Checkbox, RadioGroup, Swatch};
+use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, Scroll, Show as _, ShowContainer as _};
+use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::Field;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
@@ -23,7 +23,9 @@ use super::framework::Form;
 use crate::DesignApp;
 
 /// Edit › Preferences.
-pub(crate) const FORM: Form = Form::new(show).width(640.0);
+/// It asks for a wide dialog (`Form::width` of 700 pt or more), so the options have room beside the section list and
+/// a long check box label keeps its inset from the edge; a window too narrow for that gets the narrower dialog.
+pub(crate) const FORM: Form = Form::new(show).width(720.0);
 
 /// The sections with a document open: application options and the document's own settings (InDesign keeps those with
 /// the document).
@@ -77,7 +79,8 @@ fn edited<T: Bindable>(events: EditEvents<T>, before: T) -> Option<T> {
     (next != before).then_some(next)
 }
 
-/// The section list on the left and the chosen section's options on the right.
+/// The section list on the left, a divider, and the chosen section's options on the right, its groups a section gap
+/// apart.
 fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let has_doc = d.fields.contains_key("horizontalUnits") && !d.b("defaults");
     let sections = if has_doc { DOCUMENT_SECTIONS } else { APP_SECTIONS };
@@ -86,66 +89,60 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     // A section the list doesn't have shows General, as the native body does.
     let shown = d.s("section");
     let current = sections.iter().map(|(id, _)| *id).find(|id| *id == shown).unwrap_or("general");
-    Row::new().id_salt("preferences_form").fill_width().show(ui, |ui, _| {
+    let captioned: Vec<(&str, String)> = sections.iter().map(|(id, label)| (*id, tr(*label))).collect();
+    Row::new().id_salt("preferences_form").fill_width().gap(Gap::Section).least_height(PANE_HEIGHT).show(ui, |ui, _| {
         Stack::new().id_salt("preferences_sections").scroll(Scroll::vertical()).room_height(PANE_HEIGHT).show(ui, |ui, _| {
-            let group = RadioGroup::new(tr("Preferences"), Bind::given(current)).id_salt("preferences_section_list").show(ui, |ui, _| {
-                for (id, label) in sections {
-                    Radio::new(*id).label(tr(label)).id_salt(("preferences_section", *id)).show(ui);
-                }
-            });
-            if let Some(next) = edited(group.output.events, current) {
+            if let Some(next) = super::framework::section_list(ui, "preferences_section_list", tr("Preferences"), &captioned, current) {
                 d.fields.insert("section".into(), json!(next));
             }
         });
-        Stack::new().id_salt(("preferences_options", current)).fill_width().scroll(Scroll::vertical()).room_height(PANE_HEIGHT).show(ui, |ui, _| {
-            match current {
-                "dictionary" => dictionary(ui, d, &lang),
-                "spelling" => {
-                    heading(ui, &tr("Dynamic Spelling"));
-                    check(ui, d, "dynamicSpelling", &tr("Enable Dynamic Spelling (underline misspelled words)"));
+        Divider::vertical().show(ui);
+        Stack::new()
+            .id_salt(("preferences_options", current))
+            .fill_width()
+            .gap(Gap::Section)
+            .scroll(Scroll::vertical())
+            .room_height(PANE_HEIGHT)
+            .show(ui, |ui, _| {
+                match current {
+                    "dictionary" => dictionary(ui, d, &lang),
+                    "spelling" => group(ui, &tr("Dynamic Spelling"), |ui| {
+                        check(ui, d, "dynamicSpelling", &tr("Enable Dynamic Spelling (underline misspelled words)"));
+                    }),
+                    "autocorrect" => autocorrect(ui, d, &lang),
+                    "notes" => group(ui, &tr("Options"), |ui| check(ui, d, "showNoteAnchors", &tr("Show Note Anchors in Layout View"))),
+                    "trackChanges" => group(ui, &tr("Show"), |ui| check(ui, d, "showAddedText", &tr("Added Text (highlighted)"))),
+                    "storyEditor" => group(ui, &tr("Text Display Options"), |ui| {
+                        slider(ui, d, "storyEditorSize", &tr("Font Size:"), Range { default: 14.0, min: 8.0, max: 36.0, step: 1.0 }, " pt");
+                    }),
+                    "files" => files(ui, d, &lang),
+                    "type" => type_options(ui, d, &lang),
+                    "composition" => composition(ui, d, &lang),
+                    "advancedType" => advanced_type(ui, d, &lang),
+                    "black" => black(ui, d, &lang),
+                    "interface" => interface(app, ui, d),
+                    "uiScaling" => {
+                        group(ui, &tr("UI Scaling"), |ui| {
+                            slider(ui, d, "uiScale", &tr("UI Size:"), Range { default: 100.0, min: 50.0, max: 200.0, step: 5.0 }, "%");
+                        });
+                        group(ui, &tr("Panels"), |ui| check(ui, d, "autoCollapseIconicPanels", &tr("Auto-Collapse Iconic Panels")));
+                    }
+                    "grids" => grids(ui, d, &lang),
+                    "guides" => guides(ui, d, &lang),
+                    "display" => group(ui, &tr("Options"), |ui| {
+                        let choices = [("fast", "Fast"), ("typical", "Typical"), ("high", "High Quality")];
+                        // An unknown quality shows as High Quality, as the native field does.
+                        let cur = d.s("displayQuality");
+                        let held = if matches!(cur.as_str(), "fast" | "typical") { cur } else { "high".to_owned() };
+                        choose_text(ui, d, "displayQuality", &tr("Default View:"), &held, &choices, &lang);
+                    }),
+                    "units" => units(ui, d, &lang),
+                    _ => general(app, ui, d),
                 }
-                "autocorrect" => autocorrect(ui, d, &lang),
-                "notes" => {
-                    heading(ui, &tr("Options"));
-                    check(ui, d, "showNoteAnchors", &tr("Show Note Anchors in Layout View"));
+                if let Some(status) = d.fields.get("status").and_then(Value::as_str) {
+                    Text::new(status.to_owned()).shade(Shade::Muted).show(ui);
                 }
-                "trackChanges" => {
-                    heading(ui, &tr("Show"));
-                    check(ui, d, "showAddedText", &tr("Added Text (highlighted)"));
-                }
-                "storyEditor" => {
-                    heading(ui, &tr("Text Display Options"));
-                    slider(ui, d, "storyEditorSize", &tr("Font Size:"), Range { default: 14.0, min: 8.0, max: 36.0, step: 1.0 }, " pt");
-                }
-                "files" => files(ui, d, &lang),
-                "type" => type_options(ui, d, &lang),
-                "composition" => composition(ui, d, &lang),
-                "advancedType" => advanced_type(ui, d, &lang),
-                "black" => black(ui, d, &lang),
-                "interface" => interface(app, ui, d),
-                "uiScaling" => {
-                    heading(ui, &tr("UI Scaling"));
-                    slider(ui, d, "uiScale", &tr("UI Size:"), Range { default: 100.0, min: 50.0, max: 200.0, step: 5.0 }, "%");
-                    heading(ui, &tr("Panels"));
-                    check(ui, d, "autoCollapseIconicPanels", &tr("Auto-Collapse Iconic Panels"));
-                }
-                "grids" => grids(ui, d, &lang),
-                "guides" => guides(ui, d, &lang),
-                "display" => {
-                    heading(ui, &tr("Options"));
-                    let choices = [("fast", "Fast"), ("typical", "Typical"), ("high", "High Quality")];
-                    // An unknown quality shows as High Quality, as the native field does.
-                    let cur = d.s("displayQuality");
-                    let held = if matches!(cur.as_str(), "fast" | "typical") { cur } else { "high".to_owned() };
-                    choose_text(ui, d, "displayQuality", &tr("Default View:"), &held, &choices, &lang);
-                }
-                "units" => units(ui, d, &lang),
-                _ => general(app, ui, d),
-            }
-            if let Some(status) = d.fields.get("status").and_then(Value::as_str) {
-                Text::new(status.to_owned()).shade(Shade::Muted).show(ui);
-            }
-        });
+            });
     });
     None
 }
@@ -153,6 +150,15 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
 /// A heading over a group of options.
 fn heading(ui: &mut Ui, text: &str) {
     Text::new(text.to_owned()).role(TypeRole::BodyStrong).show(ui);
+}
+
+/// A group of options under its heading: one child of the options pane, whose section gap sets it apart from the group
+/// above.
+fn group(ui: &mut Ui, title: &str, mut body: impl FnMut(&mut Ui)) {
+    Stack::new().id_salt(("preferences_group", title.to_owned())).fill_width().show(ui, |ui, _| {
+        heading(ui, title);
+        body(ui);
+    });
 }
 
 /// A check box over the boolean `key`.
@@ -295,25 +301,25 @@ fn color(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
 fn general(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
-    heading(ui, &tr("Interface Language"));
-    let languages = crate::i18n::picker_languages();
-    let entries: Vec<Entry<&'static str>> = languages.iter().map(|(code, name)| Entry::new(*code, (*name).to_owned())).collect();
-    let current = languages.iter().map(|(code, _)| *code).find(|code| *code == app.ui.language).unwrap_or("");
-    let label = tr("Interface Language");
-    let out = Select::new(label, Bind::given(current), &entries).id_salt("preferences_language").show(ui);
-    // A pick takes effect at once, like any other app setting; Cancel goes back to the language it opened with.
-    if let Some(code) = edited(out.events, current)
-        && let Err(e) = app.run("app.language", json!({"lang": code}))
-    {
-        d.fields.insert("status".into(), json!(e));
-    }
-    heading(ui, &tr("When Scaling"));
-    check(ui, d, "scaleStrokes", &tr("Include Stroke Weight"));
-    heading(ui, &tr("Transform"));
-    check(ui, d, "dimensionsIncludeStroke", &tr("Dimensions Include Stroke Weight"));
-    check(ui, d, "transformationsAreTotals", &tr("Transformations are Totals"));
-    heading(ui, &tr("Page Numbering"));
-    check(ui, d, "absolutePageNumbers", &tr("Absolute Numbering (instead of Section Numbering)"));
+    group(ui, &tr("Interface Language"), |ui| {
+        let languages = crate::i18n::picker_languages();
+        let entries: Vec<Entry<&'static str>> = languages.iter().map(|(code, name)| Entry::new(*code, (*name).to_owned())).collect();
+        let current = languages.iter().map(|(code, _)| *code).find(|code| *code == app.ui.language).unwrap_or("");
+        let label = tr("Interface Language");
+        let out = Select::new(label, Bind::given(current), &entries).id_salt("preferences_language").show(ui);
+        // A pick takes effect at once, like any other app setting; Cancel goes back to the language it opened with.
+        if let Some(code) = edited(out.events, current)
+            && let Err(e) = app.run("app.language", json!({"lang": code}))
+        {
+            d.fields.insert("status".into(), json!(e));
+        }
+    });
+    group(ui, &tr("When Scaling"), |ui| check(ui, d, "scaleStrokes", &tr("Include Stroke Weight")));
+    group(ui, &tr("Transform"), |ui| {
+        check(ui, d, "dimensionsIncludeStroke", &tr("Dimensions Include Stroke Weight"));
+        check(ui, d, "transformationsAreTotals", &tr("Transformations are Totals"));
+    });
+    group(ui, &tr("Page Numbering"), |ui| check(ui, d, "absolutePageNumbers", &tr("Absolute Numbering (instead of Section Numbering)")));
 }
 
 /// Interface: the Color Theme (a swatch per theme; a click shows it at once, Cancel goes back to the theme Preferences
@@ -321,168 +327,188 @@ fn general(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
 fn interface(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
-    heading(ui, &tr("Appearance"));
-    let current = d.s("brightness");
-    let held = crate::theme::Brightness::ALL.iter().map(|b| b.id()).find(|id| *id == current).unwrap_or(crate::theme::Brightness::default().id());
-    let mut picked = None;
-    Row::new().id_salt("preferences_theme_row").show(ui, |ui, _| {
-        Text::new(tr("Color Theme:")).show(ui);
-        let group = RadioGroup::new(tr("Color Theme:"), Bind::given(held)).id_salt("preferences_theme").show(ui, |ui, _| {
-            Row::new().id_salt("preferences_theme_swatches").show(ui, |ui, _| {
-                for b in crate::theme::Brightness::ALL {
-                    let panel = crate::theme::Tokens::for_brightness(b).panel;
-                    let color = Srgba::rgb(f32::from(panel.r()) / 255.0, f32::from(panel.g()) / 255.0, f32::from(panel.b()) / 255.0);
-                    let name = tr(b.label());
-                    Swatch::new(name.clone(), color).member(b.id()).tooltip(name).id_salt(("preferences_theme_swatch", b.id())).show(ui);
-                }
+    group(ui, &tr("Appearance"), |ui| {
+        let current = d.s("brightness");
+        let held = crate::theme::Brightness::ALL.iter().map(|b| b.id()).find(|id| *id == current).unwrap_or(crate::theme::Brightness::default().id());
+        let mut picked = None;
+        Row::new().id_salt("preferences_theme_row").show(ui, |ui, _| {
+            Text::new(tr("Color Theme:")).show(ui);
+            let themes = RadioGroup::new(tr("Color Theme:"), Bind::given(held)).id_salt("preferences_theme").show(ui, |ui, _| {
+                Row::new().id_salt("preferences_theme_swatches").show(ui, |ui, _| {
+                    for b in crate::theme::Brightness::ALL {
+                        let panel = crate::theme::Tokens::for_brightness(b).panel;
+                        let color = Srgba::rgb(f32::from(panel.r()) / 255.0, f32::from(panel.g()) / 255.0, f32::from(panel.b()) / 255.0);
+                        let name = tr(b.label());
+                        Swatch::new(name.clone(), color).member(b.id()).tooltip(name).id_salt(("preferences_theme_swatch", b.id())).show(ui);
+                    }
+                });
             });
+            picked = edited(themes.output.events, held);
         });
-        picked = edited(group.output.events, held);
-    });
-    if let Some(id) = picked {
-        d.fields.insert("brightness".into(), json!(id));
-        if let Err(e) = app.run("window.brightness", json!({"brightness": id})) {
-            d.fields.insert("status".into(), json!(e));
+        if let Some(id) = picked {
+            d.fields.insert("brightness".into(), json!(id));
+            if let Err(e) = app.run("window.brightness", json!({"brightness": id})) {
+                d.fields.insert("status".into(), json!(e));
+            }
         }
-    }
-    heading(ui, &tr("Panels"));
-    let columns = d.s("toolsColumns");
-    choose_text(ui, d, "toolsColumns", &tr("Tools Panel:"), &columns, &[("single", "Single Column"), ("double", "Double Column")], &lang);
+    });
+    group(ui, &tr("Panels"), |ui| {
+        let columns = d.s("toolsColumns");
+        choose_text(ui, d, "toolsColumns", &tr("Tools Panel:"), &columns, &[("single", "Single Column"), ("double", "Double Column")], &lang);
+    });
 }
 
 fn dictionary(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("User Dictionary (this document)"));
-    Text::new(tr("Words, one per line:")).show(ui);
-    multiline(ui, d, "userWords", &tr("Words, one per line:"), 8);
+    group(ui, &tr("User Dictionary (this document)"), |ui| {
+        Text::new(tr("Words, one per line:")).show(ui);
+        multiline(ui, d, "userWords", &tr("Words, one per line:"), 8);
+    });
 }
 
 fn autocorrect(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Options"));
-    check(ui, d, "autocorrect", &tr("Enable Autocorrect"));
-    let label = tr("Misspelled word → Correction (one per line):");
-    Text::new(label.clone()).show(ui);
-    multiline(ui, d, "autocorrectText", &label, 8);
+    group(ui, &tr("Options"), |ui| {
+        check(ui, d, "autocorrect", &tr("Enable Autocorrect"));
+        let label = tr("Misspelled word → Correction (one per line):");
+        Text::new(label.clone()).show(ui);
+        multiline(ui, d, "autocorrectText", &label, 8);
+    });
 }
 
 /// File Handling: how often recovery data is saved, how many recent items show, and links to placed text files.
 fn files(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Document Recovery Data"));
-    number(ui, d, "recoveryMinutes", &tr("Save recovery data every:"), Range { default: 0.5, min: 0.1, max: 60.0, step: 0.1 }, 1, Some("min"));
-    let recent = Range { default: 20.0, min: 0.0, max: f64::from(designcraft_engine::MAX_RECENT_FILES), step: 1.0 };
-    number(ui, d, "recentFilesMax", &tr("Number of Recent Items to Display:"), recent, 0, None);
-    heading(ui, &tr("Links"));
-    check(ui, d, "linkTextFiles", &tr("Create Links When Placing Text Files"));
+    group(ui, &tr("Document Recovery Data"), |ui| {
+        number(ui, d, "recoveryMinutes", &tr("Save recovery data every:"), Range { default: 0.5, min: 0.1, max: 60.0, step: 0.1 }, 1, Some("min"));
+        let recent = Range { default: 20.0, min: 0.0, max: f64::from(designcraft_engine::MAX_RECENT_FILES), step: 1.0 };
+        number(ui, d, "recentFilesMax", &tr("Number of Recent Items to Display:"), recent, 0, None);
+    });
+    group(ui, &tr("Links"), |ui| check(ui, d, "linkTextFiles", &tr("Create Links When Placing Text Files")));
 }
 
 fn type_options(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Type Options"));
-    check(ui, d, "typographersQuotes", &tr("Use Typographer's Quotes"));
-    check(ui, d, "showFontNamesInEnglish", &tr("Show Font Names in English"));
-    check(ui, d, "cjkFeatures", &tr("Show CJK Features"));
-    heading(ui, &tr("Smart Text Reflow"));
-    check(ui, d, "smartTextReflow", &tr("Add and remove pages as the primary text frame's story grows and shrinks"));
+    group(ui, &tr("Type Options"), |ui| {
+        check(ui, d, "typographersQuotes", &tr("Use Typographer's Quotes"));
+        check(ui, d, "showFontNamesInEnglish", &tr("Show Font Names in English"));
+        check(ui, d, "cjkFeatures", &tr("Show CJK Features"));
+    });
+    group(ui, &tr("Smart Text Reflow"), |ui| {
+        check(ui, d, "smartTextReflow", &tr("Add and remove pages as the primary text frame's story grows and shrinks"));
+    });
 }
 
 fn composition(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Highlight"));
-    check(ui, d, "highlightKeeps", &tr("Keep Violations"));
-    check(ui, d, "highlightHj", &tr("H&J Violations"));
-    check(ui, d, "highlightCustomTracking", &tr("Custom Tracking/Kerning"));
-    check(ui, d, "highlightSubstitutedFonts", &tr("Substituted Fonts"));
+    group(ui, &tr("Highlight"), |ui| {
+        check(ui, d, "highlightKeeps", &tr("Keep Violations"));
+        check(ui, d, "highlightHj", &tr("H&J Violations"));
+        check(ui, d, "highlightCustomTracking", &tr("Custom Tracking/Kerning"));
+        check(ui, d, "highlightSubstitutedFonts", &tr("Substituted Fonts"));
+    });
     if d.fields.contains_key("glyphFallback") {
-        heading(ui, &tr("Missing Glyphs"));
-        check(ui, d, "glyphFallback", &tr("Draw Missing Glyphs from Fallback Fonts"));
+        group(ui, &tr("Missing Glyphs"), |ui| check(ui, d, "glyphFallback", &tr("Draw Missing Glyphs from Fallback Fonts")));
     }
 }
 
 /// Advanced Type: the superscript and subscript size and position, in percent.
 fn advanced_type(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Character Settings"));
-    for (k, l) in [("superscript", "Superscript:"), ("subscript", "Subscript:")] {
-        Row::new().id_salt(("preferences_advanced", k)).show(ui, |ui, _| {
-            Text::new(tr(l)).show(ui);
-            for f in ["Size", "Position"] {
-                // Each field is named by its row and its column: "Superscript: Size".
-                let name = format!("{} {}", tr(l), tr(f));
-                labelled_text(ui, d, &format!("adv.{k}{f}"), &name, Some("%"));
-            }
-        });
-    }
+    group(ui, &tr("Character Settings"), |ui| {
+        for (k, l) in [("superscript", "Superscript:"), ("subscript", "Subscript:")] {
+            Row::new().id_salt(("preferences_advanced", k)).show(ui, |ui, _| {
+                Text::new(tr(l)).show(ui);
+                for f in ["Size", "Position"] {
+                    // Each field is named by its row and its column: "Superscript: Size".
+                    let name = format!("{} {}", tr(l), tr(f));
+                    labelled_text(ui, d, &format!("adv.{k}{f}"), &name, Some("%"));
+                }
+            });
+        }
+    });
 }
 
 /// Appearance of Black: on screen and for output, all blacks accurately or as rich black; [Black] Overprint.
 fn black(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Options for Black on RGB and Grayscale Devices"));
-    choose_bool(ui, d, "richBlack", &tr("On Screen:"), ["Display All Blacks Accurately", "Display All Blacks as Rich Black"], lang);
-    choose_bool(ui, d, "richBlackOutput", &tr("Printing / Exporting:"), ["Output All Blacks Accurately", "Output All Blacks as Rich Black"], lang);
+    group(ui, &tr("Options for Black on RGB and Grayscale Devices"), |ui| {
+        choose_bool(ui, d, "richBlack", &tr("On Screen:"), ["Display All Blacks Accurately", "Display All Blacks as Rich Black"], lang);
+        choose_bool(
+            ui,
+            d,
+            "richBlackOutput",
+            &tr("Printing / Exporting:"),
+            ["Output All Blacks Accurately", "Output All Blacks as Rich Black"],
+            lang,
+        );
+    });
     if d.fields.contains_key("overprintBlack") {
-        heading(ui, &tr("[Black] Overprint"));
-        check(ui, d, "overprintBlack", &tr("Overprint [Black] Swatch at 100%"));
+        group(ui, &tr("[Black] Overprint"), |ui| check(ui, d, "overprintBlack", &tr("Overprint [Black] Swatch at 100%")));
     }
 }
 
 /// Grids: the baseline grid and the document grid.
 fn grids(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Baseline Grid"));
-    color(ui, d, "bg.color", &tr("Color:"));
-    labelled_text(ui, d, "bg.start", &tr("Start:"), None);
-    let relative = if d.s("bg.relativeTo") == "topMargin" { "topMargin" } else { "topOfPage" };
-    choose_text(ui, d, "bg.relativeTo", &tr("Relative To:"), relative, &[("topOfPage", "Top of Page"), ("topMargin", "Top Margin")], lang);
-    labelled_text(ui, d, "bg.increment", &tr("Increment Every:"), None);
-    labelled_text(ui, d, "bg.viewThreshold", &tr("View Threshold:"), Some("%"));
-    heading(ui, &tr("Document Grid"));
-    color(ui, d, "grid.color", &tr("Color:"));
-    labelled_text(ui, d, "grid.horizontal", &tr("Horizontal Gridline Every:"), None);
-    labelled_text(ui, d, "grid.vertical", &tr("Vertical Gridline Every:"), None);
-    labelled_text(ui, d, "grid.subdivisions", &tr("Subdivisions:"), None);
-    check(ui, d, "grid.inBack", &tr("Grids in Back"));
+    group(ui, &tr("Baseline Grid"), |ui| {
+        color(ui, d, "bg.color", &tr("Color:"));
+        labelled_text(ui, d, "bg.start", &tr("Start:"), None);
+        let relative = if d.s("bg.relativeTo") == "topMargin" { "topMargin" } else { "topOfPage" };
+        choose_text(ui, d, "bg.relativeTo", &tr("Relative To:"), relative, &[("topOfPage", "Top of Page"), ("topMargin", "Top Margin")], lang);
+        labelled_text(ui, d, "bg.increment", &tr("Increment Every:"), None);
+        labelled_text(ui, d, "bg.viewThreshold", &tr("View Threshold:"), Some("%"));
+    });
+    group(ui, &tr("Document Grid"), |ui| {
+        color(ui, d, "grid.color", &tr("Color:"));
+        labelled_text(ui, d, "grid.horizontal", &tr("Horizontal Gridline Every:"), None);
+        labelled_text(ui, d, "grid.vertical", &tr("Vertical Gridline Every:"), None);
+        labelled_text(ui, d, "grid.subdivisions", &tr("Subdivisions:"), None);
+        check(ui, d, "grid.inBack", &tr("Grids in Back"));
+    });
 }
 
 /// Guides & Pasteboard: the guide colours, the pasteboard margins and the smart guides.
 fn guides(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Color"));
-    for (k, l) in [("marginColor", "Margins:"), ("columnColor", "Columns:"), ("bleedColor", "Bleed:"), ("slugColor", "Slug:")] {
-        color(ui, d, k, &tr(l));
-    }
-    heading(ui, &tr("Pasteboard Options"));
-    labelled_text(ui, d, "pasteboard.h", &tr("Horizontal Margins:"), None);
-    labelled_text(ui, d, "pasteboard.v", &tr("Vertical Margins:"), None);
-    check(ui, d, "snap.alignEdges", &tr("Align to Object Edges"));
-    check(ui, d, "snap.alignCenters", &tr("Align to Object Centers"));
-    check(ui, d, "snap.dimensions", &tr("Smart Dimensions"));
-    check(ui, d, "snap.spacing", &tr("Smart Spacing"));
-    number(ui, d, "snap.zone", &tr("Snap to Zone"), Range { default: 4.0, min: 0.0, max: 1000.0, step: 0.1 }, 2, None);
+    group(ui, &tr("Color"), |ui| {
+        for (k, l) in [("marginColor", "Margins:"), ("columnColor", "Columns:"), ("bleedColor", "Bleed:"), ("slugColor", "Slug:")] {
+            color(ui, d, k, &tr(l));
+        }
+    });
+    group(ui, &tr("Pasteboard Options"), |ui| {
+        labelled_text(ui, d, "pasteboard.h", &tr("Horizontal Margins:"), None);
+        labelled_text(ui, d, "pasteboard.v", &tr("Vertical Margins:"), None);
+        check(ui, d, "snap.alignEdges", &tr("Align to Object Edges"));
+        check(ui, d, "snap.alignCenters", &tr("Align to Object Centers"));
+        check(ui, d, "snap.dimensions", &tr("Smart Dimensions"));
+        check(ui, d, "snap.spacing", &tr("Smart Spacing"));
+        number(ui, d, "snap.zone", &tr("Snap to Zone"), Range { default: 4.0, min: 0.0, max: 1000.0, step: 0.1 }, 2, None);
+    });
 }
 
 /// Units & Increments: the ruler origin and units, and the keyboard increments.
 fn units(ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_owned();
-    heading(ui, &tr("Ruler Units"));
-    let origin = d.fields.get("rulerOrigin").and_then(Value::as_str).unwrap_or("spread").to_owned();
-    choose_text(ui, d, "rulerOrigin", &tr("Origin:"), &origin, &[("spread", "Spread"), ("page", "Page"), ("spine", "Spine")], lang);
-    let entries: Vec<Entry<Unit>> = Unit::ALL.iter().map(|u| Entry::new(*u, tr(u.label()))).collect();
-    for (key, label) in [("horizontalUnits", "Horizontal:"), ("verticalUnits", "Vertical:")] {
-        let current: Unit = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-        let label = tr(label);
-        Field::new(label.clone()).id_salt(("preferences_unit_field", key)).show(ui, |ui, _| {
-            let out = Select::new(label.clone(), Bind::given(current), &entries).id_salt(("preferences_unit", key)).show(ui);
-            if let Some(next) = edited(out.events, current) {
-                d.fields.insert(key.into(), json!(next));
-            }
-        });
-    }
-    heading(ui, &tr("Keyboard Increments"));
-    labelled_text(ui, d, "keyboardIncrement", &tr("Cursor Key:"), None);
-    labelled_text(ui, d, "kerningIncrement", &tr("Kerning/Tracking:"), Some(&tr("/1000 em")));
+    group(ui, &tr("Ruler Units"), |ui| {
+        let origin = d.fields.get("rulerOrigin").and_then(Value::as_str).unwrap_or("spread").to_owned();
+        choose_text(ui, d, "rulerOrigin", &tr("Origin:"), &origin, &[("spread", "Spread"), ("page", "Page"), ("spine", "Spine")], lang);
+        let entries: Vec<Entry<Unit>> = Unit::ALL.iter().map(|u| Entry::new(*u, tr(u.label()))).collect();
+        for (key, label) in [("horizontalUnits", "Horizontal:"), ("verticalUnits", "Vertical:")] {
+            let current: Unit = d.fields.get(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let label = tr(label);
+            Field::new(label.clone()).id_salt(("preferences_unit_field", key)).show(ui, |ui, _| {
+                let out = Select::new(label.clone(), Bind::given(current), &entries).id_salt(("preferences_unit", key)).show(ui);
+                if let Some(next) = edited(out.events, current) {
+                    d.fields.insert(key.into(), json!(next));
+                }
+            });
+        }
+    });
+    group(ui, &tr("Keyboard Increments"), |ui| {
+        labelled_text(ui, d, "keyboardIncrement", &tr("Cursor Key:"), None);
+        labelled_text(ui, d, "kerningIncrement", &tr("Kerning/Tracking:"), Some(&tr("/1000 em")));
+    });
 }
 
 #[cfg(test)]
@@ -604,9 +630,9 @@ mod tests {
         let mut h = open(with_preferences("general"));
         assert!(shows(&h, "Interface Language"), "General comes first");
         for (_, label) in DOCUMENT_SECTIONS {
-            assert_eq!(h.query_all_by_role_and_label(Role::RadioButton, label).count(), 1, "{label} is listed once");
+            assert_eq!(h.query_all_by_role_and_label(Role::ListItem, label).count(), 1, "{label} is listed once");
         }
-        click(&mut h, Role::RadioButton, "Units & Increments");
+        click(&mut h, Role::ListItem, "Units & Increments");
         assert_eq!(dialog(&h).s("section"), "units");
         assert!(shows(&h, "Ruler Units") && shows(&h, "Keyboard Increments"));
         assert!(!shows(&h, "When Scaling"), "only the chosen section shows");
@@ -615,8 +641,8 @@ mod tests {
         app.ui.language = String::new();
         crate::menus::activate(&mut app, "app.preferences", &Value::Null);
         let h = open(app);
-        assert!(h.query_by_role_and_label(Role::RadioButton, "Grids").is_none(), "Grids belong to a document");
-        assert!(h.query_by_role_and_label(Role::RadioButton, "Units & Increments").is_some());
+        assert!(h.query_by_role_and_label(Role::ListItem, "Grids").is_none(), "Grids belong to a document");
+        assert!(h.query_by_role_and_label(Role::ListItem, "Units & Increments").is_some());
     }
 
     #[test]
@@ -700,9 +726,10 @@ mod tests {
     #[test]
     fn tab_moves_through_the_sections_controls() {
         let mut h = open(with_preferences("notes"));
-        click(&mut h, Role::RadioButton, "Notes");
+        click(&mut h, Role::ListItem, "Notes");
         // Natural Tab reaches the section's option within the dialog's own stops (the list, the option, the footer).
-        let stops = h.query_all_by(|n| matches!(n.role(), Role::RadioButton | Role::CheckBox | Role::Button | Role::ComboBox)).count();
+        let stops =
+            h.query_all_by(|n| matches!(n.role(), Role::ListItem | Role::RadioButton | Role::CheckBox | Role::Button | Role::ComboBox)).count();
         let reached = (0..=stops).any(|_| {
             if h.get_by_role_and_label(Role::CheckBox, "Show Note Anchors in Layout View").is_focused() {
                 return true;

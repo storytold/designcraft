@@ -18,25 +18,38 @@ fn dest_text(lang: &str, d: &Value) -> String {
     d.to_string()
 }
 
+/// The room under a panel's last line, so the body never ends flush against the edge of its window.
+const PANEL_BOTTOM_INSET: f32 = 14.0;
+
+/// Leaves [`PANEL_BOTTOM_INSET`] under what the panel drew; every panel of this file, `library` and `datamerge` ends
+/// with it.
+pub(crate) fn bottom_inset(ui: &mut egui::Ui) {
+    ui.add_space(PANEL_BOTTOM_INSET);
+}
+
 /// Window › Interactive › Hyperlinks: a URL and New over the document's hyperlinks; a name goes to its source.
 pub fn hyperlinks(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::hyperlinks(app, ui);
+    bottom_inset(ui);
 }
 
 /// Window › Interactive › Bookmarks: the PDF outline; a name goes to its page.
 pub fn bookmarks(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::bookmarks(app, ui);
+    bottom_inset(ui);
 }
 
 /// Articles panel: reading-order lists for EPUB / HTML export.
 pub fn articles(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::articles(app, ui);
+    bottom_inset(ui);
 }
 
 /// Tags panel and structure: tags (click to tag the selection), the structure in reading order,
 /// XML export/import.
 pub fn tags(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::tags(app, ui);
+    bottom_inset(ui);
 }
 
 /// Independent Tags/XML controls use actual parent/input-measurement readiness.
@@ -554,11 +567,13 @@ mod framework_b;
 /// Object States panel: the selected multi-state object's states (click to show one).
 pub fn states(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::states(app, ui);
+    bottom_inset(ui);
 }
 
 /// Buttons and Forms panel: the selected objects' On Release action.
 pub fn buttons(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::buttons(app, ui);
+    bottom_inset(ui);
 }
 
 /// Liquid page rules in InDesign's order, with their menu labels.
@@ -594,16 +609,19 @@ fn object_based(d: &designcraft_doc::Document, abs: usize) -> bool {
 /// guides follow (Create Alternate Layout is in the Layout menu).
 pub fn liquid(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::liquid(app, ui);
+    bottom_inset(ui);
 }
 
 /// Media panel: the selected video or sound's playback options and poster.
 pub fn media(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::media(app, ui);
+    bottom_inset(ui);
 }
 
 /// Page Transitions panel: the current spread's transition for interactive PDF.
 pub fn transitions(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::transitions(app, ui);
+    bottom_inset(ui);
 }
 
 fn track_identity(app: &DesignApp) -> Option<(u64, u64, u64)> {
@@ -626,6 +644,7 @@ fn track_row_name(action: &str, change: &Value) -> String {
 /// Track Changes panel: tracking on/off and each change with Accept / Reject.
 pub fn track_changes(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework_b::track_changes(app, ui);
+    bottom_inset(ui);
 }
 
 #[cfg(test)]
@@ -1305,11 +1324,11 @@ mod ui223_interactive_actions_tests {
 
     #[test]
     fn public_control_size_reaches_existing_component_builders() {
+        use craft_theme::ControlSize;
         use craft_ui_widgets::buttons::Button;
         use craft_ui_widgets::choice::Checkbox;
         use craft_ui_widgets::contract::{Bind, Props as _};
-        use craft_theme::ControlSize;
-        use craft_ui_widgets::style::{Variant};
+        use craft_ui_widgets::style::Variant;
         use craft_ui_widgets::text::TextField;
 
         // Both named roles must be the exact enum already accepted by Props::size, not a copy.

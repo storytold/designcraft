@@ -7,12 +7,15 @@ use super::frame_forms::{captioned, check, field, message, select, text};
 use super::framework::Form;
 use super::{Bound, Dialog, FILE_INFO_FIELDS, SETUP_EDGES, load_color_profile};
 use crate::DesignApp;
+use craft_behavior::ColumnWidth;
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::Segmented;
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Sizing};
 use craft_ui_widgets::form::FieldGroup;
-use craft_ui_widgets::layout_components::{Row, Stack};
+use craft_ui_widgets::layout::GridFit;
+use craft_ui_widgets::layout_components::{Grid, Row, Stack};
+use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::text::{TextField, link_toggle};
 use designcraft_geom::format_measure;
 use egui::Ui;
@@ -28,6 +31,32 @@ pub(crate) const FILE_INFO: Form = Form::new(file_info);
 // ---------------------------------------------------------------------------------------------------------------------
 // Color Settings
 
+/// The one column the three pickers of Color Settings stand in, so RGB, CMYK and Intent are as wide as each other whatever
+/// their entries' names are.
+const PICKER_COLUMN: &[ColumnWidth] = &[ColumnWidth::Fixed(250.0)];
+
+/// A picker over the draft string of `key` that fills the width of its cell: `select`, but sized by the cell, not by its
+/// widest entry.
+fn cell_select(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, options: &[(String, String)]) {
+    let current = d.s(key);
+    let entries: Vec<Entry<String>> = options.iter().map(|(value, caption)| Entry::new(value.clone(), caption.clone())).collect();
+    let mut picker = Select::new(label.to_owned(), Bind::given(current.clone()), &entries)
+        .keeps_name(true)
+        .sizing(Sizing::FillWidth)
+        .id_salt(("frame_form_select", key));
+    if !options.iter().any(|(value, _)| *value == current) {
+        picker = picker.placeholder(current.clone());
+    }
+    if let Some(next) = picker.show(ui).events.committed().cloned().filter(|next| *next != current) {
+        d.fields.insert(key.into(), json!(next));
+    }
+}
+
+/// `body` as the one cell of a fixed-width column.
+fn in_column(ui: &mut Ui, salt: &str, mut body: impl FnMut(&mut Ui)) {
+    Grid::new(PICKER_COLUMN).id_salt(("color_settings_column", salt.to_owned())).fit(GridFit::Fixed).show(ui, |ui, _| body(ui));
+}
+
 fn color_settings(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
@@ -40,9 +69,9 @@ fn color_settings(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
     let mut load = false;
     Stack::new().id_salt("color_settings").fill_width().show(ui, |ui, _| {
         FieldGroup::new(tr("Color Settings")).id_salt("color_settings_fields").show(ui, |ui, _| {
-            field(ui, &tr("RGB:"), "rgb", |ui| select(ui, d, "rgb", &tr("RGB:"), &rgb, true));
-            field(ui, &tr("CMYK:"), "cmyk", |ui| select(ui, d, "cmyk", &tr("CMYK:"), &cmyk, true));
-            field(ui, &tr("Intent:"), "intent", |ui| select(ui, d, "intent", &tr("Intent:"), &intents, true));
+            field(ui, &tr("RGB:"), "rgb", |ui| in_column(ui, "rgb", |ui| cell_select(ui, d, "rgb", &tr("RGB:"), &rgb)));
+            field(ui, &tr("CMYK:"), "cmyk", |ui| in_column(ui, "cmyk", |ui| cell_select(ui, d, "cmyk", &tr("CMYK:"), &cmyk)));
+            field(ui, &tr("Intent:"), "intent", |ui| in_column(ui, "intent", |ui| cell_select(ui, d, "intent", &tr("Intent:"), &intents)));
         });
         check(ui, d, "bpc", &tr("Use Black Point Compensation"), true);
         load |= Button::new(tr("Load Profile\u{2026}")).id_salt("color_settings_load").show(ui).clicked();

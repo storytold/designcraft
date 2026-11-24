@@ -15,7 +15,7 @@ use craft_ui_widgets::contract::{
     Sizing, Styled as _,
 };
 use craft_ui_widgets::display::{Divider, Shade, Text};
-use craft_ui_widgets::layout::RowAlign;
+use craft_ui_widgets::layout::{GridFit, RowAlign};
 use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::primitives::{Span, TextRun, Wrap};
@@ -25,8 +25,9 @@ use craft_ui_widgets::text::{NumberField, TextField};
 use egui::Ui;
 use serde_json::{Value, json};
 
-/// The check boxes of a constraint group stand in two columns, as wide as their captions.
-const CONSTRAINT_COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::Content];
+/// The check boxes of a constraint group stand in two aligned columns: the second starts at the panel's middle, not
+/// right after the first caption.
+const CONSTRAINT_COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Fixed(100.0), ColumnWidth::Content];
 
 /// The room a long list gets before it scrolls.
 const LIST_ROOM: f32 = 260.0;
@@ -41,16 +42,16 @@ fn hint(ui: &mut Ui, salt: &'static str, text: String) {
     Text::new(text).id_salt(salt).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
 }
 
-/// A caption over the controls it names.
+/// A caption over the controls it names, in the case it is written in (`SectionCaption` would set it in capitals).
 fn caption(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, text: String) {
-    Text::new(text).id_salt(salt).role(TypeRole::SectionCaption).show(ui);
+    Text::new(text).id_salt(salt).role(TypeRole::Label).show(ui);
 }
 
-/// A push button; it reports a click only where the panel may edit.
+/// A push button as wide as its label; it reports a click only where the panel may edit.
 fn action_button(ui: &mut Ui, controls: &InteractiveFields, key: &str, label: &str, enabled: bool, small: bool) -> bool {
     let enabled = enabled && InteractiveFields::editable(ui);
     let button = Button::new(label.to_owned()).id(controls.id(key)).enabled(enabled);
-    let button = if small { button.size(ControlSize::Sm) } else { button.sizing(Sizing::FillWidth) };
+    let button = if small { button.size(ControlSize::Sm) } else { button };
     button.show(ui).clicked() && enabled
 }
 
@@ -326,7 +327,6 @@ fn rule_select(ui: &mut Ui, id: egui::Id, rule: designcraft_doc::LiquidRule, lan
         .id(id)
         .enabled(enabled)
         .placeholder(crate::i18n::tr(lang, liquid_rule_label(rule)).to_string())
-        .sizing(Sizing::FillWidth)
         .show(ui);
     // Proposed entries are not page edits; Escape must leave the real rule and Undo alone.
     out.events.committed().and_then(|i| LIQUID_RULES.get(*i)).map(|(r, _)| *r).filter(|r| enabled && *r != rule)
@@ -394,17 +394,17 @@ pub(super) fn liquid(app: &mut DesignApp, ui: &mut Ui) {
         rule_pick = rule_select(ui, identity.with("rule"), pg.liquid, &lang);
         Divider::horizontal().show(ui);
         caption(ui, "liquid_content_caption", t("Content:"));
-        Stack::new().id_salt("liquid_content").indent(1).show(ui, |ui, _| {
+        Stack::new().id_salt("liquid_content").fill_width().indent(2).show(ui, |ui, _| {
             if check_at(ui, identity.with("auto-fit"), &t("Auto-Fit"), &mut auto, graphic.is_some()) {
                 commands.push(("object.fittingOptions", json!({"autoFit": auto})));
             }
         });
         caption(ui, "liquid_constraints_caption", t("Object Constraints:"));
-        Stack::new().id_salt("liquid_constraints").indent(1).show(ui, |ui, _| {
+        Stack::new().id_salt("liquid_constraints").fill_width().indent(2).show(ui, |ui, _| {
             for (title, boxes) in &groups {
                 let title: &str = title;
                 caption(ui, ("liquid_group", title), t(title));
-                Grid::new(&CONSTRAINT_COLUMNS).id_salt(("liquid_grid", title)).show(ui, |ui, _| {
+                Grid::new(&CONSTRAINT_COLUMNS).id_salt(("liquid_grid", title)).fit(GridFit::Fixed).show(ui, |ui, _| {
                     for &(label, key, value) in boxes {
                         let mut v = value;
                         if check_at(ui, identity.with(("constraint", key)), &t(label), &mut v, on) {
@@ -500,7 +500,7 @@ pub(super) fn transitions(app: &mut DesignApp, ui: &mut Ui) {
         let out = Select::new(tr(app, "Transition"), Bind::given(current), &entries)
             .id_salt("transition_kind")
             .enabled(editable)
-            .sizing(Sizing::FillWidth)
+            .sizing(Sizing::Content)
             .show(ui);
         if let Some(&picked) = out.events.committed().filter(|picked| **picked != current) {
             kind = picked.checked_sub(1).and_then(|i| K::ALL.get(i)).copied();

@@ -12,19 +12,20 @@ use crate::DesignApp;
 use craft_behavior::{Anchor9, EditEvent, Mixed};
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::buttons::Button;
-use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
-use craft_ui_widgets::display::{Shade, Text};
+use craft_ui_widgets::choice::Checkbox;
+use craft_ui_widgets::contract::{Bind, Bracket, Entry, Gap, Pad, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::{ReferencePoint, Select};
+use craft_ui_widgets::style::SurfaceKind;
 use craft_ui_widgets::text::{NumberField, TextField, link_toggle};
 use designcraft_geom::{format_measure, units::parse_measure};
 use egui::Ui;
 use serde_json::{Value, json};
 
-/// Text Frame Options, with its live preview.
-pub(crate) const TEXT_FRAME_OPTIONS: Form = Form::new(text_frame_options);
+/// Text Frame Options, with its live preview (the Preview box in the footer).
+pub(crate) const TEXT_FRAME_OPTIONS: Form = Form::new(text_frame_options).footer(text_frame_footer);
 /// Frame Fitting Options.
 pub(crate) const FITTING_OPTIONS: Form = Form::new(fitting_options);
 /// Polygon Settings.
@@ -151,44 +152,57 @@ fn text_frame_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Optio
     None
 }
 
+/// The least height of the Text Frame Options pages, as the native dialog's fixed height (one more row for a
+/// non-rectangular frame's Inset): the pages keep the tallest page's height on top of it.
+const TEXT_FRAME_PAGE_HEIGHT: f32 = 330.0;
+/// The most a page's measured height counts for: a run in a room narrower than the dialog's, where the text wraps, does
+/// not stretch the pages.
+const TEXT_FRAME_PAGE_MOST: f32 = 560.0;
+
+/// The sections beside the page shown, a divider between them, as InDesign's. The pages are as tall as the tallest one
+/// shown so far (General, which the dialog opens on), so OK and Cancel under them stay where they are on every page;
+/// the dialog is as tall as that, not the window.
 fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let lang = app.ui.language.as_str();
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
-    let sections = [("general", "General"), ("rules", "Column Rules"), ("baseline", "Baseline Options"), ("autosize", "Auto-Size")];
-    Stack::new().id_salt("frame_options").fill_width().show(ui, |ui, _| {
-        Row::new().id_salt("frame_options_layout").fill_width().show(ui, |ui, _| {
-            let before = d.s("section");
-            let shown = RadioGroup::new(tr("Text Frame Options"), Bind::given(before.clone())).id_salt("frame_options_sections").show(ui, |ui, _| {
-                Stack::new().id_salt("frame_options_section_list").show(ui, |ui, _| {
-                    for (id, caption) in sections {
-                        Radio::new(id.to_owned()).label(tr(caption)).id_salt(("frame_options_section", id)).show(ui);
-                    }
-                });
-            });
-            if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
+    let sections: Vec<(&str, String)> =
+        [("general", "General"), ("rules", "Column Rules"), ("baseline", "Baseline Options"), ("autosize", "Auto-Size")]
+            .iter()
+            .map(|(id, caption)| (*id, tr(*caption)))
+            .collect();
+    let tallest = egui::Id::new(("text_frame_options_page_height", d.b("_shaped")));
+    let held: f32 = ui.data(|data| data.get_temp(tallest)).unwrap_or(0.0);
+    let least = if d.b("_shaped") { TEXT_FRAME_PAGE_HEIGHT + 30.0 } else { TEXT_FRAME_PAGE_HEIGHT };
+    Row::new().id_salt("frame_options_layout").fill_width().gap(Gap::Section).least_height(held.max(least)).show(ui, |ui, _| {
+        Stack::new().id_salt("frame_options_sections").show(ui, |ui, _| {
+            if let Some(next) = super::framework::section_list(ui, "frame_options_sections", tr("Text Frame Options"), &sections, &d.s("section")) {
                 d.fields.insert("section".into(), json!(next));
             }
-            // The pages are as tall as the tallest one shown so far (General, which the dialog opens on), so the buttons under
-            // them stay where they are on every page.
-            let tallest = egui::Id::new("text_frame_options_page_height");
-            Stack::new().id_salt("frame_options_page").fill_width().show(ui, |ui, _| {
-                match d.s("section").as_str() {
-                    "baseline" => baseline_page(app, ui, d),
-                    "autosize" => auto_size_page(app, ui, d),
-                    "rules" => column_rules_page(app, ui, d),
-                    _ => general(app, ui, d),
-                }
-                let held: f32 = ui.data(|data| data.get_temp(tallest)).unwrap_or(0.0);
-                // Only the run that is drawn tells how tall a page is: the framework runs a body more than once to find its
-                // size, in a narrow room where the text wraps, and a height taken from such a run would never shrink again.
-                let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
-                let used = ui.min_rect().height();
-                if !measuring && used > held {
-                    ui.data_mut(|data| data.insert_temp(tallest, used));
-                }
-                ui.set_min_height(held);
-            });
         });
+        Divider::vertical().show(ui);
+        // The page's own height, which the row's least height does not stretch (the page fills the row's width, not its
+        // height).
+        let page = Stack::new().id_salt("frame_options_page").fill_width().show(ui, |ui, _| match d.s("section").as_str() {
+            "baseline" => baseline_page(app, ui, d),
+            "autosize" => auto_size_page(app, ui, d),
+            "rules" => column_rules_page(app, ui, d),
+            _ => general(app, ui, d),
+        });
+        // Only the run that is drawn tells how tall a page is: the framework runs a body more than once to find its size,
+        // in a narrow room where the text wraps, and a height taken from such a run would never shrink again.
+        let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
+        let used = page.output.rect.height().min(TEXT_FRAME_PAGE_MOST);
+        if !measuring && used > held {
+            ui.data_mut(|data| data.insert_temp(tallest, used));
+        }
+    });
+}
+
+/// Text Frame Options' footer, before OK and Cancel: the Preview box, and why the preview or OK was refused.
+fn text_frame_footer(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
+    let lang = app.ui.language.as_str();
+    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    Row::new().id_salt("frame_options_footer").show(ui, |ui, _| {
         check(ui, d, "preview", &tr("Preview"), true);
         if let Some(status) = d.fields.get("status").and_then(Value::as_str).map(str::to_owned) {
             message(ui, &status);
@@ -196,9 +210,10 @@ fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
 }
 
-/// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and maximum, Balance Columns),
-/// Inset Spacing (the four sides and the link between them; one Inset for a non-rectangular frame), Vertical
-/// Justification (align, paragraph spacing limit) and Ignore Text Wrap. Also the General page of Object Style Options.
+/// Text Frame Options › General, as InDesign's: Columns (kind; Number and Gutter beside Width and Maximum; Balance
+/// Columns), Inset Spacing (Top and Bottom, the link between them and Left and Right; one Inset for a non-rectangular
+/// frame), Vertical Justification (align, paragraph spacing limit) and Ignore Text Wrap. Also the General page of Object
+/// Style Options.
 pub(crate) fn general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let lang = app.ui.language.as_str();
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
@@ -206,68 +221,91 @@ pub(crate) fn general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let kinds = captioned(lang, &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
     let justifications = captioned(lang, &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")]);
     Stack::new().id_salt("frame_general").fill_width().show(ui, |ui, _| {
-        FieldGroup::new(tr("Columns")).id_salt("frame_general_columns").show(ui, |ui, _| {
-            field(ui, &tr("Columns:"), "columns_kind", |ui| select(ui, d, "columnsKind", &tr("Columns:"), &kinds, true));
-            field(ui, &number_caption, "columns", |ui| {
-                if let Some(columns) = number(ui, d, "columns", &number_caption, (1.0, 40.0), true, None) {
-                    d.fields.insert("columns".into(), json!(columns.round().to_string()));
-                }
-            });
-            field(ui, &tr("Width:"), "column_width", |ui| {
-                if d.s("columnsKind") == "fixedWidth" {
-                    measure(ui, d, "columnWidth", &tr("Width:"), true);
-                } else {
-                    // Fixed Number: each column's width, from the frame, the insets and the gutter.
-                    let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
-                    let n = d.n("columns").unwrap_or(1.0).max(1.0);
-                    // A non-rectangular frame keeps its sides until its one Inset is changed.
-                    let (left, right) = if d.b("_shaped") && super::edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
-                    let width = frame.map(|w| {
-                        let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
-                        ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
+        // Columns: a frame with no title, as InDesign's.
+        Stack::new().id_salt("frame_general_columns_box").surface(SurfaceKind::Frame).pad(Pad::Regular).fill_width().show(ui, |ui, _| {
+            FieldGroup::new(tr("Columns")).id_salt("frame_general_columns").show(ui, |ui, _| {
+                field(ui, &tr("Columns:"), "columns_kind", |ui| select(ui, d, "columnsKind", &tr("Columns:"), &kinds, true));
+                Row::new().id_salt("frame_general_columns_grid").gap(Gap::Section).show(ui, |ui, _| {
+                    Stack::new().id_salt("frame_general_columns_start").show(ui, |ui, _| {
+                        field(ui, &number_caption, "columns", |ui| {
+                            if let Some(columns) = number(ui, d, "columns", &number_caption, (1.0, 40.0), true, None) {
+                                d.fields.insert("columns".into(), json!(columns.round().to_string()));
+                            }
+                        });
+                        field(ui, &tr("Gutter:"), "gutter", |ui| {
+                            measure(ui, d, "gutter", &tr("Gutter:"), true);
+                        });
                     });
-                    let shown = width.map(|w| format_measure(w, d.unit)).unwrap_or_default();
-                    TextField::new(tr("Width:"), Bind::given(shown)).id_salt("frame_form_auto_width").enabled(false).show(ui);
-                }
+                    Stack::new().id_salt("frame_general_columns_end").show(ui, |ui, _| {
+                        field(ui, &tr("Width:"), "column_width", |ui| {
+                            if d.s("columnsKind") == "fixedWidth" {
+                                measure(ui, d, "columnWidth", &tr("Width:"), true);
+                            } else {
+                                // Fixed Number: each column's width, from the frame, the insets and the gutter.
+                                let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
+                                let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                                // A non-rectangular frame keeps its sides until its one Inset is changed.
+                                let (left, right) =
+                                    if d.b("_shaped") && super::edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
+                                let width = frame.map(|w| {
+                                    let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
+                                    ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
+                                });
+                                let shown = width.map(|w| format_measure(w, d.unit)).unwrap_or_default();
+                                TextField::new(tr("Width:"), Bind::given(shown)).id_salt("frame_form_auto_width").enabled(false).show(ui);
+                            }
+                        });
+                        // Maximum is for Flexible Width columns, which aren't in the document model yet: a dimmed field as wide as
+                        // the others.
+                        field(ui, &tr("Maximum:"), "maximum", |ui| {
+                            TextField::new(tr("Maximum:"), Bind::given(String::new())).id_salt("frame_form_maximum").enabled(false).show(ui);
+                        });
+                    });
+                });
+                check(ui, d, "balanceColumns", &tr("Balance Columns"), true);
             });
-            field(ui, &tr("Gutter:"), "gutter", |ui| {
-                measure(ui, d, "gutter", &tr("Gutter:"), true);
-            });
-            // Maximum is for Flexible Width columns, which aren't in the document model yet.
-            field(ui, &tr("Maximum:"), "maximum", |ui| {
-                NumberField::new(tr("Maximum:"), Bind::given(None::<f64>)).id_salt("frame_form_maximum").enabled(false).show(ui);
-            });
-            check(ui, d, "balanceColumns", &tr("Balance Columns"), true);
         });
         GroupBox::new(tr("Inset Spacing"), None).id_salt("frame_general_inset_box").show(ui, |ui, _| {
             FieldGroup::new(tr("Inset Spacing")).id_salt("frame_general_inset").show(ui, |ui, _| {
                 // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept from the
                 // outline.
                 let shaped = d.b("_shaped");
-                for (caption, key) in [("Top:", SIDES[0]), ("Left:", SIDES[1]), ("Bottom:", SIDES[2]), ("Right:", SIDES[3])] {
+                let linked = d.b("insetLinked");
+                let side = |ui: &mut Ui, d: &mut Dialog, caption: &str, key: &str| {
                     field(ui, &tr(caption), key, |ui| {
-                        Row::new().id_salt(("frame_general_side", key)).show(ui, |ui, _| {
-                            // While linked, a side typed in sets all four ("Make all settings the same").
-                            if let Some(side) = measure(ui, d, key, &tr(caption), !shaped)
-                                && d.b("insetLinked")
-                                && !shaped
-                            {
-                                for other in SIDES {
-                                    d.fields.insert(other.into(), json!(side));
-                                }
+                        // While linked, a side typed in sets all four ("Make all settings the same").
+                        if let Some(side) = measure(ui, d, key, &tr(caption), !shaped)
+                            && d.b("insetLinked")
+                            && !shaped
+                        {
+                            for other in SIDES {
+                                d.fields.insert(other.into(), json!(side));
                             }
-                            if key == SIDES[0] {
-                                let out = link_toggle(tr("Make all settings the same"), Bind::given(d.b("insetLinked")))
-                                    .id_salt("frame_general_link")
-                                    .enabled(!shaped)
-                                    .show(ui);
-                                if let Some(linked) = out.events.committed().copied() {
-                                    d.fields.insert("insetLinked".into(), json!(linked));
-                                }
-                            }
+                        }
+                    });
+                };
+                // Top and Bottom, the link bracketed to them, then Left and Right, as InDesign has them.
+                Row::new()
+                    .id_salt("frame_general_sides")
+                    .gap(Gap::Section)
+                    .bracket(if linked && !shaped { Bracket::Linked } else { Bracket::Unlinked })
+                    .show(ui, |ui, _| {
+                        Stack::new().id_salt("frame_general_sides_start").show(ui, |ui, _| {
+                            side(ui, d, "Top:", SIDES[0]);
+                            side(ui, d, "Bottom:", SIDES[2]);
+                        });
+                        let out = link_toggle(tr("Make all settings the same"), Bind::given(linked))
+                            .id_salt("frame_general_link")
+                            .enabled(!shaped)
+                            .show(ui);
+                        if let Some(linked) = out.events.committed().copied() {
+                            d.fields.insert("insetLinked".into(), json!(linked));
+                        }
+                        Stack::new().id_salt("frame_general_sides_end").show(ui, |ui, _| {
+                            side(ui, d, "Left:", SIDES[1]);
+                            side(ui, d, "Right:", SIDES[3]);
                         });
                     });
-                }
                 if shaped {
                     field(ui, &tr("Inset:"), "inset", |ui| {
                         measure(ui, d, "inset", &tr("Inset:"), true);
@@ -677,16 +715,16 @@ mod tests {
             assert_eq!(dialog(&h).m(side), Some(6.0), "{side} follows the linked side");
         }
 
-        click(&mut h, Role::RadioButton, "Column Rules");
+        click(&mut h, Role::ListItem, "Column Rules");
         click(&mut h, Role::CheckBox, "Insert Column Rule");
         assert!(dialog(&h).b("columnRule"));
 
-        click(&mut h, Role::RadioButton, "Baseline Options");
+        click(&mut h, Role::ListItem, "Baseline Options");
         click(&mut h, Role::CheckBox, "Use Custom Baseline Grid");
         type_in(&mut h, Role::TextInput, "Increment Every:", "14 pt");
         assert!(dialog(&h).b("customGrid"));
 
-        click(&mut h, Role::RadioButton, "Auto-Size");
+        click(&mut h, Role::ListItem, "Auto-Size");
         pick(&mut h, "Auto-Sizing", "Height Only");
         click(&mut h, Role::RadioButton, "Bottom right");
         click(&mut h, Role::CheckBox, "Minimum Height");

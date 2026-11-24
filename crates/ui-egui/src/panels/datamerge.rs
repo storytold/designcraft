@@ -1,6 +1,5 @@
 //! Data Merge panel. It reads the linked source and calls commands. Opening the panel does not merge.
 
-
 use egui::{Color32, Stroke, vec2};
 use serde_json::{Value, json};
 
@@ -11,6 +10,7 @@ use crate::theme::semibold;
 /// The Data Merge panel: the craft framework's controls.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::show(app, ui);
+    super::interactive::bottom_inset(ui);
 }
 
 /// Local widget adapters only: every accepted value still calls the existing live engine
@@ -20,6 +20,8 @@ struct DataMergeControls {
     document: (u64, u64),
     /// Whether the controls take input; the framework's also follow the parent Ui.
     enabled: bool,
+    /// Whether number fields are as wide as their value, not a number cell: the record number in the navigation row.
+    narrow_numbers: bool,
 }
 
 struct MergeNumber {
@@ -33,26 +35,45 @@ impl DataMergeControls {
     }
 
     fn button(&self, ui: &mut egui::Ui, key: &str, caption: &str, name: &str, enabled: bool) -> bool {
+        self.face(ui, key, (caption, name), enabled, (craft_theme::ControlSize::Md, None))
+    }
+
+    /// A small button, for the source actions and the record navigation that stand in one row of the narrow panel.
+    /// `tip` names a button whose caption is only a glyph.
+    fn compact_button(&self, ui: &mut egui::Ui, key: &str, caption_and_name: (&str, &str), enabled: bool, tip: Option<&str>) -> bool {
+        self.face(ui, key, caption_and_name, enabled, (craft_theme::ControlSize::Sm, tip))
+    }
+
+    /// A button named `name` that paints `caption`, at `size`, with a tooltip.
+    fn face(
+        &self,
+        ui: &mut egui::Ui,
+        key: &str,
+        (caption, name): (&str, &str),
+        enabled: bool,
+        (size, tip): (craft_theme::ControlSize, Option<&str>),
+    ) -> bool {
         use craft_ui_widgets::contract::{Props as _, Show as _};
         let id = self.id(ui, "button", key);
         let enabled = enabled && self.enabled && ui.is_enabled();
-        craft_ui_widgets::buttons::Button::new(name.to_owned()).painted(caption.to_owned()).id(id).enabled(enabled).show(ui).clicked()
+        let button = craft_ui_widgets::buttons::Button::new(name.to_owned()).painted(caption.to_owned()).id(id).enabled(enabled).size(size);
+        let button = match tip {
+            Some(tip) => button.tooltip(tip.to_owned()),
+            None => button,
+        };
+        button.show(ui).clicked()
     }
 
     fn check(&self, ui: &mut egui::Ui, key: &str, name: &str, value: &mut bool) -> bool {
         use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
         let id = self.id(ui, "check", key);
         let before = *value;
-        craft_ui_widgets::choice::Checkbox::new(Bind::bound(value))
-            .id(id)
-            .label(name.to_owned())
-            .enabled(self.enabled && ui.is_enabled())
-            .show(ui);
+        craft_ui_widgets::choice::Checkbox::new(Bind::bound(value)).id(id).label(name.to_owned()).enabled(self.enabled && ui.is_enabled()).show(ui);
         *value != before
     }
 
     fn choice(&self, ui: &mut egui::Ui, key: &str, current: &str, options: &[(&str, &str)], lang: &str, name: &str) -> Option<String> {
-        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, Sizing};
+        use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
         let id = self.id(ui, "choice", key);
         let current_index = options.iter().position(|(value, _)| *value == current).unwrap_or(usize::MAX);
         let entries: Vec<_> = options.iter().enumerate().map(|(i, (_, text))| Entry::new(i, tr(lang, text).to_owned())).collect();
@@ -60,7 +81,6 @@ impl DataMergeControls {
             .id(id)
             .enabled(self.enabled && ui.is_enabled())
             .placeholder(current.to_owned())
-            .sizing(Sizing::FillWidth)
             .show(ui);
         // Arrow navigation is only a proposal. Escape cannot send data.options.
         out.events.committed().and_then(|i| options.get(*i)).map(|(value, _)| (*value).to_owned()).filter(|value| value != current)
@@ -105,6 +125,9 @@ impl DataMergeControls {
                 .id(id)
                 .enabled(self.enabled && ui.is_enabled())
                 .step(1.0);
+            if self.narrow_numbers {
+                field = field.sizing(craft_ui_widgets::contract::Sizing::Content);
+            }
             if let Some(range) = &range {
                 field = field.range(range.clone());
             }
@@ -205,7 +228,7 @@ mod framework {
             note(ui, tr(&lang, "No data source"));
             return;
         };
-        let controls = DataMergeControls { document, enabled: true };
+        let controls = DataMergeControls { document, enabled: true, narrow_numbers: false };
         let fields = app.session.execute("data.fields", &json!({})).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
         let max_record = (record_count as u32).max(1);
         let shown = if preview_record == 0 { 1 } else { preview_record.min(max_record) };
@@ -217,13 +240,16 @@ mod framework {
                 Some(name) => Text::new(name.clone()).role(TypeRole::BodyStrong).show(ui),
                 None => Text::new(tr(&lang, "No data source").to_owned()).shade(Shade::Muted).show(ui),
             };
+            // Small buttons keep the three source actions on one row; it only wraps where even they do not fit.
             Row::new().id_salt("source").wrap(true).show(ui, |ui, _| {
-                select = controls.button(ui, "select-source", tr(&lang, "Select Data Source…"), tr(&lang, "Select Data Source…"), true);
+                let select_name = tr(&lang, "Select Data Source…");
+                select = controls.compact_button(ui, "select-source", (select_name, select_name), true, None);
                 let has_source = source_name.is_some();
-                if controls.button(ui, "update-source", tr(&lang, "Update"), tr(&lang, "Update"), has_source) {
+                let (update, remove) = (tr(&lang, "Update"), tr(&lang, "Remove"));
+                if controls.compact_button(ui, "update-source", (update, update), has_source, None) {
                     commands.push(("data.source.update", json!({})));
                 }
-                if controls.button(ui, "remove-source", tr(&lang, "Remove"), tr(&lang, "Remove"), has_source) {
+                if controls.compact_button(ui, "remove-source", (remove, remove), has_source, None) {
                     commands.push(("data.source.remove", json!({})));
                 }
             });
@@ -258,11 +284,14 @@ mod framework {
             if controls.check(ui, "preview", tr(&lang, "Preview"), &mut preview_on) {
                 commands.push(if preview_on { ("data.preview", json!({"record": 1})) } else { ("data.preview.stop", json!({})) });
             }
-            // The record navigation takes input only while a record is previewed; it wraps in a narrow sidebar.
-            let navigation = DataMergeControls { enabled: preview_record > 0, ..controls };
+            // The record navigation takes input only while a record is previewed. It is one row, First Previous [n]
+            // Record Next Last: the four moves are small buttons, and the number is as wide as its value. It wraps only
+            // where even that does not fit.
+            let navigation = DataMergeControls { enabled: preview_record > 0, narrow_numbers: true, ..controls };
             Row::new().id_salt("preview-navigation").wrap(true).show(ui, |ui, _| {
                 for (key, label, to) in [("first", "First", 1), ("previous", "Previous", shown.saturating_sub(1).max(1))] {
-                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true) {
+                    let name = tr(&lang, label);
+                    if navigation.compact_button(ui, key, (name, name), true, None) {
                         jump = Some(to);
                     }
                 }
@@ -272,7 +301,8 @@ mod framework {
                 }
                 Text::new(tr(&lang, "Record").to_owned()).show(ui);
                 for (key, label, to) in [("next", "Next", shown.saturating_add(1).min(max_record)), ("last", "Last", max_record)] {
-                    if navigation.button(ui, key, tr(&lang, label), tr(&lang, label), true) {
+                    let name = tr(&lang, label);
+                    if navigation.compact_button(ui, key, (name, name), true, None) {
                         jump = Some(to);
                     }
                 }
@@ -1039,7 +1069,6 @@ mod ui223_datamerge_workflow_tests {
         }
         no_idle_replay(&mut h);
     }
-
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -48,6 +48,14 @@ const DIALOG_CHROME_H: f32 = 160.0;
 const DIALOG_HEIGHT_SHARE: f32 = 0.9;
 /// The dialog's padding on its two sides (`Pad::Regular` each side).
 const DIALOG_PAD_W: f32 = 16.0;
+/// The details' column, as wide as the native one: two captioned columns and the link toggle beside the edges.
+const DETAILS_W: f32 = 300.0;
+/// The gap between the presets and the details (`Gap::Section`), and a little slack for the details' scroll bar.
+const PANE_GAP: f32 = 20.0;
+/// The category tabs over the inset, with the gap under them.
+const TABS_H: f32 = 40.0;
+/// The inset's padding on each side (`Pad::Regular`).
+const INSET_PAD: f32 = 8.0;
 /// The share of the window's width a framework dialog may take (`Overlay::dialog`'s cap).
 const DIALOG_WIDTH_SHARE: f32 = 0.8;
 /// The dialog width below which the presets go under the details, in one column the dialog's body scrolls, as the native
@@ -118,29 +126,35 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         return create.then_some(true);
     }
     let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).clamp(LEAST_PANE_ROOM, PANE_ROOM);
-    // The dialog opens 960 points wide, or as wide as the window lets it be: a container's frame is as wide as its
-    // content, so the body asks for that width itself (the layer's least width alone widens the layer, not the frame).
-    ui.set_min_width(((FORM.width).min(window.width() * DIALOG_WIDTH_SHARE) - DIALOG_PAD_W).max(0.0));
+    // The dialog opens 960 points wide, or as wide as the window lets it be. A container's frame is as wide as its
+    // content (the layer's least width widens the layer, not the frame), so each pane asks for its own width: the
+    // details their native column, the presets the rest.
+    let body = (FORM.width.min(window.width() * DIALOG_WIDTH_SHARE) - DIALOG_PAD_W).max(TWO_PANES - DIALOG_PAD_W);
+    let presets_w = body - DETAILS_W - PANE_GAP;
     Row::new().id_salt("new_document_form").fill_width().gap(Gap::Section).show(ui, |ui, _| {
-        Stack::new().id_salt("new_document_presets").fill_width().room_height(room).gap(Gap::Item).show(ui, |ui, _| {
+        Stack::new().id_salt("new_document_presets").room_height(room).gap(Gap::Item).show(ui, |ui, _| {
             tabs(app, ui, d);
-            inset(ui, true, |ui| create = presets(app, ui, d));
+            // The inset fills the column down to the footer: as wide as the column, as high as the room the tabs leave.
+            let inset_h = room - TABS_H;
+            inset(ui, true, |ui| {
+                ui.set_min_width(presets_w - 2.0 * INSET_PAD);
+                ui.set_min_height(inset_h - 2.0 * INSET_PAD);
+                create = presets(app, ui, d);
+            });
         });
-        Stack::new()
-            .id_salt("new_document_details")
-            .gap(Gap::Item)
-            .scroll(Scroll::vertical())
-            .room_height(room)
-            .show(ui, |ui, _| details(app, ui, d));
+        Stack::new().id_salt("new_document_details").gap(Gap::Item).scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
+            ui.set_min_width(DETAILS_W);
+            details(app, ui, d);
+        });
     });
     create.then_some(true)
 }
 
 /// The presets' inset: a darker, rounded panel with padding that holds the heading and the cards, and scrolls them.
-/// Beside the details it fills the column down to the footer (`fill`).
-fn inset(ui: &mut Ui, fill: bool, mut body: impl FnMut(&mut Ui)) {
+/// Beside the details it scrolls the cards in the room the column gives it (`scrolls`).
+fn inset(ui: &mut Ui, scrolls: bool, mut body: impl FnMut(&mut Ui)) {
     let stack = Stack::new().id_salt("new_document_presets_inset").surface(SurfaceKind::Sunken).pad(Pad::Regular).gap(Gap::Item);
-    let stack = if fill { stack.fill().scroll(Scroll::vertical()) } else { stack.fill_width() };
+    let stack = if scrolls { stack.scroll(Scroll::vertical()) } else { stack.fill_width() };
     stack.show(ui, |ui, _| body(ui));
 }
 
@@ -467,12 +481,17 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
             text(ui, d, "gutter", tr(app, "Column Gutter"), None);
         });
     });
-    Section::new(tr(app, "Margins")).id_salt("new_document_margins").show(ui, |ui, _| edges(app, ui, d, "margin"));
+    // The edges sit indented under their disclosure headings, as the native dialog set them.
+    Section::new(tr(app, "Margins")).id_salt("new_document_margins").show(ui, |ui, _| {
+        Stack::new().id_salt("new_document_margin_edges").indent(1).show(ui, |ui, _| edges(app, ui, d, "margin"));
+    });
     Section::new(tr(app, "Bleed and Slug")).id_salt("new_document_bleed_slug").show(ui, |ui, _| {
-        Text::new(tr(app, "Bleed")).shade(Shade::Muted).show(ui);
-        edges(app, ui, d, "bleed");
-        Text::new(tr(app, "Slug")).shade(Shade::Muted).show(ui);
-        edges(app, ui, d, "slug");
+        Stack::new().id_salt("new_document_bleed_slug_edges").indent(1).gap(Gap::Item).show(ui, |ui, _| {
+            Text::new(tr(app, "Bleed")).shade(Shade::Muted).show(ui);
+            edges(app, ui, d, "bleed");
+            Text::new(tr(app, "Slug")).shade(Shade::Muted).show(ui);
+            edges(app, ui, d, "slug");
+        });
     });
 }
 

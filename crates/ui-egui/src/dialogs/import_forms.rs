@@ -8,7 +8,7 @@ use super::frame_forms::{check, field, text};
 use super::framework::Form;
 use crate::DesignApp;
 use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
-use craft_ui_widgets::contract::{Bind, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+use craft_ui_widgets::contract::{Bind, Gap, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
 use craft_ui_widgets::display::Text;
 use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 /// Menu Customization: which menu items show.
 pub(crate) const MENUS: Form = Form::new(menus);
 /// Import Options: styles and formatting of a file placed into text.
-pub(crate) const IMPORT_OPTIONS: Form = Form::new(import_options);
+/// It opens wide enough that the row of three style choices has room beside its right edge.
+pub(crate) const IMPORT_OPTIONS: Form = Form::new(import_options).width(520.0).opens_at_width();
 /// Place Contact Sheet: images on new pages.
 pub(crate) const CONTACT_SHEET: Form = Form::new(contact_sheet);
 /// Place PDF: the page and the crop of a PDF.
@@ -85,49 +86,56 @@ fn import_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
     let options: Vec<(String, String)> =
         std::iter::once((String::new(), tr("(import)"))).chain(names.iter().map(|n| (n.clone(), n.clone()))).collect();
     let resolutions = [("useExisting", "Use Document Style Definition"), ("redefine", "Redefine Document Style"), ("autoRename", "Auto Rename")];
-    Stack::new().id_salt("import_options").fill_width().show(ui, |ui, _| {
-        line(ui, &d.s("path"));
-        check(ui, d, "removeStyles", &tr("Remove Styles and Formatting from Text and Tables"), true);
+    // The sections stand apart: a bold heading over each, with the room of a section above it.
+    Stack::new().id_salt("import_options").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+        Stack::new().id_salt("import_options_file").fill_width().show(ui, |ui, _| {
+            line(ui, &d.s("path"));
+            check(ui, d, "removeStyles", &tr("Remove Styles and Formatting from Text and Tables"), true);
+        });
         if d.b("removeStyles") {
             return;
         }
-        heading(ui, &tr("Style Name Conflicts"));
-        line(
-            ui,
-            &if conflicts.is_empty() {
-                tr("No conflicts")
-            } else {
-                tr("{count} conflict(s): {names}").replace("{count}", &conflicts.len().to_string()).replace("{names}", &conflicts.join(", "))
-            },
-        );
-        let before = d.s("styleConflicts");
-        let shown = RadioGroup::new(tr("Style Name Conflicts"), Bind::given(before.clone())).id_salt("import_conflicts").show(ui, |ui, _| {
-            Row::new().id_salt("import_conflicts_row").show(ui, |ui, _| {
-                for (value, caption) in resolutions {
-                    Radio::new(value.to_owned()).label(tr(caption)).id_salt(("import_conflict", value)).show(ui);
-                }
+        Stack::new().id_salt("import_options_conflicts").fill_width().show(ui, |ui, _| {
+            heading(ui, &tr("Style Name Conflicts"));
+            line(
+                ui,
+                &if conflicts.is_empty() {
+                    tr("No conflicts")
+                } else {
+                    tr("{count} conflict(s): {names}").replace("{count}", &conflicts.len().to_string()).replace("{names}", &conflicts.join(", "))
+                },
+            );
+            let before = d.s("styleConflicts");
+            let shown = RadioGroup::new(tr("Style Name Conflicts"), Bind::given(before.clone())).id_salt("import_conflicts").show(ui, |ui, _| {
+                Row::new().id_salt("import_conflicts_row").fill_width().show(ui, |ui, _| {
+                    for (value, caption) in resolutions {
+                        Radio::new(value.to_owned()).label(tr(caption)).id_salt(("import_conflict", value)).show(ui);
+                    }
+                });
             });
+            if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
+                d.fields.insert("styleConflicts".into(), json!(next));
+            }
         });
-        if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
-            d.fields.insert("styleConflicts".into(), json!(next));
-        }
-        heading(ui, &tr("Style Mapping"));
-        Stack::new().id_salt("import_mapping").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| {
-            FieldGroup::new(tr("Style Mapping")).id_salt("import_mapping_fields").show(ui, |ui, _| {
-                for style in &imported {
-                    field(ui, style, &format!("map:{style}"), |ui| {
-                        let mapped = d.fields.get("map").and_then(|m| m.get(style)).and_then(Value::as_str).unwrap_or("").to_owned();
-                        if let Some(next) = picker(ui, &format!("map:{style}"), style, &mapped, &options, false)
-                            && let Some(map) = d.fields.get_mut("map").and_then(Value::as_object_mut)
-                        {
-                            if next.is_empty() {
-                                map.remove(style);
-                            } else {
-                                map.insert(style.clone(), json!(next));
+        Stack::new().id_salt("import_options_mapping").fill_width().show(ui, |ui, _| {
+            heading(ui, &tr("Style Mapping"));
+            Stack::new().id_salt("import_mapping").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| {
+                FieldGroup::new(tr("Style Mapping")).id_salt("import_mapping_fields").show(ui, |ui, _| {
+                    for style in &imported {
+                        field(ui, style, &format!("map:{style}"), |ui| {
+                            let mapped = d.fields.get("map").and_then(|m| m.get(style)).and_then(Value::as_str).unwrap_or("").to_owned();
+                            if let Some(next) = picker(ui, &format!("map:{style}"), style, &mapped, &options, false)
+                                && let Some(map) = d.fields.get_mut("map").and_then(Value::as_object_mut)
+                            {
+                                if next.is_empty() {
+                                    map.remove(style);
+                                } else {
+                                    map.insert(style.clone(), json!(next));
+                                }
                             }
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             });
         });
     });

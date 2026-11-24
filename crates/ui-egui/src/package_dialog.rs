@@ -319,7 +319,7 @@ mod framework_form {
     use craft_theme::variant::Tone;
     use craft_ui_widgets::choice::Checkbox;
     use craft_ui_widgets::contract::{
-        Bind, ColumnSpec, Entry, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
+        Bind, ColumnSpec, Entry, Gap, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
     };
     use craft_ui_widgets::display::{Divider, Text};
     use craft_ui_widgets::form::{Field, FieldGroup};
@@ -438,30 +438,40 @@ mod framework_form {
     /// The Summary: the scope, the counts (a warning sign on those that need attention), what the package includes
     /// and the PDF's preset.
     fn summary(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
-        Row::new().id_salt("package_scope").show(ui, |ui, _| {
-            Text::new(tr(app, "Scope:")).show(ui);
-            Text::new(tr(app, "Entire Publication")).show(ui);
-        });
-        for (at, (line, warn)) in summary_lines(&app.ui.language, d).into_iter().enumerate() {
-            Row::new().id_salt(("package_summary", at)).show(ui, |ui, _| {
-                if warn {
-                    Text::new("\u{26A0}").tone(Tone::Warn).show(ui);
-                }
-                Text::new(line.clone()).show(ui);
+        // Three blocks with the room of a section between them: the scope, the counts under it, and the choices.
+        Stack::new().id_salt("package_summary_blocks").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+            Row::new().id_salt("package_scope").show(ui, |ui, _| {
+                Text::new(tr(app, "Scope:")).show(ui);
+                Text::new(tr(app, "Entire Publication")).show(ui);
             });
-        }
-        for (key, label) in [("instructions", "Create Printing Instructions"), ("idml", "Include IDML"), ("pdf", "Include PDF (Print)")] {
-            check(app, ui, d, key, label);
-        }
-        // The PDF's preset, as InDesign's Select PDF Preset.
-        let name = tr(app, "PDF Preset:");
-        Field::new(name.clone()).id_salt("package_pdf_preset_field").enabled(d.b("pdf")).show(ui, |ui, _| {
-            let current = d.s("pdfPreset");
-            let entries: Vec<_> = crate::dialogs::pdf_presets().map(|p| Entry::new(p.to_string(), tr(app, p))).collect();
-            let out = Select::new(name.clone(), Bind::given(current), &entries).id_salt("package_pdf_preset").enabled(d.b("pdf")).show(ui);
-            if let Some(value) = out.events.committed() {
-                d.fields.insert("pdfPreset".into(), json!(value));
-            }
+            Stack::new().id_salt("package_summary_counts").indent(2).fill_width().show(ui, |ui, _| {
+                for (at, (line, warn)) in summary_lines(&app.ui.language, d).into_iter().enumerate() {
+                    Row::new().id_salt(("package_summary", at)).show(ui, |ui, _| {
+                        if warn {
+                            Text::new("\u{26A0}").tone(Tone::Warn).show(ui);
+                        }
+                        Text::new(line.clone()).show(ui);
+                    });
+                }
+            });
+            Stack::new().id_salt("package_summary_choices").fill_width().show(ui, |ui, _| {
+                for (key, label) in [("instructions", "Create Printing Instructions"), ("idml", "Include IDML"), ("pdf", "Include PDF (Print)")] {
+                    check(app, ui, d, key, label);
+                }
+                // The PDF's preset, as InDesign's Select PDF Preset, under the check box of the PDF.
+                Stack::new().id_salt("package_pdf_preset_row").indent(2).fill_width().show(ui, |ui, _| {
+                    let name = tr(app, "PDF Preset:");
+                    Field::new(name.clone()).id_salt("package_pdf_preset_field").enabled(d.b("pdf")).show(ui, |ui, _| {
+                        let current = d.s("pdfPreset");
+                        let entries: Vec<_> = crate::dialogs::pdf_presets().map(|p| Entry::new(p.to_string(), tr(app, p))).collect();
+                        let out =
+                            Select::new(name.clone(), Bind::given(current), &entries).id_salt("package_pdf_preset").enabled(d.b("pdf")).show(ui);
+                        if let Some(value) = out.events.committed() {
+                            d.fields.insert("pdfPreset".into(), json!(value));
+                        }
+                    });
+                });
+            });
         });
     }
 
@@ -1270,7 +1280,6 @@ mod framework_tests {
         assert_eq!(requests.load(Ordering::SeqCst), 0);
         assert_quiet(&h, &before);
     }
-
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

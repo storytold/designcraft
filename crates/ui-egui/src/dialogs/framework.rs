@@ -8,6 +8,7 @@
 
 use super::Dialog;
 use crate::DesignApp;
+use craft_ui_panels::dialog::ButtonPlace;
 use egui::Ui;
 
 #[path = "simple_forms.rs"]
@@ -31,11 +32,17 @@ pub(crate) struct Form {
     /// The dialog opens `width` wide, or as wide as the window lets a dialog be where that is narrower, instead of as
     /// wide as its content (New Document's presets fill what they are given).
     pub(crate) opens_at_width: bool,
+    /// Where the buttons stand: the foot by default; `ButtonPlace::Body` for a form whose body keeps their cell with a
+    /// `FooterSlot` (the Color Picker's column at the top right).
+    pub(crate) button_place: ButtonPlace,
+    /// Buttons after the extra ones that act and keep the dialog open: their labels (i18n keys) and the field each sets
+    /// to `true` for the form to act on in its next pass (the Color Picker's Add CMYK Swatch).
+    pub(crate) actions: &'static [(&'static str, &'static str)],
 }
 
 impl Form {
     pub(crate) const fn new(show: fn(&mut DesignApp, &mut Ui, &mut Dialog) -> Option<bool>) -> Self {
-        Form { show, width: 640.0, extra: &[], footer: None, opens_at_width: false }
+        Form { show, width: 640.0, extra: &[], footer: None, opens_at_width: false, button_place: ButtonPlace::Foot, actions: &[] }
     }
 
     pub(crate) const fn width(mut self, width: f32) -> Self {
@@ -57,6 +64,62 @@ impl Form {
         self.opens_at_width = true;
         self
     }
+
+    /// Where the dialog's buttons stand ([`Form::button_place`]).
+    pub(crate) const fn button_place(mut self, place: ButtonPlace) -> Self {
+        self.button_place = place;
+        self
+    }
+
+    /// Buttons that act and keep the dialog open ([`Form::actions`]).
+    pub(crate) const fn actions(mut self, actions: &'static [(&'static str, &'static str)]) -> Self {
+        self.actions = actions;
+        self
+    }
+}
+
+/// The captions of a section list, one row each, keyed by position.
+struct SectionCaptions(Vec<String>);
+
+impl craft_behavior::DisplayOrder<usize> for SectionCaptions {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn key(&self, at: usize) -> usize {
+        at
+    }
+    fn index_of(&self, key: &usize) -> Option<usize> {
+        (*key < self.0.len()).then_some(*key)
+    }
+    fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.0.get(at).map(|text| std::borrow::Cow::Borrowed(text.as_str()))
+    }
+}
+impl craft_behavior::ItemSource<usize> for SectionCaptions {}
+
+/// The section list of a dialog with pages (Preferences, Paragraph and Character Style Options, Text Frame Options, the
+/// Format Settings of Find/Change, Find/Replace Font's fonts): a navigation list named `label`, one row per section of
+/// `sections` (id and caption in the interface language), with the row of `current` highlighted (the first row when
+/// `current` is none of them), as tall as its rows (a body that scrolls around it scrolls it). The arrow keys move the
+/// highlight. Returns the id of the section picked in this pass when it is another one.
+pub(crate) fn section_list(ui: &mut Ui, id_salt: &str, label: String, sections: &[(&str, String)], current: &str) -> Option<String> {
+    use craft_behavior::Selection;
+    use craft_ui_widgets::contract::{Bind, Props as _, SelectMode, ShowCollection as _, Sizing};
+    use craft_ui_widgets::list::{List, ListRow};
+
+    let captions = SectionCaptions(sections.iter().map(|(_, caption)| caption.clone()).collect());
+    let at = sections.iter().position(|(id, _)| *id == current).unwrap_or(0);
+    let mut selected = Selection::single(at);
+    let _ = List::<usize>::new(label)
+        .id_salt(("dialog_section_list", id_salt.to_owned()))
+        .select(SelectMode::Single)
+        .arrows_select(true)
+        .natural_height(true)
+        .sizing(Sizing::FillWidth)
+        .selection(Bind::bound(&mut selected))
+        .show_items(ui, &captions, &mut |key, _| ListRow::new(captions.0.get(*key).cloned().unwrap_or_default()));
+    // Only a row picked in this pass reports: a `current` the list doesn't have shows the first row without picking it.
+    selected.items.first().filter(|picked| **picked != at).and_then(|picked| sections.get(*picked)).map(|(id, _)| (*id).to_owned())
 }
 
 /// The share of the window's width a framework dialog may take before its body scrolls (`Overlay::dialog`'s cap).
@@ -189,7 +252,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
     if d.id != "alert" {
         buttons.push(FooterButton::new(tr(cancel), DialogRole::Cancel).enabled(enabled));
     }
-    for (label, _) in form.extra {
+    for (label, _) in form.extra.iter().chain(form.actions) {
         buttons.push(FooterButton::new(tr(label), DialogRole::Other).enabled(enabled).stays_open(true));
     }
     let mut opened = true;
@@ -219,6 +282,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
             .closable(false)
             .outer_gesture(false)
             .close_on_enter(enabled)
+            .button_place(form.button_place)
             .buttons(buttons);
         let dialog = match least {
             Some(least) => dialog.least_width(least),
@@ -248,9 +312,15 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
     });
     let (app, mut d) = state.into_inner();
     let out = shown.inner;
-    let picked_extra = out.picked.and_then(|picked| picked.checked_sub(if d.id == "alert" { 1 } else { 2 }));
+    let picked_after = out.picked.and_then(|picked| picked.checked_sub(if d.id == "alert" { 1 } else { 2 }));
+    let picked_extra = picked_after.filter(|at| *at < form.extra.len());
     if let Some((_, field)) = picked_extra.and_then(|at| form.extra.get(at)) {
         d.fields.insert((*field).into(), serde_json::json!(true));
+    }
+    // An action keeps the dialog open: the form acts on its field in the next pass.
+    if let Some((_, field)) = picked_after.and_then(|at| at.checked_sub(form.extra.len())).and_then(|at| form.actions.get(at)) {
+        d.fields.insert((*field).into(), serde_json::json!(true));
+        ctx.request_repaint();
     }
     app.ui.dialog = Some(d);
     let result = match (out.picked, from_form) {

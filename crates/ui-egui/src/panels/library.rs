@@ -29,6 +29,11 @@ fn framework_action(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::De
 
 /// The Object Library panel: the conveyor, New and Open, Add Selection and a row for each item.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    library_body(app, ui);
+    super::interactive::bottom_inset(ui);
+}
+
+fn library_body(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Shade, Text};
     use craft_ui_widgets::layout_components::{Row, Stack};
@@ -186,6 +191,7 @@ pub fn book(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::runtime::env::{Direction, with_env};
     let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
     with_env(ui, |scope| scope.direction = Some(direction), |ui| book_framework(app, ui));
+    super::interactive::bottom_inset(ui);
 }
 
 /// What the Book panel's buttons ask for.
@@ -322,12 +328,7 @@ fn book_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// Script actions retain the actual current script and document/selection identity, not an ordinal alone.
 fn scripts_action(ui: &mut egui::Ui, id: egui::Id, label: &str, enabled: bool) -> bool {
     use craft_ui_widgets::contract::{Props as _, Show as _};
-    craft_ui_widgets::buttons::Button::new(label.to_owned())
-        .id(id)
-        .enabled(enabled)
-        .size(craft_theme::ControlSize::Sm)
-        .show(ui)
-        .clicked()
+    craft_ui_widgets::buttons::Button::new(label.to_owned()).id(id).enabled(enabled).size(craft_theme::ControlSize::Sm).show(ui).clicked()
 }
 
 /// Plain, unbounded write-through editors: the persisted UI strings remain the only model.
@@ -354,6 +355,11 @@ fn scripts_sdk_editors(ui: &mut egui::Ui, id: egui::Id, name: &mut String, text:
 /// (a click selects it, a double click runs it), the Run, New, Load and Delete actions, and the selected
 /// script's name and text.
 pub fn scripts(app: &mut DesignApp, ui: &mut egui::Ui) {
+    scripts_body(app, ui);
+    super::interactive::bottom_inset(ui);
+}
+
+fn scripts_body(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::buttons::Button;
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Shade, Text};
@@ -1423,12 +1429,7 @@ mod scripts_shelf_workflow_tests {
         });
     }
 
-    fn harness_with_original_glyphs(
-        mut app: DesignApp,
-        parent: bool,
-        width: f32,
-        case: OriginalScriptGlyphs,
-    ) -> Harness<'static, Window> {
+    fn harness_with_original_glyphs(mut app: DesignApp, parent: bool, width: f32, case: OriginalScriptGlyphs) -> Harness<'static, Window> {
         let texts = original_script_glyph_texts(case, &app.ui.language);
         let ctx = egui::Context::default();
         app.install_framework(&ctx);
