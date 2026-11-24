@@ -400,6 +400,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-24** · Footnote numbers start over at Start At in every story (#3214), as in InDesign (measured with six stories on one page and with three on separate pages, created in a different order from their page order): a second story's notes no longer carry on from the first story's (1, 2 then 3, 4 then 5, 6). The document-wide numbering that `footnote_start` gave stories on earlier pages is gone; the EPUB export numbers the same way. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
