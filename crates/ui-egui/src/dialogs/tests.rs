@@ -569,6 +569,94 @@ fn adjust_layout_dialog_auto_adjust_on_then_off_restores_margins_and_preserves_p
 }
 
 #[test]
+fn adjust_layout_dialog_previews_custom_page_zero_margins_and_allows_bleed_only_edit() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 2, "facingPages": false, "width": 612.0, "height": 792.0, "margins": 36.0})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).unwrap();
+    app.run("layout.pageSize", json!({"pages": [1], "width": 1000.0})).unwrap();
+    app.run("layout.marginsAndColumns", json!({"pages": [0], "margins": {"top": 36, "bottom": 36, "inside": 400, "outside": 300}})).unwrap();
+
+    // Bleed-only edit must not be rejected against document default width 612 pt when page 0 is 1000 pt.
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"bleedTop": "9 pt"}));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    assert!((doc.settings.bleed[0] - 9.0).abs() < 1e-6);
+    assert!((doc.page(0).unwrap().width - 1000.0).abs() < 1e-6);
+    assert!((doc.page(0).unwrap().margins.inside - 400.0).abs() < 1e-6);
+
+    // Auto-adjust preview scales page 0's margins by page 0's own width ratio and isolates unchanged axes.
+    app.run("layout.marginsAndColumns", json!({"pages": [0], "margins": 36})).unwrap();
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
+
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"width": "1224 pt"}));
+    let mut labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    for _ in 0..2 {
+        labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let preview_w = app.ui.dialog.as_ref().unwrap().m("marginInside").unwrap();
+    assert!((preview_w - 44.064).abs() < 0.01, "expected 1224 / 1000 * 36 = 44.064 pt, got {preview_w}");
+    assert!((app.ui.dialog.as_ref().unwrap().m("marginTop").unwrap() - 36.0).abs() < 0.01, "height axis unchanged");
+
+    // Changing only height leaves custom page 0's horizontal margins at scale 1.0 while scaling top/bottom.
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"height": "1584 pt"}));
+    labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    click_dialog(&mut app, &ctx, screen, visible_label(&labels, screen, "Auto-adjust margins to page size changes").center());
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert!((d.m("marginInside").unwrap() - 36.0).abs() < 0.01, "unchanged width keeps scale 1.0: {}", d.s("marginInside"));
+    assert!((d.m("marginTop").unwrap() - 72.0).abs() < 0.01, "height doubled: {}", d.s("marginTop"));
+}
+
+#[test]
+fn adjust_layout_dialog_exposes_accessible_names_on_size_margin_and_bleed_inputs() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    for facing in [false, true] {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": 1, "facingPages": facing})).unwrap();
+        open_adjust_layout(&mut app);
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 900.0)).build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique(("adjust_layout_a11y_fonts", facing));
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(4);
+        let _ = h.get_by_role_and_label(Role::ComboBox, "Page Size:");
+        for name in ["Width:", "Height:", "Top:", "Bottom:"] {
+            let _ = h.get_by_role_and_label(Role::TextInput, name);
+            let stem = name.trim_end_matches(':');
+            let _ = h.get_by_label(&format!("Increase {stem}"));
+            let _ = h.get_by_label(&format!("Decrease {stem}"));
+        }
+        let (side_a, side_b) = if facing { ("Inside", "Outside") } else { ("Left", "Right") };
+        for side in [side_a, side_b] {
+            let _ = h.get_by_role_and_label(Role::TextInput, &format!("{side}:"));
+            let _ = h.get_by_label(&format!("Increase {side}"));
+            let _ = h.get_by_role_and_label(Role::TextInput, side);
+        }
+        for edge in ["Top", "Bottom"] {
+            let _ = h.get_by_role_and_label(Role::TextInput, edge);
+        }
+        for limit in ["Min", "Max"] {
+            let _ = h.get_by_label(&format!("Increase {limit}"));
+        }
+    }
+}
+
+#[test]
 fn cell_options_dialog_draws_and_applies_only_changed_values_to_the_chosen_edges() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();

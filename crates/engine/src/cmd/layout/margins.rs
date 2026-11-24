@@ -34,6 +34,24 @@ pub(super) fn adjust_layout(d: &mut designcraft_doc::Document, before: &[PageBox
     adjust_layout_with(d, before, AdjustOptions::default());
 }
 
+/// Groups page boxes by spread while preserving original spread and within-spread page order.
+fn group_pages_by_spread(
+    pages: &[PageBox],
+) -> (Vec<designcraft_doc::SpreadRef>, std::collections::HashMap<designcraft_doc::SpreadRef, Vec<&PageBox>>) {
+    let mut order = Vec::new();
+    let mut by_spread: std::collections::HashMap<designcraft_doc::SpreadRef, Vec<&PageBox>> = std::collections::HashMap::new();
+    for pb in pages {
+        by_spread
+            .entry(pb.spread)
+            .or_insert_with(|| {
+                order.push(pb.spread);
+                Vec::new()
+            })
+            .push(pb);
+    }
+    (order, by_spread)
+}
+
 /// Captures each eligible top-level item's page assignment from `before` margin boxes before any
 /// page geometry or spread layout changes.
 pub(super) fn assign_items(
@@ -43,22 +61,18 @@ pub(super) fn assign_items(
 ) -> Vec<(designcraft_doc::PageId, designcraft_doc::ItemId)> {
     let locked_layers: Vec<designcraft_doc::LayerId> =
         if adjust_locked_content { Vec::new() } else { d.layers.iter().filter(|l| l.locked).map(|l| l.id).collect() };
-    let mut seen_spreads = Vec::new();
+    let (spread_order, by_spread) = group_pages_by_spread(before);
     let mut assigned = Vec::new();
-    for pb in before {
-        let r = &pb.spread;
-        if seen_spreads.contains(r) {
-            continue;
-        }
-        seen_spreads.push(*r);
-        let Some(sp) = d.spread(*r) else { continue };
+    for r in spread_order {
+        let Some(sp) = d.spread(r) else { continue };
+        let Some(pages) = by_spread.get(&r) else { continue };
         for it in &sp.items {
             if !(adjust_locked_content || (!it.locked && !locked_layers.contains(&it.layer))) {
                 continue;
             }
             let c = it.bounds().center();
             // Pages share a spread side by side: the margin box's page is the one under the centre's x.
-            if let Some(target) = before.iter().filter(|b| b.spread == *r).min_by(|a, b| dist(a.margin, c.x).total_cmp(&dist(b.margin, c.x))) {
+            if let Some(target) = pages.iter().copied().min_by(|a, b| dist(a.margin, c.x).total_cmp(&dist(b.margin, c.x))) {
                 assigned.push((target.id, it.id));
             }
         }
@@ -82,22 +96,28 @@ pub(super) fn adjust_layout_assigned(
 ) {
     use designcraft_geom::Affine;
     let after = margin_boxes(d);
+    let after_by_id: std::collections::HashMap<designcraft_doc::PageId, &PageBox> = after.iter().map(|pb| (pb.id, pb)).collect();
+    let mut assigned_by_page: std::collections::HashMap<designcraft_doc::PageId, Vec<designcraft_doc::ItemId>> = std::collections::HashMap::new();
+    for &(pid, id) in assigned {
+        assigned_by_page.entry(pid).or_default().push(id);
+    }
     let locked_layers: Vec<designcraft_doc::LayerId> =
         if opts.adjust_locked_content { Vec::new() } else { d.layers.iter().filter(|l| l.locked).map(|l| l.id).collect() };
-    adjust_guides(d, before, &after, opts.adjust_locked_content, &locked_layers);
-    let mut story_scales: std::collections::BTreeMap<designcraft_doc::StoryId, f64> = std::collections::BTreeMap::new();
+    adjust_guides(d, before, &after_by_id, opts.adjust_locked_content, &locked_layers);
+    let mut story_frame_scales: std::collections::BTreeMap<designcraft_doc::StoryId, Vec<(designcraft_doc::ItemId, f64)>> =
+        std::collections::BTreeMap::new();
     let story_filter = if opts.adjust_locked_content { StoryFilter::All } else { StoryFilter::UnlockedOnly };
     for old in before {
-        let Some(new) = after.iter().find(|n| n.id == old.id) else { continue };
+        let Some(&new) = after_by_id.get(&old.id) else { continue };
         let (om, nm) = (old.margin, new.margin);
         let margin_changed = om != nm && om.width() >= 1e-6 && om.height() >= 1e-6 && nm.width() >= 1e-6 && nm.height() >= 1e-6;
         let page_sx = if old.width >= 1e-6 && new.width >= 1e-6 { new.width / old.width } else { 1.0 };
         let page_sy = if old.height >= 1e-6 && new.height >= 1e-6 { new.height / old.height } else { 1.0 };
         let font_scale = (page_sx * page_sy).sqrt();
-        let font_changed = opts.adjust_font_size && font_scale.is_finite() && (font_scale - 1.0).abs() >= 1e-6;
-        if !margin_changed && !font_changed {
+        if !margin_changed && !opts.adjust_font_size {
             continue;
         }
+        let Some(ids) = assigned_by_page.get(&old.id) else { continue };
         let m = if margin_changed {
             let sx = nm.width() / om.width();
             let sy = nm.height() / om.height();
@@ -105,27 +125,40 @@ pub(super) fn adjust_layout_assigned(
         } else {
             Affine::IDENTITY
         };
-        let ids: Vec<designcraft_doc::ItemId> = assigned.iter().filter(|(p2, _)| *p2 == old.id).map(|(_, id)| *id).collect();
-        for id in ids {
-            let Some(it) = d.item_mut(id) else { continue };
-            if margin_changed {
+        for &id in ids {
+            if margin_changed && let Some(it) = d.item_mut(id) {
                 adjust_item(it, m, opts.adjust_locked_content, &locked_layers, 0);
             }
-            if font_changed {
-                let mut sids = Vec::new();
-                collect_stories(it, story_filter, false, &locked_layers, 0, &mut sids);
-                for sid in sids {
-                    story_scales.entry(sid).or_insert(font_scale);
+            if opts.adjust_font_size
+                && let Some(it) = d.item(id)
+            {
+                let mut frames = Vec::new();
+                collect_story_frames(it, story_filter, false, &locked_layers, 0, &mut frames);
+                for (sid, fid) in frames {
+                    story_frame_scales.entry(sid).or_default().push((fid, font_scale));
                 }
             }
         }
     }
-    if opts.adjust_font_size && !story_scales.is_empty() {
+    if opts.adjust_font_size && !story_frame_scales.is_empty() {
+        // Resolve each story's font scale from its first frame in thread order, including a
+        // unit (1.0) ratio so continuation frames on resized pages cannot override it.
+        let mut story_scales: std::collections::BTreeMap<designcraft_doc::StoryId, f64> = std::collections::BTreeMap::new();
+        for (sid, collected) in story_frame_scales {
+            let scale = d
+                .story(sid)
+                .and_then(|st| st.frames.iter().find_map(|fid| collected.iter().find(|&&(f, _)| f == *fid).map(|&(_, s)| s)))
+                .or_else(|| collected.first().map(|&(_, s)| s));
+            if let Some(scale) = scale {
+                story_scales.insert(sid, scale);
+            }
+        }
         let locked_stories = if opts.adjust_locked_content { std::collections::BTreeSet::new() } else { collect_locked_stories(d, &locked_layers) };
         if !locked_stories.is_empty() {
             story_scales.retain(|sid, _| !locked_stories.contains(sid));
         }
         expand_anchored_stories(d, story_filter, &locked_layers, &locked_stories, &mut story_scales);
+        story_scales.retain(|_, scale| scale.is_finite() && (*scale - 1.0).abs() >= 1e-6);
         if !story_scales.is_empty() {
             let styles = d.styles.clone();
             for (sid, scale) in story_scales {
@@ -141,26 +174,24 @@ pub(super) fn adjust_layout_assigned(
 fn adjust_guides(
     d: &mut designcraft_doc::Document,
     before: &[PageBox],
-    after: &[PageBox],
+    after_by_id: &std::collections::HashMap<designcraft_doc::PageId, &PageBox>,
     locked_ok: bool,
     locked_layers: &[designcraft_doc::LayerId],
 ) {
+    let before_by_id: std::collections::HashMap<designcraft_doc::PageId, &PageBox> = before.iter().map(|pb| (pb.id, pb)).collect();
+    let (spread_order, by_spread) = group_pages_by_spread(before);
     let valid_pair = |pid: designcraft_doc::PageId| -> Option<(designcraft_geom::Rect, designcraft_geom::Rect)> {
-        let old = before.iter().find(|b| b.id == pid)?;
-        let new = after.iter().find(|a| a.id == pid)?;
+        let old = before_by_id.get(&pid)?;
+        let new = after_by_id.get(&pid)?;
         let (om, nm) = (old.margin, new.margin);
         if om == nm || om.width() < 1e-6 || om.height() < 1e-6 || nm.width() < 1e-6 || nm.height() < 1e-6 {
             return None;
         }
         Some((om, nm))
     };
-    let mut seen_spreads = Vec::new();
-    for pb in before {
-        if seen_spreads.contains(&pb.spread) {
-            continue;
-        }
-        seen_spreads.push(pb.spread);
-        let Some(sp) = d.spread_mut(pb.spread) else { continue };
+    for r in spread_order {
+        let Some(pages) = by_spread.get(&r) else { continue };
+        let Some(sp) = d.spread_mut(r) else { continue };
         for pg in &mut sp.pages {
             let pg_pair = valid_pair(pg.id);
             for g in &mut pg.guides {
@@ -171,9 +202,9 @@ fn adjust_guides(
                     continue;
                 }
                 let pair = if g.spread && g.orientation == designcraft_doc::Orientation::Vertical {
-                    before
+                    pages
                         .iter()
-                        .filter(|b| b.spread == pb.spread)
+                        .copied()
                         .min_by(|a, b| dist(a.margin, g.position).total_cmp(&dist(b.margin, g.position)))
                         .and_then(|target| valid_pair(target.id))
                 } else {
@@ -280,14 +311,15 @@ enum StoryFilter {
     LockedOnly,
 }
 
-/// Collects story IDs from text frames and nested group children matching `filter`, up to a bounded depth.
-fn collect_stories(
+/// Collects `(story, frame)` pairs from text frames and nested group children matching `filter`,
+/// up to a bounded depth.
+fn collect_story_frames(
     it: &designcraft_doc::Item,
     filter: StoryFilter,
     parent_locked: bool,
     locked_layers: &[designcraft_doc::LayerId],
     depth: usize,
-    out: &mut Vec<designcraft_doc::StoryId>,
+    out: &mut Vec<(designcraft_doc::StoryId, designcraft_doc::ItemId)>,
 ) {
     if depth >= 32 {
         return;
@@ -304,16 +336,30 @@ fn collect_stories(
                 StoryFilter::LockedOnly => is_locked,
             };
             if take {
-                out.push(tf.story);
+                out.push((tf.story, it.id));
             }
         }
         designcraft_doc::Content::Group { items } => {
             for child in items {
-                collect_stories(child, filter, is_locked, locked_layers, depth + 1, out);
+                collect_story_frames(child, filter, is_locked, locked_layers, depth + 1, out);
             }
         }
         designcraft_doc::Content::Unassigned | designcraft_doc::Content::Graphic(_) => {}
     }
+}
+
+/// Collects story IDs from text frames and nested group children matching `filter`, up to a bounded depth.
+fn collect_stories(
+    it: &designcraft_doc::Item,
+    filter: StoryFilter,
+    parent_locked: bool,
+    locked_layers: &[designcraft_doc::LayerId],
+    depth: usize,
+    out: &mut Vec<designcraft_doc::StoryId>,
+) {
+    let mut frames = Vec::new();
+    collect_story_frames(it, filter, parent_locked, locked_layers, depth, &mut frames);
+    out.extend(frames.into_iter().map(|(sid, _)| sid));
 }
 
 /// Collects story IDs referenced by anchored objects inside `st`, its footnotes, endnotes, and table cells.
@@ -1165,5 +1211,39 @@ mod adjust_tests {
         let guides = &d.spreads[0].pages[0].guides;
         assert!((guides[0].position - 324.0).abs() < 1e-6, "vertical guide tracks margin box: {:?}", guides[0]);
         assert!((guides[1].position - 417.8).abs() < 1e-6, "horizontal guide tracks margin box: {:?}", guides[1]);
+    }
+
+    #[test]
+    fn adjust_layout_uses_threaded_story_first_frame_page_ratio() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": 612, "height": 792, "margins": 36})).unwrap();
+        // Page 1 is already 1224 pt wide (ratio 1.0 on width=1224); page 2 is 612 pt (ratio sqrt(2)).
+        s.execute("layout.pageSize", &json!({"pages": [1], "width": 1224})).unwrap();
+
+        // Story A threads forward from page 1 (ratio 1.0) onto page 2 (ratio sqrt(2)): must stay 20 pt.
+        let a1 = s.execute("frame.create", &json!({"spread": 0, "rect": [36, 36, 300, 200], "content": "text", "text": "Forward"})).unwrap();
+        let a2 = s.execute("frame.create", &json!({"spread": 1, "rect": [36, 36, 300, 200], "content": "text", "text": ""})).unwrap();
+        let sid_a = designcraft_doc::StoryId(a1["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid_a.0, "anchor": 0, "focus": 7})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20.0}})).unwrap();
+        s.execute("text.thread", &json!({"from": a1["id"], "to": a2["id"]})).unwrap();
+
+        // Story B threads backward from page 2 (ratio sqrt(2)) onto page 1 (ratio 1.0): must scale once by sqrt(2).
+        let b1 = s.execute("frame.create", &json!({"spread": 1, "rect": [36, 300, 300, 500], "content": "text", "text": "Backward"})).unwrap();
+        let b2 = s.execute("frame.create", &json!({"spread": 0, "rect": [36, 300, 300, 500], "content": "text", "text": ""})).unwrap();
+        let sid_b = designcraft_doc::StoryId(b1["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid_b.0, "anchor": 0, "focus": 8})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20.0}})).unwrap();
+        s.execute("text.thread", &json!({"from": b1["id"], "to": b2["id"]})).unwrap();
+
+        s.execute("layout.adjust", &json!({"width": 1224, "adjustFontSize": true})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        assert_eq!(d.story(sid_a).unwrap().char_format_of(0).over.size, Some(20.0), "first frame on unchanged 1224 pt page keeps unit scale");
+        let scaled_b = d.story(sid_b).unwrap().char_format_of(0).over.size.unwrap();
+        assert!(
+            (scaled_b - 20.0 * 2.0_f64.sqrt()).abs() < 1e-6,
+            "first frame in thread order on resized page 2 scales story once by sqrt(2), got {scaled_b}"
+        );
     }
 }

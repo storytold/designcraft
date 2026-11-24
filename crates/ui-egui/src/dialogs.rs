@@ -2402,7 +2402,7 @@ fn setup_measure(d: &Dialog, key: &str) -> Option<f64> {
 
 /// A measure field with up/down arrows (a point, or a millimetre in metric units, a step); true
 /// when its value changed.
-fn setup_spin(ui: &mut egui::Ui, d: &mut Dialog, key: &str, width: f32, min: f64) -> bool {
+fn setup_spin(ui: &mut egui::Ui, d: &mut Dialog, key: &str, width: f32, min: f64, label: &egui::Response, name: &str) -> bool {
     let t = crate::theme::Tokens::get(ui.ctx());
     let h = 22.0;
     let (r, _) = ui.allocate_exact_size(egui::vec2(width, h), egui::Sense::hover());
@@ -2411,12 +2411,20 @@ fn setup_spin(ui: &mut egui::Ui, d: &mut Dialog, key: &str, width: f32, min: f64
     ui.painter().line_segment([seg.right_top(), seg.right_bottom()], egui::Stroke::new(1.0, t.field_border));
     let units = setup_units(d);
     let step = if matches!(units, Unit::Millimeters | Unit::Centimeters) { designcraft_geom::units::PT_PER_MM } else { 1.0 };
+    let label_name = name.trim_end_matches(':');
     let mut changed = false;
     for (dir, half) in [
         (1.0, egui::Rect::from_min_max(seg.min, egui::pos2(seg.max.x, seg.center().y))),
         (-1.0, egui::Rect::from_min_max(egui::pos2(seg.min.x, seg.center().y), seg.max)),
     ] {
         let resp = ui.interact(half, ui.scope_id().with((key, dir < 0.0)), egui::Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::Role::Button,
+                ui.is_enabled(),
+                format!("{} {}", if dir > 0.0 { "Increase" } else { "Decrease" }, label_name),
+            )
+        });
         if resp.hovered() {
             ui.painter().rect_filled(half.shrink(1.0), 1.0, t.hover);
         }
@@ -2435,8 +2443,9 @@ fn setup_spin(ui: &mut egui::Ui, d: &mut Dialog, key: &str, width: f32, min: f64
     let text = egui::Rect::from_min_max(egui::pos2(seg.right() + 5.0, r.top() + 1.0), egui::pos2(r.right() - 3.0, r.bottom() - 1.0));
     let mut s = d.s(key);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let resp =
-        child.add(egui::TextEdit::singleline(&mut s).id(ui.scope_id().with((key, "text"))).frame(egui::Frame::NONE).desired_width(text.width()));
+    let resp = child
+        .add(egui::TextEdit::singleline(&mut s).id(ui.scope_id().with((key, "text"))).frame(egui::Frame::NONE).desired_width(text.width()))
+        .labelled_by(label.id);
     if resp.changed() {
         d.fields.insert(key.into(), Value::String(s));
         changed = true;
@@ -2445,13 +2454,14 @@ fn setup_spin(ui: &mut egui::Ui, d: &mut Dialog, key: &str, width: f32, min: f64
 }
 
 /// A caption ending at the field it names (`Width:` [ ]), `width` wide.
-fn setup_caption(ui: &mut egui::Ui, text: &str, width: f32) {
+fn setup_caption(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
     let rtl = ui.layout().prefer_right_to_left();
     let layout = if rtl { egui::Layout::left_to_right(egui::Align::Center) } else { egui::Layout::right_to_left(egui::Align::Center) };
     ui.allocate_ui_with_layout(egui::vec2(width, 22.0), layout, |ui| {
         ui.set_width(width);
-        crate::rtl::label(ui, text);
-    });
+        crate::rtl::label(ui, text)
+    })
+    .inner
 }
 
 /// A row that runs right to left in a right-to-left interface.
@@ -2664,23 +2674,29 @@ fn setup_page_size_group(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, preset_s
     let mut size_changed = false;
     setup_group(ui, |ui| {
         setup_row(ui, rtl, |ui| {
-            crate::rtl::label(ui, egui::RichText::new(tr("Page Size:")).color(t.text_strong));
-            craft_ui::ComboBox::from_id_salt(preset_salt).selected_text(crate::rtl::widget(ui, &preset)).width(260.0).show_ui(ui, |ui| {
-                for p in designcraft_doc::build::PRESETS {
-                    if ui.selectable_label(tr(p.name) == preset, crate::rtl::widget(ui, tr(p.name))).clicked() {
-                        // Keep the orientation; the preset's size in the document's units.
-                        let units = setup_units(d);
-                        let (pw, ph) = if w > h { (p.width.max(p.height), p.width.min(p.height)) } else { (p.width, p.height) };
-                        d.fields.insert("width".into(), json!(format_measure(pw, units)));
-                        d.fields.insert("height".into(), json!(format_measure(ph, units)));
-                        size_changed = true;
+            let page_size_label = crate::rtl::label(ui, egui::RichText::new(tr("Page Size:")).color(t.text_strong));
+            craft_ui::ComboBox::from_id_salt(preset_salt)
+                .selected_text(crate::rtl::widget(ui, &preset))
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for p in designcraft_doc::build::PRESETS {
+                        if ui.selectable_label(tr(p.name) == preset, crate::rtl::widget(ui, tr(p.name))).clicked() {
+                            // Keep the orientation; the preset's size in the document's units.
+                            let units = setup_units(d);
+                            let (pw, ph) = if w > h { (p.width.max(p.height), p.width.min(p.height)) } else { (p.width, p.height) };
+                            d.fields.insert("width".into(), json!(format_measure(pw, units)));
+                            d.fields.insert("height".into(), json!(format_measure(ph, units)));
+                            size_changed = true;
+                        }
                     }
-                }
-            });
+                })
+                .response
+                .labelled_by(page_size_label.id);
         });
         setup_row(ui, rtl, |ui| {
-            setup_caption(ui, tr("Width:"), 70.0);
-            size_changed |= setup_spin(ui, d, "width", 130.0, 1.0);
+            let width_caption = tr("Width:");
+            let label = setup_caption(ui, width_caption, 70.0);
+            size_changed |= setup_spin(ui, d, "width", 130.0, 1.0, &label, width_caption);
             ui.add_space(30.0);
             crate::rtl::label(ui, tr("Orientation:"));
             for (icon, tip, portrait) in [("orient-portrait", "Portrait", true), ("orient-landscape", "Landscape", false)] {
@@ -2694,8 +2710,9 @@ fn setup_page_size_group(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, preset_s
             }
         });
         setup_row(ui, rtl, |ui| {
-            setup_caption(ui, tr("Height:"), 70.0);
-            size_changed |= setup_spin(ui, d, "height", 130.0, 1.0);
+            let height_caption = tr("Height:");
+            let label = setup_caption(ui, height_caption, 70.0);
+            size_changed |= setup_spin(ui, d, "height", 130.0, 1.0, &label, height_caption);
         });
     });
     size_changed
@@ -2711,8 +2728,9 @@ fn setup_two_column_edges(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: 
         ui.vertical(|ui| {
             for (a, b) in [("Top:", "Top"), ("Bottom:", "Bottom")] {
                 setup_row(ui, rtl, |ui| {
-                    setup_caption(ui, tr(a), 70.0);
-                    if setup_spin(ui, d, &format!("{group}{b}"), 120.0, 0.0) {
+                    let caption = tr(a);
+                    let label = setup_caption(ui, caption, 70.0);
+                    if setup_spin(ui, d, &format!("{group}{b}"), 120.0, 0.0, &label, caption) {
                         changed = Some(format!("{group}{b}"));
                         edited = true;
                     }
@@ -2725,8 +2743,9 @@ fn setup_two_column_edges(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: 
         ui.vertical(|ui| {
             for (a, b) in [(side_labels.0, "Inside"), (side_labels.1, "Outside")] {
                 setup_row(ui, rtl, |ui| {
-                    setup_caption(ui, tr(a), 70.0);
-                    if setup_spin(ui, d, &format!("{group}{b}"), 120.0, 0.0) {
+                    let caption = tr(a);
+                    let label = setup_caption(ui, caption, 70.0);
+                    if setup_spin(ui, d, &format!("{group}{b}"), 120.0, 0.0, &label, caption) {
                         changed = Some(format!("{group}{b}"));
                         edited = true;
                     }
@@ -2747,6 +2766,7 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
     let fm = |v: f64| json!(format_measure(v, units));
     let w = cur["width"].as_f64().unwrap_or(612.0);
     let h = cur["height"].as_f64().unwrap_or(792.0);
+    let (page_w, page_h) = app.session.active().and_then(|s| s.doc.page(0)).map(|pg| (pg.width, pg.height)).unwrap_or((w, h));
     let mt = cur["margins"]["top"].as_f64().unwrap_or(36.0);
     let mb = cur["margins"]["bottom"].as_f64().unwrap_or(36.0);
     let mi = cur["margins"]["inside"].as_f64().unwrap_or(36.0);
@@ -2759,6 +2779,8 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
         "height": fm(h),
         "origWidth": w,
         "origHeight": h,
+        "origPageWidth": page_w,
+        "origPageHeight": page_h,
         "origMarginTop": mt,
         "origMarginBottom": mb,
         "origMarginInside": mi,
@@ -2788,11 +2810,17 @@ pub fn open_adjust_layout(app: &mut DesignApp) {
 
 /// Update displayed margin fields proportionally to page size changes when auto-adjust is enabled.
 fn sync_adjust_margins(d: &mut Dialog) {
-    let Some(ow) = d.n("origWidth").filter(|v| v.is_finite() && *v > 1e-6) else { return };
-    let Some(oh) = d.n("origHeight").filter(|v| v.is_finite() && *v > 1e-6) else { return };
+    const PAGE_DIM_TOLERANCE: f64 = 1e-4;
+    let Some(doc_ow) = d.n("origWidth").filter(|v| v.is_finite() && *v > 1e-6) else { return };
+    let Some(doc_oh) = d.n("origHeight").filter(|v| v.is_finite() && *v > 1e-6) else { return };
+    let page_ow = d.n("origPageWidth").filter(|v| v.is_finite() && *v > 1e-6).unwrap_or(doc_ow);
+    let page_oh = d.n("origPageHeight").filter(|v| v.is_finite() && *v > 1e-6).unwrap_or(doc_oh);
     let Some(nw) = setup_measure(d, "width").filter(|v| v.is_finite() && *v > 0.0) else { return };
     let Some(nh) = setup_measure(d, "height").filter(|v| v.is_finite() && *v > 0.0) else { return };
-    let (sx, sy) = (nw / ow, nh / oh);
+    let width_changed = d.fields.get("widthShown") != d.fields.get("width") && (nw - doc_ow).abs() > PAGE_DIM_TOLERANCE;
+    let height_changed = d.fields.get("heightShown") != d.fields.get("height") && (nh - doc_oh).abs() > PAGE_DIM_TOLERANCE;
+    let sx = if width_changed { nw / page_ow } else { 1.0 };
+    let sy = if height_changed { nh / page_oh } else { 1.0 };
     let units = setup_units(d);
     for (orig_key, key, scale) in [
         ("origMarginTop", "marginTop", sy),
@@ -2872,16 +2900,16 @@ fn adjust_layout_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             setup_group(ui, |ui| {
                 let bleed_headers = if facing { ["Top", "Bottom", "Inside", "Outside"] } else { ["Top", "Bottom", "Left", "Right"] };
                 egui::Grid::new("al_bleed_grid").num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
-                    for lbl in bleed_headers {
-                        ui.add_sized([104.0, 18.0], egui::Label::new(crate::rtl::widget(ui, egui::RichText::new(tr(lbl)).color(t.text_strong))));
-                    }
+                    let header_ids = bleed_headers.map(|lbl| {
+                        ui.add_sized([104.0, 18.0], egui::Label::new(crate::rtl::widget(ui, egui::RichText::new(tr(lbl)).color(t.text_strong)))).id
+                    });
                     ui.label("");
                     ui.end_row();
                     let mut changed = None;
-                    for e in SETUP_EDGES {
+                    for (e, header_id) in SETUP_EDGES.iter().zip(header_ids) {
                         let key = format!("bleed{e}");
                         let mut v = d.s(&key);
-                        if ui.add_sized([104.0, 22.0], egui::TextEdit::singleline(&mut v)).changed() {
+                        if ui.add_sized([104.0, 22.0], egui::TextEdit::singleline(&mut v)).labelled_by(header_id).changed() {
                             d.fields.insert(key.clone(), Value::String(v));
                             changed = Some(key);
                         }
@@ -2910,9 +2938,12 @@ fn adjust_layout_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             ui.add_enabled_ui(limits_on, |ui| {
                 setup_row(ui, rtl, |ui| {
                     ui.add_space(36.0);
-                    setup_caption(ui, tr("Min:"), 36.0);
+                    let min_caption = tr("Min:");
+                    let min_label = setup_caption(ui, min_caption, 36.0);
                     let min_v = d.n("minFontSize").unwrap_or(6.0);
                     if let Some(v) = crate::widgets::NumField::points("minFontSize", Some(min_v), 2)
+                        .name(min_caption.trim_end_matches(':'))
+                        .labelled_by(min_label.id)
                         .width(96.0)
                         .spinner()
                         .presets(FONT_LIMIT_PRESETS)
@@ -2923,9 +2954,12 @@ fn adjust_layout_dialog(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         d.fields.insert("minFontSize".into(), json!(v));
                     }
                     ui.add_space(24.0);
-                    setup_caption(ui, tr("Max:"), 36.0);
+                    let max_caption = tr("Max:");
+                    let max_label = setup_caption(ui, max_caption, 36.0);
                     let max_v = d.n("maxFontSize").unwrap_or(324.0);
                     if let Some(v) = crate::widgets::NumField::points("maxFontSize", Some(max_v), 2)
+                        .name(max_caption.trim_end_matches(':'))
+                        .labelled_by(max_label.id)
                         .width(96.0)
                         .spinner()
                         .presets(FONT_LIMIT_PRESETS)
@@ -2970,12 +3004,7 @@ fn confirm_adjust_layout(app: &mut DesignApp, d: &Dialog) -> Result<Value, Strin
     }
     let width_edited = d.fields.get("widthShown") != d.fields.get("width");
     let height_edited = d.fields.get("heightShown") != d.fields.get("height");
-    let eff_w = if width_edited { w } else { d.n("origWidth").unwrap_or(w) };
-    let eff_h = if height_edited { h } else { d.n("origHeight").unwrap_or(h) };
     let auto_margins = d.b("autoAdjustMargins");
-    if !auto_margins && (margins[0] + margins[1] >= eff_h || margins[2] + margins[3] >= eff_w) {
-        return Err("margins must fit within the page size".into());
-    }
     let bleed: Vec<f64> = SETUP_EDGES.iter().map(|e| measure(&format!("bleed{e}"))).collect::<Result<_, _>>()?;
     if bleed.iter().any(|v| !(0.0..=720.0).contains(v)) {
         return Err("bleed out of range".into());
