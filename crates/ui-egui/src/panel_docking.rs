@@ -1135,7 +1135,7 @@ fn dock_config() -> DockConfig {
         .wheel_selects_tabs(false)
         .tab_close_buttons(false)
         .group_order_items(true)
-        .menu_button(true)
+        .panel_menu_always(true)
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
@@ -1257,7 +1257,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     #[cfg(not(target_arch = "wasm32"))]
     open_window_drops(app, &output.window_files);
     // Keys pressed in a floating panel's own OS window that nothing there took run the main window's shortcuts.
-    crate::menus::forwarded_shortcuts(app, ui.ctx(), output.forwarded, output.forwarded_modifiers.unwrap_or_default());
+    crate::menus::forwarded_shortcuts(app, ui.ctx(), output.forwarded_events, output.forwarded_modifiers.unwrap_or_default());
 }
 
 /// Files dropped on a floating panel's own OS window open or place as drops on the main window
