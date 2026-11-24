@@ -2245,11 +2245,18 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
         let shown = h.state().canvas.shown.unwrap().size;
         assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
         let patches = h.state().canvas.patches;
+        let rect = h.state().canvas_rect;
         // A small edit: one more character in the frame.
         h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();
         h.run_steps(6);
         assert_eq!(h.state().canvas.patches == patches, sampled_down, "width {width}");
-        assert_eq!(h.state().canvas.texture.as_ref().map(|t| t.size()), Some(size));
+        // The canvas keeps its rect through the edit, so the texture keeps its size.
+        assert_eq!(
+            h.state().canvas.texture.as_ref().map(|t| t.size()),
+            Some(size),
+            "width {width}: canvas {rect:?} before the edit, {:?} after",
+            h.state().canvas_rect
+        );
     }
 }
 

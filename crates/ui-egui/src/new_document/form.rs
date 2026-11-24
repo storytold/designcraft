@@ -117,11 +117,12 @@ impl ItemSource<usize> for Cards<'_> {}
 fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let mut create = false;
     let window = ui.ctx().content_rect();
-    if window.width() * DIALOG_WIDTH_SHARE < TWO_PANES {
+    if one_column(ui.ctx()) {
         Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).show(ui, |ui, _| {
             details(app, ui, d);
             tabs(app, ui, d);
             inset(ui, false, |ui| create = presets(app, ui, d));
+            preview_check(app, ui, d);
         });
         return create.then_some(true);
     }
@@ -160,10 +161,12 @@ fn inset(ui: &mut Ui, scrolls: bool, mut body: impl FnMut(&mut Ui)) {
 
 /// Preview, and the reason Create was refused. Preview makes the document it shows here, after the check box.
 fn footer(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
+    let one_column = one_column(ui.ctx());
     Row::new().id_salt("new_document_footer").show(ui, |ui, _| {
-        let out = Checkbox::new(Bind::given(d.b("preview"))).id_salt("new_document_preview").label(tr(app, "Preview")).show(ui);
-        if let Some(on) = out.events.committed() {
-            d.fields.insert("preview".into(), json!(on));
+        // In a small window the footer keeps only the buttons, so Close and Create stay inside it: Preview goes to the end
+        // of the body ([`show`]).
+        if !one_column {
+            preview_check(app, ui, d);
         }
         if let Some(status) = d.fields.get("status").and_then(Value::as_str) {
             Text::new(status.to_owned()).shade(Shade::Muted).show(ui);
@@ -171,6 +174,21 @@ fn footer(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
     let ctx = ui.ctx().clone();
     super::preview(app, d, &ctx);
+}
+
+/// The Preview check box.
+fn preview_check(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
+    let out = Checkbox::new(Bind::given(d.b("preview"))).id_salt("new_document_preview").label(tr(app, "Preview")).show(ui);
+    if let Some(on) = out.events.committed() {
+        d.fields.insert("preview".into(), json!(on));
+    }
+}
+
+/// Whether the window is too small for the presets beside the details: too narrow for the two panes, or too short for
+/// their least room. The details, then the presets, stand in one column that the dialog's body scrolls.
+fn one_column(ctx: &egui::Context) -> bool {
+    let window = ctx.content_rect();
+    window.width() * DIALOG_WIDTH_SHARE < TWO_PANES || window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H < LEAST_PANE_ROOM
 }
 
 /// The preset tabs. As in InDesign, a tab shows its first preset's details (Web and Mobile in pixels).
