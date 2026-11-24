@@ -683,6 +683,13 @@ fn preferences_form_sidebar_reaches_the_last_section_in_a_small_window() {
     let mut app = kit::app(1, false);
     app.run("app.preferences", json!({})).unwrap();
     let mut h = kit::harness_sized(app, vec2(589.0, 407.0));
+    // The section list is one Tab stop and its arrow keys pick: arrowing down to the last section scrolls the list to it, as
+    // the wheel would (the list's own rows take no AccessKit scroll request).
+    kit::click(&mut h, &[Role::ListItem], "General", 0);
+    for _ in 0..24 {
+        kit::key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    }
+    kit::steps(&mut h, 3);
     let files = kit::reach(&mut h, "File Handling");
     kit::click_at(&mut h, files.center());
     assert_eq!(kit::draft(&h).s("section"), "files");
