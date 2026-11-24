@@ -332,7 +332,7 @@ mod framework {
         let app_ref: &DesignApp = app;
         let mut close = false;
         let resp = egui::Panel::top("app_bar").frame(egui::Frame::NONE).resizable(false).show(ui, |ui| {
-            let out = TitleBar::new().show_titled(
+            let out = TitleBar::new().title_when_native().show_titled(
                 ui,
                 title,
                 |ui, _| {
@@ -353,8 +353,10 @@ mod framework {
                     }
                 },
                 |ui, _| {
-                    search(app_ref, ui, &asks);
-                    workspace_menu(app_ref, ui, &asks);
+                    // Always one click away: the ArtCraft community Discord.
+                    if crate::about::discord_framework(ui, "Discord".to_owned(), "app_bar_discord") {
+                        asks.borrow_mut().push(Ask::Run("help.discord", json!({})));
+                    }
                     let share = {
                         let face = TabGlyph("share");
                         IconButton::new(IconSpec::glyph(&face)).id_salt("app_bar_share").label(tr("Share")).tooltip(tr("Share")).show(ui)
@@ -362,10 +364,8 @@ mod framework {
                     if share.clicked() {
                         asks.borrow_mut().push(Ask::Share);
                     }
-                    // Always one click away: the ArtCraft community Discord.
-                    if crate::about::discord_framework(ui, "Discord".to_owned(), "app_bar_discord") {
-                        asks.borrow_mut().push(Ask::Run("help.discord", json!({})));
-                    }
+                    workspace_menu(app_ref, ui, &asks);
+                    search(app_ref, ui, &asks);
                 },
             );
             close = out.close_requested;
