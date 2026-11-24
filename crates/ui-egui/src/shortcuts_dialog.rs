@@ -261,7 +261,9 @@ fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
         return;
     }
     match crate::shortcut_import::read_set(text) {
-        Ok(set) => host.pending.push(Pending::Review(set, crate::shortcut_import::import_options(app.shortcut_answers.clone(), app.shortcut_codes.clone()))),
+        Ok(set) => {
+            host.pending.push(Pending::Review(set, crate::shortcut_import::import_options(app.shortcut_answers.clone(), app.shortcut_codes.clone())))
+        }
         Err(e) => host.state.show_error(e),
     }
 }
