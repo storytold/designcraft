@@ -238,8 +238,8 @@ pub(crate) fn para_field_min(key: &str) -> f64 {
 mod framework {
     use super::*;
     use crate::framework_transform::{
-        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_family_select, font_style_select, icon_button, icon_number,
-        letters_button, menu, number_field, swatch_select,
+        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, letters_button, menu,
+        number_field, swatch_select,
     };
     use crate::panels::properties::text::framework::{kerning_field, language_select};
     use craft_behavior::EditEvent;
@@ -273,9 +273,7 @@ mod framework {
         let row = FIELD_H + 5.0;
         let b = block(ui, 2.0 * row);
         let id = cid(ui, "font-family");
-        if let Some(family) = font_family_select(app, ui, Some(sub(b, 0.0, 0.0, 220.0, FIELD_H)), id, &fam) {
-            crate::panels::apply_font(app, &crate::panels::FontPick { family, style: None });
-        }
+        crate::panels::font_family_field(app, ui, id, &fam, sub(b, 0.0, 0.0, 220.0, FIELD_H));
         let id = cid(ui, "font-style");
         if let Some(style) = font_style_select(app, ui, Some(sub(b, 0.0, row, 220.0, FIELD_H)), id, &fam, &sty) {
             let _ = app.run("type.char", json!({"attrs": {"fontStyle": style}}));

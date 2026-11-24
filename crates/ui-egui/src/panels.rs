@@ -471,6 +471,11 @@ pub fn apply_font(app: &mut DesignApp, pick: &FontPick) {
 pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, width: f32) {
     let id = ui.id().with("font_family");
     let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
+    font_family_field(app, ui, id, current, at);
+}
+
+/// The Font menu's field in `at`, with `id`, showing `current`, applied to the text when a font is picked.
+pub fn font_family_field(app: &mut DesignApp, ui: &mut egui::Ui, id: egui::Id, current: &str, at: egui::Rect) {
     if let Some(pick) = font_menu::framework::combo_at(app, ui, id, current, at) {
         apply_font(app, &pick);
     }

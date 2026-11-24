@@ -251,8 +251,8 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 pub(crate) mod framework {
     use super::*;
     use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, check, choice, font_family_select, font_style_select, icon, icon_button, icon_number,
-        letters_button, menu, more_options, number_field,
+        Letters, MenuRow, Number, Quantity, button, check, choice, font_style_select, icon, icon_button, icon_number, letters_button, menu,
+        more_options, number_field,
     };
     use crate::panels::properties::object::framework::{SwatchFor, swatch_chip};
     use craft_behavior::Mixed;
@@ -413,9 +413,7 @@ pub(crate) mod framework {
         let fw = full_width(ui);
         let b = block(ui, FIELD_H);
         let id = cid(ui, "font-family");
-        if let Some(family) = font_family_select(app, ui, Some(sub(b, 0.0, 0.0, fw, FIELD_H)), id, &fam) {
-            crate::panels::apply_font(app, &crate::panels::FontPick { family, style: None });
-        }
+        crate::panels::font_family_field(app, ui, id, &fam, sub(b, 0.0, 0.0, fw, FIELD_H));
         ui.add_space(1.0);
         let b = block(ui, FIELD_H);
         let id = cid(ui, "font-style");

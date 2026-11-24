@@ -366,17 +366,6 @@ pub(crate) fn swatch_select(
     select(ui, at, id, Picker { label, current, entries: &entries, placeholder }, false)
 }
 
-/// The font family select at `at` (or in the flow): the families in the font menus' order, by the names the menus
-/// show, with a filter field. The family picked this pass.
-pub(crate) fn font_family_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, current: &str) -> Option<String> {
-    let english = app.session.prefs.show_font_names_in_english;
-    let menu = crate::panels::font_menu(app);
-    let entries: Vec<Entry<String>> = menu.iter().map(|f| Entry::new(f.family.clone(), f.label(english).to_owned())).collect();
-    let label = crate::i18n::tr(&app.ui.language, "Font Family");
-    let current = (!current.is_empty()).then(|| current.to_owned());
-    select(ui, at, id, Picker { label, current, entries: &entries, placeholder: Some("\u{2014}") }, true)
-}
-
 /// The font style select of `family` at `at` (or in the flow), showing `current` (a style with axis settings shows
 /// its axes, as the native field does): the style picked this pass. The styles come from the app's fonts.
 pub(crate) fn font_style_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, family: &str, current: &str) -> Option<String> {
