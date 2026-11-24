@@ -649,7 +649,11 @@ mod tests {
         let d = kit::draft(&h);
         assert!(!d.s("family").is_empty() && !d.s("toFamily").is_empty(), "a font is selected and a replacement chosen");
         let label = format!("{} {}", d.s("family"), d.s("style"));
-        let listed = h.query_all_by_role(Role::ListBoxOption).any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
+        // The list's rows are list items (a listbox's options before the list was a framework `List`).
+        let listed = [Role::ListItem, Role::ListBoxOption]
+            .into_iter()
+            .flat_map(|role| h.query_all_by_role(role))
+            .any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
         assert!(listed, "the selected font is a row of the list");
         kit::click(&mut h, BUTTON, "Done", 0);
         assert!(h.state().ui.dialog.is_none());

@@ -114,45 +114,35 @@ impl ExportControls {
         out
     }
 
-    /// A line of controls in `columns`, each child a cell, so the same column of every version's line has one width.
+    /// A line of controls in `columns`, each child a cell, so the same column of every version's line has one width. The
+    /// framework runs a grid's body more than once in a pass (its measuring runs, and the run that draws), so `add` runs
+    /// each time; what it returns is the last run's, the one that draws.
     fn grid<R>(
         &self,
         ui: &mut egui::Ui,
         scope: impl std::hash::Hash + std::fmt::Debug,
         columns: &'static [craft_behavior::ColumnWidth],
-        add: impl FnOnce(&mut egui::Ui) -> R,
+        mut add: impl FnMut(&mut egui::Ui) -> R,
     ) -> Option<R> {
         use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-        let mut add = Some(add);
         let mut out = None;
         craft_ui_widgets::layout_components::Grid::new(columns).id_salt(scope).show(ui, |ui, _| {
-            if let Some(add) = add.take() {
-                out = Some(add(ui));
-            }
+            out = Some(add(ui));
         });
         out
     }
 
-    /// Ids scoped by `scope` for what `add` shows, one under another.
-    fn scope(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
+    /// Ids scoped by `scope` for what `add` shows, one under another. The body runs in every run of the stack: a stack
+    /// with new ids (a version added or removed) is measured before it is drawn.
+    fn scope(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, mut add: impl FnMut(&mut egui::Ui)) {
         use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-        let mut add = Some(add);
-        craft_ui_widgets::layout_components::Stack::new().id_salt(scope).fill_width().show(ui, |ui, _| {
-            if let Some(add) = add.take() {
-                add(ui);
-            }
-        });
+        craft_ui_widgets::layout_components::Stack::new().id_salt(scope).fill_width().show(ui, |ui, _| add(ui));
     }
 
     /// A wrapping line of options, indented under the line they belong to.
-    fn options(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
+    fn options(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, mut add: impl FnMut(&mut egui::Ui)) {
         use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
-        let mut add = Some(add);
-        craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(true).indent(1).show(ui, |ui, _| {
-            if let Some(add) = add.take() {
-                add(ui);
-            }
-        });
+        craft_ui_widgets::layout_components::Row::new().id_salt(scope).wrap(true).indent(1).show(ui, |ui, _| add(ui));
     }
 
     /// A section's title.
