@@ -201,7 +201,12 @@ mod framework {
                         crate::canvas::page_box_go(app, b, i);
                     }
                 }
-                Ask::Preflight => super::show_preflight(app),
+                Ask::Preflight => {
+                    // A double click on the count shows the panel at once and leaves no menu open behind it (the first click
+                    // opened it; the second would close it, but the click that shows the panel is the one the menu keeps).
+                    craft_ui_widgets::runtime::overlay::close_popups(ui.ctx());
+                    super::show_preflight(app);
+                }
             }
         }
     }
