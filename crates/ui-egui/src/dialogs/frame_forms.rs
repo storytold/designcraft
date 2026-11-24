@@ -51,8 +51,18 @@ pub(super) fn field(ui: &mut Ui, label: &str, salt: &str, mut body: impl FnMut(&
 /// A text field over the draft text of `key`. Every edit is written to the draft as it is typed, so OK always sees what
 /// is on screen. Returns the text before and after an edit that ended in this pass.
 pub(super) fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) -> Option<(Option<String>, String)> {
-    let out =
-        TextField::new(label.to_owned(), Bind::given(d.s(key))).id_salt(("frame_form_text", key)).limit(None::<usize>).enabled(enabled).show(ui);
+    text_chars(ui, d, key, label, enabled, 0)
+}
+
+/// [`text`] asking for the width of `chars` characters instead of the field length (`0` keeps the field length): a
+/// short number takes little, a title or a URL takes a line.
+pub(super) fn text_chars(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool, chars: u16) -> Option<(Option<String>, String)> {
+    let out = TextField::new(label.to_owned(), Bind::given(d.s(key)))
+        .width_chars(chars)
+        .id_salt(("frame_form_text", key))
+        .limit(None::<usize>)
+        .enabled(enabled)
+        .show(ui);
     if let Some(next) = out.events.landed().filter(|next| **next != d.s(key)).cloned() {
         d.fields.insert(key.into(), json!(next));
     }
@@ -484,7 +494,8 @@ fn qr_code(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         field(ui, &tr("Type:"), "type", |ui| select(ui, d, "type", &tr("Type:"), &types, true));
         for (key, caption) in fields.iter().copied() {
             field(ui, &tr(caption), key, |ui| {
-                text(ui, d, key, &tr(caption), true);
+                // The content is a link or a message: it asks for a line, the type and colour for a field's length.
+                text_chars(ui, d, key, &tr(caption), true, 40);
             });
         }
         field(ui, &tr("Color:"), "color", |ui| {

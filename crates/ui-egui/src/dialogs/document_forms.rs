@@ -3,16 +3,21 @@
 //! the document and its undo steps are what the native windows made.
 
 use super::find_forms::picker;
-use super::frame_forms::{captioned, check, field, message, select, text};
+use super::frame_forms::{captioned, check, field, message, select, text, text_chars};
 use super::framework::Form;
 use super::{Bound, Dialog, FILE_INFO_FIELDS, SETUP_EDGES, load_color_profile};
 use crate::DesignApp;
-use craft_ui_panels::sections::GroupBox;
+use craft_behavior::{ColumnWidth, IconId};
+use craft_ui_panels::sections::{GroupBox, Section};
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::Segmented;
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Bind, Entry, Pad, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::display::{Icon, Shade, Text};
 use craft_ui_widgets::form::FieldGroup;
-use craft_ui_widgets::layout_components::{Row, Stack};
+use craft_ui_widgets::layout::empty_cell;
+use craft_ui_widgets::layout_components::{Grid, Row, Stack};
+use craft_ui_widgets::primitives::{Glyph, IconSpec};
+use craft_ui_widgets::style::{SurfaceKind, UiTokens};
 use craft_ui_widgets::text::{TextField, link_toggle};
 use designcraft_geom::format_measure;
 use egui::Ui;
@@ -21,7 +26,7 @@ use serde_json::{Value, json};
 /// Color Settings.
 pub(crate) const COLOR_SETTINGS: Form = Form::new(color_settings);
 /// Document Setup.
-pub(crate) const DOCUMENT_SETUP: Form = Form::new(document_setup).extra(&[("Adjust Layout", "adjustLayout")]);
+pub(crate) const DOCUMENT_SETUP: Form = Form::new(document_setup);
 /// File Info.
 pub(crate) const FILE_INFO: Form = Form::new(file_info);
 
@@ -86,8 +91,32 @@ fn link(ui: &mut Ui, d: &mut Dialog, lang: &str, group: &str) {
     }
 }
 
-/// File › Document Setup: intent, pages, start page, facing pages and binding, then Page Size, Margins, Bleed and Slug and
-/// Adjust Layout. Adjust Layout accepts the dialog at once with `adjustLayout` set, so the objects follow the new size.
+/// One of the app's icons, by its name in `crate::icons`.
+#[derive(craft_ui::contract::MemoProps)]
+struct AppIcon(&'static str);
+
+impl Glyph for AppIcon {
+    fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: egui::Rect, color: egui::Color32, _mirrored: bool) {
+        crate::icons::paint(painter, rect, self.0, color);
+    }
+}
+
+static PORTRAIT: AppIcon = AppIcon("orient-portrait");
+static LANDSCAPE: AppIcon = AppIcon("orient-landscape");
+
+/// Bleed and Slug as InDesign lays them out: the row's name, the four edges and the link between them.
+const BLEED_COLUMNS: &[ColumnWidth] = &[
+    ColumnWidth::Content,
+    ColumnWidth::Fixed(84.0),
+    ColumnWidth::Fixed(84.0),
+    ColumnWidth::Fixed(84.0),
+    ColumnWidth::Fixed(84.0),
+    ColumnWidth::Content,
+];
+
+/// File › Document Setup: intent, pages, start page, binding and the facing pages and primary text frame flags, then Page
+/// Size, Margins, Bleed and Slug and Adjust Layout. Adjust Layout accepts the dialog at once with `adjustLayout` set, so the
+/// objects follow the new size.
 fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
@@ -103,28 +132,30 @@ fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
         })
         .map_or_else(|| tr("Custom"), |p| p.name.to_owned());
     let portrait = height >= width;
-    let orientations = [Entry::new("portrait".to_owned(), tr("Portrait")), Entry::new("landscape".to_owned(), tr("Landscape"))];
+    let orientations = [
+        Entry::new("portrait".to_owned(), tr("Portrait")).icon(IconSpec::glyph(&PORTRAIT)),
+        Entry::new("landscape".to_owned(), tr("Landscape")).icon(IconSpec::glyph(&LANDSCAPE)),
+    ];
     let facing = d.b("facingPages");
     let (inside, outside) = if facing { ("Inside:", "Outside:") } else { ("Left:", "Right:") };
+    let mut adjust = false;
     Stack::new().id_salt("document_setup").fill_width().show(ui, |ui, _| {
         FieldGroup::new(tr("Document Setup")).id_salt("document_setup_fields").show(ui, |ui, _| {
             field(ui, &tr("Intent:"), "intent", |ui| select(ui, d, "intent", &tr("Intent:"), &intents, true));
             field(ui, &tr("Number of Pages:"), "pages", |ui| {
-                Row::new().id_salt("document_setup_pages").show(ui, |ui, _| {
-                    text(ui, d, "pages", &tr("Number of Pages:"), true);
-                    check(ui, d, "facingPages", &tr("Facing Pages"), true);
-                });
+                text(ui, d, "pages", &tr("Number of Pages:"), true);
             });
             field(ui, &tr("Start Page #:"), "start_page", |ui| {
-                Row::new().id_salt("document_setup_start").show(ui, |ui, _| {
-                    text(ui, d, "startPage", &tr("Start Page #:"), true);
-                    // Set when the document is made (New Document); shown here, as InDesign does.
-                    check(ui, d, "primaryTextFrame", &tr("Primary Text Frame"), false);
-                });
+                text(ui, d, "startPage", &tr("Start Page #:"), true);
             });
             field(ui, &tr("Binding:"), "binding", |ui| select(ui, d, "binding", &tr("Binding:"), &bindings, true));
+            // A check box named by its own label sits straight in the group, in the control column: inside a `Field` the
+            // field's label names it and its own text is not drawn.
+            check(ui, d, "facingPages", &tr("Facing Pages"), true);
+            // Set when the document is made (New Document); shown here, as InDesign does.
+            check(ui, d, "primaryTextFrame", &tr("Primary Text Frame"), false);
         });
-        GroupBox::new(tr("Page Size:"), None).id_salt("document_setup_size_box").show(ui, |ui, _| {
+        Stack::new().id_salt("document_setup_size_box").fill_width().surface(SurfaceKind::Frame).pad(Pad::Regular).show(ui, |ui, _| {
             FieldGroup::new(tr("Page Size:")).id_salt("document_setup_size").show(ui, |ui, _| {
                 field(ui, &tr("Page Size:"), "preset", |ui| {
                     if let Some(next) = picker(ui, "preset", &tr("Page Size:"), &current_preset, &presets, false)
@@ -139,6 +170,9 @@ fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
                 field(ui, &tr("Width:"), "width", |ui| {
                     text(ui, d, "width", &tr("Width:"), true);
                 });
+                field(ui, &tr("Height:"), "height", |ui| {
+                    text(ui, d, "height", &tr("Height:"), true);
+                });
                 field(ui, &tr("Orientation:"), "orientation", |ui| {
                     let now = if portrait { "portrait" } else { "landscape" };
                     let out =
@@ -149,49 +183,59 @@ fn document_setup(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bo
                         d.fields.insert("height".into(), json!(w));
                     }
                 });
-                field(ui, &tr("Height:"), "height", |ui| {
-                    text(ui, d, "height", &tr("Height:"), true);
-                });
             });
         });
         GroupBox::new(tr("Margins"), None).id_salt("document_setup_margins_box").show(ui, |ui, _| {
-            FieldGroup::new(tr("Margins")).id_salt("document_setup_margins").show(ui, |ui, _| {
-                for (caption, e) in [("Top:", "Top"), ("Bottom:", "Bottom"), (inside, "Inside"), (outside, "Outside")] {
-                    field(ui, &tr(caption), &format!("margin{e}"), |ui| {
-                        Row::new().id_salt(("document_setup_margin", e)).show(ui, |ui, _| {
-                            edge(ui, d, "margin", e, &tr(caption));
-                            if e == "Top" {
-                                link(ui, d, &lang, "margin");
-                            }
-                        });
-                    });
+            // Two columns with the link between them: Top and Bottom, then Inside and Outside (Left and Right).
+            Row::new().id_salt("document_setup_margins").fill_width().show(ui, |ui, _| {
+                FieldGroup::new(tr("Margins")).id_salt("document_setup_margins_vertical").show(ui, |ui, _| {
+                    for (caption, e) in [("Top:", "Top"), ("Bottom:", "Bottom")] {
+                        field(ui, &tr(caption), &format!("margin{e}"), |ui| edge(ui, d, "margin", e, &tr(caption)));
+                    }
+                });
+                link(ui, d, &lang, "margin");
+                FieldGroup::new(tr("Margins")).id_salt("document_setup_margins_horizontal").show(ui, |ui, _| {
+                    for (caption, e) in [(inside, "Inside"), (outside, "Outside")] {
+                        field(ui, &tr(caption), &format!("margin{e}"), |ui| edge(ui, d, "margin", e, &tr(caption)));
+                    }
+                });
+            });
+        });
+        Section::new(tr("Bleed and Slug")).id_salt("document_setup_bleed").show(ui, |ui, _| {
+            Grid::new(BLEED_COLUMNS).id_salt("document_setup_bleed_grid").show(ui, |ui, _| {
+                empty_cell(ui);
+                for e in SETUP_EDGES {
+                    Text::new(tr(e)).shade(Shade::Muted).show(ui);
+                }
+                empty_cell(ui);
+                for (group, caption) in [("bleed", "Bleed:"), ("slug", "Slug:")] {
+                    Text::new(tr(caption)).show(ui);
+                    for e in SETUP_EDGES {
+                        edge(ui, d, group, e, &format!("{} {}", tr(caption), tr(e)));
+                    }
+                    link(ui, d, &lang, group);
                 }
             });
         });
-        GroupBox::new(tr("Bleed and Slug"), None).id_salt("document_setup_bleed_box").show(ui, |ui, _| {
-            for (group, caption) in [("bleed", "Bleed:"), ("slug", "Slug:")] {
-                FieldGroup::new(tr(caption)).id_salt(("document_setup_group", group)).show(ui, |ui, _| {
-                    for e in SETUP_EDGES {
-                        field(ui, &tr(e), &format!("{group}{e}"), |ui| {
-                            Row::new().id_salt(("document_setup_edge", group, e)).show(ui, |ui, _| {
-                                edge(ui, d, group, e, &format!("{} {}", tr(caption), tr(e)));
-                                if e == "Top" {
-                                    link(ui, d, &lang, group);
-                                }
-                            });
-                        });
-                    }
-                });
-            }
+        // Adjust Layout sets `adjustLayout` and accepts at once.
+        Row::new().id_salt("document_setup_adjust").fill_width().show(ui, |ui, _| {
+            Icon::new(IconSpec::svg(IconId::new("info"))).id_salt("document_setup_info").show(ui);
+            message(ui, &tr("Adjust page elements to document changes"));
+            adjust |= Button::new(tr("Adjust Layout")).id_salt("document_setup_adjust_button").show(ui).clicked();
         });
-        // Adjust Layout is a footer button (`Form::extra`): it sets `adjustLayout` and accepts at once.
-        message(ui, &tr("Adjust page elements to document changes"));
     });
+    if adjust {
+        d.fields.insert("adjustLayout".into(), json!(true));
+        return Some(true);
+    }
     None
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // File Info
+
+/// How many characters wide File Info's fields ask to be: a title, a URL or a notice fits without scrolling.
+const FILE_INFO_CHARS: u16 = 40;
 
 fn file_info(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let lang = app.ui.language.clone();
@@ -200,13 +244,17 @@ fn file_info(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
             let label = crate::i18n::tr(&lang, caption).to_string();
             field(ui, &label, key, |ui| {
                 if key == "description" {
-                    let out =
-                        TextField::new(label.clone(), Bind::given(d.s(key))).lines(3).limit(None::<usize>).id_salt(("file_info_text", key)).show(ui);
+                    let out = TextField::new(label.clone(), Bind::given(d.s(key)))
+                        .lines(3)
+                        .width_chars(FILE_INFO_CHARS)
+                        .limit(None::<usize>)
+                        .id_salt(("file_info_text", key))
+                        .show(ui);
                     if let Some(next) = out.events.landed().filter(|next| **next != d.s(key)).cloned() {
                         d.fields.insert(key.into(), Value::String(next));
                     }
                 } else {
-                    text(ui, d, key, &label, true);
+                    text_chars(ui, d, key, &label, true, FILE_INFO_CHARS);
                 }
             });
         }
@@ -292,6 +340,23 @@ mod tests {
         let sent = kit::journal(&h, "layout.documentSetup").split_off(opened);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert_eq!((sent[0].1["adjustLayout"].as_bool(), sent[0].1["pages"].as_u64()), (Some(true), Some(3)));
+    }
+
+    /// Regression: Document Setup's flags are check boxes with their own names (Primary Text Frame is dimmed), and the Bleed
+    /// and Slug grid edits the bleed and the slug apart.
+    #[test]
+    fn document_setup_flags_and_the_bleed_and_slug_grid() {
+        let mut app = kit::app(1, false);
+        crate::dialogs::open_document_setup(&mut app);
+        let mut h = kit::harness(app);
+        assert!(kit::disabled(&h, CHECK, "Primary Text Frame", 0), "set when the document is made");
+        let facing = kit::draft(&h).b("facingPages");
+        kit::click(&mut h, CHECK, "Facing Pages", 0);
+        assert_eq!(kit::draft(&h).b("facingPages"), !facing);
+        kit::type_and_commit(&mut h, "Bleed: Top", 0, "9 pt");
+        kit::type_and_commit(&mut h, "Slug: Top", 0, "4 pt");
+        let draft = kit::draft(&h);
+        assert_eq!((draft.m("bleedTop"), draft.m("slugTop")), (Some(9.0), Some(4.0)));
     }
 
     /// Regression: File Info sends the typed fields, and the keywords as a list only when they were edited.
