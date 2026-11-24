@@ -330,8 +330,9 @@ fn overflowing_document_tabs_are_reached_through_the_menu_that_lists_every_docum
     // The chosen document's tab is brought into view.
     let strip = tab.y_range();
     for (n, index) in [(7_usize, 6_usize), (30, 29)] {
+        let label = format!("Doc {n} @");
         let entry = h
-            .query_all_by_label_contains(&format!("Doc {n} @"))
+            .query_all_by_label_contains(&label)
             .find(|node| !strip.contains(node.rect().center().y))
             .unwrap_or_else(|| panic!("Doc {n} is listed"));
         entry.click();
