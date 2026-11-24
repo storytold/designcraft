@@ -27,7 +27,7 @@ use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
 use craft_ui_widgets::style::{SurfaceKind, TypeRole, UiTokens};
 use craft_ui_widgets::tabs::{Tab, TabKind, TabStrip};
 use craft_ui_widgets::text::{NumberField, TextField};
-use craft_ui_widgets::tile_grid::{CardText, GridZoom, Tile, TileGrid};
+use craft_ui_widgets::tile_grid::{CardText, Tile, TileGrid};
 use designcraft_geom::Unit;
 use egui::{Color32, Rect, Ui};
 use serde_json::{Value, json};
@@ -53,9 +53,9 @@ const DIALOG_WIDTH_SHARE: f32 = 0.8;
 const TWO_PANES: f32 = 700.0;
 /// The details' two columns of captioned controls, each as wide as the native dialog's.
 const DETAIL_COLUMNS: &[ColumnWidth] = &[ColumnWidth::Fixed(124.0), ColumnWidth::Fixed(124.0)];
-/// The preset cards' picture: this share of the card thumbnail side wide, and this much wider than high, so a card is
+/// The preset cards' picture: this many points wide, and this much wider than high, so a card is
 /// about 125 by 140 points with its name and size under the page, as the native cards were.
-const CARD_ZOOM: f64 = 0.82;
+const CARD_SIDE: f32 = 108.0;
 const CARD_ASPECT: f32 = 1.5;
 
 /// One of the app's icons, by its name in `crate::icons`.
@@ -160,12 +160,15 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let keys: Vec<&'static str> = TABS.iter().map(|(key, _)| *key).collect();
     let shown = keys.iter().copied().find(|key| *key == current).unwrap_or(TABS[0].0);
     let source = keyed(&keys, |key: &&'static str| *key);
-    let strip =
-        TabStrip::new(tr(app, "New Document")).kind(TabKind::Text).shown(shown).natural_height(true).show_items(ui, &source, &mut |key, _| {
+    let strip = TabStrip::new(tr(app, "New Document")).kind(TabKind::Text).large().shown(shown).natural_height(true).show_items(
+        ui,
+        &source,
+        &mut |key, _| {
             let label = TABS.iter().find(|(held, _)| held == key).map_or("", |(_, label)| *label);
             let tab = Tab::new(tr(app, label));
             if *key == "recent" { tab.icon(IconSpec::glyph(&CLOCK)) } else { tab }
-        });
+        },
+    );
     for event in strip.response.events {
         if let CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } = event
             && let Some(key) = keys.last()
@@ -213,7 +216,7 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         .select(SelectMode::Single)
         .deletable(saved)
         .rows_stamp(list.len() as u64)
-        .zoom(GridZoom::Fixed(CARD_ZOOM))
+        .card_size(CARD_SIDE)
         .aspect(CARD_ASPECT)
         .selection(Bind::given(selection))
         // The presets' inset scrolls; the grid takes its whole height inside it.
