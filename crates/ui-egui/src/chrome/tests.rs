@@ -161,7 +161,7 @@ fn keys_typed_in_the_search_field_stay_out_of_the_document() {
 }
 
 /// The status bar's preflight count: the lowest button named Preflight (the Preflight panel's icon is in the dock above it).
-fn preflight_count<S>(h: &egui_kittest::Harness<'static, S>) -> egui_kittest::Node<'_> {
+fn preflight_count<'a, S>(h: &'a egui_kittest::Harness<'static, S>) -> egui_kittest::Node<'a> {
     h.query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Preflight"))
         .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
         .expect("the status bar's preflight count")
@@ -195,17 +195,17 @@ fn status_bar_error_count_opens_the_preflight_panel() {
 #[test]
 fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
     use egui::accesskit::Role;
+    fn page_box<'a>(h: &'a egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Node<'a> {
+        h.query_all_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"))
+            .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+            .expect("the status bar's page box")
+    }
     let mut app = app();
     app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
     app.run("layout.parents.new", serde_json::json!({"prefix": "B", "name": "Cover"})).unwrap();
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open(app, vec2(1200.0, 700.0));
     // The status bar's page box is the lowest select named Page (the Properties panel has one too).
-    let page_box = |h: &egui_kittest::Harness<'static, test_window::Window>| {
-        h.query_all_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"))
-            .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
-            .expect("the status bar's page box")
-    };
     let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| page_box(h).value().unwrap_or_default();
     assert_eq!(shown(&h), "1");
     h.state_mut().app.run("layout.parents.edit", serde_json::json!({"on": true})).unwrap();
@@ -322,7 +322,7 @@ fn overflowing_document_tabs_are_reached_through_the_menu_that_lists_every_docum
     let tab = tab_of(&h, "Doc 1 @").expect("the first tab is shown");
     assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
     let more = h.get_by_label("More tabs").rect().center();
-    test_window::click_at(&mut h, more);
+    click_in(&mut h, more);
     h.run_steps(3);
     for n in 1..=30 {
         assert!(h.query_all_by_label_contains(&format!("Doc {n} @")).next().is_some(), "Doc {n} is in the list");
@@ -341,7 +341,7 @@ fn overflowing_document_tabs_are_reached_through_the_menu_that_lists_every_docum
         assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
         if n == 7 {
             let more = h.get_by_label("More tabs").rect().center();
-            test_window::click_at(&mut h, more);
+            click_in(&mut h, more);
             h.run_steps(3);
         }
     }
@@ -793,6 +793,14 @@ fn drag<S>(h: &mut egui_kittest::Harness<'static, S>, from: egui::Pos2) -> Vec<e
     press(h, from + vec2(48.0, 3.0), false);
     out.extend(window_commands(h, 2));
     out
+}
+
+/// A primary click at `pos`, then a few frames.
+fn click_in<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.drag_at(pos);
+    h.drop_at(pos);
+    h.run_steps(4);
 }
 
 /// A click: the window commands it sends.
