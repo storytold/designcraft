@@ -2750,7 +2750,8 @@ fn native_gui_two_completed_clicks_count_once_each_in_order() {
 /// The craft UI runtime's one-press rule (H0) gives a frame at most one pointer press, as its last pointer event, and
 /// holds the events after it for the next frame. So the valid click completes first (its release arrives in the frame
 /// that also carries the malformed press) and counts once, as a click: its caret and release. The malformed press is
-/// then rejected: no second caret or release, no history, no drag from it. A discarded pass replays neither press.
+/// then rejected (the app's input hook turns it into `PointerGone`, so no pass sees it as a press): no second caret
+/// or release, no history, no drag from it. A discarded pass replays neither press.
 #[test]
 fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
     for discard in [false, true] {
@@ -2771,7 +2772,8 @@ fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
             discard,
         );
         assert_eq!(batch_edges(&edges), (true, true, false));
-        assert_eq!(edges.iter().filter(|e| e.0).count(), 2, "each press is seen once; discard must not replay malformed input");
+        // The app's input hook turns the malformed press into `PointerGone`, so only the valid press reaches a pass.
+        assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "the valid press is seen once; discard must not replay malformed input");
         let clicked = f.app.session.doc().unwrap().selection.text.map(|t| (t.story.0, t.anchor, t.focus));
         assert_eq!(clicked, Some((f.target.as_u64().unwrap(), f.focus, f.focus)), "discard={discard}: the completed click's caret");
         let pointer: Vec<&str> = f.app.session.journal[journal..]

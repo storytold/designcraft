@@ -86,6 +86,8 @@ fn saved_preset_delete_buttons_keep_the_preview_and_never_create_a_document() {
     app.run("file.savePreset", json!({"name":"Landscape draft","width":792,"height":612,"pages":2})).unwrap();
     app.run("app.newDocumentDialog", json!({})).unwrap();
     let mut h = kit::harness_sized(app, vec2(1440.0, 900.0));
+    // The setup's own `file.new` is in the journal: only what the dialog runs from here counts.
+    let journal = h.state().session.journal.len();
     kit::click(&mut h, &[Role::Tab], "Saved", 0);
     let portrait = card_at(&h, "Portrait draft");
     kit::click_at(&mut h, portrait);
@@ -119,7 +121,7 @@ fn saved_preset_delete_buttons_keep_the_preview_and_never_create_a_document() {
     let app = h.state();
     assert!(app.session.prefs.document_presets.is_empty());
     assert_eq!(app.session.documents().len(), count);
-    assert!(kit::journal(&h, "file.new").is_empty(), "no document was created");
+    assert!(app.session.journal[journal..].iter().all(|(id, _)| id != "file.new"), "no document was created");
 }
 
 #[test]

@@ -214,6 +214,23 @@ fn wheel_navigate(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf:
     }
 }
 
+/// In a pass's events: where the primary button was released before the pass's first primary press, if it was, and
+/// whether it is released again after the last one.
+fn primary_release_before_press(events: &[egui::Event]) -> (Option<Pos2>, bool) {
+    let primary: Vec<(bool, Pos2)> = events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, .. } => Some((*pressed, *pos)),
+            _ => None,
+        })
+        .collect();
+    let Some(first_press) = primary.iter().position(|(pressed, _)| *pressed) else { return (None, false) };
+    let before = primary[..first_press].iter().rev().find(|(pressed, _)| !pressed).map(|(_, at)| *at);
+    let last_press = primary.iter().rposition(|(pressed, _)| *pressed).unwrap_or(first_press);
+    let after = primary[last_press + 1..].iter().any(|(pressed, _)| !pressed);
+    (before, after)
+}
+
 /// Where the primary button went down this pass, if egui no longer holds the press origin. A pointer that left (or whose
 /// last event was malformed, which the input hook turns into `PointerGone`) ends the gesture: an earlier press of the pass
 /// is not recovered past it, so a later release cannot complete it.
@@ -356,6 +373,20 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     // Recover the actual primary press position, preserving the origin for held gestures.
     let origin = origin.or_else(|| recent_primary_press(ui));
     let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
+    // The craft UI runtime gives a pass at most one press, as its last pointer event, so the pass that carries a new
+    // press can also carry the release of the press held from an earlier pass, before it. That release ends the held
+    // press first, at its own position: the tool sees one press and its release, then the next press.
+    let mut released = released;
+    if down
+        && pressed
+        && let (Some(at), after) = ui.input(|i| primary_release_before_press(&i.events))
+    {
+        let at = if at.is_finite() { at } else { latest.unwrap_or(rect.center()) };
+        note_release(ui, clicks_id, Some(at), now);
+        events.push(PointerEvent { kind: PointerKind::Up, pos: pos(at), mods: m, clicks: 1 });
+        down = false;
+        released = after;
+    }
     if pressed
         && !space
         && !menu_open

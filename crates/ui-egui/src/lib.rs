@@ -402,6 +402,7 @@ pub(crate) mod test_window {
         // where egui embeds viewports.
         ctx.set_embed_viewports(true);
         crate::framework_transform::install(&ctx);
+        crate::cursors::install(&ctx);
         // The framework's services get a frame to route keys and focus in, as `DesignApp::raw_input_hook` gives them
         // each frame in the shipping window; a test that calls the hook replaces it each frame.
         craft_ui_widgets::runtime::frame::set_input(&ctx, craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()));
