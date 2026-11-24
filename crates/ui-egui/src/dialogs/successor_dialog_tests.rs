@@ -745,6 +745,40 @@ fn preferences_form_reaches_the_widest_option_in_a_very_small_window() {
     assert!(kit::draft(&h).b("absolutePageNumbers"));
 }
 
+/// Scrolls New Document's one column with the wheel, over the column, until `find`'s node lies wholly in the window,
+/// as a person reaches a field in a small window; returns its bounds, or panics with where it stayed.
+fn wheel_into_view(
+    h: &mut egui_kittest::Harness<'_, DesignApp>,
+    what: &str,
+    find: impl Fn(&egui_kittest::Harness<'_, DesignApp>) -> Option<egui::Rect>,
+) -> egui::Rect {
+    for _ in 0..24 {
+        let window = kit::screen(h);
+        let Some(target) = find(h) else { panic!("{what} is not shown") };
+        // What the column shows: the dialog under its title and over its footer, inside the window.
+        let dialog = h.query_all_by_role(Role::Dialog).next().map_or(window, |node| node.rect()).intersect(window);
+        let shown = egui::Rect::from_min_max(egui::pos2(dialog.left(), dialog.top() + 50.0), egui::pos2(dialog.right(), dialog.bottom() - 60.0));
+        if shown.contains_rect(target) || (window.contains_rect(target) && shown.height() < target.height()) {
+            return target;
+        }
+        let over = shown.center();
+        kit::event(h, egui::Event::PointerMoved(over));
+        let delta = (target.center().y - over.y).clamp(-40.0, 40.0);
+        kit::event(
+            h,
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -delta),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+                source: egui::MouseWheelSource::Unknown,
+            },
+        );
+        kit::steps(h, 2);
+    }
+    panic!("{what} cannot be reached with the wheel: {:?} in {:?}", find(h), kit::screen(h))
+}
+
 /// Successor of `new_document_vertical_scroll_reaches_every_field_and_preset`: in a very small window New Document's
 /// Primary Text Frame caption is reached by scrolling and toggles its check box, and the preset cards below the details are
 /// reached too.
@@ -757,10 +791,11 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
     for expected in ["New Document", "Create", "Close"] {
         assert!(kit::in_view(&h, expected), "{expected} is in the window; {}", fit_report(&h, "New Document"));
     }
-    let at = kit::reach(&mut h, "Primary Text Frame").center();
+    // The one column scrolls under the title and over the footer: the wheel over it reaches what lies below.
+    let at = wheel_into_view(&mut h, "Primary Text Frame", |h| kit::rect_of(h, "Primary Text Frame")).center();
     kit::click_at(&mut h, at);
     assert!(kit::draft(&h).b("primaryTextFrame"), "the caption toggles its checkbox");
-    kit::reach(&mut h, "[Default]");
+    wheel_into_view(&mut h, "[Default]", |h| kit::rect_of(h, "[Default]"));
 }
 
 /// Successor of `arabic_new_document_fields_remain_reachable_and_editable`: with the Arabic interface, at three window sizes,
@@ -776,16 +811,17 @@ fn new_document_form_arabic_fields_remain_reachable_and_editable() {
             app.ui.dialog.as_mut().unwrap().fields.insert(field.into(), json!(value));
         }
         let mut h = kit::harness_sized(app, size);
-        // The Height field may start partly below the body's clip: scroll to it like the other fields.
-        let reached = kit::field_showing(&h, "66p1");
-        let _ = reached;
-        let node = h.query_all_by_role(Role::TextInput).find(|node| node.value().as_deref() == Some("66p1")).expect("66p1 is shown");
-        node.scroll_to_me();
-        kit::steps(&mut h, 3);
+        // The Height field may start partly below the column's clip: scroll to it with the wheel like the other fields.
+        let shows = |value: &'static str| {
+            move |h: &egui_kittest::Harness<'_, DesignApp>| {
+                h.query_all_by_role(Role::TextInput).find(|node| node.value().as_deref() == Some(value)).map(|node| node.rect())
+            }
+        };
+        wheel_into_view(&mut h, "66p1", shows("66p1"));
         kit::retype_showing(&mut h, "66p1", "88p8");
         assert_eq!(kit::draft(&h).s("height"), "88p8", "numeric fields accept edits");
         let caption = crate::i18n::tr("ar", "Primary Text Frame");
-        let at = kit::reach(&mut h, caption).center();
+        let at = wheel_into_view(&mut h, caption, |h| kit::rect_of(h, caption)).center();
         kit::click_at(&mut h, at);
         assert!(kit::draft(&h).b("primaryTextFrame"), "checkboxes remain clickable");
         for (_, value) in &fields[1..] {
