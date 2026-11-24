@@ -1,6 +1,6 @@
-use super::caret::story_of;
+use super::caret::validated_story_of;
 use super::format::{Target, effective_char_format, format_targets};
-use super::{ItemId, Result, Session, StoryId, Value, bad, bool_or, json};
+use super::{Result, Session, StoryId, Value, bad, bool_or, json};
 
 /// The stories of the text selection, the selected cells and the selected text frames.
 pub(super) fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
@@ -19,24 +19,8 @@ pub(super) fn selected_stories(s: &Session) -> Result<Vec<StoryId>> {
 
 /// Target stories for a story-wide command: explicit `story`/`frame` if provided, else the current selection.
 pub(super) fn target_stories(s: &Session, p: &Value, cmd: &str) -> Result<Vec<StoryId>> {
-    let explicit = |key| p.get(key).filter(|v| !v.is_null());
-    if explicit("story").is_some() || explicit("frame").is_some() {
-        let doc = &s.doc()?.doc;
-        for key in ["story", "frame"] {
-            if let Some(value) = explicit(key) {
-                let id = value.as_u64().ok_or_else(|| bad(cmd, format!("`{key}` must be an unsigned integer")))?;
-                let sid = if key == "story" {
-                    StoryId(id)
-                } else {
-                    let item = doc.item(ItemId(id)).ok_or_else(|| bad(cmd, format!("no such frame {id}")))?;
-                    item.text_frame().ok_or_else(|| bad(cmd, format!("frame {id} holds no text")))?.story
-                };
-                if doc.story(sid).is_none() {
-                    return Err(bad(cmd, format!("no such story {}", sid.0)));
-                }
-            }
-        }
-        return Ok(vec![story_of(s, p).ok_or_else(|| bad(cmd, "no such story"))?]);
+    if p.get("story").is_some_and(|v| !v.is_null()) || p.get("frame").is_some_and(|v| !v.is_null()) {
+        return Ok(validated_story_of(s, p, cmd)?.into_iter().collect());
     }
     selected_stories(s)
 }
