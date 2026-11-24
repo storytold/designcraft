@@ -381,8 +381,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ruler_units_menus(app, &resp, full, rect, &doc);
     }
     context_menu(app, ui, &resp);
+    // The task bar hangs in an area of its own: shown from a measuring run too, its components would open their stages twice
+    // in one pass, under the ids the real run gives them.
     if let Some(r) = sel_rect
         && !preview
+        && !measuring
         && r.intersects(screen)
     {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);
