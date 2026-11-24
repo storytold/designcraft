@@ -2167,9 +2167,9 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
 fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_with() {
     use table_layout_kit as kit;
     let mut app = kit::app(1, false);
-    // The colour the inks give, as the picker keeps typed inks only while they give the colour it shows.
+    // A CMYK colour: the picker keeps its inks (the draft's `model` names them) while they give the colour it shows.
     let hex = designcraft_color::Color::Cmyk { c: 0.0, m: 0.0, y: 0.0, k: 1.0 }.to_hex();
-    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": hex, "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": hex, "model": "cmyk", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
     let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
     // A C typed at 100% K is kept, whether or not the colour shown changes with it.
     let rgb = kit::draft(&h).fields.get("rgb").cloned();
