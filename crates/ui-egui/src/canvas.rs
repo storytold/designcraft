@@ -256,6 +256,15 @@ pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let outer = ui.available_rect_before_wrap();
+    // A sizing or measuring run of the dock's body shows the canvas too: the framework runs a body more than once to find
+    // its size, in a scope of its own and not always over the rect it then draws in. The canvas fills what it is given, so
+    // such a run only takes that space. The view rect, the render, the pane's focus record, the cursor, the menus and the
+    // task bar belong to the run that is drawn: from a measuring run they rendered the texture at the measured size,
+    // recorded a view rect and a focus target the drawn canvas does not have, and took the pass's input twice.
+    if ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx()) {
+        ui.allocate_rect(outer, Sense::hover());
+        return;
+    }
     let rot = app.view().map_or(0, |v| v.rotation % 4);
     let presenting = app.ui.screen_mode == ScreenMode::Presentation;
     // Scrollbars sit outside the view (right and bottom); rulers and the view share the rest.
@@ -274,15 +283,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let held = ui.data(|data| data.get_temp::<egui::Id>(last)).is_some_and(|id| ui.memory(|memory| memory.has_focus(id)));
     let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
     ui.data_mut(|data| data.insert_temp(last, resp.id));
-    // A sizing or measuring run of the dock's body shows the canvas too (the framework runs a body more than once to find its
-    // size); only the pass that is drawn takes the pass's input, or one Paste would paste once per run.
-    let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
-    if !measuring && input::keyboard_pane(app) {
+    if input::keyboard_pane(app) {
         ui.data_mut(|data| data.insert_temp(egui::Id::new(KEY_TARGET), resp.id));
     }
-    if measuring {
-        // Nothing to take: the real run reads the input.
-    } else if presenting {
+    if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,
         // Shift-click the previous one. Tools and selection don't see the input.
         present_fit(app, rect);
@@ -381,11 +385,10 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ruler_units_menus(app, &resp, full, rect, &doc);
     }
     context_menu(app, ui, &resp);
-    // The task bar hangs in an area of its own: shown from a measuring run too, its components would open their stages twice
-    // in one pass, under the ids the real run gives them.
+    // The task bar hangs in an area of its own, shown from the drawn run only (a measuring run returned above): from a
+    // measuring run too, its components would open their stages twice in one pass, under the ids the real run gives them.
     if let Some(r) = sel_rect
         && !preview
-        && !measuring
         && r.intersects(screen)
     {
         crate::taskbar::show(app, &ui.ctx().clone(), r, screen);

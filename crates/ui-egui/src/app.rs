@@ -100,6 +100,7 @@ impl DesignApp {
             control_synthetic: vec![],
             native_actions: Default::default(),
             native_events_pending: Default::default(),
+            host_order_frame: None,
             control_input_frame: Default::default(),
             clipboard_guard_installed: false,
             story_editor: None,

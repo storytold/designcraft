@@ -608,7 +608,11 @@ mod automation_contract_tests {
         }
     }
     fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) {
-        let mut output = ctx.run_ui(
+        framed(app, ctx, events).textures_delta.clear();
+    }
+    /// [`frame`], returning the frame's output.
+    fn framed(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+        ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
                 events,
@@ -618,8 +622,7 @@ mod automation_contract_tests {
                 app.logic(ui.ctx());
                 app.ui(ui);
             },
-        );
-        output.textures_delta.clear();
+        )
     }
     #[test]
     fn oversized_pointer_requests_leave_pending_events_unchanged() {
@@ -769,7 +772,14 @@ mod automation_contract_tests {
         assert_eq!(call(&mut app, &ctx, "ui.text", json!({"text":"field"}))["ok"], true);
         let events = std::mem::take(&mut app.control_synthetic);
         frame(&mut app, &ctx, events);
-        assert_eq!(app.ui.palette.as_deref(), Some("field"));
+        // Quick Apply is the framework's command palette: its search field keeps the query (`ui.palette` only says that
+        // it is open), so the field's accessibility node shows what was typed into it.
+        assert!(app.ui.palette.is_some(), "Quick Apply stays open");
+        ctx.enable_accesskit();
+        let mut output = framed(&mut app, &ctx, vec![]);
+        output.textures_delta.clear();
+        let typed = output.platform_output.accesskit_update.is_some_and(|update| update.nodes.iter().any(|(_, node)| node.value() == Some("field")));
+        assert!(typed, "the focused Quick Apply field took the typing");
         assert_eq!(app.session.execute("story.get", &json!({"story":f["story"]})).unwrap()["text"], "Hello");
     }
     #[test]

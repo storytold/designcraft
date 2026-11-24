@@ -248,7 +248,12 @@ fn bar_harness(app: DesignApp, size: egui::Vec2) -> egui_kittest::Harness<'stati
 fn open_menu<'a>(app: &'a mut DesignApp, runs: Vec<(&'static str, Vec<Item>)>, size: egui::Vec2) -> egui_kittest::Harness<'a> {
     use craft_ui::contract::overlay::Anchor;
     use craft_ui::contract::{Bind, Props as _, ShowContainer as _, Trigger};
-    let mut h = crate::test_window::builder::<()>().with_size(size).with_step_dt(1.0 / 60.0).build_ui(move |ui| {
+    // The window's UI fonts for the interface language, as `DesignApp::ui` installs them before it draws anything: the
+    // rows of a Japanese, Chinese or Korean menu need their faces.
+    let ctx = crate::test_window::context();
+    crate::theme::install_fonts(&ctx, &app.ui.language);
+    let builder = egui_kittest::HarnessBuilder::<()>::default().with_context(ctx);
+    let mut h = builder.with_size(size).with_step_dt(1.0 / 60.0).build_ui(move |ui| {
         let opener = ui.allocate_response(egui::vec2(8.0, 8.0), egui::Sense::hover());
         let mut open = true;
         let shown: &DesignApp = app;
