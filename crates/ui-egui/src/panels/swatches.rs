@@ -2196,7 +2196,11 @@ mod color_panel_tests {
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.event(egui::Event::Text("1".into()));
         h.run_steps(4);
-        let typed = h.query_by(|n| n.role() == egui::accesskit::Role::SpinButton && n.is_focused()).and_then(|n| n.value());
+        // The field writes its unit after the number ("1 %"): the number is what stays.
+        let typed = h
+            .query_by(|n| n.role() == egui::accesskit::Role::SpinButton && n.is_focused())
+            .and_then(|n| n.value())
+            .map(|v| v.trim_end_matches('%').trim_end().to_owned());
         assert_eq!(typed.as_deref(), Some("1"), "the typed text stays while the field has focus");
         let designcraft_color::Color::Cmyk { m, .. } = fill(h.state(), id) else { panic!("not CMYK") };
         assert!((m - 0.5).abs() < 1e-6, "nothing is applied while typing: {m}");

@@ -1244,10 +1244,13 @@ mod type_style_sdk_tests {
                 let actual = current(&mut h.state_mut().app, &[true; 6]);
                 assert_eq!(actual["type"], json!({"kind": "style", "name": "Missing imported rule"}));
                 assert_eq!(type_label("", &actual["type"]), "Missing imported rule", "the complete orphan is the actual placeholder, never Solid");
+                // The Select shows an orphan's own name as its value (its placeholder text), and claims no catalog ordinal.
+                let select = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h));
                 assert!(
-                    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, &name(&h)).value().is_none_or(|v| v.is_empty()),
-                    "public Select honestly reports no catalog ordinal/value for an orphan"
+                    select.value().is_none_or(|v| v.is_empty() || v == "Missing imported rule"),
+                    "public Select reports no catalog value for an orphan, only its own name"
                 );
+                assert!(select.accesskit_node().numeric_value().is_none(), "public Select reports no catalog ordinal for an orphan");
             }
             open(&mut h);
             assert_eq!(h.query_all_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Missing imported rule").count(), 0);

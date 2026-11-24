@@ -778,9 +778,9 @@ mod framework_actions_tests {
         let history = undo_len(&h);
         let start = h.state().app.session.journal.len();
         let family_name = label(&h, "Font Family");
-        // The framework family field is a button that opens the Font menu popover (the framework has no combo opener for an
-        // app-owned popover), so it is a Button named "Font Family" rather than a ComboBox.
-        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(family_name.as_str())).rect().center();
+        // The framework family field is a button that opens the Font menu popover; it reports itself as a combo box
+        // named "Font Family" with the current family as its value.
+        let pos = h.get_by(|n| n.role() == egui::accesskit::Role::ComboBox && n.label().as_deref() == Some(family_name.as_str())).rect().center();
         click_at(&mut h, pos);
         // The family menu naturally puts typing in its real search field.
         event(&mut h, Event::Text("Source Sans 3".to_owned()));
