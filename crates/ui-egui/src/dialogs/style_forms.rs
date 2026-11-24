@@ -54,7 +54,9 @@ fn preview(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
 /// The sections beside the page they show: a list of radio buttons that scrolls at the dialog's fixed height.
 fn section_nav(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, sections: &[(&str, &str)], title: &str) {
     let before = d.s("section");
-    Stack::new().id_salt("style_sections_box").scroll(Scroll::vertical()).room_height(380.0).show(ui, |ui, _| {
+    // Every section shows: a radio and its gap are about 28 points, and the box grows with the list.
+    let room = (sections.len() as f32 * 28.0).max(380.0);
+    Stack::new().id_salt("style_sections_box").scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
         let shown = RadioGroup::new(title.to_owned(), Bind::given(before.clone())).id_salt("style_sections").show(ui, |ui, _| {
             Stack::new().id_salt("style_section_list").show(ui, |ui, _| {
                 for (id, caption) in sections {
