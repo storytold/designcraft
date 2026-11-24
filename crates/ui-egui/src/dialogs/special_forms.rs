@@ -182,7 +182,7 @@ fn toc(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let levels: Vec<(String, String)> = (1..=9u8).map(|l| (l.to_string(), l.to_string())).collect();
     let specials = [("Tab Character", "^t"), ("Right Indent Tab", "^y"), ("Em Space", "^m"), ("En Space", "^>")];
     Stack::new().id_salt("toc").fill_width().show(ui, |ui, _| {
-        Row::new().id_salt("toc_title").wrap(true).show(ui, |ui, _| {
+        Row::new().id_salt("toc_title").fill_width().show(ui, |ui, _| {
             field(ui, &tr("Title:"), "title", |ui| {
                 text(ui, d, "title", &tr("Title:"), true);
             });

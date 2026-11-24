@@ -4,20 +4,23 @@
 //! the host's `confirm` and `cancel`.
 
 use super::frame_forms::{field, message, text};
+use super::text_forms::pick_list;
 use super::{CHANGE_FORMAT, CharFields, Dialog, FIND_FORMAT, FORMAT_EDIT, FORMAT_SECTIONS};
 use super::{char_sections, framework::Form};
 use crate::DesignApp;
+use crate::framework_transform::Artwork;
 use craft_ui_panels::dialog::Dialog as FrameworkDialog;
-use craft_ui_panels::sections::{DialogRole, FooterButton};
-use craft_ui_widgets::buttons::Button;
+use craft_ui_panels::sections::{DialogRole, FooterButton, GroupBox};
+use craft_ui_widgets::buttons::{Button, IconButton};
 use craft_ui_widgets::choice::{Radio, RadioGroup, Segmented};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+use craft_ui_widgets::contract::{Bind, Entry, Pad, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
 use craft_ui_widgets::display::Text;
 use craft_ui_widgets::form::{Field, FieldGroup, Help};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
+use craft_ui_widgets::primitives::IconSpec;
 use craft_ui_widgets::runtime::overlay::Backdrop;
-use craft_ui_widgets::style::TypeRole;
+use craft_ui_widgets::style::{SurfaceKind, TypeRole};
 use egui::Ui;
 use serde_json::{Map, Value, json};
 
@@ -27,6 +30,12 @@ pub(crate) const FIND_CHANGE: Form = Form::new(find_change);
 pub(crate) const FIND_FONT: Form = Form::new(find_font);
 /// User Dictionary.
 pub(crate) const USER_DICTIONARY: Form = Form::new(user_dictionary);
+
+/// The height of a format box, as InDesign gives it: room for a few lines of what is specified.
+const FORMAT_BOX_HEIGHT: f32 = 50.0;
+
+/// How many fonts the Find/Replace Font list shows before it scrolls.
+const FONT_LIST_ROWS: usize = 8;
 
 /// A picker over `current` from `options` (value, caption), with the value picked in this pass. A value none of them has
 /// shows as the placeholder.
@@ -240,26 +249,47 @@ fn format_box(ui: &mut Ui, d: &mut Dialog, lang: &str, find: bool) {
     let summary = super::format_summary(lang, d.fields.get(key));
     Stack::new().id_salt(("find_format_box", key)).fill_width().show(ui, |ui, _| {
         Text::new(tr(label)).show(ui);
-        Row::new().id_salt(("find_format_row", key)).fill_width().show(ui, |ui, _| {
-            Text::new(if summary.is_empty() { "\u{2014}".to_owned() } else { summary.clone() }).sizing(Sizing::FillWidth).show(ui);
-            if Button::new(tr(specify)).id_salt(("find_format_specify", key)).show(ui).clicked() {
-                let current = d.fields.get(key).cloned().unwrap_or_default();
-                let mut edit = Map::new();
-                edit.insert("for".into(), json!(if find { "find" } else { "change" }));
-                edit.insert("section".into(), json!("style"));
-                for name in ["charStyle", "paraStyle"] {
-                    if let Some(v) = current.get(name) {
-                        edit.insert(name.into(), v.clone());
+        // A sunken box that lists what is specified, with the specify and clear buttons at its side.
+        Row::new().id_salt(("find_format_row", key)).fill_width().least_height(FORMAT_BOX_HEIGHT).show(ui, |ui, _| {
+            Stack::new().id_salt(("find_format_summary", key)).surface(SurfaceKind::Sunken).pad(Pad::Regular).fill().show(ui, |ui, _| {
+                if !summary.is_empty() {
+                    Text::new(summary.clone()).sizing(Sizing::FillWidth).show(ui);
+                }
+            });
+            Stack::new().id_salt(("find_format_buttons", key)).show(ui, |ui, _| {
+                let specify = tr(specify);
+                if IconButton::new(IconSpec::glyph(&Artwork("find-format")))
+                    .id_salt(("find_format_specify", key))
+                    .label(specify.clone())
+                    .tooltip(specify)
+                    .show(ui)
+                    .clicked()
+                {
+                    let current = d.fields.get(key).cloned().unwrap_or_default();
+                    let mut edit = Map::new();
+                    edit.insert("for".into(), json!(if find { "find" } else { "change" }));
+                    edit.insert("section".into(), json!("style"));
+                    for name in ["charStyle", "paraStyle"] {
+                        if let Some(v) = current.get(name) {
+                            edit.insert(name.into(), v.clone());
+                        }
                     }
+                    for (k, v) in current.get("chars").and_then(Value::as_object).into_iter().flatten() {
+                        edit.insert(format!("c.{k}"), v.clone());
+                    }
+                    d.fields.insert(FORMAT_EDIT.into(), Value::Object(edit));
                 }
-                for (k, v) in current.get("chars").and_then(Value::as_object).into_iter().flatten() {
-                    edit.insert(format!("c.{k}"), v.clone());
+                let clear = tr("Clear specified attributes");
+                if IconButton::new(IconSpec::glyph(&Artwork("trash")))
+                    .id_salt(("find_format_clear", key))
+                    .label(clear.clone())
+                    .tooltip(clear)
+                    .show(ui)
+                    .clicked()
+                {
+                    d.fields.remove(key);
                 }
-                d.fields.insert(FORMAT_EDIT.into(), Value::Object(edit));
-            }
-            if Button::new(tr("Clear specified attributes")).id_salt(("find_format_clear", key)).show(ui).clicked() {
-                d.fields.remove(key);
-            }
+            });
         });
     });
 }
@@ -449,21 +479,13 @@ fn find_font(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
                 .replace("{count}", &fonts.len().to_string())
                 .replace("{missing}", &missing_count.to_string()),
         );
-        let before = at;
-        let shown = RadioGroup::new(tr("Fonts in Document"), Bind::given(before)).id_salt("find_font_list").show(ui, |ui, _| {
-            Stack::new().id_salt("find_font_rows").fill_width().scroll(Scroll::vertical()).room_height(180.0).show(ui, |ui, _| {
-                for (i, f) in fonts.iter().enumerate() {
-                    let label = format!(
-                        "{}{} {}",
-                        if missing(f) { "\u{26A0} " } else { "" },
-                        f["family"].as_str().unwrap_or(""),
-                        f["style"].as_str().unwrap_or("")
-                    );
-                    Radio::new(i).label(label).id_salt(("find_font_row", i)).show(ui);
-                }
-            });
-        });
-        if let Some(next) = shown.output.events.landed().copied().filter(|next| *next != before)
+        let labels: Vec<String> = fonts
+            .iter()
+            .map(|f| {
+                format!("{}{} {}", if missing(f) { "\u{26A0} " } else { "" }, f["family"].as_str().unwrap_or(""), f["style"].as_str().unwrap_or(""))
+            })
+            .collect();
+        if let Some(next) = pick_list(ui, "find_font_list", &tr("Fonts in Document"), &labels, Some(at), FONT_LIST_ROWS)
             && let Some(font) = fonts.get(next)
         {
             d.fields.insert("family".into(), font["family"].clone());
@@ -472,20 +494,21 @@ fn find_font(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         if let Some(rendered) = &rendered {
             line(ui, rendered);
         }
-        heading(ui, &tr("Replace With"));
-        FieldGroup::new(tr("Replace With")).id_salt("find_font_replace").show(ui, |ui, _| {
-            field(ui, &tr("Font Family:"), "to_family", |ui| {
-                if let Some(family) = picker(ui, "toFamily", &tr("Font Family:"), &d.s("toFamily"), &families, true) {
-                    let styles = crate::panels::fonts(app).styles(&family);
-                    let style = if styles.iter().any(|s| s == "Regular") { Some("Regular".to_owned()) } else { styles.first().cloned() };
-                    d.fields.insert("toFamily".into(), json!(family));
-                    d.fields.insert("toStyle".into(), json!(style.unwrap_or_default()));
-                }
-            });
-            field(ui, &tr("Font Style:"), "to_style", |ui| {
-                if let Some(style) = picker(ui, "toStyle", &tr("Font Style:"), &d.s("toStyle"), &style_options, false) {
-                    d.fields.insert("toStyle".into(), json!(style));
-                }
+        GroupBox::new(tr("Replace With"), None).id_salt("find_font_replace_box").show(ui, |ui, _| {
+            FieldGroup::new(tr("Replace With")).id_salt("find_font_replace").show(ui, |ui, _| {
+                field(ui, &tr("Font Family:"), "to_family", |ui| {
+                    if let Some(family) = picker(ui, "toFamily", &tr("Font Family:"), &d.s("toFamily"), &families, true) {
+                        let styles = crate::panels::fonts(app).styles(&family);
+                        let style = if styles.iter().any(|s| s == "Regular") { Some("Regular".to_owned()) } else { styles.first().cloned() };
+                        d.fields.insert("toFamily".into(), json!(family));
+                        d.fields.insert("toStyle".into(), json!(style.unwrap_or_default()));
+                    }
+                });
+                field(ui, &tr("Font Style:"), "to_style", |ui| {
+                    if let Some(style) = picker(ui, "toStyle", &tr("Font Style:"), &d.s("toStyle"), &style_options, false) {
+                        d.fields.insert("toStyle".into(), json!(style));
+                    }
+                });
             });
         });
         message(ui, &tr("Replace All updates this font throughout text and styles. Done keeps remaining fallback fonts."));
@@ -630,7 +653,7 @@ mod tests {
         let d = kit::draft(&h);
         assert!(!d.s("family").is_empty() && !d.s("toFamily").is_empty(), "a font is selected and a replacement chosen");
         let label = format!("{} {}", d.s("family"), d.s("style"));
-        let listed = h.query_all_by_role(Role::RadioButton).any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
+        let listed = h.query_all_by_role(Role::ListBoxOption).any(|node| node.accesskit_node().label().is_some_and(|name| name.ends_with(&label)));
         assert!(listed, "the selected font is a row of the list");
         kit::click(&mut h, BUTTON, "Done", 0);
         assert!(h.state().ui.dialog.is_none());
