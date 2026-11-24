@@ -10,7 +10,6 @@ use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::text::{TextField, link_toggle};
-use designcraft_geom::format_measure;
 use egui::Ui;
 use serde_json::{Value, json};
 
@@ -160,7 +159,7 @@ fn measure_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
         d.fields.insert(key.into(), Value::String(next));
     }
     if committed && let Some(value) = d.m(key).filter(|v| v.is_finite()) {
-        d.fields.insert(key.into(), json!(format_measure(value, d.unit)));
+        d.set_measure(key, value);
     }
 }
 
