@@ -224,7 +224,8 @@ fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
     use craft_ui_widgets::contract::{Props as _, Scroll, ShowContainer as _};
     use craft_ui_widgets::layout_components::Stack;
 
-    let room = ui.available_height();
+    // Less than the group's room by a margin, so the last row does not touch the window's edge.
+    let room = (ui.available_height() - 8.0).max(0.0);
     Stack::new().id_salt("typography").fill_width().scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| sections(ui, &mut changes));
     changes.apply(app);
 }

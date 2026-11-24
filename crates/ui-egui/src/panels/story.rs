@@ -65,6 +65,8 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// frame selected, the controls are disabled.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     show_framework(app, ui);
+    // Room under the row, so the panel does not end at the window's edge.
+    ui.add_space(8.0);
 }
 
 #[cfg(test)]
