@@ -2167,7 +2167,9 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
 fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_with() {
     use table_layout_kit as kit;
     let mut app = kit::app(1, false);
-    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
+    // The colour the inks give, as the picker keeps typed inks only while they give the colour it shows.
+    let hex = designcraft_color::Color::Cmyk { c: 0.0, m: 0.0, y: 0.0, k: 1.0 }.to_hex();
+    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": hex, "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
     let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
     // A C typed at 100% K is kept, whether or not the colour shown changes with it.
     let rgb = kit::draft(&h).fields.get("rgb").cloned();
@@ -2462,12 +2464,19 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     // The link of the weights (0), corners (1) or offsets (2), in reading order.
     let link = |h: &mut egui_kittest::Harness<'static, DesignApp>, n: usize| {
         use egui_kittest::kittest::{NodeT, Queryable};
-        let links = h.query_all_by_label("Make all settings the same").filter(|node| kit::TOGGLE.contains(&node.accesskit_node().role())).count();
-        assert_eq!(links, 3, "weights, corners and offsets each have a link");
-        kit::click(h, kit::TOGGLE, "Make all settings the same", n);
+        let mut links: Vec<egui::Rect> = h
+            .query_all_by_label("Make all settings the same")
+            .filter(|node| kit::TOGGLE.contains(&node.accesskit_node().role()))
+            .map(|node| node.rect())
+            .collect();
+        assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
+        // Top to bottom on the page: the weights', the corners', the offsets'.
+        links.sort_by(|a, b| a.center().y.total_cmp(&b.center().y));
+        kit::click_at(h, links[n].center());
     };
     // Unlinked, Left alone takes 10 pt.
     link(&mut h, 0);
+    assert_eq!(kit::draft(&h).fields.get("_linked.p.borderWeights").or(kit::draft(&h).fields.get("_linked.borderWeights")), Some(&json!(false)), "the click turned the weights' link off: {:?}", kit::draft(&h).fields.keys().filter(|k| k.contains("link")).collect::<Vec<_>>());
     kit::type_and_commit(&mut h, "Left:", 0, "10");
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
     // Linked again, the four take Top's weight; unlinked once more for the thick left side.
@@ -2573,7 +2582,8 @@ fn a_rules_default_gap_tint_shows_100() {
         .query_all_by_label("Gap Tint:")
         .find(|n| table_layout_kit::FIELD.contains(&n.accesskit_node().role()))
         .and_then(|n| n.value());
-    assert_eq!(field.as_deref(), Some("100%"));
+    // The field spells its unit with or without a space ("100%", "100 %"): what it shows is the whole 100.
+    assert_eq!(field.map(|text| text.split_whitespace().collect::<String>()).as_deref(), Some("100%"));
 }
 
 
