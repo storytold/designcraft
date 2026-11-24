@@ -22,7 +22,7 @@ fn story_editor_harness(text: &str) -> egui_kittest::Harness<'static, crate::tes
 }
 
 fn text_left(h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str) -> f32 {
-    h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
+    h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
 }
 
 /// Successor of `depth_marks_wait_for_composition_after_editing` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime.
