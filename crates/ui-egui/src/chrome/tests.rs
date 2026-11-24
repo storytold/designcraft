@@ -443,14 +443,14 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     // The size's list opens; choosing 72 pt sets the size.
     open_list(&mut h, "Font Size");
     let rows: Vec<String> = h.query_all_by_label("72 pt").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
-    h.query_all_by_label("72 pt").last().expect("the presets list's row").click();
-    h.run_steps(2);
+    let at = h.query_all_by_label("72 pt").last().expect("the presets list's row").rect().center();
+    test_window::click_at(&mut h, at);
     let journal: Vec<String> = h.state().app.session.journal.iter().rev().take(4).map(|(id, params)| format!("{id} {params}")).collect();
     assert_eq!(size_of(&h), Some(72.0), "the rows named 72 pt: {rows:?}; the last commands: {journal:?}");
     // Auto leading has the same list beside it.
     open_list(&mut h, "Leading");
-    h.query_all_by_label("60 pt").last().expect("the presets list's row").click();
-    h.run_steps(2);
+    let at = h.query_all_by_label("60 pt").last().expect("the presets list's row").rect().center();
+    test_window::click_at(&mut h, at);
     assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(60.0)));
     // The arrow keys step the size by a point.
     focus(&mut h, "Font Size");
