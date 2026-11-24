@@ -526,8 +526,10 @@ fn tool_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, vi:
         _ => return,
     };
     let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
+    // An Escape the tool did not take deselects, as everywhere else, only with no gesture in progress.
+    let busy = app.session.tool_busy();
     let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
-    if !handled && k == ToolKey::Escape {
+    if !handled && k == ToolKey::Escape && !busy {
         let _ = app.run("edit.deselectAll", json!({}));
     }
     app.after_engine();

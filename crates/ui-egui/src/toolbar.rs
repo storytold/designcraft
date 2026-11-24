@@ -86,37 +86,56 @@ pub(crate) fn apply_none(app: &mut DesignApp) -> Result<Value, String> {
 }
 
 /// The tools as framework commands, for the board in the language `lang`: each tool's own keymap command
-/// (`keys::tool`), its translated label and its artwork's name. They carry no default chords: the app's keymap is the
-/// one dispatcher of every key, and the board only resolves and fires these for the Tools rail. One catalog per
-/// language, so its generation moves only when the language does.
-pub(crate) fn tool_catalog(lang: &str) -> craft_ui_widgets::runtime::commands::AppCatalog {
+/// (`keys::tool`), its translated label, its artwork's name and the bindings `keymap` (the app's, with the user's
+/// overrides) gives it. Their chords are shown only (`AppCatalog::shown_only`): the Tools rail's tooltips and flyout
+/// rows show them, while the app's keymap stays the one dispatcher of every key, and the board only resolves and fires
+/// these for the rail. One catalog per language, built again with a new generation when the keymap's platform or the
+/// user's overrides change, so a rebound tool shows its new chord.
+pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_ui_widgets::runtime::commands::AppCatalog {
     use craft_ui_widgets::runtime::commands::AppCatalog;
+    use std::hash::{Hash as _, Hasher as _};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, PoisonError};
-    static CATALOGS: Mutex<Vec<(String, AppCatalog)>> = Mutex::new(Vec::new());
+    /// Each language's catalog, with the hash of the platform and overrides it was built under.
+    static CATALOGS: Mutex<Vec<(String, u64, AppCatalog)>> = Mutex::new(Vec::new());
+    /// A new generation for every catalog built, below `quick_apply_catalog`'s, which count from 1 << 32.
+    static GENERATION: AtomicU64 = AtomicU64::new(1);
+    // The keymap's bindings follow its platform (the web build learns it on the first frame) and the user's overrides.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    keymap.platform().hash(&mut hasher);
+    keymap.overrides().iter().for_each(|entry| entry.hash(&mut hasher));
+    let overrides = hasher.finish();
     let mut catalogs = CATALOGS.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, catalog)) = catalogs.iter().find(|(code, _)| code == lang) {
+    let held = catalogs.iter().position(|(code, _, _)| code == lang);
+    if let Some((_, _, catalog)) = held.and_then(|at| catalogs.get(at)).filter(|(_, hash, _)| *hash == overrides) {
         return catalog.clone();
     }
+    let mut tools = Vec::new();
     let defs: Vec<craft_keymap::CommandDef> = crate::keys::catalog()
         .iter()
         .filter_map(|def| {
             let tool = crate::keys::tool_of(&def.command)?;
             let icon = TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| t.id == tool).map(|t| t.icon);
             let mut def = def.clone();
-            def.defaults.clear();
+            def.defaults = keymap.bindings(&def.command);
             def.label = crate::i18n::tr(lang, &def.label).to_owned();
             if let Some(icon) = icon {
                 def = def.with_icon(icon);
             }
+            tools.push(def.command.id.clone());
             Some(def)
         })
         .collect();
-    let generation = catalogs.len() as u64 + 1;
-    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(tools)).unwrap_or_else(|error| {
         log::warn!("the tool commands are not on the framework's board: {error}");
         AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
     });
-    catalogs.push((lang.to_owned(), catalog.clone()));
+    let entry = (lang.to_owned(), overrides, catalog.clone());
+    match held.and_then(|at| catalogs.get_mut(at)) {
+        Some(slot) => *slot = entry,
+        None => catalogs.push(entry),
+    }
     catalog
 }
 
@@ -219,7 +238,12 @@ mod framework {
                     tall > ui.available_height() - toggle_h
                 };
                 let cols = if app.ui.tools_double_column || crowded { 2 } else { 1 };
-                let width = grid(cols).width(cols as u16);
+                // egui keeps the room of the panel's separator line in the frame's outer margin on its inner edge (the
+                // noninteractive stroke's width, rounded: `Panel::resolve_frame`), so the panel is that much wider than the
+                // rail's grid: the rail takes as many columns as the width it gets holds, and at two columns less a point it
+                // laid out one.
+                let separator = ui.style().visuals.widgets.noninteractive.bg_stroke.width.round();
+                let width = grid(cols).width(cols as u16) + separator;
                 egui::Panel::left("tools").exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |ui| {
                     Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                         let icon = if cols == 1 { "double-chevron-right" } else { "double-chevron-left" };
