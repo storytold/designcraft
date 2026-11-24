@@ -820,7 +820,7 @@ mod tests {
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
         h.run_steps(2);
         let text_x = |h: &egui_kittest::Harness<'_, crate::test_window::Window>| {
-            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some("Ruler story")).rect().min.x
+            h.get_by(|n| n.role() == egui::accesskit::Role::TextRun && !n.is_hidden() && n.value().as_deref() == Some("Ruler story")).rect().min.x
         };
         let with = text_x(&h);
         h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
@@ -843,8 +843,10 @@ mod tests {
         h
     }
 
+    /// Where the story's text starts: its text run, which sits after the style column and the ruler. (The editor's own node
+    /// spans the columns and the text, so its edge does not move with them.)
     fn text_left(h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str) -> f32 {
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
+        h.get_by(|n| n.role() == egui::accesskit::Role::TextRun && !n.is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
     }
 
     /// View › Story Editor › Show/Hide Style Name Column: hiding the column takes away the style
