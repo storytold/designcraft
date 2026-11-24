@@ -798,19 +798,30 @@ pub(crate) mod framework {
         current: &str,
         width: f32,
     ) -> Option<FontPick> {
+        let id = ui.make_persistent_id(("font_combo", id_salt));
+        let (_, slot) = ui.allocate_space(vec2(width, 24.0));
+        combo_at(app, ui, id, current, slot)
+    }
+
+    /// [`combo`] in `slot`, with `id`. Screen readers hear the button as a combo box with the current family as its value.
+    pub(crate) fn combo_at(app: &mut DesignApp, ui: &mut Ui, id: egui::Id, current: &str, slot: Rect) -> Option<FontPick> {
         let menu = super::super::font_menu(app);
         let shown = if current.is_empty() { "—".to_string() } else { super::super::font_label(app, &menu, current) };
         let label = crate::i18n::tr(&app.ui.language, "Font Family").to_owned();
-        let id = ui.make_persistent_id(("font_combo", id_salt));
         let mut open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
-        let (_, slot) = ui.allocate_space(vec2(width, 24.0));
+        let width = slot.width();
         let opener = Button::new(label.clone())
-            .painted(shown)
+            .painted(shown.clone())
             .id(id)
             .align(HAlign::Start)
             .variant(Variant::SECONDARY)
             .tooltip(label.clone())
             .show_at(ui, slot);
+        // The field is a combo box that holds the family: the framework's button names itself and says nothing of its value.
+        ui.ctx().accesskit_node_builder(opener.response.id, |node| {
+            node.set_role(egui::accesskit::Role::ComboBox);
+            node.set_value(shown.clone());
+        });
         if opener.clicked() {
             open = !open;
         }
@@ -877,6 +888,8 @@ pub(crate) mod framework {
         let sample_key = app.ui.font_sample.clone();
         let size_index = usize::from(app.ui.font_preview_size).min(SIZES.len() - 1);
         let mut asks = Asks::default();
+        // A click on a control of the menu leaves the keyboard in the search, where typing goes on.
+        let mut refocus = false;
         let before = st.query.clone();
         Stack::new().id_salt("font_menu_header").fill_width().show(ui, |ui, _| {
             Line::new().id_salt("font_search").fill_width().show(ui, |ui, _| {
@@ -894,6 +907,7 @@ pub(crate) mod framework {
                     st.focus_search = false;
                 }
                 if glyph_button(ui, "font_menu_clear", "clear", &tr("Clear"), false, !st.query.is_empty(), None).clicked() {
+                    refocus = true;
                     st.query.clear();
                 }
             });
@@ -902,18 +916,22 @@ pub(crate) mod framework {
                 let class = st.class.map_or_else(|| tr("All Classes"), |c| tr(c.label()));
                 if Button::new(format!("{class} ▾")).id_salt("font_menu_class").variant(Variant::GHOST).selected(st.show_classes).show(ui).clicked()
                 {
+                    refocus = true;
                     st.show_classes = !st.show_classes;
                     st.show_samples = false;
                 }
                 if glyph_button(ui, "font_menu_favs", "star", &tr("Show Favorites Only"), st.only_favs, true, None).clicked() {
+                    refocus = true;
                     st.only_favs = !st.only_favs;
                 }
                 if glyph_button(ui, "font_menu_added", "clock", &tr("Show Recently Added"), st.only_recent, true, None).clicked() {
+                    refocus = true;
                     st.only_recent = !st.only_recent;
                 }
                 for (i, glyph) in ["size-0", "size-1", "size-2"].into_iter().enumerate() {
                     let tip = [tr("Small Sample Text Size"), tr("Medium Sample Text Size"), tr("Large Sample Text Size")][i].clone();
                     if glyph_button(ui, ("font_menu_size", i), glyph, &tip, size_index == i, true, None).clicked() {
+                        refocus = true;
                         asks.size = Some(i as u8);
                     }
                 }
@@ -925,6 +943,7 @@ pub(crate) mod framework {
                     .show(ui)
                     .clicked()
                 {
+                    refocus = true;
                     st.show_samples = !st.show_samples;
                     st.show_classes = false;
                 }
@@ -938,6 +957,7 @@ pub(crate) mod framework {
                         .show(ui)
                         .clicked()
                     {
+                        refocus = true;
                         st.class = None;
                         st.show_classes = false;
                     }
@@ -949,6 +969,7 @@ pub(crate) mod framework {
                             .show(ui)
                             .clicked()
                         {
+                            refocus = true;
                             st.class = Some(c);
                             st.show_classes = false;
                         }
@@ -960,6 +981,7 @@ pub(crate) mod framework {
                     for (key, label) in SAMPLES {
                         if Button::new(tr(label)).id_salt(("font_sample", key)).variant(Variant::GHOST).selected(sample_key == key).show(ui).clicked()
                         {
+                            refocus = true;
                             asks.sample = Some(key.to_string());
                             st.show_samples = false;
                         }
@@ -970,6 +992,7 @@ pub(crate) mod framework {
                 Line::new().id_salt("font_similar").show(ui, |ui, _| {
                     Text::new(tr("Similar to {family}").replace("{family}", &like)).role(TypeRole::BodyStrong).show(ui);
                     if glyph_button(ui, "font_similar_clear", "clear", &tr("Clear"), false, true, None).clicked() {
+                        refocus = true;
                         st.similar = None;
                     }
                 });
@@ -1130,6 +1153,10 @@ pub(crate) mod framework {
                 }
             }
         });
+        refocus |= toggle_expand.is_some() || toggle_fav.is_some() || similar.is_some();
+        if refocus {
+            st.focus_search = true;
+        }
         if let Some(f) = toggle_expand
             && !st.expanded.remove(&f)
         {

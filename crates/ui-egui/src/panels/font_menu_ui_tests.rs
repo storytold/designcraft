@@ -307,7 +307,11 @@ fn font_fields_in_panels_and_dialogs_search() {
 fn rows_shown(h: &Harness<'static, Window>, search: egui::Rect) -> (usize, f32) {
     let families: Vec<String> = crate::panels::font_menu(&h.state().app).iter().map(|f| f.label(true).to_string()).collect();
     let rows: Vec<egui::Rect> = h
-        .query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().is_some_and(|l| families.contains(&l)))
+        .query_all_by(|n| {
+            // A row of the Font menu is a button; a row of a dialog's family list (a combo box's) is an option.
+            matches!(n.role(), egui::accesskit::Role::Button | egui::accesskit::Role::ListBoxOption)
+                && n.label().is_some_and(|l| families.contains(&l))
+        })
         .map(|n| n.rect())
         .filter(|r| r.min.y > search.max.y)
         .collect();
