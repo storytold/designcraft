@@ -1,5 +1,5 @@
 use craft_keymap::CommandRef;
-use craft_ui::menu::search::HelpEntry;
+use craft_ui::menu::search::{HelpEntry, SearchIndex, SearchWords, Synonyms};
 
 use super::bar::in_app_env;
 use super::state::shortcut_of;
@@ -24,7 +24,12 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     // This area only supplies a parent: the palette mounts its own modal layer.
     let shown = egui::Area::new(egui::Id::new("designcraft-quick-apply-host")).order(egui::Order::Foreground).show(ctx, |ui| {
         in_app_env(ui, &lang, |ui| {
-            CommandPalette::new(crate::i18n::tr(&lang, "Quick Apply").to_owned(), &entries, Bind::bound(&mut open))
+            // The palette ranks through a word index of its entries, built here in the interface language's words; the
+            // entries are this pass's (the document's styles change them).
+            let env = craft_ui::runtime::env::Env::of(ui);
+            let synonyms = Synonyms::of(&env.words::<SearchWords>());
+            let index = SearchIndex::new(&env.view(), &entries, &synonyms);
+            CommandPalette::new(crate::i18n::tr(&lang, "Quick Apply").to_owned(), &entries, &index, Bind::bound(&mut open))
                 .placeholder(crate::i18n::tr(&lang, "Search styles and commands…").to_owned())
                 .suggested((Label::from(crate::i18n::tr(&lang, "Commands").to_owned()), suggested))
                 .show(ui)
