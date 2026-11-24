@@ -304,6 +304,16 @@ mod tests {
     /// holds.
     #[test]
     fn color_settings_pick_intent_and_black_point_and_ok_runs_the_command() {
+        // OK runs `color.settings`, which changes the process-wide colour settings every test thread reads (the Color
+        // Picker's inks among them): hold the shared lock, and put the settings back when the test ends, even by a panic.
+        struct Restore(designcraft_color::cms::ColorSettings);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = designcraft_color::cms::set_active(&self.0);
+            }
+        }
+        let _settings = super::super::color_forms::COLOR_SETTINGS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = Restore(designcraft_color::cms::active_settings());
         let mut app = kit::app(1, false);
         kit::open(&mut app, "app.colorSettings");
         let mut h = kit::harness(app);
