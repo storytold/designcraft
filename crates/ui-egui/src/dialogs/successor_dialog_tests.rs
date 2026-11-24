@@ -754,6 +754,9 @@ fn wheel_into_view(
 ) -> egui::Rect {
     // The last move: a node scrolled out of the column may leave the tree, and the wheel then goes back the other way.
     let mut last = 0.0_f32;
+    // Where the target was after each step, and where the wheel went: what a failure reports.
+    let mut trail: Vec<(Option<egui::Rect>, egui::Pos2)> = Vec::new();
+    let rtl = crate::i18n::is_rtl(&h.state().ui.language);
     for _ in 0..24 {
         let window = kit::screen(h);
         // What the column shows: the dialog under its title and over its footer, inside the window.
@@ -766,8 +769,10 @@ fn wheel_into_view(
             None => panic!("{what} is not shown"),
         };
         last = delta;
-        // The pointer rests just inside the column's left edge.
-        let over = egui::pos2(shown.left() + 12.0, shown.center().y);
+        // The pointer rests just inside the column's end edge, past the details' two columns, over the column itself and
+        // no field: a text field under the pointer takes the wheel for its own text.
+        let over = egui::pos2(if rtl { shown.left() + 12.0 } else { shown.right() - 12.0 }, shown.center().y);
+        trail.push((find(h), over));
         kit::event(h, egui::Event::PointerMoved(over));
         kit::event(
             h,
@@ -781,7 +786,7 @@ fn wheel_into_view(
         );
         kit::steps(h, 2);
     }
-    panic!("{what} cannot be reached with the wheel: {:?} in {:?}", find(h), kit::screen(h))
+    panic!("{what} cannot be reached with the wheel: {:?} in {:?}; the target and the pointer at each step: {trail:?}", find(h), kit::screen(h))
 }
 
 /// Successor of `new_document_vertical_scroll_reaches_every_field_and_preset`: in a very small window New Document's
