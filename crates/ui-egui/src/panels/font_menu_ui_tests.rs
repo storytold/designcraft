@@ -327,7 +327,10 @@ fn rows_shown(h: &Harness<'static, Window>, search: egui::Rect) -> (usize, f32) 
         Some(list) => rows.into_iter().filter(|r| r.min.y >= list.min.y - 0.5 && r.max.y <= list.max.y + 0.5).collect(),
         None => rows,
     };
-    (rows.len(), rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max))
+    // How far the menu reaches: a dialog's list ends where its box does (the whole rows in it stop short of that by however far
+    // the list is scrolled, which differs between the menu as it opened and after a cleared search); the Font menu's rows end where it does.
+    let bottom = list.map_or_else(|| rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max), |list| list.max.y);
+    (rows.len(), bottom)
 }
 
 /// Opens the font menu of the field at `at`, searches for a font that doesn't exist and clears

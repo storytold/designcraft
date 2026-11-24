@@ -787,8 +787,8 @@ mod optical_margin_sdk_tests {
                     Some(if external { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False })
                 );
                 let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap();
-                // The framework field keeps the authoritative value as typed (the unit is its own adornment, not part of the text).
-                assert_eq!(field.value().as_deref(), Some("42.875"), "unchanged real point field still formats the authoritative size");
+                // The framework's inline number field reads its unit as part of the value ("42.875 pt").
+                assert_eq!(field.value().as_deref(), Some("42.875 pt"), "unchanged real point field still formats the authoritative size");
                 click(&mut h);
                 assert_one_edit(&h.state().app, &before, &[made.stories[0]], !external);
                 undo_redo(&mut h, &before);
