@@ -95,8 +95,10 @@ fn installation_boundary(platform: Platform, exe: &Path) -> Result<PathBuf, Stri
 fn forbidden_roots(platform: Platform, env: &impl Fn(&str) -> Option<OsString>, exe: &Path) -> Result<Vec<PathBuf>, String> {
     let mut roots = match platform {
         Platform::Windows => {
-            let mut roots =
-                ["APPDATA", "LOCALAPPDATA"].into_iter().map(|key| required_base(env, key).map(|p| p.join("DesignCraft"))).collect::<Result<Vec<_>, _>>()?;
+            let mut roots = ["APPDATA", "LOCALAPPDATA"]
+                .into_iter()
+                .map(|key| required_base(env, key).map(|p| p.join("DesignCraft")))
+                .collect::<Result<Vec<_>, _>>()?;
             // The MSI's per-machine folder (install-policy.wxi, ProgramFiles6432Folder) and a
             // per-user install folder. A custom folder is not known here; the executable's own
             // folder is fenced below.
@@ -255,7 +257,8 @@ mod tests {
         fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let root = loop {
-                let candidate = std::env::temp_dir().join(format!("designcraft-profile-policy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                let candidate =
+                    std::env::temp_dir().join(format!("designcraft-profile-policy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
                 match std::fs::create_dir(&candidate) {
                     Ok(()) => break std::fs::canonicalize(candidate).unwrap(),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -328,10 +331,16 @@ mod tests {
         for (platform, stable) in cases {
             for candidate in [stable.clone(), stable.join("nested nightly")] {
                 let probed = std::cell::Cell::new(false);
-                let result = validate_for(platform, &candidate, |key| fixture.get(key), Some(&fixture.exe), |_| {
-                    probed.set(true);
-                    Ok(())
-                });
+                let result = validate_for(
+                    platform,
+                    &candidate,
+                    |key| fixture.get(key),
+                    Some(&fixture.exe),
+                    |_| {
+                        probed.set(true);
+                        Ok(())
+                    },
+                );
                 assert!(result.is_err(), "{platform:?} accepted {candidate:?}");
                 assert!(!probed.get(), "a refused root must not be probed for writing");
             }
@@ -374,10 +383,16 @@ mod tests {
         for platform in [Platform::Windows, Platform::Linux, Platform::Mac] {
             for candidate in [&stable_data, &stable_data.join("nested nightly")] {
                 let probed = std::cell::Cell::new(false);
-                let result = validate_for(platform, candidate, |key| fixture.get(key), Some(&fixture.exe), |_| {
-                    probed.set(true);
-                    Ok(())
-                });
+                let result = validate_for(
+                    platform,
+                    candidate,
+                    |key| fixture.get(key),
+                    Some(&fixture.exe),
+                    |_| {
+                        probed.set(true);
+                        Ok(())
+                    },
+                );
                 assert!(result.is_err(), "a different portable install is not a private Nightly profile");
                 assert!(!probed.get(), "reject portable data before a writable probe");
                 assert!(!stable_data.join("nested nightly").exists());
@@ -428,10 +443,8 @@ mod tests {
     fn a_created_profile_is_private_and_a_failed_write_probe_never_falls_back() {
         let fixture = Fixture::new();
         let probe = fixture.root.join("profile for probe");
-        let error = validate_for(Platform::Linux, &probe, |key| fixture.get(key), Some(&fixture.exe), |_| {
-            Err(std::io::Error::other("read-only"))
-        })
-        .unwrap_err();
+        let error = validate_for(Platform::Linux, &probe, |key| fixture.get(key), Some(&fixture.exe), |_| Err(std::io::Error::other("read-only")))
+            .unwrap_err();
         assert!(error.contains("not writable"), "{error}");
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&probe).unwrap().permissions().mode() & 0o777, 0o700);
@@ -443,7 +456,7 @@ mod tests {
         for candidate in [PathBuf::from("relative/nightly"), fixture.root.join("a/../nightly")] {
             assert!(fixture.check(Platform::Linux, &candidate).is_err(), "{candidate:?}");
         }
-       #[cfg(unix)]
+        #[cfg(unix)]
         {
             let elsewhere = fixture.root.join("elsewhere");
             std::fs::create_dir_all(&elsewhere).unwrap();

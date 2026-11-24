@@ -55,9 +55,7 @@ pub fn select(channel: Channel, version: &'static str, commit: Option<&'static s
         return Err("only a nightly channel carries a source commit".into());
     }
     let value = if channel.is_nightly() { 2 } else { 1 };
-    SELECTED
-        .compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| "the build channel was already selected".to_string())?;
+    SELECTED.compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire).map_err(|_| "the build channel was already selected".to_string())?;
     IDENTITY.set((version, commit)).map_err(|_| "the build channel was already selected".to_string())
 }
 

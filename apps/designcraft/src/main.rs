@@ -15,16 +15,18 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+// The build script includes this file by path; the crate needs it only for its tests.
+#[cfg(test)]
 mod build_channel;
 mod build_flavor;
 mod clipboard_image;
 mod control_server;
 mod gpu;
 mod gpu_limits;
+mod launch_profile;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
-mod launch_profile;
 mod nightly_session;
 #[cfg(target_os = "macos")]
 mod pointer;
@@ -317,7 +319,8 @@ fn prepare_launch() -> Option<Launched> {
     // Plain `--version`, or the Launcher's `--launch-profile nightly-v1 --profile-root <dir>
     // --version`: answered before logging, root validation, process identity or any window. A
     // headless runner otherwise hung on macOS and exited 2 on Linux.
-    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv)) {
+    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
+    {
         use std::io::Write as _;
         let line = build_flavor::version_line(build_flavor::COMPILED, build_flavor::STABLE_VERSION_LINE, build_flavor::VERSION);
         let _ = writeln!(std::io::stdout(), "{line}");
@@ -332,7 +335,9 @@ fn prepare_launch() -> Option<Launched> {
             Ok(launch)
         })
         .and_then(|launch| {
-            launch_profile::prepare(launch, |root| launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref()))
+            launch_profile::prepare(launch, |root| {
+                launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref())
+            })
         })
         .unwrap_or_else(|error| {
             report_launch_profile_error(&error);
@@ -340,9 +345,9 @@ fn prepare_launch() -> Option<Launched> {
         });
     let nightly = launch.profile.is_nightly();
     let channel = if nightly { designcraft_ui_egui::channel::Channel::NightlyV1 } else { designcraft_ui_egui::channel::Channel::Stable };
-    if let Err(error) = launch_profile::install(launch.profile).and_then(|()| {
-        designcraft_ui_egui::channel::select(channel, build_flavor::VERSION, option_env!("DESIGNCRAFT_BUILD_SHA"))
-    }) {
+    if let Err(error) = launch_profile::install(launch.profile)
+        .and_then(|()| designcraft_ui_egui::channel::select(channel, build_flavor::VERSION, option_env!("DESIGNCRAFT_BUILD_SHA")))
+    {
         report_launch_profile_error(&error);
         std::process::exit(2);
     }
@@ -350,7 +355,11 @@ fn prepare_launch() -> Option<Launched> {
     let mut unclean = false;
     let mut session_unavailable = false;
     if nightly {
-        match nightly_session::Session::begin_with_health(launch_profile::current().root(), build_flavor::VERSION, option_env!("DESIGNCRAFT_BUILD_SHA")) {
+        match nightly_session::Session::begin_with_health(
+            launch_profile::current().root(),
+            build_flavor::VERSION,
+            option_env!("DESIGNCRAFT_BUILD_SHA"),
+        ) {
             Ok((watch, unavailable)) => {
                 unclean = watch.as_ref().is_some_and(nightly_session::Session::previous_unclean);
                 session_unavailable = unavailable;
@@ -381,7 +390,8 @@ fn main() -> std::process::ExitCode {
     let logger = logging::install();
     // A Nightly launch is handed files only; its control channel, sample document and graphics
     // restart options are not part of the Launcher's protocol.
-    let mut control_port = if launch.nightly { None } else { control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok()) };
+    let mut control_port =
+        if launch.nightly { None } else { control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok()) };
     let mut files = Vec::new();
     let mut sample = false;
     let mut skip = Vec::new();

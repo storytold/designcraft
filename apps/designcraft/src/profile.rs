@@ -23,7 +23,7 @@ pub fn config_dir() -> Option<PathBuf> {
 pub(crate) fn ensure_writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let probe = dir.join(format!(".write-test-{}", std::process::id()));
-    let result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map(|file| drop(file));
+    let result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map(drop);
     let _ = std::fs::remove_file(&probe);
     result
 }

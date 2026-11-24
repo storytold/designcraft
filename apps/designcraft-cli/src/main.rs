@@ -173,9 +173,11 @@ fn main() -> ExitCode {
     // The Launcher's nightly-v1 profile is a desktop-only contract. Never let its arguments fall
     // through to the CLI's directory and credential discovery (which would read the stable
     // profile), and answer before any subcommand parses them. A file name after `--` is a file.
-    if args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| {
-        arg == "--launch-profile" || arg == "--profile-root" || arg.starts_with("--launch-profile=") || arg.starts_with("--profile-root=")
-    }) {
+    if args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--launch-profile" || arg == "--profile-root" || arg.starts_with("--launch-profile=") || arg.starts_with("--profile-root="))
+    {
         eprintln!("designcraft-cli: nightly-v1 is supported only by the DesignCraft desktop launcher protocol");
         return ExitCode::from(2);
     }

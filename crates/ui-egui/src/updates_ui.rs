@@ -135,28 +135,30 @@ fn result_window_shows(status: &Status, prompt_open: bool) -> bool {
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        if let Some(who) = app.updates_rt.managed {
-            if app.updates_rt.managed_window_open {
-                let mut open = true;
-                let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
-                let ok_label = crate::i18n::tr(&app.ui.language, "OK");
-                egui::Window::new(title)
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .pivot(egui::Align2::CENTER_CENTER)
-                    .default_pos(ctx.content_rect().center())
-                    .show(ctx, |ui| {
-                        ui.label(format!("Updates are managed by {who}."));
-                        ui.add_space(8.0);
-                        if ui.button(ok_label).clicked() {
-                            app.updates_rt.managed_window_open = false;
-                        }
-                    });
-                if !open {
-                    app.updates_rt.managed_window_open = false;
-                }
+        if let Some(who) = app.updates_rt.managed
+            && app.updates_rt.managed_window_open
+        {
+            let mut open = true;
+            let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
+            let ok_label = crate::i18n::tr(&app.ui.language, "OK");
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.content_rect().center())
+                .show(ctx, |ui| {
+                    ui.label(format!("Updates are managed by {who}."));
+                    ui.add_space(8.0);
+                    if ui.button(ok_label).clicked() {
+                        app.updates_rt.managed_window_open = false;
+                    }
+                });
+            if !open {
+                app.updates_rt.managed_window_open = false;
             }
+        }
+        if app.updates_rt.managed.is_some() {
             return;
         }
         // The updater asks to close only when no document has unsaved changes; the install starts when the app exits.

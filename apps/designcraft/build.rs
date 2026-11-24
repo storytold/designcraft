@@ -59,7 +59,8 @@ fn main() {
         }
         let date = std::env::var("DESIGNCRAFT_BUILD_DATE").unwrap_or_default();
         let digits: Vec<char> = date.chars().filter(|c| c.is_ascii_digit()).collect();
-        if date.len() != 10 || date.as_bytes()[4] != b'-' || date.as_bytes()[7] != b'-' || digits.iter().collect::<String>() != date.replace('-', "") {
+        if date.len() != 10 || date.as_bytes()[4] != b'-' || date.as_bytes()[7] != b'-' || digits.iter().collect::<String>() != date.replace('-', "")
+        {
             die("nightly-v1 requires DESIGNCRAFT_BUILD_DATE as YYYY-MM-DD");
         }
         if build_channel::nightly_date_digits(&version) != Some(&date.replace('-', "")) {
