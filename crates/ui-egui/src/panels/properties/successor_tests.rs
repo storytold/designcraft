@@ -1283,7 +1283,14 @@ fn text_frame_fields(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
 /// Clicks the control labeled `label` inside Properties › Text Frame.
 fn click_in_text_frame(h: &mut Harness<'_, DesignApp>, label: &str) {
     let (top, bottom) = text_frame_band(h);
-    h.get_all_by_label(label).find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
+    // The control, not a field's caption or its inline label of the same name ("Bottom" names an inset field and a button).
+    let control = |n: &egui_kittest::Node<'_>| {
+        !matches!(
+            n.accesskit_node().role(),
+            egui::accesskit::Role::Label | egui::accesskit::Role::TextInput | egui::accesskit::Role::SpinButton | egui::accesskit::Role::Tooltip
+        )
+    };
+    h.get_all_by_label(label).filter(control).find(|n| n.rect().center().y > top && n.rect().center().y < bottom).unwrap().click();
     h.run_steps(3);
 }
 

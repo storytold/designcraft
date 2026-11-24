@@ -67,6 +67,13 @@ const APP_SECTIONS: &[(&str, &str)] = &[
 
 /// The height both panes keep, so a lower section's options stay in view.
 const PANE_HEIGHT: f32 = 440.0;
+/// What the dialog's title, footer and padding take of the window's height: the panes stay within what is left, and scroll.
+const CHROME_HEIGHT: f32 = 150.0;
+
+/// The height of the section list and the options pane: [`PANE_HEIGHT`], or what a small window leaves of it.
+fn pane_height(ui: &Ui) -> f32 {
+    (ui.ctx().content_rect().height() - CHROME_HEIGHT).clamp(120.0, PANE_HEIGHT)
+}
 
 /// The value after a control's `events`, when they changed `before`.
 fn edited<T: Bindable>(events: EditEvents<T>, before: T) -> Option<T> {
@@ -89,7 +96,7 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     Row::new().id_salt("preferences_form").fill_width().show(ui, |ui, _| {
         // The sections read as navigation, as the native window's selectable list did: one Tab stop, the arrow keys
         // move through it and pick, and the picked row is highlighted. The column scrolls to the sections past the fold.
-        Stack::new().id_salt("preferences_sections").scroll(Scroll::vertical()).room_height(PANE_HEIGHT).show(ui, |ui, _| {
+        Stack::new().id_salt("preferences_sections").scroll(Scroll::vertical()).room_height(pane_height(ui)).show(ui, |ui, _| {
             let captions: Vec<(&str, String)> = sections.iter().map(|(id, label)| (*id, tr(label))).collect();
             if let Some(next) = crate::dialogs::framework::section_list(ui, "preferences", tr("Preferences"), &captions, current) {
                 d.fields.insert("section".into(), json!(next));
@@ -102,7 +109,7 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
             .id_salt(("preferences_options", current))
             .fill_width()
             .scroll(Scroll::vertical())
-            .room_height(PANE_HEIGHT)
+            .room_height(pane_height(ui))
             .pad(Pad::Control)
             .gap(Gap::Section)
             .show(ui, |ui, _| {
