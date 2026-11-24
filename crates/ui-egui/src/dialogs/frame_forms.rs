@@ -179,8 +179,11 @@ fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
                     _ => general(app, ui, d),
                 }
                 let held: f32 = ui.data(|data| data.get_temp(tallest)).unwrap_or(0.0);
+                // Only the run that is drawn tells how tall a page is: the framework runs a body more than once to find its
+                // size, in a narrow room where the text wraps, and a height taken from such a run would never shrink again.
+                let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
                 let used = ui.min_rect().height();
-                if used > held {
+                if !measuring && used > held {
                     ui.data_mut(|data| data.insert_temp(tallest, used));
                 }
                 ui.set_min_height(held);

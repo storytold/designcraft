@@ -315,6 +315,18 @@ fn rows_shown(h: &Harness<'static, Window>, search: egui::Rect) -> (usize, f32) 
         .map(|n| n.rect())
         .filter(|r| r.min.y > search.max.y)
         .collect();
+    // A dialog's family list keeps rows past its ends that are cut off, and which of them it keeps follows where the list was
+    // scrolled to (to the current family when it opened, to the top once a search is cleared): only the rows that show whole
+    // count, as the rows the menu shows.
+    let list = h
+        .query_all_by(|n| n.role() == egui::accesskit::Role::ListBox)
+        .map(|n| n.rect())
+        .filter(|r| r.min.y > search.min.y)
+        .min_by(|a, b| a.min.y.total_cmp(&b.min.y));
+    let rows: Vec<egui::Rect> = match list {
+        Some(list) => rows.into_iter().filter(|r| r.min.y >= list.min.y - 0.5 && r.max.y <= list.max.y + 0.5).collect(),
+        None => rows,
+    };
     (rows.len(), rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max))
 }
 
