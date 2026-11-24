@@ -34,6 +34,8 @@ nightly_init() {
 # Compile only: the version query runs on the unpacked payload (Linux) or the signed bundle
 # (macOS, packaging/macos/nightly-verify.sh). DesignCraft's GUI needs no optional features.
 nightly_compile_gui() {
+  # The guard sits here as well as in the entrypoints: no caller may compile with signing material.
+  nightly_refuse_signing_env
   (cd "$ROOT" && DESIGNCRAFT_BUILD_CHANNEL=nightly-v1 cargo build --release --locked -p designcraft --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/designcraft"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'

@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn relative_parent_traversing_and_link_ancestors_are_refused() {
+    fn relative_and_parent_traversing_are_refused_and_link_ancestors_are_resolved() {
         let fixture = Fixture::new();
         for candidate in [PathBuf::from("relative/nightly"), fixture.root.join("a/../nightly")] {
             assert!(fixture.check(Platform::Linux, &candidate).is_err(), "{candidate:?}");
@@ -471,7 +471,13 @@ mod tests {
             let elsewhere = fixture.root.join("elsewhere");
             std::fs::create_dir_all(&elsewhere).unwrap();
             std::os::unix::fs::symlink(&elsewhere, fixture.root.join("linked")).unwrap();
-            assert!(fixture.check(Platform::Linux, &fixture.root.join("linked/nightly")).is_err(), "a resolved link is not a private root");
+            // `canonical_future` resolves the existing ancestors before anything is created, so a
+            // root reached through a link is validated and created at the link's real location.
+            // That location is what the fence checks, and it is where every write then lands.
+            let resolved = fixture.check(Platform::Linux, &fixture.root.join("linked/nightly")).unwrap();
+            assert_eq!(resolved, std::fs::canonicalize(elsewhere.join("nightly")).unwrap());
+            assert!(resolved.is_dir());
+            assert_eq!(std::fs::canonicalize(fixture.root.join("linked")).unwrap(), elsewhere);
         }
     }
 
