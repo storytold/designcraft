@@ -2470,37 +2470,48 @@ fn a_cell_inset_is_at_least_half_its_edge_stroke() {
     assert!(lines(8.0) > lines(0.0), "{} vs {}", lines(8.0), lines(0.0));
 }
 
-/// A table that breaks across frames draws its border on the cut edges, so the text there keeps
-/// half the border weight clear; a table that stays whole keeps the interior strokes' half.
+/// A table that breaks across frames keeps its row heights: InDesign does not raise the rows at the
+/// cut for the table border (measured with a 12 pt border and 0 pt insets, the same rows fitting
+/// whole and broken after the fifth row, with and without 4 pt insets).
 #[test]
-fn a_table_that_breaks_keeps_its_text_off_the_border_drawn_at_the_cut() {
+fn a_table_that_breaks_keeps_the_row_heights_it_has_whole() {
     let table = || {
-        let mut t = filled(4, 1, 0, 100.0);
-        t.options.border.weight = 20.0;
-        for r in 0..4 {
+        let mut t = filled(8, 1, 0, 100.0);
+        t.options.border.weight = 12.0;
+        for r in 0..8 {
             t.cell_mut(r, 0).unwrap().insets = [0.0; 4];
         }
         t
     };
-    let sides = |cell: &PlacedCell| (cell.clip.y0 - cell.rect.y0, cell.rect.y1 - cell.clip.y1);
-    // Whole: the interior rows sit between 1 pt strokes.
+    let heights = |cs: &ComposedStory| -> Vec<f64> {
+        cs.frames.iter().flat_map(|f| f.tables.iter()).flat_map(|t| t.cells.iter().map(|c| c.rect.height())).collect()
+    };
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), table());
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    let (top, bottom) = sides(cs.frames[0].tables[0].cell(1, 0).unwrap());
-    assert!((top - 0.5).abs() < 1e-6 && (bottom - 0.5).abs() < 1e-6, "{top} {bottom}");
-    // Broken between frames: the cut edges are the table border. The first frame holds one row of
-    // 32 pt with room to spare for a border offset above it.
+    let whole = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(whole.frames[0].tables.len(), 1);
+    // The same table broken between two frames.
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
-    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 50.0), lid, "", ParaFormat::default()).unwrap();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 60.0), lid, "", ParaFormat::default()).unwrap();
     let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 600.0), lid, "", ParaFormat::default()).unwrap();
     d.thread(f1, f2).unwrap();
     d.story_mut(sid).unwrap().insert_table(0, table());
-    let cs = compose_story(&d, sid, &ComposeOptions::default());
-    assert!(!cs.is_overset());
-    let (_, last_bottom) = sides(cs.frames[0].tables[0].cell(0, 0).unwrap());
-    let (next_top, _) = sides(cs.frames[1].tables[0].cell(1, 0).unwrap());
-    assert!(last_bottom >= 10.0 - 1e-6 && next_top >= 10.0 - 1e-6, "{last_bottom} {next_top}");
+    let broken = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!broken.is_overset());
+    assert_eq!((broken.frames[0].tables.len(), broken.frames[1].tables.len()), (1, 1));
+    let (w, b) = (heights(&whole), heights(&broken));
+    assert_eq!(w.len(), b.len());
+    for (r, (w, b)) in w.iter().zip(&b).enumerate() {
+        assert!((w - b).abs() < 1e-6, "row {r}: {w} whole, {b} broken");
+    }
+    // An interior row is the height it has without any table border: only its own 1 pt strokes count.
+    let mut plain = table();
+    plain.options.border.weight = 0.0;
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), plain);
+    let no_border = compose_story(&d, sid, &ComposeOptions::default());
+    for r in 1..7 {
+        assert!((heights(&no_border)[r] - w[r]).abs() < 1e-6, "row {r}: {} without a border, {} with", heights(&no_border)[r], w[r]);
+    }
 }
 
 #[test]

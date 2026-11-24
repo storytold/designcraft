@@ -231,9 +231,8 @@ pub(crate) fn place_table(
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    // Compose every owner cell and size the rows. `split_edges`: the table breaks across columns or
-    // frames, so the cut edges are drawn with the table border.
-    let rows_for = |split_edges: bool| -> (Vec<Option<CellLayout>>, Vec<f64>) {
+    // Compose every owner cell and size the rows.
+    let rows_for = || -> (Vec<Option<CellLayout>>, Vec<f64>) {
         let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
         for r in 0..nr {
             for c in 0..nc {
@@ -243,7 +242,7 @@ pub(crate) fn place_table(
                 }
                 let cell = &table.cells[r * nc + c];
                 let cs = (cell.col_span.max(1) as usize).min(nc - c);
-                let ins = effective_insets(table, &owners, (r, c), split_edges);
+                let ins = effective_insets(table, &owners, (r, c));
                 let w = colx[c + cs] - colx[c] - ins[1] - ins[3];
                 let mut layout = compose_cell(doc, cell, w, ins[2], opts, side);
                 layout.ins = ins;
@@ -284,7 +283,7 @@ pub(crate) fn place_table(
         }
         (layouts, heights)
     };
-    let (mut layouts, mut heights) = rows_for(false);
+    let (layouts, heights) = rows_for();
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -321,16 +320,6 @@ pub(crate) fn place_table(
         notes.reserve(doc, column, &[], opts)
     };
     let mut reserve = column_reserve(notes, cur, col);
-    // A table that does not fit the rest of its column whole breaks at an edge drawn with the table
-    // border: size its rows for that when it asks for more room than the cell's own strokes do.
-    if y + heights.iter().sum::<f64>() > col.y1 - reserve + 0.01 {
-        let widened = (0..nr).any(|r| {
-            (0..nc).any(|c| is_owner(r, c) && effective_insets(table, &owners, (r, c), true) != effective_insets(table, &owners, (r, c), false))
-        });
-        if widened {
-            (layouts, heights) = rows_for(true);
-        }
-    }
     let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
     let footer_h = sum(body_end, nr);
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
@@ -675,9 +664,10 @@ pub fn cell_side_strokes<'a>(table: &'a Table, owners: &[(usize, usize)], (r, c)
 /// The insets of the cell at `(r, c)` (top, left, bottom, right) as InDesign applies them: each
 /// side is the larger of its inset and half the weight of the stroke on that edge, so a 0 pt inset
 /// under a 1 pt stroke still keeps the text half a point off the line (observed with single cells:
-/// the text origin, the wrap width and the row height all follow `max(inset, stroke / 2)`). With
-/// `split_edges` the top and bottom also keep clear of the table border, which a break draws.
-fn effective_insets(table: &Table, owners: &[(usize, usize)], (r, c): (usize, usize), split_edges: bool) -> [f64; 4] {
+/// the text origin, the wrap width and the row height all follow `max(inset, stroke / 2)`). A table
+/// that breaks across columns or frames keeps its row heights: InDesign does not raise the rows at
+/// the cut for the table border.
+fn effective_insets(table: &Table, owners: &[(usize, usize)], (r, c): (usize, usize)) -> [f64; 4] {
     let Some(cell) = table.cell(r, c) else { return [0.0; 4] };
     std::array::from_fn(|side| {
         let half = cell_side_strokes(table, owners, (r, c), side)
@@ -685,14 +675,7 @@ fn effective_insets(table: &Table, owners: &[(usize, usize)], (r, c): (usize, us
             .filter(|s| s.stroke.is_visible() && s.stroke.weight.is_finite())
             .map(|s| s.stroke.weight / 2.0)
             .fold(0.0, f64::max);
-        // A table that breaks across columns or frames draws its border on the cut edges, whichever
-        // row ends up there.
-        let cut = if split_edges && side % 2 == 0 && table.options.border_for(side).is_visible() {
-            table.options.border_for(side).weight / 2.0
-        } else {
-            0.0
-        };
-        cell.insets[side].max(half).max(if cut.is_finite() { cut } else { 0.0 })
+        cell.insets[side].max(half)
     })
 }
 
