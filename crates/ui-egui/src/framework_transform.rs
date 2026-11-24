@@ -25,9 +25,9 @@ use craft_ui_widgets::menu::{Menu, MenuItem};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::primitives::{Glyph, IconSpec};
 use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
-use craft_ui_widgets::style::TypeRole;
 use craft_ui_widgets::style::UiTokens;
-use craft_ui_widgets::text::{NumberField, NumberPick, TextField};
+use craft_ui_widgets::style::{TypeRole, Variant};
+use craft_ui_widgets::text::{NumberField, NumberPick, StepArrows, TextField};
 use designcraft_geom::Unit;
 use designcraft_geom::units::{format_measure, parse_measure};
 use egui::{Rect, pos2, vec2};
@@ -227,6 +227,7 @@ impl<'a> Number<'a> {
 /// (points), `Some(None)` when it was emptied. A field left as it shows its value commits nothing: reading the shown
 /// text back would round the value (13Q is 9.2126 pt, shown as 9.213). Up and Down Arrow step the value by the unit's
 /// step (1 pt, 1/16 in, 1 mm; one point in picas), Shift by ten steps, as the app's spinners did.
+#[allow(clippy::too_many_arguments)]
 fn measure_text(
     ui: &mut egui::Ui,
     at: Option<Rect>,
@@ -235,9 +236,20 @@ fn measure_text(
     value: Option<f64>,
     unit: Unit,
     enabled: bool,
+    derived: bool,
 ) -> Option<Option<f64>> {
-    let stepped = if enabled { measure_step(ui, id, unit) } else { None };
-    let field = TextField::with_codec(label.to_owned(), Bind::given(value), MeasureCodec(unit)).id(id).enabled(enabled);
+    let mut stepped = if enabled { measure_step(ui, id, unit) } else { None };
+    // A placed field has the up and down step halves at its start, as the app's spinners had; the framework's text
+    // field has none of its own.
+    let at = at.map(|at| {
+        let halves = Rect::from_min_size(at.min, vec2(STEP_W, at.height()));
+        if let Some(by) = step_halves(ui, halves, id, label, unit, enabled) {
+            stepped = Some(by);
+        }
+        Rect::from_min_max(egui::pos2(halves.max.x, at.min.y), at.max)
+    });
+    let codec = MeasureCodec { unit, derived };
+    let field = TextField::with_codec(label.to_owned(), Bind::given(value), codec).id(id).enabled(enabled);
     let out = match at {
         Some(at) => field.show_at(ui, at),
         None => field.show(ui),
@@ -251,6 +263,50 @@ fn measure_text(
         // An emptied field: a value that may be unset (`Number::ignore`) is cleared.
         (None, old) => old.is_some(),
     })
+}
+
+/// The width of a measure field's step halves.
+const STEP_W: f32 = 14.0;
+
+/// The up and down halves at `at` that step the measure field `id` named `label`: the step a click asked for this
+/// pass, in points (ten steps with Shift). They are no Tab stops: the field's own Up and Down Arrow step it.
+fn step_halves(ui: &mut egui::Ui, at: Rect, id: egui::Id, label: &str, unit: Unit, enabled: bool) -> Option<f64> {
+    let step = crate::widgets::NumKind::Measure(unit).step();
+    let mid = at.center().y;
+    let mut by = None;
+    for (up, half) in [(true, Rect::from_min_max(at.min, egui::pos2(at.max.x, mid))), (false, Rect::from_min_max(egui::pos2(at.min.x, mid), at.max))]
+    {
+        let name = format!("{} {label}", if up { "Increase" } else { "Decrease" });
+        let glyph = StepChevron(up);
+        let clicked = IconButton::new(IconSpec::glyph(&glyph))
+            .id(id.with(("step", up)))
+            .label(name)
+            .focusable(false)
+            .variant(Variant::GHOST)
+            .enabled(enabled)
+            .show_at(ui, half)
+            .clicked();
+        if clicked {
+            let times = if ui.input(|input| input.modifiers.shift) { 10.0 } else { 1.0 };
+            by = Some(if up { step } else { -step } * times);
+        }
+    }
+    by
+}
+
+/// The chevron of a step half: up, or down.
+#[derive(craft_ui::contract::MemoProps)]
+struct StepChevron(bool);
+
+impl Glyph for StepChevron {
+    fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+        let c = rect.center();
+        let (w, h) = (3.5_f32.min(rect.width() / 2.0 - 1.0), 2.0_f32.min(rect.height() / 2.0 - 1.0));
+        let (tip, ends) = if self.0 { (c.y - h, c.y + h) } else { (c.y + h, c.y - h) };
+        let stroke = egui::Stroke::new(1.0, color);
+        painter.line_segment([egui::pos2(c.x - w, ends), egui::pos2(c.x, tip)], stroke);
+        painter.line_segment([egui::pos2(c.x, tip), egui::pos2(c.x + w, ends)], stroke);
+    }
 }
 
 /// The step an Up or Down Arrow pressed in the measure field `id` asks for this pass, in points: the unit's step, ten
@@ -288,7 +344,7 @@ pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n:
         _ => None,
     };
     if let Some(unit) = spelled {
-        return match measure_text(ui, at, id, label, value, unit, enabled)? {
+        return match measure_text(ui, at, id, label, value, unit, enabled, derived)? {
             Some(v) => Some(Some(clamp(v))),
             None => ignore.map(|_| None),
         };
@@ -309,7 +365,8 @@ pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n:
         Quantity::Degrees => NumberField::new(label.to_owned(), Bind::given(value)).unit_kind(UnitKind::Degrees),
         Quantity::Plain { decimals } => NumberField::new(label.to_owned(), Bind::given(value)).commit_decimals(decimals),
     };
-    let mut field = field.id(id).enabled(enabled).derived(derived);
+    // The up and down step halves at the field's start, as the app's spinners had.
+    let mut field = field.id(id).enabled(enabled).derived(derived).step_arrows(StepArrows::Leading);
     if let Some(range) = range.clone() {
         field = field.range(range);
     }
@@ -599,13 +656,18 @@ fn unit_kind(unit: Unit) -> Option<UnitKind> {
 /// A length in points as the app writes and reads it in a document unit: `format_measure` and `parse_measure`, the
 /// spelling of every measurement field of the app (`3p6`, `2c4`, `12 pt + 1p`). Empty text is no value.
 #[derive(Clone)]
-struct MeasureCodec(Unit);
+struct MeasureCodec {
+    unit: Unit,
+    /// The value is derived (automatic leading): it shows in parentheses, as "(14.4 pt)".
+    derived: bool,
+}
 
 impl Codec for MeasureCodec {
     type Value = Option<f64>;
 
     fn format(&self, value: &Option<f64>) -> String {
-        value.filter(|v| v.is_finite()).map(|v| format_measure(v, self.0)).unwrap_or_default()
+        let shown = value.filter(|v| v.is_finite()).map(|v| format_measure(v, self.unit)).unwrap_or_default();
+        if self.derived && !shown.is_empty() { format!("({shown})") } else { shown }
     }
 
     fn parse(&self, text: &str, _start: &Option<f64>) -> Result<Option<f64>, NotAValue> {
@@ -613,7 +675,8 @@ impl Codec for MeasureCodec {
         if text.trim().is_empty() {
             return Ok(None);
         }
-        parse_measure(text, self.0).map(Some).map_err(|_| NotAValue)
+        let text = text.trim().trim_start_matches('(').trim_end_matches(')');
+        parse_measure(text, self.unit).map(Some).map_err(|_| NotAValue)
     }
 }
 
@@ -640,13 +703,14 @@ pub(crate) fn length_field(ui: &mut egui::Ui, at: Rect, id: egui::Id, label: &st
             let mut field = NumberField::length(label.to_owned(), Bind::given(value), LengthUnits::new(UnitKind::Points, shown, 72.0))
                 .id(id)
                 .step(step)
+                .step_arrows(StepArrows::Leading)
                 .enabled(enabled);
             if let Some(range) = range.clone() {
                 field = field.range(range);
             }
             field.show_at(ui, at).edit.events.committed().copied().flatten()
         }
-        None => measure_text(ui, Some(at), id, label, value, unit, enabled)
+        None => measure_text(ui, Some(at), id, label, value, unit, enabled, false)
             .flatten()
             .map(|v| range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))),
     });

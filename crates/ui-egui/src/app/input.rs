@@ -62,6 +62,10 @@ impl DesignApp {
         // Document tabs cut a long name short (at most 22 digits wide) and shrink before they overflow, so a very long
         // file name never pushes the close button and the tabs after it out of the strip (#603).
         root.values.set(craft_ui_widgets::tabs::DocumentTabLook::Shrinking);
+        // Number fields as the app has always shown them: the number and its unit as one run in the interface face
+        // ("12 pt", "0°", "100%"), not a centred mono number with the unit apart, and percentages whole.
+        root.values.set(craft_ui_widgets::text::NumberLook::Inline);
+        root.values.set(craft_ui_widgets::text::NumberPrecision::Measured);
         // The selection of a list, a layer row or a swatch shows in the app's own blue, as it always has.
         match selection_theme() {
             Some(theme) => root.library_theme(theme),

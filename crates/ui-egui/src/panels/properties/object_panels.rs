@@ -588,17 +588,24 @@ mod framework {
         let offsets = info.map(|i| i.wrap_offsets);
         let linked = wrap_linked(ui, offsets);
         let mut set = None;
-        // Two rows: Top | Left, then Bottom | Right; the link between the columns.
+        // Two rows: Top | Left, then Bottom | Right; the link between the columns. The columns share the panel's width,
+        // so the right-hand fields end inside it at any width.
+        let fw = full_width(ui);
+        let (left_w, right_w) = (caption_width(app, ui, &["Top", "Bottom"]), caption_width(app, ui, &["Left", "Right"]));
+        let (gap, link_w) = (4.0, 22.0);
+        let field_w = ((fw - left_w - right_w - 2.0 * gap - link_w - 12.0) / 2.0).clamp(40.0, 80.0);
+        let link_x = left_w + gap + field_w + 6.0;
+        let right_x = link_x + link_w + 6.0;
         let b = block(ui, 2.0 * FIELD_H + 5.0);
-        for (side, label, x, y) in
-            [(0, "Top", 0.0, 0.0), (1, "Left", 150.0, 0.0), (2, "Bottom", 0.0, FIELD_H + 5.0), (3, "Right", 150.0, FIELD_H + 5.0)]
+        for (side, label, right, y) in
+            [(0, "Top", false, 0.0), (1, "Left", true, 0.0), (2, "Bottom", false, FIELD_H + 5.0), (3, "Right", true, FIELD_H + 5.0)]
         {
             let name = tr(label);
-            text(ui, Some(sub(b, x, y, if x == 0.0 { 54.0 } else { 38.0 }, FIELD_H)), &name);
-            let fx = if x == 0.0 { 56.0 } else { 190.0 };
+            let (x, caption_w) = if right { (right_x, right_w) } else { (0.0, left_w) };
+            text(ui, Some(sub(b, x, y, caption_w, FIELD_H)), &name);
             let id = cid(ui, ("wrap-offset", side));
             let n = Number::new(&name, offsets.map(|o| o[side]), Quantity::Length(u)).enabled(enabled);
-            if let Some(Some(v)) = number_field(ui, Some(sub(b, fx, y, 60.0, FIELD_H)), id, n) {
+            if let Some(Some(v)) = number_field(ui, Some(sub(b, x + caption_w + gap, y, field_w, FIELD_H)), id, n) {
                 set = Some(wrap_offsets_set(offsets, linked, side, v));
             }
         }
@@ -608,7 +615,7 @@ mod framework {
             .id(id)
             .tooltip(tip)
             .enabled(enabled)
-            .show_at(ui, sub(b, 122.0, (FIELD_H + 5.0) / 2.0, 22.0, FIELD_H))
+            .show_at(ui, sub(b, link_x, (FIELD_H + 5.0) / 2.0, link_w, FIELD_H))
             .events
             .committed()
             .copied();

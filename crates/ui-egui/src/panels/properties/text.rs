@@ -235,7 +235,8 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 pub(crate) mod framework {
     use super::*;
     use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, check, choice, font_style_select, icon, icon_button, icon_number, letters_button, menu, more_options, number_field, icon_tip, icon_toggle,
+        Letters, MenuRow, Number, Quantity, button, check, choice, font_style_select, icon_button, icon_number, icon_tip, icon_toggle,
+        letters_button, menu, more_options, number_field,
     };
     use crate::panels::properties::object::framework::{SwatchFor, swatch_chip};
     use craft_behavior::Mixed;
@@ -415,11 +416,12 @@ pub(crate) mod framework {
         if let Some(Some(v)) = icon_number(ui, sub(b, 0.0, 1.0, 19.0, 19.0), sub(b, 24.0, 0.0, field_w, FIELD_H), id, "font-size", n) {
             let _ = app.run("type.char", json!({"attrs": {"size": v}}));
         }
-        // Auto leading shows the leading it works out to (the native field writes it in parentheses).
+        // Auto leading shows the leading it works out to, in parentheses: "(14.4 pt)".
         let id = cid(ui, ("leading", auto));
         let n = Number::new(crate::i18n::tr(&lang, "Leading"), lv.map(|v| (v * 100.0).round() / 100.0), Quantity::Points)
             .presets(TYPE_SIZES)
-            .range(0.0, 5000.0);
+            .range(0.0, 5000.0)
+            .derived(auto);
         if let Some(Some(v)) = icon_number(ui, sub(b, half + 10.0, 1.0, 19.0, 19.0), sub(b, half + 34.0, 0.0, field_w, FIELD_H), id, "leading", n) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
@@ -795,6 +797,7 @@ pub(crate) mod framework {
             .id(id)
             .presets(&rows)
             .step(5.0)
+            .step_arrows(craft_ui_widgets::text::StepArrows::Leading)
             .commit_decimals(0)
             .range(-1000.0..=10000.0);
         let out = match at {
