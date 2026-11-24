@@ -752,18 +752,23 @@ fn wheel_into_view(
     what: &str,
     find: impl Fn(&egui_kittest::Harness<'_, DesignApp>) -> Option<egui::Rect>,
 ) -> egui::Rect {
+    // The last move: a node scrolled out of the column may leave the tree, and the wheel then goes back the other way.
+    let mut last = 0.0_f32;
     for _ in 0..24 {
         let window = kit::screen(h);
-        let Some(target) = find(h) else { panic!("{what} is not shown") };
         // What the column shows: the dialog under its title and over its footer, inside the window.
         let dialog = h.query_all_by_role(Role::Dialog).next().map_or(window, |node| node.rect()).intersect(window);
         let shown = egui::Rect::from_min_max(egui::pos2(dialog.left(), dialog.top() + 50.0), egui::pos2(dialog.right(), dialog.bottom() - 60.0));
-        if shown.contains_rect(target) || (window.contains_rect(target) && shown.height() < target.height()) {
-            return target;
-        }
-        let over = shown.center();
+        let delta = match find(h) {
+            Some(target) if shown.contains_rect(target) || (window.contains_rect(target) && shown.height() < target.height()) => return target,
+            Some(target) => (target.center().y - shown.center().y).clamp(-40.0, 40.0),
+            None if last != 0.0 => -last / 2.0,
+            None => panic!("{what} is not shown"),
+        };
+        last = delta;
+        // The pointer rests just inside the column's left edge.
+        let over = egui::pos2(shown.left() + 12.0, shown.center().y);
         kit::event(h, egui::Event::PointerMoved(over));
-        let delta = (target.center().y - over.y).clamp(-40.0, 40.0);
         kit::event(
             h,
             egui::Event::MouseWheel {

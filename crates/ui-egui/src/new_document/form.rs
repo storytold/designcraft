@@ -123,11 +123,15 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         // The column scrolls in the room the window leaves under the title and over the footer, so Close and Create stay
         // in view: a body that only the dialog's own scroll held grew past the window and took the footer with it.
         let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).max(LEAST_COLUMN_ROOM);
-        Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
-            details(app, ui, d);
-            tabs(app, ui, d);
-            inset(ui, false, |ui| create = presets(app, ui, d));
-            preview_check(app, ui, d);
+        // `room_height` caps what the container offers its children, not the container itself: the column that scrolls
+        // is the one child of a stack that offers it the room, so it is at most that tall and scrolls the rest.
+        Stack::new().id_salt("new_document_column_room").fill_width().room_height(room).show(ui, |ui, _| {
+            Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).scroll(Scroll::vertical()).show(ui, |ui, _| {
+                details(app, ui, d);
+                tabs(app, ui, d);
+                inset(ui, false, |ui| create = presets(app, ui, d));
+                preview_check(app, ui, d);
+            });
         });
         return create.then_some(true);
     }
@@ -148,9 +152,12 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
                 create = presets(app, ui, d);
             });
         });
-        Stack::new().id_salt("new_document_details").gap(Gap::Item).scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
-            ui.set_min_width(DETAILS_W);
-            details(app, ui, d);
+        // The details scroll in the panes' room: the scrolling stack is the one child of a stack that offers it the room.
+        Stack::new().id_salt("new_document_details_room").room_height(room).show(ui, |ui, _| {
+            Stack::new().id_salt("new_document_details").gap(Gap::Item).scroll(Scroll::vertical()).show(ui, |ui, _| {
+                ui.set_min_width(DETAILS_W);
+                details(app, ui, d);
+            });
         });
     });
     create.then_some(true)
