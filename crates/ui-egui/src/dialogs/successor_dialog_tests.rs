@@ -801,6 +801,8 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
     kit::click_at(&mut h, at);
     assert!(kit::draft(&h).b("primaryTextFrame"), "the caption toggles its checkbox");
     wheel_into_view(&mut h, "[Default]", |h| kit::rect_of(h, "[Default]"));
+    // A screen reader reaches what lies below as well: Scroll Into View brings the column back to Primary Text Frame.
+    kit::reach(&mut h, "Primary Text Frame");
 }
 
 /// Successor of `arabic_new_document_fields_remain_reachable_and_editable`: with the Arabic interface, at three window sizes,
