@@ -312,6 +312,45 @@ pub fn system(c: Cursor) -> egui::CursorIcon {
     }
 }
 
+/// The tool cursor the canvas showed in this frame's pass, for [`CursorImagePlugin`].
+#[derive(Clone, Default)]
+struct Shown {
+    image: Option<CustomCursorImage>,
+    icon: egui::CursorIcon,
+}
+
+fn shown_id() -> egui::Id {
+    egui::Id::new("designcraft-tool-cursor-shown")
+}
+
+/// Hands the window the canvas's tool cursor image ([`Mode::Os`]) once the frame's passes are done. The craft UI
+/// runtime settles the window's cursor at the end of each pass from the requests its components made, and clears the
+/// image the window had, so an image the canvas set during the pass would never reach the window. The image goes out
+/// only where no framework component asked for a cursor of its own in that pass.
+struct CursorImagePlugin;
+
+impl egui::Plugin for CursorImagePlugin {
+    fn debug_name(&self) -> &'static str {
+        "designcraft.tool_cursor_image"
+    }
+
+    fn output_hook(&mut self, ctx: &egui::Context, output: &mut egui::FullOutput) {
+        let Some(shown) = ctx.data_mut(|data| data.remove_temp::<Shown>(shown_id())) else { return };
+        if craft_ui_widgets::runtime::cursor::current(ctx).is_some() {
+            return;
+        }
+        output.platform_output.cursor_image = shown.image;
+        output.platform_output.cursor_icon = shown.icon;
+    }
+}
+
+/// Puts the tool cursor's hand-over on `ctx`, once: with the craft UI runtime, after it is installed.
+pub(crate) fn install(ctx: &egui::Context) {
+    if ctx.plugin_opt::<CursorImagePlugin>().is_none() {
+        ctx.add_plugin(CursorImagePlugin);
+    }
+}
+
 /// Show cursor `c` with the pointer at `hover` (screen points): set the OS cursor bitmap or paint
 /// the glyph per [`mode`], and return the cursor icon to set.
 pub fn show(ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) -> egui::CursorIcon {
@@ -319,7 +358,11 @@ pub fn show(ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) ->
         Mode::Os => {
             // The glyphs keep the system cursors' size whatever the interface scale.
             let ppp = ctx.pixels_per_point() / ctx.zoom_factor().max(0.01);
-            ctx.set_cursor_image(images.get(c, ppp));
+            let image = images.get(c, ppp);
+            ctx.set_cursor_image(image.clone());
+            // The craft UI runtime's cursor stage clears the window's image at the end of every pass, after the canvas
+            // set it: the window takes it from the frame's output instead ([`install`]).
+            ctx.data_mut(|data| data.insert_temp(shown_id(), Shown { image, icon: system(c) }));
             system(c)
         }
         Mode::Painted => {

@@ -45,6 +45,8 @@ impl DesignApp {
             craft_host::target::WindowChrome::Native
         };
         crate::framework_transform::install_with(ctx, chrome);
+        // The canvas's tool cursor images reach the window past the runtime's cursor stage.
+        crate::cursors::install(ctx);
     }
 
     /// Start the background font scan, establish the monotonic timing origin, and initialize document, view, input, screenshot, dialog and control state.

@@ -46,6 +46,8 @@ const LEAST_PANE_ROOM: f32 = 120.0;
 const DIALOG_CHROME_H: f32 = 160.0;
 /// The share of the window's height a framework dialog may take before its body scrolls (`Overlay::dialog`'s cap).
 const DIALOG_HEIGHT_SHARE: f32 = 0.9;
+/// The dialog's padding on its two sides (`Pad::Regular` each side).
+const DIALOG_PAD_W: f32 = 16.0;
 /// The share of the window's width a framework dialog may take (`Overlay::dialog`'s cap).
 const DIALOG_WIDTH_SHARE: f32 = 0.8;
 /// The dialog width below which the presets go under the details, in one column the dialog's body scrolls, as the native
@@ -116,6 +118,9 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         return create.then_some(true);
     }
     let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).clamp(LEAST_PANE_ROOM, PANE_ROOM);
+    // The dialog opens 960 points wide, or as wide as the window lets it be: a container's frame is as wide as its
+    // content, so the body asks for that width itself (the layer's least width alone widens the layer, not the frame).
+    ui.set_min_width(((FORM.width).min(window.width() * DIALOG_WIDTH_SHARE) - DIALOG_PAD_W).max(0.0));
     Row::new().id_salt("new_document_form").fill_width().gap(Gap::Section).show(ui, |ui, _| {
         Stack::new().id_salt("new_document_presets").fill_width().room_height(room).gap(Gap::Item).show(ui, |ui, _| {
             tabs(app, ui, d);

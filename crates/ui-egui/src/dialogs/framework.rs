@@ -199,9 +199,11 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
     // width gives way to it, so the footer's buttons stay in a small window.
     let room = ctx.content_rect().width() * DIALOG_WIDTH_SHARE;
     let tokens = craft_ui_widgets::runtime::env::Env::of_root(ctx).tokens.clone();
-    let least = [LeastWidth::WideDialog, LeastWidth::Dialog]
+    // The dialog chrome's own least width is `LeastWidth::Dialog`, which a container cannot drop: in a window too narrow
+    // for it, a smaller size role stands in, so the dialog, its footer buttons included, stays inside the window.
+    let least = [LeastWidth::WideDialog, LeastWidth::Dialog, LeastWidth::Popup, LeastWidth::DialogButton]
         .into_iter()
-        .filter(|least| form.width >= 700.0 || *least == LeastWidth::Dialog)
+        .filter(|least| form.width >= 700.0 || *least != LeastWidth::WideDialog)
         .find(|least| least.points(tokens.tokens()) <= room);
     // The body and the footer content both edit the app and the draft; the dialog runs them one after the other.
     let state = RefCell::new((app, d));
