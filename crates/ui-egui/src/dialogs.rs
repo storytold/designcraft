@@ -258,11 +258,11 @@ mod color_theme_tests {
     /// with [None] puts a page without a parent before the page chosen.
     #[test]
     fn insert_pages_goes_before_a_page_or_at_the_start_with_the_chosen_parent() {
+        use super::super::table_layout_kit as kit;
         use egui::accesskit::Role;
         use egui_kittest::{Harness, kittest::Queryable};
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         // Facing: [1] [2 3] [4].
-        app.run("file.new", json!({"pages": 4})).unwrap();
+        let mut app = kit::app(4, false);
         let b = app.run("layout.parents.new", json!({"prefix": "B", "name": "Cover"})).unwrap()["id"].as_u64().unwrap();
         let ids = |app: &DesignApp| -> Vec<u64> {
             let d = &app.session.doc().unwrap().doc;
@@ -271,34 +271,16 @@ mod color_theme_tests {
         let old = ids(&app);
         crate::menus::activate(&mut app, "layout.pages.insert", &Value::Null);
         assert_eq!(app.ui.dialog.as_ref().unwrap().id, "insertPages");
-        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let key = egui::Id::unique("insert_pages_test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(key, true));
-                    return;
-                }
-                show(app, ui.ctx());
-            },
-            app,
-        );
-        h.run_steps(3);
+        let mut h = kit::harness_sized(app, egui::vec2(1000.0, 700.0));
         for l in ["Pages:", "Insert:", "Parent:"] {
-            assert!(h.query_by_label(l).is_some(), "{l}");
+            assert!(h.query_all_by_label(l).next().is_some(), "{l}");
         }
-        // The dropdown showing `shown`, then its item `choice`.
-        let pick = |h: &mut Harness<'_, DesignApp>, shown: &str, choice: &str| {
-            h.get_by(|n| n.role() == Role::ComboBox && n.value().as_deref() == Some(shown)).click();
-            h.run_steps(2);
-            h.get_by_label(choice).click();
-            h.run_steps(2);
-        };
+        // The dropdown named `label`, then its item `choice`.
+        let pick = |h: &mut Harness<'_, DesignApp>, label: &str, choice: &str| kit::pick(h, label, choice);
         // After page 1 with A, at first; then At Start of Document, with B-Cover.
-        pick(&mut h, "After Page", "At Start of Document");
-        pick(&mut h, "A-Parent", "B-Cover");
-        h.get_by_label("  OK  ").click();
-        h.run_steps(3);
+        pick(&mut h, "Insert:", "At Start of Document");
+        pick(&mut h, "Parent:", "B-Cover");
+        kit::click(&mut h, &[Role::Button], "OK", 0);
         assert!(h.state().ui.dialog.is_none());
         let now = ids(h.state());
         assert_eq!(now[1..], old[..], "the new page is first");
@@ -306,12 +288,11 @@ mod color_theme_tests {
         assert_eq!(parent(h.state(), 0), Some(b));
         // Before page 4, with [None].
         crate::dialogs::open_insert_pages(h.state_mut(), 0);
-        h.run_steps(3);
-        pick(&mut h, "After Page", "Before Page");
-        pick(&mut h, "1", "4");
-        pick(&mut h, "B-Cover", "[None]");
-        h.get_by_label("  OK  ").click();
-        h.run_steps(3);
+        kit::steps(&mut h, 3);
+        pick(&mut h, "Insert:", "Before Page");
+        pick(&mut h, "Page", "4");
+        pick(&mut h, "Parent:", "[None]");
+        kit::click(&mut h, &[Role::Button], "OK", 0);
         let then = ids(h.state());
         assert_eq!(then.len(), 6);
         assert_eq!(then[..3], now[..3], "the pages before it stay");
