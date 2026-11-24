@@ -10,6 +10,7 @@ def main() -> int:
     suite = unittest.TestSuite()
     for name, relative in (
         ("designcraft_archive_suite", "nightly-archive-tests.py"),
+        ("designcraft_launcher_suite", "nightly-launcher-tests.py"),
         ("designcraft_plist_suite", "macos/nightly_plist_tests.py"),
         ("designcraft_release_dispatch_suite", "nightly-release-tests.py"),
         ("designcraft_mac_sign_suite", "macos/nightly_sign_tests.py"),

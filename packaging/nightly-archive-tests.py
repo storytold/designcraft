@@ -30,10 +30,11 @@ class ArchivePolicy(unittest.TestCase):
         self.stage.mkdir()
         self.output = self.root / "nightly.tar.gz"
         # DesignCraft ships no ATTRIBUTION.md (its credits are the About window's).
-        self.required = {"designcraft", "designcraft-nightly.png", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE"}
+        self.required = {"designcraft", "designcraft-bin", "designcraft-nightly.png", "README.md", "LICENSE-MIT", "LICENSE-APACHE", "NOTICE"}
         for name in self.required:
             (self.stage / name).write_bytes(b"generated fixture: " + name.encode())
-        (self.stage / "designcraft").chmod(0o755)
+        for executable in ("designcraft", "designcraft-bin"):
+            (self.stage / executable).chmod(0o755)
 
     def test_flat_regular_ustar_with_all_notices(self):
         (self.stage / "OFL-Font.txt").write_text("generated fixture license", encoding="utf-8")
@@ -42,6 +43,8 @@ class ArchivePolicy(unittest.TestCase):
             self.assertEqual({m.name for m in archive}, self.required | {"OFL-Font.txt"})
             self.assertTrue(all(m.isfile() and not m.pax_headers for m in archive))
             self.assertEqual(archive.extractfile("designcraft").read(), (self.stage / "designcraft").read_bytes())
+            # The launcher and the compiled binary are two distinct files in one flat archive.
+            self.assertNotEqual(archive.extractfile("designcraft").read(), archive.extractfile("designcraft-bin").read())
         with gzip.open(self.output, "rb") as stream:
             while (header := stream.read(512)) != bytes(512):
                 self.assertEqual(len(header), 512)

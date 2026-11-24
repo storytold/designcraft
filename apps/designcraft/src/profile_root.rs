@@ -204,10 +204,13 @@ fn validate_for(
         // The stable override would silently point every write at another app's data.
         return Err("nightly-v1 cannot be combined with DESIGNCRAFT_CONFIG_DIR".into());
     }
-    if platform != Platform::Windows && env("FLATPAK_ID").is_some_and(|v| !v.is_empty()) {
-        // These rows are native tar/app-bundle launches, not a Flatpak package. Inheriting its
-        // runtime socket namespace could point another profile at the stable app's socket.
-        return Err("nightly-v1 native packages cannot inherit a Flatpak instance; launch through the native Launcher".into());
+    // The nightly bundle's own sandbox is the one Flatpak that may reach this code: its per-app
+    // home is private. Any other id means a native package (or the stable bundle) started here,
+    // whose runtime socket namespace is not this profile's.
+    let foreign_sandbox =
+        env("FLATPAK_ID").filter(|value| !value.is_empty()).is_some_and(|id| id != designcraft_ui_egui::channel::NIGHTLY_PACKAGE_ID);
+    if platform != Platform::Windows && foreign_sandbox {
+        return Err("nightly-v1 starts only in its own Flatpak bundle, not inside another app's sandbox".into());
     }
     let chosen = canonical_future(root)?;
     if is_portable_layout(root, platform) || is_portable_layout(&chosen, platform) {
@@ -420,6 +423,13 @@ mod tests {
         let flatpak = |key: &str| if key == "FLATPAK_ID" { Some(OsString::from("ai.storyteller.designcraft")) } else { fixture.get(key) };
         assert!(validate_for(Platform::Linux, &target, flatpak, Some(&fixture.exe), |_| Ok(())).is_err());
         assert!(validate_for(Platform::Windows, &target, flatpak, Some(&fixture.exe), |_| Ok(())).is_ok(), "Windows has no Flatpak namespace");
+        // The nightly bundle's own sandbox is private; a lookalike id is still another app's.
+        let nightly_bundle =
+            |key: &str| if key == "FLATPAK_ID" { Some(OsString::from(designcraft_ui_egui::channel::NIGHTLY_PACKAGE_ID)) } else { fixture.get(key) };
+        assert!(validate_for(Platform::Linux, &target, nightly_bundle, Some(&fixture.exe), |_| Ok(())).is_ok());
+        let lookalike =
+            |key: &str| if key == "FLATPAK_ID" { Some(OsString::from("ai.storyteller.designcraft.nightly-v1")) } else { fixture.get(key) };
+        assert!(validate_for(Platform::Linux, &target, lookalike, Some(&fixture.exe), |_| Ok(())).is_err());
     }
 
     #[cfg(unix)]

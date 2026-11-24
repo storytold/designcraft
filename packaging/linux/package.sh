@@ -153,15 +153,15 @@ if has deb || has rpm; then
     install -Dm755 "$NFPM_STAGE/usr/bin/designcraft" "$NFPM_STAGE/usr/lib/designcraft-nightly/designcraft"
     cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
 #!/bin/sh
+# Start the compiled nightly-v1 flavor. Its profile is the Launcher's protocol (the app refuses a
+# DESIGNCRAFT_CONFIG_DIR override), so this wrapper passes the same pair the Launcher will.
 set -eu
+real_bin=/usr/lib/designcraft-nightly/designcraft
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
-  exec /usr/lib/designcraft-nightly/designcraft "$@"
+  exec "$real_bin" "$@"
 fi
-if [ -z "${DESIGNCRAFT_CONFIG_DIR+x}" ]; then
-  profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
-  export DESIGNCRAFT_CONFIG_DIR="$profile_base/designcraft-nightly"
-fi
-exec /usr/lib/designcraft-nightly/designcraft "$@"
+profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
+exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
 WRAPPER
     chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
     rm -f "$NFPM_STAGE/usr/bin/designcraft"
@@ -218,16 +218,16 @@ if has appimage; then
     APPIMAGE_ID="$APP_ID.nightly-v1"
     cat >"$APPDIR/AppRun" <<'APPRUN'
 #!/bin/sh
+# Start the compiled nightly-v1 flavor. A real file, never a symlink to the binary: the flavor
+# needs the Launcher's profile pair, and the app refuses a DESIGNCRAFT_CONFIG_DIR override.
 set -eu
 APPDIR="${APPDIR:-$(cd "$(dirname "$0")" && pwd)}"
+real_bin="$APPDIR/usr/bin/designcraft"
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
-  exec "$APPDIR/usr/bin/designcraft" "$@"
+  exec "$real_bin" "$@"
 fi
-if [ -z "${DESIGNCRAFT_CONFIG_DIR+x}" ]; then
-  profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
-  export DESIGNCRAFT_CONFIG_DIR="$profile_base/designcraft-nightly"
-fi
-exec "$APPDIR/usr/bin/designcraft" "$@"
+profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
+exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
 APPRUN
     chmod 755 "$APPDIR/AppRun"
     sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \

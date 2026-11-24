@@ -1,12 +1,12 @@
 #!/bin/sh
+# Start the compiled nightly-v1 flavor from the Arch package. The profile is the Launcher's
+# protocol (the app refuses a DESIGNCRAFT_CONFIG_DIR override), so this launcher passes the same
+# pair the Launcher will.
 set -eu
-
-real_bin="$(dirname "$0")/.designcraft-nightly/designcraft"
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+real_bin="$here/.designcraft-nightly/designcraft"
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
   exec "$real_bin" "$@"
 fi
-if [ -z "${DESIGNCRAFT_CONFIG_DIR+x}" ]; then
-  profile_base="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}"
-  export DESIGNCRAFT_CONFIG_DIR="$profile_base/designcraft-nightly"
-fi
-exec "$real_bin" "$@"
+profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
+exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
