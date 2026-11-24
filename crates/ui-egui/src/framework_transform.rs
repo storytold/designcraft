@@ -224,8 +224,9 @@ impl<'a> Number<'a> {
 }
 
 /// A text field over the app's own spelling of a length in `unit`, at `at` or in the flow: the value it committed
-/// (points). A field left as it shows its value commits nothing: reading the shown text back would round the value
-/// (13Q is 9.2126 pt, shown as 9.213).
+/// (points), `Some(None)` when it was emptied. A field left as it shows its value commits nothing: reading the shown
+/// text back would round the value (13Q is 9.2126 pt, shown as 9.213). Up and Down Arrow step the value by the unit's
+/// step (1 pt, 1/16 in, 1 mm; one point in picas), Shift by ten steps, as the app's spinners did.
 fn measure_text(
     ui: &mut egui::Ui,
     at: Option<Rect>,
@@ -235,16 +236,41 @@ fn measure_text(
     unit: Unit,
     enabled: bool,
 ) -> Option<Option<f64>> {
+    let stepped = if enabled { measure_step(ui, id, unit) } else { None };
     let field = TextField::with_codec(label.to_owned(), Bind::given(value), MeasureCodec(unit)).id(id).enabled(enabled);
     let out = match at {
         Some(at) => field.show_at(ui, at),
         None => field.show(ui),
     };
+    if let Some(by) = stepped {
+        return Some(Some(value.unwrap_or(0.0) + by));
+    }
     out.events.committed().copied().filter(|v| match (v, value) {
         (Some(v), Some(old)) => v.is_finite() && format_measure(*v, unit) != format_measure(old, unit),
         (Some(v), None) => v.is_finite(),
         // An emptied field: a value that may be unset (`Number::ignore`) is cleared.
         (None, old) => old.is_some(),
+    })
+}
+
+/// The step an Up or Down Arrow pressed in the measure field `id` asks for this pass, in points: the unit's step, ten
+/// with Shift, down for Down. The field has the keyboard (as of the last pass), so the keys are its: they are taken
+/// before it runs, and the canvas does not nudge the selection with them.
+fn measure_step(ui: &mut egui::Ui, id: egui::Id, unit: Unit) -> Option<f64> {
+    if !craft_ui_widgets::runtime::focus::has(ui.ctx(), id) {
+        return None;
+    }
+    let step = crate::widgets::NumKind::Measure(unit).step();
+    ui.input_mut(|input| {
+        let mut by = 0.0;
+        for (key, sign) in [(egui::Key::ArrowUp, 1.0), (egui::Key::ArrowDown, -1.0)] {
+            for (modifiers, times) in [(egui::Modifiers::SHIFT, 10.0), (egui::Modifiers::NONE, 1.0)] {
+                while input.consume_key(modifiers, key) {
+                    by += sign * times * step;
+                }
+            }
+        }
+        (by != 0.0).then_some(by)
     })
 }
 
@@ -577,8 +603,9 @@ impl Codec for MeasureCodec {
     }
 
     fn parse(&self, text: &str, _start: &Option<f64>) -> Result<Option<f64>, NotAValue> {
+        // An emptied field is no value: the caller unsets a value that may be unset and keeps any other.
         if text.trim().is_empty() {
-            return Err(NotAValue);
+            return Ok(None);
         }
         parse_measure(text, self.0).map(Some).map_err(|_| NotAValue)
     }

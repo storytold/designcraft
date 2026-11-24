@@ -252,3 +252,72 @@ fn the_field_rects_are_this_frames_and_go_when_the_fields_do() {
     h.run_steps(3);
     assert!(h.state().framework_fields.is_empty(), "stale rects with no selection: {:?}", h.state().framework_fields);
 }
+
+/// A picas width, a field the app spells itself: Up and Down Arrow step it by a point and Shift by ten, as the app's
+/// spinners did, each press one undo step.
+#[test]
+fn arrow_keys_step_a_picas_field_by_a_point_and_shift_by_ten() {
+    let (mut app, id) = app_with_frame();
+    {
+        let st = app.session.doc_mut().expect("a document");
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        (doc.settings.horizontal_units, doc.settings.vertical_units) = (designcraft_geom::Unit::Picas, designcraft_geom::Unit::Picas);
+    }
+    let mut h = properties_harness(app);
+    let at = field_rect(&h, "width").center();
+    h.event(Event::PointerMoved(at));
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    let width = |h: &Harness<'_, DesignApp>| bounds(h, id).width();
+    let (before, steps) = (width(&h), undo_steps(&h));
+    for (key, modifiers, by) in
+        [(Key::ArrowUp, Modifiers::NONE, 1.0), (Key::ArrowUp, Modifiers::SHIFT, 10.0), (Key::ArrowDown, Modifiers::NONE, -1.0)]
+    {
+        let was = width(&h);
+        h.event(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+        h.event(Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+        h.run_steps(2);
+        assert!((width(&h) - (was + by)).abs() < 1e-3, "{key:?} with {modifiers:?}: {was} → {}", width(&h));
+    }
+    assert!((width(&h) - (before + 10.0)).abs() < 1e-3);
+    assert_eq!(undo_steps(&h) - steps, 3, "one undo step a press");
+}
+
+/// A picas field whose value may be unset (Space Between Paragraphs Using Same Style): emptying it unsets the value,
+/// and a field that may not be unset keeps its value.
+#[test]
+fn an_emptied_picas_field_unsets_a_value_that_may_be_unset() {
+    for ignorable in [true, false] {
+        let ctx = egui::Context::default();
+        crate::framework_transform::install(&ctx);
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(240.0, 80.0)).build_ui_state(
+            move |ui, got: &mut Option<Option<f64>>| {
+                let n = crate::framework_transform::Number::new(
+                    "Space",
+                    Some(6.0),
+                    crate::framework_transform::Quantity::Length(designcraft_geom::Unit::Picas),
+                );
+                let n = if ignorable { n.ignore("Ignore") } else { n };
+                let at = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), vec2(120.0, 22.0));
+                if let Some(v) = crate::framework_transform::number_field(ui, Some(at), egui::Id::new("space"), n) {
+                    *got = Some(v);
+                }
+            },
+            None,
+        );
+        h.run_steps(3);
+        let at = egui::pos2(70.0, 21.0);
+        h.event(Event::PointerMoved(at));
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(2);
+        h.event(Event::Key { key: Key::A, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND });
+        h.event(Event::Key { key: Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        h.event(Event::Key { key: Key::Enter, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(3);
+        let want = if ignorable { Some(None) } else { None };
+        assert_eq!(*h.state(), want, "ignorable: {ignorable}");
+    }
+}
