@@ -337,8 +337,11 @@ mod framework {
             // The Fill and Stroke proxy with Default Fill and Stroke and Swap over it; a click brings a box to the
             // front, a double click opens the Color Picker for it.
             let wells = [
-                PairWell::new(tr("Fill (X)"), Mixed::Same(well_color(doc.as_deref(), &fill_sw))),
-                PairWell::new(tr("Stroke (X)"), Mixed::Same(well_color(doc.as_deref(), &stroke_sw))).ring(true),
+                // A None swatch shows the "no colour" diagonal, as the native panel's red slash did.
+                PairWell::new(tr("Fill (X)"), Mixed::Same(well_color(doc.as_deref(), &fill_sw))).none(fill_sw == designcraft_color::swatch::NONE),
+                PairWell::new(tr("Stroke (X)"), Mixed::Same(well_color(doc.as_deref(), &stroke_sw)))
+                    .ring(true)
+                    .none(stroke_sw == designcraft_color::swatch::NONE),
             ];
             let active = if stroke_front { Well::Secondary } else { Well::Primary };
             let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
