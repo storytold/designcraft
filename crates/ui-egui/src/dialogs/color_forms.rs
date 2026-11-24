@@ -23,8 +23,8 @@ use craft_ui_widgets::display::{Shade, Text};
 use craft_ui_widgets::form::{Field, FieldGroup, SliderField, SliderFieldLayout};
 use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::pickers::Select;
-use craft_ui_widgets::runtime::env::{UnitKind, with_env};
-use craft_ui_widgets::text::{NumberField, NumberLook, TextField};
+use craft_ui_widgets::runtime::env::UnitKind;
+use craft_ui_widgets::text::{NumberField, TextField};
 use designcraft_color::Color;
 use egui::Ui;
 use serde_json::{Value, json};
@@ -208,23 +208,14 @@ fn color_picker(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     // The colour space the area shows, named over it as in InDesign: Lab while a Lab component is chosen, else RGB.
     let space = if matches!(component, "l" | "la" | "lb") { "Lab Color Space View" } else { "RGB Color Space View" };
     Text::new(tr(app, space)).show(ui);
-    // InDesign's fields: at the field's start in the interface face, the unit after the field. The picker shows each
-    // channel's own decimals (whole percents too).
-    let out = with_env(
-        ui,
-        |scope| {
-            scope.values.set(NumberLook::Inline);
-        },
-        |ui| {
-            ColorPicker::new(tr(app, "Color Picker"), Bind::given(shown))
-                .layout(ColorPickerLayout::Full)
-                .models(models)
-                .mode(Bind::bound(&mut mode))
-                .compare(Mixed::Same(PickedColor::rgb(srgb(replaced))))
-                .eyedropper(true)
-                .show(ui)
-        },
-    );
+    // The picker shows each channel's own decimals (whole percents too), in the app's number look.
+    let out = ColorPicker::new(tr(app, "Color Picker"), Bind::given(shown))
+        .layout(ColorPickerLayout::Full)
+        .models(models)
+        .mode(Bind::bound(&mut mode))
+        .compare(Mixed::Same(PickedColor::rgb(srgb(replaced))))
+        .eyedropper(true)
+        .show(ui);
     if let Some(color) = edited(out.events, shown) {
         take(d, color, p.hsb[0]);
     }

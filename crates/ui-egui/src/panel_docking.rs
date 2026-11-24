@@ -1153,7 +1153,6 @@ fn dock_config() -> DockConfig {
         .tab_close_buttons(false)
         .group_order_items(true)
         .panel_menu_always(true)
-        .panel_menu_icon(craft_behavior::IconId::new("menu"))
         // Long tab titles end with "…" and the tabs that do not fit go to the strip's overflow menu, as InDesign's.
         .tab_shrink(craft_ui::tabs::PanelTabShrink::Ellipsis)
         // Floating panels stay above the docked columns' flyouts, as InDesign's.
