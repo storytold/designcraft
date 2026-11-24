@@ -408,7 +408,7 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     let mut h = test_window::open(app, vec2(1800.0, 700.0));
     let bar = test_window::panel_rect(&h, "control_bar");
     // The number fields of the Control panel are named by what they set.
-    fn field<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>, bar: egui::Rect, label: &str) -> egui_kittest::Node<'h> {
+    fn field<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>, bar: egui::Rect, label: &'h str) -> egui_kittest::Node<'h> {
         h.query_all_by_label(label)
             .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
             .find(|n| bar.y_range().contains(n.rect().center().y))
