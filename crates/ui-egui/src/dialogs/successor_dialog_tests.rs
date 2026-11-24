@@ -752,6 +752,17 @@ fn wheel_into_view(
     what: &str,
     find: impl Fn(&egui_kittest::Harness<'_, DesignApp>) -> Option<egui::Rect>,
 ) -> egui::Rect {
+    wheel_into_view_over(h, what, find, false)
+}
+
+/// [`wheel_into_view`], with the pointer over a text field the column shows when `over_field` (the first, which the
+/// dialog focuses when it opens): a field passes the wheel on to the column around it, focused or not.
+fn wheel_into_view_over(
+    h: &mut egui_kittest::Harness<'_, DesignApp>,
+    what: &str,
+    find: impl Fn(&egui_kittest::Harness<'_, DesignApp>) -> Option<egui::Rect>,
+    over_field: bool,
+) -> egui::Rect {
     // The last move: a node scrolled out of the column may leave the tree, and the wheel then goes back the other way.
     let mut last = 0.0_f32;
     // Where the target was after each step, and where the wheel went: what a failure reports.
@@ -769,9 +780,12 @@ fn wheel_into_view(
             None => panic!("{what} is not shown"),
         };
         last = delta;
-        // The pointer rests just inside the column's end edge, past the details' two columns, over the column itself and
-        // no field: a text field under the pointer takes the wheel for its own text.
-        let over = egui::pos2(if rtl { shown.left() + 12.0 } else { shown.right() - 12.0 }, shown.center().y);
+        // The pointer rests over a text field the column shows, or just inside the column's end edge, past the details'
+        // two columns, over the column itself.
+        let field =
+            over_field.then(|| h.query_all_by_role(Role::TextInput).map(|node| node.rect()).find(|rect| shown.contains_rect(*rect))).flatten();
+        let over =
+            field.map_or_else(|| egui::pos2(if rtl { shown.left() + 12.0 } else { shown.right() - 12.0 }, shown.center().y), |rect| rect.center());
         trail.push((find(h), over));
         kit::event(h, egui::Event::PointerMoved(over));
         kit::event(
@@ -801,6 +815,8 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
     for expected in ["New Document", "Create", "Close"] {
         assert!(kit::in_view(&h, expected), "{expected} is in the window; {}", fit_report(&h, "New Document"));
     }
+    // The wheel over a field, the focused name field first, scrolls the column too: a field passes it on.
+    wheel_into_view_over(&mut h, "Bleed and Slug", |h| kit::rect_of(h, "Bleed and Slug"), true);
     // The one column scrolls under the title and over the footer: the wheel over it reaches what lies below.
     let at = wheel_into_view(&mut h, "Primary Text Frame", |h| kit::rect_of(h, "Primary Text Frame")).center();
     kit::click_at(&mut h, at);
