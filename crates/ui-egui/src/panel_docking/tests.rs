@@ -1552,19 +1552,57 @@ fn a_changing_panel_title_makes_a_new_spec_model_only_when_it_changes() {
     assert!(format!("{:?}", plain.spec(&"tabs".to_string()).label).contains("Tabs"));
 }
 
-/// The flyout of a low icon (Attributes, near the bottom of the iconic column) opens with its panel's room inside the
-/// window: it asks for `OPEN_PANEL_HEIGHT` (`Specs::spec`) and moves up from its icon by what would pass the window's
-/// bottom, instead of sitting at its icon with only its first line above the window's bottom edge.
+/// The flyout of a low icon (Attributes, near the bottom of the iconic column) opens whole inside the window: its tab
+/// strip and its body, as tall as the panel's content, lie inside the window, and the body is not cut, so the last
+/// Attributes check box is inside the flyout. A flyout that would pass the window's bottom below its icon moves up by
+/// what it overflows (the framework's `Flyout`), instead of sitting at its icon with only its first line above the
+/// window's bottom edge (the visual review's "Attributes panel clipped at the bottom of the window").
+///
+/// This test used to ask that the tab's top plus `OPEN_PANEL_HEIGHT` fit, from when every flyout asked for that docked
+/// height. Flyouts are content-tall now (`FlyoutHeight::Content` in `Specs::spec`); only docked groups keep their
+/// `DockHeights`, so the room a flyout needs is what its content measures, and that is what is checked.
 #[test]
 fn a_low_icons_flyout_opens_with_its_room_inside_the_window() {
     let mut app = app();
+    // An object selected, so the panel shows its check boxes (with none it shows one line, "Select an object.").
+    app.run("file.new", json!({"width":480,"height":360})).unwrap();
+    app.run("frame.create", json!({"rect":[80,70,330,230],"content":"none"})).unwrap();
     app.run("window.panel", json!({"panel": "attributes"})).unwrap();
     assert!(in_iconic_column(&layout_of(&app), "attributes"));
     assert_eq!(app.ui.docking_flyout.as_deref(), Some("attributes"));
+    // This harness shows the dock alone over the whole window (no status bar), so the window is the dock's room.
     let size = vec2(1280.0, 900.0);
+    let window = Rect::from_min_size(Pos2::ZERO, size);
     let mut h = harness(app, size);
     h.run_steps(2);
-    let tab = tab_rect(&h, "attributes");
-    assert!(tab.top() >= 0.0, "{tab:?}");
-    assert!(tab.top() + super::OPEN_PANEL_HEIGHT <= size.y + 0.5, "the flyout's room passes the window's bottom: {tab:?}");
+    let language = h.state().ui.language.clone();
+    let tab = h
+        .query_all_by_role_and_label(Role::Tab, crate::i18n::tr(&language, crate::dock::panel_label("attributes")))
+        .next()
+        .expect("the Attributes tab");
+    // The panel's last control: Overprint Gap, at the end of the check boxes' bottom row (`attribute_rows`).
+    let last =
+        h.query_all_by_role_and_label(Role::CheckBox, crate::i18n::tr(&language, "Overprint Gap")).next().expect("the Overprint Gap check box");
+    // The flyout is the nearest node with bounds holding both its tab strip and its body's last control: the flyout's
+    // group. (Not every node above them has bounds, and `rect` wants them.)
+    let mut holders = Vec::new();
+    let mut at = tab.parent();
+    while let Some(node) = at {
+        holders.push(node.accesskit_node().id());
+        at = node.parent();
+    }
+    let mut at = last.parent();
+    let flyout = loop {
+        let node = at.expect("the tab and the last control share the flyout");
+        if holders.contains(&node.accesskit_node().id()) && node.accesskit_node().bounding_box().is_some() {
+            break node.rect();
+        }
+        at = node.parent();
+    };
+    // Probe: that node is the flyout beside the column, not the window's root.
+    assert!(flyout.width() < size.x / 2.0, "the flyout's node: {flyout:?}");
+    assert!(window.expand(0.5).contains_rect(flyout), "the flyout {flyout:?} passes the window {window:?}");
+    assert!(flyout.top() <= tab.rect().top() + 0.5, "the flyout {flyout:?} holds its tab strip {:?}", tab.rect());
+    let rect = last.rect();
+    assert!(flyout.expand(0.5).contains_rect(rect), "the last Attributes control {rect:?} is cut from the flyout {flyout:?}");
 }
