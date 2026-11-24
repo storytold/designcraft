@@ -1,4 +1,5 @@
 use egui::{pos2, vec2};
+use egui_kittest::kittest::NodeT as _;
 use egui_kittest::kittest::Queryable;
 
 use crate::test_window::{self, wheel};
@@ -16,15 +17,41 @@ fn app(double: bool) -> crate::DesignApp {
     app
 }
 
+/// Probe (harness setup): the window as the shipping one has it, with the tool commands on the framework's board. The
+/// Tools rail names each button by its command's label, which `DesignApp::raw_input_hook` puts on the board
+/// (`toolbar::tool_catalog`, in the interface language) before every frame; `test_window::open` never runs the hook, so
+/// there the rail's buttons were named by their command ids (`tool.select.zoom`). The frame input the hook sets stays
+/// for the passes after it.
+fn open(app: crate::DesignApp, size: egui::Vec2) -> egui_kittest::Harness<'static, test_window::Window> {
+    with_tools(test_window::open(app, size))
+}
+
+/// `h` with the tool commands on the board (see [`open`]).
+fn with_tools(mut h: egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Harness<'static, test_window::Window> {
+    let ctx = h.ctx.clone();
+    h.state_mut().app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+    h.run_steps(3);
+    h
+}
+
 /// The width of the Tools panel in `cols` columns, as the rail lays them out in a window tall enough for one.
 fn column_width(cols: f32) -> f32 {
-    let h = test_window::open(app(cols > 1.5), vec2(1400.0, 900.0));
+    let h = open(app(cols > 1.5), vec2(1400.0, 900.0));
     test_window::panel_rect(&h, "tools").width()
 }
 
-/// Returns the bounds of the labeled test widget, failing if the label cannot be found.
+/// Returns the bounds of the control named `label`, failing if no control has the name or two separate ones do.
+///
+/// Probe: a Tools-rail slot with a flyout has a second node of its name inside it, its corner mark (the framework's
+/// `FlyoutButton` names the mark after the slot's tool), so the control is the outermost node of the name. A tooltip
+/// (its text a Label) carries the name too and is not the control.
 fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
-    h.get_by_label(label).rect()
+    use egui::accesskit::Role;
+    let rects: Vec<egui::Rect> =
+        h.query_all_by_label(label).filter(|n| !matches!(n.accesskit_node().role(), Role::Label | Role::Tooltip)).map(|n| n.rect()).collect();
+    let outer = rects.iter().copied().max_by(|a, b| a.area().total_cmp(&b.area())).unwrap_or_else(|| panic!("no control named {label:?}"));
+    assert!(rects.iter().all(|r| outer.expand(0.5).contains_rect(*r)), "two controls are named {label:?}: {rects:?}");
+    outer
 }
 
 /// Checks that every tool's Tools-rail button carries its translated name in both Tools-panel layouts, and that its
@@ -34,7 +61,7 @@ fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
     for double in [false, true] {
         let mut app = app(double);
         app.ui.language = "hu".into();
-        let mut h = test_window::open(app, vec2(1400.0, 1000.0));
+        let mut h = open(app, vec2(1400.0, 1000.0));
         for tool in designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()) {
             h.state_mut().app.run("tool.select", serde_json::json!({"tool": tool.id})).unwrap();
             h.run_steps(3);
@@ -55,7 +82,7 @@ fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
     use egui::{Event, Modifiers, PointerButton};
     use egui_kittest::kittest::{NodeT, Queryable};
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let mut h = open(app, vec2(1400.0, 900.0));
     // The flyout lists the group's tools as menu rows; the rail's own buttons are not rows.
     let rows = |h: &egui_kittest::Harness<'static, crate::test_window::Window>| {
         h.query_all_by_label("Ellipse Frame Tool")
@@ -63,7 +90,7 @@ fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
             .count()
     };
     let open = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
-        let at = h.get_by_label("Rectangle Frame Tool").rect().center();
+        let at = rect(h, "Rectangle Frame Tool").center();
         h.input_mut().events.push(Event::PointerMoved(at));
         for pressed in [true, false] {
             h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
@@ -94,7 +121,7 @@ fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
 fn a_short_window_reaches_every_tool() {
     for double in [false, true] {
         let (w, ht) = (1000.0, 500.0);
-        let mut h = test_window::open(app(double), vec2(w, ht));
+        let mut h = open(app(double), vec2(w, ht));
         let panel = test_window::panel_rect(&h, "tools");
         wheel(&mut h, panel.center(), vec2(0.0, -2000.0));
         let visible = egui::Rect::from_min_max(pos2(0.0, panel.min.y), pos2(w, ht - STATUS_H));
@@ -109,7 +136,7 @@ fn a_short_window_reaches_every_tool() {
 #[test]
 fn tools_take_two_columns_while_one_does_not_fit() {
     let (w, ht) = (1086.0, 612.0);
-    let mut h = test_window::open(app(false), vec2(w, ht));
+    let mut h = open(app(false), vec2(w, ht));
     assert_eq!(test_window::panel_rect(&h, "tools").width(), column_width(2.0));
     let visible = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(w, ht - STATUS_H));
     for label in [LAST_TOOL, FILL] {
@@ -191,7 +218,7 @@ fn the_color_picker_from_the_fill_box_follows_formatting_affects_text() {
 
 #[test]
 fn a_tall_window_keeps_one_column_and_does_not_scroll() {
-    let mut h = test_window::open(app(false), vec2(1400.0, 900.0));
+    let mut h = open(app(false), vec2(1400.0, 900.0));
     let panel = test_window::panel_rect(&h, "tools");
     assert_eq!(panel.width(), column_width(1.0));
     assert!(panel.width() < column_width(2.0), "a tall window keeps the Tools panel to one column");
@@ -206,7 +233,7 @@ fn the_tools_panel_lays_out_like_indesigns() {
     // Feather are tools of their own; in two columns Content Collector and Placer, Apply
     // Color / Gradient / None and Normal / Preview each get a button.
     for double in [false, true] {
-        let h = test_window::open(app(double), vec2(1400.0, 900.0));
+        let h = open(app(double), vec2(1400.0, 900.0));
         let _ = rect(&h, "Gradient Swatch Tool");
         let _ = rect(&h, "Gradient Feather Tool");
         let _ = rect(&h, "View Options");
@@ -398,10 +425,10 @@ fn alt_click_cycles_the_tool_flyout_group() {
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     // 1 ms frames so an Alt-click and a following plain click can form a real double-click
     // (default open() spaces frames by 0.25 s, outside egui's double-click window).
-    let mut h = crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 0.001);
+    let mut h = with_tools(crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 0.001));
     h.state_mut().app.select_tool("rectangleFrame");
     h.run_steps(2);
-    let at = h.get_by_label("Rectangle Frame Tool").rect().center();
+    let at = rect(&h, "Rectangle Frame Tool").center();
     // The group's flyout lists its tools as menu rows; the rail's own buttons are not rows.
     let flyout_open = |h: &egui_kittest::Harness<'static, crate::test_window::Window>| {
         h.query_all_by_label("Polygon Frame Tool")
