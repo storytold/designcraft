@@ -230,7 +230,7 @@ fn validate_for(
     create.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::DirBuilderExt as _;
+        use std::os::unix::fs::DirBuilderExt as _;
         create.mode(0o700);
     }
     create.create(&chosen).map_err(|e| format!("cannot create the nightly profile: {e}"))?;
