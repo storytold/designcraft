@@ -167,7 +167,7 @@ WRAPPER
     rm -f "$NFPM_STAGE/usr/bin/designcraft"
     mv "$NFPM_STAGE/usr/bin/designcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
     mv "$NFPM_STAGE/usr/share/doc/designcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
-    sed -e "s|^Exec=designcraft\([[:space:]]\|$\)|Exec=$NFPM_BIN\1|" \
+    sed -e "s#^Exec=designcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
         -e "s|^TryExec=designcraft$|TryExec=$NFPM_BIN|" \
         -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
         -e "s|^Name=DesignCraft$|Name=DesignCraft Nightly|" \

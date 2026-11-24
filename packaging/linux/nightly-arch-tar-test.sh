@@ -31,7 +31,7 @@ bin="$work/installed/bin"
 mv "$bin/designcraft" "$bin/designcraft-nightly"
 mv "$bin/designcraft-cli" "$bin/designcraft-nightly-cli"
 
-test ! -e "$stage/bin/.designcraft-nightly"
+[[ ! -e "$stage/bin/.designcraft-nightly" ]]
 cmp "$stage/bin/designcraft" "$bin/.designcraft-nightly/designcraft"
 cmp "$stage/bin/designcraft-cli" "$bin/designcraft-nightly-cli"
 export HOME="$work/home with space"
