@@ -282,8 +282,26 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
     if let Some(system) = &system {
         add_system_fallbacks(&mut defs, system, lang);
     }
+    note_framework_faces(ctx);
     ctx.set_fonts(defs);
     found
+}
+
+/// Tells the framework which faces the interface draws with. Its strong roles (section headings, titles, strong body
+/// text) draw in the `semibold` family only when the stack it installed has one, and its rows take the line height of
+/// the face that leads the proportional family; the app's own definitions, given to egui after this, do not tell it.
+/// So a framework stack of the app's three faces is installed first, and the app's full definitions (its CJK, Arabic
+/// and system fallbacks, under the same family names) replace it before the next pass.
+fn note_framework_faces(ctx: &egui::Context) {
+    use craft_ui_widgets::fonts::{Family, FontRef, I18nScripts, SEMIBOLD, SystemFonts, UiFonts};
+    let scripts = I18nScripts;
+    UiFonts::new(&scripts)
+        .app_face("ui", FontData::from_static(include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf")), &[FontRef::proportional()])
+        .app_face("ui-semibold", FontData::from_static(include_bytes!("../../../assets/fonts/SourceSans3-Semibold.ttf")), &[FontRef::named(SEMIBOLD)])
+        .app_face("mono", FontData::from_static(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf")), &[FontRef::monospace()])
+        .family(Family::named(SEMIBOLD).weight(600))
+        .system_fonts(SystemFonts::Off)
+        .install(ctx);
 }
 
 /// Whether [`install_fonts`] would find the installed fonts cataloged.

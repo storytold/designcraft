@@ -21,10 +21,10 @@ use egui::Ui;
 use serde_json::{Value, json};
 use text_forms::{field, heading, line, message, pick, push, toggle};
 
-/// Paragraph Style Options, with its live preview (the Preview box in the footer).
-pub(crate) const PARAGRAPH_STYLE_OPTIONS: Form = Form::new(paragraph_style_options).width(760.0).footer(preview_box);
-/// Character Style Options, with its live preview (the Preview box in the footer).
-pub(crate) const CHARACTER_STYLE_OPTIONS: Form = Form::new(character_style_options).width(760.0).footer(preview_box);
+/// Paragraph Style Options, with its live preview.
+pub(crate) const PARAGRAPH_STYLE_OPTIONS: Form = Form::new(paragraph_style_options).width(760.0).footer(preview);
+/// Character Style Options, with its live preview.
+pub(crate) const CHARACTER_STYLE_OPTIONS: Form = Form::new(character_style_options).width(760.0).footer(preview);
 /// Delete Paragraph Style: what the text using it is reassigned to.
 pub(crate) const DELETE_PARAGRAPH_STYLE: Form = Form::new(delete_paragraph_style).width(380.0);
 /// Delete Character Style: what the text using it is reassigned to.
@@ -38,9 +38,9 @@ fn tr(app: &DesignApp, s: &str) -> String {
     crate::i18n::tr(&app.ui.language, s).to_string()
 }
 
-/// The Preview check box at the start of the footer, level with OK and Cancel, as InDesign has it (an existing style
-/// only). [`preview`] shows what it turns on.
-fn preview_box(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
+/// The Preview check box in the footer, level with the buttons, and the preview it turns on: the changed attributes go through the
+/// same engine commands as OK, on the page, until Cancel or OK takes the preview back.
+fn preview(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     if d.b("new") {
         return;
     }
@@ -48,20 +48,11 @@ fn preview_box(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     if let Some(on) = toggle(ui, "style_preview", &label, Some(d.b("preview")), true) {
         d.fields.insert("preview".into(), json!(on));
     }
-}
-
-/// The preview the footer's Preview box turns on: the changed attributes go through the same engine commands as OK, on
-/// the page, until Cancel or OK takes the preview back.
-fn preview(app: &mut DesignApp, d: &mut Dialog) {
-    if d.b("new") {
-        return;
-    }
     app.ui.style_preview = d.b("preview");
     crate::dialogs::style_options_preview(app, d);
 }
 
-/// The sections beside the page they show: a navigation list with the current section highlighted, as tall as its
-/// rows (the dialog's body scrolls in a window too short for them).
+/// The sections beside the page they show: a navigation list, as tall as its rows.
 fn section_nav(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, sections: &[(&str, &str)], title: &str) {
     let captioned: Vec<(&str, String)> = sections.iter().map(|(id, caption)| (*id, tr(app, caption))).collect();
     let current = d.s("section");
@@ -69,14 +60,6 @@ fn section_nav(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, sections: &[(&str, 
         if let Some(next) = super::section_list(ui, "style_sections", title.to_owned(), &captioned, &current) {
             d.fields.insert("section".into(), json!(next));
         }
-    });
-}
-
-/// A bold heading over a group, set apart from what is above it by the section gap of the stack it heads.
-fn titled(ui: &mut Ui, salt: &str, title: &str, mut body: impl FnMut(&mut Ui)) {
-    Stack::new().id_salt(("style_titled", salt.to_owned())).fill_width().show(ui, |ui, _| {
-        heading(ui, title);
-        body(ui);
     });
 }
 
@@ -208,7 +191,6 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
             status_line(ui, d);
         });
     }
-    preview(app, d);
     None
 }
 
@@ -246,29 +228,26 @@ fn paragraph_general(
     let mut next_entries = vec![(String::new(), tr(app, "[Same style]"))];
     next_entries.extend(entries.iter().filter(|(n, _)| n != designcraft_doc::NO_PARA_STYLE).cloned());
     let (name_label, based_label, next_label) = (tr(app, "Style Name:"), tr(app, "Based On:"), tr(app, "Next Style:"));
-    Stack::new().id_salt("paragraph_general").fill_width().gap(Gap::Section).show(ui, |ui, _| {
-        Stack::new().id_salt("paragraph_general_top").fill_width().show(ui, |ui, _| {
-            FieldGroup::new(tr(app, "General")).id_salt("paragraph_general_fields").show(ui, |ui, _| {
-                field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
-                field(ui, &based_label, "basedOn", |ui| {
-                    if let Some(picked) = pick(ui, "style_based_on", &based_label, &based, &entries, true) {
-                        d.fields.insert("basedOn".into(), json!(picked));
-                    }
-                });
-                field(ui, &next_label, "nextStyle", |ui| {
-                    if let Some(picked) = pick(ui, "style_next", &next_label, &next, &next_entries, true) {
-                        d.fields.insert("nextStyle".into(), if picked.is_empty() { Value::Null } else { json!(picked) });
-                    }
-                });
+    Stack::new().id_salt("paragraph_general").fill_width().show(ui, |ui, _| {
+        FieldGroup::new(tr(app, "General")).id_salt("paragraph_general_fields").show(ui, |ui, _| {
+            field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
+            field(ui, &based_label, "basedOn", |ui| {
+                if let Some(picked) = pick(ui, "style_based_on", &based_label, &based, &entries, true) {
+                    d.fields.insert("basedOn".into(), json!(picked));
+                }
             });
-            // Reset To Base: the style keeps nothing of its own (the edits made here stay).
-            if !new && push(ui, "reset_to_base", &tr(app, "Reset To Base"), !based_name.is_empty() && based_name != designcraft_doc::NO_PARA_STYLE) {
-                d.fields.insert("resetToBase".into(), json!(true));
-            }
+            field(ui, &next_label, "nextStyle", |ui| {
+                if let Some(picked) = pick(ui, "style_next", &next_label, &next, &next_entries, true) {
+                    d.fields.insert("nextStyle".into(), if picked.is_empty() { Value::Null } else { json!(picked) });
+                }
+            });
         });
-        titled(ui, "paragraph_style_settings", &tr(app, "Style Settings:"), |ui| {
-            summary(ui, &crate::dialogs::paragraph_style_summary(lang, d, style, &doc.styles));
-        });
+        // Reset To Base: the style keeps nothing of its own (the edits made here stay).
+        if !new && push(ui, "reset_to_base", &tr(app, "Reset To Base"), !based_name.is_empty() && based_name != designcraft_doc::NO_PARA_STYLE) {
+            d.fields.insert("resetToBase".into(), json!(true));
+        }
+        heading(ui, &tr(app, "Style Settings:"));
+        summary(ui, &crate::dialogs::paragraph_style_summary(lang, d, style, &doc.styles));
         if new && let Some(on) = toggle(ui, "style_apply", &tr(app, "Apply Style to Selection"), Some(d.b("apply")), true) {
             d.fields.insert("apply".into(), json!(on));
         }
@@ -413,7 +392,6 @@ fn character_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
             });
         });
     }
-    preview(app, d);
     None
 }
 
@@ -456,19 +434,18 @@ fn character_general(
             .map(|(k, v)| format!("{}: {}", crate::dialogs::setting_label(lang, k), crate::dialogs::setting_text(v))),
     );
     let (name_label, based_label) = (tr(app, "Style Name:"), tr(app, "Based On:"));
-    Stack::new().id_salt("character_general").fill_width().gap(Gap::Section).show(ui, |ui, _| {
-        Stack::new().id_salt("character_general_top").fill_width().show(ui, |ui, _| {
-            FieldGroup::new(tr(app, "General")).id_salt("character_general_fields").show(ui, |ui, _| {
-                field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
-                field(ui, &based_label, "basedOn", |ui| {
-                    if let Some(picked) = pick(ui, "style_based_on", &based_label, based, &entries, true) {
-                        d.fields.insert("basedOn".into(), json!(picked));
-                    }
-                });
+    Stack::new().id_salt("character_general").fill_width().show(ui, |ui, _| {
+        FieldGroup::new(tr(app, "General")).id_salt("character_general_fields").show(ui, |ui, _| {
+            field(ui, &name_label, "rename", |ui| text_forms::text(ui, d, &plain, "rename", &name_label, true));
+            field(ui, &based_label, "basedOn", |ui| {
+                if let Some(picked) = pick(ui, "style_based_on", &based_label, based, &entries, true) {
+                    d.fields.insert("basedOn".into(), json!(picked));
+                }
             });
-            status_line(ui, d);
         });
-        titled(ui, "character_style_settings", &tr(app, "Style Settings:"), |ui| message(ui, &parts.join(" + "), false));
+        status_line(ui, d);
+        heading(ui, &tr(app, "Style Settings:"));
+        message(ui, &parts.join(" + "), false);
     });
 }
 
@@ -705,8 +682,8 @@ mod tests {
         click_at(h, at);
     }
 
-    /// Scrolls the dialog by real wheel events over the section list until the row named `label` is inside the window (the
-    /// list is as tall as its rows; the dialog's body scrolls it in a short window), then clicks it.
+    /// Scrolls the section list by real wheel events over it until the radio button named `label` is in its 380 pt window,
+    /// then clicks it.
     fn click_section(h: &mut Window, label: &str) {
         let window = h.ctx.content_rect();
         for _ in 0..20 {

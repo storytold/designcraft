@@ -488,7 +488,7 @@ mod framework_tests {
         let shown = h.get_by_role_and_label(Role::CheckBox, "Facing Pages").rect();
         let label = h
             .query_all_by_label("Facing Pages")
-            .filter(|n| n.role() != Role::CheckBox)
+            .filter(|n| n.accesskit_node().role() != Role::CheckBox)
             .map(|n| n.rect())
             .find(|r| r.width() > 0.0 && r.left() >= shown.right() - 1.0 && r.center().y > shown.top() && r.center().y < shown.bottom());
         assert!(label.is_some(), "Facing Pages shows its label after its box {shown:?}");

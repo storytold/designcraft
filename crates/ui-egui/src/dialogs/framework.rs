@@ -114,6 +114,8 @@ pub(crate) fn section_list(ui: &mut Ui, id_salt: &str, label: String, sections: 
         .id_salt(("dialog_section_list", id_salt.to_owned()))
         .select(SelectMode::Single)
         .arrows_select(true)
+        .allow_empty(false)
+        .header(false)
         .natural_height(true)
         .sizing(Sizing::FillWidth)
         .selection(Bind::bound(&mut selected))

@@ -207,6 +207,7 @@ mod framework {
         let field = TextField::new(hint.clone(), Bind::bound(&mut st.query))
             .id(id)
             .placeholder(hint)
+            .leading(IconSpec::svg(craft_behavior::IconId::new("search")))
             .tooltip(crate::i18n::tr(&lang, "Search commands").to_owned())
             .limit(None)
             .size(craft_theme::ControlSize::Sm)

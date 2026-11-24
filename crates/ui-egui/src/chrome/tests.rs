@@ -166,10 +166,10 @@ fn preflight_count<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Pos2 {
     let bar = status_bar_rect(h);
     h.query_all_by(|n| {
         n.role() != egui::accesskit::Role::Label
-            && bar.contains(n.rect().center())
             && n.label().is_some_and(|l| l == "Preflight" || l.contains("error") || l.contains("Checking"))
     })
     .map(|n| n.rect())
+    .filter(|r| bar.contains(r.center()))
     .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
     .expect("the status bar's preflight count")
     .center()

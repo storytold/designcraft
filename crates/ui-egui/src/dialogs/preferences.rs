@@ -6,7 +6,7 @@
 use craft_behavior::{EditEvents, Value as Bindable};
 use craft_theme::{Rgba, Srgba};
 use craft_ui_widgets::choice::{Checkbox, RadioGroup, Swatch};
-use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, Scroll, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Bind, Entry, Gap, Pad, Props as _, Scroll, Show as _, ShowContainer as _};
 use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::Field;
 use craft_ui_widgets::layout_components::{Row, Stack};
@@ -22,10 +22,8 @@ use super::Dialog;
 use super::framework::Form;
 use crate::DesignApp;
 
-/// Edit › Preferences.
-/// It asks for a wide dialog (`Form::width` of 700 pt or more), so the options have room beside the section list and
-/// a long check box label keeps its inset from the edge; a window too narrow for that gets the narrower dialog.
-pub(crate) const FORM: Form = Form::new(show).width(720.0);
+/// Edit › Preferences. It opens as wide as the native window was, so the options pane has room beside the list.
+pub(crate) const FORM: Form = Form::new(show).width(650.0).opens_at_width();
 
 /// The sections with a document open: application options and the document's own settings (InDesign keeps those with
 /// the document).
@@ -79,8 +77,7 @@ fn edited<T: Bindable>(events: EditEvents<T>, before: T) -> Option<T> {
     (next != before).then_some(next)
 }
 
-/// The section list on the left, a divider, and the chosen section's options on the right, its groups a section gap
-/// apart.
+/// The section list on the left, a divider down the dialog's body, and the chosen section's options on the right.
 fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let has_doc = d.fields.contains_key("horizontalUnits") && !d.b("defaults");
     let sections = if has_doc { DOCUMENT_SECTIONS } else { APP_SECTIONS };
@@ -89,20 +86,25 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     // A section the list doesn't have shows General, as the native body does.
     let shown = d.s("section");
     let current = sections.iter().map(|(id, _)| *id).find(|id| *id == shown).unwrap_or("general");
-    let captioned: Vec<(&str, String)> = sections.iter().map(|(id, label)| (*id, tr(*label))).collect();
-    Row::new().id_salt("preferences_form").fill_width().gap(Gap::Section).least_height(PANE_HEIGHT).show(ui, |ui, _| {
+    Row::new().id_salt("preferences_form").fill_width().show(ui, |ui, _| {
+        // The sections read as navigation, as the native window's selectable list did: one Tab stop, the arrow keys
+        // move through it and pick, and the picked row is highlighted. The column scrolls to the sections past the fold.
         Stack::new().id_salt("preferences_sections").scroll(Scroll::vertical()).room_height(PANE_HEIGHT).show(ui, |ui, _| {
-            if let Some(next) = super::framework::section_list(ui, "preferences_section_list", tr("Preferences"), &captioned, current) {
+            let captions: Vec<(&str, String)> = sections.iter().map(|(id, label)| (*id, tr(label))).collect();
+            if let Some(next) = crate::dialogs::framework::section_list(ui, "preferences", tr("Preferences"), &captions, current) {
                 d.fields.insert("section".into(), json!(next));
             }
         });
         Divider::vertical().show(ui);
+        // The options stand off the divider and the dialog's edge, and the groups are spaced apart as the native
+        // window's space above each heading had them.
         Stack::new()
             .id_salt(("preferences_options", current))
             .fill_width()
-            .gap(Gap::Section)
             .scroll(Scroll::vertical())
             .room_height(PANE_HEIGHT)
+            .pad(Pad::Control)
+            .gap(Gap::Section)
             .show(ui, |ui, _| {
                 match current {
                     "dictionary" => dictionary(ui, d, &lang),
@@ -147,15 +149,15 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     None
 }
 
-/// A heading over a group of options.
+/// A heading over a group of options, in the strong body weight the native window's semibold headings had.
 fn heading(ui: &mut Ui, text: &str) {
     Text::new(text.to_owned()).role(TypeRole::BodyStrong).show(ui);
 }
 
-/// A group of options under its heading: one child of the options pane, whose section gap sets it apart from the group
-/// above.
+/// A group of options under its heading: the heading and its options keep the row gap, and the pane's section gap
+/// sets the groups apart.
 fn group(ui: &mut Ui, title: &str, mut body: impl FnMut(&mut Ui)) {
-    Stack::new().id_salt(("preferences_group", title.to_owned())).fill_width().show(ui, |ui, _| {
+    Stack::new().id_salt(("preferences_group", title.to_owned())).show(ui, |ui, _| {
         heading(ui, title);
         body(ui);
     });
@@ -305,8 +307,7 @@ fn general(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
         let languages = crate::i18n::picker_languages();
         let entries: Vec<Entry<&'static str>> = languages.iter().map(|(code, name)| Entry::new(*code, (*name).to_owned())).collect();
         let current = languages.iter().map(|(code, _)| *code).find(|code| *code == app.ui.language).unwrap_or("");
-        let label = tr("Interface Language");
-        let out = Select::new(label, Bind::given(current), &entries).id_salt("preferences_language").show(ui);
+        let out = Select::new(tr("Interface Language"), Bind::given(current), &entries).id_salt("preferences_language").show(ui);
         // A pick takes effect at once, like any other app setting; Cancel goes back to the language it opened with.
         if let Some(code) = edited(out.events, current)
             && let Err(e) = app.run("app.language", json!({"lang": code}))
@@ -333,7 +334,7 @@ fn interface(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
         let mut picked = None;
         Row::new().id_salt("preferences_theme_row").show(ui, |ui, _| {
             Text::new(tr("Color Theme:")).show(ui);
-            let themes = RadioGroup::new(tr("Color Theme:"), Bind::given(held)).id_salt("preferences_theme").show(ui, |ui, _| {
+            let theme = RadioGroup::new(tr("Color Theme:"), Bind::given(held)).id_salt("preferences_theme").show(ui, |ui, _| {
                 Row::new().id_salt("preferences_theme_swatches").show(ui, |ui, _| {
                     for b in crate::theme::Brightness::ALL {
                         let panel = crate::theme::Tokens::for_brightness(b).panel;
@@ -343,7 +344,7 @@ fn interface(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
                     }
                 });
             });
-            picked = edited(themes.output.events, held);
+            picked = edited(theme.output.events, held);
         });
         if let Some(id) = picked {
             d.fields.insert("brightness".into(), json!(id));
@@ -728,8 +729,7 @@ mod tests {
         let mut h = open(with_preferences("notes"));
         click(&mut h, Role::ListItem, "Notes");
         // Natural Tab reaches the section's option within the dialog's own stops (the list, the option, the footer).
-        let stops =
-            h.query_all_by(|n| matches!(n.role(), Role::ListItem | Role::RadioButton | Role::CheckBox | Role::Button | Role::ComboBox)).count();
+        let stops = h.query_all_by(|n| matches!(n.role(), Role::ListItem | Role::CheckBox | Role::Button | Role::ComboBox)).count();
         let reached = (0..=stops).any(|_| {
             if h.get_by_role_and_label(Role::CheckBox, "Show Note Anchors in Layout View").is_focused() {
                 return true;

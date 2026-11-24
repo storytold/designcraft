@@ -4,7 +4,7 @@
 
 use super::Dialog;
 use super::find_forms::picker;
-use super::frame_forms::{check, field, text};
+use super::frame_forms::{check, field, text, text_chars};
 use super::framework::Form;
 use crate::DesignApp;
 use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
@@ -157,7 +157,8 @@ fn contact_sheet(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<boo
         FieldGroup::new(tr("Place Contact Sheet")).id_salt("contact_sheet_fields").show(ui, |ui, _| {
             for (caption, key) in [("Columns", "columns"), ("Rows", "rows"), ("Gutter", "gutter"), ("Page margin", "margin")] {
                 field(ui, &tr(caption), key, |ui| {
-                    text(ui, d, key, &tr(caption), true);
+                    // A count or a short measure: it asks for a few characters, not a field's length.
+                    text_chars(ui, d, key, &tr(caption), true, 8);
                 });
             }
         });

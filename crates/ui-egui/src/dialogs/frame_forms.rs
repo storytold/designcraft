@@ -13,18 +13,17 @@ use craft_behavior::{Anchor9, EditEvent, Mixed};
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::Checkbox;
-use craft_ui_widgets::contract::{Bind, Bracket, Entry, Gap, Pad, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, Show as _, ShowContainer as _};
 use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::{ReferencePoint, Select};
-use craft_ui_widgets::style::SurfaceKind;
 use craft_ui_widgets::text::{NumberField, TextField, link_toggle};
 use designcraft_geom::{format_measure, units::parse_measure};
 use egui::Ui;
 use serde_json::{Value, json};
 
-/// Text Frame Options, with its live preview (the Preview box in the footer).
+/// Text Frame Options, with its live preview.
 pub(crate) const TEXT_FRAME_OPTIONS: Form = Form::new(text_frame_options).footer(text_frame_footer);
 /// Frame Fitting Options.
 pub(crate) const FITTING_OPTIONS: Form = Form::new(fitting_options);
@@ -52,8 +51,18 @@ pub(super) fn field(ui: &mut Ui, label: &str, salt: &str, mut body: impl FnMut(&
 /// A text field over the draft text of `key`. Every edit is written to the draft as it is typed, so OK always sees what
 /// is on screen. Returns the text before and after an edit that ended in this pass.
 pub(super) fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool) -> Option<(Option<String>, String)> {
-    let out =
-        TextField::new(label.to_owned(), Bind::given(d.s(key))).id_salt(("frame_form_text", key)).limit(None::<usize>).enabled(enabled).show(ui);
+    text_chars(ui, d, key, label, enabled, 0)
+}
+
+/// [`text`] asking for the width of `chars` characters instead of the field length (`0` keeps the field length): a
+/// short number takes little, a title or a URL takes a line.
+pub(super) fn text_chars(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool, chars: u16) -> Option<(Option<String>, String)> {
+    let out = TextField::new(label.to_owned(), Bind::given(d.s(key)))
+        .width_chars(chars)
+        .id_salt(("frame_form_text", key))
+        .limit(None::<usize>)
+        .enabled(enabled)
+        .show(ui);
     if let Some(next) = out.events.landed().filter(|next| **next != d.s(key)).cloned() {
         d.fields.insert(key.into(), json!(next));
     }
@@ -198,22 +207,21 @@ fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     });
 }
 
-/// Text Frame Options' footer, before OK and Cancel: the Preview box, and why the preview or OK was refused.
+/// Preview and the status line, in the footer beside the buttons as InDesign has them: the page height rule above can
+/// never push them out of the window.
 fn text_frame_footer(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
-    let lang = app.ui.language.as_str();
-    let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
+    let label = crate::i18n::tr(&app.ui.language, "Preview").to_string();
     Row::new().id_salt("frame_options_footer").show(ui, |ui, _| {
-        check(ui, d, "preview", &tr("Preview"), true);
+        check(ui, d, "preview", &label, true);
         if let Some(status) = d.fields.get("status").and_then(Value::as_str).map(str::to_owned) {
             message(ui, &status);
         }
     });
 }
 
-/// Text Frame Options › General, as InDesign's: Columns (kind; Number and Gutter beside Width and Maximum; Balance
-/// Columns), Inset Spacing (Top and Bottom, the link between them and Left and Right; one Inset for a non-rectangular
-/// frame), Vertical Justification (align, paragraph spacing limit) and Ignore Text Wrap. Also the General page of Object
-/// Style Options.
+/// Text Frame Options › General, as InDesign's: Columns (kind, number and width, gutter and maximum, Balance Columns),
+/// Inset Spacing (the four sides and the link between them; one Inset for a non-rectangular frame), Vertical
+/// Justification (align, paragraph spacing limit) and Ignore Text Wrap. Also the General page of Object Style Options.
 pub(crate) fn general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let lang = app.ui.language.as_str();
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
@@ -221,97 +229,79 @@ pub(crate) fn general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let kinds = captioned(lang, &[("fixedNumber", "Fixed Number"), ("fixedWidth", "Fixed Width")]);
     let justifications = captioned(lang, &[("top", "Top"), ("center", "Center"), ("bottom", "Bottom"), ("justify", "Justify")]);
     Stack::new().id_salt("frame_general").fill_width().show(ui, |ui, _| {
-        // Columns: a frame with no title, as InDesign's.
-        Stack::new().id_salt("frame_general_columns_box").surface(SurfaceKind::Frame).pad(Pad::Regular).fill_width().show(ui, |ui, _| {
-            FieldGroup::new(tr("Columns")).id_salt("frame_general_columns").show(ui, |ui, _| {
+        GroupBox::new(tr("Columns"), None).id_salt("frame_general_columns_box").show(ui, |ui, _| {
+            FieldGroup::new(tr("Columns")).id_salt("frame_general_columns_kind").show(ui, |ui, _| {
                 field(ui, &tr("Columns:"), "columns_kind", |ui| select(ui, d, "columnsKind", &tr("Columns:"), &kinds, true));
-                Row::new().id_salt("frame_general_columns_grid").gap(Gap::Section).show(ui, |ui, _| {
-                    Stack::new().id_salt("frame_general_columns_start").show(ui, |ui, _| {
-                        field(ui, &number_caption, "columns", |ui| {
-                            if let Some(columns) = number(ui, d, "columns", &number_caption, (1.0, 40.0), true, None) {
-                                d.fields.insert("columns".into(), json!(columns.round().to_string()));
-                            }
-                        });
-                        field(ui, &tr("Gutter:"), "gutter", |ui| {
-                            measure(ui, d, "gutter", &tr("Gutter:"), true);
-                        });
+            });
+            // Number and Gutter on the left, Width and Maximum on the right, as InDesign lays them out.
+            Row::new().id_salt("frame_general_columns_grid").fill_width().show(ui, |ui, _| {
+                FieldGroup::new(tr("Columns")).id_salt("frame_general_columns_count").show(ui, |ui, _| {
+                    field(ui, &number_caption, "columns", |ui| {
+                        if let Some(columns) = number(ui, d, "columns", &number_caption, (1.0, 40.0), true, None) {
+                            d.fields.insert("columns".into(), json!(columns.round().to_string()));
+                        }
                     });
-                    Stack::new().id_salt("frame_general_columns_end").show(ui, |ui, _| {
-                        field(ui, &tr("Width:"), "column_width", |ui| {
-                            if d.s("columnsKind") == "fixedWidth" {
-                                measure(ui, d, "columnWidth", &tr("Width:"), true);
-                            } else {
-                                // Fixed Number: each column's width, from the frame, the insets and the gutter.
-                                let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
-                                let n = d.n("columns").unwrap_or(1.0).max(1.0);
-                                // A non-rectangular frame keeps its sides until its one Inset is changed.
-                                let (left, right) =
-                                    if d.b("_shaped") && super::edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
-                                let width = frame.map(|w| {
-                                    let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
-                                    ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
-                                });
-                                let shown = width.map(|w| format_measure(w, d.unit)).unwrap_or_default();
-                                TextField::new(tr("Width:"), Bind::given(shown)).id_salt("frame_form_auto_width").enabled(false).show(ui);
-                            }
-                        });
-                        // Maximum is for Flexible Width columns, which aren't in the document model yet: a dimmed field as wide as
-                        // the others.
-                        field(ui, &tr("Maximum:"), "maximum", |ui| {
-                            TextField::new(tr("Maximum:"), Bind::given(String::new())).id_salt("frame_form_maximum").enabled(false).show(ui);
-                        });
+                    field(ui, &tr("Gutter:"), "gutter", |ui| {
+                        measure(ui, d, "gutter", &tr("Gutter:"), true);
                     });
                 });
-                check(ui, d, "balanceColumns", &tr("Balance Columns"), true);
+                FieldGroup::new(tr("Columns")).id_salt("frame_general_columns_size").show(ui, |ui, _| {
+                    field(ui, &tr("Width:"), "column_width", |ui| {
+                        if d.s("columnsKind") == "fixedWidth" {
+                            measure(ui, d, "columnWidth", &tr("Width:"), true);
+                        } else {
+                            // Fixed Number: each column's width, from the frame, the insets and the gutter.
+                            let frame = d.fields.get("_frameWidth").and_then(Value::as_f64);
+                            let n = d.n("columns").unwrap_or(1.0).max(1.0);
+                            // A non-rectangular frame keeps its sides until its one Inset is changed.
+                            let (left, right) =
+                                if d.b("_shaped") && super::edited(d, "inset") { ("inset", "inset") } else { ("insetLeft", "insetRight") };
+                            let width = frame.map(|w| {
+                                let inner = w - d.m(left).unwrap_or(0.0) - d.m(right).unwrap_or(0.0);
+                                ((inner - d.m("gutter").unwrap_or(0.0) * (n - 1.0)) / n).max(0.0)
+                            });
+                            let shown = width.map(|w| format_measure(w, d.unit)).unwrap_or_default();
+                            TextField::new(tr("Width:"), Bind::given(shown)).id_salt("frame_form_auto_width").enabled(false).show(ui);
+                        }
+                    });
+                    // Maximum is for Flexible Width columns, which aren't in the document model yet.
+                    field(ui, &tr("Maximum:"), "maximum", |ui| {
+                        TextField::new(tr("Maximum:"), Bind::given(String::new())).id_salt("frame_form_maximum").enabled(false).show(ui);
+                    });
+                });
             });
+            check(ui, d, "balanceColumns", &tr("Balance Columns"), true);
         });
         GroupBox::new(tr("Inset Spacing"), None).id_salt("frame_general_inset_box").show(ui, |ui, _| {
-            FieldGroup::new(tr("Inset Spacing")).id_salt("frame_general_inset").show(ui, |ui, _| {
-                // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept from the
-                // outline.
-                let shaped = d.b("_shaped");
-                let linked = d.b("insetLinked");
-                let side = |ui: &mut Ui, d: &mut Dialog, caption: &str, key: &str| {
-                    field(ui, &tr(caption), key, |ui| {
-                        // While linked, a side typed in sets all four ("Make all settings the same").
-                        if let Some(side) = measure(ui, d, key, &tr(caption), !shaped)
-                            && d.b("insetLinked")
-                            && !shaped
-                        {
-                            for other in SIDES {
-                                d.fields.insert(other.into(), json!(side));
-                            }
-                        }
-                    });
-                };
-                // Top and Bottom, the link bracketed to them, then Left and Right, as InDesign has them.
-                Row::new()
-                    .id_salt("frame_general_sides")
-                    .gap(Gap::Section)
-                    .bracket(if linked && !shaped { Bracket::Linked } else { Bracket::Unlinked })
-                    .show(ui, |ui, _| {
-                        Stack::new().id_salt("frame_general_sides_start").show(ui, |ui, _| {
-                            side(ui, d, "Top:", SIDES[0]);
-                            side(ui, d, "Bottom:", SIDES[2]);
-                        });
-                        let out = link_toggle(tr("Make all settings the same"), Bind::given(linked))
-                            .id_salt("frame_general_link")
-                            .enabled(!shaped)
-                            .show(ui);
-                        if let Some(linked) = out.events.committed().copied() {
-                            d.fields.insert("insetLinked".into(), json!(linked));
-                        }
-                        Stack::new().id_salt("frame_general_sides_end").show(ui, |ui, _| {
-                            side(ui, d, "Left:", SIDES[1]);
-                            side(ui, d, "Right:", SIDES[3]);
-                        });
-                    });
-                if shaped {
+            // A non-rectangular frame: the four sides are dimmed and one Inset sets the distance kept from the outline.
+            let shaped = d.b("_shaped");
+            // Top and Bottom on the left, Left and Right on the right, with the link between them.
+            Row::new().id_salt("frame_general_inset_grid").fill_width().show(ui, |ui, _| {
+                FieldGroup::new(tr("Inset Spacing")).id_salt("frame_general_inset_vertical").show(ui, |ui, _| {
+                    for (caption, key) in [("Top:", SIDES[0]), ("Bottom:", SIDES[2])] {
+                        field(ui, &tr(caption), key, |ui| inset_side(ui, d, &tr(caption), key, shaped));
+                    }
+                });
+                let out = link_toggle(tr("Make all settings the same"), Bind::given(d.b("insetLinked")))
+                    .id_salt("frame_general_link")
+                    .enabled(!shaped)
+                    .show(ui);
+                if let Some(linked) = out.events.committed().copied() {
+                    d.fields.insert("insetLinked".into(), json!(linked));
+                }
+                FieldGroup::new(tr("Inset Spacing")).id_salt("frame_general_inset_horizontal").show(ui, |ui, _| {
+                    for (caption, key) in [("Left:", SIDES[1]), ("Right:", SIDES[3])] {
+                        field(ui, &tr(caption), key, |ui| inset_side(ui, d, &tr(caption), key, shaped));
+                    }
+                });
+            });
+            if shaped {
+                FieldGroup::new(tr("Inset Spacing")).id_salt("frame_general_inset").show(ui, |ui, _| {
                     field(ui, &tr("Inset:"), "inset", |ui| {
                         measure(ui, d, "inset", &tr("Inset:"), true);
                     });
-                }
-            });
+                });
+            }
         });
         GroupBox::new(tr("Vertical Justification"), None).id_salt("frame_general_vertical_box").show(ui, |ui, _| {
             FieldGroup::new(tr("Vertical Justification")).id_salt("frame_general_vertical").show(ui, |ui, _| {
@@ -324,6 +314,18 @@ pub(crate) fn general(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
         });
         check(ui, d, "ignoreWrap", &tr("Ignore Text Wrap"), true);
     });
+}
+
+/// One side of the inset. While linked, a side typed in sets all four ("Make all settings the same").
+fn inset_side(ui: &mut Ui, d: &mut Dialog, label: &str, key: &str, shaped: bool) {
+    if let Some(side) = measure(ui, d, key, label, !shaped)
+        && d.b("insetLinked")
+        && !shaped
+    {
+        for other in SIDES {
+            d.fields.insert(other.into(), json!(side));
+        }
+    }
 }
 
 /// Text Frame Options › Column Rules.
@@ -522,7 +524,8 @@ fn qr_code(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
         field(ui, &tr("Type:"), "type", |ui| select(ui, d, "type", &tr("Type:"), &types, true));
         for (key, caption) in fields.iter().copied() {
             field(ui, &tr(caption), key, |ui| {
-                text(ui, d, key, &tr(caption), true);
+                // The content is a link or a message: it asks for a line, the type and colour for a field's length.
+                text_chars(ui, d, key, &tr(caption), true, 40);
             });
         }
         field(ui, &tr("Color:"), "color", |ui| {

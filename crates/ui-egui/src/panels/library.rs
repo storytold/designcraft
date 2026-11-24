@@ -99,6 +99,8 @@ fn library_body(app: &mut DesignApp, ui: &mut egui::Ui) {
             });
         }
     });
+    // Room under the last row, so the panel does not end at the window's edge.
+    ui.add_space(8.0);
     for act in acts {
         match act {
             LibraryAction::ClearConveyor => {
@@ -388,7 +390,8 @@ fn scripts_body(app: &mut DesignApp, ui: &mut egui::Ui) {
         for (i, (name, _)) in app_ref.ui.scripts.iter().enumerate() {
             let out = Button::new(name.clone())
                 .id_salt(("script_row", i))
-                .variant(if i == sel { Variant::SECONDARY } else { Variant::GHOST })
+                // The chosen script is a solid accent row, as a chosen row of a list is.
+                .variant(if i == sel { Variant::PRIMARY } else { Variant::GHOST })
                 .align(HAlign::Start)
                 .sizing(Sizing::FillWidth)
                 .show(ui);
@@ -431,6 +434,8 @@ fn scripts_body(app: &mut DesignApp, ui: &mut egui::Ui) {
             scripts_sdk_editors(ui, editor, name, text, (&labels.0, &labels.1));
         });
     }
+    // Room under the editor, so its box ends inside the panel instead of at the window's edge.
+    ui.add_space(8.0);
     if let Some(i) = run
         && let Some((name, text)) = app.ui.scripts.get(i).cloned()
     {

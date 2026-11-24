@@ -24,6 +24,7 @@ use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::list::{List, ListRow};
 use craft_ui_widgets::pickers::Select;
+use craft_ui_widgets::style::SurfaceKind;
 use craft_ui_widgets::text::{NumberField, TextField};
 use craft_ui_widgets::value_drag::Slider;
 use designcraft_geom::{Unit, format_measure, units::parse_measure};
@@ -181,6 +182,8 @@ pub(super) fn measure_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f
     let text = shown.map(|v| format_measure(v, unit)).unwrap_or_default();
     let out = TextField::new(label.to_owned(), Bind::given(text))
         .id_salt(("text_form_measure", salt.to_owned()))
+        // As wide as the number fields it stands among.
+        .width_chars(8)
         .limit(None::<usize>)
         .enabled(enabled)
         .show(ui);
@@ -421,18 +424,27 @@ impl DisplayOrder<usize> for Rows {
 
 impl ItemSource<usize> for Rows {}
 
+/// The least height of a list well: a few rows, as a list of styles or fonts has in InDesign.
+const LIST_LEAST_HEIGHT: f32 = 96.0;
+
 /// A list of `items` of which one is picked, at most `max_rows` tall: the row picked in this pass.
 pub(super) fn pick_list(ui: &mut Ui, salt: &str, label: &str, items: &[String], current: Option<usize>, max_rows: usize) -> Option<usize> {
     let rows = Rows(items.to_vec());
     let mut selected = current.map_or_else(Selection::default, Selection::single);
-    let _shown = List::<usize>::new(label.to_owned())
-        .id_salt(("text_form_list", salt.to_owned()))
-        .select(SelectMode::Single)
-        .arrows_select(true)
-        .max_rows(u16::try_from(max_rows).unwrap_or(u16::MAX))
-        .sizing(Sizing::FillWidth)
-        .selection(Bind::bound(&mut selected))
-        .show_items(ui, &rows, &mut |at, _| ListRow::new(rows.0.get(*at).cloned().unwrap_or_default()));
+    // The list sits in a well that keeps its room when the list is empty, so a list with nothing in it still shows where
+    // its rows go.
+    Row::new().id_salt(("text_form_list_room", salt.to_owned())).fill_width().least_height(LIST_LEAST_HEIGHT).show(ui, |ui, _| {
+        Stack::new().id_salt(("text_form_list_well", salt.to_owned())).surface(SurfaceKind::Well).fill().show(ui, |ui, _| {
+            let _shown = List::<usize>::new(label.to_owned())
+                .id_salt(("text_form_list", salt.to_owned()))
+                .select(SelectMode::Single)
+                .arrows_select(true)
+                .max_rows(u16::try_from(max_rows).unwrap_or(u16::MAX))
+                .sizing(Sizing::FillWidth)
+                .selection(Bind::bound(&mut selected))
+                .show_items(ui, &rows, &mut |at, _| ListRow::new(rows.0.get(*at).cloned().unwrap_or_default()));
+        });
+    });
     selected.items.first().copied().filter(|at| Some(*at) != current)
 }
 
@@ -537,8 +549,9 @@ fn footnote_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<
             });
             return;
         }
-        GroupBox::new(tr("Numbering"), None).id_salt("footnote_numbering_box").show(ui, |ui, _| {
-            FieldGroup::new(tr("Numbering")).id_salt("footnote_numbering").show(ui, |ui, _| {
+        // One group over the three boxes: their labels share one column, so the fields line up from box to box.
+        FieldGroup::new(tr("Numbering and Formatting")).id_salt("footnote_fields").show(ui, |ui, _| {
+            GroupBox::new(tr("Numbering"), None).id_salt("footnote_numbering_box").show(ui, |ui, _| {
                 field(ui, &tr("Style:"), "style", |ui| choice(ui, d, &a, "style", &tr("Style:"), &styles, true));
                 field(ui, &tr("Start at:"), "startAt", |ui| text(ui, d, &a, "startAt", &tr("Start at:"), true));
                 field(ui, &tr("Restart Numbering Every:"), "restart", |ui| {
@@ -549,17 +562,13 @@ fn footnote_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<
                     field(ui, &tr(caption), key, |ui| text(ui, d, &a, key, &tr(caption), true));
                 }
             });
-        });
-        GroupBox::new(tr("Footnote Reference Number in Text"), None).id_salt("footnote_reference_box").show(ui, |ui, _| {
-            FieldGroup::new(tr("Footnote Reference Number in Text")).id_salt("footnote_reference").show(ui, |ui, _| {
+            GroupBox::new(tr("Footnote Reference Number in Text"), None).id_salt("footnote_reference_box").show(ui, |ui, _| {
                 field(ui, &tr("Position:"), "refPosition", |ui| choice(ui, d, &a, "refPosition", &tr("Position:"), &positions, true));
                 field(ui, &tr("Character Style:"), "refCharStyle", |ui| {
                     choice(ui, d, &a, "refCharStyle", &tr("Character Style:"), &char_styles, true)
                 });
             });
-        });
-        GroupBox::new(tr("Footnote Formatting"), None).id_salt("footnote_formatting_box").show(ui, |ui, _| {
-            FieldGroup::new(tr("Footnote Formatting")).id_salt("footnote_formatting").show(ui, |ui, _| {
+            GroupBox::new(tr("Footnote Formatting"), None).id_salt("footnote_formatting_box").show(ui, |ui, _| {
                 field(ui, &tr("Paragraph Style:"), "paraStyle", |ui| choice(ui, d, &a, "paraStyle", &tr("Paragraph Style:"), &para_styles, true));
                 field(ui, &tr("Separator:"), "separator", |ui| text(ui, d, &a, "separator", &tr("Separator:"), true));
             });
@@ -647,7 +656,8 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
             });
             // A solid rule has no gaps.
             field(ui, &tr("Gap Color:"), "gapColor", |ui| {
-                if let Some(picked) = swatch_choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps) {
+                // A rule with no gap colour has [None] there, as the rule is drawn.
+                if let Some(picked) = swatch_value(ui, &a.field("gapColor"), &tr("Gap Color:"), &swatches, &json!(gap_color), on && gaps) {
                     a.set(d, "gapColor", picked);
                 }
             });
