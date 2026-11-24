@@ -167,7 +167,7 @@ fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
             if *key == "recent" { tab.icon(IconSpec::glyph(&CLOCK)) } else { tab }
         });
     for event in strip.response.events {
-        if let CollectionEvent::Selection(SelectionChange::Set(keys)) = event
+        if let CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } = event
             && let Some(key) = keys.last()
             && *key != current
         {
@@ -223,8 +223,15 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     let mut delete = None;
     for event in shown.response.events {
         match event {
-            CollectionEvent::Selection(SelectionChange::Set(keys)) => {
+            CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } => {
                 if let Some(card) = keys.last().and_then(|at| list.get(*at)) {
+                    select(d, card);
+                }
+            }
+            // A click on the card already picked applies it again, as a click on a card always did: its details
+            // replace what was edited since.
+            CollectionEvent::Picked { key, .. } => {
+                if let Some(card) = list.get(key) {
                     select(d, card);
                 }
             }
