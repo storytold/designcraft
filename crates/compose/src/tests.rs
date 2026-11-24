@@ -2819,9 +2819,10 @@ fn footnotes_sit_at_the_column_bottom_and_push_text() {
     assert_eq!(b.label, "2");
     assert!(a.rect.y1 <= b.rect.y0 + 1e-6, "stacked in order");
     let area = ft.columns[0];
-    assert!((b.rect.y1 - area.y1).abs() < 1e-6, "last footnote ends at the column bottom");
+    let b_last = b.origin.y + b.text.frames[0].lines.last().unwrap().baseline;
+    assert!((b_last - area.y1).abs() < 1e-6, "the last footnote's last baseline sits on the column bottom");
     let last = ft.lines.last().unwrap();
-    assert!(last.baseline + last.descent <= a.rect.y0 - d.footnote_options.space_before + 0.01, "text clears the footnotes");
+    assert!(last.baseline <= a.rect.y0 - d.footnote_options.space_before + 0.01, "text clears the footnotes");
     assert!(a.text.frames[0].lines.len() >= 2);
     // The rule sits above the first footnote.
     assert!(ft.decos.iter().any(|dc| (dc.rect.width() - 72.0).abs() < 1e-6 && dc.rect.y1 <= a.rect.y0 + 1e-6));
@@ -3565,17 +3566,19 @@ fn footnotes_stack_baseline_to_baseline() {
         for w in ft.notes.windows(2) {
             assert!(w[0].rect.y1 <= w[1].rect.y0 + 1e-6, "rects stack in order");
         }
-        // Area: first-baseline offset + (n - 1) steps + the last descent, ending at the column bottom.
+        // Area: first-baseline offset + (n - 1) steps, the last baseline on the column bottom (its
+        // descent hangs below, as in InDesign).
         let col = ft.columns[0];
         let top = ft.notes[0].rect.y0;
-        let (l0, l3) = (first_line(&ft.notes[0]), first_line(&ft.notes[3]));
-        assert!((col.y1 - top - (l0.baseline + 3.0 * step + l3.descent)).abs() < 1e-6);
-        assert!((ft.notes[3].rect.y1 - col.y1).abs() < 1e-6);
-        // The body text fills the room left above the footnotes and their space before.
+        let l0 = first_line(&ft.notes[0]);
+        assert!((col.y1 - top - (l0.baseline + 3.0 * step)).abs() < 1e-6);
+        assert!((baselines[3] - col.y1).abs() < 1e-6);
+        // The body text fills the room left above the footnotes and their space before: its
+        // baseline has to clear them, not its descent.
         let room = top - d.footnote_options.space_before;
         let last = ft.lines.last().unwrap();
-        assert!(last.baseline + last.descent <= room + 0.01, "text clears the footnotes");
-        assert!(last.baseline + last.leading + last.descent > room, "one more line wouldn't fit");
+        assert!(last.baseline <= room + 0.01, "text clears the footnotes");
+        assert!(last.baseline + last.leading > room, "one more line wouldn't fit");
     }
 }
 
@@ -3655,10 +3658,11 @@ fn footnotes_span_columns_across_the_frame_bottom() {
         let n = &ft.notes[0];
         assert_eq!(n.column, ref_col, "ref at {at}");
         assert!((n.rect.x0 - c0.x0).abs() < 1e-6 && (n.rect.x1 - c1.x1).abs() < 1e-6, "ref at {at}: note {:?} spans the frame", n.rect);
-        assert!((n.rect.y1 - c0.y1).abs() < 1e-6, "ref at {at}: note ends at the frame bottom");
+        let n_last = n.origin.y + n.text.frames[0].lines.last().unwrap().baseline;
+        assert!((n_last - c0.y1).abs() < 1e-6, "ref at {at}: the note's last baseline is on the frame bottom");
         for col in 0..2 {
             let last = ft.lines.iter().rfind(|l| l.column == col).unwrap();
-            assert!(last.baseline + last.descent <= n.rect.y0 - space_before + 0.01, "ref at {at}: column {col} text clears the note");
+            assert!(last.baseline <= n.rect.y0 - space_before + 0.01, "ref at {at}: column {col} text clears the note");
         }
         assert!(n.text.frames[0].lines.iter().all(|l| l.x1 - l.x0 > c0.width() + 1.0), "ref at {at}: note set at the frame width");
     }

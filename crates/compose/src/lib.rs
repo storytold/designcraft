@@ -2149,12 +2149,11 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, note_column, &[], opts) } else { reserve };
-    let fit_descent =
-        if f.opts.path.is_some() || f.vertical || reserve > 0.0 || line_glyphs.iter().any(|g| sub_objects.get(&g.byte).is_some_and(|o| !o.custom)) {
-            desc
-        } else {
-            0.0
-        };
+    let fit_descent = if f.opts.path.is_some() || f.vertical || line_glyphs.iter().any(|g| sub_objects.get(&g.byte).is_some_and(|o| !o.custom)) {
+        desc
+    } else {
+        0.0
+    };
     let fits = baseline + fit_descent <= col.y1 - reserve + 0.01 && !capped;
     if !fits
         && !pp.hyph_across_column
