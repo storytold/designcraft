@@ -383,7 +383,8 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
     let target_exists = app.session.active().is_some_and(|st| {
         issue.item.is_none_or(|id| st.doc.item(designcraft_doc::ItemId(id)).is_some()) && issue.page.is_none_or(|p| p < st.doc.page_count())
     });
-    let text = format!("{}  {}", if issue.severity == "error" { "⛔" } else { "⚠" }, issue.message);
+    let sign = if issue.severity == "error" { "⛔" } else { "⚠" };
+    let text = format!("{sign}  {}", issue.message);
     // Page and item context distinguish identical messages and expose the complete action name.
     let name = match (page, issue.item) {
         (Some(page), Some(item)) => format!("{text} · page {page} · item {item}"),
@@ -391,10 +392,40 @@ fn preflight_issue_button(app: &DesignApp, ui: &mut egui::Ui, issue: &designcraf
         (None, Some(item)) => format!("{text} · item {item}"),
         (None, None) => text,
     };
+    use craft_behavior::Proposal;
     use craft_theme::ControlSize;
     use craft_ui_widgets::contract::{Props as _, Show as _};
-    use craft_ui_widgets::style::Variant;
-    craft_ui_widgets::buttons::Button::new(name).id(id).enabled(target_exists).size(ControlSize::Sm).variant(Variant::GHOST).show(ui).clicked()
+    use craft_ui_widgets::display::{Elide, Shade, Text};
+    use craft_ui_widgets::style::{TypeRole, Variant};
+    // The row reads as the native one did: the sign at the panel's edge, the whole message wrapped beside it, and the
+    // page on a line of its own under the message. The button covers the row and keeps the complete name as its
+    // accessible name; its face paints nothing, for the sign and message laid over it (they take no input).
+    const PAD_Y: f32 = 2.0;
+    let width = ui.available_width();
+    let mut mark = Text::new(sign).role(TypeRole::Label).enabled(target_exists);
+    let mark_size = mark.measure_in(ui, Proposal::Ideal);
+    let indent = mark_size.x + 4.0;
+    let room = (width - indent).max(40.0);
+    let mut message = Text::new(issue.message.clone()).role(TypeRole::Label).enabled(target_exists);
+    let height = message.measure_in(ui, Proposal::Width(room)).y.max(mark_size.y);
+    let row = block(ui, height + 2.0 * PAD_Y);
+    let clicked = craft_ui_widgets::buttons::Button::new(name)
+        .painted("")
+        .id(id)
+        .enabled(target_exists)
+        .size(ControlSize::Sm)
+        .variant(Variant::GHOST)
+        .show_at(ui, row)
+        .clicked();
+    mark.show_at(ui, sub(row, 0.0, PAD_Y, mark_size.x, mark_size.y));
+    message.show_at(ui, sub(row, indent, PAD_Y, room, height));
+    if let Some(page) = page {
+        let mut line = Text::new(format!("page {page}")).role(TypeRole::Caption).shade(Shade::Muted).elide(Elide::End);
+        let line_h = line.measure_in(ui, Proposal::Ideal).y;
+        let at = block(ui, line_h);
+        line.show_at(ui, sub(at, indent, 0.0, room, line_h));
+    }
+    clicked
 }
 // PREFLIGHT_ADAPTER_END
 
@@ -443,6 +474,7 @@ fn preflight_go_to(app: &mut DesignApp, issue: &designcraft_engine::cmd::preflig
 /// (`link_button`, `preflight_issue_button`).
 mod framework {
     use super::*;
+    use craft_behavior::Proposal;
     use craft_theme::variant::Tone;
     use craft_theme::{ControlSize, Emphasis};
     use craft_ui_widgets::buttons::Button;
@@ -495,6 +527,23 @@ mod framework {
         };
     }
 
+    /// The gap between the Links columns.
+    const COLUMN_GAP: f32 = 8.0;
+    /// The room the storage glyph and its gap take before a status chip.
+    const STORAGE_W: f32 = 18.0;
+    /// The least width of the Name column, thumbnail included.
+    const NAME_MIN: f32 = 60.0;
+
+    /// A link status chip: its words in a soft badge of the status tone.
+    fn status_badge(words: &str, look: StatusTone) -> Badge {
+        Badge::new(words.to_owned()).size(ControlSize::Sm).variant(Variant::look(Emphasis::Soft, tone(look)))
+    }
+
+    /// The width small secondary text takes on one line.
+    fn caption_width(ui: &egui::Ui, text: &str) -> f32 {
+        Text::new(text.to_owned()).role(TypeRole::Caption).measure_in(ui, Proposal::Ideal).x
+    }
+
     pub(super) fn links_body(app: &mut DesignApp, ui: &mut egui::Ui) {
         let lang = app.ui.language.clone();
         let tr = |s: &str| crate::i18n::tr(&lang, s).to_owned();
@@ -530,18 +579,32 @@ mod framework {
         }
         let sel_key = egui::Id::unique("links_panel_sel");
         let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
-        // Leave room for Status and Page/PPI instead of widening the rows for long source paths.
+        // Status and Page · PPI are as wide as their widest entry (a chip sized to its words, a short readout) and Name
+        // takes the rest, so a file name stays readable and every column fits the panel; long source paths are cut.
         let width = ui.available_width();
-        let name_width = (width - 160.0).max(50.0);
-        let status_x = name_width + 10.0;
-        let info_x = status_x + 90.0;
-        let info_w = (width - info_x).max(40.0);
+        let looks: Vec<(String, StatusTone)> = rows
+            .iter()
+            .map(|r| {
+                let (words, look) = status_look(r["status"].as_str().unwrap_or(""));
+                (tr(words), look)
+            })
+            .collect();
+        let chips: Vec<egui::Vec2> = looks.iter().map(|(words, look)| status_badge(words, *look).measure_in(ui, Proposal::Ideal)).collect();
+        let uses: Vec<(String, bool)> = rows.iter().map(|r| use_info(&lang, r)).collect();
+        let storage_w = if rows.iter().any(|r| r["storage"].as_str().is_some_and(|s| !s.is_empty())) { STORAGE_W } else { 0.0 };
+        let status_w = chips.iter().map(|chip| storage_w + chip.x).fold(caption_width(ui, &tr("Status")), f32::max);
+        let info_w = uses.iter().map(|(info, _)| caption_width(ui, info)).fold(caption_width(ui, &tr("Page · PPI")), f32::max);
+        let name_width = (width - status_w - info_w - 2.0 * COLUMN_GAP).max(NAME_MIN);
+        let status_x = name_width + COLUMN_GAP;
+        let info_x = status_x + status_w + COLUMN_GAP;
+        let info_room = (width - info_x).max(0.0);
         let b = block(ui, 16.0);
         small(ui, Some(sub(b, 0.0, 0.0, name_width, 16.0)), &tr("Name"), Shade::Muted, None);
-        small(ui, Some(sub(b, status_x, 0.0, 80.0, 16.0)), &tr("Status"), Shade::Muted, None);
-        small(ui, Some(sub(b, info_x, 0.0, info_w, 16.0)), &tr("Page · PPI"), Shade::Muted, None);
+        small(ui, Some(sub(b, status_x, 0.0, status_w, 16.0)), &tr("Status"), Shade::Muted, None);
+        small(ui, Some(sub(b, info_x, 0.0, info_room, 16.0)), &tr("Page · PPI"), Shade::Muted, None);
         let uid = app.session.active().map(|st| st.uid);
-        for r in rows.iter() {
+        let band = Tokens::get(ui.ctx()).panel_darker;
+        for (index, (r, (((words, look), chip), (info, low)))) in rows.iter().zip(looks.iter().zip(&chips).zip(&uses)).enumerate() {
             // Asset and story ids come from one counter: a row is chosen by either.
             let aid = r["asset"].as_u64().or_else(|| r["story"].as_u64()).unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("");
@@ -549,6 +612,10 @@ mod framework {
             let path = r["path"].as_str().filter(|path| !path.is_empty());
             let thumb = if r["story"].is_null() { app.session.active().and_then(|st| proxy_thumb(ui.ctx(), st.uid, &st.doc, aid)) } else { None };
             let b = block(ui, if path.is_some() { 38.0 } else { THUMB });
+            // Every second row sits on the darker rounded band the native striped grid gave it, the first one included.
+            if index % 2 == 0 {
+                ui.painter().rect_filled(b.expand2(vec2(3.0, 2.0)), 3.0, band);
+            }
             let mut x = 0.0;
             if let Some(tex) = thumb {
                 let glyph = Thumb(tex.id());
@@ -575,23 +642,23 @@ mod framework {
             if picked || picked_path {
                 chosen = Some(aid);
             }
-            let (words, look) = status_look(r["status"].as_str().unwrap_or(""));
             let mut sx = status_x;
             if !storage.is_empty() {
                 let linked = storage == "linked";
                 let glyph = Storage(linked);
                 let tip = tr(if linked { "Linked: the file stays outside the document" } else { "Embedded: the document holds the file" });
                 Icon::new(IconSpec::glyph(&glyph)).label(tip).show_at(ui, sub(b, sx, 3.0, 14.0, 14.0));
-                sx += 18.0;
+                sx += STORAGE_W;
             }
-            let mut badge = Badge::new(tr(words)).variant(Variant::look(Emphasis::Soft, tone(look)));
+            let mut badge = status_badge(words, *look);
             // Why a link isn't followed (a path on another computer, a device).
             if let Some(why) = r["refused"].as_str() {
                 badge = badge.tooltip(why.to_owned());
             }
-            badge.show_at(ui, sub(b, sx, 1.0, (info_x - 4.0 - sx).max(30.0), 18.0));
-            let (info, low) = use_info(&lang, r);
-            small(ui, Some(sub(b, info_x, 2.0, info_w, 16.0)), &info, Shade::Muted, low.then_some(Tone::Warn));
+            // A compact chip as wide as its words, centred on the name's line.
+            let chip_w = chip.x.min((status_x + status_w - sx).max(0.0));
+            badge.show_at(ui, sub(b, sx, ((20.0 - chip.y) / 2.0).max(0.0), chip_w, chip.y));
+            small(ui, Some(sub(b, info_x, 2.0, info_room, 16.0)), info, Shade::Muted, low.then_some(Tone::Warn));
             ui.add_space(4.0);
         }
         if let Some(c) = chosen {
@@ -632,11 +699,8 @@ mod framework {
         divider(ui);
         for i in issues.iter() {
             let page = i.page.filter(|_| app.session.active().is_some()).map(|p| app.session.page_label(p));
-            let clicked = preflight_issue_button(app, ui, i, page.as_deref());
-            if let Some(pg) = &page {
-                small(ui, None, &format!("   page {pg}"), Shade::Muted, None);
-            }
-            if clicked {
+            // The row shows the issue's page on its own line, under the message.
+            if preflight_issue_button(app, ui, i, page.as_deref()) {
                 preflight_go_to(app, i);
             }
         }
