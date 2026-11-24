@@ -20,12 +20,15 @@ pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Optio
         .native_shortcuts
         .get(id)
         .and_then(|sc| craft_keymap::Binding::parse(sc).ok())
-        .is_some_and(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+        .is_some_and(|b| !b.trigger.is_double() && b.trigger.chord.effective(platform) == pressed);
     if app.native_menu && on_bar {
         return None;
     }
-    let bound =
-        app.keymap.bindings(&craft_keymap::CommandRef::new(id)).iter().any(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+    let bound = app
+        .keymap
+        .bindings(&craft_keymap::CommandRef::new(id))
+        .iter()
+        .any(|b| !b.trigger.is_double() && b.trigger.chord.effective(platform) == pressed);
     bound.then_some(id)
 }
 
