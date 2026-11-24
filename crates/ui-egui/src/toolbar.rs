@@ -854,7 +854,10 @@ mod line_workflow_tests {
         let first = item(&h, id);
         let committed = mark(&h);
         let start = h.state().app.session.journal.len();
-        let to = begin_line(&mut h, [270.0,420.0], [390.0,465.0]);
+        // Probe: the second gesture starts above the first line. The Contextual Task Bar (`taskbar::show`) hangs 14 to 50
+        // screen points under the selected first line (bottom at y 365), so at a fitted zoom of about 26% to 90% a press at
+        // 270,420 lands on the bar, not on the Canvas, and starts no gesture.
+        let to = begin_line(&mut h, [270.0, 200.0], [390.0, 245.0]);
         assert_ne!(mark(&h).0, committed.0, "the second real gesture has a document preview");
         let during = mark(&h);
         let busy = h.state().app.session.tool_busy();

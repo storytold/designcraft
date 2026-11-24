@@ -672,7 +672,8 @@ fn a_tab_released_over_the_story_editor_window_neither_joins_nor_moves_it() {
     h.run_steps(1);
     h.event(Event::PointerMoved(from - vec2(90.0, 0.0)));
     h.run_steps(2);
-    assert!(dragging_tab(&h.ctx, "properties"));
+    // The message says where the windows and tabs were when the drag did not start, for tracing a failure.
+    assert!(dragging_tab(&h.ctx, "properties"), "{}", tab_drag_diagnosis(&h, from));
     h.event(Event::PointerMoved(outside));
     h.event(Event::PointerButton { pos: outside, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
@@ -903,7 +904,8 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
     let opener = find(&h, Role::Button, "Pages Panel Menu").expect("the Pages panel's menu button");
     click(&mut h, opener.center(), PointerButton::Primary);
     for item in ["Numbering & Section Options…", "Panel Options…"] {
-        assert!(shown(&h, item), "{item}");
+        // The message says what the tree and the app held around the menu, for tracing a failure.
+        assert!(shown(&h, item), "{item}: {}", pages_menu_diagnosis(&h, item));
     }
     h.get_by_label("Panel Options…").click();
     h.run_steps(3);
@@ -920,6 +922,55 @@ fn pages_keeps_its_panel_menu_in_the_docking_layout() {
     }
     assert!(!shown(&h, "Close Panel"));
     assert!(!shown(&h, "Panel Options…"), "the panel's own commands stay in its panel menu");
+}
+
+/// The nodes named `name`: role, rect and whether each is hidden itself.
+fn named_nodes<S>(h: &Harness<'static, S>, name: &str) -> Vec<(Role, Rect, bool)> {
+    h.query_all_by_label(name).map(|node| (node.accesskit_node().role(), node.rect(), node.accesskit_node().is_hidden())).collect()
+}
+
+/// The floating windows of the layout in use: each group's panels, the one shown, and the window's rect.
+fn floating_windows(app: &DesignApp) -> Vec<(Vec<(Vec<String>, usize)>, Rect)> {
+    layout_of(app).floating.iter().map(|w| (window_groups(w).into_iter().map(|g| (g.panels, g.active)).collect(), w.rect)).collect()
+}
+
+/// What the tree and the app held around the Pages Panel Menu when its row `item` is not shown: the opener and the
+/// menu (both named "Pages Panel Menu"), the row, whether the menu's first rows show, the open layers and what can close
+/// the menu (a dialog, the journal), and the floating windows.
+fn pages_menu_diagnosis(h: &Harness<'static, DesignApp>, item: &str) -> String {
+    use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
+    let app = h.state();
+    format!(
+        "named Pages Panel Menu {:?}; {item} {:?}; Insert Pages… shown {}; Duplicate Spread shown {}; a layer open {}; an egui popup open {}; \
+         dialog {:?}; journal {}; focused {:?}; floating {:?}",
+        named_nodes(h, "Pages Panel Menu"),
+        named_nodes(h, item),
+        shown(h, "Insert Pages…"),
+        shown(h, "Duplicate Spread"),
+        any_open(&h.ctx, OpenFilter::Any),
+        egui::Popup::is_any_open(&h.ctx),
+        app.ui.dialog.as_ref().map(|d| d.id.clone()),
+        app.session.journal.len(),
+        app.ui.docking_focused,
+        floating_windows(app),
+    )
+}
+
+/// What the tree and the app held when a tab pressed at `from` and dragged did not start a panel drag: every tab with
+/// its rect and hidden flag, the floating windows, the drag under way, and what cancels a dock gesture (a modal, an egui
+/// popup).
+fn tab_drag_diagnosis(h: &Harness<'static, crate::test_window::Window>, from: Pos2) -> String {
+    let app = &h.state().app;
+    let tabs: Vec<(Option<String>, Rect, bool)> =
+        h.query_all_by_role(Role::Tab).map(|node| (node.accesskit_node().label(), node.rect(), node.accesskit_node().is_hidden())).collect();
+    let drag = craft_ui::runtime::drag::active::<craft_ui::docking::PanelDrag>(&h.ctx).map(|drag| drag.panel);
+    format!(
+        "pressed at {from:?}; tabs {tabs:?}; floating {:?}; panel drag {drag:?}; modal {}; an egui popup open {}; egui focus {:?}",
+        floating_windows(app),
+        modal_open(app),
+        egui::Popup::is_any_open(&h.ctx),
+        h.ctx.memory(|memory| memory.focused()),
+    )
 }
 
 fn group_with(layout: &Layout<String>, panel: &str) -> (bool, Vec<String>, usize) {

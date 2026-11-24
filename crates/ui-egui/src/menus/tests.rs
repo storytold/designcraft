@@ -2530,8 +2530,11 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     // Each command runs as Quick Apply runs an entry. One that needs a selection may fail
     // without it, but runs in one of the contexts; none changes a preference it wasn't asked to.
     // Opening a panel or collapsing the dock to icons changes where the panels are, as it should.
+    // Edit in Story Editor opens the editor as a float-only panel of the dock, as Type › Tabs does
+    // (`story_editor::follow_target`), so it changes where the panels are too.
     let opens_a_panel = [
         "app.tabsPanel",
+        "app.storyEditor",
         "app.characterStylesPanel",
         "app.paragraphStylesPanel",
         "app.characterPanel",
@@ -3490,6 +3493,28 @@ fn web_save_marks_the_document_saved_only_after_the_download_starts() {
     assert!(!app.session.active().unwrap().is_dirty());
 }
 
+/// The names of the start screen's buttons (its cards among them), as its AccessKit tree names them.
+fn start_screen_buttons(app: &mut crate::DesignApp) -> Vec<String> {
+    let ctx = crate::test_window::context();
+    crate::theme::install_fonts(&ctx, "");
+    ctx.enable_accesskit();
+    let mut names = Vec::new();
+    for _ in 0..3 {
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        if let Some(update) = out.platform_output.accesskit_update.take() {
+            let buttons = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Button);
+            names = buttons.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+        }
+    }
+    names
+}
+
 fn start_screen_texts(app: &mut crate::DesignApp) -> Vec<String> {
     let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");
@@ -3617,7 +3642,9 @@ fn help_links_are_enabled_without_a_document() {
 #[test]
 fn start_screen_offers_every_print_preset_including_a6() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let texts = start_screen_texts(&mut app);
+    // The cards by their accessible names: a stacked card paints a name of more than ten characters as two lines
+    // ("Letter" over "- Half"), so the painted text runs no longer hold whole names.
+    let texts = start_screen_buttons(&mut app);
     for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
         assert!(texts.iter().any(|t| t == p.name), "start screen lacks the {} card: {texts:?}", p.name);
     }
@@ -3771,10 +3798,13 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     assert!(app.view().unwrap().zoom > 1.0);
     let after = under(&app, pointer);
     assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
-    // A click in the menu bar takes the pointer out of the window: the centre stays.
-    let centre = under(&app, rect.center());
+    // A click in the menu bar takes the pointer out of the window: the centre stays. The canvas's centre as it is
+    // now: the window's layout can settle after the first two frames `rect` was read in, and the canvas then has
+    // another size (its top left, which the points under the pointer above depend on, stays).
+    let mid = app.canvas_rect.unwrap().center();
+    let centre = under(&app, mid);
     native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
-    let kept = under(&app, rect.center());
+    let kept = under(&app, mid);
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
 }
 
