@@ -219,6 +219,29 @@ fn outer_half_weight(table: &Table, owners: &[(usize, usize)], side: usize) -> f
     half
 }
 
+/// Half the weight of the heaviest visible stroke on the top edge of row `from`, where a table
+/// fragment continues the table in the next column or frame. Its first row is placed like the
+/// table's own first row, the grid shifted half that stroke in, but the edge is the cell grid's
+/// (the stroke between the row and the one before the cut), not the table border: measured in
+/// InDesign, a 7 pt border moves the first row 3.5 pt down and a continuation 0.5 pt (the 1 pt
+/// strokes between the rows). The left edge is the table's border in every fragment, and a repeated
+/// header keeps the table's top border.
+fn continuation_top_half(table: &Table, owners: &[(usize, usize)], from: usize) -> f64 {
+    let nc = table.ncols();
+    let mut half = 0.0f64;
+    for c in 0..nc {
+        if owners[from * nc + c] != (from, c) {
+            continue;
+        }
+        for s in cell_side_strokes(table, owners, (from, c), 0) {
+            if s.stroke.is_visible() && s.stroke.weight.is_finite() {
+                half = half.max(s.stroke.weight / 2.0);
+            }
+        }
+    }
+    half
+}
+
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
 /// when it doesn't fit the remaining frames (overset).
 #[allow(clippy::too_many_arguments)]
@@ -350,6 +373,9 @@ pub(crate) fn place_table(
     } + top_half;
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
     let mut first_frag = true;
+    // How far the fragment's grid lies below its column's top: half the table's top stroke for the
+    // first fragment, half the stroke at the cut for the ones that continue it.
+    let mut frag_top = top_half;
     let mut body_placed = 0usize;
     let mut top = y;
     let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
@@ -374,7 +400,7 @@ pub(crate) fn place_table(
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
         let bottom = col.y1 - reserve;
-        let at_col_top = cur.last_baseline.is_none() && (top - col.y0 - if first_frag { top_half } else { 0.0 }).abs() < 1e-6;
+        let at_col_top = cur.last_baseline.is_none() && (top - col.y0 - frag_top).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
@@ -397,7 +423,7 @@ pub(crate) fn place_table(
                 &frag_rows,
                 &heights,
                 &colx,
-                col.x0 + x_off + if first_frag { left_half } else { 0.0 },
+                col.x0 + x_off + left_half,
                 top,
                 y,
                 first_frag,
@@ -418,8 +444,16 @@ pub(crate) fn place_table(
         col = col_rect(cur);
         reserve = column_reserve(notes, cur, col);
         // A table that has not started yet begins in the new column as it would have in the old
-        // one: half its top stroke down.
-        y = col.y0 + if first_frag { top_half } else { 0.0 };
+        // one: half its top stroke down. One that continues starts half the stroke at the cut down,
+        // unless it repeats its header, whose top edge is the table's own.
+        if !first_frag {
+            frag_top = match placed_inside {
+                false => 0.0,
+                true if o.repeat_header && header > 0 => top_half,
+                true => continuation_top_half(table, &owners, r),
+            };
+        }
+        y = col.y0 + frag_top;
         top = y;
         frag_rows.clear();
         body_placed = 0;
@@ -431,24 +465,7 @@ pub(crate) fn place_table(
         }
     }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    emit(
-        table,
-        anchor,
-        pi,
-        &frag_rows,
-        &heights,
-        &colx,
-        col.x0 + x_off + if first_frag { left_half } else { 0.0 },
-        top,
-        y,
-        first_frag,
-        true,
-        &layouts,
-        &owners,
-        cur,
-        col,
-        out,
-    );
+    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off + left_half, top, y, first_frag, true, &layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y + bottom_half);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
