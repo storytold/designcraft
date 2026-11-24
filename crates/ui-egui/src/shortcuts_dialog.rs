@@ -87,6 +87,8 @@ impl Host {
 fn options() -> Options {
     Options::default().with(|o| {
         o.keyboard = true;
+        // Wide enough for the keyboard pane's keys to stay readable beside the key list.
+        o.width = Some(1130.0);
         o.import_formats = vec![INDESIGN_FORMAT];
         o.visible = Some(crate::keys::listed);
     })
