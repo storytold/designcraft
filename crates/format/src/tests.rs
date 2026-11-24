@@ -43,7 +43,7 @@ fn place(d: &mut Document, asset: AssetId, crop: f64) -> designcraft_doc::ItemId
 
 fn asset_entries(bytes: &[u8]) -> usize {
     let z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    z.file_names().filter(|n| n.starts_with("assets/")).count()
+    z.file_names().map(Result::unwrap).filter(|n| n.starts_with("assets/")).count()
 }
 
 /// Zip `d` the way files were saved with one asset per placement (nothing merged or pruned).

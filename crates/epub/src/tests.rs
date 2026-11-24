@@ -130,7 +130,7 @@ fn package_metadata_and_cover_image() {
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(d, opts).unwrap())).unwrap();
         let mut s = String::new();
         z.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut s).unwrap();
-        let names: Vec<String> = z.file_names().map(str::to_string).collect();
+        let names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
         (s, names)
     };
     let id_of = |opf: &str| opf.split("<dc:identifier id=\"bookid\">").nth(1).and_then(|r| r.split('<').next()).unwrap_or_default().to_string();

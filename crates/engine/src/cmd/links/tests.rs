@@ -777,7 +777,7 @@ fn row(s: &mut Session, id: AssetId) -> Value {
 fn bundle_version(bytes: &[u8]) -> (u64, Vec<String>) {
     use std::io::Read;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let names: Vec<String> = zip.file_names().map(|n| n.unwrap().into_owned()).collect();
     let mut version = 0;
     for name in names.iter().filter(|n| n.ends_with(".json")) {
         let mut text = String::new();

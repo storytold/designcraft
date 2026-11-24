@@ -144,7 +144,7 @@ fn epub_and_html_carry_a_linked_graphic_and_a_modified_one_from_disk() {
     assert!(html["text"].as_str().unwrap().contains("<img"), "the linked graphic is in the HTML");
     let r = s.execute("file.exportEpub", &json!({})).unwrap();
     let z = zip::ZipArchive::new(std::io::Cursor::new(crate::cmd::base64_decode(r["base64"].as_str().unwrap()))).unwrap();
-    let names: Vec<String> = z.file_names().map(str::to_string).collect();
+    let names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
     let image = names.iter().find(|n| n.starts_with("OEBPS/images/")).unwrap_or_else(|| panic!("no image in {names:?}")).clone();
     // A modified link exports the file on disk, with a warning.
     std::fs::write(&file, png(77, 33, false)).unwrap();
