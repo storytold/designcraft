@@ -765,17 +765,25 @@ fn wheel_into_view_over(
 ) -> egui::Rect {
     // The last move: a node scrolled out of the column may leave the tree, and the wheel then goes back the other way.
     let mut last = 0.0_f32;
+    // Whether the target had a node yet.
+    let mut seen = false;
     // Where the target was after each step, and where the wheel went: what a failure reports.
     let mut trail: Vec<(Option<egui::Rect>, egui::Pos2)> = Vec::new();
     let rtl = crate::i18n::is_rtl(&h.state().ui.language);
-    for _ in 0..24 {
+    for _ in 0..48 {
         let window = kit::screen(h);
         // What the column shows: the dialog under its title and over its footer, inside the window.
         let dialog = h.query_all_by_role(Role::Dialog).next().map_or(window, |node| node.rect()).intersect(window);
         let shown = egui::Rect::from_min_max(egui::pos2(dialog.left(), dialog.top() + 50.0), egui::pos2(dialog.right(), dialog.bottom() - 60.0));
         let delta = match find(h) {
             Some(target) if shown.contains_rect(target) || (window.contains_rect(target) && shown.height() < target.height()) => return target,
-            Some(target) => (target.center().y - shown.center().y).clamp(-40.0, 40.0),
+            Some(target) => {
+                seen = true;
+                (target.center().y - shown.center().y).clamp(-40.0, 40.0)
+            }
+            // Not built yet (a collection builds only the rows near its view, so a card far down has no node): go on
+            // down the column, the way the targets lie.
+            None if !seen => 40.0,
             None if last != 0.0 => -last / 2.0,
             None => panic!("{what} is not shown"),
         };
