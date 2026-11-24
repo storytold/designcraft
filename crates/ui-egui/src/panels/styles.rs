@@ -26,6 +26,9 @@ mod framework {
     use serde_json::{Value, json};
 
     use super::{object_style_of_selection, selection_overrides_styles};
+
+    /// The look of the row of the current style: a tinted accent fill, which reads as the selected row.
+    const CURRENT: Variant = Variant::look(craft_theme::variant::Emphasis::Soft, craft_theme::variant::Tone::Accent);
     use crate::DesignApp;
     use crate::panels::tabs::TabGlyph;
     use crate::theme::Tokens;
@@ -201,7 +204,7 @@ mod framework {
         let kind = if para { "paragraph" } else { "character" };
         let out = Button::new(row_label.clone())
             .id_salt(("style_row", para, n.to_owned()))
-            .variant(if is_current { Variant::SECONDARY } else { Variant::GHOST })
+            .variant(if is_current { CURRENT } else { Variant::GHOST })
             .align(HAlign::Start)
             .sizing(Sizing::FillWidth)
             .show(ui);
@@ -292,7 +295,7 @@ mod framework {
                     Row::new().id_salt(("object_style_row", n.clone())).fill_width().show(ui, |ui, _| {
                         let out = Button::new(label.clone())
                             .id_salt(("object_style", n.clone()))
-                            .variant(if is_current { Variant::SECONDARY } else { Variant::GHOST })
+                            .variant(if is_current { CURRENT } else { Variant::GHOST })
                             .align(HAlign::Start)
                             .sizing(Sizing::FillWidth)
                             .show(ui);
