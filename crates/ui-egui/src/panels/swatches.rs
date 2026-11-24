@@ -2948,15 +2948,16 @@ mod ui223_swatches_rename_apply_tests {
         Some((facts.name.clone().unwrap_or_default(), facts.value.clone().unwrap_or_default()))
     }
     fn open(h: &mut Harness<'_, Rig>, source: &str) {
-        let picked = h.ctx.data(|data| data.get_temp::<String>(egui::Id::unique(PICKED)));
-        if picked.as_deref() != Some(source) {
+        // A click picks the row, and a click on the row that is the sole pick starts its rename. The swatch the selection
+        // has in front is the pick from the first frame, so one click opens its editor; any other row takes two.
+        for _ in 0..2 {
+            if draft(h).as_ref().map(|value| value.0.as_str()) == Some(source) {
+                break;
+            }
             let at = reveal(h, source);
             click(h, at);
             wait_click_interval(h);
         }
-        let at = reveal(h, source);
-        click(h, at);
-        wait_click_interval(h);
         assert_eq!(draft(h).as_ref().map(|value| value.0.as_str()), Some(source));
         editor(h, source);
     }
@@ -3443,9 +3444,8 @@ mod ui223_swatches_rename_apply_tests {
     fn installed_real_double_click_still_opens_options_and_locked_names_never_start_an_editor() {
         let (app, _) = fixture();
         let mut h = harness(app);
+        // Brand is the swatch in front, so it is the pick already: a click first would start its rename.
         let at = reveal(&mut h, "Brand");
-        click(&mut h, at);
-        wait_click_interval(&mut h);
         let start = h.state().app.session.journal.len();
         frame(&mut h, Some(Event::PointerMoved(at)));
         for _ in 0..2 {
