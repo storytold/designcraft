@@ -552,7 +552,7 @@ fn parents_list(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Documen
     let by_keys = out.events.iter().any(|event| matches!(event, CollectionEvent::LeadMoved { by: LeadSource::Keys, .. }));
     for event in out.events {
         match event {
-            CollectionEvent::Selection(SelectionChange::Set(keys)) => {
+            CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } => {
                 if let Some(key) = keys.last().copied().filter(|key| !(by_keys && *key == ParentKey::New)) {
                     picked = Some(key);
                 }

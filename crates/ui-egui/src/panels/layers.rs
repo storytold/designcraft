@@ -759,7 +759,7 @@ mod framework {
         let mut toggles: Vec<(LayerKey, bool, bool)> = Vec::new();
         for event in events {
             match event {
-                CollectionEvent::Selection(change) => reported.commands.extend(pick(memory, change)),
+                CollectionEvent::Selection { change, .. } => reported.commands.extend(pick(memory, change)),
                 CollectionEvent::LeadMoved { key, .. } => memory.lead = Some(key),
                 CollectionEvent::Activate(LayerKey::Layer(id)) => reported.commands.push(("app.layerOptionsDialog", json!({"id": id.0}))),
                 CollectionEvent::Open(change) => open_rows(lines, memory, &change),
