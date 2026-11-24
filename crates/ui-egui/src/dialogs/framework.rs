@@ -281,6 +281,8 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context, form: Form, enabled
             .enabled(enabled)
             // No dimmed backdrop: the page behind a dialog is what its settings and colours are judged against.
             .backdrop(Backdrop::None)
+            // As the old app's dialogs: a dragged dialog may go past the window's edges, keeping its title strip inside.
+            .drag_bounds(craft_ui::contract::overlay::DragBounds::TitleVisible)
             .closable(false)
             .outer_gesture(false)
             .close_on_enter(enabled)
