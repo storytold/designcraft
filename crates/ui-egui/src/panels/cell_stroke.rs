@@ -339,7 +339,7 @@ pub(crate) mod framework {
     /// The proxy lines' names, in [`EDGE_NAMES`] order.
     const EDGE_LABELS: [&str; 6] = ["Top", "Bottom", "Left", "Right", "Inner Horizontal", "Inner Vertical"];
 
-    /// The look of the edge proxy: a well around a cell grid, its lines in the accent colour while chosen.
+    /// The look of the edge proxy: a well around a cell grid, its lines in the solid accent colour while chosen.
     #[derive(Clone, Debug, PartialEq)]
     pub(crate) struct EdgeProxyStyle {
         surface: SurfaceLook,
@@ -422,8 +422,10 @@ pub(crate) mod framework {
                 cell: cx.tokens.size.control.md,
                 inset: cx.tokens.space.gap.item,
                 paper: Stateful::new(StyleColor(paper.fill)),
-                on: look(cx.color(colors.accent.text)),
-                off: look(cx.color(colors.text.muted)),
+                // A chosen line is the saturated accent of a check mark; a line not chosen is faint ink, so the two tell
+                // apart at a glance on the dark cells as on light ones.
+                on: look(cx.color(colors.accent.solid)),
+                off: look(cx.color(colors.text.faint)),
             }
         }
 

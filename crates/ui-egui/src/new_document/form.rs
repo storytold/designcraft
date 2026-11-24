@@ -14,7 +14,7 @@ use craft_ui_panels::sections::Section;
 use craft_ui_widgets::buttons::{Button, IconButton, ToggleButton};
 use craft_ui_widgets::choice::{Checkbox, Segmented};
 use craft_ui_widgets::contract::{
-    Bind, CollectionEvent, Entry, FieldLayout, Gap, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
+    Bind, CollectionEvent, Entry, FieldLayout, Gap, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
 };
 use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::Field;
@@ -338,6 +338,8 @@ fn count_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) {
     let value = d.n(key).filter(|v| v.is_finite());
     let out = NumberField::new(label, Bind::given(value))
         .id_salt(("new_document_count", key))
+        // As wide as its column, as the length fields beside it are.
+        .sizing(Sizing::FillWidth)
         .range(1.0..=9999.0)
         .step(1.0)
         .fixed_decimals(0)

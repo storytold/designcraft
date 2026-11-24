@@ -44,6 +44,22 @@ impl DataMergeControls {
         self.face(ui, key, caption_and_name, enabled, (craft_theme::ControlSize::Sm, tip))
     }
 
+    /// An icon button of the app's glyph `glyph` (the status bar's first, prev, next and last arrows), named and tipped
+    /// `name`: a record move of the navigation row.
+    fn nav_button(&self, ui: &mut egui::Ui, key: &str, glyph: &'static str, name: &str) -> bool {
+        use craft_ui_widgets::contract::{Props as _, Show as _};
+        let id = self.id(ui, "button", key);
+        let enabled = self.enabled && ui.is_enabled();
+        let face = crate::panels::tabs::TabGlyph(glyph);
+        craft_ui_widgets::buttons::IconButton::new(craft_ui_widgets::primitives::IconSpec::glyph(&face))
+            .label(name.to_owned())
+            .tooltip(name.to_owned())
+            .id(id)
+            .enabled(enabled)
+            .show(ui)
+            .clicked()
+    }
+
     /// A button named `name` that paints `caption`, at `size`, with a tooltip.
     fn face(
         &self,
@@ -285,13 +301,14 @@ mod framework {
                 commands.push(if preview_on { ("data.preview", json!({"record": 1})) } else { ("data.preview.stop", json!({})) });
             }
             // The record navigation takes input only while a record is previewed. It is one row, First Previous [n]
-            // Record Next Last: the four moves are small buttons, and the number is as wide as its value. It wraps only
-            // where even that does not fit.
+            // Record Next Last, inside the narrow sidebar: the four moves are icon buttons with the arrows the status
+            // bar's spread navigation draws, named and tipped in full, and the number is as wide as its value. Text
+            // pills did not fit and cut Last off. It wraps only where even that does not fit.
             let navigation = DataMergeControls { enabled: preview_record > 0, narrow_numbers: true, ..controls };
             Row::new().id_salt("preview-navigation").wrap(true).show(ui, |ui, _| {
-                for (key, label, to) in [("first", "First", 1), ("previous", "Previous", shown.saturating_sub(1).max(1))] {
+                for (key, glyph, label, to) in [("first", "first", "First", 1), ("previous", "prev", "Previous", shown.saturating_sub(1).max(1))] {
                     let name = tr(&lang, label);
-                    if navigation.compact_button(ui, key, (name, name), true, None) {
+                    if navigation.nav_button(ui, key, glyph, name) {
                         jump = Some(to);
                     }
                 }
@@ -300,9 +317,11 @@ mod framework {
                     jump = Some(rec as u32);
                 }
                 Text::new(tr(&lang, "Record").to_owned()).show(ui);
-                for (key, label, to) in [("next", "Next", shown.saturating_add(1).min(max_record)), ("last", "Last", max_record)] {
+                for (key, glyph, label, to) in
+                    [("next", "next", "Next", shown.saturating_add(1).min(max_record)), ("last", "last", "Last", max_record)]
+                {
                     let name = tr(&lang, label);
-                    if navigation.compact_button(ui, key, (name, name), true, None) {
+                    if navigation.nav_button(ui, key, glyph, name) {
                         jump = Some(to);
                     }
                 }
@@ -761,7 +780,8 @@ mod ui223_datamerge_workflow_tests {
     fn ui223_datamerge_preview_toggle_record_and_escape_keep_session_policy() {
         let mut h = fixture_width(app(1, false), 320.0);
         for name in ["First", "Previous", "Next", "Last"] {
-            let navigation = control(&h, "Button", name, 0);
+            // The record moves are icon buttons, named in full.
+            let navigation = control(&h, "IconButton", name, 0);
             assert!(navigation.rect.left() >= 0.0 && navigation.rect.right() <= 320.0, "the actual narrow-sidebar navigation must not clip: {name}");
         }
         let before = effects(&h);

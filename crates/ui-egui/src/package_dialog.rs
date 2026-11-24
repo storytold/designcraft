@@ -321,7 +321,7 @@ mod framework_form {
     use craft_ui_widgets::contract::{
         Bind, ColumnSpec, Entry, Gap, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
     };
-    use craft_ui_widgets::display::{Divider, Text};
+    use craft_ui_widgets::display::{Divider, Elide, Text};
     use craft_ui_widgets::form::{Field, FieldGroup};
     use craft_ui_widgets::layout_components::{Row, Stack};
     use craft_ui_widgets::list::{List, ListRow};
@@ -444,13 +444,17 @@ mod framework_form {
                 Text::new(tr(app, "Scope:")).show(ui);
                 Text::new(tr(app, "Entire Publication")).show(ui);
             });
+            // Each count is one line across the page, as InDesign's: it does not wrap at the dialog's paragraph width,
+            // and is cut (shown whole in its tooltip) only where the page is narrower than it. A line that wrapped in
+            // the drawn run but not in the measuring one made the block taller than it was measured, and cut its last
+            // line (Colors and Inks) off.
             Stack::new().id_salt("package_summary_counts").indent(2).fill_width().show(ui, |ui, _| {
                 for (at, (line, warn)) in summary_lines(&app.ui.language, d).into_iter().enumerate() {
-                    Row::new().id_salt(("package_summary", at)).show(ui, |ui, _| {
+                    Row::new().id_salt(("package_summary", at)).fill_width().show(ui, |ui, _| {
                         if warn {
                             Text::new("\u{26A0}").tone(Tone::Warn).show(ui);
                         }
-                        Text::new(line.clone()).show(ui);
+                        Text::new(line.clone()).elide(Elide::End).sizing(Sizing::FillWidth).show(ui);
                     });
                 }
             });
