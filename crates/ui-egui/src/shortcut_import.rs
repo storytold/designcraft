@@ -194,10 +194,11 @@ fn foreign(set: &ParsedSet) -> ForeignSet {
 
 /// What DesignCraft's contexts take from a set: Default keys bind in the command's home scope; an
 /// item without Default keys takes its Text keys. Unmatched items get likely commands.
-pub fn import_options(remembered: BTreeMap<String, CommandRef>) -> ImportOptions {
+pub fn import_options(remembered: BTreeMap<String, Option<CommandRef>>, codes: BTreeMap<String, Option<String>>) -> ImportOptions {
     ImportOptions {
         contexts: vec![("Default".into(), ContextRule::Home), (crate::keys::TEXT_CONTEXT.into(), ContextRule::HomeWithoutHomeEntry)],
         remembered,
+        codes,
         suggest: true,
         ..ImportOptions::default()
     }
@@ -220,7 +221,7 @@ pub fn read_set(text: &str) -> Result<ForeignSet, String> {
 pub fn import(app: &mut DesignApp, text: &str) -> Result<Value, String> {
     let set = read_set(text)?;
     app.sync_keymap();
-    let options = import_options(app.shortcut_answers.clone());
+    let options = import_options(app.shortcut_answers.clone(), app.shortcut_codes.clone());
     let plan = craft_keymap::plan(&set, &app.keymap, &options);
     let (name, report) = app.ui.shortcut_sets.import_plan(&plan, &app.keymap, None, &crate::shortcuts_dialog::BUILTINS).map_err(|e| e.to_string())?;
     crate::shortcuts_dialog::load_active_set(app);

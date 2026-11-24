@@ -172,7 +172,10 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
         Some(Outcome::Import { .. }) => request_import(app, &mut host),
         Some(Outcome::Export { name, json, .. }) => save_file(app, &format!("{name}.json"), json.as_bytes()),
         Some(Outcome::Summary { name, html, .. }) => save_file(app, &format!("{name}.html"), html.as_bytes()),
-        Some(Outcome::Remembered(answers)) => app.shortcut_answers = answers,
+        Some(Outcome::Remembered { targets, codes }) => {
+            app.shortcut_answers = targets;
+            app.shortcut_codes = codes;
+        }
         _ => {}
     }
     if refused && host.state.is_open() {
@@ -258,7 +261,9 @@ fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
         return;
     }
     match crate::shortcut_import::read_set(text) {
-        Ok(set) => host.pending.push(Pending::Review(set, crate::shortcut_import::import_options(app.shortcut_answers.clone()))),
+        Ok(set) => {
+            host.pending.push(Pending::Review(set, crate::shortcut_import::import_options(app.shortcut_answers.clone(), app.shortcut_codes.clone())))
+        }
         Err(e) => host.state.show_error(e),
     }
 }
