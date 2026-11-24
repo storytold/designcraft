@@ -15,7 +15,7 @@ use craft_ui_widgets::choice::{Checkbox, Segmented};
 use craft_ui_widgets::contract::{
     Bind, CollectionEvent, Entry, FieldLayout, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
 };
-use craft_ui_widgets::display::{Picture, Shade, Text};
+use craft_ui_widgets::display::{Shade, Text};
 use craft_ui_widgets::form::Field;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::list::ThumbAspect;
@@ -164,6 +164,8 @@ fn tile(card: &Card, units: Unit) -> Tile<'static> {
     Tile::new(card.label.clone())
         .detail(size_text(&card.nd, units))
         .flat_thumbnail()
+        // The picked preset is outlined in the accent, as it always was; the flat thumbnail marks a pick with a fill alone.
+        .pick_ring()
         .thumb(ThumbAspect::new(1, 1), move |cx: &ContentPainterCx<'_>, rect: Rect| paint_page(&cx.painter, rect, &nd, custom, cx.ink()))
 }
 
@@ -194,15 +196,6 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         // The presets column scrolls; the grid takes its whole height inside it.
         .natural_height(true)
         .show_items(ui, &Cards(&list), &mut |at, _| tile(&list[*at], card_units));
-    // The picked card is outlined in the accent, as it always was: the framework's flat thumbnail marks the pick with a fill alone.
-    if let Some(card) = list.iter().position(|card| card.key == current).and_then(|at| shown.response.shown.iter().find(|row| row.key == at)) {
-        let (rect, accent) = (card.rect, crate::theme::Tokens::get(ui.ctx()).accent);
-        Picture::painter("", ThumbAspect::SQUARE, move |cx: &ContentPainterCx<'_>, _| {
-            cx.painter.rect_stroke(rect, 6.0, egui::Stroke::new(2.0, accent), egui::StrokeKind::Inside);
-        })
-        .id_salt("new_document_picked_outline")
-        .show_at(ui, rect);
-    }
     let mut create = false;
     let mut delete = None;
     for event in shown.response.events {
