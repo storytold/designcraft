@@ -1,7 +1,7 @@
 //! Successor, on the installed framework, of the native Story Editor depth marks test: the same steps and checks with the framework flag
 //! on, so the editor draws its framework body.
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT as _, Queryable};
 use serde_json::json;
 
 use crate::DesignApp;

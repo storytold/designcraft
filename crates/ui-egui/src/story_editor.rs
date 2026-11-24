@@ -654,7 +654,7 @@ mod framework {
 
 #[cfg(test)]
 mod tests {
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT as _, Queryable};
     use serde_json::json;
 
     use crate::DesignApp;
