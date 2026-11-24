@@ -671,8 +671,14 @@ mod framework {
             .and_then(|r| r["path"].as_str())
             .filter(|path| !path.is_empty())
         {
-            // A selected link stays distinguishable even if two rows truncate to the same prefix.
-            small(ui, None, path, Shade::Muted, None);
+            // A selected link stays distinguishable even if two rows truncate to the same prefix: its whole path, wrapped
+            // in the panel's width (measured there and shown at that width, so no room the flow around it leaves
+            // unbounded lets it run past the panel's edge).
+            let width = ui.available_width();
+            let mut shown = Text::new(path.to_owned()).role(TypeRole::Caption).shade(Shade::Muted);
+            let height = shown.measure_in(ui, Proposal::Width(width)).y;
+            let at = block(ui, height);
+            shown.show_at(ui, sub(at, 0.0, 0.0, width, height));
             ui.add_space(6.0);
         }
         link_actions(app, ui, &rows, chosen);

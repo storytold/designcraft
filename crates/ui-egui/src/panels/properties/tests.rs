@@ -292,7 +292,22 @@ fn links_panel_keeps_long_source_paths_inside_a_narrow_panel() {
     assert!(h.get_by_label("Page · PPI").rect().right() <= 240.0);
     h.get_by_label(path).click();
     h.run_steps(3);
-    assert!(h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)), "the selected path is painted in full and wraps inside the panel");
+    // What paints the path, for the message: each text shape holding its file name, elided or not, and where it ends.
+    let painted: Vec<(String, bool, f32)> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(text) if text.galley.job.text.contains("photo.svg") => {
+                Some((text.galley.job.text.clone(), text.galley.elided, text.visual_bounding_rect().right()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        h.output().shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(text) if text.galley.job.text == path && !text.galley.elided && text.visual_bounding_rect().right() <= 240.0)),
+        "the selected path is painted in full and wraps inside the panel: {painted:?}"
+    );
 }
 
 #[test]
