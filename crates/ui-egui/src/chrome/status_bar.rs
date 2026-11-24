@@ -182,11 +182,23 @@ mod framework {
                 if count.clicks >= 2 {
                     asks.push(Ask::Preflight);
                 }
-                let _ = Menu::new(count_label).id_salt("status_preflight_menu").opened_by(&count.response, Trigger::Click).show(ui, |ui, _| {
-                    if MenuItem::new(tr("Preflight Panel…")).id_salt("preflight_panel").show(ui).ran {
-                        asks.push(Ask::Preflight);
-                    }
-                });
+                // The menu's open state is the app's, so the double click that shows the panel can leave the menu closed whatever
+                // its two presses did to it.
+                let open_key = egui::Id::new("status_preflight_menu_open");
+                let mut open: bool = ui.data(|d| d.get_temp(open_key)).unwrap_or(false);
+                let _ = Menu::new(count_label)
+                    .id_salt("status_preflight_menu")
+                    .open(Bind::bound(&mut open))
+                    .opened_by(&count.response, Trigger::Click)
+                    .show(ui, |ui, _| {
+                        if MenuItem::new(tr("Preflight Panel…")).id_salt("preflight_panel").show(ui).ran {
+                            asks.push(Ask::Preflight);
+                        }
+                    });
+                if count.clicks >= 2 {
+                    open = false;
+                }
+                ui.data_mut(|d| d.insert_temp(open_key, open));
                 Text::new(status.clone()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
             });
         });
