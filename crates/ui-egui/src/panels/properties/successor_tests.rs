@@ -320,7 +320,7 @@ fn more_options_grid_button_keeps_first_line_only() {
     h.get_all_by_label("More Options").nth(1).unwrap().click();
     h.run_steps(3);
     // The framework's icon button shows its on look as the selected state.
-    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").accesskit_node().is_selected(), Some(true));
+    assert!(is_on(&h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid")), "Align to Baseline Grid shows on");
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["gridAlign"], "firstLineOnly");
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").click();
     h.run_steps(3);
@@ -369,7 +369,7 @@ fn paragraph_panel_keeps_first_line_only() {
     let mut h = panel_harness(app, paragraph_panel);
     h.run_steps(3);
     // The framework's icon button shows its on look as the selected state.
-    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").accesskit_node().is_selected(), Some(true));
+    assert!(is_on(&h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid")), "Align to Baseline Grid shows on");
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").click();
     h.run_steps(3);
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["gridAlign"], "firstLineOnly");
@@ -436,14 +436,14 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
     // Space Between Paragraphs Using Same Style starts at Ignore; a value is set, and emptying
     // the field ignores it again.
     assert!(para(&mut h)["sameParaStyleSpacing"].is_null());
-    let field = h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node).nth(6).unwrap();
+    let field = named_field(&h, "Space Between Paragraphs Using Same Style");
     field.focus();
     field.type_text("6 pt");
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(para(&mut h)["sameParaStyleSpacing"], 6.0);
-    h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node).nth(6).unwrap().focus();
+    named_field(&h, "Space Between Paragraphs Using Same Style").focus();
     h.run_steps(1);
     for _ in 0..8 {
         h.key_press(egui::Key::Backspace);
@@ -984,9 +984,8 @@ fn properties_text_wrap_shows_and_sets_the_offsets() {
     // The fields between the Text Wrap heading and Quick Actions: Top, Left, Bottom, Right.
     let fields = |h: &Harness<'_, DesignApp>| {
         let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
-        let mut v: Vec<egui::Rect> = h
-            .get_all_by_role(egui::accesskit::Role::TextInput)
-            .filter(field_node)
+        let mut v: Vec<egui::Rect> = outermost(h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node))
+            .into_iter()
             .map(|n| n.rect())
             .filter(|r| r.center().y > top && r.center().y < bottom)
             .collect();
@@ -1090,11 +1089,7 @@ fn the_fill_menu_sets_a_tint() {
     assert!(h.query_by_label("Apply To:").is_none());
     // The field on the Tint row (Opacity also reads 100%).
     // The row's caption (the field carries the same name).
-    let row = h.get_by_role_and_label(egui::accesskit::Role::Label, "Tint:").rect();
-    h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
-        .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
-        .expect("the Tint field")
-        .click();
+    tint_field(&h).click();
     h.run_steps(2);
     h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
     h.event(egui::Event::Text("25".into()));
@@ -1118,11 +1113,7 @@ fn a_tint_on_several_objects_keeps_each_ones_swatch() {
     h.get_by_label("Fill swatch").click();
     h.run_steps(3);
     // The row's caption (the field carries the same name).
-    let row = h.get_by_role_and_label(egui::accesskit::Role::Label, "Tint:").rect();
-    h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
-        .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
-        .expect("the Tint field")
-        .click();
+    tint_field(&h).click();
     h.run_steps(2);
     h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
     h.event(egui::Event::Text("25".into()));
@@ -1221,8 +1212,8 @@ fn one_selected_point_shows_its_frames_size_greyed() {
     let mut h = panel(app);
     h.run_steps(2);
     let greyed = |h: &Harness<'_, DesignApp>| {
-        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_disabled())
-            .filter(field_node)
+        outermost(h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_disabled()).filter(field_node))
+            .into_iter()
             .filter_map(|n| n.value())
             .collect::<Vec<_>>()
     };
@@ -1280,9 +1271,8 @@ fn text_frame_band(h: &Harness<'_, DesignApp>) -> (f32, f32) {
 /// The fields of Properties › Text Frame (Columns is a number field, the lengths text fields), in reading order.
 fn text_frame_fields(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
     let (top, bottom) = text_frame_band(h);
-    let mut v: Vec<egui::Rect> = h
-        .get_all_by_role(egui::accesskit::Role::TextInput)
-        .filter(field_node)
+    let mut v: Vec<egui::Rect> = outermost(h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node))
+        .into_iter()
         .map(|n| n.rect())
         .filter(|r| r.center().y > top && r.center().y < bottom)
         .collect();
@@ -1639,6 +1629,34 @@ fn the_framework_text_wrap_panel_shows_each_offset_and_invert() {
 /// inputs, the part as a child of its field.
 fn field_node(n: &egui_kittest::Node<'_>) -> bool {
     !n.parent().is_some_and(|p| p.accesskit_node().role() == egui::accesskit::Role::TextInput)
+}
+
+/// Whether a framework button or row shows its on state: as the selected look, or as a toggle.
+fn is_on(n: &egui_kittest::Node<'_>) -> bool {
+    let node = n.accesskit_node();
+    node.is_selected() == Some(true) || node.toggled() == Some(egui::accesskit::Toggled::True)
+}
+
+/// The Tint field on the Tint row of the fill menu: the field (a number field or a text input) level with the row's caption and
+/// after it, not the caption or the Opacity field below.
+fn tint_field<'h>(h: &'h Harness<'_, DesignApp>) -> egui_kittest::Node<'h> {
+    let row = h.get_by_role_and_label(egui::accesskit::Role::Label, "Tint:").rect();
+    let level = h
+        .query_all_by(|n| matches!(n.role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput) && !n.is_hidden())
+        .filter(|n| (n.rect().center().y - row.center().y).abs() < 8.0 && n.rect().left() >= row.right() - 1.0);
+    outermost(level).into_iter().next().expect("the Tint field")
+}
+
+/// The nodes whose rect no other of them contains: a framework text field's text part sits inside its field, and both read
+/// as text inputs, so a field counts once.
+fn outermost<'h>(nodes: impl Iterator<Item = egui_kittest::Node<'h>>) -> Vec<egui_kittest::Node<'h>> {
+    let all: Vec<_> = nodes.collect();
+    let rects: Vec<egui::Rect> = all.iter().map(|n| n.rect()).collect();
+    all.into_iter()
+        .enumerate()
+        .filter(|(i, _)| !rects.iter().enumerate().any(|(j, r)| j != *i && r.contains_rect(rects[*i]) && (*r != rects[*i] || j < *i)))
+        .map(|(_, n)| n)
+        .collect()
 }
 
 /// The field named `name` (a number field or a text field), at its text part when it has one.

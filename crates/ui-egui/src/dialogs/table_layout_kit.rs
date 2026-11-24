@@ -107,6 +107,8 @@ pub(crate) fn click(h: &mut Harness<'_, DesignApp>, roles: &[Role], label: &str,
 /// Opens the picker named `label` and picks the entry named `choice`.
 pub(crate) fn pick(h: &mut Harness<'_, DesignApp>, label: &str, choice: &str) {
     click(h, &[Role::ComboBox], label, 0);
+    // The list's first pass is a sizing pass with no nodes: give it frames to show its entries.
+    steps(h, 3);
     // The entry is a node of the opened list; a title or a label of the same words can share its name, so the list's own
     // roles come first and the last node named so (the popup is drawn above the dialog) is the fallback.
     let options = [Role::ListBoxOption, Role::MenuItem, Role::MenuItemRadio, Role::ListItem, Role::Row];
