@@ -728,8 +728,8 @@ mod line_workflow_tests {
     fn label(h: &Harness<'_, Rig>) -> String {
         let app = &h.state().app;
         let name = crate::i18n::tr(&app.ui.language, "Line Tool");
-        // The Tools rail names a tool by its command's label alone: its chord comes only from the framework's own
-        // keymap, which the app's keymap does not feed (a framework gap, display-only chords).
+        // The Tools rail names a tool by its command's label alone; the chord the app's keymap gives it shows beside it
+        // (the board's shown-only chords) and is not part of the name.
         name.to_string()
     }
     /// The installed rail's button of the tool named `name`.
