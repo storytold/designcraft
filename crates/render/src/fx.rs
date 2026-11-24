@@ -96,12 +96,17 @@ fn painted_bounds(it: &Item) -> Rect {
     // A clipping path crops the image further.
     let Some((path, even_odd)) = g.clip_region().filter(|(p, _)| !p.is_empty()) else { return shown };
     if even_odd {
-        // An inverted clip keeps the graphic's rectangle minus the path, so the box ends where the
-        // path removes a side of it, not at the combined region's outer edge.
+        // An inverted clip keeps the graphic's rectangle minus the path, so the box ends where a
+        // rectangular path removes a side of it, not at the combined region's outer edge.
         let Some(clip) = g.clip.as_ref() else { return shown };
         let mut excluded = clip.path.to_bezpath();
         excluded.apply_affine(g.xf);
-        let kept = bounds_without(shown, excluded.bounding_box());
+        let hole = excluded.bounding_box();
+        // Only a rectangular hole removes whole strips; any other shape leaves pixels inside its box.
+        if (excluded.area().abs() - hole.area()).abs() > 1e-6 * hole.area().max(1.0) {
+            return shown;
+        }
+        let kept = bounds_without(shown, hole);
         return if kept.width() > 0.0 && kept.height() > 0.0 { kept } else { shown };
     }
     let clipped = shown.intersect(path.bounding_box());
@@ -1288,6 +1293,32 @@ mod tests {
         assert!(lum(120) < 60, "solid before the fade: {}", lum(120));
         assert!(lum(195) > 600, "nearly transparent at the retained edge: {}", lum(195));
         assert!(lum(250) > 700, "the removed part of the frame: {}", lum(250));
+    }
+
+    /// A non-rectangular inverted clip leaves pixels inside its box, so the feather stays at the visible edge.
+    #[test]
+    fn directional_feather_keeps_a_non_rectangular_inverted_clips_pixels() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // A triangle whose box is the frame's right half; on the sampled row (the middle) it
+            // removes x = 200 to 250 only, so the image still shows up to the frame's edge at 300.
+            let mut hole = BezPath::new();
+            hole.move_to((100.0, 0.0));
+            hole.line_to((200.0, 0.0));
+            hole.line_to((100.0, 200.0));
+            hole.close_path();
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fade runs 230..300 at the frame's edge, not 130..200 at the triangle's box.
+        assert!(lum(180) < 60, "solid before the fade: {}", lum(180));
+        assert!(lum(225) > 700, "the triangle's part of the row: {}", lum(225));
+        assert!(lum(295) > 600, "nearly transparent at the visible edge: {}", lum(295));
     }
 
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
