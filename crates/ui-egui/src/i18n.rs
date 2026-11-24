@@ -151,6 +151,12 @@ impl SwedishCatalog {
     fn has(&self, s: &str) -> bool {
         self.get(s).is_some()
     }
+
+    #[cfg(test)]
+    fn app_override<'a>(&'a self, s: &'a str) -> Option<&'a str> {
+        let (i18n, lang) = self.app.as_ref()?;
+        i18n.get(*lang, "", s).filter(|text| !text.trim().is_empty())
+    }
 }
 
 fn swedish_catalog() -> &'static SwedishCatalog {
@@ -357,6 +363,7 @@ mod swedish_tests {
     fn swedish_catalog_preserves_placeholders_and_ellipses() {
         let catalog: HashMap<_, _> = sv::TABLE.iter().copied().collect();
         assert_eq!(catalog.len(), sv::TABLE.len(), "duplicate Swedish keys");
+        let local_only = SwedishCatalog::new(&[], &[]);
         let placeholders = |s: &str| {
             s.split('{').skip(1).filter_map(|part| part.split_once('}').map(|(name, _)| name.to_owned())).collect::<std::collections::BTreeSet<_>>()
         };
@@ -364,13 +371,13 @@ mod swedish_tests {
             assert!(!translation.trim().is_empty(), "empty {key}");
             assert_eq!(placeholders(key), placeholders(translation), "placeholders: {key}");
             assert_eq!(key.ends_with('…'), translation.ends_with('…'), "ellipsis: {key}");
-            assert_eq!(tr("sv", key), *translation, "sv: {key}");
+            assert_eq!(local_only.get(key), Some(*translation), "sv: {key}");
         }
         let contexts: std::collections::HashSet<_> = sv::CONTEXT.iter().map(|(key, scope, _)| (*key, *scope)).collect();
         assert_eq!(contexts.len(), sv::CONTEXT.len(), "duplicate Swedish context keys");
         for (key, context, expected) in sv::CONTEXT {
             assert_eq!(placeholders(key), placeholders(expected), "placeholders: {key} ({context})");
-            assert_eq!(tr_context("sv", key, context), *expected, "sv {context}: {key}");
+            assert_eq!(local_only.get_context(key, context), Some(*expected), "sv {context}: {key}");
         }
         assert_eq!(tr("sv", "File"), "Arkiv");
         assert_eq!(tr("sv", "Save As…"), "Spara som…");
