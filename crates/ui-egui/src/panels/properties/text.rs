@@ -65,22 +65,10 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::character_section(app, ui)
 }
 
-/// A percentage or other number field in one half of a two-field row, with its icon.
-
-/// [`half_field`] for a value that may be unset: emptying the field commits `Some(None)`.
-
-/// Properties › Character after •••: vertical and horizontal scale, baseline shift and skew,
-/// language and OpenType, then All Caps, Small Caps, Superscript, Subscript, Underline and
-/// Strikethrough, as InDesign lays them out.
-
 /// Paragraph section: the 9 alignment buttons and •••.
 pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::paragraph_section(app, ui)
 }
-
-/// Properties › Paragraph after •••: left and right indent, first line and last line indent,
-/// space before and after, drop cap lines and characters, then Hyphenate and Align to Baseline
-/// Grid, as InDesign lays them out.
 
 pub(super) fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::bullets_section(app, ui)
@@ -115,10 +103,6 @@ fn is_shaped(item: &designcraft_doc::Item) -> bool {
 pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::text_frame_section(app, ui)
 }
-
-/// Inset Spacing under the columns: Top and Bottom, the link that makes all four the same, then
-/// Left and Right, as the wrap offsets are laid out. A non-rectangular frame shows one Inset, the
-/// distance its text keeps from the outline.
 
 /// The `inset` a shaped frame's one Inset sets: the composer also bounds the text by the frame's rectangle less all
 /// four insets, so when every frame it changes is shaped the one Inset sets all four. With a rectangular frame among
@@ -251,8 +235,7 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 pub(crate) mod framework {
     use super::*;
     use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, check, choice, font_family_select, font_style_select, icon, icon_button, icon_number,
-        letters_button, menu, more_options, number_field,
+        Letters, MenuRow, Number, Quantity, button, check, choice, font_style_select, icon, icon_button, icon_number, letters_button, menu, more_options, number_field, icon_tip, icon_toggle,
     };
     use crate::panels::properties::object::framework::{SwatchFor, swatch_chip};
     use craft_behavior::Mixed;
@@ -413,9 +396,7 @@ pub(crate) mod framework {
         let fw = full_width(ui);
         let b = block(ui, FIELD_H);
         let id = cid(ui, "font-family");
-        if let Some(family) = font_family_select(app, ui, Some(sub(b, 0.0, 0.0, fw, FIELD_H)), id, &fam) {
-            crate::panels::apply_font(app, &crate::panels::FontPick { family, style: None });
-        }
+        crate::panels::font_family_field(app, ui, id, &fam, sub(b, 0.0, 0.0, fw, FIELD_H));
         ui.add_space(1.0);
         let b = block(ui, FIELD_H);
         let id = cid(ui, "font-style");
@@ -442,7 +423,7 @@ pub(crate) mod framework {
         if let Some(Some(v)) = icon_number(ui, sub(b, half + 10.0, 1.0, 19.0, 19.0), sub(b, half + 34.0, 0.0, field_w, FIELD_H), id, "leading", n) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
-        icon(ui, sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", Some(crate::i18n::tr(&lang, "Kerning")), true);
+        icon_tip(ui, sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", crate::i18n::tr(&lang, "Kerning"), true);
         let id = cid(ui, "kerning");
         kerning_field(app, ui, Some(sub(b, 24.0, 26.0, field_w, FIELD_H)), id, &c["kerning"]);
         let id = cid(ui, "tracking");
@@ -529,7 +510,7 @@ pub(crate) mod framework {
             let id = cid(ui, ("case", i));
             let label = tr(tip);
             let clicked = if text == "small-caps" {
-                icon_button(ui, r, id, "small-caps", &label, on)
+                icon_toggle(ui, r, id, "small-caps", &label, on)
             } else {
                 letters_button(ui, r, id, Letters { text, struck: i == 5 }, &label, on)
             };
@@ -549,7 +530,7 @@ pub(crate) mod framework {
         let b = block(ui, 21.0);
         for (k, (al, artwork)) in PARA_ALIGN_BUTTONS.into_iter().enumerate() {
             let (at, id) = (sub(b, k as f32 * pitch, 0.0, pitch.min(23.0), 21.0), cid(ui, ("align", k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, al.label()), cur == al) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, al.label()), cur == al) {
                 let _ = app.run("type.para", json!({"attrs": {"align": al}}));
             }
         }
@@ -605,7 +586,7 @@ pub(crate) mod framework {
         // First Line Only is aligned too: the button shows it pressed, and a click turns alignment off.
         let grid = matches!(p["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));
         let id = cid(ui, "grid-align");
-        if icon_button(ui, sub(b, 0.0, 0.0, 23.0, 21.0), id, "grid-baseline", &tr("Align to Baseline Grid"), grid) {
+        if icon_toggle(ui, sub(b, 0.0, 0.0, 23.0, 21.0), id, "grid-baseline", &tr("Align to Baseline Grid"), grid) {
             let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "none" } else { "allLines" }}}));
         }
         let id = cid(ui, "hyphenate");
@@ -631,7 +612,7 @@ pub(crate) mod framework {
             // Pressed while every selected paragraph has the list, as Type › Apply Bullets shows it.
             let on = app.session.selection_has_list(kind);
             let (at, id) = (sub(b, k as f32 * 33.0, 0.0, 23.0, 21.0), cid(ui, ("list", cmd)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), on) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, tip), on) {
                 let _ = app.run(cmd, json!({"on": !on}));
             }
         }
@@ -702,7 +683,7 @@ pub(crate) mod framework {
         let b = block(ui, 21.0);
         for (k, (vj, artwork, tip)) in VERTICAL_JUSTIFICATIONS.into_iter().enumerate() {
             let (at, id) = (sub(b, k as f32 * 27.0, 0.0, 23.0, 21.0), cid(ui, ("vjust", k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), cur == vj) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, tip), cur == vj) {
                 let _ = app.run("object.textFrameOptions", json!({"verticalJustification": vj}));
             }
         }

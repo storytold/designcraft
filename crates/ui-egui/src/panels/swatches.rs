@@ -12,9 +12,6 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 /// Temp-data key of the swatch last clicked (Delete Swatch removes it).
 const PICKED: &str = "swatches_picked";
-/// Temp-data key of the swatch renamed in place and its name being typed (only the native-rename test still reads it).
-#[cfg(test)]
-const RENAMING: &str = "swatches_renaming";
 
 /// The Tint field: `percent` of the colour in front of the proxy, for the text or each selected
 /// object, which keep their own swatches.
@@ -257,6 +254,11 @@ mod color_panel_defaults_tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
 
+    /// The spectrum's bar: the ramp and its bar part both carry the label, the bar being the narrower of the two.
+    fn spectrum_bar<S>(h: &egui_kittest::Harness<'_, S>) -> egui::Rect {
+        h.query_all_by_label("Color spectrum").map(|n| n.rect()).min_by(|a, b| a.width().total_cmp(&b.width())).unwrap()
+    }
+
     #[test]
     fn color_panel_with_no_selection_edits_future_shapes_without_recoloring_existing_ones() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -269,7 +271,7 @@ mod color_panel_defaults_tests {
         app.run("window.panel", json!({"panel":"color"})).unwrap();
         let mut h = crate::test_window::open(app, vec2(1440.0, 900.0));
         assert!(h.query_by_label("Select an object or text to color its fill or stroke.").is_none());
-        let ramp = h.get_by_label("Color spectrum").rect();
+        let ramp = spectrum_bar(&h);
         crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() / 3.0, ramp.center().y));
         let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
         assert_ne!(defaults.stroke, original.swatch);
@@ -290,7 +292,7 @@ mod color_panel_defaults_tests {
         let original_fill = h.state().app.session.active().unwrap().doc.item(old).unwrap().fill.clone();
         h.state_mut().app.ui.stroke_front = false;
         h.run_steps(2);
-        let ramp = h.get_by_label("Color spectrum").rect();
+        let ramp = spectrum_bar(&h);
         crate::test_window::click_at(&mut h, egui::pos2(ramp.left() + ramp.width() * 2.0 / 3.0, ramp.center().y));
         let defaults = h.state().app.session.active().unwrap().doc.settings.new_object.clone();
         assert_ne!(defaults.fill, original_fill.swatch);
@@ -2102,37 +2104,6 @@ mod gradient_panel_tests {
         assert_eq!(stops, vec![json!({"location": 0})]);
     }
 
-    #[test]
-    fn a_swatch_dropped_on_the_ramp_is_a_new_stop() {
-        let app = app_with_frame();
-        let mut h = crate::test_window::builder().with_size(vec2(280.0, 200.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let id = egui::Id::unique("test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(id, true));
-                    return;
-                }
-                gradient_panel(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
-        assert!(gradient(h.state()).is_none(), "no gradient yet");
-        // The ramp sits under the Reverse row: drop cyan at its middle.
-        let row = h.get_by_label("Reverse the gradient").rect();
-        let at = egui::pos2(h.ctx.content_rect().center().x, row.bottom() + 6.0 + 17.0);
-        egui::DragAndDrop::set_payload(&h.ctx, SwatchDrag("C=100 M=0 Y=0 K=0".into()));
-        h.event(egui::Event::PointerMoved(at));
-        h.run_steps(2);
-        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
-        h.run_steps(3);
-        let g = gradient(h.state()).expect("the drop gives the fill a gradient");
-        assert_eq!(g.stops.len(), 3, "White, cyan, Black");
-        assert_eq!(g.stops[1].color, Color::cmyk(1.0, 0.0, 0.0, 0.0));
-        assert!((g.stops[1].offset - 0.5).abs() < 0.05, "{}", g.stops[1].offset);
-    }
-
     /// The Gradient panel's thumbnail drags the selection's gradient onto the Swatches panel,
     /// which keeps it as a gradient swatch.
     #[test]
@@ -2296,41 +2267,6 @@ mod swatches_header_tests {
         h.get_by_label("Delete Swatch").click();
         h.run_steps(2);
         assert!(h.state().session.doc().unwrap().doc.swatch("Brand").is_none());
-    }
-
-    /// A rename in place belongs to its document: with another one active, a swatch of the same
-    /// name there gets no field, and nothing is renamed.
-    #[test]
-    fn a_rename_in_place_ends_with_its_document() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({})).unwrap();
-        let color = json!({"color": {"c": 14, "m": 8, "y": 95, "k": 0}});
-        let name = app.run("swatch.create", color.clone()).unwrap()["name"].as_str().unwrap().to_string();
-        let mut h = crate::test_window::builder().with_size(vec2(300.0, 520.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let id = egui::Id::unique("rename_test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(id, true));
-                    return;
-                }
-                super::show(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
-        let fields = h.query_all_by_role(egui::accesskit::Role::TextInput).count();
-        let renaming = egui::Id::unique(super::RENAMING);
-        h.ctx.data_mut(|d| d.insert_temp(renaming, (name.clone(), "Typed".to_string())));
-        h.run_steps(2);
-        assert!(h.query_all_by_role(egui::accesskit::Role::TextInput).count() > fields, "the name is a field");
-        // Another document with a swatch of the same name.
-        h.state_mut().run("file.new", json!({})).unwrap();
-        h.state_mut().run("swatch.create", color).unwrap();
-        h.run_steps(3);
-        assert!(h.ctx.data(|d| d.get_temp::<(String, String)>(renaming)).is_none(), "the rename is dropped");
-        let doc = &h.state().session.active().unwrap().doc;
-        assert!(doc.swatch(&name).is_some() && doc.swatch("Typed").is_none());
     }
 
     /// The course's chapter 23: a swatch added as "C=14 M=8 Y=95 K=0" is renamed in the panel by

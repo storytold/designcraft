@@ -116,9 +116,6 @@ fn flex_grid_choice(f: Option<&designcraft_doc::FlexLayout>) -> ((usize, usize),
     }
 }
 
-/// The alignment grid: 3 × 3 cells (one column or row of three when a space justification spreads
-/// the objects along the main axis); the chosen cell shows the direction's arrow.
-
 // FLEX_CREATE_DIRECTION_WRAP_APPLICATION_BEGIN
 fn flex_create_choice(app: &DesignApp, ui: &mut Ui, on: &mut bool, label: &str) -> bool {
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _};

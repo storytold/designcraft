@@ -165,9 +165,11 @@ mod framework {
         let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
         let mut asks: Vec<Ask> = Vec::new();
         let pinned = app.ui.task_bar_pin.is_some();
-        Bar::new(tr("Contextual Task Bar"), BarKind::Tool).sizing(Sizing::Content).show(ui, |ui, _| {
-            // Dragging the grip moves the bar, and pins it where it is dropped.
-            let (_, g) = ui.allocate_space(vec2(12.0, 20.0));
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Dragging the grip moves the bar, and pins it where it is dropped. The grip is the egui area's own, before the
+            // bar: its press is the area's, not a member of the bar's roving group.
+            let (g, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
             let grip = ui.interact(g, grip_id, Sense::drag());
             let ink = if grip.hovered() || grip.dragged() { t.text_strong } else { t.icon };
             Picture::painter(tr("Move"), ThumbAspect::SQUARE, move |cx, rect| crate::icons::paint(&cx.painter, rect, "grip", ink))
@@ -180,24 +182,26 @@ mod framework {
             } else if grip.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
-            if has_text || text_frame {
-                text_controls(app, ui, has_text, &tr, &mut asks);
-            } else {
-                object_controls(app, ui, &tr, &mut asks);
-            }
-            // More Options.
-            let more = icon(ui, "task_bar_more", "task-more", &tr("More Options"));
-            let _ = Menu::new(tr("More Options")).id_salt("task_bar_more_menu").opened_by(&more.response, Trigger::Click).show(ui, |ui, _| {
-                if MenuItem::new(tr("Hide Bar")).id_salt("hide").show(ui).ran {
-                    asks.push(Ask::Hide);
+            Bar::new(tr("Contextual Task Bar"), BarKind::Tool).sizing(Sizing::Content).show(ui, |ui, _| {
+                if has_text || text_frame {
+                    text_controls(app, ui, has_text, &tr, &mut asks);
+                } else {
+                    object_controls(app, ui, &tr, &mut asks);
                 }
-                let pin = MenuItem::new(tr("Pin Bar Position")).id_salt("pin").check(pinned).show(ui);
-                if pin.ran {
-                    asks.push(Ask::Run("window.taskBarPin", if pinned { json!({"on": false}) } else { json!({"on": true, "at": place}) }));
-                }
-                if MenuItem::new(tr("Reset Bar Position")).id_salt("reset").enabled(pinned).show(ui).ran {
-                    asks.push(Ask::Run("window.taskBarReset", json!({})));
-                }
+                // More Options.
+                let more = icon(ui, "task_bar_more", "task-more", &tr("More Options"));
+                let _ = Menu::new(tr("More Options")).id_salt("task_bar_more_menu").opened_by(&more.response, Trigger::Click).show(ui, |ui, _| {
+                    if MenuItem::new(tr("Hide Bar")).id_salt("hide").show(ui).ran {
+                        asks.push(Ask::Hide);
+                    }
+                    let pin = MenuItem::new(tr("Pin Bar Position")).id_salt("pin").check(pinned).show(ui);
+                    if pin.ran {
+                        asks.push(Ask::Run("window.taskBarPin", if pinned { json!({"on": false}) } else { json!({"on": true, "at": place}) }));
+                    }
+                    if MenuItem::new(tr("Reset Bar Position")).id_salt("reset").enabled(pinned).show(ui).ran {
+                        asks.push(Ask::Run("window.taskBarReset", json!({})));
+                    }
+                });
             });
         });
         for ask in asks {

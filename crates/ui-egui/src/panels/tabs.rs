@@ -537,9 +537,14 @@ mod tests {
         h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::T);
         h.run_steps(6);
         assert!(crate::panel_docking::floating_panels(&h.state().app).iter().any(|p| p == "tabs"), "Cmd+Shift+T floats the Tabs panel");
-        // The ruler's strip lies just below the row of alignment buttons.
-        let b = h.get_by_label("Left-aligned tab").rect();
-        test_window::click_at(&mut h, egui::pos2(b.min.x + super::PAD + 60.0, b.max.y + 14.0));
+        // The ruler is the panel's last row, the strip along its top. Its group and the part under the pointer both carry
+        // its name: the smallest one is the ruler.
+        let ruler = h
+            .query_all_by(|n| n.role() == egui::accesskit::Role::Group && n.label().as_deref() == Some("Tabs"))
+            .map(|n| n.rect())
+            .min_by(|a, b| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
+            .expect("the ruler");
+        test_window::click_at(&mut h, egui::pos2(ruler.min.x + super::PAD + 60.0, ruler.min.y + super::STRIP * 0.5));
         let got = stops(&mut h.state_mut().app);
         assert_eq!(got.len(), 1, "one stop added");
         assert!(got[0] > 0.0);

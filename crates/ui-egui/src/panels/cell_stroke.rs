@@ -665,7 +665,7 @@ mod tests {
             h.drop_at(at);
             h.run_steps(3);
         }
-        let weight = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("1 pt")).rect();
+        let weight = h.get_by(|n| n.role() == egui::accesskit::Role::SpinButton && n.label().as_deref() == Some("Weight") && n.value().as_deref() == Some("1 pt")).rect();
         h.hover_at(weight.center());
         h.drag_at(weight.center());
         h.drop_at(weight.center());
@@ -1495,7 +1495,7 @@ mod type_style_sdk_tests {
             assert!(control(&h).rect.is_finite());
             assert_eq!(control(&h).facts.unwrap().name.as_deref(), Some(tr(language, "Type")));
             assert_eq!(
-                h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("2.375 pt")).count(),
+                h.query_all_by(|n| n.role() == egui::accesskit::Role::SpinButton && n.value().as_deref() == Some("2.375 pt")).count(),
                 1,
                 "the untouched real native point field retains its precision"
             );

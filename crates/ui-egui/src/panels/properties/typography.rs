@@ -154,20 +154,14 @@ fn run_paragraph_action(app: &mut DesignApp, action: ParagraphAction) {
     }
 }
 
-/// The Paragraph panel menu, in the order of InDesign's.
-
-/// Variable Font sliders: one per axis, each with a field for a typed value; the style becomes
-/// `Named {tag:value,…}`. Dragging a slider previews on the page and is one undo step once let go;
-/// a click, an arrow key or a typed value applies at once.
-
-/// The slider step and the field's decimals for an axis: whole units, or hundredths for an axis
-/// whose whole range is a few units (Skia's weight runs 0.48–3.2).
 /// The axes a slider can show: a malformed font's axis whose minimum lies above its maximum (or
 /// isn't a number) is left out, since no value fits its range.
 pub(super) fn usable_axes(axes: Vec<(String, String, f32, f32, f32)>) -> Vec<(String, String, f32, f32, f32)> {
     axes.into_iter().filter(|a| a.2 <= a.4).collect()
 }
 
+/// The slider step and the field's decimals for an axis: whole units, or hundredths for an axis
+/// whose whole range is a few units (Skia's weight runs 0.48–3.2).
 pub(super) fn axis_step(min: f32, max: f32) -> (f32, usize) {
     if max - min >= 10.0 { (1.0, 0) } else { (0.01, 2) }
 }
@@ -203,11 +197,6 @@ fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
         .ceil()
 }
 
-/// A Character panel column row: a caption cell `label_w` wide, then the number field filling the
-/// rest of the column. Returns the value committed.
-
-/// A left-aligned caption in a cell of fixed width, so the field after it lines up.
-
 /// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
 /// paragraph and single-line composers of its kind (Japanese or not), for the composer choice.
 pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2]) {
@@ -238,8 +227,7 @@ pub(crate) fn para_field_min(key: &str) -> f64 {
 mod framework {
     use super::*;
     use crate::framework_transform::{
-        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_family_select, font_style_select, icon_button, icon_number,
-        letters_button, menu, number_field, swatch_select,
+        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, letters_button, menu, number_field, swatch_select, icon_toggle,
     };
     use crate::panels::properties::text::framework::{kerning_field, language_select};
     use craft_behavior::EditEvent;
@@ -273,9 +261,7 @@ mod framework {
         let row = FIELD_H + 5.0;
         let b = block(ui, 2.0 * row);
         let id = cid(ui, "font-family");
-        if let Some(family) = font_family_select(app, ui, Some(sub(b, 0.0, 0.0, 220.0, FIELD_H)), id, &fam) {
-            crate::panels::apply_font(app, &crate::panels::FontPick { family, style: None });
-        }
+        crate::panels::font_family_field(app, ui, id, &fam, sub(b, 0.0, 0.0, 220.0, FIELD_H));
         let id = cid(ui, "font-style");
         if let Some(style) = font_style_select(app, ui, Some(sub(b, 0.0, row, 220.0, FIELD_H)), id, &fam, &sty) {
             let _ = app.run("type.char", json!({"attrs": {"fontStyle": style}}));
@@ -530,7 +516,7 @@ mod framework {
                 x += GAP;
             }
             let (at, id) = (sub(b, x, 0.0, pitch, 21.0), cid(ui, ("align", i)));
-            if icon_button(ui, at, id, artwork, &tr(al.label()), cur == al) {
+            if icon_toggle(ui, at, id, artwork, &tr(al.label()), cur == al) {
                 let _ = app.run("type.para", json!({"attrs": {"align": al}}));
             }
             x += pitch;
@@ -624,7 +610,7 @@ mod framework {
         for (i, (artwork, tip, on, v)) in GRID_BUTTONS.into_iter().enumerate() {
             let on = on == grid;
             let (at, id) = (sub(b, fw - 48.0 + i as f32 * 25.0, 0.0, 23.0, FIELD_H), cid(ui, ("grid", i)));
-            if icon_button(ui, at, id, artwork, &tr(tip), on) && !on {
+            if icon_toggle(ui, at, id, artwork, &tr(tip), on) && !on {
                 let _ = app.run("type.para", json!({"attrs": {"gridAlign": v}}));
             }
         }

@@ -17,7 +17,7 @@ use crate::DesignApp;
 use crate::panels::SelInfo;
 use craft_behavior::{Codec, IconId, Mixed, NotAValue};
 use craft_theme::Srgba;
-use craft_ui_widgets::buttons::{Button, ButtonOutput, IconButton};
+use craft_ui_widgets::buttons::{Button, ButtonOutput, IconButton, ToggleButton};
 use craft_ui_widgets::choice::Checkbox;
 use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Trigger};
 use craft_ui_widgets::display::{Divider, Icon, Text};
@@ -89,6 +89,13 @@ pub(crate) fn icon(ui: &mut egui::Ui, at: Rect, icon: &'static str, label: Optio
     };
 }
 
+/// The app's artwork `icon` at `at` beside a field: `tip` is its tooltip, and the field it stands beside carries the
+/// name, so the icon is not a second accessible node of the same name.
+pub(crate) fn icon_tip(ui: &mut egui::Ui, at: Rect, icon: &'static str, tip: &str, enabled: bool) {
+    let artwork = Artwork(icon);
+    Icon::new(IconSpec::glyph(&artwork)).enabled(enabled).tooltip(tip.to_owned()).show_at(ui, at);
+}
+
 /// The `•••` button at the end of its own row under a panel section, with the id `id`: whether it was clicked this
 /// pass.
 pub(crate) fn more_options(ui: &mut egui::Ui, language: &str, id: egui::Id) -> bool {
@@ -116,10 +123,30 @@ impl Glyph for Letters {
     }
 }
 
-/// A toggle-like button at `at` lettered `letters`, named and tipped `label`, in its on look while `selected`:
-/// whether it was clicked this pass.
-pub(crate) fn letters_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, letters: Letters, label: &str, selected: bool) -> bool {
-    IconButton::new(IconSpec::glyph(&letters)).id(id).label(label.to_owned()).tooltip(label.to_owned()).selected(selected).show_at(ui, at).clicked()
+/// A toggle button at `at` lettered `letters`, named and tipped `label`, pressed while `on`: whether it was clicked
+/// this pass. Assistive technology reads its pressed state.
+pub(crate) fn letters_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, letters: Letters, label: &str, on: bool) -> bool {
+    toggle_glyph(ui, at, id, &letters, label, on)
+}
+
+/// A toggle button at `at` showing the app's artwork `icon`, named and tipped `label`, pressed while `on`: whether it
+/// was clicked this pass. For a button with a state (Align to Baseline Grid, an alignment, a list); a button that only
+/// acts is an [`icon_button`]. Assistive technology reads its pressed state.
+pub(crate) fn icon_toggle(ui: &mut egui::Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str, on: bool) -> bool {
+    toggle_glyph(ui, at, id, &Artwork(icon), label, on)
+}
+
+/// A toggle button showing `glyph`: whether it was clicked (either way) this pass.
+fn toggle_glyph(ui: &mut egui::Ui, at: Rect, id: egui::Id, glyph: &(dyn Glyph + 'static), label: &str, on: bool) -> bool {
+    ToggleButton::new(label.to_owned(), Bind::given(on))
+        .id(id)
+        .icon(IconSpec::glyph(glyph))
+        .icon_only()
+        .tooltip(label.to_owned())
+        .show_at(ui, at)
+        .events
+        .committed()
+        .is_some()
 }
 
 /// What a number field counts and how it reads typed text.
@@ -216,7 +243,8 @@ fn measure_text(
     out.events.committed().copied().filter(|v| match (v, value) {
         (Some(v), Some(old)) => v.is_finite() && format_measure(*v, unit) != format_measure(old, unit),
         (Some(v), None) => v.is_finite(),
-        (None, _) => false,
+        // An emptied field: a value that may be unset (`Number::ignore`) is cleared.
+        (None, old) => old.is_some(),
     })
 }
 
@@ -225,9 +253,15 @@ fn measure_text(
 pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n: Number<'_>) -> Option<Option<f64>> {
     let Number { label, value, quantity, range, step, presets, ignore, enabled, derived } = n;
     let clamp = |v: f64| range.as_ref().map_or(v, |r| v.clamp(*r.start(), *r.end()));
-    if let Quantity::Length(unit) = quantity
-        && unit_kind(unit).is_none()
-    {
+    // A length the framework's field cannot spell in the app's way: a unit it has no kind for, or points, where the app
+    // reads every unit it knows ("13Q", "5mm", "2H") and the framework's length field has no kind for Q or H. A points
+    // field with presets (a type size's list) stays the framework's number field, to keep its list and step keys.
+    let spelled = match quantity {
+        Quantity::Length(unit) if unit_kind(unit).is_none() => Some(unit),
+        Quantity::Points if presets.is_empty() => Some(Unit::Points),
+        _ => None,
+    };
+    if let Some(unit) = spelled {
         return match measure_text(ui, at, id, label, value, unit, enabled)? {
             Some(v) => Some(Some(clamp(v))),
             None => ignore.map(|_| None),
@@ -283,8 +317,8 @@ fn preset_label(quantity: Quantity, v: f64) -> String {
     }
 }
 
-/// A number field after its icon, as the panels lay a field out: the icon at `icon_at` (named by the field's label,
-/// its tooltip) and the field at `field_at`. What the field did, as [`number_field`].
+/// A number field after its icon, as the panels lay a field out: the icon at `icon_at` (the field's label is its
+/// tooltip) and the field at `field_at`. What the field did, as [`number_field`].
 pub(crate) fn icon_number(
     ui: &mut egui::Ui,
     icon_at: Rect,
@@ -293,7 +327,9 @@ pub(crate) fn icon_number(
     artwork: &'static str,
     n: Number<'_>,
 ) -> Option<Option<f64>> {
-    icon(ui, icon_at, artwork, Some(n.label), n.enabled);
+    // The icon shows the field's name as its tooltip but is not a second accessible node of that name: the field
+    // itself is named.
+    icon_tip(ui, icon_at, artwork, n.label, n.enabled);
     number_field(ui, Some(field_at), id, n)
 }
 
@@ -364,17 +400,6 @@ pub(crate) fn swatch_select(
         doc.swatches.iter().map(|sw| Entry::new(sw.name.clone(), sw.name.clone()).icon(swatch_icon(doc, &sw.name))).collect();
     let current = current.filter(|c| doc.swatches.iter().any(|sw| sw.name == *c)).map(str::to_owned);
     select(ui, at, id, Picker { label, current, entries: &entries, placeholder }, false)
-}
-
-/// The font family select at `at` (or in the flow): the families in the font menus' order, by the names the menus
-/// show, with a filter field. The family picked this pass.
-pub(crate) fn font_family_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, current: &str) -> Option<String> {
-    let english = app.session.prefs.show_font_names_in_english;
-    let menu = crate::panels::font_menu(app);
-    let entries: Vec<Entry<String>> = menu.iter().map(|f| Entry::new(f.family.clone(), f.label(english).to_owned())).collect();
-    let label = crate::i18n::tr(&app.ui.language, "Font Family");
-    let current = (!current.is_empty()).then(|| current.to_owned());
-    select(ui, at, id, Picker { label, current, entries: &entries, placeholder: Some("\u{2014}") }, true)
 }
 
 /// The font style select of `family` at `at` (or in the flow), showing `current` (a style with axis settings shows
