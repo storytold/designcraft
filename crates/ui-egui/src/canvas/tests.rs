@@ -1903,17 +1903,35 @@ fn screen_of(h: &Harness<'_, DesignApp>, x: f64, y: f64) -> Pos2 {
     xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
 }
 
-/// A menu row: a button that isn't a toggle, named by its label, then its shortcut if it has
-/// one. Toggle buttons with the same name (the Task Bar's icons) don't match, nor do buttons
-/// right of the canvas (the Properties panel's Arrange).
+/// A shown row of the canvas context menu, named by its label: the framework menu's rows are menu items (a check row
+/// is a `MenuItemCheckBox`, its state in `toggled`; the shortcut is the row's keyboard shortcut, not part of its name).
+/// A row counts only while neither it nor a node above it is hidden (a closing menu keeps its rows under a hidden root
+/// while it fades), and only left of the canvas's right edge (not the Properties panel's rows).
 fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
+    use egui_kittest::kittest::NodeT;
     let right = f64::from(h.state().canvas_rect.map_or(f32::INFINITY, |r| r.max.x));
-    h.query_by(move |n| {
-        n.role() == egui::accesskit::Role::Button
-            && n.toggled().is_none()
+    h.query_all_by(move |n| {
+        matches!(n.role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemCheckBox | egui::accesskit::Role::MenuItemRadio)
             && n.bounding_box().is_none_or(|b| b.x0 < right)
-            && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
+            && n.label().is_some_and(|l| l == label)
     })
+    .find(|node| {
+        let mut shown = !node.accesskit_node().is_hidden();
+        let mut at = node.parent();
+        while shown && let Some(parent) = at {
+            shown = !parent.accesskit_node().is_hidden();
+            at = parent.parent();
+        }
+        shown
+    })
+}
+
+/// A pointer click on the context menu row `label`.
+fn click_row(h: &mut Harness<'_, DesignApp>, label: &str) {
+    let at = menu_row(h, label).unwrap_or_else(|| panic!("no menu row {label}")).rect().center();
+    h.hover_at(at);
+    h.drag_at(at);
+    h.drop_at(at);
 }
 
 fn enabled(h: &Harness<'_, DesignApp>, label: &str) -> bool {
@@ -1945,9 +1963,9 @@ fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
     assert!(menu_row(&h, "Fitting").is_none() && menu_row(&h, "Text Frame Options…").is_none());
     // Paste is available with nothing copied here: the system clipboard may hold another app's text.
     assert!(enabled(&h, "Copy") && enabled(&h, "Paste"));
-    menu_row(&h, "Arrange").unwrap().click();
+    click_row(&mut h, "Arrange");
     h.run_steps(3);
-    menu_row(&h, "Bring to Front").unwrap().click();
+    click_row(&mut h, "Bring to Front");
     h.run_steps(3);
     assert_eq!(spread_items(&h), [b, a]);
     assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
@@ -1966,7 +1984,13 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert_eq!(selected(&h), [a], "a right-click on nothing keeps the selection");
     assert!(menu_row(&h, "Arrange").is_none(), "the page menu, not the object menu");
     assert!(enabled(&h, "Paste in Place"));
-    assert!(menu_row(&h, "✓ Show/Hide Rulers").is_some(), "toggles show their state");
+    assert!(
+        menu_row(&h, "Show/Hide Rulers").is_some_and(|row| {
+            use egui_kittest::kittest::NodeT;
+            row.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+        }),
+        "toggles show their state"
+    );
     // Escape closes the menu and does nothing else: the tool would deselect, the shortcuts
     // would switch to the Selection tool.
     h.key_press(egui::Key::Escape);
@@ -1974,7 +1998,7 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert!(menu_row(&h, "Paste in Place").is_none());
     assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
     right_click(&mut h, empty);
-    menu_row(&h, "Paste").unwrap().click();
+    click_row(&mut h, "Paste");
     h.run_steps(3);
     assert_eq!(spread_items(&h).len(), 2);
 }
@@ -2049,11 +2073,11 @@ fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
     let mut h = harness(app);
     let on_frame = screen_of(&h, 60.0, 60.0);
     right_click(&mut h, on_frame);
-    menu_row(&h, "Arrange").unwrap().click();
+    click_row(&mut h, "Arrange");
     h.run_steps(3);
     assert!(menu_row(&h, "Bring to Front").is_none());
     assert!(menu_row(&h, "Send to Back").is_some());
-    assert!(h.query_by_label("Show All Menu Items").is_some());
+    assert!(menu_row(&h, "Show All Menu Items").is_some());
 }
 
 #[test]
@@ -2571,25 +2595,49 @@ fn native_gui_selected_old_click_fixture() -> NativeClickFixture {
     f
 }
 
-/// Run one raw event batch, optionally force a discarded pass, and return the pointer edges observed by each pass.
+/// Run one raw event batch as the host does, optionally force a discarded pass, and return the pointer edges observed by
+/// each pass. The craft UI runtime gives a frame at most one pointer press, as its last pointer event (its one-press
+/// rule): the events after it wait for the next frame, which the runtime asks for at once. So the batch takes one frame,
+/// and one more for each press that other events follow, as the shipping host runs them. Only the first frame's first
+/// pass is discarded.
 fn native_gui_input(f: &mut NativeClickFixture, events: Vec<egui::Event>, discard: bool) -> Vec<(bool, bool, bool)> {
-    let mut raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))), events, ..Default::default() };
-    // The host runs the app's input hook before every pass, as eframe does.
-    f.app.raw_input_hook(&f.ctx, &mut raw);
+    let frames = 1 + events
+        .iter()
+        .enumerate()
+        .filter(|(at, event)| matches!(event, egui::Event::PointerButton { pressed: true, .. }) && at + 1 < events.len())
+        .count();
+    let mut events = Some(events);
     let mut edges = Vec::new();
-    let mut out = f.ctx.run_ui(raw, |ui| {
-        edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
-        f.app.logic(ui.ctx());
-        f.app.ui(ui);
-        if discard && edges.len() == 1 {
-            ui.ctx().request_discard("native same-batch click exactly-once regression");
+    for frame in 0..frames {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            events: events.take().unwrap_or_default(),
+            ..Default::default()
+        };
+        // The host runs the app's input hook before every frame, as eframe does.
+        f.app.raw_input_hook(&f.ctx, &mut raw);
+        let mut passes = 0;
+        let mut out = f.ctx.run_ui(raw, |ui| {
+            passes += 1;
+            edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
+            f.app.logic(ui.ctx());
+            f.app.ui(ui);
+            if discard && frame == 0 && passes == 1 {
+                ui.ctx().request_discard("native same-batch click exactly-once regression");
+            }
+        });
+        if discard && frame == 0 {
+            assert_eq!(out.platform_output.num_completed_passes, 2, "the requested discarded pass actually ran");
         }
-    });
-    if discard {
-        assert_eq!(out.platform_output.num_completed_passes, 2, "the requested discarded pass actually ran");
+        out.textures_delta.clear();
     }
-    out.textures_delta.clear();
     edges
+}
+
+/// What a batch's passes saw of the primary button, together: whether one saw it pressed, whether one saw it released,
+/// and whether a press origin was still held after the last of them.
+fn batch_edges(edges: &[(bool, bool, bool)]) -> (bool, bool, bool) {
+    (edges.iter().any(|e| e.0), edges.iter().any(|e| e.1), edges.last().is_some_and(|e| e.2))
 }
 
 /// Assert that the primary button, canvas press state and tool gesture are all released.
@@ -2649,7 +2697,7 @@ fn native_gui_two_completed_clicks_use_last_primary_press_once() {
                 ],
                 discard,
             );
-            assert_eq!(edges[0], (true, true, false), "both completed clicks leave no held origin");
+            assert_eq!(batch_edges(&edges), (true, true, false), "both completed clicks leave no held origin");
             assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay either press");
             let sel = f.app.session.doc().unwrap().selection.text.unwrap();
             assert_eq!(
@@ -2710,7 +2758,7 @@ fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
             ],
             discard,
         );
-        assert_eq!(edges[0], (true, true, false));
+        assert_eq!(batch_edges(&edges), (true, true, false));
         assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay malformed input");
         assert_eq!(
             f.app.session.doc().unwrap().selection.text,
@@ -2736,7 +2784,7 @@ fn native_gui_same_batch_click_switches_story_once_before_typing() {
         let undo = f.app.session.doc().unwrap().history.undo.len();
         let at = f.at;
         let edges = native_gui_input(&mut f, vec![egui::Event::PointerMoved(at), native_gui_button(at, true), native_gui_button(at, false)], discard);
-        assert_eq!(edges[0], (true, true, false), "the real input consumed both edges and cleared the origin");
+        assert_eq!(batch_edges(&edges), (true, true, false), "the real input consumed both edges and cleared the origin");
         assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "a discarded pass must not replay the press");
         let selection = f.app.session.doc().unwrap().selection.text.unwrap();
         assert_eq!((selection.story.0, selection.anchor, selection.focus), (f.target.as_u64().unwrap(), f.focus, f.focus), "discard={discard}");
@@ -3364,6 +3412,7 @@ fn baseline_grid_lines_are_the_ones_on_the_page() {
 
 #[test]
 fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
+    use egui_kittest::kittest::NodeT as _;
     for key in [egui::Key::Enter, egui::Key::Tab] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
@@ -3372,8 +3421,18 @@ fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
         app.run("text.select", json!({"story": f["story"], "anchor": 1, "focus": 4})).unwrap();
         assert!(app.session.wants_text());
         let mut h = harness(app);
-        let size = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some("12 pt")).unwrap();
-        size.focus();
+        // The Control panel's Font Size field, the topmost of that name (the Properties panel has one too): the
+        // framework's number field, a spin button showing the size.
+        let size = h
+            .query_all_by_label("Font Size")
+            .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .map(|n| n.rect())
+            .min_by(|a, b| a.min.y.total_cmp(&b.min.y).then(a.min.x.total_cmp(&b.min.x)))
+            .expect("the Control panel's Font Size field");
+        let at = size.center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.drop_at(at);
         h.run_steps(1);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.run_steps(1);

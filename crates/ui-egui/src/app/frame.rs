@@ -29,7 +29,17 @@ impl DesignApp {
         updates_ui::tick(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         let _ = self.dialog_wake.set(ctx.clone());
-        if self.fonts_ready && !self.host_order_pending() {
+        // Host-ordered work (an injected batch, a native menu action) holds the deliveries back for the rest of the frame
+        // it was seen in, not only for the pass: they resume with the next host iteration. A frame can run a second pass
+        // (the framework asks for one when a measured layout changed), and that pass must not open a file right after a
+        // native action ran in the first one.
+        let frame = ctx.cumulative_frame_nr();
+        if self.host_order_pending() {
+            self.host_order_frame = Some(frame);
+        } else if self.host_order_frame == Some(frame) {
+            ctx.request_repaint();
+        }
+        if self.fonts_ready && !self.host_order_pending() && self.host_order_frame != Some(frame) {
             #[cfg(not(target_arch = "wasm32"))]
             self.handle_file_dialog_answers();
             self.drain_inbox();
@@ -132,6 +142,12 @@ impl DesignApp {
 
     /// The document area: the start screen, or the document tabs over one or two canvas panes.
     pub(crate) fn canvas_area(&mut self, ui: &mut egui::Ui, presenting: bool) {
+        // The dock's group gives the area its size, so a sizing or measuring run of its body only takes the space: the
+        // tabs, the panes, the pane a press focuses and the canvases belong to the run that is drawn (see `canvas::show`).
+        if ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx()) {
+            ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::hover());
+            return;
+        }
         let t = theme::Tokens::get(ui.ctx());
         if self.session.active().is_none() {
             chrome::start_screen(self, ui);

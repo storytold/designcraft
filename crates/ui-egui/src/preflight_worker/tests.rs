@@ -327,10 +327,24 @@ fn the_first_check_shows_as_checking() {
     h.run_steps(5);
     assert!(h.state().app.preflight.found.is_empty(), "nothing found yet");
     assert_eq!(h.state().app.preflight.inline_checks, 0);
-    assert!(h.query_by_label("Checking ▾").is_some(), "the status bar shows the check");
-    assert!(h.query_by_label("No errors ▾").is_none());
+    // The status bar's Preflight button is named "Preflight" and paints its count in its place.
+    assert!(painted(&h, "Checking ▾"), "the status bar shows the check");
+    assert!(!painted(&h, "No errors ▾"));
     assert!(h.query_by_label("Checking").is_some(), "the Preflight panel shows the check");
     assert!(h.query_by_label("No errors").is_none());
+}
+
+/// Whether the last frame painted `text` as one run of text.
+#[cfg(not(target_arch = "wasm32"))]
+fn painted<S>(h: &egui_kittest::Harness<'_, S>, text: &str) -> bool {
+    fn has(shape: &egui::Shape, text: &str) -> bool {
+        match shape {
+            egui::Shape::Text(shape) => shape.galley.text() == text,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|shape| has(shape, text)),
+            _ => false,
+        }
+    }
+    h.output().shapes.iter().any(|clipped| has(&clipped.shape, text))
 }
 
 /// Waiting for a worker that ended before it answered fails the test instead of leaving it

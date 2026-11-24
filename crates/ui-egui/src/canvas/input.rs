@@ -118,15 +118,9 @@ pub(super) fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     let Some(req) = ui.data(|d| d.get_temp::<MenuRequest>(id)) else { return };
     let mut open = true;
     let place = crate::menus::ContextPlace { id, opener: resp, at: req.at };
+    // Only the drawn run of the canvas shows the menu (`canvas::show` returns early from the dock's measuring runs), so
+    // this pass says whether it stays.
     crate::menus::context_menu(app, ui, req.kind, &place, &mut open);
-    // A measuring run of the dock's body shows the canvas too; only the drawn pass says whether the menu stays.
-    #[cfg(not(target_arch = "wasm32"))]
-    let measuring = ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx());
-    #[cfg(target_arch = "wasm32")]
-    let measuring = ui.is_sizing_pass();
-    if measuring {
-        return;
-    }
     let pass = ui.ctx().cumulative_pass_nr();
     if open || req.fresh {
         ui.data_mut(|d| d.insert_temp(id, MenuRequest { pass, fresh: false, ..req }));

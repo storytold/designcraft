@@ -215,6 +215,9 @@ pub struct DesignApp {
     /// Resolved native menu choices, kept stable across menu rebuilds until input settles.
     native_actions: std::collections::VecDeque<(String, Value)>,
     native_events_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The last frame (`Context::cumulative_frame_nr`) a logic call saw host-ordered work pending in: deliveries wait
+    /// for the next one ([`DesignApp::logic`]).
+    host_order_frame: Option<u64>,
     control_input_frame: std::sync::Arc<std::sync::atomic::AtomicBool>,
     clipboard_guard_installed: bool,
     /// Story open in the Story Editor.
