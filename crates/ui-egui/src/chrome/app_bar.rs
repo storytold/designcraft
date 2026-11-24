@@ -270,7 +270,12 @@ mod framework {
             let previous = st.previous_focus.take();
             ui.memory_mut(|m| match previous {
                 Some(p) => m.request_focus(p),
-                None => m.surrender_focus(id),
+                // The field's text widget is the one egui has focused (its id is the component's own only for the stop).
+                None => {
+                    if let Some(held) = m.focused() {
+                        m.surrender_focus(held);
+                    }
+                }
             });
         } else if !focused {
             // A click elsewhere or Tab took the keyboard: the matches close, the query stays.

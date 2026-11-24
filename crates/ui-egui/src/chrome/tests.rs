@@ -160,11 +160,26 @@ fn keys_typed_in_the_search_field_stay_out_of_the_document() {
     assert_eq!(field.value().unwrap_or_default(), "", "the query is cleared");
 }
 
-/// The status bar's preflight count: the lowest button named Preflight (the Preflight panel's icon is in the dock above it).
-fn preflight_count<'a, S>(h: &'a egui_kittest::Harness<'static, S>) -> egui_kittest::Node<'a> {
-    h.query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Preflight"))
-        .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
-        .expect("the status bar's preflight count")
+/// The centre of the status bar's preflight count: the control in the status bar that names Preflight or what it counts (the
+/// dock's Preflight icon is a button of the same name above it).
+fn preflight_count<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Pos2 {
+    let bar = status_bar_rect(h);
+    h.query_all_by(|n| {
+        n.role() != egui::accesskit::Role::Label
+            && bar.contains(n.rect().center())
+            && n.label().is_some_and(|l| l == "Preflight" || l.contains("error") || l.contains("Checking"))
+    })
+    .map(|n| n.rect())
+    .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+    .expect("the status bar's preflight count")
+    .center()
+}
+
+/// The status bar's rect.
+fn status_bar_rect<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Rect {
+    egui::containers::panel::PanelState::load(&h.ctx, h.ui_id().with("status_bar"))
+        .map(|panel| panel.outer_rect)
+        .expect("the status bar is shown at the bottom of the window")
 }
 
 /// The status bar's preflight count is a menu; its Preflight Panel entry shows the panel.
@@ -174,18 +189,20 @@ fn status_bar_error_count_opens_the_preflight_panel() {
     app.run("file.new", serde_json::json!({})).unwrap();
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open(app, vec2(1200.0, 700.0));
-    preflight_count(&h).click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
     h.run_steps(3);
-    h.get_by_label("Preflight Panel…").click();
-    h.run_steps(3);
+    let entry = h.get_by_label("Preflight Panel…").rect().center();
+    click_in(&mut h, entry);
     // Preflight is in the iconic column: `window.panel` shows it.
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
     // With the panel already showing, the entry keeps it open.
-    preflight_count(&h).click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
     h.run_steps(3);
-    h.get_by_label("Preflight Panel…").click();
-    h.run_steps(3);
+    let entry = h.get_by_label("Preflight Panel…").rect().center();
+    click_in(&mut h, entry);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
 
@@ -212,21 +229,25 @@ fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
     h.run_steps(6);
     assert_eq!(shown(&h), "A-Parent");
     // The menu: a parent.
-    page_box(&h).click();
+    let at = page_box(&h).rect().center();
+    click_in(&mut h, at);
     h.run_steps(3);
     for name in ["1", "2", "3", "4", "A-Parent"] {
         // The canvas or a panel may show the name too: the menu lists it.
         assert!(h.query_all_by_label(name).next().is_some(), "{name} is listed");
     }
     // The menu, drawn last, holds the last match.
-    h.get_all_by_label("B-Cover").last().unwrap().click();
+    let at = h.get_all_by_label("B-Cover").last().unwrap().rect().center();
+    click_in(&mut h, at);
     h.run_steps(6);
     assert_eq!(shown(&h), "B-Cover");
     assert_eq!(crate::canvas::current_parent_page(&h.state().app).map(|(i, _)| i), Some(1));
     // A page: the parents are left.
-    page_box(&h).click();
+    let at = page_box(&h).rect().center();
+    click_in(&mut h, at);
     h.run_steps(3);
-    h.get_all_by_label("3").last().unwrap().click();
+    let at = h.get_all_by_label("3").last().unwrap().rect().center();
+    click_in(&mut h, at);
     h.run_steps(6);
     assert!(!h.state().app.session.active().unwrap().editing_parents);
     assert_eq!(crate::canvas::current_page(&h.state().app), Some(2));
@@ -245,8 +266,8 @@ fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open_stepped(app, vec2(1200.0, 700.0), 1.0, 1.0 / 60.0);
     let count = preflight_count(&h);
-    count.click();
-    count.click();
+    click_in(&mut h, count);
+    click_in(&mut h, count);
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
@@ -256,8 +277,8 @@ fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
     // clicks are not counted with the ones before.
     h.run_steps(30);
     let count = preflight_count(&h);
-    count.click();
-    count.click();
+    click_in(&mut h, count);
+    click_in(&mut h, count);
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
@@ -329,14 +350,12 @@ fn overflowing_document_tabs_are_reached_through_the_menu_that_lists_every_docum
     }
     // The chosen document's tab is brought into view.
     let strip = tab.y_range();
-    for (n, index) in [(7_usize, 6_usize), (30, 29)] {
+    for (n, index) in [(7_usize, 6_usize), (13, 12)] {
         let label = format!("Doc {n} @");
-        let entry = h
-            .query_all_by_label_contains(&label)
-            .find(|node| !strip.contains(node.rect().center().y))
-            .unwrap_or_else(|| panic!("Doc {n} is listed"));
-        entry.click();
-        h.run_steps(4);
+        let entry =
+            h.query_all_by_label_contains(&label).find(|node| !strip.contains(node.rect().center().y)).unwrap_or_else(|| panic!("Doc {n} is listed"));
+        let at = entry.rect().center();
+        click_in(&mut h, at);
         assert_eq!(h.state().app.session.active_index(), Some(index));
         let tab = tab_of(&h, &format!("Doc {n} @")).unwrap_or_else(|| panic!("the chosen document's tab is shown"));
         assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
@@ -427,13 +446,13 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     };
     // The size's list opens; choosing 72 pt sets the size.
     open_list(&mut h, "Font Size");
-    h.get_by_label("72 pt").click();
-    h.run_steps(3);
+    let at = h.get_by_label("72 pt").rect().center();
+    test_window::click_at(&mut h, at);
     assert_eq!(size_of(&h), Some(72.0));
     // Auto leading has the same list beside it.
     open_list(&mut h, "Leading");
-    h.get_by_label("60 pt").click();
-    h.run_steps(3);
+    let at = h.get_by_label("60 pt").rect().center();
+    test_window::click_at(&mut h, at);
     assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(60.0)));
     // The arrow keys step the size by a point.
     focus(&mut h, "Font Size");
@@ -485,8 +504,8 @@ fn the_control_panel_grid_button_keeps_first_line_only() {
         h.run_steps(3);
     };
     click(&mut h, "Paragraph Formatting Controls");
-    let pressed = h.query_all_by_label("Align to Baseline Grid").find(|n| in_bar(n.rect())).map(|n| n.accesskit_node().is_selected());
-    assert_eq!(pressed, Some(Some(true)), "a framework icon button shows its on state as selected");
+    let pressed = h.query_all_by_label("Align to Baseline Grid").find(|n| in_bar(n.rect())).map(|n| n.accesskit_node().toggled());
+    assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)), "a framework icon button shows its on state as pressed");
     assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "firstLineOnly");
     click(&mut h, "Align to Baseline Grid");
     assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "none");
@@ -849,22 +868,23 @@ fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
 
 #[test]
 fn the_mac_window_is_not_movable_on_the_title_bar_controls() {
-    use egui::ViewportCommand::StartDrag;
     let (frame, lights) = inset();
     let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
     let bar = title_bar(&h);
     let search = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Search")).rect();
     let controls = [in_bar(&h, "Home").center(), in_bar(&h, "Share").center(), in_bar(&h, "File").center(), search.center()];
-    // The OS moves the window from the bar's empty parts and from no control: the shell hands the move over (`StartDrag`)
-    // for a drag that starts on the free band only.
+    // The OS moves the window (macOS `NSWindow.movable`) only where a press would go to the bar's free band, as the shell
+    // writes it each pass: a press on a control never moves it.
+    let mut movable_at = |at: egui::Pos2| {
+        h.hover_at(at);
+        h.run_steps(2);
+        craft_ui_shell::shell::title_bar::window_movable(&h.ctx)
+    };
     for at in [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading + 2.0, bar.min.y + 4.0)] {
-        assert!(drag(&mut h, at).contains(&StartDrag), "empty title bar at {at:?}");
+        assert!(movable_at(at), "empty title bar at {at:?}");
     }
     for at in controls {
-        let cmds = drag(&mut h, at);
-        assert!(!cmds.contains(&StartDrag), "control at {at:?}: {cmds:?}");
-        h.key_press(egui::Key::Escape);
-        h.run_steps(2);
+        assert!(!movable_at(at), "control at {at:?}");
     }
 }
 

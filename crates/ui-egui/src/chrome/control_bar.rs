@@ -554,7 +554,7 @@ mod framework {
 mod framework_tests {
     use crate::DesignApp;
     use crate::theme::Tokens;
-    use egui::accesskit::Role;
+    use egui::accesskit::{Role, Toggled};
     use egui::{Event, Key, Modifiers, PointerButton, Rect, vec2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
@@ -795,9 +795,9 @@ mod framework_tests {
         let pressed = h
             .query_all_by_label("Align to Baseline Grid")
             .find(|n| bar.contains(n.rect().center()) && n.accesskit_node().role() == Role::Button)
-            // A framework icon button shows its on state as selected, where the native toggle was toggled.
-            .map(|n| n.accesskit_node().is_selected());
-        assert_eq!(pressed, Some(Some(true)));
+            // A framework icon button shows its on state as pressed (toggled), as the native toggle did.
+            .map(|n| n.accesskit_node().toggled());
+        assert_eq!(pressed, Some(Some(Toggled::True)));
         assert_eq!(attrs(&mut h)["para"]["gridAlign"], "firstLineOnly");
         assert_eq!(button(&mut h, "Align to Baseline Grid"), [("type.para".to_owned(), json!({"attrs": {"gridAlign": "none"}}))]);
         assert_eq!(attrs(&mut h)["para"]["gridAlign"], "none");
