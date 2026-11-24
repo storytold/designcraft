@@ -482,7 +482,7 @@ mod framework {
         Outcome, PaintUi, PartsCx, Pointer as _, PopupKind, Props as _, Remember as _, Role, SelectMode, Show as _, ShowCollection as _,
         ShowContainer as _, Sizing, Trigger,
     };
-    use craft_ui_widgets::display::{Divider, Icon, Shade, Text};
+    use craft_ui_widgets::display::{Divider, Elide, Icon, Shade, Text};
     use craft_ui_widgets::layout_components::Row;
     use craft_ui_widgets::list::{List, ListRow};
     use craft_ui_widgets::menu::{Menu, MenuItem};
@@ -491,7 +491,7 @@ mod framework {
     use craft_ui_widgets::runtime::drag::{DragPreview, DropMark, DropTarget};
     use craft_ui_widgets::runtime::env::{Env, Label, UnitKind};
     use craft_ui_widgets::runtime::focus::KeyUse;
-    use craft_ui_widgets::style::{ComponentStyle, DataColor, StyleColor, StyleCx, UiTokens};
+    use craft_ui_widgets::style::{ComponentStyle, DataColor, GlyphRole, StyleColor, StyleCx, UiTokens};
     use craft_ui_widgets::text::NumberField;
     use craft_ui_widgets::value_drag::{Slider, SliderThumb, TrackFace};
     use designcraft_color::{ColorType, SwatchValue};
@@ -1299,16 +1299,26 @@ mod framework {
         }
     }
 
+    /// The height of the spectrum ramp: the native panel's hue by lightness grid, tall enough to pick its tints at the
+    /// top and its shades at the bottom.
+    const SPECTRUM_HEIGHT: f32 = 36.0;
+
     /// The spectrum ramp, hue across and light to dark down; the colour picked this pass (RGB, 0 to 1, in 1/255
-    /// steps).
+    /// steps). It fills a row given the native ramp's height, as the framework's own Color panel fills the room left
+    /// under its channels.
     fn spectrum_pick(ui: &mut Ui, lang: &str, salt: &str) -> Option<[f32; 3]> {
-        let out =
+        let shown = Row::new().id_salt(("color-spectrum-row", salt.to_owned())).fill_width().least_height(SPECTRUM_HEIGHT).show(ui, |ui, _| {
             ColorRamp::new(tr(lang, "Color spectrum").to_owned(), RampKind::Spectrum, Bind::given(RampPick::new(Srgba::rgb(0.0, 0.0, 0.0), false)))
                 .boxes(false)
                 .id_salt(("color-spectrum", salt.to_owned()))
-                .sizing(Sizing::FillWidth)
-                .show(ui);
-        let pick = out.edit.events.committed()?;
+                .sizing(Sizing::Fill)
+                .show(ui)
+                .edit
+                .events
+                .committed()
+                .copied()
+        });
+        let pick = shown.inner.flatten()?;
         Some([pick.color.r, pick.color.g, pick.color.b].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0))
     }
 
@@ -1328,23 +1338,31 @@ mod framework {
         let mut mode: ColorMode = ui.data(|d| d.get_temp(mode_id)).unwrap_or(default_mode);
         let mut stroke = app.ui.stroke_front;
         let name = if stroke { stroke_sw.clone() } else { fill.clone() };
-        let shown = Row::new().id_salt("color-panel-proxy").show(ui, |ui, _| {
+        // The row spans the panel: the swatch's name takes the room the chips and the mode leave, so the mode stands
+        // compact at the end, as the native panel's.
+        let shown = Row::new().id_salt("color-panel-proxy").fill_width().show(ui, |ui, _| {
             let mut picked: Option<(bool, bool)> = None;
             for (k, label) in [(false, "Fill"), (true, "Stroke")] {
                 let n = if k { &stroke_sw } else { &fill };
                 let (color, gradient) = crate::widgets::swatch_colors(&doc, n, 1.0);
                 let chip = ColorChip { color, gradient, front: k == stroke };
                 let tip = tr(&lang, "{label}: {name} (double-click: Color Picker)").replace("{label}", tr(&lang, label)).replace("{name}", n);
-                let out =
-                    IconButton::new(IconSpec::glyph(&chip)).id_salt(("color-proxy", k)).label(tr(&lang, label).to_owned()).tooltip(tip).show(ui);
+                // The rail's glyph side (`size.icon.lg`) keeps the chips the size of the native panel's.
+                let out = IconButton::new(IconSpec::glyph(&chip))
+                    .id_salt(("color-proxy", k))
+                    .glyphs(GlyphRole::ToolRail)
+                    .label(tr(&lang, label).to_owned())
+                    .tooltip(tip)
+                    .show(ui);
                 if out.clicked() {
                     picked = Some((k, out.clicks >= 2));
                 }
             }
-            Text::new(name.clone()).shade(Shade::Muted).show(ui);
+            Text::new(name.clone()).shade(Shade::Faint).elide(Elide::End).sizing(Sizing::FillWidth).show(ui);
             let entries = [Entry::new(ColorMode::Lab, "Lab"), Entry::new(ColorMode::Cmyk, "CMYK"), Entry::new(ColorMode::Rgb, "RGB")];
             let chosen = Select::new(tr(&lang, "Color Mode").to_owned(), Bind::given(mode), &entries)
                 .id_salt("color_mode")
+                .sizing(Sizing::Content)
                 .show(ui)
                 .events
                 .committed()
@@ -1864,7 +1882,10 @@ mod framework {
             RampSel::Mid(_) => RampSel::Stop(0),
         };
         let mut send: Option<Value> = None;
-        let shown = Row::new().id_salt("gradient-panel-top").show(ui, |ui, _| {
+        // The rows take the panel's width, not their content's, so a field that does not fit narrows instead of widening
+        // the panel's column, and the ramp under them ends inside the panel with both end stops shown. Disabled with
+        // nothing selected, their labels dim with their controls, as the native panel's.
+        let shown = Row::new().id_salt("gradient-panel-top").fill_width().enabled(has_item).show(ui, |ui, _| {
             let mut send: Option<Value> = None;
             let thumb = GradientThumb::new(tr(&lang, "Gradient").to_owned(), g.clone(), is_gradient.then(|| fill.swatch.clone()))
                 .id_salt(("gradient-thumb", identity))
@@ -1873,16 +1894,18 @@ mod framework {
             if thumb.clicked && !is_gradient {
                 send = Some(json!({}));
             }
-            craft_ui_widgets::layout_components::Stack::new().id_salt("gradient-panel-fields").show(ui, |ui, _| {
-                Row::new().id_salt("gradient-type").show(ui, |ui, _| {
+            craft_ui_widgets::layout_components::Stack::new().id_salt("gradient-panel-fields").fill_width().show(ui, |ui, _| {
+                Row::new().id_salt("gradient-type").fill_width().show(ui, |ui, _| {
                     Text::new(tr(&lang, "Type:").to_owned()).show(ui);
                     let entries = [Entry::new("linear", tr(&lang, "Linear").to_owned()), Entry::new("radial", tr(&lang, "Radial").to_owned())];
-                    let kind: craft_behavior::Mixed<&'static str> = if !is_gradient {
-                        craft_behavior::Mixed::Mixed
+                    // Without a gradient the Type is blank, as the native panel's: a value naming no entry, with no
+                    // placeholder, shows nothing (the mixed word is for a selection whose kinds differ).
+                    let kind: &'static str = if !is_gradient {
+                        ""
                     } else if radial {
-                        craft_behavior::Mixed::Same("radial")
+                        "radial"
                     } else {
-                        craft_behavior::Mixed::Same("linear")
+                        "linear"
                     };
                     if let Some(kind) = Select::new(tr(&lang, "Type").to_owned(), Bind::given(kind), &entries)
                         .id_salt("grad_type")
@@ -1895,7 +1918,7 @@ mod framework {
                         send = Some(json!({"kind": kind}));
                     }
                 });
-                Row::new().id_salt("gradient-location").show(ui, |ui, _| {
+                Row::new().id_salt("gradient-location").fill_width().show(ui, |ui, _| {
                     Text::new(tr(&lang, "Location:").to_owned()).show(ui);
                     let loc = match sel {
                         RampSel::Stop(i) => g.stops.get(i).map(|s| s.offset as f64 * 100.0),
@@ -1939,7 +1962,7 @@ mod framework {
                         send = Some(json!({"angle": v}));
                     }
                 });
-                Row::new().id_salt("gradient-reverse").show(ui, |ui, _| {
+                Row::new().id_salt("gradient-reverse").fill_width().show(ui, |ui, _| {
                     Text::new(tr(&lang, "Reverse").to_owned()).show(ui);
                     let tip = tr(&lang, "Reverse the gradient").to_owned();
                     if IconButton::new(IconSpec::glyph(&Artwork("swap")))
