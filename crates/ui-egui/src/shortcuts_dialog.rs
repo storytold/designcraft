@@ -172,7 +172,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
         Some(Outcome::Import { .. }) => request_import(app, &mut host),
         Some(Outcome::Export { name, json, .. }) => save_file(app, &format!("{name}.json"), json.as_bytes()),
         Some(Outcome::Summary { name, html, .. }) => save_file(app, &format!("{name}.html"), html.as_bytes()),
-        Some(Outcome::Remembered { targets, codes }) => {
+        Some(Outcome::Remembered { targets, codes, .. }) => {
             app.shortcut_answers = targets;
             app.shortcut_codes = codes;
         }
