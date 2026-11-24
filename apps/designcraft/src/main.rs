@@ -299,6 +299,7 @@ fn desktop_session() -> bool {
 }
 
 /// A Nightly launch that is refused before the window: say why where the user looks.
+#[allow(clippy::disallowed_types, reason = "native refusal before any window exists")]
 fn report_launch_profile_error(error: &str) {
     eprintln!("DesignCraft launch profile: {error}");
     if build_flavor::needs_native_error(build_flavor::COMPILED, desktop_session()) {
@@ -346,7 +347,7 @@ fn prepare_launch() -> Option<Launched> {
     let nightly = launch.profile.is_nightly();
     let channel = if nightly { designcraft_ui_egui::channel::Channel::NightlyV1 } else { designcraft_ui_egui::channel::Channel::Stable };
     if let Err(error) = launch_profile::install(launch.profile)
-        .and_then(|()| designcraft_ui_egui::channel::select(channel, build_flavor::VERSION, option_env!("DESIGNCRAFT_BUILD_SHA")))
+        .and_then(|()| designcraft_ui_egui::channel::select(channel, build_flavor::VERSION, option_env!("DESIGNCRAFT_NIGHTLY_COMMIT")))
     {
         report_launch_profile_error(&error);
         std::process::exit(2);
@@ -358,7 +359,7 @@ fn prepare_launch() -> Option<Launched> {
         match nightly_session::Session::begin_with_health(
             launch_profile::current().root(),
             build_flavor::VERSION,
-            option_env!("DESIGNCRAFT_BUILD_SHA"),
+            option_env!("DESIGNCRAFT_NIGHTLY_COMMIT"),
         ) {
             Ok((watch, unavailable)) => {
                 unclean = watch.as_ref().is_some_and(nightly_session::Session::previous_unclean);
@@ -373,6 +374,55 @@ fn prepare_launch() -> Option<Launched> {
         }
     }
     Some(Launched { args: launch.args, nightly, session, unclean, session_unavailable })
+}
+
+/// The ordinary command line, once the launch profile was selected.
+#[derive(Default)]
+struct AppCommand {
+    /// `--control <port>` (Stable only).
+    control_port: Option<u16>,
+    /// `--sample` (Stable only).
+    sample: bool,
+    /// A Stable `--version`/`-V`, answered before anything starts.
+    version: bool,
+    /// Documents to open, in the order they were named.
+    files: Vec<String>,
+    /// The graphics backends a restart asked to skip ([`gpu::SKIP_ARG`]).
+    skip: Vec<String>,
+}
+
+/// Read the arguments left after the launch profile. A Nightly start's first argument is the
+/// separator `launch_profile::parse` put there: it is never a document, and an option after it was
+/// named by the Launcher as a file. Stable keeps its control, sample and version options and drops
+/// a user's own separator, so a literal `--` is never opened as a document.
+fn app_command(args: impl IntoIterator<Item = std::ffi::OsString>, nightly: bool) -> AppCommand {
+    let mut command = AppCommand::default();
+    let mut args = args.into_iter();
+    if nightly {
+        // `parse` puts the protocol's separator first; skipping it keeps a restart's `--gpu-skip=`
+        // (appended after that separator) in the ordinary arm below.
+        args.next();
+    }
+    while let Some(a) = args.next() {
+        let text = a.to_string_lossy().into_owned();
+        match text.as_str() {
+            "--" if !nightly => {
+                command.files.extend(args.map(|rest| rest.to_string_lossy().into_owned()));
+                break;
+            }
+            "--control" if !nightly => command.control_port = control_port_from("--control", args.next().map(|v| v.to_string_lossy().into_owned())),
+            "--sample" if !nightly => command.sample = true,
+            "--version" | "-V" if !nightly => {
+                command.version = true;
+                break;
+            }
+            _ => match gpu::skip_arg(&text) {
+                Some(list) => command.skip = list,
+                None => command.files.push(text),
+            },
+        }
+    }
+    command
 }
 
 fn main() -> std::process::ExitCode {
@@ -390,27 +440,16 @@ fn main() -> std::process::ExitCode {
     let logger = logging::install();
     // A Nightly launch is handed files only; its control channel, sample document and graphics
     // restart options are not part of the Launcher's protocol.
-    let mut control_port =
-        if launch.nightly { None } else { control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok()) };
-    let mut files = Vec::new();
-    let mut sample = false;
-    let mut skip = Vec::new();
-    let mut args = launch.args.into_iter();
-    while let Some(a) = args.next() {
-        let text = a.to_string_lossy().into_owned();
-        match text.as_str() {
-            "--control" if !launch.nightly => control_port = control_port_from("--control", args.next().map(|v| v.to_string_lossy().into_owned())),
-            "--sample" if !launch.nightly => sample = true,
-            "--version" | "-V" => {
-                println!("{}", build_flavor::version_line(build_flavor::COMPILED, build_flavor::STABLE_VERSION_LINE, build_flavor::VERSION));
-                return std::process::ExitCode::SUCCESS;
-            }
-            _ => match gpu::skip_arg(&text) {
-                Some(list) => skip = list,
-                None => files.push(text),
-            },
-        }
+    let command = app_command(launch.args, launch.nightly);
+    if command.version {
+        println!("{}", build_flavor::version_line(build_flavor::COMPILED, build_flavor::STABLE_VERSION_LINE, build_flavor::VERSION));
+        return std::process::ExitCode::SUCCESS;
     }
+    // A Nightly start never takes the Stable control channel, even from the environment.
+    let control_port = command.control_port.or_else(|| {
+        if launch.nightly { None } else { control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok()) }
+    });
+    let AppCommand { sample, files, skip, .. } = command;
     // A portable.txt whose DesignCraftData folder cannot be written: the platform folders are used
     // instead (see `profile`), and the user is told, in the log and in the status bar.
     let portable_note = profile::unwritable_portable_dir().map(|dir| {
@@ -654,6 +693,34 @@ mod tests {
         assert!(first.starts_with(b"{\"docking\""), "the first copy is not replaced");
         assert_eq!(second, b"not json");
         assert!(!super::KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed), "ui.json can be saved once a copy is kept");
+    }
+
+    #[test]
+    fn the_launcher_separator_is_never_a_file_and_never_hides_a_named_document() {
+        let nightly = super::app_command(["--", "--version", "a.dc", "--control", "7979", "--sample"].map(std::ffi::OsString::from), true);
+        assert_eq!(nightly.files, ["--version", "a.dc", "--control", "7979", "--sample"]);
+        assert!(!nightly.version, "a flag after the separator is a document");
+        assert_eq!(nightly.control_port, None);
+        assert!(!nightly.sample);
+    }
+
+    #[test]
+    fn a_graphics_restart_after_the_separator_keeps_its_skip_list() {
+        let nightly = super::app_command(["--", "a.dc", "--gpu-skip=vulkan,gl"].map(std::ffi::OsString::from), true);
+        assert_eq!(nightly.files, ["a.dc"]);
+        assert_eq!(nightly.skip, ["vulkan", "gl"]);
+    }
+
+    #[test]
+    fn stable_keeps_its_options_and_drops_a_user_separator() {
+        let stable = super::app_command(["--control", "7979", "--sample", "--", "--version"].map(std::ffi::OsString::from), false);
+        assert_eq!(stable.control_port, Some(7979));
+        assert!(stable.sample);
+        assert_eq!(stable.files, ["--version"]);
+        assert!(!stable.version, "a flag after the separator is a document");
+        let version = super::app_command([std::ffi::OsString::from("--version")], false);
+        assert!(version.version);
+        assert!(version.files.is_empty());
     }
 
     #[test]

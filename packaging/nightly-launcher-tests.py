@@ -18,6 +18,7 @@ CHANNEL = ROOT / "crates/ui-egui/src/channel.rs"
 
 EXEC = 'exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"'
 PROFILE_ROOT = 'profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"'
+PASSTHROUGH = 'if [ "${1:-}" = "--launch-profile" ] || [ "${1:-}" = "--profile-root" ]; then'
 
 
 def body(path, marker):
@@ -38,6 +39,18 @@ def launchers():
         "Flatpak wrapper": body("packaging/linux/flatpak-bundle.sh", "WRAPPER"),
         "tar launcher": body("packaging/linux/nightly.sh", "LAUNCHER"),
     }
+
+
+def tar_launcher(scratch):
+    """The tar's launcher beside a recorder that prints its argv, one argument per line."""
+    directory = Path(scratch)
+    launcher = directory / "designcraft"
+    launcher.write_text("\n".join(body("packaging/linux/nightly.sh", "LAUNCHER")) + "\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    recorder = directory / "designcraft-bin"
+    recorder.write_text('#!/bin/sh\nfor arg in "$@"; do printf "<%s>\\n" "$arg"; done\n', encoding="utf-8")
+    recorder.chmod(0o755)
+    return directory, launcher
 
 
 def constant(name):
@@ -93,6 +106,35 @@ class LinuxLaunchers(unittest.TestCase):
         self.assertIn('"designcraft-bin", "designcraft-nightly.png", "README.md"', policy)
         nightly = (LINUX / "nightly.sh").read_text(encoding="utf-8")
         self.assertIn('cp "$NIGHTLY_GUI" "$STAGE/designcraft-bin"', nightly)
+
+    def test_every_format_passes_an_existing_profile_pair_through(self):
+        for label, lines in launchers().items():
+            with self.subTest(launcher=label):
+                self.assertEqual(sum(line == PASSTHROUGH for line in lines), 1, "a caller's own profile pair is never doubled")
+
+    def test_the_tar_launcher_passes_an_existing_profile_pair_through_untouched(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            directory, launcher = tar_launcher(scratch)
+            supplied = ["--launch-profile", "nightly-v1", "--profile-root", "/launcher/root/designcraft", "--", "doc.dc", "--version"]
+            run = subprocess.run(
+                [str(launcher), *supplied], cwd="/", env={"HOME": str(directory), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=15
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.splitlines(), [f"<{arg}>" for arg in supplied], "the Launcher's protocol reached the binary unchanged")
+
+    def test_the_tar_launcher_never_adds_a_second_separator(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            directory, launcher = tar_launcher(scratch)
+            profile = directory / ".local/share/designcraft-nightly"
+            run = subprocess.run(
+                [str(launcher), "--", "--version"], cwd="/", env={"HOME": str(directory), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=15
+            )
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(
+                run.stdout.splitlines(),
+                ["<--launch-profile>", "<nightly-v1>", "<--profile-root>", f"<{profile}>", "<-->", "<--version>"],
+                "the caller's separator stays the only one, and a flag after it is a document",
+            )
 
     def test_the_tar_launcher_starts_its_binary_with_the_profile_pair(self):
         lines = body("packaging/linux/nightly.sh", "LAUNCHER")

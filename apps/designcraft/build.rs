@@ -66,7 +66,9 @@ fn main() {
         if build_channel::nightly_date_digits(&version) != Some(&date.replace('-', "")) {
             die("DESIGNCRAFT_VERSION names a different date than DESIGNCRAFT_BUILD_DATE");
         }
-        println!("cargo:rustc-env=DESIGNCRAFT_BUILD_SHA={sha}");
+        // A nightly-only name: `option_env!` reads the compiler's process environment, and stable
+        // packaging always exports DESIGNCRAFT_BUILD_SHA, which must not turn a Stable build nightly.
+        println!("cargo:rustc-env=DESIGNCRAFT_NIGHTLY_COMMIT={sha}");
         println!("cargo:rustc-env=DESIGNCRAFT_BUILD_DATE={date}");
         version
     } else {

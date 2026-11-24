@@ -50,7 +50,8 @@ try {
   $family = Join-Path $fontRepo 'fonts\ExampleFamily'
   $stage = Join-Path $testRoot 'stage'
   New-Item -ItemType Directory -Force -Path $repo, $family, $stage | Out-Null
-  $rootNames = @('README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md')
+  # DesignCraft has no LICENSE of its own: the same required set the production copier demands.
+  $rootNames = @('README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md')
   foreach ($name in $rootNames) { Set-Content -LiteralPath (Join-Path $repo $name) -Value "root-notice-$name" }
   Set-Content -LiteralPath (Join-Path $family 'OFL.txt') -Value 'font-notice-example'
   Copy-NightlyNotices $repo $fontRepo $stage

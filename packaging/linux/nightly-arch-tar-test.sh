@@ -56,6 +56,12 @@ expect "$(pair "$XDG_DATA_HOME/designcraft-nightly" "$(printf '<%s>\n<%s>\n' 'do
 # Version queries stay plain so a Launcher or a runner can ask before any profile exists.
 expect "$(printf 'DESIGNCRAFT_CONFIG_DIR=<UNSET>\n<--version>\n')" --version
 expect "$(printf 'DESIGNCRAFT_CONFIG_DIR=<UNSET>\n<-V>\n')" -V
+# A caller that already uses the protocol (the Launcher) reaches the binary untouched.
+expect "$(printf 'DESIGNCRAFT_CONFIG_DIR=<UNSET>\n<--launch-profile>\n<nightly-v1>\n<--profile-root>\n<%s>\n<-->\n<%s>\n' \
+   "$work/launcher root" 'doc.dc')" \
+  --launch-profile nightly-v1 --profile-root "$work/launcher root" -- doc.dc
+# A caller's own separator stays the only one, and a flag after it is a document.
+expect "$(pair "$XDG_DATA_HOME/designcraft-nightly" "$(printf '<%s>\n' '--version')")" -- --version
 # The launcher never sets or clears the stable override itself: it passes the profile pair and
 # leaves an inherited value alone, which the app then refuses with its own message.
 DESIGNCRAFT_CONFIG_DIR="$work/explicit with space" expect \

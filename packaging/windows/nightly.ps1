@@ -50,16 +50,18 @@ function Assert-NightlyFlavor([string] $ProductName, [string] $VersionOutput, [s
   }
 }
 
-# DesignCraft has no ATTRIBUTION.md of its own, so the required notices are the readme, the two
-# licences and NOTICE; an ATTRIBUTION.md is copied when a checkout does have one.
+# DesignCraft has no LICENSE or ATTRIBUTION.md of its own, so the required notices are the readme,
+# the two licences and NOTICE; LICENSE/COPYRIGHT/ATTRIBUTION.md are copied when a checkout has one.
 function Copy-NightlyNotices([string] $RepositoryRoot, [string] $FontRepository, [string] $Destination) {
-  foreach ($name in 'README.md', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE') {
+  foreach ($name in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE') {
     $source = Join-Path $RepositoryRoot $name
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "missing app notice: $name" }
     Copy-Item -LiteralPath $source -Destination $Destination
   }
-  $attribution = Join-Path $RepositoryRoot 'ATTRIBUTION.md'
-  if (Test-Path -LiteralPath $attribution -PathType Leaf) { Copy-Item -LiteralPath $attribution -Destination $Destination }
+  foreach ($optional in 'LICENSE', 'COPYRIGHT', 'ATTRIBUTION.md') {
+    $source = Join-Path $RepositoryRoot $optional
+    if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-Item -LiteralPath $source -Destination $Destination }
+  }
   if ($FontRepository) {
     $fonts = Join-Path $FontRepository 'fonts'
     if (-not (Test-Path -LiteralPath $fonts -PathType Container)) { throw 'CRAFT_FONTS_DIR has no fonts directory for the bundled notices' }
