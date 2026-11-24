@@ -124,7 +124,8 @@ pub(super) fn picked_run(command: &CommandRef) -> (String, Value) {
 
 /// The app's commands on the framework's board while Quick Apply is open: the tools (as `toolbar::tool_catalog` has
 /// them, for the Tools rail), every command Quick Apply searches and the document's styles, so the palette resolves
-/// and picks each of them. None of them has a default chord: the app's keymap stays the one dispatcher of every key.
+/// and picks each of them. The tools keep the keymap's chords for display only (`AppCatalog::shown_only`), as
+/// `tool_catalog` gives them; the others have none. The app's keymap stays the one dispatcher of every key.
 /// `None` while Quick Apply is closed; the board then has the tools alone.
 ///
 /// One catalog per interface language and set of style names; the generation changes whenever the rows do.
@@ -143,6 +144,9 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
     let styles = app.session.active().map(|st| style_names(&st.doc.styles));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     styles.hash(&mut hasher);
+    // The tools' shown chords follow the keymap's platform and the user's overrides.
+    app.keymap.platform().hash(&mut hasher);
+    app.keymap.overrides().iter().for_each(|entry| entry.hash(&mut hasher));
     let key = hasher.finish();
     let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some((held, held_key, catalog)) = last.as_ref()
@@ -152,8 +156,8 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
         return Some(catalog.clone());
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-    let defs = board_defs(lang, styles.as_ref());
-    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
+    let (defs, tools) = board_defs(lang, styles.as_ref(), &app.keymap);
+    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(tools)).unwrap_or_else(|error| {
         log::warn!("Quick Apply's commands are not on the framework's board: {error}");
         AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
     });
@@ -161,13 +165,19 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
     Some(catalog)
 }
 
-/// The definitions of [`quick_apply_catalog`]: the keymap's tool and searched commands without their default chords,
-/// labelled in `lang`, then a command for each style.
+/// The definitions of [`quick_apply_catalog`], labelled in `lang`: the keymap's tool commands with the chords `keymap`
+/// binds them to (the board shows them; the ids are returned to mark them shown-only), the searched commands without
+/// their default chords, then a command for each style.
 #[cfg(not(target_arch = "wasm32"))]
-fn board_defs(lang: &str, styles: Option<&[(&'static str, &'static str, Vec<String>); 3]>) -> Vec<craft_keymap::CommandDef> {
+fn board_defs(
+    lang: &str,
+    styles: Option<&[(&'static str, &'static str, Vec<String>); 3]>,
+    keymap: &craft_keymap::Keymap,
+) -> (Vec<craft_keymap::CommandDef>, Vec<String>) {
     let searched: std::collections::HashSet<&str> = quick_commands().map(|(id, _, _)| id).collect();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut defs: Vec<craft_keymap::CommandDef> = Vec::new();
+    let mut tools: Vec<String> = Vec::new();
     for def in crate::keys::catalog() {
         let tool = crate::keys::tool_of(&def.command);
         let quick = def.command.params.is_null() && searched.contains(def.command.id.as_str());
@@ -175,7 +185,12 @@ fn board_defs(lang: &str, styles: Option<&[(&'static str, &'static str, Vec<Stri
             continue;
         }
         let mut def = def.clone();
-        def.defaults.clear();
+        if tool.is_some() {
+            def.defaults = keymap.bindings(&def.command);
+            tools.push(def.command.id.clone());
+        } else {
+            def.defaults.clear();
+        }
         def.label = crate::i18n::tr(lang, &def.label).to_owned();
         if let Some(icon) = designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| Some(t.id) == tool).map(|t| t.icon) {
             def = def.with_icon(icon);
@@ -190,7 +205,7 @@ fn board_defs(lang: &str, styles: Option<&[(&'static str, &'static str, Vec<Stri
             }
         }
     }
-    defs
+    (defs, tools)
 }
 
 /// One Quick Apply entry: a style to apply or a command to run.
