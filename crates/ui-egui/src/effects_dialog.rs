@@ -214,21 +214,28 @@ pub(crate) mod form {
     use super::{GLOBAL_LIGHT, PAGES, is_on, num, preview, set, summary, switch, turn_on};
     use crate::DesignApp;
     use crate::dialogs::Dialog;
-    use craft_behavior::{Codec, EditEvents, NotAValue, Value as Bindable};
-    use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
-    use craft_ui_widgets::contract::{Bind, Entry, LabelKind, Props as _, Show as _, ShowContainer as _, SideLabel, Sizing};
+    use craft_behavior::{
+        Codec, ColumnKey, ColumnWidth, DisplayOrder, EditEvents, ItemSource, NotAValue, Selection, SelectionChange, Value as Bindable,
+    };
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{
+        ActivateOn, Bind, CollectionEvent, ColumnSpec, Entry, Props as _, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing,
+    };
     use craft_ui_widgets::display::{Shade, Text};
     use craft_ui_widgets::form::{Field, FieldGroup};
     use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::list::{List, ListRow};
     use craft_ui_widgets::pickers::Select;
-    use craft_ui_widgets::runtime::env::UnitKind;
+    use craft_ui_widgets::runtime::env::{Label, UnitKind};
     use craft_ui_widgets::style::TypeRole;
     use craft_ui_widgets::text::{NumberField, TextField};
     use craft_ui_widgets::value_drag::AngleDial;
     use designcraft_geom::{Unit, format_measure, units::parse_measure};
     use egui::{AsIdSalt, Ui};
     use serde_json::{Value, json};
+    use std::cell::RefCell;
     use std::ops::RangeInclusive;
+    use std::rc::Rc;
 
     /// The value after a control's `events`, when they changed `before`.
     pub(crate) fn edited<T: Bindable>(events: EditEvents<T>, before: T) -> Option<T> {
@@ -263,9 +270,15 @@ pub(crate) mod form {
         }
     }
 
+    /// The width a measure field asks for, in characters: a compact field that holds "0.0972 in" or "0p6.062", beside
+    /// the number fields (percentages, the angle) rather than the full field length. The field's shortest length still
+    /// applies, so it stays a little wider than a number cell, as the native dialog's measures were.
+    const MEASURE_CHARS: u16 = 9;
+
     /// A measure field named `label` over `points`, in the document's `unit`; the new value once it is edited.
     pub(crate) fn measure(ui: &mut Ui, salt: impl AsIdSalt, label: &str, points: f64, unit: Unit, range: Option<(f64, f64)>) -> Option<f64> {
-        let out = TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range }).id_salt(salt).show(ui);
+        let out =
+            TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range }).id_salt(salt).width_chars(MEASURE_CHARS).show(ui);
         edited(out.events, points)
     }
 
@@ -304,29 +317,82 @@ pub(crate) mod form {
         Select::new(label.to_owned(), Bind::given(0_u8), &entries).id_salt(salt).enabled(false).show(ui);
     }
 
-    /// A row of a dialog's page list inside its `RadioGroup` over the page key: the include box (when `check` is
-    /// given) and the page's radio. The box's hidden field label names it with the page, so the visible caption is
-    /// the radio's alone. The box's new state once it is toggled.
-    pub(crate) fn page_row(ui: &mut Ui, scope: &str, page: &str, label: &str, check: Option<bool>) -> Option<bool> {
-        let mut result = None;
-        Row::new().id_salt((scope.to_owned(), "row", page.to_owned())).show(ui, |ui, _| {
-            if let Some(before) = check {
-                Field::new(label.to_owned())
-                    .side(SideLabel::new().kind(LabelKind::Hidden))
-                    .sizing(Sizing::Content)
-                    .id_salt((scope.to_owned(), "include", page.to_owned()))
-                    .show(ui, |ui, _| {
-                        let out = Checkbox::new(Bind::given(before)).show(ui);
-                        if let Some(next) = edited(out.events, before) {
-                            result = Some(next);
-                        }
-                    });
-            } else {
-                ui.add_space(24.0);
+    /// The column of the effect list's on boxes, and the column of its effect names.
+    const ON: ColumnKey = ColumnKey::new("on");
+    const NAME: ColumnKey = ColumnKey::new("name");
+
+    /// The rows of the effect list: each page's key, its name, and whether its effect is on (`None` for Transparency,
+    /// the object's own, which has no box).
+    struct Rows(Vec<(String, String, Option<bool>)>);
+
+    impl DisplayOrder<String> for Rows {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        fn key(&self, at: usize) -> String {
+            self.0.get(at).map(|row| row.0.clone()).unwrap_or_default()
+        }
+
+        fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+            self.0.get(at).map(|row| std::borrow::Cow::Borrowed(row.1.as_str()))
+        }
+    }
+
+    impl ItemSource<String> for Rows {}
+
+    /// What the effect list asked for in one pass: the page to show, and the boxes flipped, in order.
+    #[derive(Default)]
+    struct Picked {
+        page: Option<String>,
+        switched: Vec<(String, bool)>,
+    }
+
+    /// The effect list, as InDesign's (and as New Object Style's page lists): the row of the effect `shown` is selected, and
+    /// each effect but Transparency has its on box before its name. A click on a row, the arrow keys and Enter show its
+    /// page. The box is a real check box in the row's on cell, with the check box's own press (a click on it flips it, a
+    /// press dragged away does not) and its own key stop (Forward from the row).
+    fn effect_list(ui: &mut Ui, label: String, rows: &Rows, shown: &str) -> Picked {
+        let selection = if rows.0.iter().any(|row| row.0 == shown) { Selection::single(shown.to_owned()) } else { Selection::default() };
+        let columns = vec![ColumnSpec::new(ON, Label::Empty, ColumnWidth::Toggle), ColumnSpec::new(NAME, Label::Empty, ColumnWidth::Content)];
+        let flipped: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
+        let out = List::<String>::new(label)
+            .id_salt("effects_pages")
+            .select(SelectMode::Single)
+            .activate(ActivateOn::Click)
+            .allow_empty(false)
+            .header(false)
+            .sizing(Sizing::Content)
+            .natural_height(true)
+            .columns(columns)
+            .selection(Bind::given(selection))
+            .show_items(ui, rows, &mut |key, icx| {
+                let Some((_, name, on)) = rows.0.iter().find(|row| row.0 == *key) else { return ListRow::spacer() };
+                // The on column holds a cell on every row (empty on Transparency's), so each name stands in the name column.
+                let row = ListRow::new(name.clone()).cells(icx.cells()).cell(ON, "");
+                let Some(before) = *on else { return row };
+                let (page, flipped) = (key.clone(), flipped.clone());
+                // The box is named by its effect ("Drop Shadow"); its label shows no text in a cell.
+                let on = Checkbox::new(Bind::given(before)).label(name.clone()).id_salt(("effects", "include", key.clone()));
+                row.cell_field(ON, on, move |out| {
+                    if let Some(next) = edited(out.events, before) {
+                        flipped.borrow_mut().push((page, next));
+                    }
+                })
+            });
+        let mut picked = Picked { page: None, switched: flipped.take() };
+        for event in out.events {
+            match event {
+                CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } => {
+                    if let Some(key) = keys.last() {
+                        picked.page = Some(key.clone());
+                    }
+                }
+                CollectionEvent::Activate(key) => picked.page = Some(key),
+                _ => {}
             }
-            Radio::new(page.to_owned()).label(label.to_owned()).id_salt((scope.to_owned(), "page", page.to_owned())).show(ui);
-        });
-        result
+        }
+        picked
     }
 
     /// A heading over a group of fields and the group, named by it.
@@ -646,21 +712,22 @@ pub(crate) mod form {
             field(ui, &tr("Settings for:"), |ui| level(ui, "fx_level", &tr("Settings for:"), &tr("Object")));
             Row::new().id_salt("effects_columns").show(ui, |ui, _| {
                 Stack::new().id_salt("effects_list").show(ui, |ui, _| {
-                    let pages = RadioGroup::new(tr("Effects"), Bind::given(shown.clone())).id_salt("effects_pages").show(ui, |ui, _| {
-                        Stack::new().show(ui, |ui, _| {
-                            for (key, label) in PAGES {
-                                let on = (key != "transparency").then(|| is_on(d.fields.get("fx").unwrap_or(&Value::Null), key));
-                                if let Some(on) = page_row(ui, "effects", key, &tr(label), on)
-                                    && let Some(f) = d.fields.get_mut("fx")
-                                {
-                                    switch(f, key, on);
-                                }
-                            }
-                        });
-                    });
-                    if let Some(page) = edited(pages.output.events, shown.clone()) {
+                    let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
+                    let rows = Rows(
+                        PAGES.iter().map(|(key, label)| ((*key).to_owned(), tr(label), (*key != "transparency").then(|| is_on(&fx, key)))).collect(),
+                    );
+                    let picked = effect_list(ui, tr("Effects"), &rows, &shown);
+                    if let Some(f) = d.fields.get_mut("fx") {
+                        for (key, on) in &picked.switched {
+                            switch(f, key, *on);
+                        }
+                    }
+                    if let Some(page) = picked.page.filter(|page| *page != shown) {
                         d.fields.insert("page".into(), json!(page));
-                        if let Some(f) = d.fields.get_mut("fx") {
+                        // Choosing an effect turns it on, unless its own box was just turned off in the same pass.
+                        if !picked.switched.iter().any(|(key, _)| *key == page)
+                            && let Some(f) = d.fields.get_mut("fx")
+                        {
                             turn_on(f, &page);
                         }
                     }
@@ -815,6 +882,12 @@ mod tests {
                 self.idle();
             }
 
+            /// Whether the effect list's row named `name` is selected.
+            fn selected(&self, name: &str) -> bool {
+                let ax = self.ax.as_ref().unwrap();
+                ax.nodes.iter().any(|(_, n)| n.role() == Role::ListItem && n.label() == Some(name) && n.is_selected() == Some(true))
+            }
+
             fn draft(&self, path: &[&str]) -> Value {
                 let mut v = self.app.ui.dialog.as_ref().unwrap().fields.get("fx").cloned().unwrap_or(Value::Null);
                 for k in path {
@@ -853,7 +926,9 @@ mod tests {
                 (Role::ComboBox, "Color:"),
                 (Role::TextInput, "Distance:"),
                 (Role::CheckBox, "Use Global Light"),
-                (Role::RadioButton, "Drop Shadow"),
+                // The effects are the list's rows (each with its on box), no longer radio buttons.
+                (Role::ListItem, "Drop Shadow"),
+                (Role::CheckBox, "Drop Shadow"),
                 (Role::CheckBox, "Preview"),
                 (Role::Button, "OK"),
                 (Role::Button, "Cancel"),
@@ -904,8 +979,11 @@ mod tests {
             crate::menus::activate(&mut w.app, "object.dropShadow", &Value::Null);
             w.idle();
             let u0 = undo(&w.app);
-            w.click(Role::RadioButton, "Outer Glow");
+            assert!(w.selected("Drop Shadow"), "the effect the dialog opened on is the selected row");
+            // The effects are the list's rows, no longer radio buttons: a click on a name shows its page.
+            w.click(Role::ListItem, "Outer Glow");
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("page"), "outerGlow");
+            assert!(w.selected("Outer Glow") && !w.selected("Drop Shadow"), "the shown effect is the one selected row");
             assert_eq!(w.draft(&["outerGlow", "on"]), json!(true));
             w.control(Role::ComboBox, "Mode:");
             w.click(Role::CheckBox, "Outer Glow");
