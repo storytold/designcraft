@@ -283,8 +283,12 @@ APPRUN
     UPDATE_ARGS=(-u "$UPDATE_INFO")
   else
     # Nightly releases are GitHub pre-releases (`latest` only selects stable releases), so point
-    # zsync update metadata at pre-release tags matching `-nightly` rather than stable `latest`.
-    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest-pre|designcraft-*-nightly*-linux-$ARCH.AppImage.zsync"
+    # zsync update metadata at pre-release tags rather than stable `latest`.
+    NIGHTLY_ZSYNC_PATTERN="designcraft-*-nightly*-linux-$ARCH.AppImage.zsync"
+    if [[ "$VERSION" != *-nightly* ]]; then
+      NIGHTLY_ZSYNC_PATTERN="designcraft-*-linux-$ARCH.AppImage.zsync"
+    fi
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest-pre|$NIGHTLY_ZSYNC_PATTERN"
     UPDATE_ARGS=(-u "$UPDATE_INFO")
   fi
   # Extract-and-run: works without FUSE (containers, CI). The output embeds the static runtime,
