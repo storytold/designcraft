@@ -24,7 +24,7 @@ use craft_ui_widgets::form::{Field, FieldGroup, SliderField, SliderFieldLayout};
 use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::runtime::env::{UnitKind, with_env};
-use craft_ui_widgets::text::{NumberField, NumberLook, NumberPrecision, TextField};
+use craft_ui_widgets::text::{NumberField, NumberLook, TextField};
 use designcraft_color::Color;
 use egui::Ui;
 use serde_json::{Value, json};
@@ -204,12 +204,12 @@ fn color_picker(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     // The colour space the area shows, named over it as in InDesign: Lab while a Lab component is chosen, else RGB.
     let space = if matches!(component, "l" | "la" | "lb") { "Lab Color Space View" } else { "RGB Color Space View" };
     Text::new(tr(app, space)).show(ui);
-    // InDesign's fields: whole numbers (whole percents too, as every model's channel declares no decimals) at the
-    // field's start in the interface face, the unit after the field.
+    // InDesign's fields: at the field's start in the interface face, the unit after the field. The picker shows each
+    // channel's own decimals (whole percents too).
     let out = with_env(
         ui,
         |scope| {
-            scope.values.set(NumberPrecision::Measured).set(NumberLook::Inline);
+            scope.values.set(NumberLook::Inline);
         },
         |ui| {
             ColorPicker::new(tr(app, "Color Picker"), Bind::given(shown))

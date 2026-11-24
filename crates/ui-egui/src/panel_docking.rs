@@ -14,7 +14,7 @@ use craft_behavior::dock::{
     Target, Workspace,
 };
 use craft_ui::contract::{Bind, BodyCx, PlainData, Tracked};
-use craft_ui::docking::{DockConfig, DockEvent, DockHeights, DockPanels, DockSizes, FloatSpace, GroupAt, PanelSpec, PanelSpecs};
+use craft_ui::docking::{DockConfig, DockEvent, DockHeights, DockPanels, DockSizes, FloatSpace, FlyoutHeight, GroupAt, PanelSpec, PanelSpecs};
 use craft_ui::patterns::dock::DockArea;
 use egui::{Rect, pos2, vec2};
 use serde_json::{Value, json};
@@ -1065,7 +1065,12 @@ impl PanelSpecs<String> for Specs {
         } else {
             DockHeights::new(OPEN_PANEL_HEIGHT).compact(80.0).fill(OPEN_PANEL_HEIGHT)
         };
-        let spec = spec.limits(craft_ui::contract::SizeLimits::at_least(vec2(220.0, 80.0))).float_size(floating_size(panel)).heights(heights);
+        // A flyout is as tall as its panel's body, as the old dock's: the heights above size the docked groups only.
+        let spec = spec
+            .limits(craft_ui::contract::SizeLimits::at_least(vec2(220.0, 80.0)))
+            .float_size(floating_size(panel))
+            .heights(heights)
+            .flyout_height(FlyoutHeight::Content);
         match panel_artwork(panel) {
             Some(artwork) => spec.icon(craft_ui::primitives::IconSpec::glyph(artwork)),
             None => spec,
@@ -1149,6 +1154,10 @@ fn dock_config() -> DockConfig {
         .group_order_items(true)
         .panel_menu_always(true)
         .panel_menu_icon(craft_behavior::IconId::new("menu"))
+        // Long tab titles end with "…" and the tabs that do not fit go to the strip's overflow menu, as InDesign's.
+        .tab_shrink(craft_ui::tabs::PanelTabShrink::Ellipsis)
+        // Floating panels stay above the docked columns' flyouts, as InDesign's.
+        .flyout_layer(craft_ui::contract::overlay::PopupLayer::BelowWindows)
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
