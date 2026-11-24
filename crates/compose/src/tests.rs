@@ -188,17 +188,24 @@ fn wrap_pushes_text_aside() {
 
 #[test]
 fn scaled_text_frame_keeps_a_contour_wrap_offset_in_page_units() {
-    let first_line_x = |mode| {
+    let first_line = |mode, wrap_width| {
         let (mut d, sid, frame) = doc_with(LOREM, Rect::new(0.0, 0.0, 300.0, 800.0), ParaAttrs::default());
         let xf = Affine::scale_non_uniform(2.0, 3.0);
         d.item_mut(frame).unwrap().xf = xf;
-        add_wrap_objects(&mut d, &[(Rect::new(0.0, 0.0, 120.0, 60.0), [6.0; 4], mode)]);
+        add_wrap_objects(&mut d, &[(Rect::new(0.0, 0.0, wrap_width, 60.0), [6.0; 4], mode)]);
         let story = compose_story(&d, sid, &ComposeOptions::default());
-        (xf * Point::new(story.frames[0].lines[0].x0, 0.0)).x
+        let line = &story.frames[0].lines[0];
+        xf * Point::new(line.x0, line.baseline - line.ascent)
     };
-    let contour = first_line_x(WrapMode::Contour);
-    let bounds = first_line_x(WrapMode::BoundingBox);
+    let contour = first_line(WrapMode::Contour, 120.0).x;
+    let bounds = first_line(WrapMode::BoundingBox, 120.0).x;
     assert!((contour - bounds).abs() < 1e-6, "contour starts at {contour}, bounding box at {bounds}");
+
+    // A wrap object across the entire frame leaves no side gap, so the first line goes below it.
+    let contour = first_line(WrapMode::Contour, 600.0).y;
+    let bounds = first_line(WrapMode::BoundingBox, 600.0).y;
+    assert!(contour >= 66.0 - 1e-6, "first line top {contour} is above the wrap offset");
+    assert!((contour - bounds).abs() < 1e-6, "contour clears at {contour}, bounding box at {bounds}");
 }
 
 /// A small frame holding one character (a tombstone at the end of an article: a 7.6 pt symbol in
