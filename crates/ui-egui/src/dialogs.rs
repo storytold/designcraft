@@ -141,7 +141,7 @@ impl Dialog {
     fn m_in(&self, k: &str, unit: Unit) -> Option<f64> {
         match self.fields.get(k) {
             Some(Value::Number(n)) => n.as_f64(),
-            Some(Value::String(s)) => parse_measure(s, unit).ok(),
+            Some(Value::String(s)) => self.exact(k, s, unit).or_else(|| parse_measure(s, unit).ok()),
             _ => None,
         }
     }
@@ -149,9 +149,22 @@ impl Dialog {
     fn pt(&self, k: &str) -> Option<f64> {
         match self.fields.get(k) {
             Some(Value::Number(n)) => n.as_f64(),
-            Some(Value::String(s)) => parse_measure(s, Unit::Points).ok(),
+            Some(Value::String(s)) => self.exact(k, s, self.unit).or_else(|| parse_measure(s, Unit::Points).ok()),
             _ => None,
         }
+    }
+    /// The points a measure field was committed as, while its text is still what was shown for them: the text is rounded for
+    /// display, so reading the points back from it would lose what the field was given ("3 cm" in picas).
+    fn exact(&self, k: &str, text: &str, unit: Unit) -> Option<f64> {
+        let points = self.fields.get(&format!("_pt.{k}"))?.as_f64()?;
+        (designcraft_geom::format_measure(points, unit) == text).then_some(points)
+    }
+    /// Commits the measure `points` to the field `k`: its text in the document's unit, and the exact points beside it.
+    pub(crate) fn set_measure(&mut self, k: &str, points: f64) -> String {
+        let shown = designcraft_geom::format_measure(points, self.unit);
+        self.fields.insert(k.into(), json!(shown));
+        self.fields.insert(format!("_pt.{k}"), json!(points));
+        shown
     }
     pub(crate) fn b(&self, k: &str) -> bool {
         self.fields.get(k).and_then(Value::as_bool).unwrap_or(false)
@@ -3739,9 +3752,15 @@ fn link_corners(d: &mut Dialog) {
         && let Some(i) = now.iter().zip(&seen).position(|(a, b)| a != b)
         && let Some(changed) = now.get(i).cloned()
     {
+        // The exact points go with the text they were shown as.
+        let exact = CORNERS.get(i).and_then(|(k, _)| d.fields.get(&format!("_pt.size{k}")).cloned());
         for (k, _) in &CORNERS {
             d.fields.insert(format!("size{k}"), json!(changed.0));
             d.fields.insert(format!("shape{k}"), json!(changed.1));
+            match &exact {
+                Some(points) => d.fields.insert(format!("_pt.size{k}"), points.clone()),
+                None => d.fields.remove(&format!("_pt.size{k}")),
+            };
         }
         now = vec![changed; CORNERS.len()];
         touched = [true; 4];

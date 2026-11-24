@@ -76,9 +76,7 @@ pub(super) fn resolved(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enab
         return None;
     };
     let measure = range.map_or(measure, |(least, most)| measure.clamp(least, most));
-    let shown = format_measure(measure, d.unit);
-    d.fields.insert(key.into(), json!(shown));
-    Some(shown)
+    Some(d.set_measure(key, measure))
 }
 
 /// A measure field with the range of the spinner fields (`0` to the largest page).
@@ -170,11 +168,22 @@ fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
             if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
                 d.fields.insert("section".into(), json!(next));
             }
-            Stack::new().id_salt("frame_options_page").fill_width().show(ui, |ui, _| match d.s("section").as_str() {
-                "baseline" => baseline_page(app, ui, d),
-                "autosize" => auto_size_page(app, ui, d),
-                "rules" => column_rules_page(app, ui, d),
-                _ => general(app, ui, d),
+            // The pages are as tall as the tallest one shown so far (General, which the dialog opens on), so the buttons under
+            // them stay where they are on every page.
+            let tallest = egui::Id::new("text_frame_options_page_height");
+            Stack::new().id_salt("frame_options_page").fill_width().show(ui, |ui, _| {
+                match d.s("section").as_str() {
+                    "baseline" => baseline_page(app, ui, d),
+                    "autosize" => auto_size_page(app, ui, d),
+                    "rules" => column_rules_page(app, ui, d),
+                    _ => general(app, ui, d),
+                }
+                let held: f32 = ui.data(|data| data.get_temp(tallest)).unwrap_or(0.0);
+                let used = ui.min_rect().height();
+                if used > held {
+                    ui.data_mut(|data| data.insert_temp(tallest, used));
+                }
+                ui.set_min_height(held);
             });
         });
         check(ui, d, "preview", &tr("Preview"), true);
