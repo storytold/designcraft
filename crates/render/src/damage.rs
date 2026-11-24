@@ -495,9 +495,44 @@ mod tests {
         assert!(changed.iter().any(|p| p.x < 70.0), "the child's stroke paints its scaled width");
     }
 
+    /// Text in a group paints its descenders below its frame, as a lone frame's do, and moving the
+    /// group damages them where they were and where they are (#3193). The canvas passes its
+    /// composition cache, which finds the text unchanged by the move, so only the group's own
+    /// area covers its text.
+    #[test]
+    fn moving_a_group_damages_its_text_below_the_frame() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let text = "gjpqy gjpqy";
+        let (f, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 200.0, 450.0, 400.0), lid, text, ParaFormat::default()).unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |c| c.over.size = Some(48.0));
+        // Fit Frame to Content: the frame ends at the baseline, the descenders below it.
+        let baseline = designcraft_compose::Cache::new().get(&d, sid, None).frame(f).unwrap().lines[0].baseline;
+        let bottom = baseline + 1.0;
+        d.item_mut(f).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(100.0, 200.0, 450.0, bottom));
+        let i = d.spreads[0].items.iter().position(|it| it.id == f).unwrap();
+        let frame = Arc::make_mut(&mut d.spreads[0]).items.remove(i);
+        let gid = ItemId(d.alloc());
+        let mut group = Item::new(gid, lid, designcraft_doc::Shape::Group, Default::default());
+        group.content = designcraft_doc::Content::Group { items: vec![frame] };
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        // The canvas has composed the version it shows.
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::translate((0.0, -80.0));
+        let dmg = damage_with(&old, &d, Some(&cache)).expect("bounded damage");
+        let changed = changed_pixels_in(&old, &d, &dmg);
+        assert!(changed.iter().any(|p| p.y > bottom), "the descenders paint below the frame");
+    }
+
     /// The pixels a page render changes from `old` to `new`, each checked to lie in the damage.
     fn changed_pixels_in_damage(old: &Document, new: &Document) -> Vec<designcraft_geom::Point> {
-        let dmg = damage(old, new).expect("bounded damage");
+        changed_pixels_in(old, new, &damage(old, new).expect("bounded damage"))
+    }
+
+    /// The pixels a page render changes from `old` to `new`, each checked to lie in `dmg`.
+    fn changed_pixels_in(old: &Document, new: &Document, dmg: &[(SpreadRef, Rect)]) -> Vec<designcraft_geom::Point> {
         let cache = designcraft_compose::Cache::new();
         let mut r = crate::Renderer::new();
         r.threads = 0;
