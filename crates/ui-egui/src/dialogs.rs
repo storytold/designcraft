@@ -271,7 +271,7 @@ mod color_theme_tests {
     /// with [None] puts a page without a parent before the page chosen.
     #[test]
     fn insert_pages_goes_before_a_page_or_at_the_start_with_the_chosen_parent() {
-        use super::super::table_layout_kit as kit;
+        use super::table_layout_kit as kit;
         use egui::accesskit::Role;
         use egui_kittest::{Harness, kittest::Queryable};
         // Facing: [1] [2 3] [4].
