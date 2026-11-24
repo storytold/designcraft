@@ -518,7 +518,7 @@ fn main() -> std::process::ExitCode {
     // A panic that ends the window (egui-wgpu's own) is caught here: never a crash.
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
-            "DesignCraft",
+            designcraft_ui_egui::channel::name(),
             options,
             Box::new(move |cc| {
                 let mut restarted = None;
