@@ -17,7 +17,7 @@ fn fit_report(h: &egui_kittest::Harness<'_, DesignApp>, title: &str) -> String {
     let screen = kit::screen(h);
     let dialog = h.query_all_by_role(Role::Dialog).find(|node| node.accesskit_node().label().as_deref() == Some(title)).map(|node| node.rect());
     let mut outside: Vec<(f32, String)> = h
-        .query_all_by(|node| node.accesskit_node().label().is_some())
+        .query_all_by(|node| node.label().is_some())
         .filter(|node| !screen.contains_rect(node.rect()) && dialog.is_some_and(|d| d.intersects(node.rect())))
         .map(|node| (node.rect().width(), format!("{:?} {:?} {:?}", node.accesskit_node().role(), node.accesskit_node().label(), node.rect())))
         .collect();
