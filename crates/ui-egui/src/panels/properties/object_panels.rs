@@ -1732,7 +1732,10 @@ mod ui223_text_wrap_mode_invert_tests {
         for (key, _) in MODES {
             let name = label(h, key);
             let node = h.get_by(|n| n.role() == role(key) && n.label().as_deref() == Some(name.as_str()));
-            assert_eq!(node.accesskit_node().is_selected().unwrap_or(false), key == mode);
+            // The current mode's button is pressed: a button marked selected reports its two-state value as toggled
+            // (pressed on, the others pressed off), not as a selected item.
+            let pressed = if key == mode { egui::accesskit::Toggled::True } else { egui::accesskit::Toggled::False };
+            assert_eq!(node.accesskit_node().toggled(), Some(pressed), "{key} pressed only while it is the mode");
         }
         let name = label(h, "invert");
         let node = h.get_by(|n| n.role() == role("invert") && n.label().as_deref() == Some(name.as_str()));
