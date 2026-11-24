@@ -29,12 +29,18 @@ fn command_form(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     let fields = command_fields(designcraft_engine::find_command(&command).map_or("", |c| c.params));
     let none = Value::Null;
     let a = Attrs::new("", &none);
+    // The document's layouts, for a parameter that names one: it is picked from them, not typed.
+    let layouts: Vec<(String, (f64, f64))> = app
+        .session
+        .active()
+        .map(|st| st.doc.layouts().iter().map(|l| (l.name.clone(), st.doc.page(l.start).map_or((st.doc.settings.page_width, st.doc.settings.page_height), |p| (p.width, p.height)))).collect())
+        .unwrap_or_default();
     let title = super::dialog_title(app, d);
     Stack::new().id_salt(("command_form", command.clone())).fill_width().show(ui, |ui, _| {
         FieldGroup::new(title.clone()).id_salt(("command_form_fields", command.clone())).show(ui, |ui, _| {
             for f in &fields {
                 let label = format!("{}{}", crate::i18n::tr(lang, &humanize(&f.key)), if f.optional { "" } else { " *" });
-                field(ui, &label, &f.key, |ui| parameter(ui, d, &a, lang, f, &label));
+                field(ui, &label, &f.key, |ui| parameter(ui, d, &a, lang, f, &label, (&layouts, &command)));
             }
         });
         if let Some(status) = d.fields.get("status").and_then(Value::as_str).map(str::to_owned) {
@@ -45,8 +51,24 @@ fn command_form(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
 }
 
 /// The control of one parameter.
-fn parameter(ui: &mut Ui, d: &mut Dialog, a: &Attrs, lang: &str, f: &CommandField, label: &str) {
-    if f.boolean {
+/// `layouts` and `command` are the document's layouts and the command the dialog runs.
+fn parameter(ui: &mut Ui, d: &mut Dialog, a: &Attrs, lang: &str, f: &CommandField, label: &str, (layouts, command): (&[(String, (f64, f64))], &str)) {
+    if f.key == "layout" && layouts.len() > 1 {
+        // Pick which layout: its name, size and the rest of the draft follow it in Alternate Layout Options.
+        let current = d.s("layout");
+        let captions: Vec<String> = layouts.iter().map(|(name, _)| name.clone()).collect();
+        let at = captions.iter().position(|name| *name == current);
+        if let Some(picked) = select_at(ui, &f.key, label, &captions, at, Some(current), true) {
+            let (name, (w, h)) = layouts[picked].clone();
+            d.fields.insert("layout".into(), json!(name));
+            if command == "layout.alternate.options" {
+                d.fields.insert("name".into(), json!(name));
+                d.fields.insert("width".into(), json!(w));
+                d.fields.insert("height".into(), json!(h));
+                d.fields.insert("sizeWas".into(), json!([w, h]));
+            }
+        }
+    } else if f.boolean {
         check(ui, d, a, &f.key, label, true);
     } else if !f.choices.is_empty() {
         // A blank first entry (no value), then the documented values.
