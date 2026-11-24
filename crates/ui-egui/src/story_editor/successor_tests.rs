@@ -65,9 +65,6 @@ fn depth_marks_wait_for_composition_after_editing() {
     let count = |h: &egui_kittest::Harness<'_, DesignApp>| h.output().shapes.iter().map(|s| marks(&s.shape, tick)).sum::<usize>();
     assert!(count(&h) >= 2, "the fixture paints ruler ticks and an overset line");
     h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden()).focus();
-=======
-    h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden()).focus();
->>>>>>> wave2/dialogs-table-layout
     h.run_steps(2);
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
     h.run_steps(2);
