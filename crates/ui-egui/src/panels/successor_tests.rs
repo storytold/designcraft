@@ -14,13 +14,14 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------------------------------------------------
 // Swatches
 
-/// The row of the swatch `name`.
+/// A point on the name of the swatch `name` in its row (a slow click renames only where it lands on the label).
 fn swatch_row(h: &egui_kittest::Harness<'_, DesignApp>, name: &str) -> egui::Pos2 {
     h.query_all_by_role(Role::TreeItem)
         .find(|node| node.accesskit_node().label().is_some_and(|label| crate::panels::swatches::names_swatch(&label, name)))
         .unwrap_or_else(|| panic!("no row for the swatch {name:?}"))
         .rect()
-        .center()
+        .left_center()
+        + vec2(40.0, 0.0)
 }
 
 /// The text fields the panel shows.
@@ -37,12 +38,14 @@ fn swatches_rename_in_place_ends_with_its_document() {
     let name = app.run("swatch.create", color.clone()).unwrap()["name"].as_str().unwrap().to_string();
     let mut h = kit::panel_harness(app, vec2(300.0, 520.0), crate::panels::swatches::show);
     let base = fields(&h);
-    // A first click picks the swatch; a second one, after the double-click time, makes its name a field.
+    // A first click picks the swatch; a second one, after the double-click time, makes its name a field once the
+    // double-click time has passed with no third click.
     let at = swatch_row(&h, &name);
     kit::click_at(&mut h, at);
     kit::steps(&mut h, 40);
     let at = swatch_row(&h, &name);
     kit::click_at(&mut h, at);
+    kit::steps(&mut h, 10);
     assert!(fields(&h) > base, "the name is a field");
     kit::key(&mut h, Key::A, Modifiers::COMMAND);
     kit::type_text(&mut h, "Typed");
@@ -135,28 +138,65 @@ fn settle(h: &mut egui_kittest::Harness<'static, Window>) {
     panic!("the font kinds were never read");
 }
 
-/// Adds a variable font whose named instances are Regular and SemiBold to the installed fonts, opens the Control bar's font
-/// menu, searches for it and opens its styles.
-fn open_family_styles(h: &mut egui_kittest::Harness<'static, Window>, family: &str) {
+/// Whether an open list shows an entry named `name`.
+fn listed(h: &egui_kittest::Harness<'static, Window>, name: &str) -> bool {
+    h.query_all_by_label(name).any(|n| n.accesskit_node().role() == Role::ListBoxOption)
+}
+
+/// The open list's entry named `name` (by role when the name is also elsewhere).
+fn entry(h: &egui_kittest::Harness<'static, Window>, name: &str) -> egui::Pos2 {
+    let nodes: Vec<egui::Rect> = h.query_all_by_label(name).filter(|n| n.accesskit_node().role() == Role::ListBoxOption).map(|n| n.rect()).collect();
+    let nodes = if nodes.is_empty() { h.query_all_by_label(name).map(|n| n.rect()).collect() } else { nodes };
+    nodes.first().unwrap_or_else(|| panic!("the open list shows {name:?}")).center()
+}
+
+/// Adds a variable font whose named instances are Regular and SemiBold to the installed fonts.
+fn add_variable_font(family: &str) {
     designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::variable_font(family).unwrap());
-    let at = font_field(h, designcraft_fonts::DEFAULT_FAMILY);
+}
+
+/// Picks `family` in the Control bar's font family select (showing `shown`): opens it, searches for the family and
+/// clicks its entry.
+fn pick_family(h: &mut egui_kittest::Harness<'static, Window>, shown: &str, family: &str) {
+    let at = font_field(h, shown);
     test_window::click_at(h, at);
     h.event(egui::Event::Text(family.into()));
     h.run_steps(4);
     settle(h);
-    let at = h.get_by_label("Show Styles").rect().center();
+    let at = entry(h, family);
     test_window::click_at(h, at);
 }
 
-/// Successor of `family_menu_selects_a_synthetic_named_instance`: in the framework font menu a catalogued variable font's named
-/// instance is listed under its family and picking it sets the family and that style.
+/// Opens the Control bar's Font Style select: the styles of the family the text has.
+fn open_styles(h: &mut egui_kittest::Harness<'static, Window>) {
+    let at = h
+        .query_all_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Font Style"))
+        .map(|n| n.rect())
+        .min_by(|a, b| a.min.y.total_cmp(&b.min.y).then(a.min.x.total_cmp(&b.min.x)))
+        .expect("the Control bar has a Font Style select")
+        .center();
+    test_window::click_at(h, at);
+    h.run_steps(4);
+}
+
+/// Adds a variable font whose named instances are Regular and SemiBold to the installed fonts, picks it in the Control
+/// bar's font family select and opens the Font Style select, which lists the family's styles. (The Control bar's font
+/// field is the framework select: a family's styles are in the Font Style select next to it, not under the family.)
+fn open_family_styles(h: &mut egui_kittest::Harness<'static, Window>, family: &str) {
+    add_variable_font(family);
+    pick_family(h, designcraft_fonts::DEFAULT_FAMILY, family);
+    open_styles(h);
+}
+
+/// Successor of `family_menu_selects_a_synthetic_named_instance`: in the framework font menus a catalogued variable font's
+/// named instance is listed among its family's styles and picking it sets the family and that style.
 #[test]
 fn font_menu_selects_a_synthetic_named_instance() {
     let (mut h, _) = typing();
     let family = "Synthetic Menu Wiring";
     open_family_styles(&mut h, family);
-    assert!(h.query_by_label("SemiBold").is_some(), "the named instance is listed");
-    let at = h.get_by_label("SemiBold").rect().center();
+    assert!(listed(&h, "SemiBold"), "the named instance is listed");
+    let at = entry(&h, "SemiBold");
     test_window::click_at(&mut h, at);
     let attrs = h.state_mut().app.run("type.selectionAttrs", json!({})).unwrap();
     assert_eq!((attrs["chars"]["fontFamily"].as_str(), attrs["chars"]["fontStyle"].as_str()), (Some(family), Some("SemiBold")));
@@ -164,26 +204,21 @@ fn font_menu_selects_a_synthetic_named_instance() {
 }
 
 /// Successor of `cold_family_menu_contains_named_instances` (which needs the pinned Bricolage fixture and is ignored), on a
-/// synthetic variable font: the font menu lists a catalogued family's named instances the first time it shows the family,
+/// synthetic variable font: the font menus list a catalogued family's named instances the first time they show the family,
 /// and the family's styles are the same after the menu was closed and opened again.
 #[test]
 fn font_menu_contains_the_named_instances_of_a_catalogued_variable_font() {
     let (mut h, _) = typing();
     let family = "Synthetic Cold Instances";
     open_family_styles(&mut h, family);
-    assert!(h.query_by_label("SemiBold").is_some(), "the first listing has the named instance");
+    assert!(listed(&h, "SemiBold"), "the first listing has the named instance");
     let first = designcraft_fonts::FontDb::global().scoped(0).styles(family);
     assert!(first.contains(&"SemiBold".to_string()), "{first:?}");
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
-    let at = font_field(&h, designcraft_fonts::DEFAULT_FAMILY);
-    test_window::click_at(&mut h, at);
-    h.event(egui::Event::Text(family.into()));
-    h.run_steps(4);
-    settle(&mut h);
-    let at = h.get_by_label("Show Styles").rect().center();
-    test_window::click_at(&mut h, at);
-    assert!(h.query_by_label("SemiBold").is_some(), "the reopened menu lists it too");
+    assert!(!listed(&h, "SemiBold"), "Escape closed the list");
+    open_styles(&mut h);
+    assert!(listed(&h, "SemiBold"), "the reopened menu lists it too");
     assert_eq!(designcraft_fonts::FontDb::global().scoped(0).styles(family), first, "the styles are cached unchanged");
 }
 
@@ -194,9 +229,8 @@ fn font_menu_discovers_and_caches_named_instances() {
     let (mut h, _) = typing();
     let family = "Synthetic Cold Menu";
     open_family_styles(&mut h, family);
-    let listed: Vec<String> =
-        ["Regular", "SemiBold"].iter().filter(|style| h.query_by_label(style).is_some()).map(|style| (*style).to_string()).collect();
-    assert!(listed.contains(&"SemiBold".to_string()), "{listed:?}");
+    let shown: Vec<String> = ["Regular", "SemiBold"].iter().filter(|style| listed(&h, style)).map(|style| (*style).to_string()).collect();
+    assert!(shown.contains(&"SemiBold".to_string()), "{shown:?}");
     let styles = designcraft_fonts::FontDb::global().scoped(0).styles(family);
     assert_eq!(styles, ["Regular", "SemiBold"]);
     h.run_steps(4);

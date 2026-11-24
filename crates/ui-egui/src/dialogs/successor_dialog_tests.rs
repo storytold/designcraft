@@ -23,7 +23,8 @@ fn section_form_enter_and_escape_belong_to_the_open_style_menu() {
     kit::open(&mut app, "layout.section");
     let mut h = kit::harness(app);
     for pressed in [Key::Enter, Key::Escape] {
-        kit::click(&mut h, &[Role::ComboBox], "Style:", 0);
+        // The Style menu is named by its group, as the framework form names it: Page Numbering.
+        kit::click(&mut h, &[Role::ComboBox], "Page Numbering", 0);
         kit::key(&mut h, pressed, Modifiers::NONE);
         assert!(h.state().ui.dialog.is_some(), "{pressed:?} with the menu open leaves the dialog open");
         assert!(h.state().session.active().unwrap().doc.sections.iter().all(|s| s.start_number != Some(0)));
@@ -48,7 +49,11 @@ fn section_form_keeps_its_actions_in_view() {
             kit::open(&mut app, "layout.section");
             let mut h = kit::harness_sized(app, size);
             let tr = |s| crate::i18n::tr(language, s);
-            for expected in [tr("Numbering & Section Options…").trim_end_matches('…'), tr("OK"), tr("Cancel"), tr("Start Section")] {
+            // The framework window is titled with the "Numbering & Section Options" key, which Arabic words differently
+            // from the menu item's; either wording is the title.
+            let titles = [tr("Numbering & Section Options"), tr("Numbering & Section Options…").trim_end_matches('…')];
+            assert!(titles.iter().any(|title| kit::in_view(&h, title)), "{language} {size:?}: the title {titles:?} is in the window");
+            for expected in [tr("OK"), tr("Cancel"), tr("Start Section")] {
                 assert!(kit::in_view(&h, expected), "{language} {size:?}: {expected} is in the window");
             }
             if size.x > 1000.0 {
@@ -168,10 +173,13 @@ fn color_picker_form_keeps_a_typed_channel_value() {
 /// ink is a percent (M 1 is 1 %), and typed R, G or B values make it RGB.
 #[test]
 fn color_picker_form_cmyk_stays_cmyk_unless_rgb_values_are_typed() {
-    let cmyk = json!({"target": "fill", "hex": "#ff8000", "model": "cmyk", "cmyk": [0, 50, 100, 0]});
+    // The fields the Fill chip opens the picker with for C0 M50 Y100 K0 (`picker_fields`): the hex is the inks' display
+    // colour, so the picker keeps the inks as typed.
+    let cmyk = crate::panels::swatches::picker_fields(Some(designcraft_color::Color::cmyk(0.0, 0.5, 1.0, 0.0)), false);
+    let hex = cmyk["hex"].as_str().unwrap().to_owned();
     // Picked by hex: converted to CMYK.
     let (mut h, id) = picker(cmyk.clone());
-    kit::retype_showing(&mut h, "ff8000", "3366cc");
+    kit::retype_showing(&mut h, &hex, "3366cc");
     kit::click(&mut h, &[Role::Button], "OK", 0);
     assert!(matches!(fill(&h, id), designcraft_color::Color::Cmyk { .. }), "{:?}", fill(&h, id));
     // A typed C/M/Y/K percent is a percent: M 1 is 1 %.
@@ -296,12 +304,13 @@ fn paragraph_style_options_form_justification_fits_without_horizontal_scrolling(
     app.run("style.paragraph.create", json!({"name": "Headline"})).unwrap();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Headline", "section": "justify"})));
     let h = kit::harness_sized(app, vec2(1200.0, 800.0));
-    let (minimum, desired) = (kit::rect_of(&h, "Minimum"), kit::rect_of(&h, "Desired"));
+    // Each spacing row's fields are named by their captions, with the colon a field caption has.
+    let (minimum, desired) = (kit::rect_of(&h, "Minimum:"), kit::rect_of(&h, "Desired:"));
     let (minimum, desired) = (minimum.expect("Minimum is shown"), desired.expect("Desired is shown"));
     // The spacing table has its own grid: the two headers are one column apart, not a whole stretched column.
     let gap = desired.min.x - minimum.min.x;
     assert!(gap < 200.0, "Minimum/Desired headers {gap:.1} pt apart: {minimum:?} {desired:?}");
-    for expected in ["Maximum", "Single Word Justification:", "Composer:", "Insert Kashidas:", "Korean Line Breaks:"] {
+    for expected in ["Maximum:", "Single Word Justification:", "Composer:", "Insert Kashidas:", "Korean Line Breaks:"] {
         assert!(kit::in_view(&h, expected), "{expected} is in the window");
     }
 }
@@ -435,6 +444,25 @@ fn field(h: &egui_kittest::Harness<'_, DesignApp>, key: &str) -> Option<Value> {
     h.state().ui.dialog.as_ref().unwrap().fields.get(key).cloned()
 }
 
+/// Clicks the button named `label` of the dialog titled `title`, not the button of that name of a dialog under it: one
+/// in the dialog's own nodes, else one inside its bounds.
+fn click_in_dialog(h: &mut egui_kittest::Harness<'_, DesignApp>, title: &str, label: &str) {
+    let at = {
+        let dialog = h.get_by_role_and_label(Role::Dialog, title);
+        let bounds = dialog.rect();
+        let own: Vec<egui::Pos2> = dialog.query_all_by_role_and_label(Role::Button, label).map(|node| node.rect().center()).collect();
+        own.last().copied().unwrap_or_else(|| {
+            h.query_all_by_role_and_label(Role::Button, label)
+                .map(|node| node.rect())
+                .filter(|rect| bounds.contains_rect(*rect))
+                .last()
+                .unwrap_or_else(|| panic!("no button {label:?} in the dialog {title:?}"))
+                .center()
+        })
+    };
+    kit::click_at(h, at);
+}
+
 /// Successor of `find_change_gives_the_found_text_a_change_format`: Specify attributes to change opens the Change Format
 /// Settings, picking the eggs character style and OK makes it the Change Format (the box and Change to's help show it),
 /// Escape closes the settings only, and Change All formats every lowercase "eggs" and leaves the words.
@@ -456,7 +484,8 @@ fn find_change_form_gives_the_found_text_a_change_format() {
     }
     // Style Options > Character Style: eggs.
     kit::pick(&mut h, "Character Style:", "eggs");
-    kit::click(&mut h, &[Role::Button], "OK", 0);
+    // The settings' own OK: Find/Change under it has an OK of its own.
+    click_in_dialog(&mut h, "Change Format Settings", "OK");
     assert_eq!((field(&h, CHANGE_FORMAT), field(&h, FORMAT_EDIT)), (Some(json!({"charStyle": "eggs"})), None));
     assert!(kit::shows(&h, "Character Style: eggs"), "the box shows it");
     assert!(kit::shows(&h, TIP), "Change to's help");
@@ -498,7 +527,8 @@ fn find_change_form_find_format_finds_only_text_with_it() {
     kit::click(&mut h, &[Role::Button], "Specify attributes to find", 0);
     assert!(kit::shows(&h, "Find Format Settings"));
     kit::pick(&mut h, "Character Style:", "eggs");
-    kit::click(&mut h, &[Role::Button], "OK", 0);
+    // The settings' own OK: Find/Change under it has an OK of its own.
+    click_in_dialog(&mut h, "Find Format Settings", "OK");
     assert_eq!((field(&h, FIND_FORMAT), field(&h, CHANGE_FORMAT)), (Some(json!({"charStyle": "eggs"})), None));
     assert!(kit::shows(&h, "Character Style: eggs") && kit::shows(&h, TIP));
     kit::click(&mut h, &[Role::Button], "Count", 0);
@@ -767,9 +797,14 @@ fn framework_dialogs_cancel_and_reopen_without_applying_edits_after_resizing() {
 // ---------------------------------------------------------------------------------------------------------------------
 // The dialog window
 
-/// The title text of the dialog named `title`: a node of that name that is not the dialog frame.
+/// The title text of the dialog named `title`: the topmost node of that name that is not the dialog frame (New
+/// Document's preset tab strip is named "New Document" too).
 fn title_at(h: &egui_kittest::Harness<'_, DesignApp>, title: &str) -> egui::Pos2 {
-    kit::rect_of(h, title).unwrap_or_else(|| panic!("no title {title:?}")).center()
+    h.query_all_by_label(title)
+        .filter(|node| node.accesskit_node().role() != Role::Dialog)
+        .map(|node| node.rect().center())
+        .min_by(|a, b| a.y.total_cmp(&b.y))
+        .unwrap_or_else(|| panic!("no title {title:?}"))
 }
 
 /// Successor of `dragging_the_title_moves_the_dialog_and_dragging_the_body_does_not`: Insert Table starts centred; a drag on

@@ -2,7 +2,10 @@
 //! shipping window with the craft UI runtime, whose context menus are the framework's.
 
 use designcraft_geom::Unit;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT as _, Queryable},
+};
 
 use super::*;
 
@@ -281,21 +284,42 @@ fn screen_of(h: &Harness<'_, DesignApp>, x: f64, y: f64) -> Pos2 {
     xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
 }
 
-/// A menu row: a button that isn't a toggle, named by its label, then its shortcut if it has
-/// one. Toggle buttons with the same name (the Task Bar's icons) don't match, nor do buttons
-/// right of the canvas (the Properties panel's Arrange).
+/// Whether `node` is shown: kittest also lists hidden nodes (a closing menu keeps its rows under a hidden root while it
+/// fades, and the runtime keeps a hidden hit-test node beside some components), so a node counts only when neither it nor
+/// a node above it is hidden.
+fn shown_node(node: &egui_kittest::Node<'_>) -> bool {
+    if node.accesskit_node().is_hidden() {
+        return false;
+    }
+    let mut at = node.parent();
+    while let Some(up) = at {
+        if up.accesskit_node().is_hidden() {
+            return false;
+        }
+        at = up.parent();
+    }
+    true
+}
+
+/// A shown row of an open framework menu named `label`: a MenuItem, MenuItemCheckBox or MenuItemRadio node (the
+/// framework names a row by its label alone; its shortcut is a child). Buttons with the same name (the Task Bar's
+/// Bring to Front, the Properties panel's Arrange) are not rows, nor is anything right of the canvas.
 fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
+    use egui::accesskit::Role;
     let right = f64::from(h.state().canvas_rect.map_or(f32::INFINITY, |r| r.max.x));
-    h.query_by(move |n| {
-        matches!(n.role(), egui::accesskit::Role::Button | egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemRadio)
-            && n.toggled().is_none()
-            && n.bounding_box().is_none_or(|b| b.x0 < right)
-            && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
-    })
+    let mut rows = h
+        .query_all_by(move |n| {
+            matches!(n.role(), Role::MenuItem | Role::MenuItemCheckBox | Role::MenuItemRadio)
+                && n.bounding_box().is_none_or(|b| b.x0 < right)
+                && n.label().is_some_and(|l| l == label)
+        })
+        .filter(shown_node);
+    let row = rows.next();
+    assert!(rows.next().is_none(), "two or more shown menu rows named {label:?}");
+    row
 }
 
 fn enabled(h: &Harness<'_, DesignApp>, label: &str) -> bool {
-    use egui_kittest::kittest::NodeT;
     !menu_row(h, label).unwrap_or_else(|| panic!("no menu row {label}")).accesskit_node().is_disabled()
 }
 
@@ -307,7 +331,7 @@ fn selected(h: &Harness<'_, DesignApp>) -> Vec<u64> {
     h.state().session.doc().unwrap().selection.items.iter().map(|i| i.0).collect()
 }
 
-/// Successor of `right_clicking_an_object_selects_it_and_its_menu_arranges_it` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `right_clicking_an_object_selects_it_and_its_menu_arranges_it` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -332,7 +356,7 @@ fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
     assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
 }
 
-/// Successor of `right_clicking_empty_canvas_offers_paste_after_a_copy` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `right_clicking_empty_canvas_offers_paste_after_a_copy` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -346,7 +370,13 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert_eq!(selected(&h), [a], "a right-click on nothing keeps the selection");
     assert!(menu_row(&h, "Arrange").is_none(), "the page menu, not the object menu");
     assert!(enabled(&h, "Paste in Place"));
-    assert!(menu_row(&h, "✓ Show/Hide Rulers").is_some(), "toggles show their state");
+    // A toggle row shows its state: Show/Hide Rulers is a check row, checked while the rulers show.
+    let rulers = menu_row(&h, "Show/Hide Rulers").expect("the Show/Hide Rulers row");
+    assert_eq!(
+        (rulers.accesskit_node().role(), rulers.accesskit_node().toggled()),
+        (egui::accesskit::Role::MenuItemCheckBox, Some(egui::accesskit::Toggled::True)),
+        "toggles show their state"
+    );
     // Escape closes the menu and does nothing else: the tool would deselect, the shortcuts
     // would switch to the Selection tool.
     h.key_press(egui::Key::Escape);
@@ -359,7 +389,7 @@ fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
     assert_eq!(spread_items(&h).len(), 2);
 }
 
-/// Successor of `right_clicking_another_object_while_the_menu_is_open_reopens_it_there` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `right_clicking_another_object_while_the_menu_is_open_reopens_it_there` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -377,7 +407,7 @@ fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
     assert!(menu_row(&h, "Arrange").is_some(), "the menu reopens at the new click");
 }
 
-/// Successor of `a_context_menu_in_one_pane_keeps_the_keys_from_the_other` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `a_context_menu_in_one_pane_keeps_the_keys_from_the_other` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -397,7 +427,7 @@ fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
     assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
 }
 
-/// Successor of `right_clicking_text_keeps_the_selected_text_or_places_the_caret` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `right_clicking_text_keeps_the_selected_text_or_places_the_caret` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -423,7 +453,7 @@ fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
     assert!(menu_row(&h, "Paste without Formatting").is_some());
 }
 
-/// Successor of `rows_hidden_in_the_menu_bar_are_hidden_in_context_menus` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `rows_hidden_in_the_menu_bar_are_hidden_in_context_menus` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -719,7 +749,7 @@ fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
     assert!(!app.canvas_ime());
 }
 
-/// Successor of `enter_or_tab_in_a_panel_field_leave_the_selected_text_alone` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a Button, a MenuItem or a MenuItemRadio node.
+/// Successor of `enter_or_tab_in_a_panel_field_leave_the_selected_text_alone` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime; a menu row is a shown MenuItem, MenuItemCheckBox or MenuItemRadio node.
 #[test]
 fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
     for key in [egui::Key::Enter, egui::Key::Tab] {
@@ -730,7 +760,13 @@ fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
         app.run("text.select", json!({"story": f["story"], "anchor": 1, "focus": 4})).unwrap();
         assert!(app.session.wants_text());
         let mut h = harness(app);
-        let size = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some("12 pt")).unwrap();
+        // The framework's size field is a SpinButton named Font Size whose value is the number; its unit is apart.
+        let size = h
+            .get_all_by_role(egui::accesskit::Role::SpinButton)
+            .find(|n| {
+                shown_node(n) && n.accesskit_node().label().as_deref() == Some("Font Size") && n.accesskit_node().value().as_deref() == Some("12")
+            })
+            .expect("a shown Font Size field showing 12");
         size.focus();
         h.run_steps(1);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);

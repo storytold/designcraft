@@ -132,6 +132,23 @@ fn scope_dialog_with_tool(text: &str, end: usize, tool: Option<&str>) -> (Rig, e
     (app, ctx, screen, sid)
 }
 
+/// Leaves no control focused, then a few frames.
+fn unfocus(app: &mut Rig) {
+    let ctx = app.0.ctx.clone();
+    ctx.memory_mut(|memory| {
+        if let Some(id) = memory.focused() {
+            memory.surrender_focus(id);
+        }
+    });
+    kit::steps(&mut app.0, 2);
+}
+
+/// A few frames for a dialog that just replaced the open one: a new dialog's first pass only measures it and shows nothing to
+/// click or press.
+fn settle(app: &mut Rig) {
+    kit::steps(&mut app.0, 3);
+}
+
 fn scope_selected(app: &DesignApp, sid: designcraft_engine::doc::StoryId, a: usize, b: usize) {
     let t = app.session.doc().unwrap().selection.text.unwrap();
     assert_eq!((t.story, t.range(), t.cell), (sid, a..b, None));
@@ -176,6 +193,9 @@ fn scope_confirm_case(action: &str) {
     match action {
         "OK" => scope_click(&mut app, &ctx, screen, "OK"),
         "Enter" => {
+            // The setup picked the scope from the Search picker, so a focused control holds the keys, and a focused picker or
+            // button takes Enter itself. The old window had no focused control: Enter with nothing focused is the dialog's OK.
+            unfocus(&mut app);
             dialog_frame(
                 &mut app,
                 &ctx,
@@ -360,6 +380,7 @@ fn find_scope_form_tool_replacement_releases_bounds() {
         assert!(app.session.ui_requests.is_empty());
         assert_eq!((app.session.active_index(), app.session.documents().len()), active);
         scope_state_unchanged(&app, &before);
+        settle(&mut app);
         scope_click(&mut app, &ctx, screen, "Cancel");
         assert!(app.ui.dialog.is_none());
         assert_eq!((app.session.active_index(), app.session.documents().len()), active);
@@ -447,6 +468,7 @@ fn find_scope_form_native_pdf_replacement_releases_bounds() {
         assert!(app.pending_pdf.is_none());
         assert_eq!((app.session.active_index(), app.session.documents().len()), active);
         scope_state_unchanged(&app, &before);
+        settle(&mut app);
         match dismissal {
             "Cancel" => scope_click(&mut app, &ctx, screen, "Cancel"),
             "Escape" => {
@@ -709,6 +731,7 @@ fn find_scope_form_failed_native_drop_alert_releases_bounds() {
         assert_eq!(app.session.doc().unwrap().revision, revision);
         assert_eq!(app.session.doc().unwrap().uid, uid);
         assert_eq!(app.session.doc().unwrap().history.undo.len(), history);
+        settle(&mut app);
         match dismissal {
             "OK" => scope_click(&mut app, &ctx, screen, "OK"),
             "Escape" => {

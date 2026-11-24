@@ -319,9 +319,10 @@ fn more_options_grid_button_keeps_first_line_only() {
     h.run_steps(3);
     h.get_all_by_label("More Options").nth(1).unwrap().click();
     h.run_steps(3);
-    assert_eq!(h.get_by_label("Align to Baseline Grid").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    // The framework's icon button shows its on look as the selected state.
+    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").accesskit_node().is_selected(), Some(true));
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["gridAlign"], "firstLineOnly");
-    h.get_by_label("Align to Baseline Grid").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").click();
     h.run_steps(3);
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["gridAlign"], "none");
 }
@@ -367,13 +368,16 @@ fn paragraph_panel_keeps_first_line_only() {
     app.run("type.para", json!({"attrs": {"gridAlign": "firstLineOnly"}})).unwrap();
     let mut h = panel_harness(app, paragraph_panel);
     h.run_steps(3);
-    assert_eq!(h.get_by_label("Align to Baseline Grid").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
-    h.get_by_label("Align to Baseline Grid").click();
+    // The framework's icon button shows its on look as the selected state.
+    assert_eq!(h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").accesskit_node().is_selected(), Some(true));
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").click();
     h.run_steps(3);
     assert_eq!(text_attrs(h.state_mut()).unwrap()["para"]["gridAlign"], "firstLineOnly");
     h.get_all_by_label("Paragraph").find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).expect("the panel menu button").click();
     h.run_steps(3);
-    let _ = h.get_by_label("Only Align First Line to Grid");
+    // The row is named without its tick; its check is its toggle.
+    let row = h.get_by_label("Only Align First Line to Grid");
+    assert_eq!(row.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "the panel menu checks Only Align First Line to Grid");
 }
 
 /// Successor of `paragraph_panel_menu_toggles_ignore_optical_margin` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime.
@@ -425,21 +429,21 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
         "Hyphenate",
         "Do Not Align to Baseline Grid",
     ] {
-        // A framework text field's text part carries its field's name too: one or more nodes.
-        assert!(h.query_all_by_label(l).next().is_some(), "{l}");
+        // An indent's or spacing's icon carries the field's name too: at least one node is named so.
+        let _ = h.get_all_by_label(l);
     }
     let para = |h: &mut Harness<'static, DesignApp>| text_attrs(h.state_mut()).unwrap()["para"].clone();
     // Space Between Paragraphs Using Same Style starts at Ignore; a value is set, and emptying
     // the field ignores it again.
     assert!(para(&mut h)["sameParaStyleSpacing"].is_null());
-    let field = h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node).nth(6).unwrap();
+    let field = same_style_spacing(&h);
     field.focus();
     field.type_text("6 pt");
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert_eq!(para(&mut h)["sameParaStyleSpacing"], 6.0);
-    h.get_all_by_role(egui::accesskit::Role::TextInput).filter(field_node).nth(6).unwrap().focus();
+    same_style_spacing(&h).focus();
     h.run_steps(1);
     for _ in 0..8 {
         h.key_press(egui::Key::Backspace);
@@ -448,10 +452,10 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
     h.run_steps(3);
     assert!(para(&mut h)["sameParaStyleSpacing"].is_null(), "Ignore");
     // Shading on, then the grid buttons and Only Align First Line to Grid from the menu.
-    h.get_by_label("Shading").click();
+    h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Shading").click();
     h.run_steps(3);
     assert_eq!(para(&mut h)["shadingOn"], true);
-    h.get_by_label("Align to Baseline Grid").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Align to Baseline Grid").click();
     h.run_steps(3);
     assert_eq!(para(&mut h)["gridAlign"], "allLines");
     h.get_all_by_label("Paragraph").find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button).expect("the panel menu button").click();
@@ -463,7 +467,7 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
     h.get_by_label("Only Align First Line to Grid").click();
     h.run_steps(3);
     assert_eq!(para(&mut h)["gridAlign"], "firstLineOnly");
-    h.get_by_label("Do Not Align to Baseline Grid").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Do Not Align to Baseline Grid").click();
     h.run_steps(3);
     assert_eq!(para(&mut h)["gridAlign"], "none");
     // Keep Options… opens the selected paragraphs' Keep Options, and OK applies them.
@@ -481,6 +485,24 @@ fn paragraph_panel_is_laid_out_as_indesigns_with_its_panel_menu() {
 
 fn kerning(app: &mut DesignApp) -> Value {
     text_attrs(app).unwrap()["chars"]["kerning"].clone()
+}
+
+/// Whether `n` is a field a person sees: a number field (spin button) or a text field. The editor inside each one folds
+/// into the field's own node as a hidden text input, which is not a field of its own.
+fn is_field(n: &egui_kittest::kittest::AccessKitNode<'_>) -> bool {
+    matches!(n.role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput) && !n.is_hidden()
+}
+
+/// The rect of the field named `label`: not its caption or icon, which carry the same name.
+fn field_rect(h: &Harness<'_, DesignApp>, label: &str) -> egui::Rect {
+    h.query_all_by(|n| is_field(n) && n.label().as_deref() == Some(label)).next().unwrap_or_else(|| panic!("no field named {label}")).rect()
+}
+
+/// The Paragraph panel's Space Between Paragraphs Using Same Style field (its icon carries the name too).
+fn same_style_spacing<'h>(h: &'h Harness<'_, DesignApp>) -> egui_kittest::Node<'h> {
+    h.query_all_by(|n| is_field(n) && n.label().as_deref() == Some("Space Between Paragraphs Using Same Style"))
+        .next()
+        .expect("the Space Between Paragraphs Using Same Style field")
 }
 
 /// A harness drawing `panel` for `app` (fonts installed before the first frame).
@@ -513,12 +535,10 @@ fn properties_kerning_menu_sets_zero_kerning() {
     let mut h = panel_harness(text_app(), show);
     h.run_steps(3);
     assert_eq!(kerning(h.state_mut())["kind"], "metrics");
-    // The kerning field's presets list (Metrics, Optical, 0) opens with Alt+Down from the focused field.
-    named_field(&h, "Kerning").focus();
-    h.run_steps(1);
-    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowDown);
+    // The Kerning field's presets list holds Metrics, Optical and 0 (its icon carries the name too).
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Kerning").get_by_role_and_label(egui::accesskit::Role::Button, "Presets").click();
     h.run_steps(2);
-    h.query_all_by_label("0").last().expect("the presets list's 0 row").click();
+    h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "0").click();
     h.run_steps(2);
     assert_eq!(kerning(h.state_mut())["kind"], "none");
 }
@@ -597,16 +617,9 @@ fn dragging_one_of_several_axis_sliders_is_one_undo_step() {
 fn character_panel_has_kerning_and_takes_a_typed_manual_value() {
     let mut h = panel_harness(text_app(), character_panel);
     h.run_steps(3);
-    // The kerning field takes a manual value typed into it (its presets list holds Metrics, Optical and 0).
-    let field = named_field(&h, "Kerning");
-    field.focus();
-    h.run_steps(1);
-    // It shows "Metrics": select that before typing over it.
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    named_field(&h, "Kerning").type_text("-40");
-    h.run_steps(1);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
+    // The Kerning field itself takes a manual value (its caption carries the name too).
+    let field = field_rect(&h, "Kerning");
+    type_in_field(&mut h, field, "-40");
     assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -40.0}));
 }
 
@@ -619,17 +632,10 @@ fn character_size_field_reads_the_unit_typed() {
     h.run_steps(3);
     let size = |app: &mut DesignApp| text_attrs(app).unwrap()["chars"]["size"].as_f64().unwrap();
     for (typed, pt) in [("13Q", 13.0 * designcraft_geom::units::PT_PER_Q), ("5mm", 5.0 * designcraft_geom::units::PT_PER_MM), ("14", 14.0)] {
-        let field = h
-            .get_all_by_role(egui::accesskit::Role::TextInput)
-            .find(|n| n.value().is_some_and(|v| v.ends_with(" pt") && !v.starts_with('(') && v != "0 pt"))
-            .unwrap();
-        field.focus();
-        h.run_steps(1);
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-        h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.is_focused()).unwrap().type_text(typed);
-        h.run_steps(1);
-        h.key_press(egui::Key::Enter);
-        h.run_steps(3);
+        // The Size field by its name (its caption carries the name too); the framework paints the unit beside the
+        // number instead of writing it into the value.
+        let field = field_rect(&h, "Size");
+        type_in_field(&mut h, field, typed);
         let got = size(h.state_mut());
         assert!((got - pt).abs() < 1e-6, "{typed}: {got} pt, want {pt}");
     }
@@ -643,15 +649,9 @@ fn a_manual_kerning_value_at_a_caret_kerns_the_pair() {
     app.run("text.select", json!({"story": story.0, "anchor": 1, "focus": 1})).unwrap();
     let mut h = panel_harness(app, character_panel);
     h.run_steps(3);
-    let field = named_field(&h, "Kerning");
-    field.focus();
-    h.run_steps(1);
-    // It shows "Metrics": select that before typing over it.
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    named_field(&h, "Kerning").type_text("-80");
-    h.run_steps(1);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
+    // The Kerning field itself takes a manual value (its caption carries the name too).
+    let field = field_rect(&h, "Kerning");
+    type_in_field(&mut h, field, "-80");
     let st = h.state_mut().session.active().unwrap().doc.story(story).unwrap().format_after(0).over.kerning;
     assert_eq!(st, Some(designcraft_doc::Kerning::Manual(-80.0)), "A of the A|V pair");
     assert_eq!(kerning(h.state_mut()), json!({"kind": "manual", "value": -80.0}));
@@ -686,8 +686,18 @@ fn clicking_a_swatch_chip_in_the_appearance_fill_menu_applies_it() {
     // Click the *chip* (the row's left edge), not the name.
     let name = "[Paper]".to_string();
     let row = h.get_by_label(&name).rect();
-    // The row spans the menu (chip + name), not just the name text.
-    assert!(row.width() > 150.0, "the row is the full menu width, chip included: {row:?}");
+    // The row spans the menu (chip + name), not just the name text: as wide as the popover's swatch list.
+    let list = h
+        .query_all_by(|n| {
+            matches!(n.role(), egui::accesskit::Role::List | egui::accesskit::Role::ListBox) && n.label().as_deref() == Some("Swatches")
+        })
+        .next()
+        .expect("the Fill popover's swatch list")
+        .rect();
+    assert!(
+        row.left() <= list.left() + 8.0 && row.width() >= list.width() - 16.0,
+        "the row is the full menu width, chip included: {row:?} in {list:?}"
+    );
     let p = row.min + vec2(8.0, row.height() / 2.0);
     h.hover_at(p);
     h.drag_at(p);
@@ -810,14 +820,8 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
         .unwrap();
     app.run("text.select", json!({"story": f["story"], "anchor": 0, "focus": 15})).unwrap();
     let mut h = panel(app);
-    // The button, not the tooltip that names it while the pointer rests on it after a click.
-    let button = |h: &Harness<'_, DesignApp>| {
-        h.get_all_by_label("Bulleted List").find(|n| n.role() != egui::accesskit::Role::Tooltip).expect("the Bulleted List button").rect().center()
-    };
-    let at = button(&h);
-    h.hover_at(at);
-    h.drag_at(at);
-    h.drop_at(at);
+    // The button, not its tooltip, which carries the name too once the pointer rests on it.
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Bulleted List").click();
     h.run_steps(3);
     let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
     assert_eq!(
@@ -825,10 +829,7 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
         (Some("bullets"), Some(18.0), Some(-18.0))
     );
     assert_eq!(crate::menus::checked(h.state(), "list.bullets", &json!({})), Some(true), "Type › Apply Bullets shows it");
-    let at = button(&h);
-    h.hover_at(at);
-    h.drag_at(at);
-    h.drop_at(at);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Bulleted List").click();
     h.run_steps(3);
     let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
     assert_eq!((a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64()), (Some("none"), Some(0.0)));
@@ -962,12 +963,7 @@ fn properties_text_wrap_shows_and_sets_the_offsets() {
     // The fields between the Text Wrap heading and Quick Actions: Top, Left, Bottom, Right.
     let fields = |h: &Harness<'_, DesignApp>| {
         let (top, bottom) = (h.get_by_label("Text Wrap").rect().bottom(), h.get_by_label("Quick Actions").rect().top());
-        let mut v: Vec<egui::Rect> = h
-            .get_all_by_role(egui::accesskit::Role::TextInput)
-            .filter(field_node)
-            .map(|n| n.rect())
-            .filter(|r| r.center().y > top && r.center().y < bottom)
-            .collect();
+        let mut v: Vec<egui::Rect> = h.query_all_by(is_field).map(|n| n.rect()).filter(|r| r.center().y > top && r.center().y < bottom).collect();
         v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
         v
     };
@@ -1029,7 +1025,7 @@ fn the_corner_shape_list_has_glyph_rows_and_picks_a_shape() {
     let mut h = panel(app);
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
     h.run_steps(3);
-    // The select's list holds its rows as options.
+    // The select's list rows are options.
     let rows = ["None", "Fancy", "Bevel", "Inset", "Inverse Rounded", "Rounded"];
     for r in rows {
         let _ = h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, r);
@@ -1041,6 +1037,7 @@ fn the_corner_shape_list_has_glyph_rows_and_picks_a_shape() {
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Corner Shape").click();
     h.run_steps(3);
     use egui_kittest::kittest::NodeT;
+    // An option marks the current value as its selected state.
     let n = h.get_by_role_and_label(egui::accesskit::Role::ListBoxOption, "Bevel");
     assert_eq!(n.accesskit_node().is_selected(), Some(true), "the current shape is marked");
     // The stroke type list has the same rows, by name.
@@ -1066,18 +1063,9 @@ fn the_fill_menu_sets_a_tint() {
     h.run_steps(3);
     // A frame that isn't a text frame: no Apply To.
     assert!(h.query_by_label("Apply To:").is_none());
-    // The field on the Tint row (Opacity also reads 100%).
-    // The row's caption (the field carries the same name).
-    let row = h.get_by_role_and_label(egui::accesskit::Role::Label, "Tint:").rect();
-    h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
-        .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
-        .expect("the Tint field")
-        .click();
-    h.run_steps(2);
-    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-    h.event(egui::Event::Text("25".into()));
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
+    // The Tint field by its name (its caption carries the name too; Opacity is a field of its own name).
+    let field = field_rect(&h, "Tint:");
+    type_in_field(&mut h, field, "25");
     let fill = h.state().session.active().unwrap().doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.clone();
     assert_eq!((fill.swatch.as_str(), fill.tint), (CYAN, 0.25), "the tint, on the same swatch");
 }
@@ -1095,17 +1083,9 @@ fn a_tint_on_several_objects_keeps_each_ones_swatch() {
     let mut h = panel(app);
     h.get_by_label("Fill swatch").click();
     h.run_steps(3);
-    // The row's caption (the field carries the same name).
-    let row = h.get_by_role_and_label(egui::accesskit::Role::Label, "Tint:").rect();
-    h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some("100%"))
-        .find(|n| (n.rect().center().y - row.center().y).abs() < 8.0)
-        .expect("the Tint field")
-        .click();
-    h.run_steps(2);
-    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-    h.event(egui::Event::Text("25".into()));
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
+    // The Tint field by its name (its caption carries the name too; Opacity is a field of its own name).
+    let field = field_rect(&h, "Tint:");
+    type_in_field(&mut h, field, "25");
     let doc = &h.state().session.active().unwrap().doc;
     let fill = |id: u64| doc.item(designcraft_doc::ids::ItemId(id)).unwrap().fill.clone();
     assert_eq!((fill(a).swatch.as_str(), fill(a).tint), (CYAN, 0.25));
@@ -1148,9 +1128,9 @@ fn apply_to_text_colours_the_text_of_several_text_frames() {
     let mut h = panel(app);
     h.get_by_label("Fill swatch").click();
     h.run_steps(3);
-    // Three text frames, as one: Apply To is offered.
-    assert!(h.query_by_role_and_label(egui::accesskit::Role::Label, "Apply To:").is_some());
-    h.get_by_label("Text").click();
+    // Three text frames, as one: Apply To is offered (its caption carries the name too).
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::RadioGroup, "Apply To:").is_some());
+    h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "Text").click();
     h.run_steps(3);
     h.get_by_label(CYAN).click();
     h.run_steps(3);
@@ -1198,12 +1178,7 @@ fn one_selected_point_shows_its_frames_size_greyed() {
     assert_eq!(super::super::sel_info(&app).unwrap().object_size, (100.0, 150.0));
     let mut h = panel(app);
     h.run_steps(2);
-    let greyed = |h: &Harness<'_, DesignApp>| {
-        h.query_all_by(|n| n.role() == egui::accesskit::Role::TextInput && n.is_disabled())
-            .filter(field_node)
-            .filter_map(|n| n.value())
-            .collect::<Vec<_>>()
-    };
+    let greyed = |h: &Harness<'_, DesignApp>| h.query_all_by(|n| is_field(n) && n.is_disabled()).filter_map(|n| n.value()).collect::<Vec<_>>();
     let u = units(h.state());
     let f = |v| designcraft_geom::units::format_measure(v, u);
     assert_eq!(greyed(&h), [f(100.0), f(150.0)], "the frame's W and H, greyed");
@@ -1237,15 +1212,11 @@ fn transform_flips_and_rotates_from_properties() {
     h.run_steps(3);
     let info = h.state_mut().session.execute("transform.info", &json!({})).unwrap();
     assert!((info["rotation"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
-    // The angle and scale fields are there: the rotation field shows the quarter turn (its framework number field may write a decimal: "90.0°").
-    let ninety = |v: &str| v.trim_end_matches('°').trim().parse::<f64>().is_ok_and(|n| (n - 90.0).abs() < 1e-9) && v.ends_with('°');
-    assert!(
-        h.query_all_by(
-            |n| matches!(n.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::SpinButton) && n.value().as_deref().is_some_and(ninety)
-        )
-        .next()
-        .is_some()
-    );
+    // The angle and scale fields are there: the angle field reads 90 (the framework paints the ° beside the number
+    // instead of writing it into the value).
+    let angle = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Rotation Angle").accesskit_node().numeric_value();
+    assert!(angle.is_some_and(|v| (v - 90.0).abs() < 1e-6), "the angle field shows the quarter turn: {angle:?}");
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Scale X Percentage");
 }
 
 /// The vertical extent of Properties › Text Frame: from its heading (the last "Text Frame" label;
@@ -1255,15 +1226,10 @@ fn text_frame_band(h: &Harness<'_, DesignApp>) -> (f32, f32) {
     (top, h.get_by_label("Quick Actions").rect().top())
 }
 
-/// The text fields of Properties › Text Frame, in reading order.
+/// The fields of Properties › Text Frame (Columns is a number field, the lengths text fields), in reading order.
 fn text_frame_fields(h: &Harness<'_, DesignApp>) -> Vec<egui::Rect> {
     let (top, bottom) = text_frame_band(h);
-    let mut v: Vec<egui::Rect> = h
-        .get_all_by_role(egui::accesskit::Role::TextInput)
-        .filter(field_node)
-        .map(|n| n.rect())
-        .filter(|r| r.center().y > top && r.center().y < bottom)
-        .collect();
+    let mut v: Vec<egui::Rect> = h.query_all_by(is_field).map(|n| n.rect()).filter(|r| r.center().y > top && r.center().y < bottom).collect();
     v.sort_by(|a, b| (a.top(), a.left()).partial_cmp(&(b.top(), b.left())).unwrap());
     v
 }

@@ -29,7 +29,9 @@ fn split_note_splits_the_note_at_the_insertion_point_in_its_text() {
     );
     h.run_steps(3);
     assert!(h.get_by_label("Split Note").accesskit_node().is_disabled(), "no insertion point in the note yet");
-    let field = h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("check this")).rect();
+    // The runtime keeps a hidden node beside the note's field with the same role and value: the field is the shown one.
+    let field =
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some("check this")).rect();
     h.hover_at(field.center());
     h.drag_at(field.center());
     h.drop_at(field.center());

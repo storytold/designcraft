@@ -244,6 +244,12 @@ pub(crate) fn shows(h: &Harness<'_, DesignApp>, label: &str) -> bool {
     h.query_all_by_label(label).next().is_some()
 }
 
+/// Whether a closed picker whose name contains `part` shows the entry `shown`: a picker is named by its caption and reports
+/// the entry it shows as its value, not as a name.
+pub(crate) fn picker_shows(h: &Harness<'_, DesignApp>, part: &str, shown: &str) -> bool {
+    h.query_all_by_label_contains(part).any(|node| node.accesskit_node().role() == Role::ComboBox && node.value().as_deref() == Some(shown))
+}
+
 /// Resizes the window and runs a few frames.
 pub(crate) fn resize(h: &mut Harness<'_, DesignApp>, size: egui::Vec2) {
     h.set_size(size);

@@ -37,6 +37,18 @@ fn open_menu(h: &mut egui_kittest::Harness<'static, test_window::Window>, title:
     test_window::click_at(h, at);
 }
 
+/// What the tree holds of open menus, for a failure message: each menu node's name and rect, and the rows whose name
+/// contains `label`.
+fn menus_seen(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> String {
+    let menus: Vec<_> =
+        h.query_all_by_role(Role::Menu).map(|node| (node.accesskit_node().label(), node.rect(), node.accesskit_node().is_hidden())).collect();
+    let rows: Vec<_> = h
+        .query_all_by_label_contains(label)
+        .map(|node| (node.accesskit_node().role(), node.accesskit_node().label(), node.rect(), node.accesskit_node().is_hidden()))
+        .collect();
+    format!("menus {menus:?}, {label:?} rows {rows:?}")
+}
+
 /// The bounds of the open menu: the smallest menu node holding the row `label`.
 fn menu_bounds(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> Option<egui::Rect> {
     let row = row(h, label)?;
@@ -86,7 +98,7 @@ fn a_framework_menu_fits_its_window_and_reopens_at_the_top() {
     assert!(row(&h, "Undo").is_none(), "Esc closes the menu");
     open_menu(&mut h, "Edit");
     let undo = row(&h, "Undo").expect("the reopened menu lists Undo");
-    assert!(window.expand(1.0).contains_rect(undo), "the reopened menu starts at its first row: {undo:?} in {window:?}");
+    assert!(window.expand(1.0).contains_rect(undo), "the reopened menu starts at its first row: {undo:?} in {window:?}; {}", menus_seen(&h, "Undo"));
 }
 
 /// Successor of `tiny_menu_viewport_does_not_force_the_default_scroll_height`: in a very short window the menu is no taller than
@@ -96,7 +108,9 @@ fn a_framework_menu_in_a_tiny_window_is_no_taller_than_it() {
     let mut h = open(vec2(700.0, 120.0));
     let window = h.ctx.content_rect();
     open_menu(&mut h, "Edit");
-    let menu = menu_bounds(&h, "Undo").expect("the Edit menu is open");
+    // The menu node is named for its title; in a window this short its rows may all be out of view.
+    let named = h.query_all_by_role_and_label(Role::Menu, "Edit").find(|node| !node.accesskit_node().is_hidden()).map(|node| node.rect());
+    let menu = named.or_else(|| menu_bounds(&h, "Undo")).unwrap_or_else(|| panic!("the Edit menu is open: {}", menus_seen(&h, "Undo")));
     assert!(menu.height() <= window.height() + 1.0, "the menu {menu:?} is no taller than the window {window:?}");
 }
 
@@ -104,9 +118,14 @@ fn a_framework_menu_in_a_tiny_window_is_no_taller_than_it() {
 /// row.
 #[test]
 fn a_framework_menu_row_is_chosen_by_a_click_at_its_far_end() {
-    let mut h = open(vec2(1000.0, 700.0));
+    // A window tall enough for the whole Edit menu: in a shorter one the menu scrolls and its last row, Preferences…,
+    // starts out of view, where a click lands on no row.
+    let mut h = open(vec2(1000.0, 1000.0));
     open_menu(&mut h, "Edit");
     let rect = row(&h, "Preferences").expect("Preferences… is listed");
+    let window = h.ctx.content_rect();
+    let menu = menu_bounds(&h, "Preferences").unwrap_or_else(|| panic!("the Edit menu is open: {}", menus_seen(&h, "Preferences")));
+    assert!(window.contains_rect(rect) && menu.contains(rect.center()), "Preferences… is in view: {rect:?} in the menu {menu:?}, window {window:?}");
     assert!(rect.width() >= 200.0, "the row is the menu's full width: {rect:?}");
     let far = egui::pos2(rect.right() - 6.0, rect.center().y);
     test_window::click_at(&mut h, far);

@@ -67,7 +67,8 @@ fn object_style_form_makes_a_style_from_the_selection_and_edits_its_options() {
     d.fields.insert("name".into(), json!("Rounded Corner Image, White Stroke"));
     d.fields.insert("page".into(), json!("corners"));
     kit::steps(&mut h, 4);
-    assert!(kit::shows(&h, "Rounded") || shows_like(&h, "Rounded"));
+    // Rounded is the entry the Shape picker shows: its value, not a name.
+    assert!(kit::picker_shows(&h, "Shape", "Rounded"), "the corners page shows the selection's Rounded corners");
     ok(&mut h);
     assert!(h.state().ui.dialog.is_none());
     let name = "Rounded Corner Image, White Stroke";

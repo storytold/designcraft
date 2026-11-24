@@ -409,9 +409,9 @@ fn diagonal_lines_form_applies_its_values_but_not_a_mixed_one() {
     select_table(&mut app);
     app.run("app.diagonalLinesDialog", json!({})).unwrap();
     let mut h = kit::harness(app);
-    for shown in ["Line Stroke", "Diagonal In Front"] {
-        assert!(kit::shows(&h, shown), "{shown} is shown");
-    }
+    assert!(kit::shows(&h, "Line Stroke"), "Line Stroke is shown");
+    // Diagonal In Front is the entry the Draw picker shows: its value, not a name.
+    assert!(kit::picker_shows(&h, "Draw", "Diagonal In Front"), "Diagonal In Front is shown");
     let d = kit::draft(&h);
     assert_eq!(d.id, "diagonalLines");
     assert_eq!((&d.fields["lines"], &d.fields["color"], &d.fields["inFront"]), (&json!("none"), &Value::Null, &json!(true)));
