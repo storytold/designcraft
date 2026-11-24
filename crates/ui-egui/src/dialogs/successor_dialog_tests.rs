@@ -23,7 +23,11 @@ fn fit_report(h: &egui_kittest::Harness<'_, DesignApp>, title: &str) -> String {
         .collect();
     outside.sort_by(|a, b| b.0.total_cmp(&a.0));
     let outside: Vec<String> = outside.into_iter().take(12).map(|(_, node)| node).collect();
-    format!("window {screen:?}, dialog {dialog:?}, outside the window: {outside:#?}")
+    let actions: Vec<String> = ["Create", "Close", "OK", "Cancel"]
+        .into_iter()
+        .flat_map(|name| h.query_all_by_label(name).map(move |node| format!("{name}: {:?} {:?}", node.accesskit_node().role(), node.rect())))
+        .collect();
+    format!("window {screen:?}, dialog {dialog:?}, the actions: {actions:?}, outside the window: {outside:#?}")
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

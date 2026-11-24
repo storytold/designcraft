@@ -40,6 +40,8 @@ pub(crate) const FORM: Form = Form::new(show).width(960.0).opens_at_width().foot
 const PRESET_POPOVER: &str = "_presetPopover";
 /// How high the presets and the details may grow before they scroll.
 const PANE_ROOM: f32 = 560.0;
+/// The least room the one column keeps in a very short window.
+const LEAST_COLUMN_ROOM: f32 = 48.0;
 /// The least room the panes keep in a short window, which scrolls the dialog's body instead.
 const LEAST_PANE_ROOM: f32 = 120.0;
 /// The dialog's title bar, footer and padding: what the panes' room leaves of the height the window gives a dialog.
@@ -118,7 +120,10 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let mut create = false;
     let window = ui.ctx().content_rect();
     if one_column(ui.ctx()) {
-        Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+        // The column scrolls in the room the window leaves under the title and over the footer, so Close and Create stay
+        // in view: a body that only the dialog's own scroll held grew past the window and took the footer with it.
+        let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).max(LEAST_COLUMN_ROOM);
+        Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
             details(app, ui, d);
             tabs(app, ui, d);
             inset(ui, false, |ui| create = presets(app, ui, d));
