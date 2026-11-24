@@ -4870,15 +4870,26 @@ fn a_visible_frame_stroke_insets_the_text() {
 #[test]
 fn list_labels_do_not_raise_the_ascent_first_baseline() {
     use designcraft_doc::{CharAttrs, ListType};
-    // The paragraph's own character size (the label's) is 40 pt; its text is 10 pt (Source Sans 3:
-    // typo ascender 1 em).
+    // The label is 40 pt through its character style; the text is 10 pt (Source Sans 3: typo
+    // ascender 1 em).
     let line = |text: &str, list: ListType| {
-        let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs { list_type: Some(list), ..Default::default() });
+        let para = ParaAttrs {
+            list_type: Some(list),
+            bullet_char_style: Some("Big label".into()),
+            number_char_style: Some("Big label".into()),
+            ..Default::default()
+        };
+        let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 300.0), para);
+        std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+            name: "Big label".into(),
+            based_on: None,
+            chars: CharAttrs { size: Some(40.0), ..Default::default() },
+            shortcut: String::new(),
+        });
         let st = d.story_mut(sid).unwrap();
         for p in &mut st.paras {
-            p.chars = CharAttrs { font_family: Some("Source Sans 3".into()), size: Some(40.0), ..Default::default() };
+            p.chars = CharAttrs { font_family: Some("Source Sans 3".into()), size: Some(10.0), ..Default::default() };
         }
-        st.format_chars(0..text.len(), |f| f.over.size = Some(10.0));
         let l = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone();
         (l.baseline, l.ascent, l.leading)
     };
@@ -4895,6 +4906,37 @@ fn list_labels_do_not_raise_the_ascent_first_baseline() {
     let (eb, _, _) = line("", ListType::None);
     let (ebl, _, _) = line("", ListType::Bullets);
     assert!((ebl - eb).abs() < 1e-6, "{ebl} vs {eb}");
+}
+
+/// A bullet or number is set like the paragraph's first character, local formatting included
+/// (measured in InDesign 2026: a 20 pt first letter gives a 20 pt bullet, a big word later in the
+/// paragraph does not, and a local size and font on the whole paragraph are followed).
+#[test]
+fn a_list_label_follows_the_formatting_of_the_first_character() {
+    use designcraft_doc::ListType;
+    let bullet_adv = |format: &dyn Fn(&mut designcraft_doc::Story)| {
+        let para = ParaAttrs { list_type: Some(ListType::Bullets), ..Default::default() };
+        let (mut d, sid, _) = doc_with("Hxg Hxg", Rect::new(36.0, 36.0, 300.0, 300.0), para);
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..7, |f| {
+            f.over.font_family = Some("Source Sans 3".into());
+            f.over.size = Some(10.0);
+        });
+        format(st);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].lines[0].glyphs.iter().find(|g| g.len == 0).expect("the bullet").adv
+    };
+    let plain = bullet_adv(&|_| {});
+    assert!(plain > 0.0);
+    // A big first letter makes a big bullet...
+    let first = bullet_adv(&|st| st.format_chars(0..1, |f| f.over.size = Some(30.0)));
+    assert!((first / plain - 3.0).abs() < 0.01, "{first} vs {plain}");
+    // ...a big word later does not.
+    let later = bullet_adv(&|st| st.format_chars(4..7, |f| f.over.size = Some(30.0)));
+    assert!((later - plain).abs() < 1e-9, "{later} vs {plain}");
+    // The whole paragraph at another local size.
+    let whole = bullet_adv(&|st| st.format_chars(0..7, |f| f.over.size = Some(20.0)));
+    assert!((whole / plain - 2.0).abs() < 0.01, "{whole} vs {plain}");
 }
 
 #[test]
