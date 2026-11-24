@@ -13,7 +13,7 @@ fn exports_valid_package_in_reading_order() {
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "First\nline two", ParaFormat::default()).unwrap();
     let bytes = export_epub(&d, &EpubOptions::default()).unwrap();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    assert_eq!(z.by_index(0).unwrap().name(), "mimetype");
+    assert_eq!(z.by_index(0).unwrap().name().expect("valid UTF-8 EPUB filename"), "mimetype");
     let mut html = String::new();
     z.by_name("OEBPS/content.xhtml").unwrap().read_to_string(&mut html).unwrap();
     let a = html.find("First").unwrap();
