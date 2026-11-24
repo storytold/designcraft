@@ -270,6 +270,8 @@ fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
+    // A closing menu keeps its nodes, hidden, while it fades out.
+    h.run_steps(20);
     let left: Vec<String> = h.query_all_by_label("Preflight Panel…").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
     assert!(left.is_empty(), "the menu isn't left open: {left:?}");
     // A double-click with the panel already showing keeps it open (the first click closes
@@ -443,14 +445,16 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     // The size's list opens; choosing 72 pt sets the size.
     open_list(&mut h, "Font Size");
     let rows: Vec<String> = h.query_all_by_label("72 pt").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
-    let at = h.query_all_by_label("72 pt").last().expect("the presets list's row").rect().center();
-    test_window::click_at(&mut h, at);
+    // The row is the last of the list, below the dropdown's scroll viewport: the accessibility click activates it where a
+    // pointer press would land on the window under it.
+    h.query_all_by_label("72 pt").last().expect("the presets list's row").click_accesskit();
+    h.run_steps(3);
     let journal: Vec<String> = h.state().app.session.journal.iter().rev().take(4).map(|(id, params)| format!("{id} {params}")).collect();
     assert_eq!(size_of(&h), Some(72.0), "the rows named 72 pt: {rows:?}; the last commands: {journal:?}");
     // Auto leading has the same list beside it.
     open_list(&mut h, "Leading");
-    let at = h.query_all_by_label("60 pt").last().expect("the presets list's row").rect().center();
-    test_window::click_at(&mut h, at);
+    h.query_all_by_label("60 pt").last().expect("the presets list's row").click_accesskit();
+    h.run_steps(3);
     assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(60.0)));
     // The arrow keys step the size by a point.
     focus(&mut h, "Font Size");
