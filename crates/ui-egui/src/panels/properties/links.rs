@@ -231,8 +231,6 @@ fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response 
         .response
 }
 
-/// Chain links for a linked graphic, a page with a folded corner for an embedded one.
-
 /// Paints in `rect` chain links for a linked graphic, a page with a folded corner for an embedded one.
 fn paint_storage(p: &egui::Painter, rect: egui::Rect, linked: bool, color: egui::Color32) {
     let stroke = egui::Stroke::new(1.3, color);

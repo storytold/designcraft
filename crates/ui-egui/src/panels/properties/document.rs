@@ -115,8 +115,6 @@ pub(crate) fn preset_name(w: f64, h: f64) -> &'static str {
     PAGE_PRESETS.iter().find(|p| (p.1 - a).abs() < 0.6 && (p.2 - b).abs() < 0.6).map(|p| p.0).unwrap_or("Custom")
 }
 
-/// The preset dropdown and orientation toggles for one page; the new (width, height) when one changed.
-
 /// Properties with the Page tool (Properties › Edit Page), as InDesign's: a "Page" band with Back,
 /// Page Size for this page alone (which page, preset, orientation, W/H), Margins and Columns and
 /// Quick Actions. Back leaves parent editing and returns to the Selection tool and document properties.
@@ -147,10 +145,6 @@ fn edited_margins(mut m: designcraft_doc::Margins, linked: bool, k: usize, nv: f
     }
     m
 }
-
-/// The page-size preset menu; the width and height of the preset chosen.
-
-/// As the status bar's page box: the page, or the parent shown ("A-Parent"); then the parents.
 
 pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     framework::document_sections(app, ui)

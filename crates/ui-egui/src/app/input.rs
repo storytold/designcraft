@@ -31,6 +31,9 @@ impl DesignApp {
         let contrast = if brightness == crate::theme::Brightness::HighContrast { ContrastChoice::High } else { ContrastChoice::Standard };
         let mut root = RootEnv::new().direction(direction).mode(if dark { ModeChoice::Dark } else { ModeChoice::Light });
         root.contrast = contrast;
+        // Document tabs cut a long name short (at most 22 digits wide) and shrink before they overflow, so a very long
+        // file name never pushes the close button and the tabs after it out of the strip (#603).
+        root.values.set(craft_ui_widgets::tabs::DocumentTabLook::Shrinking);
         root
     }
 

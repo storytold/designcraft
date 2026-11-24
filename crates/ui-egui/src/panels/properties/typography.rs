@@ -154,20 +154,14 @@ fn run_paragraph_action(app: &mut DesignApp, action: ParagraphAction) {
     }
 }
 
-/// The Paragraph panel menu, in the order of InDesign's.
-
-/// Variable Font sliders: one per axis, each with a field for a typed value; the style becomes
-/// `Named {tag:value,…}`. Dragging a slider previews on the page and is one undo step once let go;
-/// a click, an arrow key or a typed value applies at once.
-
-/// The slider step and the field's decimals for an axis: whole units, or hundredths for an axis
-/// whose whole range is a few units (Skia's weight runs 0.48–3.2).
 /// The axes a slider can show: a malformed font's axis whose minimum lies above its maximum (or
 /// isn't a number) is left out, since no value fits its range.
 pub(super) fn usable_axes(axes: Vec<(String, String, f32, f32, f32)>) -> Vec<(String, String, f32, f32, f32)> {
     axes.into_iter().filter(|a| a.2 <= a.4).collect()
 }
 
+/// The slider step and the field's decimals for an axis: whole units, or hundredths for an axis
+/// whose whole range is a few units (Skia's weight runs 0.48–3.2).
 pub(super) fn axis_step(min: f32, max: f32) -> (f32, usize) {
     if max - min >= 10.0 { (1.0, 0) } else { (0.01, 2) }
 }
@@ -202,11 +196,6 @@ fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
         .fold(0.0, f32::max)
         .ceil()
 }
-
-/// A Character panel column row: a caption cell `label_w` wide, then the number field filling the
-/// rest of the column. Returns the value committed.
-
-/// A left-aligned caption in a cell of fixed width, so the field after it lines up.
 
 /// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
 /// paragraph and single-line composers of its kind (Japanese or not), for the composer choice.
