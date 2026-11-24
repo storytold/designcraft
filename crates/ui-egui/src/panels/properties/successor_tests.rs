@@ -830,7 +830,11 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
     let mut h = panel(app);
     // The button, not the tooltip that names it while the pointer rests on it after a click.
     let button = |h: &Harness<'_, DesignApp>| {
-        h.get_all_by_label("Bulleted List").find(|n| n.role() != egui::accesskit::Role::Tooltip).expect("the Bulleted List button").rect().center()
+        h.get_all_by_label("Bulleted List")
+            .find(|n| n.accesskit_node().role() != egui::accesskit::Role::Tooltip)
+            .expect("the Bulleted List button")
+            .rect()
+            .center()
     };
     let at = button(&h);
     h.hover_at(at);
@@ -1634,11 +1638,11 @@ fn the_framework_text_wrap_panel_shows_each_offset_and_invert() {
 /// Whether `n` is a field's own node, not the text part a framework text field holds inside itself: both read as text
 /// inputs, the part as a child of its field.
 fn field_node(n: &egui_kittest::Node<'_>) -> bool {
-    !n.parent().is_some_and(|p| p.role() == egui::accesskit::Role::TextInput)
+    !n.parent().is_some_and(|p| p.accesskit_node().role() == egui::accesskit::Role::TextInput)
 }
 
 /// The field named `name` (a number field or a text field), at its text part when it has one.
-fn named_field<'h>(h: &'h Harness<'_, DesignApp>, name: &str) -> egui_kittest::Node<'h> {
+fn named_field<'h>(h: &'h Harness<'_, DesignApp>, name: &'h str) -> egui_kittest::Node<'h> {
     h.query_all_by(|n| matches!(n.role(), egui::accesskit::Role::TextInput | egui::accesskit::Role::SpinButton) && n.label().as_deref() == Some(name))
         .last()
         .unwrap_or_else(|| panic!("no field named {name}"))
