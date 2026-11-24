@@ -489,6 +489,15 @@ mod tests {
         assert!(canvas.contains_rect(bar(&h)), "{:?} outside the canvas {canvas:?}", bar(&h));
         // Reset Bar Position: back under the selection.
         more(&mut h);
+        // TASKBAR-DEBUG: temporary, to see what the click on More reached.
+        {
+            use egui_kittest::kittest::NodeT as _;
+            eprintln!("TASKBAR-DEBUG bar {:?} canvas {canvas:?} pin {:?}", bar(&h), h.state().app.ui.task_bar_pin);
+            for n in h.query_all_by(|n| n.label().is_some_and(|l| l.contains("Bar") || l.contains("More") || l.contains("Pin") || l.contains("Hide")))
+            {
+                eprintln!("TASKBAR-DEBUG   {:?} {:?} {:?}", n.accesskit_node().role(), n.label(), n.rect());
+            }
+        }
         let at = h.get_by_label("Reset Bar Position").rect().center();
         click_at(&mut h, at);
         assert_eq!(h.state().app.ui.task_bar_pin, None);
