@@ -32,12 +32,23 @@ use serde_json::{Value, json};
 use std::borrow::Cow;
 
 /// New Document on the framework's dialog host.
-pub(crate) const FORM: Form = Form::new(show).width(960.0).footer(footer);
+pub(crate) const FORM: Form = Form::new(show).width(960.0).opens_at_width().footer(footer);
 
 /// Whether the Save Document Preset popover is open: a draft field, as the dialog's other transient state.
 const PRESET_POPOVER: &str = "_presetPopover";
 /// How high the presets and the details may grow before they scroll.
 const PANE_ROOM: f32 = 560.0;
+/// The least room the panes keep in a short window, which scrolls the dialog's body instead.
+const LEAST_PANE_ROOM: f32 = 120.0;
+/// The dialog's title bar, footer and padding: what the panes' room leaves of the height the window gives a dialog.
+const DIALOG_CHROME_H: f32 = 160.0;
+/// The share of the window's height a framework dialog may take before its body scrolls (`Overlay::dialog`'s cap).
+const DIALOG_HEIGHT_SHARE: f32 = 0.9;
+/// The share of the window's width a framework dialog may take (`Overlay::dialog`'s cap).
+const DIALOG_WIDTH_SHARE: f32 = 0.8;
+/// The dialog width below which the presets go under the details, in one column the dialog's body scrolls, as the native
+/// dialog did in a small window.
+const TWO_PANES: f32 = 700.0;
 
 /// One of the app's icons, by its name in `crate::icons`.
 #[derive(craft_ui::contract::MemoProps)]
@@ -81,14 +92,28 @@ impl ItemSource<usize> for Cards<'_> {}
 
 /// The window's body: the presets beside the details. `Some(true)` when a card was activated (a double click or Enter
 /// creates the document at once).
+///
+/// The dialog fits the window, as the native one did: the panes grow as high as the window lets the dialog be, up to
+/// [`PANE_ROOM`], and a window too narrow for the two panes side by side shows the details, then the presets, in one
+/// column that the dialog's body scrolls.
 fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let mut create = false;
-    Row::new().id_salt("new_document_form").fill_width().show(ui, |ui, _| {
-        Stack::new().id_salt("new_document_presets").fill_width().scroll(Scroll::vertical()).room_height(PANE_ROOM).show(ui, |ui, _| {
+    let window = ui.ctx().content_rect();
+    if window.width() * DIALOG_WIDTH_SHARE < TWO_PANES {
+        Stack::new().id_salt("new_document_column").fill_width().show(ui, |ui, _| {
+            details(app, ui, d);
             tabs(app, ui, d);
             create = presets(app, ui, d);
         });
-        Stack::new().id_salt("new_document_details").scroll(Scroll::vertical()).room_height(PANE_ROOM).show(ui, |ui, _| details(app, ui, d));
+        return create.then_some(true);
+    }
+    let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).clamp(LEAST_PANE_ROOM, PANE_ROOM);
+    Row::new().id_salt("new_document_form").fill_width().show(ui, |ui, _| {
+        Stack::new().id_salt("new_document_presets").fill_width().scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
+            tabs(app, ui, d);
+            create = presets(app, ui, d);
+        });
+        Stack::new().id_salt("new_document_details").scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| details(app, ui, d));
     });
     create.then_some(true)
 }
