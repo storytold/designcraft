@@ -35,9 +35,10 @@ fn drag_edge(h: &mut egui_kittest::Harness<'static, crate::DesignApp>, cell: egu
 }
 
 /// Successor of `every_column_can_be_dragged_at_its_right_edge_and_stays_there`: dragging a column's right edge 30 points makes that
-/// column 30 wider, leaves the others as they were, and the width stays after more frames. (The drag is outward: the table's
-/// number columns open at or near the least width the framework lets a column be dragged to, two control heights, so a drag
-/// 30 points inward stops there.)
+/// column 30 wider and the width stays after more frames. The framework table keeps the other fixed columns as they were and lets
+/// its one fill column (Contributor, the first) take what is left, so it is 30 narrower when another column grows. (The drag is
+/// outward: the table's number columns open at or near the least width the framework lets a column be dragged to, two control
+/// heights, so a drag 30 points inward stops there.)
 #[test]
 fn every_framework_column_can_be_dragged_at_its_right_edge_and_stays_there() {
     let columns = headers(&table(1100.0)).len();
@@ -49,33 +50,47 @@ fn every_framework_column_can_be_dragged_at_its_right_edge_and_stays_there() {
         kit::steps(&mut h, 4);
         let after = headers(&h);
         assert_eq!(after.len(), opened.len());
+        let width = |cells: &[egui::Rect], at: usize| cells[at].width();
         assert!(
-            (after[dragged].width() - (opened[dragged].width() + 30.0)).abs() < 2.0,
+            (width(&after, dragged) - (width(&opened, dragged) + 30.0)).abs() < 2.0,
             "dragging column {dragged}: {:?} was {:?}",
             after[dragged],
             opened[dragged]
         );
-        for (column, (was, now)) in opened.iter().zip(&after).enumerate().filter(|(c, _)| *c != dragged) {
-            assert!((now.width() - was.width()).abs() < 2.0, "dragging column {dragged}: column {column} is {now:?}, was {was:?}");
+        // The fixed columns stay; the fill column (the first) takes the room the drag made.
+        for column in (1..columns).filter(|c| *c != dragged) {
+            assert!(
+                (width(&after, column) - width(&opened, column)).abs() < 2.0,
+                "dragging column {dragged}: column {column} is {:?}, was {:?}",
+                after[column],
+                opened[column]
+            );
+        }
+        if dragged != 0 {
+            assert!((width(&after, 0) - (width(&opened, 0) - 30.0)).abs() < 2.0, "the fill column gives way: {:?} was {:?}", after[0], opened[0]);
         }
     }
 }
 
-/// Successor of `a_changed_fit_replaces_the_column_widths`: after a column is dragged, a narrower window refits the table so its last
-/// column ends inside the window, and a changed sort (another set of rows) keeps the table fitted.
+/// Successor of `a_changed_fit_replaces_the_column_widths`: the framework table keeps a dragged width (it does not drop it when the
+/// fit changes, as the native table did): in a narrower window the dragged column is as wide as the drag left it, and a changed
+/// sort keeps it too, with every column still in the table.
 #[test]
-fn a_changed_window_refits_the_framework_table() {
+fn the_framework_table_keeps_a_dragged_width_in_a_narrower_window() {
     let mut h = table(1100.0);
     let opened = headers(&h);
     drag_edge(&mut h, opened[0], -30.0);
     kit::steps(&mut h, 3);
+    let dragged = headers(&h)[0].width();
+    assert!((dragged - (opened[0].width() - 30.0)).abs() < 2.0, "the drag took: {dragged} was {}", opened[0].width());
     kit::resize(&mut h, vec2(700.0, 500.0));
     let narrower = headers(&h);
-    let window = kit::screen(&h);
-    assert!(narrower.last().unwrap().right() <= window.right() + 1.0, "a narrower window refits the table: {narrower:?} in {window:?}");
+    assert_eq!(narrower.len(), opened.len(), "every column is still in the table");
+    assert!((narrower[0].width() - dragged).abs() < 2.0, "a narrower window keeps the dragged width: {narrower:?}");
     kit::click(&mut h, &[Role::Button], "Reverse the order", 0);
     let after = headers(&h);
-    assert!(after.last().unwrap().right() <= window.right() + 1.0, "the table still fits the window: {after:?}");
+    assert_eq!(after.len(), opened.len());
+    assert!((after[0].width() - dragged).abs() < 2.0, "so does a changed sort: {after:?}");
 }
 
 /// Successor of `scrolling_sideways_keeps_dragged_widths`: a column dragged 100 points wider keeps its width while the table is
