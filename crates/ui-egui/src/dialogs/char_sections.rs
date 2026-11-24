@@ -14,7 +14,7 @@ use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContain
 use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
-use craft_ui_widgets::text::{NumberField, TextField};
+use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
 use egui::Ui;
 use serde_json::{Value, json};
 
@@ -36,7 +36,10 @@ struct Spec<'a> {
 /// A number attribute; `make` is the value a number gives the attribute. An emptied field of a sparse form unsets it.
 fn number(ui: &mut Ui, d: &mut Dialog, cf: &CharFields, key: &str, spec: Spec<'_>, make: impl Fn(f64) -> Value) {
     let Spec { label, shown, unit, range } = spec;
-    let mut field = NumberField::new(label.to_owned(), Bind::given(shown)).id_salt(("char_number", key)).range(range.0..=range.1);
+    let mut field = NumberField::new(label.to_owned(), Bind::given(shown))
+        .id_salt(("char_number", key))
+        .range(range.0..=range.1)
+        .step_arrows(StepArrows::Leading);
     if let Some(unit) = unit {
         field = field.unit(unit);
     }

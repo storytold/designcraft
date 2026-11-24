@@ -25,7 +25,7 @@ use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::list::{List, ListRow};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::style::SurfaceKind;
-use craft_ui_widgets::text::{NumberField, TextField};
+use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
 use craft_ui_widgets::value_drag::Slider;
 use designcraft_geom::{Unit, format_measure, units::parse_measure};
 use egui::Ui;
@@ -143,6 +143,7 @@ pub(super) fn number_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f6
         .id_salt(("text_form_number", salt.to_owned()))
         .range(spec.range.0..=spec.range.1)
         .step(1.0)
+        .step_arrows(StepArrows::Leading)
         .enabled(enabled);
     if spec.whole {
         field = field.snap_typed(true).fixed_decimals(0).commit_decimals(0);
@@ -180,15 +181,29 @@ pub(super) fn number(ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, label: &
 /// `range`. A text that is no measure leaves the value as it was.
 pub(super) fn measure_edit(ui: &mut Ui, salt: &str, label: &str, shown: Option<f64>, unit: Unit, range: (f64, f64), enabled: bool) -> Option<f64> {
     let text = shown.map(|v| format_measure(v, unit)).unwrap_or_default();
-    let out = TextField::new(label.to_owned(), Bind::given(text))
-        .id_salt(("text_form_measure", salt.to_owned()))
-        // As wide as the number fields it stands among.
-        .width_chars(8)
-        .limit(None::<usize>)
-        .enabled(enabled)
-        .show(ui);
-    let Some(EditEvent::Commit { after, .. } | EditEvent::Set { after, .. }) = out.events.ended() else { return None };
-    let value = parse_measure(after, unit).ok().filter(|v| v.is_finite())?.clamp(range.0, range.1);
+    // The step halves before the field, as the number fields beside it have.
+    let (mut stepped, mut ended) = (None, None);
+    Row::new().id_salt(("text_form_measure_row", salt.to_owned())).show(ui, |ui, _| {
+        let id = ui.make_persistent_id(("text_form_measure_steps", salt.to_owned()));
+        stepped = crate::framework_transform::measure_steps(ui, id, label, unit, enabled);
+        let out = TextField::new(label.to_owned(), Bind::given(text.clone()))
+            .id_salt(("text_form_measure", salt.to_owned()))
+            // As wide as the number fields it stands among.
+            .width_chars(8)
+            .limit(None::<usize>)
+            .enabled(enabled)
+            .show(ui);
+        ended = match out.events.ended() {
+            Some(EditEvent::Commit { after, .. } | EditEvent::Set { after, .. }) => Some(after.clone()),
+            _ => None,
+        };
+    });
+    if let Some(by) = stepped {
+        let value = (shown.unwrap_or(0.0) + by).clamp(range.0, range.1);
+        return shown.is_none_or(|before| (before - value).abs() > 1e-9).then_some(value);
+    }
+    let after = ended?;
+    let value = parse_measure(&after, unit).ok().filter(|v| v.is_finite())?.clamp(range.0, range.1);
     shown.is_none_or(|before| (before - value).abs() > 1e-9).then_some(value)
 }
 

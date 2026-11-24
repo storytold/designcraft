@@ -12,7 +12,7 @@ use craft_ui_widgets::form::Field;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::style::TypeRole;
-use craft_ui_widgets::text::{HexField, NumberField, TextField};
+use craft_ui_widgets::text::{HexField, NumberField, StepArrows, TextField};
 use craft_ui_widgets::value_drag::Slider;
 use designcraft_geom::Unit;
 use egui::Ui;
@@ -275,6 +275,7 @@ fn number(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, range: Range, dec
                 .id_salt(("preferences_number", key.to_owned()))
                 .range(range.min..=range.max)
                 .step(range.step)
+                .step_arrows(StepArrows::Leading)
                 .commit_decimals(decimals);
             let out = field.show(ui);
             if let Some(Some(next)) = edited(out.edit.events, Some(value)).filter(|v| v.is_some_and(f64::is_finite)) {

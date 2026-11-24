@@ -18,7 +18,7 @@ use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::{ReferencePoint, Select};
-use craft_ui_widgets::text::{NumberField, TextField, link_toggle};
+use craft_ui_widgets::text::{NumberField, StepArrows, TextField, link_toggle};
 use designcraft_geom::{format_measure, units::parse_measure};
 use egui::Ui;
 use serde_json::{Value, json};
@@ -78,7 +78,21 @@ pub(super) fn text_chars(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, en
 /// document's unit, kept inside `range` when there is one; a text that is no measure goes back to what the field had.
 /// Returns the text it committed.
 pub(super) fn resolved(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, enabled: bool, range: Option<(f64, f64)>) -> Option<String> {
-    let (before, after) = text(ui, d, key, label, enabled)?;
+    // The step halves before the field, as the dialog's number fields have.
+    let (mut stepped, mut edited) = (None, None);
+    let unit = d.unit;
+    Row::new().id_salt(("frame_form_measure_row", key)).show(ui, |ui, _| {
+        let id = ui.make_persistent_id(("frame_form_measure_steps", key));
+        stepped = crate::framework_transform::measure_steps(ui, id, label, unit, enabled);
+        edited = text(ui, d, key, label, enabled);
+    });
+    if let Some(by) = stepped {
+        let current = parse_measure(&d.s(key), d.unit).ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+        let measure = current + by;
+        let measure = range.map_or(measure, |(least, most)| measure.clamp(least, most));
+        return Some(d.set_measure(key, measure));
+    }
+    let (before, after) = edited?;
     let Some(measure) = parse_measure(&after, d.unit).ok().filter(|v| v.is_finite()) else {
         if let Some(before) = before {
             d.fields.insert(key.into(), json!(before));
@@ -99,7 +113,8 @@ pub(super) fn number(ui: &mut Ui, d: &Dialog, key: &str, label: &str, range: (f6
     let field = NumberField::new(label.to_owned(), Bind::given(d.n(key).filter(|v| v.is_finite())))
         .id_salt(("frame_form_number", key))
         .range(range.0..=range.1)
-        .step(1.0);
+        .step(1.0)
+        .step_arrows(StepArrows::Leading);
     let field = if whole { field.snap_typed(true).fixed_decimals(0).commit_decimals(0) } else { field };
     let field = if let Some(unit) = unit { field.unit(unit) } else { field };
     let out = field.show(ui);

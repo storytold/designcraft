@@ -17,7 +17,7 @@ use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::{Row, Stack};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::style::TypeRole;
-use craft_ui_widgets::text::{NumberField, TextField};
+use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
 use egui::Ui;
 use serde_json::{Value, json};
 
@@ -247,6 +247,7 @@ fn insert_pages(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
                 .id_salt("simple_insert_count_field")
                 .range(1.0..=9999.0)
                 .step(1.0)
+                .step_arrows(StepArrows::Leading)
                 .snap_typed(true)
                 .fixed_decimals(0)
                 .commit_decimals(0)

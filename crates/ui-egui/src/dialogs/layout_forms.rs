@@ -149,10 +149,24 @@ fn text_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
 /// A measure field: typed arithmetic ("0.4375 in*2") is worked out when the field commits, as InDesign shows it.
 fn measure_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str) {
     let current = d.s(key);
-    let out = TextField::new(label.to_owned(), Bind::given(current.clone())).id_salt(("layout_measure", key)).limit(None::<usize>).show(ui);
-    let committed = out.events.committed().is_some();
+    // The step halves before the field, as the dialog's number fields have.
+    let (mut stepped, mut events) = (None, None);
+    let unit = d.unit;
+    Row::new().id_salt(("layout_measure_row", key)).show(ui, |ui, _| {
+        let id = ui.make_persistent_id(("layout_measure_steps", key));
+        stepped = crate::framework_transform::measure_steps(ui, id, label, unit, true);
+        let out = TextField::new(label.to_owned(), Bind::given(current.clone())).id_salt(("layout_measure", key)).limit(None::<usize>).show(ui);
+        events = Some(out.events);
+    });
+    if let Some(by) = stepped {
+        let value = d.m(key).filter(|v| v.is_finite()).unwrap_or(0.0) + by;
+        d.set_measure(key, value);
+        return;
+    }
+    let Some(events) = events else { return };
+    let committed = events.committed().is_some();
     let mut next = current.clone();
-    for event in out.events {
+    for event in events {
         event.apply(&mut next);
     }
     if next != current {

@@ -26,7 +26,7 @@ use craft_ui_widgets::popover::Popover;
 use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
 use craft_ui_widgets::style::{SurfaceKind, TypeRole, UiTokens};
 use craft_ui_widgets::tabs::{Tab, TabKind, TabStrip};
-use craft_ui_widgets::text::{NumberField, TextField};
+use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
 use craft_ui_widgets::tile_grid::{CardText, Tile, TileGrid};
 use designcraft_geom::Unit;
 use egui::{Color32, Rect, Ui};
@@ -333,6 +333,24 @@ fn text(ui: &mut Ui, d: &mut Dialog, key: &str, label: String, hint: Option<Stri
     changed
 }
 
+/// A measure over the string draft field `key`, named `label`, with the step halves before it as the dialog's number
+/// fields have: a step writes the new length in the dialog's units. Returns whether the text changed.
+fn measure_text(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) -> bool {
+    let unit = units(d);
+    let (mut stepped, mut changed) = (None, false);
+    Row::new().id_salt(("new_document_measure_row", key)).show(ui, |ui, _| {
+        let id = ui.make_persistent_id(("new_document_measure_steps", key));
+        stepped = crate::framework_transform::measure_steps(ui, id, &label, unit, true);
+        changed = text(ui, d, key, label.clone(), None);
+    });
+    if let Some(by) = stepped {
+        let value = measure(d, key).unwrap_or(0.0) + by;
+        d.fields.insert(key.into(), Value::String(designcraft_geom::units::format_measure(value.max(0.0), unit)));
+        return true;
+    }
+    changed
+}
+
 /// A whole number from 1 over the draft field `key` (Pages, Start #, Columns).
 fn count_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) {
     let value = d.n(key).filter(|v| v.is_finite());
@@ -342,6 +360,7 @@ fn count_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) {
         .sizing(Sizing::FillWidth)
         .range(1.0..=9999.0)
         .step(1.0)
+        .step_arrows(StepArrows::Leading)
         .fixed_decimals(0)
         .commit_decimals(0)
         .show(ui);
@@ -429,7 +448,7 @@ fn edges(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, group: &str) {
                 let key = format!("{group}{}", EDGES[at]);
                 let caption = tr(app, labels[at]);
                 cell(ui, caption.clone(), |ui| {
-                    if text(ui, d, &key, caption, None) {
+                    if measure_text(ui, d, &key, caption) {
                         changed = Some(key.clone());
                     }
                 });
@@ -469,7 +488,7 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     // The page: two columns of captioned controls, each caption above its control, as the native dialog set them.
     columns(ui, "new_document_page", |ui| {
         cell(ui, tr(app, "Width"), |ui| {
-            text(ui, d, "width", tr(app, "Width"), None);
+            measure_text(ui, d, "width", tr(app, "Width"));
         });
         cell(ui, tr(app, "Units"), |ui| {
             // InDesign's eight; a preset in another unit keeps it on the list.
@@ -484,7 +503,7 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
             }
         });
         cell(ui, tr(app, "Height"), |ui| {
-            text(ui, d, "height", tr(app, "Height"), None);
+            measure_text(ui, d, "height", tr(app, "Height"));
         });
         cell(ui, tr(app, "Orientation"), |ui| {
             let portrait = !matches!((measure(d, "width"), measure(d, "height")), (Some(w), Some(h)) if w > h);
@@ -510,7 +529,7 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
     columns(ui, "new_document_columns", |ui| {
         cell(ui, tr(app, "Columns"), |ui| count_field(ui, d, "columns", tr(app, "Columns")));
         cell(ui, tr(app, "Column Gutter"), |ui| {
-            text(ui, d, "gutter", tr(app, "Column Gutter"), None);
+            measure_text(ui, d, "gutter", tr(app, "Column Gutter"));
         });
     });
     // The edges sit indented under their disclosure headings, as the native dialog set them.
