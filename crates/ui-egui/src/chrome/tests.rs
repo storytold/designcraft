@@ -165,8 +165,7 @@ fn keys_typed_in_the_search_field_stay_out_of_the_document() {
 fn preflight_count<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Pos2 {
     let bar = status_bar_rect(h);
     h.query_all_by(|n| {
-        n.role() != egui::accesskit::Role::Label
-            && n.label().is_some_and(|l| l == "Preflight" || l.contains("error") || l.contains("Checking"))
+        n.role() != egui::accesskit::Role::Label && n.label().is_some_and(|l| l == "Preflight" || l.contains("error") || l.contains("Checking"))
     })
     .map(|n| n.rect())
     .filter(|r| bar.contains(r.center()))
@@ -413,22 +412,19 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     let field = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| {
         h.query_all_by_label(label)
             .filter(|n| matches!(n.accesskit_node().role(), Role::SpinButton | Role::TextInput))
-            .map(|n| n.rect())
-            .find(in_bar)
+            .find(|n| in_bar(&n.rect()))
             .unwrap_or_else(|| panic!("no {label:?} field in the Control panel"))
     };
+    // The field takes the keyboard as a screen reader gives it: the pointer would move the text selection with it.
     let focus = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
-        let at = field(h, label).center();
-        test_window::click_at(h, at);
+        field(h, label).focus();
         h.run_steps(2);
     };
     // Alt+Down opens a field's list of presets.
     let open_list = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
         focus(h, label);
-        for pressed in [true, false] {
-            h.event(egui::Event::Key { key: egui::Key::ArrowDown, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::ALT });
-        }
-        h.run_steps(3);
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowDown);
+        h.run_steps(2);
     };
     let type_over = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str, text: &str, key: egui::Key| {
         focus(h, label);
@@ -446,13 +442,13 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     };
     // The size's list opens; choosing 72 pt sets the size.
     open_list(&mut h, "Font Size");
-    let at = h.get_by_label("72 pt").rect().center();
-    test_window::click_at(&mut h, at);
+    h.query_all_by_label("72 pt").last().expect("the presets list's row").click();
+    h.run_steps(2);
     assert_eq!(size_of(&h), Some(72.0));
     // Auto leading has the same list beside it.
     open_list(&mut h, "Leading");
-    let at = h.get_by_label("60 pt").rect().center();
-    test_window::click_at(&mut h, at);
+    h.query_all_by_label("60 pt").last().expect("the presets list's row").click();
+    h.run_steps(2);
     assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(60.0)));
     // The arrow keys step the size by a point.
     focus(&mut h, "Font Size");
@@ -841,7 +837,7 @@ fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
     let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
     let bar = title_bar(&h);
     // Under the centred title, and between the traffic lights and the Home button.
-    let empty = [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading + 2.0, bar.min.y + 4.0)];
+    let empty = [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading - 4.0, bar.center().y)];
     for at in empty {
         // Tests read the setting as its default, zoom.
         let cmds = double_click(&mut h, at);
@@ -880,7 +876,7 @@ fn the_mac_window_is_not_movable_on_the_title_bar_controls() {
         h.run_steps(2);
         craft_ui_shell::shell::title_bar::window_movable(&h.ctx)
     };
-    for at in [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading + 2.0, bar.min.y + 4.0)] {
+    for at in [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading - 4.0, bar.center().y)] {
         assert!(movable_at(at), "empty title bar at {at:?}");
     }
     for at in controls {

@@ -264,7 +264,8 @@ mod framework {
                 st.open = false;
             }
         }
-        if escape || run.is_some() {
+        // Escape reaches the field first when it has typing to take back: the field reports it, not the key.
+        if escape || field.escaped || run.is_some() {
             st.query.clear();
             st.open = false;
             // The keyboard goes back to the widget that had it before the field took it.
