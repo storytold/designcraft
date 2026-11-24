@@ -5164,6 +5164,8 @@ fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize
     if points.is_empty() {
         return;
     }
+    // Each join takes up to its own cap; the line's length is shared evenly, and a join whose
+    // share passes its cap leaves the rest to the word spaces.
     let cap = |g: &Glyph| match most {
         Some(n) => n as f64 * g.face.advance(designcraft_fonts::first_glyph(&g.face, &['\u{0640}'])) * g.sx,
         None => g.size * 1.5,
@@ -5172,7 +5174,7 @@ fn insert_kashidas(line: &mut Vec<Glyph>, text: &str, pp: &ParaProps, seg: usize
     let per = total / points.len() as f64;
     // From the end, so the indices of earlier words stay valid.
     for &i in points.iter().rev() {
-        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per, most.unwrap_or(200)) {
+        if let Some((range, glyphs, added)) = lengthen_word(line, text, i, seg, per.min(cap(&line[i])), most.unwrap_or(200)) {
             line.splice(range, glyphs);
             *extra -= added;
         }
@@ -5229,16 +5231,20 @@ impl<'a> Word<'a> {
 
     /// The line glyph a glyph shaped again from cluster `cluster` (of `plain`) stands for: the
     /// cluster's next glyph on the line, or its first again, without text, when the cluster
-    /// now has more glyphs. `seen` counts the glyphs taken from each cluster.
-    fn original(&self, cluster: usize, seen: &mut HashMap<usize, usize>) -> Option<Glyph> {
+    /// now has more glyphs. `seen` counts the glyphs taken from each cluster. With it, the
+    /// offset that glyph was given beyond the shaper's (a mark's Diacritic Position), which
+    /// [`take_shape`] keeps.
+    fn original(&self, cluster: usize, seen: &mut HashMap<usize, usize>) -> Option<(Glyph, (f64, f64))> {
         let nth = seen.entry(cluster).or_default();
-        let mut originals = self.plain.iter().zip(self.glyphs).filter(|(p, _)| p.cluster == cluster).map(|(_, g)| g);
-        let mut g = originals.clone().nth(*nth).or_else(|| originals.next())?.clone();
+        let mut originals = self.plain.iter().zip(self.glyphs).filter(|(p, _)| p.cluster == cluster);
+        let (p, g) = originals.clone().nth(*nth).or_else(|| originals.next())?;
+        let set = (g.dx - f64::from(p.x_offset) * g.sx, g.dy + f64::from(p.y_offset) * g.sy);
+        let mut g = g.clone();
         if *nth > 0 {
             g.len = 0;
         }
         *nth += 1;
-        Some(g)
+        Some((g, set))
     }
 
     /// Tracking and other extra advance the line gave each cluster, put back on the last glyph of
@@ -5256,12 +5262,13 @@ impl<'a> Word<'a> {
     }
 }
 
-/// `g` drawn as the shaper's glyph `s`.
-fn take_shape(g: &mut Glyph, s: &designcraft_fonts::ShapedGlyph) {
+/// `g` drawn as the shaper's glyph `s`, keeping the offset `set` it was given by hand (a mark's
+/// Diacritic Position); only the shaper's own offset is replaced.
+fn take_shape(g: &mut Glyph, s: &designcraft_fonts::ShapedGlyph, set: (f64, f64)) {
     g.gid = s.gid;
     g.adv = f64::from(s.x_advance) * g.sx;
-    g.dx = f64::from(s.x_offset) * g.sx;
-    g.dy = -f64::from(s.y_offset) * g.sy;
+    g.dx = f64::from(s.x_offset) * g.sx + set.0;
+    g.dy = -f64::from(s.y_offset) * g.sy + set.1;
 }
 
 /// The word holding the join after `line[i]`, shaped again with as many tatweels at the join (at
@@ -5291,7 +5298,8 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, mo
     let mut seen: HashMap<usize, usize> = HashMap::new();
     for s in &shaped {
         let in_run = (at..at + run).contains(&s.cluster);
-        let mut g = if in_run {
+        // A tatweel has no offset set by hand (Diacritic Position); a letter or mark keeps its own.
+        let (mut g, set) = if in_run {
             // A tatweel takes the metrics of the letter after the join, and no text.
             let mut g = n.clone();
             g.len = 0;
@@ -5299,11 +5307,11 @@ fn lengthen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64, mo
             g.rendered_char = '\u{0640}';
             g.safe_tatweel_before = false;
             g.space = 0.0;
-            g
+            (g, (0.0, 0.0))
         } else {
             word.original(if s.cluster < at { s.cluster } else { s.cluster - run }, &mut seen)?
         };
-        take_shape(&mut g, s);
+        take_shape(&mut g, s, set);
         if in_run { tatweels.push(g) } else { letters.push(g) }
     }
     // The tatweels go with the letter after the join, after its glyphs and in visual order: the
@@ -5365,8 +5373,8 @@ fn widen_word(line: &[Glyph], text: &str, i: usize, seg: usize, room: f64) -> Op
         let mut seen: HashMap<usize, usize> = HashMap::new();
         let mut glyphs = Vec::with_capacity(shaped.len());
         for s in &shaped {
-            let mut g = word.original(s.cluster, &mut seen)?;
-            take_shape(&mut g, s);
+            let (mut g, set) = word.original(s.cluster, &mut seen)?;
+            take_shape(&mut g, s, set);
             glyphs.push(g);
         }
         word.keep_extra_advance(&mut glyphs);
