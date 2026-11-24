@@ -768,7 +768,8 @@ fn wheel_into_view_over(
     // Whether the target had a node yet.
     let mut seen = false;
     // Where the target was after each step, and where the wheel went: what a failure reports.
-    let mut trail: Vec<(Option<egui::Rect>, egui::Pos2)> = Vec::new();
+    // With it, the top of the first text field the column shows, which moves as the column scrolls.
+    let mut trail: Vec<(Option<egui::Rect>, egui::Pos2, Option<f32>)> = Vec::new();
     let rtl = crate::i18n::is_rtl(&h.state().ui.language);
     for _ in 0..48 {
         let window = kit::screen(h);
@@ -794,7 +795,7 @@ fn wheel_into_view_over(
             over_field.then(|| h.query_all_by_role(Role::TextInput).map(|node| node.rect()).find(|rect| shown.contains_rect(*rect))).flatten();
         let over =
             field.map_or_else(|| egui::pos2(if rtl { shown.left() + 12.0 } else { shown.right() - 12.0 }, shown.center().y), |rect| rect.center());
-        trail.push((find(h), over));
+        trail.push((find(h), over, h.query_all_by_role(Role::TextInput).next().map(|node| node.rect().top())));
         kit::event(h, egui::Event::PointerMoved(over));
         kit::event(
             h,
@@ -833,7 +834,16 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
     let at = wheel_into_view(&mut h, "Primary Text Frame", |h| kit::rect_of(h, "Primary Text Frame")).center();
     kit::click_at(&mut h, at);
     assert!(kit::draft(&h).b("primaryTextFrame"), "the caption toggles its checkbox");
-    wheel_into_view(&mut h, "[Default]", |h| kit::rect_of(h, "[Default]"));
+    // A preset card is named by its name then its size ("[Default], 51p0 × 66p0").
+    let card = |h: &egui_kittest::Harness<'_, DesignApp>| {
+        h.query_all_by(|node| {
+            !matches!(node.role(), Role::Label | Role::Tab)
+                && node.label().is_some_and(|label| label == "[Default]" || label.starts_with("[Default], "))
+        })
+        .next()
+        .map(|node| node.rect())
+    };
+    wheel_into_view(&mut h, "[Default]", card);
     // A screen reader reaches what lies below as well: Scroll Into View brings the column back to Primary Text Frame.
     kit::reach(&mut h, "Primary Text Frame");
 }
