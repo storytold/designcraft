@@ -21,8 +21,11 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     let suggested: Vec<CommandRef> =
         quick_apply_items(&app.session, "", crate::cjk_features(app)).into_iter().map(|it| CommandRef::new(it.id)).collect();
     let mut open = true;
-    // This area only supplies a parent: the palette mounts its own modal layer.
-    let shown = egui::Area::new(egui::Id::new("designcraft-quick-apply-host")).order(egui::Order::Foreground).show(ctx, |ui| {
+    // This area only supplies a parent: the palette mounts its own modal layer. The area spans the window from its
+    // corner, so the palette's box centres in the window (an auto-placed area put it wherever egui found room).
+    let screen = ctx.content_rect();
+    let shown = egui::Area::new(egui::Id::new("designcraft-quick-apply-host")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        ui.set_max_size(screen.size());
         in_app_env(ui, &lang, |ui| {
             // The palette ranks through a word index of its entries, built here in the interface language's words; the
             // entries are this pass's (the document's styles change them).
@@ -124,8 +127,8 @@ pub(super) fn picked_run(command: &CommandRef) -> (String, Value) {
 
 /// The app's commands on the framework's board while Quick Apply is open: the tools (as `toolbar::tool_catalog` has
 /// them, for the Tools rail), every command Quick Apply searches and the document's styles, so the palette resolves
-/// and picks each of them. The tools keep the keymap's chords for display only (`AppCatalog::shown_only`), as
-/// `tool_catalog` gives them; the others have none. The app's keymap stays the one dispatcher of every key.
+/// and picks each of them. The keymap's commands keep its chords for display only (`AppCatalog::shown_only`), so the
+/// rail and the palette's rows show them; the styles have none. The app's keymap stays the one dispatcher of every key.
 /// `None` while Quick Apply is closed; the board then has the tools alone.
 ///
 /// One catalog per interface language and set of style names; the generation changes whenever the rows do.
@@ -144,7 +147,7 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
     let styles = app.session.active().map(|st| style_names(&st.doc.styles));
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     styles.hash(&mut hasher);
-    // The tools' shown chords follow the keymap's platform and the user's overrides.
+    // The shown chords follow the keymap's platform and the user's overrides.
     app.keymap.platform().hash(&mut hasher);
     app.keymap.overrides().iter().for_each(|entry| entry.hash(&mut hasher));
     let key = hasher.finish();
@@ -156,8 +159,8 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
         return Some(catalog.clone());
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-    let (defs, tools) = board_defs(lang, styles.as_ref(), &app.keymap);
-    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(tools)).unwrap_or_else(|error| {
+    let (defs, shown) = board_defs(lang, styles.as_ref(), &app.keymap);
+    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(shown)).unwrap_or_else(|error| {
         log::warn!("Quick Apply's commands are not on the framework's board: {error}");
         AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
     });
@@ -165,9 +168,9 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
     Some(catalog)
 }
 
-/// The definitions of [`quick_apply_catalog`], labelled in `lang`: the keymap's tool commands with the chords `keymap`
-/// binds them to (the board shows them; the ids are returned to mark them shown-only), the searched commands without
-/// their default chords, then a command for each style.
+/// The definitions of [`quick_apply_catalog`], labelled in `lang`: the keymap's tool and searched commands with the
+/// chords `keymap` binds them to (the board shows them; their ids are returned to mark them shown-only), then a command
+/// for each style.
 #[cfg(not(target_arch = "wasm32"))]
 fn board_defs(
     lang: &str,
@@ -177,20 +180,18 @@ fn board_defs(
     let searched: std::collections::HashSet<&str> = quick_commands().map(|(id, _, _)| id).collect();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut defs: Vec<craft_keymap::CommandDef> = Vec::new();
-    let mut tools: Vec<String> = Vec::new();
+    let mut shown: Vec<String> = Vec::new();
     for def in crate::keys::catalog() {
         let tool = crate::keys::tool_of(&def.command);
         let quick = def.command.params.is_null() && searched.contains(def.command.id.as_str());
         if !(tool.is_some() || quick) || !seen.insert(def.command.id.clone()) {
             continue;
         }
+        // Every keymap command on the board keeps the chords the app's keymap binds it to, for display only: the
+        // rail's tools and the palette's rows show them, and the app's keymap dispatches them.
         let mut def = def.clone();
-        if tool.is_some() {
-            def.defaults = keymap.bindings(&def.command);
-            tools.push(def.command.id.clone());
-        } else {
-            def.defaults.clear();
-        }
+        def.defaults = keymap.bindings(&def.command);
+        shown.push(def.command.id.clone());
         def.label = crate::i18n::tr(lang, &def.label).to_owned();
         if let Some(icon) = designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| Some(t.id) == tool).map(|t| t.icon) {
             def = def.with_icon(icon);
@@ -205,7 +206,7 @@ fn board_defs(
             }
         }
     }
-    (defs, tools)
+    (defs, shown)
 }
 
 /// One Quick Apply entry: a style to apply or a command to run.

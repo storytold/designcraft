@@ -336,11 +336,13 @@ mod framework {
     use super::{ATTRIBUTES, get, included, set, settings};
     use crate::DesignApp;
     use crate::dialogs::Dialog;
-    use crate::effects_dialog::form::{check, choose, edited, level, number, page_row};
-    use craft_behavior::{ColumnWidth, Selection};
-    use craft_ui_panels::sections::GroupBox;
-    use craft_ui_widgets::choice::RadioGroup;
-    use craft_ui_widgets::contract::{Bind, Entry, Props as _, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing};
+    use crate::effects_dialog::form::{check, choose, edited, level, number};
+    use craft_behavior::{ColumnKey, ColumnWidth, DisplayOrder, ItemSource, Selection, SelectionChange};
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{
+        ActivateOn, Bind, CollectionEvent, ColumnSpec, Entry, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _,
+        ShowContainer as _, Sizing,
+    };
     use craft_ui_widgets::display::{Shade, Text};
     use craft_ui_widgets::form::Field;
     use craft_ui_widgets::layout::CellAlign;
@@ -348,14 +350,26 @@ mod framework {
     use craft_ui_widgets::list::{List, ListRow};
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::ContentPainterCx;
-    use craft_ui_widgets::runtime::env::UnitKind;
-    use craft_ui_widgets::style::{DataColor, TypeRole};
+    use craft_ui_widgets::runtime::env::{Label, UnitKind};
+    use craft_ui_widgets::style::{DataColor, SurfaceKind, TypeRole};
     use craft_ui_widgets::text::TextField;
     use egui::{Color32, CornerRadius, Rect, Ui};
     use serde_json::{Value, json};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
-    /// The page list beside the page shown, each at the top of its column.
-    const COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::Content];
+    /// The page lists beside the page shown, each at the top of its column; the page takes the rest of the width.
+    const COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::fill(1.0)];
+
+    /// The Style Name field's width, in characters: InDesign's field, not the dialog's whole width.
+    const NAME_CHARS: u16 = 40;
+
+    /// The height of the Style Settings box under its heading: room for several settings, as InDesign's.
+    const SETTINGS_ROOM: f32 = 170.0;
+
+    /// The column of a page list's include boxes, and the column of its page names.
+    const INCLUDE: ColumnKey = ColumnKey::new("include");
+    const NAME: ColumnKey = ColumnKey::new("name");
 
     /// The form: the style's name (and why OK was refused), its pages beside the page shown, and Apply Style to
     /// Selection for a new style.
@@ -368,7 +382,7 @@ mod framework {
                 let name = d.s("name");
                 let out = TextField::new(tr("Style Name:"), Bind::given(name.clone()))
                     .id_salt("object_style_name")
-                    .sizing(Sizing::FillWidth)
+                    .width_chars(NAME_CHARS)
                     .limit(None::<usize>)
                     .show(ui);
                 if let Some(name) = edited(out.events, name) {
@@ -380,9 +394,9 @@ mod framework {
             if !status.is_empty() {
                 Text::new(status).show(ui);
             }
-            Grid::new(&COLUMNS).id_salt("object_style_columns").cells(CellAlign::Top).show(ui, |ui, _| {
+            Grid::new(&COLUMNS).id_salt("object_style_columns").cells(CellAlign::Top).fill_width().show(ui, |ui, _| {
                 Stack::new().id_salt("object_style_list").show(ui, |ui, _| navigation(app, ui, d));
-                Stack::new().id_salt("object_style_page").show(ui, |ui, _| page_form(app, ui, d, &page));
+                Stack::new().id_salt("object_style_page").fill_width().show(ui, |ui, _| page_form(app, ui, d, &page));
             });
             if d.b("new")
                 && let Some(on) = check(ui, "object_style_apply", &tr("Apply Style to Selection"), d.b("apply"))
@@ -393,35 +407,112 @@ mod framework {
         None
     }
 
-    /// Basic Attributes and the effects: a box includes one in the style, its name shows its page.
+    /// Basic Attributes and the effects, as two page lists: the row of the page shown is selected, a box includes its
+    /// attribute (or turns its effect on) in the style.
     fn navigation(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
         let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_owned();
-        let before = d.s("page");
-        let shown = RadioGroup::new(tr("Basic Attributes"), Bind::given(before.clone())).id_salt("object_style_pages").show(ui, |ui, _| {
-            Stack::new().show(ui, |ui, _| {
-                Text::new(tr("Basic Attributes")).role(TypeRole::BodyStrong).show(ui);
-                for (key, label) in ATTRIBUTES {
-                    let check = (key != "general").then(|| included(d, key));
-                    if let Some(on) = page_row(ui, "object_style", key, &tr(label), check) {
-                        set(d, &["inc", key], json!(on));
-                    }
-                }
-                Field::new(tr("Effects for:")).id_salt("object_style_fx_level").show(ui, |ui, _| {
-                    level(ui, "os_fx_level", &tr("Effects for:"), &tr("Object"));
-                });
-                for (key, label) in crate::effects_dialog::PAGES.iter().skip(1) {
-                    let on = crate::effects_dialog::is_on(d.fields.get("fx").unwrap_or(&Value::Null), key);
-                    if let Some(on) = page_row(ui, "object_style", key, &tr(label), Some(on))
-                        && let Some(f) = d.fields.get_mut("fx")
-                    {
-                        crate::effects_dialog::switch(f, key, on);
-                    }
-                }
-            });
+        let shown = d.s("page");
+        Text::new(tr("Basic Attributes")).role(TypeRole::BodyStrong).show(ui);
+        let basic =
+            Pages(ATTRIBUTES.iter().map(|(key, label)| ((*key).to_owned(), tr(label), (*key != "general").then(|| included(d, key)))).collect());
+        let basic = page_list(ui, "object_style_pages", tr("Basic Attributes"), &basic, &shown);
+        Field::new(tr("Effects for:")).id_salt("object_style_fx_level").show(ui, |ui, _| {
+            level(ui, "os_fx_level", &tr("Effects for:"), &tr("Object"));
         });
-        if let Some(page) = edited(shown.output.events, before) {
+        let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
+        let effects = Pages(
+            crate::effects_dialog::PAGES
+                .iter()
+                .skip(1)
+                .map(|(key, label)| ((*key).to_owned(), tr(label), Some(crate::effects_dialog::is_on(&fx, key))))
+                .collect(),
+        );
+        let effects = page_list(ui, "object_style_effects", tr("Effects"), &effects, &shown);
+        for (key, on) in basic.includes {
+            set(d, &["inc", key.as_str()], json!(on));
+        }
+        for (key, on) in effects.includes {
+            if let Some(f) = d.fields.get_mut("fx") {
+                crate::effects_dialog::switch(f, &key, on);
+            }
+        }
+        if let Some(page) = effects.page.or(basic.page).filter(|page| *page != shown) {
             d.fields.insert("page".into(), json!(page));
         }
+    }
+
+    /// The rows of a page list: each page's key, its name, and whether the style includes it (`None` for General, which
+    /// has no box).
+    struct Pages(Vec<(String, String, Option<bool>)>);
+
+    impl DisplayOrder<String> for Pages {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        fn key(&self, at: usize) -> String {
+            self.0.get(at).map(|page| page.0.clone()).unwrap_or_default()
+        }
+
+        fn text(&self, at: usize) -> Option<std::borrow::Cow<'_, str>> {
+            self.0.get(at).map(|page| std::borrow::Cow::Borrowed(page.1.as_str()))
+        }
+    }
+
+    impl ItemSource<String> for Pages {}
+
+    /// What a page list asked for in one pass: the page to show, and the boxes flipped, in order.
+    #[derive(Default)]
+    struct Picked {
+        page: Option<String>,
+        includes: Vec<(String, bool)>,
+    }
+
+    /// A list of pages beside the page shown, as InDesign's: the row of the page `shown` is selected (none when the page
+    /// is another list's), and each page but General has an include box before its name. A click on a row, the arrow
+    /// keys and Enter show its page. The box is a real check box in the row's include cell, with the check box's own
+    /// press (a click on it flips it, a press dragged away does not) and its own key stop (Forward from the row).
+    fn page_list(ui: &mut Ui, salt: &str, label: String, pages: &Pages, shown: &str) -> Picked {
+        let selection = if pages.0.iter().any(|page| page.0 == shown) { Selection::single(shown.to_owned()) } else { Selection::default() };
+        let columns = vec![ColumnSpec::new(INCLUDE, Label::Empty, ColumnWidth::Toggle), ColumnSpec::new(NAME, Label::Empty, ColumnWidth::Content)];
+        let flipped: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
+        let out = List::<String>::new(label)
+            .id_salt(salt)
+            .select(SelectMode::Single)
+            .activate(ActivateOn::Click)
+            .allow_empty(false)
+            .header(false)
+            .sizing(Sizing::Content)
+            .natural_height(true)
+            .columns(columns)
+            .selection(Bind::given(selection))
+            .show_items(ui, pages, &mut |key, icx| {
+                let Some((_, name, include)) = pages.0.iter().find(|page| page.0 == *key) else { return ListRow::spacer() };
+                // The include column holds a cell on every row (empty on General's), so each name stands in the name column.
+                let row = ListRow::new(name.clone()).cells(icx.cells()).cell(INCLUDE, "");
+                let Some(before) = *include else { return row };
+                let (page, flipped) = (key.clone(), flipped.clone());
+                // The box is named by its page ("Fill"), as the dialog's check boxes were; its label shows no text in a cell.
+                let include = Checkbox::new(Bind::given(before)).label(name.clone()).id_salt(("include", key.clone()));
+                row.cell_field(INCLUDE, include, move |out| {
+                    if let Some(on) = edited(out.events, before) {
+                        flipped.borrow_mut().push((page, on));
+                    }
+                })
+            });
+        let mut picked = Picked { page: None, includes: flipped.take() };
+        for event in out.events {
+            match event {
+                CollectionEvent::Selection { change: SelectionChange::Set(keys), .. } => {
+                    if let Some(key) = keys.last() {
+                        picked.page = Some(key.clone());
+                    }
+                }
+                CollectionEvent::Activate(key) => picked.page = Some(key),
+                _ => {}
+            }
+        }
+        picked
     }
 
     /// The settings of the attribute shown.
@@ -440,13 +531,18 @@ mod framework {
                     Select::new(tr("Based On:"), Bind::given(based.clone()), &entries).id_salt("os_based_on").enabled(false).show(ui);
                 });
                 let lines = settings(app, d);
-                GroupBox::new(tr("Style Settings:"), None).id_salt("os_style_settings").show(ui, |ui, _| {
-                    if lines.is_empty() {
-                        Text::new(tr("(no attributes)")).shade(Shade::Muted).show(ui);
-                    }
-                    for line in &lines {
-                        Text::new(line.clone()).show(ui);
-                    }
+                // Style Settings: the heading over a box that fills the page's width and the room under it, as InDesign's.
+                Text::new(tr("Style Settings:")).role(TypeRole::BodyStrong).show(ui);
+                Stack::new().id_salt("os_style_settings_room").fill_width().room_height(SETTINGS_ROOM).show(ui, |ui, _| {
+                    let settings_box = Stack::new().id_salt("os_style_settings").surface(SurfaceKind::Sunken).pad(Pad::Control);
+                    settings_box.scroll(Scroll::vertical()).fill().show(ui, |ui, _| {
+                        if lines.is_empty() {
+                            Text::new(tr("(no attributes)")).shade(Shade::Muted).show(ui);
+                        }
+                        for line in &lines {
+                            Text::new(line.clone()).show(ui);
+                        }
+                    });
                 });
             }
             "fill" | "stroke" => {
@@ -985,17 +1081,23 @@ mod tests {
             let undo = w.app.session.active().unwrap().history.undo.len();
             let journal = w.app.session.journal.len();
             w.name("Workflow");
-            w.tab_to(Role::CheckBox, "Fill");
+            // The page list is one Tab stop on its lead row (the page shown); Down moves to Fill's row, and Forward
+            // enters the row's own stops, its include box.
+            w.tab_to(Role::ListItem, "General");
+            w.key(Key::ArrowDown);
+            w.key(Key::ArrowRight);
+            assert_eq!(w.ax.as_ref().unwrap().focus, w.ax_control(Role::CheckBox, "Fill").0, "Forward from the row reaches its box");
             w.key(Key::Space);
             assert!(!included(w.app.ui.dialog.as_ref().unwrap(), "fill"));
-            w.click(Role::RadioButton, "Stroke");
+            // The pages are the list's rows, no longer radio buttons.
+            w.click(Role::ListItem, "Stroke");
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("page"), "stroke");
-            w.tab_to(Role::RadioButton, "Stroke");
+            w.tab_to(Role::ListItem, "Stroke");
             w.key(Key::Enter);
-            assert!(w.app.ui.dialog.is_some(), "the page radio, not the footer, owns Enter");
+            assert!(w.app.ui.dialog.is_some(), "the page list, not the footer, owns Enter");
             w.click(Role::CheckBox, "Drop Shadow");
             assert!(crate::effects_dialog::is_on(&w.app.ui.dialog.as_ref().unwrap().fields["fx"], "dropShadow"));
-            w.click(Role::RadioButton, "General");
+            w.click(Role::ListItem, "General");
             assert_eq!(effects(&w.app), before, "name/includes/navigation are strictly draft-only");
             w.click(Role::CheckBox, "Apply Style to Selection");
             assert!(!w.app.ui.dialog.as_ref().unwrap().b("apply"));
@@ -1247,7 +1349,8 @@ mod tests {
             app.run("style.paragraph.create", json!({"name": "Workflow Body", "fromSelection": false})).unwrap();
             let mut w = Workflow::new(app);
             w.open(None);
-            w.click(Role::RadioButton, "Paragraph Styles");
+            // The pages are the list's rows, no longer radio buttons.
+            w.click(Role::ListItem, "Paragraph Styles");
             assert!(included(w.app.ui.dialog.as_ref().unwrap(), "paragraph"));
             let before = effects(&w.app);
             let initial_style = w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle");
@@ -1285,7 +1388,8 @@ mod tests {
             w.open(None);
             w.name("Paragraph workflow");
             let before = effects(&w.app);
-            w.click(Role::RadioButton, "Paragraph Styles");
+            // The pages are the list's rows, no longer radio buttons.
+            w.click(Role::ListItem, "Paragraph Styles");
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("page"), "paragraph");
             w.click(Role::CheckBox, "Paragraph Styles");
             assert!(!included(w.app.ui.dialog.as_ref().unwrap(), "paragraph"));
@@ -1326,9 +1430,9 @@ mod tests {
             assert!(created.apply_next_style);
             w.open(Some("Precise"));
             let before_rename = effects(&w.app);
-            w.click(Role::RadioButton, "Text Frame General Options");
+            w.click(Role::ListItem, "Text Frame General Options");
             w.idle();
-            w.click(Role::RadioButton, "General");
+            w.click(Role::ListItem, "General");
             w.name("Precise renamed");
             assert_eq!(effects(&w.app), before_rename);
             w.footer("OK");
