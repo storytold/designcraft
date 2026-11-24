@@ -19,7 +19,7 @@ fn double_clicking_a_parent_shows_that_parent() {
     let mut h = test_window::open(app, vec2(1400.0, 900.0));
     let names = ["A-Parent", "B-Parent", "C-Parent", "D-Parent"];
     for name in names {
-        assert_ne!(h.get_by_label(name).accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "{name} is not selected yet");
+        assert_ne!(h.get_by_label(name).accesskit_node().is_selected(), Some(true), "{name} is not selected yet");
     }
     // Both clicks in one frame: the harness's event queue spaces events too far apart for a
     // double click.
@@ -36,7 +36,7 @@ fn double_clicking_a_parent_shows_that_parent() {
     let slot = crate::canvas::current_slot(app, &layout).unwrap();
     assert_eq!(layout.slots[slot].spread, designcraft_doc::SpreadRef::Parent(2));
     for name in names {
-        assert_eq!(h.get_by_label(name).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True), name == "C-Parent", "{name}");
+        assert_eq!(h.get_by_label(name).accesskit_node().is_selected() == Some(true), name == "C-Parent", "{name}");
     }
     // Parent rows show a rendered thumbnail (of the revision before the double click until the
     // document has been unchanged for THUMB_QUIET_SECS).
@@ -757,20 +757,23 @@ mod framework_path {
         assert!(h.query_by_label("Page 50").is_none(), "Page 50 starts out of view");
         let over = pos_of(&h, "Page 1");
         event(&mut h, Event::PointerMoved(over), Modifiers::NONE);
-        for _ in 0..40 {
+        // Wheel in small notches until Page 50 comes into view: how far one notch goes is the scroll region's, so the
+        // test does not depend on it, only on the wheel bringing later pages in.
+        let mut notches = 0;
+        while h.query_by_label("Page 50").is_none() && notches < 600 {
             event(
                 &mut h,
                 Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
-                    delta: vec2(0.0, -400.0),
+                    delta: vec2(0.0, -40.0),
                     phase: egui::TouchPhase::Move,
                     modifiers: Modifiers::NONE,
                     source: egui::MouseWheelSource::Wheel,
                 },
                 Modifiers::NONE,
             );
+            notches += 1;
         }
-        steps(&mut h, 4);
         assert!(h.query_by_label("Page 50").is_some(), "Page 50 scrolled into view");
         assert!(h.query_by_label("Page 1").is_none(), "Page 1 scrolled out of it");
     }
