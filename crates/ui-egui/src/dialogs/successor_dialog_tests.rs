@@ -11,6 +11,21 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use serde_json::{Value, json};
 
+/// What a failed fit check needs to be traced: the window, the dialog titled `title`, and the named nodes that lie
+/// partly or wholly outside the window (the widest first).
+fn fit_report(h: &egui_kittest::Harness<'_, DesignApp>, title: &str) -> String {
+    let screen = kit::screen(h);
+    let dialog = h.query_all_by_role(Role::Dialog).find(|node| node.accesskit_node().label().as_deref() == Some(title)).map(|node| node.rect());
+    let mut outside: Vec<(f32, String)> = h
+        .query_all_by(|node| node.accesskit_node().label().is_some())
+        .filter(|node| !screen.contains_rect(node.rect()) && dialog.is_some_and(|d| d.intersects(node.rect())))
+        .map(|node| (node.rect().width(), format!("{:?} {:?} {:?}", node.accesskit_node().role(), node.accesskit_node().label(), node.rect())))
+        .collect();
+    outside.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let outside: Vec<String> = outside.into_iter().take(12).map(|(_, node)| node).collect();
+    format!("window {screen:?}, dialog {dialog:?}, outside the window: {outside:#?}")
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Numbering & Section Options
 
@@ -669,7 +684,11 @@ fn framework_dialogs_keep_their_title_and_actions_in_scaled_viewports() {
                 let h = kit::harness_sized(app, size);
                 for expected in [title, ok, cancel] {
                     let shown = crate::i18n::tr(language, expected);
-                    assert!(kit::in_view(&h, shown), "{language} {size:?} {command}: {shown} is in the window");
+                    assert!(
+                        kit::in_view(&h, shown),
+                        "{language} {size:?} {command}: {shown} is in the window; {}",
+                        fit_report(&h, &crate::i18n::tr(language, title))
+                    );
                 }
             }
         }
@@ -725,7 +744,7 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
     app.run("app.newDocumentDialog", json!({})).unwrap();
     let mut h = kit::harness_sized(app, vec2(392.0, 271.0));
     for expected in ["New Document", "Create", "Close"] {
-        assert!(kit::in_view(&h, expected), "{expected} is in the window");
+        assert!(kit::in_view(&h, expected), "{expected} is in the window; {}", fit_report(&h, "New Document"));
     }
     let at = kit::reach(&mut h, "Primary Text Frame").center();
     kit::click_at(&mut h, at);
@@ -782,7 +801,7 @@ fn framework_dialogs_cancel_and_reopen_without_applying_edits_after_resizing() {
         for size in [vec2(1178.0, 814.0), vec2(392.0, 271.0), vec2(589.0, 407.0)] {
             kit::resize(&mut h, size);
             for expected in [title, ok, cancel] {
-                assert!(kit::in_view(&h, expected), "{command} {size:?}: {expected} is in the window");
+                assert!(kit::in_view(&h, expected), "{command} {size:?}: {expected} is in the window; {}", fit_report(&h, title));
             }
         }
         kit::click(&mut h, &[Role::Button], cancel, 0);
@@ -859,9 +878,12 @@ fn new_document_form_window_drags_mostly_aside_and_keeps_its_preview() {
     let from = title_at(&h, "New Document");
     let to = from + vec2(1300.0, 0.0);
     kit::drag(&mut h, from, to);
-    // All but 100 px of the window's width is past the right edge, over the preview.
+    // All but a strip of its title is past the right edge, over the preview: at least as far aside as the old window went
+    // (100 px left in view), with the strip the framework keeps (`DragBounds::TitleVisible`) still in the window to take
+    // it back by.
     let moved = kit::dialog_rect(&h, "New Document");
-    assert!((moved.left() - 1300.0).abs() < 3.0, "{moved:?}");
+    let window = kit::screen(&h);
+    assert!(moved.left() >= 1300.0 - 3.0 && moved.left() < window.right() && moved.top() >= window.top(), "{moved:?} in {window:?}");
     let app = h.state();
     assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("newDocument"));
     assert_eq!(app.session.new_document_preview(), preview, "moving the window keeps the preview");

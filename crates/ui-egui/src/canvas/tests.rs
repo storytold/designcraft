@@ -2239,6 +2239,10 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
             app,
         );
         h.run_steps(6);
+        // The window's bars settle over the first frames, and a texture rendered for a taller canvas still covers the
+        // settled one, so it is kept: render once more at the settled canvas, which the edit below renders at too.
+        h.state_mut().canvas.shown = None;
+        h.run_steps(2);
         let limit = h.ctx.input(|i| i.max_texture_side);
         let size = h.state().canvas.texture.as_ref().map(|t| t.size()).unwrap();
         assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
