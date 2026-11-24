@@ -223,7 +223,7 @@ pub(crate) mod form {
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::runtime::env::UnitKind;
     use craft_ui_widgets::style::TypeRole;
-    use craft_ui_widgets::text::{NumberField, TextField};
+    use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
     use craft_ui_widgets::value_drag::AngleDial;
     use designcraft_geom::{Unit, format_measure, units::parse_measure};
     use egui::{AsIdSalt, Ui};
@@ -265,8 +265,21 @@ pub(crate) mod form {
 
     /// A measure field named `label` over `points`, in the document's `unit`; the new value once it is edited.
     pub(crate) fn measure(ui: &mut Ui, salt: impl AsIdSalt, label: &str, points: f64, unit: Unit, range: Option<(f64, f64)>) -> Option<f64> {
-        let out = TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range }).id_salt(salt).show(ui);
-        edited(out.events, points)
+        // The step halves before the field, as the dialog's number fields have.
+        let (mut stepped, mut out) = (None, None);
+        Row::new().id_salt(salt).show(ui, |ui, _| {
+            let id = ui.make_persistent_id("effects_measure_steps");
+            stepped = crate::framework_transform::measure_steps(ui, id, label, unit, true);
+            let shown =
+                TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range }).id_salt("effects_measure_field").show(ui);
+            out = Some(shown.events);
+        });
+        if let Some(by) = stepped {
+            let next = points + by;
+            let next = range.map_or(next, |(min, max)| next.clamp(min, max));
+            return ((next - points).abs() > 1e-9).then_some(next);
+        }
+        edited(out?, points)
     }
 
     /// A number field named `label` over `value`, in `kind`, kept in `range` and written with at most `decimals`.
@@ -279,7 +292,12 @@ pub(crate) mod form {
         range: RangeInclusive<f64>,
         decimals: usize,
     ) -> Option<f64> {
-        let field = NumberField::new(label.to_owned(), Bind::given(Some(value))).id_salt(salt).unit_kind(kind).range(range).step(1.0);
+        let field = NumberField::new(label.to_owned(), Bind::given(Some(value)))
+            .id_salt(salt)
+            .unit_kind(kind)
+            .range(range)
+            .step(1.0)
+            .step_arrows(StepArrows::Leading);
         let field = if decimals == 0 { field.snap_typed(true).fixed_decimals(0) } else { field };
         let out = field.commit_decimals(decimals).show(ui);
         edited(out.edit.events, Some(value)).flatten().filter(|v| v.is_finite())

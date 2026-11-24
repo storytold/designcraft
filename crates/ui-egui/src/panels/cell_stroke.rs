@@ -330,7 +330,7 @@ pub(crate) mod framework {
     use craft_ui_widgets::runtime::env::{Env, Label, UnitKind};
     use craft_ui_widgets::runtime::focus::{ActivateKeys, KeyUse};
     use craft_ui_widgets::style::{ComponentStyle, Flags, FocusLook, Stateful, States, StyleColor, StyleCx, SurfaceKind, SurfaceLook};
-    use craft_ui_widgets::text::{NumberField, NumberPick};
+    use craft_ui_widgets::text::{NumberField, NumberPick, StepArrows};
     use egui::{Rect, Ui, Vec2};
     use serde_json::{Value, json};
 
@@ -534,6 +534,7 @@ pub(crate) mod framework {
             .unit_kind(UnitKind::Points)
             .codec(codec)
             .range(0.0..=1000.0)
+            .step_arrows(StepArrows::Leading)
             .presets(presets.as_slice())
             .show(ui)
             .edit
@@ -550,6 +551,7 @@ pub(crate) mod framework {
             .id_salt(("cell_stroke_percent", id))
             .unit_kind(UnitKind::Percent)
             .range(0.0..=100.0)
+            .step_arrows(StepArrows::Leading)
             .fixed_decimals(0)
             .show(ui)
             .edit

@@ -294,6 +294,15 @@ fn step_halves(ui: &mut egui::Ui, at: Rect, id: egui::Id, label: &str, unit: Uni
     by
 }
 
+/// The up and down step halves of a measure text field shown in the flow, before the field: a strip as tall as a field,
+/// named for `label`. The step a click asked for this pass, in points (the unit's step, ten with Shift). The framework's
+/// text field has no step arrows of its own; a dialog's measure field shows these in a row with it.
+pub(crate) fn measure_steps(ui: &mut egui::Ui, id: egui::Id, label: &str, unit: Unit, enabled: bool) -> Option<f64> {
+    let height = ui.spacing().interact_size.y.max(crate::widgets::FIELD_H);
+    let (at, _) = ui.allocate_exact_size(vec2(STEP_W, height), egui::Sense::hover());
+    step_halves(ui, at, id, label, unit, enabled)
+}
+
 /// The chevron of a step half: up, or down.
 #[derive(craft_ui::contract::MemoProps)]
 struct StepChevron(bool);
@@ -573,6 +582,11 @@ pub(crate) fn check(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, label: &s
         None => field.show(ui),
     };
     out.events.committed().copied().filter(|v| *v != value)
+}
+
+/// The width a push button labelled `label` takes to show its whole label, padding included.
+pub(crate) fn button_width(ui: &egui::Ui, label: &str) -> f32 {
+    Button::new(label.to_owned()).measure_in(ui, craft_behavior::Proposal::Ideal).x.ceil()
 }
 
 /// A push button at `at` (or in the flow) labelled `label`.

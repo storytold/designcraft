@@ -235,7 +235,7 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 pub(crate) mod framework {
     use super::*;
     use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, check, choice, font_style_select, icon_button, icon_number, icon_tip, icon_toggle,
+        Letters, MenuRow, Number, Quantity, button, button_width, check, choice, font_style_select, icon_button, icon_number, icon_tip, icon_toggle,
         letters_button, menu, more_options, number_field,
     };
     use crate::panels::properties::object::framework::{SwatchFor, swatch_chip};
@@ -620,7 +620,10 @@ pub(crate) mod framework {
         }
         // The Bullets and Numbering dialog for the selected paragraphs, at the row's end.
         let id = cid(ui, "bullets-options");
-        if button(ui, Some(sub(b, b.width() - 8.0 - 66.0, 0.0, 66.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
+        let options = crate::i18n::tr(&lang, "Options");
+        // As wide as its whole label takes, at least the old 66 pt.
+        let w = button_width(ui, options).max(66.0);
+        if button(ui, Some(sub(b, b.width() - 8.0 - w, 0.0, w, FIELD_H)), id, options, true).clicked() {
             let _ = app.run("app.bulletsNumberingDialog", json!({}));
         }
     }
@@ -670,9 +673,12 @@ pub(crate) mod framework {
         if let Some(Some(v)) = icon_number(ui, sub(b, 83.0, 1.0, 19.0, 19.0), sub(b, 105.0, 0.0, 54.0, FIELD_H), id, "text-gutter", n) {
             let _ = app.run("object.textFrameOptions", json!({"gutter": v}));
         }
-        let ow = (b.max.x - 8.0) - (b.min.x + 164.0);
+        // From x 164 to the row's end, or as wide as its whole label takes when that is wider (moving left over the gap).
+        let options = crate::i18n::tr(&lang, "Options");
+        let ow = ((b.max.x - 8.0) - (b.min.x + 164.0)).max(button_width(ui, options));
+        let ox = (b.width() - 8.0 - ow).min(164.0);
         let id = cid(ui, "text-frame-options");
-        if button(ui, Some(sub(b, 164.0, 0.5, ow, 20.0)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
+        if button(ui, Some(sub(b, ox, 0.5, ow, 20.0)), id, options, true).clicked() {
             app.ui.dialog = Some(crate::dialogs::Dialog::new("textFrameOptions", json!({})));
         }
         // Type on a path sets one line along the path: insets and vertical justification do not apply.
@@ -797,7 +803,6 @@ pub(crate) mod framework {
             .id(id)
             .presets(&rows)
             .step(5.0)
-            .step_arrows(craft_ui_widgets::text::StepArrows::Leading)
             .commit_decimals(0)
             .range(-1000.0..=10000.0);
         let out = match at {

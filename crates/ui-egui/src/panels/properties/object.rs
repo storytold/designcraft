@@ -746,10 +746,14 @@ pub(super) mod framework {
                 paint_stroke_type(&cx.painter, sample_tile(&cx.painter, rect), kind, SAMPLE_INK)
             })
             .picture_only()
-            .show_at(ui, at)
-            .events
-            .committed()
-            .copied();
+            .show_at(ui, at);
+        // The face's own picture is a square thumbnail; the current type reads at a glance only as a line across the
+        // face, as the app has always shown it.
+        if let Some(&(_, kind)) = STROKE_TYPES.iter().find(|(_, kind)| *kind == current) {
+            let tile = face_sample(ui, picked.response.rect);
+            paint_stroke_type(ui.painter(), tile, kind, SAMPLE_INK);
+        }
+        let picked = picked.events.committed().copied();
         if let Some(kind) = picked {
             let _ = app.run("object.stroke", stroke_type_params(kind));
         }
@@ -757,6 +761,14 @@ pub(super) mod framework {
 
     /// The ink a stroke type or corner shape sample draws in, on its white tile.
     const SAMPLE_INK: egui::Color32 = egui::Color32::BLACK;
+
+    /// The white sample tile across a stroke type or corner shape select's face at `face`, its chevron left clear: the
+    /// rect inside it the sample draws in.
+    fn face_sample(ui: &Ui, face: Rect) -> Rect {
+        let tile = Rect::from_min_max(face.min + vec2(4.0, 4.0), egui::pos2(face.max.x - 18.0, face.max.y - 4.0));
+        ui.painter().rect_filled(tile, 2.0, egui::Color32::WHITE);
+        tile.shrink(1.0)
+    }
 
     /// The white tile a stroke type or corner shape sample sits on, as the app's pickers have always shown them, painted
     /// over `rect`: the rect inside it the sample draws in.
@@ -779,10 +791,11 @@ pub(super) mod framework {
                 paint_corner_shape(&cx.painter, sample_tile(&cx.painter, rect), *shape, SAMPLE_INK)
             })
             .picture_only()
-            .show_at(ui, at)
-            .events
-            .committed()
-            .copied();
+            .show_at(ui, at);
+        // The current shape across the face, as the stroke type's line is.
+        let tile = face_sample(ui, picked.response.rect);
+        paint_corner_shape(ui.painter(), tile, shape, SAMPLE_INK);
+        let picked = picked.events.committed().copied();
         if let Some(s) = picked {
             let _ = app.run("object.cornerOptions", corner_shape_params(s, size));
         }

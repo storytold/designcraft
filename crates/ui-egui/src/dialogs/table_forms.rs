@@ -7,7 +7,7 @@ use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContain
 use craft_ui_widgets::form::{Field, FieldGroup};
 use craft_ui_widgets::layout_components::Stack;
 use craft_ui_widgets::pickers::{ComboBox, Select};
-use craft_ui_widgets::text::NumberField;
+use craft_ui_widgets::text::{NumberField, StepArrows};
 use designcraft_engine::cmd::table::{MAX_BODY_ROWS, MAX_COLUMNS, MAX_HEADER_FOOTER_ROWS};
 use egui::Ui;
 use serde_json::json;
@@ -95,6 +95,7 @@ fn count_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: &str, min: f64, ma
         .id_salt(("table_count", key))
         .range(min..=max)
         .step(1.0)
+        .step_arrows(StepArrows::Leading)
         .snap_typed(true)
         .fixed_decimals(0)
         .commit_decimals(0)

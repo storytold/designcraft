@@ -261,7 +261,11 @@ impl ExportControls {
         if integer {
             craft_ui_widgets::display::Text::new(label.to_owned()).show(ui);
         }
-        let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value))).id(id).range(range.clone()).step(1.0);
+        let field = craft_ui_widgets::text::NumberField::new(label.to_owned(), Bind::given(Some(*value)))
+            .id(id)
+            .range(range.clone())
+            .step(1.0)
+            .step_arrows(craft_ui_widgets::text::StepArrows::Leading);
         let out = if integer { field.snap_typed(true).fixed_decimals(0).commit_decimals(0).show(ui) } else { field.unit("ppi").show(ui) };
         if let Some(Some(next)) = out.edit.events.landed().filter(|next| next.is_some_and(f64::is_finite)) {
             let next = next.clamp(*range.start(), *range.end());
