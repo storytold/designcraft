@@ -29,10 +29,11 @@ mod framework {
     use crate::panels::tabs::TabGlyph;
     use craft_ui_widgets::bars::{Bar, BarKind};
     use craft_ui_widgets::buttons::{Button, IconButton};
-    use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing, Trigger};
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Sizing, Trigger};
     use craft_ui_widgets::display::{Divider, Picture, Shade, Text};
     use craft_ui_widgets::list::ThumbAspect;
     use craft_ui_widgets::menu::{Menu, MenuItem};
+    use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::IconSpec;
     use craft_ui_widgets::style::{TypeRole, Variant};
     use craft_ui_widgets::tabs::{DocumentTab, DocumentTabs, DocumentTabsEvent};
@@ -148,22 +149,15 @@ mod framework {
                 if nav(ui, "prev", &tr("Previous Spread")) {
                     asks.push(Ask::Page(cur.saturating_sub(1)));
                 }
-                // The page box, as InDesign's: the page in view, or the parent while one is shown ("A-Parent"); its menu
-                // lists the pages, then the parents.
-                let name = page_box.as_ref().map_or_else(String::new, |b| b.current_name().to_string());
-                let label = tr("Page");
-                let page = Button::new(label.clone()).painted(format!("{name} ▾")).id_salt("status_page").variant(Variant::SECONDARY).show(ui);
+                // The page box, as InDesign's: the page in view, or the parent while one is shown ("A-Parent"); its list
+                // holds the pages, then the parents. It is a select, so its accessible value is the name shown.
                 if let Some(b) = &page_box {
-                    let _ = Menu::new(label).id_salt("status_page_menu").opened_by(&page.response, Trigger::Click).show(ui, |ui, _| {
-                        for (i, nm) in b.names.iter().enumerate() {
-                            if i == b.pages && i > 0 {
-                                Divider::horizontal().show(ui);
-                            }
-                            if MenuItem::new(nm.clone()).id_salt(("page", i)).check(i == b.current).show(ui).ran {
-                                asks.push(Ask::PageBox(i));
-                            }
-                        }
-                    });
+                    let entries: Vec<Entry<usize>> = b.names.iter().enumerate().map(|(i, nm)| Entry::new(i, nm.clone())).collect();
+                    let picked =
+                        Select::new(tr("Page"), Bind::given(b.current), &entries).id_salt("status_page").show(ui).events.committed().copied();
+                    if let Some(i) = picked {
+                        asks.push(Ask::PageBox(i));
+                    }
                 }
                 if nav(ui, "next", &tr("Next Spread")) {
                     asks.push(Ask::Page((cur + 1).min(pages.saturating_sub(1))));

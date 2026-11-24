@@ -71,7 +71,8 @@ fn a_typed_tint_is_kept_while_typing_and_applied_on_enter_or_leaving_the_field()
     h.run_steps(3);
     assert_eq!(fill_tint(h.state(), id), 1.0, "150 is clamped to 100 % when the field loses focus");
     // The slider still applies on release.
-    let track = h.get_by_role(Role::Slider).rect();
+    // The Tint slider is one of several: the C/M/Y/K channels have sliders of their own.
+    let track = h.get_by_role_and_label(Role::Slider, "Tint").rect();
     h.hover_at(track.right_center());
     h.drag_at(track.right_center());
     h.run_steps(1);

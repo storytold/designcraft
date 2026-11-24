@@ -2119,7 +2119,7 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
         let v = *app.view().unwrap();
         crate::canvas::Xf::new(app.canvas_rect.unwrap(), &v).to_screen(layout.slots[0].xf * designcraft_geom::Point::new(300.0, 600.0))
     };
-    let from = h.get_by_label("Eyedropper: drag it onto the page").rect().center();
+    let from = h.get_by_role_and_label(egui::accesskit::Role::Button, "Sample color from the screen").rect().center();
     h.hover_at(from);
     h.drag_at(from);
     h.run_steps(1);
@@ -2147,7 +2147,7 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
     h.run_steps(3);
     assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("hex"), hex);
     // Let go over the picker's own colour field, with the page under it: nothing either.
-    let field = h.get_by_label("Color field").rect().center();
+    let field = picker_area(&h, "Blue and green").center();
     let ctx = h.ctx.clone();
     assert!(crate::canvas::color_at(h.state_mut(), &ctx, field).is_some(), "the page lies under the field");
     h.hover_at(from);
@@ -2160,132 +2160,128 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
     assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("hex"), hex, "the picker isn't sampled");
 }
 
+
 /// The Color Picker laid out as InDesign's: a field and a slider for the component whose radio
 /// is on, the new colour over the old one, and the values in every space.
 #[test]
-
 fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_with() {
-    use egui_kittest::kittest::Queryable;
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
+    use table_layout_kit as kit;
+    let mut app = kit::app(1, false);
     app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.run_steps(3);
+    let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
     // A C typed at 100% K is kept, whether or not the colour shown changes with it.
-    let rgb = h.state().app.ui.dialog.as_ref().unwrap().fields.get("rgb").cloned();
-    h.get_by_label("C").focus();
-    h.run_steps(1);
-    h.event(egui::Event::Text("50".into()));
-    h.run_steps(2);
-    let d = h.state().app.ui.dialog.as_ref().unwrap();
+    let rgb = kit::draft(&h).fields.get("rgb").cloned();
+    kit::type_and_commit(&mut h, "Cyan", 0, "50");
+    let d = kit::draft(&h);
     assert_eq!(d.fields["cmyk"], json!([50.0, 0.0, 0.0, 100.0]), "rgb {:?} (was {rgb:?})", d.fields.get("rgb"));
     assert!(d.b("edited"));
+}
+
+
+/// The colour area of the Color Picker named by its two components (the Red mode's is "Blue and green").
+fn picker_area(h: &egui_kittest::Harness<'_, DesignApp>, name: &str) -> egui::Rect {
+    use egui_kittest::kittest::Queryable;
+    h.query_all_by_label(name)
+        .map(|n| n.rect())
+        .max_by(|a, b| a.area().total_cmp(&b.area()))
+        .unwrap_or_else(|| panic!("no colour area named {name:?}"))
 }
 
 #[test]
 fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
     use egui_kittest::kittest::Queryable;
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
+    use table_layout_kit as kit;
+    let mut app = kit::app(1, false);
     app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
     app.run("object.color", json!({"color":designcraft_color::Color::from_hex("#7c1315").unwrap(),"target":"fill"})).unwrap();
     app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.run_steps(3);
+    let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
     // R at first: R up the slider, B across and G up the field.
-    let _ = h.get_by_label("RGB Color Space View");
-    let field = h.get_by_label("Color field").rect();
-    crate::test_window::click_at(&mut h, egui::pos2(field.right() - 1.0, field.top() + 1.0));
-    h.run_steps(2);
-    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    let field = picker_area(&h, "Blue and green");
+    kit::click_at(&mut h, egui::pos2(field.right() - 1.0, field.top() + 1.0));
+    let p = picked_of(kit::draft(&h));
     assert!((p.rgb[0] - 124.0 / 255.0).abs() < 0.01 && p.rgb[1] > 0.97 && p.rgb[2] > 0.97, "{p:?}: R kept, G and B full");
     // The slider sets R alone.
-    let slider = h.get_by_label("Color slider").rect();
-    crate::test_window::click_at(&mut h, egui::pos2(slider.center().x, slider.bottom() - 1.0));
-    h.run_steps(2);
-    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    let slider = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Red").rect();
+    kit::click_at(&mut h, egui::pos2(slider.center().x, slider.bottom() - 1.0));
+    let p = picked_of(kit::draft(&h));
     assert!(p.rgb[0] < 0.02 && p.rgb[1] > 0.97, "{p:?}");
     // Hue on the slider: the field is saturation across, brightness up.
-    store_picked(h.state_mut().app.ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
-    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("h"));
-    h.run_steps(2);
-    crate::test_window::click_at(&mut h, egui::pos2(field.left() + 1.0, field.top() + 1.0));
-    h.run_steps(2);
-    let p = picked_of(h.state().app.ui.dialog.as_ref().unwrap());
+    store_picked(h.state_mut().ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("h"));
+    kit::steps(&mut h, 2);
+    let field = picker_area(&h, "Saturation and brightness");
+    kit::click_at(&mut h, egui::pos2(field.left() + 1.0, field.top() + 1.0));
+    let p = picked_of(kit::draft(&h));
     assert!(p.hsb[1] < 0.02 && p.hsb[2] > 0.98 && (p.hsb[0] - 359.0).abs() < 2.0, "{p:?}: no saturation, full brightness, the hue kept");
     // Lab shows its own view.
-    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("l"));
-    h.run_steps(2);
-    let _ = h.get_by_label("Lab Color Space View");
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("component".into(), json!("l"));
+    kit::steps(&mut h, 2);
+    let _ = picker_area(&h, "Green-red and blue-yellow");
     // Add CMYK Swatch adds the colour as a CMYK swatch; OK applies it.
-    store_picked(h.state_mut().app.ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
-    h.run_steps(2);
-    let before = h.state().app.session.active().unwrap().doc.swatches.len();
-    h.get_by_label("Add CMYK Swatch").click();
-    h.run_steps(3);
-    let doc = &h.state().app.session.active().unwrap().doc;
+    store_picked(h.state_mut().ui.dialog.as_mut().unwrap(), &Picked::from_rgb([124.0 / 255.0, 19.0 / 255.0, 21.0 / 255.0], 0.0));
+    kit::steps(&mut h, 2);
+    let before = h.state().session.active().unwrap().doc.swatches.len();
+    kit::click(&mut h, &[egui::accesskit::Role::Button], "Add CMYK Swatch", 0);
+    let doc = &h.state().session.active().unwrap().doc;
     assert_eq!(doc.swatches.len(), before + 1);
     assert!(matches!(
         doc.swatches.last().unwrap().value,
         designcraft_color::swatch::SwatchValue::Color { color: designcraft_color::Color::Cmyk { .. }, .. }
     ));
     // The percentages the C/M/Y/K fields show, exactly (not the colour converted back).
-    h.state_mut().app.ui.dialog.as_mut().unwrap().fields.insert("cmyk".into(), json!([0.0, 50.0, 100.0, 0.0]));
-    h.run_steps(2);
-    h.get_by_label("Add CMYK Swatch").click();
-    h.run_steps(3);
-    let doc = &h.state().app.session.active().unwrap().doc;
+    h.state_mut().ui.dialog.as_mut().unwrap().fields.insert("cmyk".into(), json!([0.0, 50.0, 100.0, 0.0]));
+    kit::steps(&mut h, 2);
+    kit::click(&mut h, &[egui::accesskit::Role::Button], "Add CMYK Swatch", 0);
+    let doc = &h.state().session.active().unwrap().doc;
     let designcraft_color::swatch::SwatchValue::Color { color: designcraft_color::Color::Cmyk { c, m, y, k }, .. } =
         doc.swatches.last().unwrap().value
     else {
         panic!("a CMYK swatch")
     };
     assert_eq!([c, m, y, k].map(|v| (v * 100.0).round()), [0.0, 50.0, 100.0, 0.0]);
-    // Its own OK, at the top right, applies it.
-    h.get_by_label("OK").click();
-    h.run_steps(3);
-    assert!(h.state().app.ui.dialog.is_none(), "OK closes it");
-    let st = h.state().app.session.active().unwrap();
+    // Its own OK applies it.
+    kit::click(&mut h, &[egui::accesskit::Role::Button], "OK", 0);
+    assert!(h.state().ui.dialog.is_none(), "OK closes it");
+    let st = h.state().session.active().unwrap();
     let id = st.selection.items[0];
     let fill = st.doc.item(id).unwrap().fill.swatch.clone();
     assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
 }
 
+
 /// The Color Picker reopens on the component it was left on, and the choice survives the
 /// preferences file; an opener that names a component still gets it.
 #[test]
 fn the_color_picker_remembers_its_component() {
-    use egui_kittest::kittest::Queryable;
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
+    use egui::accesskit::Role;
+    use table_layout_kit as kit;
+    let mut app = kit::app(1, false);
     app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap();
     assert_eq!(app.ui.color_picker_component, "r", "R at first, as before");
     app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.run_steps(3);
-    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "r");
-    h.get_by_role_and_label(egui::accesskit::Role::RadioButton, "H:").click();
-    h.run_steps(2);
-    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
-    assert_eq!(h.state().app.ui.color_picker_component, "h", "the choice is kept outside the dialog");
-    h.get_by_label("Cancel").click();
-    h.run_steps(2);
-    assert!(h.state().app.ui.dialog.is_none());
+    let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
+    assert_eq!(kit::draft(&h).s("component"), "r");
+    kit::click(&mut h, &[Role::RadioButton], "Hue", 0);
+    assert_eq!(kit::draft(&h).s("component"), "h");
+    assert_eq!(h.state().ui.color_picker_component, "h", "the choice is kept outside the dialog");
+    kit::click(&mut h, &[Role::Button], "Cancel", 0);
+    assert!(h.state().ui.dialog.is_none());
     // Reopened: H, not R.
-    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
-    h.run_steps(3);
-    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "h");
-    h.get_by_label("Cancel").click();
-    h.run_steps(2);
+    h.state_mut().ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false})));
+    kit::steps(&mut h, 3);
+    assert_eq!(kit::draft(&h).s("component"), "h");
+    kit::click(&mut h, &[Role::Button], "Cancel", 0);
     // An opener's own choice wins.
-    h.state_mut().app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
-    h.run_steps(3);
-    assert_eq!(h.state().app.ui.dialog.as_ref().unwrap().s("component"), "l");
+    h.state_mut().ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": "#7c1315", "text": false, "component": "l"})));
+    kit::steps(&mut h, 3);
+    assert_eq!(kit::draft(&h).s("component"), "l");
     // Saved with the preferences, and read back; a file without it is R.
-    let saved = serde_json::to_vec(&h.state().app.ui).unwrap();
+    let saved = serde_json::to_vec(&h.state().ui).unwrap();
     assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
     assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
 }
+
 
 #[test]
 fn create_guides_dialog_covers_the_spread_in_view() {
@@ -2450,124 +2446,81 @@ fn character_style_options_set_the_digits() {
     assert_eq!(char_style(&app, "Emphasis").unwrap().chars.digits, Some(designcraft_doc::Digits::Farsi));
 }
 
-/// Replace the text of the field beside the `nth` label `label` (on its row, to its right) with
-/// `new`, and leave the field.
-fn retype_beside(h: &mut egui_kittest::Harness<'static, crate::test_window::Window>, label: &str, nth: usize, new: &str) {
-    use egui_kittest::kittest::Queryable;
-    let l = h.get_all_by_label(label).nth(nth).unwrap_or_else(|| panic!("no label {label} #{nth}")).rect();
-    let field = h
-        .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
-        .map(|n| n.rect())
-        .filter(|r| r.center().x > l.max.x && (r.center().y - l.center().y).abs() < l.height().max(8.0))
-        .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
-        .unwrap_or_else(|| panic!("no field beside {label} #{nth}"))
-        .center();
-    crate::test_window::click_at(h, field);
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.event(egui::Event::Text(new.into()));
-    h.run_steps(1);
-    // Tab leaves the field (Enter would be the dialog's OK).
-    h.key_press(egui::Key::Tab);
-    h.run_steps(3);
-}
-
-/// The dialog's "Make all settings the same" links, in reading order: the Properties panel's
-/// own links (its Text Frame insets, with a caret in a frame) are to the right of its Quick
-/// Actions heading's left edge and are left out.
-fn dialog_links(h: &egui_kittest::Harness<'static, crate::test_window::Window>) -> Vec<egui::Rect> {
-    use egui_kittest::kittest::Queryable;
-    let panel_left = h.query_by_label("Quick Actions").map_or(f32::INFINITY, |n| n.rect().left());
-    h.get_all_by_label("Make all settings the same").map(|n| n.rect()).filter(|r| r.center().x < panel_left).collect()
-}
-
 /// The course's chapter 40: Paragraph Border's four weights are linked as InDesign's, so a
 /// side typed in sets all four; with the link off ("Make all settings the same") a side is set
 /// alone, as the lesson gives the border only a thick left side. The corners link the same way.
 #[test]
 fn paragraph_border_sides_and_corners_link_as_indesigns() {
-    let (app, _) = ruled_paragraph();
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
-    h.run_steps(4);
-    let field = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, key: &str| {
-        h.state().app.ui.dialog.as_ref().and_then(|d| d.fields.get(&format!("p.{key}")).cloned()).unwrap_or_default()
-    };
+    use table_layout_kit as kit;
+    let (mut app, _) = ruled_paragraph();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "border", "p.borderOn": true})));
+    let mut h = kit::harness_sized(app, egui::vec2(1400.0, 1000.0));
+    let field = |h: &egui_kittest::Harness<'static, DesignApp>, key: &str| kit::draft(h).fields.get(&format!("p.{key}")).cloned().unwrap_or_default();
     // The four weights start the same, so linked: Top sets them all.
-    retype_beside(&mut h, "Top:", 0, "3");
+    kit::type_and_commit(&mut h, "Top:", 0, "3");
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
-    // Unlinked, Left alone takes 10 pt.
-    // The link of the weights (0), corners (1) or offsets (2), where it is now: the dialog
-    // scrolls as fields take focus.
-    let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links = dialog_links(h);
-        assert_eq!(links.len(), 3, "weights, corners and offsets each have a link");
-        links[n].center()
+    // The link of the weights (0), corners (1) or offsets (2), in reading order.
+    let link = |h: &mut egui_kittest::Harness<'static, DesignApp>, n: usize| {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let links = h.query_all_by_label("Make all settings the same").filter(|node| kit::TOGGLE.contains(&node.accesskit_node().role())).count();
+        assert_eq!(links, 3, "weights, corners and offsets each have a link");
+        kit::click(h, kit::TOGGLE, "Make all settings the same", n);
     };
-    let at = link(&h, 0);
-    crate::test_window::click_at(&mut h, at);
-    retype_beside(&mut h, "Left:", 0, "10");
+    // Unlinked, Left alone takes 10 pt.
+    link(&mut h, 0);
+    kit::type_and_commit(&mut h, "Left:", 0, "10");
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
     // Linked again, the four take Top's weight; unlinked once more for the thick left side.
-    let at = link(&h, 0);
-    crate::test_window::click_at(&mut h, at);
+    link(&mut h, 0);
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 3.0, 3.0, 3.0]));
-    let at = link(&h, 0);
-    crate::test_window::click_at(&mut h, at);
-    retype_beside(&mut h, "Left:", 0, "10");
+    link(&mut h, 0);
+    kit::type_and_commit(&mut h, "Left:", 0, "10");
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
     // The corners start the same too: Top Left's size goes to all four.
-    retype_beside(&mut h, "Top Left Corner", 0, "0p4");
+    kit::type_and_commit(&mut h, "Top Left Corner", 0, "0p4");
     let corners = field(&h, "borderCorners");
     assert!((0..4).all(|i| corners[i]["size"] == json!(4.0)), "{corners}");
     // Unlinked, Top Right alone takes 0p8; linked again, all four take Top Left's 4 pt.
-    let at = link(&h, 1);
-    crate::test_window::click_at(&mut h, at);
-    retype_beside(&mut h, "Top Right Corner", 0, "0p8");
+    link(&mut h, 1);
+    kit::type_and_commit(&mut h, "Top Right Corner", 0, "0p8");
     assert_eq!(field(&h, "borderCorners")[1]["size"], json!(8.0));
     assert_eq!(field(&h, "borderCorners")[0]["size"], json!(4.0));
-    let at = link(&h, 1);
-    crate::test_window::click_at(&mut h, at);
+    link(&mut h, 1);
     let corners = field(&h, "borderCorners");
     assert!((0..4).all(|i| corners[i] == corners[0] && corners[i]["size"] == json!(4.0)), "{corners}");
-    confirm(&mut h.state_mut().app).unwrap();
-    let style = h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+    confirm(h.state_mut()).unwrap();
+    let style = h.state().session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
     assert_eq!(style.para.border_weights, Some([3.0, 10.0, 3.0, 3.0]));
 }
 
-/// The course's chapter 41: Paragraph Shading as InDesign's. The page is headed with its name;
+
+/// The course's chapter 41: Paragraph Shading as InDesign's. The page is the one the section list has chosen;
 /// the tint has Overprint beside it; the corners are a two-by-two grid whose shape menus show
 /// the shapes. The lesson rounds the top two corners at 10 pt, unlinked, and moves the
 /// offsets.
 #[test]
 fn paragraph_shading_page_is_laid_out_as_indesigns() {
     use designcraft_geom::corners::CornerShape;
-    use egui_kittest::kittest::Queryable;
-    let (app, _) = ruled_paragraph();
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.state_mut().app.ui.dialog =
-        Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "shading", "p.shadingOn": true})));
-    h.run_steps(4);
-    let field = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, key: &str| {
-        h.state().app.ui.dialog.as_ref().and_then(|d| d.fields.get(&format!("p.{key}")).cloned()).unwrap_or_default()
-    };
-    assert!(h.get_all_by_label("Paragraph Shading").count() >= 2, "the section list and the page's heading");
-    h.get_by_label("Overprint").click();
-    h.run_steps(2);
+    use table_layout_kit as kit;
+    let (mut app, _) = ruled_paragraph();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "shading", "p.shadingOn": true})));
+    let mut h = kit::harness_sized(app, egui::vec2(1400.0, 1000.0));
+    let field = |h: &egui_kittest::Harness<'static, DesignApp>, key: &str| kit::draft(h).fields.get(&format!("p.{key}")).cloned().unwrap_or_default();
+    // The section list names the page it shows (the framework dialog has no separate page heading).
+    assert!(kit::shows(&h, "Paragraph Shading"), "the section list names the page");
+    kit::click(&mut h, kit::TOGGLE, "Overprint", 0);
     assert_eq!(field(&h, "shadingOverprint"), json!(true));
     // The corners' link (0) and the offsets' (1).
-    let link = |h: &egui_kittest::Harness<'static, crate::test_window::Window>, n: usize| {
-        let links = dialog_links(h);
-        assert_eq!(links.len(), 2, "corners and offsets each have a link");
-        links[n].center()
+    let link = |h: &mut egui_kittest::Harness<'static, DesignApp>, n: usize| {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let links = h.query_all_by_label("Make all settings the same").filter(|node| kit::TOGGLE.contains(&node.accesskit_node().role())).count();
+        assert_eq!(links, 2, "corners and offsets each have a link");
+        kit::click(h, kit::TOGGLE, "Make all settings the same", n);
     };
-    let at = link(&h, 0);
-    crate::test_window::click_at(&mut h, at);
-    for (corner, nth) in [("Top Left Corner", 0), ("Top Right Corner", 1)] {
-        retype_beside(&mut h, corner, 0, "10 pt");
-        h.get_all_by_label("Corner Shape").nth(nth).unwrap().click();
-        h.run_steps(2);
-        h.get_by_label("Rounded").click();
-        h.run_steps(2);
+    link(&mut h, 0);
+    for corner in ["Top Left Corner", "Top Right Corner"] {
+        kit::type_and_commit(&mut h, corner, 0, "10 pt");
+        kit::pick(&mut h, &format!("{corner} Corner Shape"), "Rounded");
     }
     let corners: [designcraft_geom::corners::Corner; 4] = serde_json::from_value(field(&h, "shadingCorners")).unwrap();
     assert_eq!(
@@ -2575,15 +2528,15 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
         [(CornerShape::Rounded, 10.0), (CornerShape::Rounded, 10.0), (CornerShape::None, 0.0), (CornerShape::None, 0.0)]
     );
     // The offsets, unlinked: Top alone.
-    let at = link(&h, 1);
-    crate::test_window::click_at(&mut h, at);
-    retype_beside(&mut h, "Top:", 0, "3 pt");
+    link(&mut h, 1);
+    kit::type_and_commit(&mut h, "Top:", 0, "3 pt");
     assert_eq!(field(&h, "shadingOffsets"), json!([3.0, 0.0, 0.0, 0.0]));
-    confirm(&mut h.state_mut().app).unwrap();
-    let style = h.state().app.session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
+    confirm(h.state_mut()).unwrap();
+    let style = h.state().session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
     assert_eq!((style.para.shading_on, style.para.shading_overprint), (Some(true), Some(true)));
     assert_eq!(style.para.shading_corners.map(|c| c[1].shape), Some(CornerShape::Rounded));
 }
+
 
 /// The course's chapter 20: a paragraph style's rule below becomes wavy, 3 pt, with a gap
 /// colour, from Paragraph Rules › Type and Gap Color.
@@ -2607,24 +2560,22 @@ fn paragraph_style_rules_take_a_type_and_a_gap_colour() {
 /// A rule's Gap Tint shows 100% at its default (the rule's JSON leaves a full gap tint out).
 #[test]
 fn a_rules_default_gap_tint_shows_100() {
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     let (mut app, _) = ruled_paragraph();
     app.run(
         "style.paragraph.edit",
         json!({"name": "Ruled Child", "para": {"ruleBelow": {"type": {"kind": "dashed", "pattern": [4.0, 2.0]}, "gapColor": "[Paper]"}}}),
     )
     .unwrap();
-    let mut h = crate::test_window::open(app, egui::vec2(1400.0, 900.0));
-    h.state_mut().app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
-    h.run_steps(4);
-    let label = h.get_by_label("Gap Tint:").rect();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
+    let h = table_layout_kit::harness_sized(app, egui::vec2(1400.0, 1000.0));
     let field = h
-        .get_all_by(|n| n.role() == egui::accesskit::Role::TextInput)
-        .filter(|n| n.rect().center().x > label.max.x && (n.rect().center().y - label.center().y).abs() < 8.0)
-        .min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+        .query_all_by_label("Gap Tint:")
+        .find(|n| table_layout_kit::FIELD.contains(&n.accesskit_node().role()))
         .and_then(|n| n.value());
     assert_eq!(field.as_deref(), Some("100%"));
 }
+
 
 /// The course's chapter 20: the "Recipe Categories" title formatted on the page (size, All
 /// Caps, tracking, space after), then New Paragraph Style from it: the dialog starts from the

@@ -20,6 +20,8 @@ struct SearchState {
     query: String,
     highlight: usize,
     open: bool,
+    /// The widget that had the keyboard before the field took it, to give it back.
+    previous_focus: Option<egui::Id>,
 }
 
 /// Lay out the application bar: the shell's title bar with the menus, the command search and the workspace, Share and Discord controls.
@@ -184,6 +186,9 @@ mod framework {
         let state_id = id.with("state");
         let mut st: SearchState = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
         let focused = focus::has(ui.ctx(), id);
+        if !focused {
+            st.previous_focus = ui.memory(|m| m.focused());
+        }
         let none = egui::Modifiers::NONE;
         let (down, up, enter, escape) = if focused {
             ui.input_mut(|i| {
@@ -261,6 +266,12 @@ mod framework {
         if escape || run.is_some() {
             st.query.clear();
             st.open = false;
+            // The keyboard goes back to the widget that had it before the field took it.
+            let previous = st.previous_focus.take();
+            ui.memory_mut(|m| match previous {
+                Some(p) => m.request_focus(p),
+                None => m.surrender_focus(id),
+            });
         } else if !focused {
             // A click elsewhere or Tab took the keyboard: the matches close, the query stays.
             st.open = false;

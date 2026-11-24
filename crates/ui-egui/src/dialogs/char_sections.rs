@@ -126,6 +126,7 @@ pub(crate) fn basic(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharField
                 entries.extend(menu.iter().map(|f| Entry::new(f.family.clone(), f.label(english).to_owned())));
                 let out = Select::new(tr(lang, "Font Family:"), Bind::given(family.clone()), &entries)
                     .searchable()
+                    .no_matches(tr(lang, "No fonts match"))
                     .keeps_name(true)
                     .id_salt("char_font_family")
                     .show(ui);

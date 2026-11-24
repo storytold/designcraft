@@ -849,96 +849,10 @@ mod framework {
     }
 }
 
-#[cfg(test)]
-mod effects_panel_tests {
-    use super::*;
-
-    /// One frame of the Effects panel: the text painted and where.
-    fn frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 400.0));
-        let time = ctx.input(|i| i.time) + 1.0 / 60.0;
-        let mut out =
-            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(time), events, ..Default::default() }, |ui| effects_panel(app, ui));
-        out.textures_delta.clear();
-        let mut v = Vec::new();
-        for s in out.shapes {
-            if let egui::Shape::Text(t) = s.shape {
-                v.push((t.galley.job.text.clone(), t.visual_bounding_rect()));
-            }
-        }
-        v
-    }
-
-    fn click(app: &mut DesignApp, ctx: &egui::Context, label: &str) {
-        let labels = frame(app, ctx, vec![]);
-        let pos = labels.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("{label} is painted")).1.center();
-        for pressed in [true, false] {
-            frame(
-                app,
-                ctx,
-                vec![
-                    egui::Event::PointerMoved(pos),
-                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-                ],
-            );
-        }
-    }
-
-    #[test]
-    fn the_effects_panel_shows_the_level_and_isolate_blending_and_knockout_group_for_groups() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({})).unwrap();
-        let a = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
-        let b = app.run("frame.create", json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-        let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
-        app.run("selection.set", json!({"ids": [g]})).unwrap();
-        app.run("object.opacity", json!({"opacity": 1.0, "blend": "colorDodge"})).unwrap();
-        let ctx = crate::test_window::context();
-        crate::theme::install_fonts(&ctx, "en");
-        crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
-        let texts: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect();
-        for expected in ["Group:", "Color Dodge 100%", "Isolate Blending", "Knockout Group"] {
-            assert!(texts.iter().any(|t| t == expected), "{expected} in {texts:?}");
-        }
-        let item = |app: &DesignApp, id: u64| app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).cloned().unwrap();
-        click(&mut app, &ctx, "Isolate Blending");
-        assert!(item(&app, g).isolate);
-        click(&mut app, &ctx, "Knockout Group");
-        assert!(item(&app, g).knockout);
-        // Another object: the level is Object, and the group options are greyed.
-        app.run("selection.set", json!({"ids": [a]})).unwrap();
-        let texts: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect();
-        assert!(texts.iter().any(|t| t == "Object:"), "{texts:?}");
-        click(&mut app, &ctx, "Knockout Group");
-        assert!(!item(&app, a).knockout);
-    }
-
-    #[test]
-    fn pasted_into_frames_keep_object_level_and_disable_group_blending() {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({})).unwrap();
-        let child = app.run("frame.create", json!({"rect": [80, 80, 120, 120]})).unwrap()["id"].clone();
-        app.run("selection.set", json!({"ids": [child]})).unwrap();
-        app.run("edit.copy", json!({})).unwrap();
-        let container = app.run("frame.create", json!({"rect": [72, 72, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-        app.run("selection.set", json!({"ids": [container]})).unwrap();
-        app.run("edit.pasteInto", json!({})).unwrap();
-        app.run("selection.set", json!({"ids": [container]})).unwrap();
-        let ctx = crate::test_window::context();
-        crate::theme::install_fonts(&ctx, "en");
-        crate::theme::apply(&ctx, &Tokens::for_brightness(crate::theme::Brightness::default()));
-        let texts: Vec<String> = frame(&mut app, &ctx, vec![]).into_iter().map(|(t, _)| t).collect();
-        assert!(texts.iter().any(|t| t == "Object:"), "a frame remains an object after Paste Into: {texts:?}");
-        let undo = app.session.doc().unwrap().history.undo.len();
-        click(&mut app, &ctx, "Isolate Blending");
-        click(&mut app, &ctx, "Knockout Group");
-        let st = app.session.doc().unwrap();
-        let it = st.doc.item(designcraft_doc::ItemId(container)).unwrap();
-        assert!(it.has_nested_items());
-        assert!(!it.isolate && !it.knockout, "group-only options stay disabled for a frame holding content");
-        assert_eq!(st.history.undo.len(), undo, "disabled controls do not create undo steps");
-    }
-}
+// The native Effects panel's tests, `the_effects_panel_shows_the_level_and_isolate_blending_and_knockout_group_for_groups`
+// and `pasted_into_frames_keep_object_level_and_disable_group_blending`, went with its native body. Their successors on
+// the framework are `the_framework_effects_panel_shows_the_level_and_group_blending_options` and
+// `the_framework_effects_panel_keeps_a_frame_with_pasted_content_an_object` in `successor_tests.rs`.
 
 #[cfg(test)]
 mod wrap_panel_tests {

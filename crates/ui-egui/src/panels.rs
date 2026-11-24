@@ -467,12 +467,17 @@ pub fn apply_font(app: &mut DesignApp, pick: &FontPick) {
     let _ = app.run("type.char", json!({"attrs": {"fontFamily": pick.family, "fontStyle": style}}));
 }
 
-/// The text's font family field: [`font_combo`], applied to the text.
+/// The text's font family field: the Font menu's field, applied to the text.
 pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, width: f32) {
     let id = ui.id().with("font_family");
     let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
-    if let Some(family) = crate::framework_transform::font_family_select(app, ui, Some(at), id, current) {
-        apply_font(app, &FontPick { family, style: None });
+    font_family_field(app, ui, id, current, at);
+}
+
+/// The Font menu's field in `at`, with `id`, showing `current`, applied to the text when a font is picked.
+pub fn font_family_field(app: &mut DesignApp, ui: &mut egui::Ui, id: egui::Id, current: &str, at: egui::Rect) {
+    if let Some(pick) = font_menu::framework::combo_at(app, ui, id, current, at) {
+        apply_font(app, &pick);
     }
 }
 
