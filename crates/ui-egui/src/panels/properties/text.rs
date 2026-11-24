@@ -251,8 +251,8 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 pub(crate) mod framework {
     use super::*;
     use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, check, choice, font_family_select, font_style_select, icon, icon_button, icon_number,
-        letters_button, menu, more_options, number_field,
+        Letters, MenuRow, Number, Quantity, button, check, choice, font_family_select, font_style_select, icon_button, icon_number, icon_tip,
+        icon_toggle, letters_button, menu, more_options, number_field,
     };
     use crate::panels::properties::object::framework::{SwatchFor, swatch_chip};
     use craft_behavior::Mixed;
@@ -442,7 +442,7 @@ pub(crate) mod framework {
         if let Some(Some(v)) = icon_number(ui, sub(b, half + 10.0, 1.0, 19.0, 19.0), sub(b, half + 34.0, 0.0, field_w, FIELD_H), id, "leading", n) {
             let _ = app.run("type.char", json!({"attrs": {"leading": {"kind": "points", "value": v}}}));
         }
-        icon(ui, sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", Some(crate::i18n::tr(&lang, "Kerning")), true);
+        icon_tip(ui, sub(b, 0.0, 27.0, 19.0, 19.0), "kerning", crate::i18n::tr(&lang, "Kerning"), true);
         let id = cid(ui, "kerning");
         kerning_field(app, ui, Some(sub(b, 24.0, 26.0, field_w, FIELD_H)), id, &c["kerning"]);
         let id = cid(ui, "tracking");
@@ -529,7 +529,7 @@ pub(crate) mod framework {
             let id = cid(ui, ("case", i));
             let label = tr(tip);
             let clicked = if text == "small-caps" {
-                icon_button(ui, r, id, "small-caps", &label, on)
+                icon_toggle(ui, r, id, "small-caps", &label, on)
             } else {
                 letters_button(ui, r, id, Letters { text, struck: i == 5 }, &label, on)
             };
@@ -549,7 +549,7 @@ pub(crate) mod framework {
         let b = block(ui, 21.0);
         for (k, (al, artwork)) in PARA_ALIGN_BUTTONS.into_iter().enumerate() {
             let (at, id) = (sub(b, k as f32 * pitch, 0.0, pitch.min(23.0), 21.0), cid(ui, ("align", k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, al.label()), cur == al) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, al.label()), cur == al) {
                 let _ = app.run("type.para", json!({"attrs": {"align": al}}));
             }
         }
@@ -605,7 +605,7 @@ pub(crate) mod framework {
         // First Line Only is aligned too: the button shows it pressed, and a click turns alignment off.
         let grid = matches!(p["gridAlign"].as_str(), Some("allLines" | "firstLineOnly"));
         let id = cid(ui, "grid-align");
-        if icon_button(ui, sub(b, 0.0, 0.0, 23.0, 21.0), id, "grid-baseline", &tr("Align to Baseline Grid"), grid) {
+        if icon_toggle(ui, sub(b, 0.0, 0.0, 23.0, 21.0), id, "grid-baseline", &tr("Align to Baseline Grid"), grid) {
             let _ = app.run("type.para", json!({"attrs": {"gridAlign": if grid { "none" } else { "allLines" }}}));
         }
         let id = cid(ui, "hyphenate");
@@ -631,7 +631,7 @@ pub(crate) mod framework {
             // Pressed while every selected paragraph has the list, as Type › Apply Bullets shows it.
             let on = app.session.selection_has_list(kind);
             let (at, id) = (sub(b, k as f32 * 33.0, 0.0, 23.0, 21.0), cid(ui, ("list", cmd)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), on) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, tip), on) {
                 let _ = app.run(cmd, json!({"on": !on}));
             }
         }
@@ -702,7 +702,7 @@ pub(crate) mod framework {
         let b = block(ui, 21.0);
         for (k, (vj, artwork, tip)) in VERTICAL_JUSTIFICATIONS.into_iter().enumerate() {
             let (at, id) = (sub(b, k as f32 * 27.0, 0.0, 23.0, 21.0), cid(ui, ("vjust", k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), cur == vj) {
+            if icon_toggle(ui, at, id, artwork, crate::i18n::tr(&lang, tip), cur == vj) {
                 let _ = app.run("object.textFrameOptions", json!({"verticalJustification": vj}));
             }
         }

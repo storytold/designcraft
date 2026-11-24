@@ -239,7 +239,7 @@ mod framework {
     use super::*;
     use crate::framework_transform::{
         Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_family_select, font_style_select, icon_button, icon_number,
-        letters_button, menu, number_field, swatch_select,
+        icon_toggle, letters_button, menu, number_field, swatch_select,
     };
     use crate::panels::properties::text::framework::{kerning_field, language_select};
     use craft_behavior::EditEvent;
@@ -530,7 +530,7 @@ mod framework {
                 x += GAP;
             }
             let (at, id) = (sub(b, x, 0.0, pitch, 21.0), cid(ui, ("align", i)));
-            if icon_button(ui, at, id, artwork, &tr(al.label()), cur == al) {
+            if icon_toggle(ui, at, id, artwork, &tr(al.label()), cur == al) {
                 let _ = app.run("type.para", json!({"attrs": {"align": al}}));
             }
             x += pitch;
@@ -624,7 +624,7 @@ mod framework {
         for (i, (artwork, tip, on, v)) in GRID_BUTTONS.into_iter().enumerate() {
             let on = on == grid;
             let (at, id) = (sub(b, fw - 48.0 + i as f32 * 25.0, 0.0, 23.0, FIELD_H), cid(ui, ("grid", i)));
-            if icon_button(ui, at, id, artwork, &tr(tip), on) && !on {
+            if icon_toggle(ui, at, id, artwork, &tr(tip), on) && !on {
                 let _ = app.run("type.para", json!({"attrs": {"gridAlign": v}}));
             }
         }
