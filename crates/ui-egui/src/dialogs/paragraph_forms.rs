@@ -24,6 +24,9 @@ use serde_json::{Value, json};
 /// Paragraph Borders and Shading, Span Columns, Keep Options, Nested Styles, GREP Styles and Bullets and Numbering.
 pub(crate) const PARAGRAPH_LOCAL: Form = Form::new(paragraph_local);
 
+/// How far the Keep Lines Together choices stand in from the check box they follow, in points.
+const KEEP_INDENT: f32 = 22.0;
+
 /// The Border and Shading tabs.
 const SHADING_TABS: [(&str, &str); 2] = [("border", "Border"), ("shading", "Shading")];
 
@@ -86,9 +89,13 @@ pub(super) fn keep_options(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs) {
         let together = a.get(d, "keepLinesTogether").as_bool().unwrap_or(false);
         let all = a.get(d, "keepAllLines").as_bool().unwrap_or(true);
         let shown = RadioGroup::new(tr("Keep Lines Together"), Bind::given(all)).id_salt("keep_all_lines").enabled(together).show(ui, |ui, _| {
-            Stack::new().id_salt("keep_all_lines_choices").show(ui, |ui, _| {
-                Radio::new(true).label(tr("All Lines in Paragraph")).show(ui);
-                Radio::new(false).label(tr("At Start/End of Paragraph")).show(ui);
+            // Indented under Keep Lines Together, which they qualify.
+            Row::new().id_salt("keep_all_lines_indent").show(ui, |ui, _| {
+                ui.add_space(KEEP_INDENT);
+                Stack::new().id_salt("keep_all_lines_choices").show(ui, |ui, _| {
+                    Radio::new(true).label(tr("All Lines in Paragraph")).show(ui);
+                    Radio::new(false).label(tr("At Start/End of Paragraph")).show(ui);
+                });
             });
         });
         let mut next = all;
@@ -617,7 +624,8 @@ enum Side {
 }
 
 /// Four per-side values in the order the attribute holds them: top, left, bottom, right. Top and Bottom, the link
-/// ("Make all settings the same"), then Left and Right. An edited side stores the whole array.
+/// ("Make all settings the same"), then Left and Right. An edited side stores the whole array. With an empty `legend`
+/// they have no box of their own.
 fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: &str, kind: Side) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     let mut values: [f64; 4] = serde_json::from_value(a.get(d, key)).unwrap_or_default();
@@ -639,8 +647,8 @@ fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: 
         }
         true
     };
-    GroupBox::new(legend.to_owned(), None).id_salt(("paragraph_sides_box", key.to_owned())).show(ui, |ui, _| {
-        Row::new().id_salt(("paragraph_sides", key.to_owned())).fill_width().show(ui, |ui, _| {
+    let mut body = |ui: &mut Ui| {
+        Row::new().id_salt(("paragraph_sides", key.to_owned())).show(ui, |ui, _| {
             for (column, indices) in [[0, 2], [1, 3]].into_iter().enumerate() {
                 if column == 1 {
                     let out =
@@ -654,15 +662,23 @@ fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: 
                         }
                     }
                 }
-                FieldGroup::new(legend.to_owned()).id_salt(("paragraph_sides_fields", key.to_owned(), column)).show(ui, |ui, _| {
-                    for i in indices {
-                        let caption = tr(["Top:", "Left:", "Bottom:", "Right:"][i]);
-                        field(ui, &caption, &format!("{key}{i}"), |ui| changed |= edit(ui, &mut values, i, &caption));
-                    }
-                });
+                FieldGroup::new(if legend.is_empty() { tr("Stroke") } else { legend.to_owned() })
+                    .id_salt(("paragraph_sides_fields", key.to_owned(), column))
+                    .show(ui, |ui, _| {
+                        for i in indices {
+                            let caption = tr(["Top:", "Left:", "Bottom:", "Right:"][i]);
+                            field(ui, &caption, &format!("{key}{i}"), |ui| changed |= edit(ui, &mut values, i, &caption));
+                        }
+                    });
             }
         });
-    });
+    };
+    // With no legend the sides stand in the box the caller has them in (the stroke's weights, over its type and colour).
+    if legend.is_empty() {
+        body(ui);
+    } else {
+        GroupBox::new(legend.to_owned(), None).id_salt(("paragraph_sides_box", key.to_owned())).show(ui, |ui, _| body(ui));
+    }
     if changed {
         a.set(d, key, json!(values));
     }
@@ -794,10 +810,11 @@ pub(super) fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs,
     let widths = captioned(lang, &[("column", "Column"), ("text", "Text")]);
     check(ui, d, a, &on_key, &tr(if border { "Border" } else { "Shading" }), true);
     Stack::new().id_salt(("paragraph_border_shading", border)).fill_width().enabled(on).show(ui, |ui, _| {
-        if border {
-            sides(lang, ui, d, a, &key("Weights"), &tr("Stroke"), Side::Weight);
-        }
         GroupBox::new(tr(if border { "Stroke" } else { "Color" }), None).id_salt(("paragraph_color_box", border)).show(ui, |ui, _| {
+            // One Stroke box holds the four weights and the type and colour under them, as InDesign's.
+            if border {
+                sides(lang, ui, d, a, &key("Weights"), "", Side::Weight);
+            }
             FieldGroup::new(tr("Color")).id_salt(("paragraph_color_fields", border)).show(ui, |ui, _| {
                 if border {
                     border_type(lang, ui, d, a, doc, &tr("Type:"));

@@ -649,7 +649,8 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
             });
             // A solid rule has no gaps.
             field(ui, &tr("Gap Color:"), "gapColor", |ui| {
-                if let Some(picked) = swatch_choice(ui, d, &a, "gapColor", &tr("Gap Color:"), &swatches, on && gaps) {
+                // A rule with no gap colour has [None] there, as the rule is drawn.
+                if let Some(picked) = swatch_value(ui, &a.field("gapColor"), &tr("Gap Color:"), &swatches, &json!(gap_color), on && gaps) {
                     a.set(d, "gapColor", picked);
                 }
             });
