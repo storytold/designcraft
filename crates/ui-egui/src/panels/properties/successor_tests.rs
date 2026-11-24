@@ -498,13 +498,6 @@ fn field_rect(h: &Harness<'_, DesignApp>, label: &str) -> egui::Rect {
     h.query_all_by(|n| is_field(n) && n.label().as_deref() == Some(label)).next().unwrap_or_else(|| panic!("no field named {label}")).rect()
 }
 
-/// The Paragraph panel's Space Between Paragraphs Using Same Style field (its icon carries the name too).
-fn same_style_spacing<'h>(h: &'h Harness<'_, DesignApp>) -> egui_kittest::Node<'h> {
-    h.query_all_by(|n| is_field(n) && n.label().as_deref() == Some("Space Between Paragraphs Using Same Style"))
-        .next()
-        .expect("the Space Between Paragraphs Using Same Style field")
-}
-
 /// A harness drawing `panel` for `app` (fonts installed before the first frame).
 fn panel_harness(app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
     crate::test_window::builder::<DesignApp>().with_size(vec2(320.0, 1400.0)).build_ui_state(

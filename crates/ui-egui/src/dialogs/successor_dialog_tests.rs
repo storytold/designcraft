@@ -155,8 +155,9 @@ fn color_picker_form_hex_field_commits_a_valid_code_and_replaces_an_invalid_one(
     let _ = kit::field_showing(&h, "f59019");
 }
 
-/// Successor of `typed_channel_values_are_kept_while_typing`: a typed 12.5 in the R field is kept, makes the colour #0d0203,
-/// and OK gives the fill that red.
+/// Successor of `typed_channel_values_are_kept_while_typing`: a typed 12.5 in the R field makes the colour #0d0203, and OK gives the
+/// fill that red. The framework picker's RGB fields take whole numbers, as InDesign's do, so 12.5 is kept as 13 (the native field
+/// kept the half).
 #[test]
 fn color_picker_form_keeps_a_typed_channel_value() {
     let (mut h, id) = picker(json!({"target": "fill", "hex": "#010203", "model": "rgb", "rgb": [1, 2, 3]}));
@@ -166,7 +167,8 @@ fn color_picker_form_keeps_a_typed_channel_value() {
     kit::click(&mut h, &[Role::Button], "OK", 0);
     assert!(h.state().ui.dialog.is_none());
     let designcraft_color::Color::Rgb { r, .. } = fill(&h, id) else { panic!("not RGB") };
-    assert!((r - 12.5 / 255.0).abs() < 1e-6, "{r}");
+    // Whole numbers: 12.5 is taken as 13.
+    assert!((r - 13.0 / 255.0).abs() < 1e-6, "{r}");
 }
 
 /// Successor of `a_cmyk_colour_stays_cmyk_unless_rgb_values_are_typed`: a colour picked by hex is converted to CMYK, a typed

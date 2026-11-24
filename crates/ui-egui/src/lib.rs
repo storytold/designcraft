@@ -400,7 +400,36 @@ pub(crate) mod test_window {
         // The framework's services get a frame to route keys and focus in, as `DesignApp::raw_input_hook` gives them
         // each frame in the shipping window; a test that calls the hook replaces it each frame.
         craft_ui_widgets::runtime::frame::set_input(&ctx, craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()));
+        // From then on each frame is set from the app's own state, as `DesignApp::raw_input_hook` does in the shipping window
+        // (its command catalog, host and root values): the window's frame leaves them in the slot for the next frame's input hook.
+        let slot = FrameSlot::default();
+        ctx.data_mut(|data| data.insert_temp(frame_slot_id(), slot.clone()));
+        ctx.add_plugin(FrameInputPlugin(slot));
         ctx
+    }
+
+    /// What the window's last frame left for the next frame's input hook.
+    type FrameSlot = std::sync::Arc<std::sync::Mutex<Option<craft_ui_widgets::runtime::frame::FrameInput>>>;
+
+    fn frame_slot_id() -> egui::Id {
+        egui::Id::new("test_window_frame_input")
+    }
+
+    /// Before each frame, the framework's per-frame input (before the pass, as its docs have it) from the app's state.
+    struct FrameInputPlugin(FrameSlot);
+
+    impl egui::Plugin for FrameInputPlugin {
+        fn debug_name(&self) -> &'static str {
+            "test_window_frame_input"
+        }
+
+        fn input_hook(&mut self, ctx: &egui::Context, _: &mut egui::RawInput) {
+            let input = self.0.lock().ok().and_then(|slot| slot.clone());
+            if let Some(input) = input {
+                let _fired = craft_ui_widgets::runtime::frame::take_output(ctx);
+                craft_ui_widgets::runtime::frame::set_input(ctx, input);
+            }
+        }
     }
 
     /// `Harness::builder()` on a [`context`] with the runtime installed.
@@ -455,6 +484,12 @@ pub(crate) mod test_window {
                     let ctx = ui.ctx().clone();
                     w.app.logic(&ctx);
                     w.app.ui(ui);
+                    // The next frame's input, for a context with the runtime (the plugin of `context`).
+                    if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id())) {
+                        if let Ok(mut slot) = slot.lock() {
+                            *slot = Some(w.app.frame_input());
+                        }
+                    }
                 },
                 Window { app, ready: false },
             );
