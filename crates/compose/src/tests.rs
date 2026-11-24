@@ -2489,6 +2489,40 @@ fn a_table_directly_above_another_leaves_only_the_lower_ones_space_before() {
     assert!((gap(6.0, 0.0)).abs() < 1e-6);
 }
 
+/// A table that starts a new column (here by its start option) below a paragraph spanning the
+/// columns follows that paragraph's baseline, its space after and its own space before. A table
+/// that ended the column before does not take the space after away.
+#[test]
+fn a_table_in_the_next_column_keeps_the_space_after_of_the_paragraph_above() {
+    let mut first = filled(3, 1, 0, 100.0);
+    first.options.space_before = 0.0;
+    first.options.space_after = 0.0;
+    first.options.border.weight = 0.0;
+    let mut second = filled(3, 1, 0, 100.0);
+    second.id = 78;
+    second.options.space_before = 4.0;
+    second.options.border.weight = 0.0;
+    let (mut d, sid, fid) = doc_with("Heading", Rect::new(0.0, 0.0, 300.0, 1000.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.story_mut(sid).unwrap().paras[0].para.span_columns = Some(SpanColumns::Span(0));
+    d.story_mut(sid).unwrap().format_paras(0..1, |p| p.para.space_after = Some(6.0));
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    st.insert_table(end, first);
+    let end = st.len();
+    st.insert_table(end, second);
+    // Paragraphs: the heading, the two tables, and the empty one after them.
+    st.paras[2].para.start_paragraph = Some(StartParagraph::NextColumn);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_eq!(ft.tables.len(), 2, "overset at {:?}", cs.overset_at);
+    let (a, b) = (&ft.tables[0], &ft.tables[1]);
+    assert!(b.rect.x0 > a.rect.x1 - 1e-6, "the second table is in the next column: {:?} / {:?}", a.rect, b.rect);
+    let heading = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    assert!((b.rect.y0 - (heading.baseline + 6.0 + 4.0)).abs() < 1e-6, "{} vs baseline {}", b.rect.y0, heading.baseline);
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));

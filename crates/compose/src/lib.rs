@@ -4386,6 +4386,8 @@ struct Resume {
     last_reference: f64,
     aki_below: Option<f64>,
     pending: f64,
+    /// A table ended the line above, so its space after is not waiting below it.
+    after_table: bool,
 }
 
 /// Consecutive paragraphs with the same Split Columns settings, set in sub-columns of their
@@ -4565,6 +4567,7 @@ impl Cursor {
             last_reference: self.last_reference,
             aki_below: self.aki_below,
             pending: self.pending,
+            after_table: self.after_table,
         }
     }
     /// Start a split block (or its part in a new column) here.
@@ -4587,6 +4590,7 @@ impl Cursor {
         self.last_reference = r.last_reference;
         self.aki_below = r.aki_below;
         self.pending = r.pending;
+        self.after_table = r.after_table;
     }
     /// Within a split block, the next sub-column when there's one to go to.
     fn can_next_sub(&self) -> bool {
@@ -4604,6 +4608,9 @@ impl Cursor {
     }
     /// Start the current column at the top of the band.
     fn resume(&mut self) {
+        // The band's line above is text (or nothing), never a table, so the space after it
+        // is waiting even when a table ended the column before.
+        self.after_table = false;
         match self.band.above {
             Some(a) => {
                 self.last_baseline = Some(a.baseline);
