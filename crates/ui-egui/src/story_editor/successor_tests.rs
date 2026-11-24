@@ -44,15 +44,27 @@ fn depth_marks_wait_for_composition_after_editing() {
     let text = "First line\nSecond line\nThird line\n".repeat(4);
     let r = app.run("frame.create", json!({"rect": [72, 72, 372, 172], "content": "text", "text": text, "caret": false})).unwrap();
     app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
-    let mut h = crate::test_window::builder::<DesignApp>()
-        .with_size(egui::vec2(900.0, 700.0))
-        .with_accessibility_check(false)
-        .build_ui_state(|ui, app| super::show(app, ui.ctx()), app);
-    h.run_steps(3);
+    // `show` only keeps the editor's panel with its story; the dock draws the editor's body in that panel. The body is
+    // drawn here as the dock draws it, after the first pass installed the fonts and the theme as the shipping window does.
+    let mut ready = false;
+    let mut h = crate::test_window::builder::<DesignApp>().with_size(egui::vec2(900.0, 700.0)).with_accessibility_check(false).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            super::body(app, ui);
+        },
+        app,
+    );
+    h.input_mut().max_texture_side = Some(8192);
+    h.run_steps(4);
     let tick = crate::theme::Tokens::get(&h.ctx).ruler_tick;
     let count = |h: &egui_kittest::Harness<'_, DesignApp>| h.output().shapes.iter().map(|s| marks(&s.shape, tick)).sum::<usize>();
     assert!(count(&h) >= 2, "the fixture paints ruler ticks and an overset line");
-    h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput).focus();
+    h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden()).focus();
     h.run_steps(2);
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
     h.run_steps(2);

@@ -22,12 +22,19 @@ fn window(selected: bool, size: egui::Vec2) -> egui_kittest::Harness<'static, te
     test_window::open_stepped(app, size, 1.0, 0.05)
 }
 
-/// The control bar's number field named like `part`: the topmost spin button or text field whose name contains it.
-fn field<'a>(h: &'a egui_kittest::Harness<'static, test_window::Window>, part: &'a str) -> egui_kittest::Node<'a> {
-    h.query_all_by_label_contains(part)
-        .filter(|n| matches!(n.accesskit_node().role(), Role::SpinButton | Role::TextInput))
+/// The Control bar: the shipping window's top panel.
+fn bar(h: &egui_kittest::Harness<'static, test_window::Window>) -> egui::Rect {
+    test_window::panel_rect(h, "control_bar")
+}
+
+/// The Control bar's number field named `name` (the object Control bar names its fields X, Y, W and H, after their
+/// captions): the spin button or text field of that name inside the bar. Fields named like "Height" are other panels'.
+fn field<'a>(h: &'a egui_kittest::Harness<'static, test_window::Window>, name: &'a str) -> egui_kittest::Node<'a> {
+    let bar = bar(h);
+    h.query_all_by_label(name)
+        .filter(|n| matches!(n.accesskit_node().role(), Role::SpinButton | Role::TextInput) && bar.contains(n.rect().center()))
         .min_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
-        .unwrap_or_else(|| panic!("no field named like {part:?} in the Control bar"))
+        .unwrap_or_else(|| panic!("no field named {name:?} in the Control bar"))
 }
 
 /// Successor of `bottom_row_spinner_edits_height_inside_the_control_panel`: the Height field of the Control bar's second row is inside
@@ -36,9 +43,10 @@ fn field<'a>(h: &'a egui_kittest::Harness<'static, test_window::Window>, part: &
 fn control_bar_height_field_steps_the_selection_height() {
     let mut h = window(true, vec2(1440.0, 900.0));
     let before = crate::panels::sel_info(&h.state().app).unwrap().page_rect.height();
-    let height = field(&h, "Height");
+    let height = field(&h, "H");
     let rect = height.rect();
-    assert!(rect.bottom() <= 90.0, "the field is inside the Control bar: {rect:?}");
+    let bar = bar(&h);
+    assert!(bar.contains_rect(rect), "the field is inside the Control bar: {rect:?} in {bar:?}");
     test_window::click_at(&mut h, rect.center());
     h.key_press(egui::Key::ArrowUp);
     h.run_steps(4);
@@ -52,7 +60,7 @@ fn control_bar_height_field_steps_the_selection_height() {
 fn control_bar_numeric_fields_are_inactive_without_a_selection() {
     let mut h = window(false, vec2(1440.0, 900.0));
     let status = h.state().app.ui.status.clone();
-    let height = field(&h, "Height");
+    let height = field(&h, "H");
     assert!(height.accesskit_node().is_disabled(), "the Height field is disabled");
     let at = height.rect().center();
     test_window::click_at(&mut h, at);
@@ -69,14 +77,17 @@ fn a_narrow_window_scrolls_the_control_bar_to_the_alignment_controls() {
     let mut h = window(true, vec2(900.0, 700.0));
     let window = h.ctx.content_rect();
     let align = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+        let bar = bar(h);
         h.query_all_by_label_contains("Align")
-            .filter(|n| n.accesskit_node().role() == Role::Button && n.rect().min.y < 90.0)
+            .filter(|n| n.accesskit_node().role() == Role::Button && bar.y_range().contains(n.rect().center().y))
             .map(|n| n.rect())
             .max_by(|a, b| a.right().total_cmp(&b.right()))
     };
     let before = align(&h).expect("the alignment buttons are in the Control bar");
     assert!(before.right() > window.right(), "the bar overflows at the minimum width: {before:?}");
-    wheel(&mut h, egui::pos2(700.0, 30.0), vec2(-500.0, 0.0));
+    // The wheel over the bar, between its two rows (the window's menu and tab bars are above the Control bar).
+    let over = egui::pos2(700.0, bar(&h).center().y);
+    wheel(&mut h, over, vec2(-500.0, 0.0));
     h.run_steps(6);
     let after = align(&h).unwrap();
     assert!(after.left() < before.left() && after.right() <= window.right() + 1.0, "scrolling reaches the last group: {before:?} -> {after:?}");

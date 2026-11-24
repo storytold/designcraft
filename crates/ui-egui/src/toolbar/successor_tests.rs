@@ -5,19 +5,74 @@
 use egui::{Event, Modifiers, PointerButton, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
-use crate::test_window::{self, wheel};
+use crate::test_window;
 
-fn secondary_click(h: &mut egui_kittest::Harness<'static, test_window::Window>, at: egui::Pos2) {
+type Win = egui_kittest::Harness<'static, test_window::Window>;
+
+/// One frame as the shipping window runs it: `DesignApp::raw_input_hook` first gives the framework its frame input, whose
+/// command catalog names the Tools rail's tools in the interface language.
+fn step(h: &mut Win) {
+    let mut raw = std::mem::take(h.input_mut());
+    let ctx = h.ctx.clone();
+    h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+    *h.input_mut() = raw;
+    h.step();
+}
+
+fn frames(h: &mut Win, count: usize) {
+    for _ in 0..count {
+        step(h);
+    }
+}
+
+/// The mouse wheel turned over `pos`: positive `delta` moves the content right and down.
+fn wheel(h: &mut Win, pos: egui::Pos2, delta: egui::Vec2) {
+    h.hover_at(pos);
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    frames(h, 10);
+}
+
+/// The face of the rail button named `label`: the framework names the button by its tool command's label, and its
+/// corner flyout mark by the same name, so the largest of the buttons so named is the face.
+fn tool_button(h: &Win, label: &str) -> egui::Rect {
+    h.query_all_by_label(label)
+        .filter(|node| node.accesskit_node().role() == egui::accesskit::Role::Button)
+        .map(|node| node.rect())
+        .max_by(|a, b| a.area().total_cmp(&b.area()))
+        .unwrap_or_else(|| panic!("no rail button {label:?}"))
+}
+
+fn secondary_click(h: &mut Win, at: egui::Pos2) {
     h.input_mut().events.push(Event::PointerMoved(at));
     for pressed in [true, false] {
         h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
     }
-    h.run_steps(4);
+    frames(h, 4);
 }
 
-/// The flyout's row named `label`.
-fn flyout_row(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> Option<egui::Rect> {
+/// Whether `node` is shown: kittest also lists hidden nodes (a closing flyout keeps its rows under a hidden root while it
+/// fades), so a node counts only when neither it nor a node above it is hidden.
+fn shown_node(node: &egui_kittest::Node<'_>) -> bool {
+    let mut at = Some(*node);
+    while let Some(up) = at {
+        if up.accesskit_node().is_hidden() {
+            return false;
+        }
+        at = up.parent();
+    }
+    true
+}
+
+/// The flyout's shown row named `label`.
+fn flyout_row(h: &Win, label: &str) -> Option<egui::Rect> {
     h.query_all_by_label(label)
+        .filter(shown_node)
         .find(|node| matches!(node.accesskit_node().role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemRadio))
         .map(|node| node.rect())
 }
@@ -41,7 +96,8 @@ fn hungarian_framework_flyout_stays_usable_in_narrow_windows() {
             .unwrap();
             app.select_tool("rectangleFrame");
             let mut h = test_window::open_stepped(app, vec2(width, 1000.0), 1.0, 0.05);
-            let group = h.get_by_label("Téglalapkeret eszköz (F)").rect().center();
+            frames(&mut h, 2);
+            let group = tool_button(&h, "Téglalapkeret eszköz").center();
             secondary_click(&mut h, group);
             let label = "Ellipsziskeret eszköz";
             let row = flyout_row(&h, label).unwrap_or_else(|| panic!("the flyout lists {label} ({width}, double {double})"));
@@ -56,9 +112,7 @@ fn hungarian_framework_flyout_stays_usable_in_narrow_windows() {
             }
             // The shortcut shows with its row, or scrolling sideways brings it into view.
             let shortcut = crate::menus::shortcut_text(chord);
-            let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| {
-                h.query_all_by_label_contains(&shortcut).any(|node| viewport.expand(0.5).contains_rect(node.rect()))
-            };
+            let shown = |h: &Win| h.query_all_by_label_contains(&shortcut).any(|node| viewport.expand(0.5).contains_rect(node.rect()));
             if !shown(&h) {
                 wheel(&mut h, row.center(), vec2(-1000.0, 0.0));
                 assert!(shown(&h), "scrolling sideways makes the complete shortcut readable ({width}, double {double})");
@@ -71,7 +125,7 @@ fn hungarian_framework_flyout_stays_usable_in_narrow_windows() {
             for pressed in [true, false] {
                 h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
             }
-            h.run_steps(4);
+            frames(&mut h, 4);
             assert_eq!(h.state().app.session.tool_id(), "ellipseFrame", "{width}, double {double}");
             assert!(flyout_row(&h, label).is_none(), "choosing a tool closes the flyout");
         }
@@ -85,18 +139,19 @@ fn a_framework_flyout_opened_by_holding_stays_open_and_esc_keeps_the_tool() {
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     let mut h = test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 1.0 / 60.0);
     h.state_mut().app.select_tool("rectangleFrame");
-    h.run_steps(2);
-    let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
+    frames(&mut h, 2);
+    let at = tool_button(&h, "Rectangle Frame Tool").center();
     h.input_mut().events.push(Event::PointerMoved(at));
     h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-    // Held for half a second: shorter than egui's longest click.
-    h.run_steps(30);
+    // Held past the framework's half-second hold (`popups::HOLD`; 30 frames end a frame short of it, since the press
+    // lands in the first) and still shorter than egui's longest click, so the release is a click.
+    frames(&mut h, 36);
     assert!(flyout_row(&h, "Ellipse Frame Tool").is_some(), "holding opens the flyout");
     h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    h.run_steps(3);
+    frames(&mut h, 3);
     assert!(flyout_row(&h, "Ellipse Frame Tool").is_some(), "the release keeps it open");
     h.key_press(egui::Key::Escape);
-    h.run_steps(3);
+    frames(&mut h, 3);
     assert!(flyout_row(&h, "Ellipse Frame Tool").is_none(), "Esc closes it");
     assert_eq!(h.state().app.session.tool_id(), "rectangleFrame", "and keeps the tool");
 }

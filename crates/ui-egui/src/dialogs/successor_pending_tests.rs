@@ -257,7 +257,9 @@ fn style_options_form_named_instance_widget_and_api_agree() {
         st(&mut h).run("edit.undo", json!({})).unwrap();
     }
     let mut current = "Regular";
-    for selected in ["SemiBold", "Bold", "Regular"] {
+    // The synthetic font's named instances are Regular and SemiBold (`designcraft_fonts::testing::variable_font`); the old test's
+    // Bold was an instance of the pinned Bricolage fixture this font stands in for.
+    for selected in ["SemiBold", "Regular"] {
         st(&mut h).ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "UI VF", "section": "chars"})));
         kit::steps(&mut h, 3);
         if font_style(&h, "UI VF") != selected {

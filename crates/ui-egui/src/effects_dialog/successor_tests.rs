@@ -41,10 +41,10 @@ fn effects_form_angle_with_global_light_sets_the_global_light() {
     let (mut h, _) = dialog("object.dropShadow");
     set(st(&mut h).ui.dialog.as_mut().unwrap(), &["dropShadow", "globalLight"], json!(true));
     kit::steps(&mut h, 4);
-    assert!(
-        !kit::disabled(&h, kit::FIELD, "Angle", 0) || h.query_all_by_label_contains("Angle").any(|n| !n.accesskit_node().is_disabled()),
-        "the Angle stays editable with Use Global Light"
-    );
+    // The Angle field is named by its caption, "Angle:".
+    let angle =
+        h.query_all_by_label_contains("Angle").find(|n| kit::FIELD.contains(&n.accesskit_node().role())).unwrap_or_else(|| panic!("no Angle field"));
+    assert!(!angle.accesskit_node().is_disabled(), "the Angle stays editable with Use Global Light");
     let d = st(&mut h).ui.dialog.as_mut().unwrap();
     d.fields.insert(GLOBAL_LIGHT.into(), json!(15.0));
     kit::steps(&mut h, 2);

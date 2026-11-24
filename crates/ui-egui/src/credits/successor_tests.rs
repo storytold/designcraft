@@ -34,8 +34,10 @@ fn drag_edge(h: &mut egui_kittest::Harness<'static, crate::DesignApp>, cell: egu
     kit::drag(h, start, start + vec2(by, 0.0));
 }
 
-/// Successor of `every_column_can_be_dragged_at_its_right_edge_and_stays_there`: dragging a column's right edge 30 points left makes
-/// that column 30 narrower, leaves the others as they were, and the width stays after more frames.
+/// Successor of `every_column_can_be_dragged_at_its_right_edge_and_stays_there`: dragging a column's right edge 30 points makes that
+/// column 30 wider, leaves the others as they were, and the width stays after more frames. (The drag is outward: the table's
+/// number columns open at or near the least width the framework lets a column be dragged to, two control heights, so a drag
+/// 30 points inward stops there.)
 #[test]
 fn every_framework_column_can_be_dragged_at_its_right_edge_and_stays_there() {
     let columns = headers(&table(1100.0)).len();
@@ -43,12 +45,12 @@ fn every_framework_column_can_be_dragged_at_its_right_edge_and_stays_there() {
     for dragged in 0..columns {
         let mut h = table(1100.0);
         let opened = headers(&h);
-        drag_edge(&mut h, opened[dragged], -30.0);
+        drag_edge(&mut h, opened[dragged], 30.0);
         kit::steps(&mut h, 4);
         let after = headers(&h);
         assert_eq!(after.len(), opened.len());
         assert!(
-            (after[dragged].width() - (opened[dragged].width() - 30.0)).abs() < 2.0,
+            (after[dragged].width() - (opened[dragged].width() + 30.0)).abs() < 2.0,
             "dragging column {dragged}: {:?} was {:?}",
             after[dragged],
             opened[dragged]

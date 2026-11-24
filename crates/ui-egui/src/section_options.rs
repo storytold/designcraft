@@ -220,7 +220,9 @@ fn framework_dialog(app: &DesignApp, ui: &mut Ui, draft: &mut Dialog) -> craft_u
     let mut opened = true;
     let lang = app.ui.language.as_str();
     let tr = |s: &'static str| crate::i18n::tr(lang, s).to_owned();
-    FrameworkDialog::new(tr("Numbering & Section Options"))
+    // On a page that doesn't start a section yet, InDesign titles the window New Section.
+    let title = if draft.b("newSection") { tr("New Section") } else { tr("Numbering & Section Options") };
+    FrameworkDialog::new(title)
         .id_salt("numbering_section")
         .opened(Bind::bound(&mut opened))
         .enabled(ui.is_enabled())
