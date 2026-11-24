@@ -822,7 +822,9 @@ mod framework {
             .natural_height(true)
             .sizing(Sizing::FillWidth)
             .rename(true)
-            .slow_click_rename(true)
+            // A row shown as current only (nothing picked yet) is no pick: its first click applies it, and a slow click on a
+            // swatch the user has picked renames it.
+            .slow_click_rename(picked.is_some())
             .can_rename(renamable)
             .current(fill_cur.as_deref().and_then(|name| rows.of_swatch(name)))
             .drag_payload(|drag: &ListDrag<RowKey>| drag.grabbed.swatch().map(|name| SwatchDrag(name.to_owned())))
