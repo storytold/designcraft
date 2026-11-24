@@ -400,6 +400,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-24** · A text frame's own footnote options (#3218; Text Frame Options > Footnotes, Enable Overrides: Span Footnotes Across Columns, Minimum Space Before First Footnote, Space Between Footnotes) are read from IDML, kept and written back, and used for the frame's notes instead of the document's; the frame field is `footnotes` in `object.textFrameOptions` JSON (absent when the frame follows the document). Measured in InDesign 2026 with 8/10 pt notes: a 14 pt minimum and an 8 pt space between take 14 and 8 pt more room. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

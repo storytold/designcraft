@@ -91,9 +91,32 @@ pub struct TextFrameOptions {
     /// Use a custom baseline grid for this frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_grid: Option<FrameBaselineGrid>,
+    /// Footnote options this frame overrides (Text Frame Options, Footnotes); None follows the
+    /// document's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footnotes: Option<FrameFootnotes>,
     /// Type on a Path: the text runs along the item's path instead of filling it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathType>,
+}
+
+/// A text frame's own footnote options (Text Frame Options > Footnotes, Enable Overrides).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FrameFootnotes {
+    /// Span Footnotes Across Columns.
+    pub span_columns: bool,
+    /// Minimum Space Before First Footnote.
+    pub min_spacing: f64,
+    /// Space Between Footnotes.
+    pub space_between: f64,
+}
+
+impl Default for FrameFootnotes {
+    /// InDesign's defaults for a frame that turns the overrides on.
+    fn default() -> Self {
+        FrameFootnotes { span_columns: false, min_spacing: 12.0, space_between: 6.0 }
+    }
 }
 
 /// A text frame's custom baseline grid. Saved as `[start, increment]` when it starts from the
@@ -235,6 +258,7 @@ impl Default for TextFrameOptions {
             column_rule_top_inset: 0.0,
             column_rule_bottom_inset: 0.0,
             baseline_grid: None,
+            footnotes: None,
             path: None,
         }
     }

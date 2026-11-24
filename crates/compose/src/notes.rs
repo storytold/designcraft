@@ -84,6 +84,8 @@ pub(crate) struct Notes {
     notes: Vec<Arc<designcraft_doc::Footnote>>,
     /// Footnotes span the columns of their frame.
     span: bool,
+    /// Each frame's own footnote options (None follows the document's), by frame index.
+    per_frame: Vec<Option<designcraft_doc::FrameFootnotes>>,
     /// Room a frame's earlier columns had to leave for spanning notes placed in a later column;
     /// kept across re-lays so the columns before the reference make room on the next pass.
     floor: HashMap<usize, f64>,
@@ -102,19 +104,39 @@ impl Notes {
             cache: HashMap::new(),
             notes: story.notes.clone(),
             span: doc.footnote_options.span_columns,
+            per_frame: Vec::new(),
             floor: HashMap::new(),
         }
     }
 
+    /// Take the frames' own footnote options (Text Frame Options > Footnotes).
+    pub fn set_frames(&mut self, frames: &[FrameSpec]) {
+        self.per_frame = frames.iter().map(|f| f.opts.footnotes).collect();
+    }
+
+    fn frame_opts(&self, fi: usize) -> Option<designcraft_doc::FrameFootnotes> {
+        self.per_frame.get(fi).copied().flatten()
+    }
+
+    /// Whether the notes of frame `fi` span its columns.
+    fn spans(&self, fi: usize) -> bool {
+        self.frame_opts(fi).map_or(self.span, |n| n.span_columns)
+    }
+
+    /// Space Between Footnotes and the minimum space before the first one, in frame `fi`.
+    fn spacing(&self, doc: &Document, fi: usize) -> (f64, f64) {
+        self.frame_opts(fi).map_or((doc.footnote_options.space_between, doc.footnote_options.space_before), |n| (n.space_between, n.min_spacing))
+    }
+
     /// Whether a note placed in (fi, col) shares the footnote area of column (`fi`, `ci`).
     fn same_area(&self, p: &Placed, fi: usize, ci: usize) -> bool {
-        p.fi == fi && (self.span || p.col == ci)
+        p.fi == fi && (self.spans(fi) || p.col == ci)
     }
 
     /// The footnote area of column `col` of a frame with columns `cols`: the column, or all of
     /// them when notes span columns.
-    pub fn area(&self, cols: &[Rect], col: usize) -> Option<Rect> {
-        if self.span { cols.iter().copied().reduce(|a, b| a.union(b)) } else { cols.get(col.min(cols.len().saturating_sub(1))).copied() }
+    pub fn area(&self, cols: &[Rect], fi: usize, col: usize) -> Option<Rect> {
+        if self.spans(fi) { cols.iter().copied().reduce(|a, b| a.union(b)) } else { cols.get(col.min(cols.len().saturating_sub(1))).copied() }
     }
 
     pub fn active(&self) -> bool {
@@ -206,21 +228,20 @@ impl Notes {
 
     /// Height the footnotes of column (fi, col) take, with `extra` footnotes added.
     pub fn reserve(&mut self, doc: &Document, column: NoteColumn<'_>, extra: &[usize], opts: &ComposeOptions) -> f64 {
-        let o = &doc.footnote_options;
-        let (space_between, space_before) = (o.space_between, o.space_before);
+        let (space_between, space_before) = self.spacing(doc, column.frame_index);
         let mut ms: Vec<NoteMetrics> =
             self.placed.iter().filter(|p| self.same_area(p, column.frame_index, column.column_index)).map(|p| p.m).collect();
         for &k in extra {
             ms.push(self.compose(doc, k, column.width, column.frame, opts).1);
         }
         let r = if ms.is_empty() { 0.0 } else { stack_height(&ms, space_between) + space_before };
-        if self.span { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
+        if self.spans(column.frame_index) { r.max(self.floor.get(&column.frame_index).copied().unwrap_or(0.0)) } else { r }
     }
 
     /// After spanning notes were placed in column `col` of frame `fi`: whether a line of an earlier
     /// column now runs into their area. The area is then remembered for the frame, to re-lay it.
     pub fn earlier_columns_collide(&mut self, lines: &[crate::Line], fi: usize, col: usize, cols: &[Rect], reserve: f64) -> bool {
-        if !self.span || col == 0 || reserve <= self.floor.get(&fi).copied().unwrap_or(0.0) + 0.01 {
+        if !self.spans(fi) || col == 0 || reserve <= self.floor.get(&fi).copied().unwrap_or(0.0) + 0.01 {
             return false;
         }
         let hit = lines
@@ -246,14 +267,15 @@ impl Notes {
             return;
         }
         let o = &doc.footnote_options;
-        let mut groups: Vec<(usize, usize)> = self.placed.iter().map(|p| (p.fi, if self.span { 0 } else { p.col })).collect();
+        let mut groups: Vec<(usize, usize)> = self.placed.iter().map(|p| (p.fi, if self.spans(p.fi) { 0 } else { p.col })).collect();
         groups.dedup();
         groups.sort_unstable();
         groups.dedup();
         for (fi, ci) in groups {
-            let (Some(_), Some(col)) = (frames.get(fi), cols.get(fi).filter(|c| ci < c.len()).and_then(|c| self.area(c, ci))) else { continue };
+            let (Some(_), Some(col)) = (frames.get(fi), cols.get(fi).filter(|c| ci < c.len()).and_then(|c| self.area(c, fi, ci))) else { continue };
+            let (space_between, _) = self.spacing(doc, fi);
             let here: Vec<&Placed> = self.placed.iter().filter(|p| self.same_area(p, fi, ci)).collect();
-            let total = stack_height(here.iter().map(|p| &p.m), o.space_between);
+            let total = stack_height(here.iter().map(|p| &p.m), space_between);
             let top = col.y1 - total;
             let ft = &mut out.frames[fi];
             if o.rule.on && o.rule.weight > 0.0 {
@@ -273,8 +295,8 @@ impl Notes {
                 let (y, y0) = match prev {
                     None => (top, top),
                     Some((last, bottom)) => {
-                        let first = last + o.space_between + p.m.lead;
-                        (first - p.m.first, (bottom + o.space_between).min(first))
+                        let first = last + space_between + p.m.lead;
+                        (first - p.m.first, (bottom + space_between).min(first))
                     }
                 };
                 let y1 = y + p.m.last + p.m.descent;

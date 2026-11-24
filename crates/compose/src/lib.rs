@@ -2145,7 +2145,7 @@ fn fit_line(input: LineFitInput<'_>) -> LineFit {
     } = input;
     let capped = cur.split.is_none() && line_cap[pi] == Some(line_no) && line_no > col_first_line;
     let line_notes = if notes.active() { notes.refs_in(line_glyphs) } else { Vec::new() };
-    let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
+    let col_w = notes.area(&cols[cur.fi], cur.fi, cur.col).map_or(0.0, |r| r.width());
     let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
     let reserve = notes.reserve(doc, note_column, &line_notes, opts);
     let reserve = if cur.last_baseline.is_none() { notes.reserve(doc, note_column, &[], opts) } else { reserve };
@@ -2577,7 +2577,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                     break;
                 }
             };
-            let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
+            let col_w = notes.area(&cols[cur.fi], cur.fi, cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
             // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
             let beside = beside_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
@@ -3255,6 +3255,7 @@ fn compose_run(
     let mut pi = 0;
     let var_story = vars::has_vars(story);
     let mut notes = Notes::new(doc, story);
+    notes.set_frames(frames);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -6156,12 +6157,9 @@ fn vertical_justify(
         if idx.is_empty() {
             continue;
         }
-        let note_top = ft
-            .notes
-            .iter()
-            .filter(|n| spanned || notes.span_columns || n.column == c)
-            .map(|n| n.rect.y0 - notes.space_before)
-            .fold(f64::INFINITY, f64::min);
+        let (note_span, note_before) = f.opts.footnotes.map_or((notes.span_columns, notes.space_before), |n| (n.span_columns, n.min_spacing));
+        let note_top =
+            ft.notes.iter().filter(|n| spanned || note_span || n.column == c).map(|n| n.rect.y0 - note_before).fold(f64::INFINITY, f64::min);
         let limit = note_top.min(f.area.y1);
         let tables = ft.tables.iter().filter(|t| spanned || t.column == c).map(|t| t.rect.y1).fold(f64::NEG_INFINITY, f64::max);
         let last_baseline = idx.iter().map(|&i| ft.lines[i].baseline).fold(tables, f64::max);

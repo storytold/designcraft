@@ -1264,11 +1264,16 @@ fn round_trips_footnotes_and_options() {
     d.footnote_options.prefix = "[".into();
     d.footnote_options.rule.width = 100.0;
     d.footnote_options.space_before = 4.0;
+    // The frame's own footnote options (Text Frame Options > Footnotes) come back too.
+    let frame = d.story(sid).unwrap().frames[0];
+    let own = designcraft_doc::FrameFootnotes { span_columns: true, min_spacing: 14.0, space_between: 8.0 };
+    d.item_mut(frame).unwrap().text_frame_mut().unwrap().options.footnotes = Some(own);
     d.check().unwrap();
     let bytes = export_idml(&d);
     let back = import_idml(&bytes).unwrap();
     back.check().unwrap();
     let s = back.stories.values().next().unwrap();
+    assert_eq!(back.item(s.frames[0]).unwrap().text_frame().unwrap().options.footnotes, Some(own));
     assert_eq!(s.text, d.story(sid).unwrap().text);
     assert_eq!(s.notes.len(), 2);
     assert_eq!(s.notes[0].text.text, "First note.");
