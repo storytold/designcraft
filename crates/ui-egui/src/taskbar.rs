@@ -84,7 +84,7 @@ mod framework {
     use craft_ui_widgets::display::{Divider, Picture};
     use craft_ui_widgets::list::ThumbAspect;
     use craft_ui_widgets::menu::{Menu, MenuItem};
-    use craft_ui_widgets::primitives::IconSpec;
+    use craft_ui_widgets::primitives::{FacePaint, IconSpec};
     use craft_ui_widgets::style::Variant;
     use craft_ui_widgets::text::{NumberField, NumberPick};
 
@@ -142,9 +142,16 @@ mod framework {
         let _ = Menu::new(label.to_owned()).id_salt(format!("{salt}_menu")).opened_by(&opener.response, Trigger::Click).show(ui, |ui, _| {
             for sw in &doc.swatches {
                 let (c, g) = widgets::swatch_colors(doc, &sw.name, 1.0);
-                let row = MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(sw.name == current).sample(move |cx, rect| {
-                    widgets::paint_chip(&cx.painter, rect, c, g);
-                });
+                // The face is named by what it paints, so a swatch edited under the same name repaints.
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    (&sw.name, c, g).hash(&mut hasher);
+                    hasher.finish()
+                };
+                let face = FacePaint::new(key, move |cx, rect| widgets::paint_chip(&cx.painter, rect, c, g));
+                let row =
+                    MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(sw.name == current).sample(ThumbAspect::SQUARE, face);
                 if row.show(ui).ran {
                     picked = Some(sw.name.clone());
                 }
