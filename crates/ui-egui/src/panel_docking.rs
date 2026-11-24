@@ -1140,6 +1140,21 @@ fn dock_config() -> DockConfig {
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
+/// Whether a tab or a group of the dock is released in this pass over the window of a float-only panel (the Story
+/// Editor, Type › Tabs). Such a window takes no tab, split or column (`FLOAT_ONLY`), but the dock floats a release no
+/// spot takes under the pointer (`DockConfig::float_on_empty_drop`): over that window the person aimed at it, so the
+/// drop is refused instead. The window's rect is the layout's from the pass the command opened it, so the release in
+/// its first frame is refused too. A whole floating window dragged by its title row only moves, and may pass over it.
+/// A window in an OS window of its own gets no release from this one.
+fn released_over_float_only(app: &DesignApp, ctx: &egui::Context) -> bool {
+    use craft_ui::docking::{DragUnit, GroupDrag, PanelDrag};
+    use craft_ui::runtime::drag::active;
+    let docking =
+        active::<PanelDrag>(ctx).is_some() || active::<GroupDrag<String>>(ctx).is_some_and(|drag| !matches!(drag.unit, DragUnit::Window(_)));
+    let Some(at) = ctx.input(|i| i.pointer.any_released().then(|| i.pointer.interact_pos()).flatten()) else { return false };
+    docking && layout_of(app).floating.iter().any(|w| w.rect.contains(at) && w.panels().any(|p| crate::dock::float_only(p)))
+}
+
 /// Draws the panels and the canvas: the framework's dock area over the layout in use. The area writes nothing
 /// itself; what the user did comes back as actions, applied through `window.panel.layout`, as a command is.
 pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -1166,9 +1181,10 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             return;
         }
     };
-    // Under a modal (a dialog, About, Quick Apply) or an open popup the dock takes no gesture.
+    // Under a modal (a dialog, About, Quick Apply) or an open popup the dock takes no gesture, and a tab or group released
+    // over a float-only panel's window (the Story Editor, Type › Tabs) drops nothing there.
     let ctx = ui.ctx().clone();
-    if modal_open(app) || egui::Popup::is_any_open(&ctx) {
+    if modal_open(app) || egui::Popup::is_any_open(&ctx) || released_over_float_only(app, &ctx) {
         cancel_gesture(&ctx);
     }
     let specs = specs(&app.ui.language, crate::dock::panel_titles(app));
