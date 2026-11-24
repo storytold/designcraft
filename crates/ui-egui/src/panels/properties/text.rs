@@ -65,22 +65,10 @@ pub(super) fn character_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::character_section(app, ui)
 }
 
-/// A percentage or other number field in one half of a two-field row, with its icon.
-
-/// [`half_field`] for a value that may be unset: emptying the field commits `Some(None)`.
-
-/// Properties › Character after •••: vertical and horizontal scale, baseline shift and skew,
-/// language and OpenType, then All Caps, Small Caps, Superscript, Subscript, Underline and
-/// Strikethrough, as InDesign lays them out.
-
 /// Paragraph section: the 9 alignment buttons and •••.
 pub(super) fn paragraph_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::paragraph_section(app, ui)
 }
-
-/// Properties › Paragraph after •••: left and right indent, first line and last line indent,
-/// space before and after, drop cap lines and characters, then Hyphenate and Align to Baseline
-/// Grid, as InDesign lays them out.
 
 pub(super) fn bullets_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::bullets_section(app, ui)
@@ -115,10 +103,6 @@ fn is_shaped(item: &designcraft_doc::Item) -> bool {
 pub(super) fn text_frame_section(app: &mut DesignApp, ui: &mut Ui) {
     framework::text_frame_section(app, ui)
 }
-
-/// Inset Spacing under the columns: Top and Bottom, the link that makes all four the same, then
-/// Left and Right, as the wrap offsets are laid out. A non-rectangular frame shows one Inset, the
-/// distance its text keeps from the outline.
 
 /// The `inset` a shaped frame's one Inset sets: the composer also bounds the text by the frame's rectangle less all
 /// four insets, so when every frame it changes is shaped the one Inset sets all four. With a rectangular frame among
