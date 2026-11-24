@@ -30,8 +30,9 @@ fn click_tint_field(h: &mut Harness<'static, DesignApp>) {
     h.run_steps(2);
 }
 
+/// The text of the focused field, without the unit the field now writes after the number ("60 %").
 fn typed(h: &Harness<'static, DesignApp>) -> Option<String> {
-    h.query_by(|n| n.is_focused()).and_then(|n| n.value())
+    h.query_by(|n| n.is_focused()).and_then(|n| n.value()).map(|v| v.trim_end_matches('%').trim_end().to_owned())
 }
 
 /// Typing "60" over "100%" keeps the text while the field has focus (it used to snap back to

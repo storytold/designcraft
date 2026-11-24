@@ -557,7 +557,9 @@ fn parents_list(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Documen
                     picked = Some(key);
                 }
             }
-            CollectionEvent::LeadMoved { key, by: LeadSource::Pointer } => picked = Some(key),
+            // The lead moves on the press, the pick comes on the release: New Parent is an action, so only the pick runs it
+            // (the press and the release would make two parents).
+            CollectionEvent::LeadMoved { key, by: LeadSource::Pointer } if key != ParentKey::New => picked = Some(key),
             CollectionEvent::Activate(key) => {
                 picked = Some(key);
                 edit = Some(key);
