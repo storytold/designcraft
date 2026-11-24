@@ -270,7 +270,8 @@ fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
-    assert!(h.query_by_label("Preflight Panel…").is_none(), "the menu isn't left open");
+    let left: Vec<String> = h.query_all_by_label("Preflight Panel…").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
+    assert!(left.is_empty(), "the menu isn't left open: {left:?}");
     // A double-click with the panel already showing keeps it open (the first click closes
     // its flyout, the double-click opens it again). Past the double-click time, so the
     // clicks are not counted with the ones before.
@@ -441,9 +442,11 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     };
     // The size's list opens; choosing 72 pt sets the size.
     open_list(&mut h, "Font Size");
+    let rows: Vec<String> = h.query_all_by_label("72 pt").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
     h.query_all_by_label("72 pt").last().expect("the presets list's row").click();
     h.run_steps(2);
-    assert_eq!(size_of(&h), Some(72.0));
+    let journal: Vec<String> = h.state().app.session.journal.iter().rev().take(4).map(|(id, params)| format!("{id} {params}")).collect();
+    assert_eq!(size_of(&h), Some(72.0), "the rows named 72 pt: {rows:?}; the last commands: {journal:?}");
     // Auto leading has the same list beside it.
     open_list(&mut h, "Leading");
     h.query_all_by_label("60 pt").last().expect("the presets list's row").click();
