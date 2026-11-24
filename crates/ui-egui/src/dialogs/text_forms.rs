@@ -427,13 +427,21 @@ impl ItemSource<usize> for Rows {}
 /// The least height of a list well: a few rows, as a list of styles or fonts has in InDesign.
 const LIST_LEAST_HEIGHT: f32 = 96.0;
 
+/// The least height of New Cross-Reference's lists, which show many styles and paragraphs.
+const XREF_LIST_LEAST_HEIGHT: f32 = 200.0;
+
 /// A list of `items` of which one is picked, at most `max_rows` tall: the row picked in this pass.
 pub(super) fn pick_list(ui: &mut Ui, salt: &str, label: &str, items: &[String], current: Option<usize>, max_rows: usize) -> Option<usize> {
+    pick_list_at_least(ui, salt, label, items, current, max_rows, LIST_LEAST_HEIGHT)
+}
+
+/// [`pick_list`] with a well that is at least `least` tall.
+fn pick_list_at_least(ui: &mut Ui, salt: &str, label: &str, items: &[String], current: Option<usize>, max_rows: usize, least: f32) -> Option<usize> {
     let rows = Rows(items.to_vec());
     let mut selected = current.map_or_else(Selection::default, Selection::single);
     // The list sits in a well that keeps its room when the list is empty, so a list with nothing in it still shows where
     // its rows go.
-    Row::new().id_salt(("text_form_list_room", salt.to_owned())).fill_width().least_height(LIST_LEAST_HEIGHT).show(ui, |ui, _| {
+    Row::new().id_salt(("text_form_list_room", salt.to_owned())).fill_width().least_height(least).show(ui, |ui, _| {
         Stack::new().id_salt(("text_form_list_well", salt.to_owned())).surface(SurfaceKind::Well).fill().show(ui, |ui, _| {
             let _shown = List::<usize>::new(label.to_owned())
                 .id_salt(("text_form_list", salt.to_owned()))
@@ -868,7 +876,9 @@ fn insert_xref(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
             if text.is_empty() {
                 continue;
             }
-            paragraphs.push((format!("{}:{pi}", st.id.0), text.chars().take(52).collect()));
+            // A row shows the start of the paragraph: a long text would widen the dialog to fit it.
+            let shown = if text.chars().count() > 32 { format!("{}…", text.chars().take(31).collect::<String>()) } else { text };
+            paragraphs.push((format!("{}:{pi}", st.id.0), shown));
         }
     }
     let formats: Vec<(Value, String)> = doc.xref_formats.iter().map(|f| (json!(f.name), f.name.clone())).collect();
@@ -883,14 +893,14 @@ fn insert_xref(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
             } else {
                 let captions: Vec<String> = anchors.iter().map(|(_, name)| name.clone()).collect();
                 let at = anchors.iter().position(|(key, _)| *key == d.s("target"));
-                if let Some(picked) = pick_list(ui, "xref_anchors", &tr("Text Anchors"), &captions, at, 10) {
+                if let Some(picked) = pick_list_at_least(ui, "xref_anchors", &tr("Text Anchors"), &captions, at, 10, XREF_LIST_LEAST_HEIGHT) {
                     d.fields.insert("target".into(), json!(anchors[picked].0));
                 }
             }
         } else {
             Row::new().id_salt("xref_paragraphs").fill_width().show(ui, |ui, _| {
                 let at = styles.iter().position(|name| *name == cur_style);
-                if let Some(picked) = pick_list(ui, "xref_styles", &tr("Paragraph Styles"), &styles, at, 10) {
+                if let Some(picked) = pick_list_at_least(ui, "xref_styles", &tr("Paragraph Styles"), &styles, at, 10, XREF_LIST_LEAST_HEIGHT) {
                     d.fields.insert("style".into(), json!(styles[picked]));
                 }
                 if paragraphs.is_empty() {
@@ -898,7 +908,7 @@ fn insert_xref(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
                 }
                 let captions: Vec<String> = paragraphs.iter().map(|(_, text)| text.clone()).collect();
                 let at = paragraphs.iter().position(|(key, _)| *key == d.s("target"));
-                if let Some(picked) = pick_list(ui, "xref_paragraph_list", &tr("Paragraphs"), &captions, at, 10) {
+                if let Some(picked) = pick_list_at_least(ui, "xref_paragraph_list", &tr("Paragraphs"), &captions, at, 10, XREF_LIST_LEAST_HEIGHT) {
                     d.fields.insert("target".into(), json!(paragraphs[picked].0));
                 }
             });

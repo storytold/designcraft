@@ -816,16 +816,18 @@ pub(crate) mod framework {
         Picture::painter("", ThumbAspect::SQUARE, move |cx, rect| {
             cx.painter.rect_filled(rect, 2.0, t.input);
             cx.painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+            // The dropdown arrow sits at the field's end, not after the family's name.
+            let side = (rect.height() - 6.0).clamp(8.0, 14.0);
+            let arrow = Rect::from_center_size(pos2(rect.max.x - 4.0 - side / 2.0, rect.center().y), vec2(side, side));
+            crate::icons::paint(&cx.painter, arrow, "chevron-down", t.text_dim);
         })
         .id_salt(("font_field_well", id))
         .show_at(ui, slot);
-        let arrow = FontGlyph("chevron-down");
         let opener = Button::new(label.clone())
             .painted(shown.clone())
             .id(id)
             .align(HAlign::Start)
             .variant(Variant::GHOST)
-            .trailing_icon(IconSpec::glyph(&arrow))
             .tooltip(label.clone())
             .show_at(ui, slot);
         // The field is a combo box that holds the family: the framework's button names itself and says nothing of its value.
