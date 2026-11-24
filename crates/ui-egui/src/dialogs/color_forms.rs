@@ -41,6 +41,12 @@ pub(crate) const LAYER_SETTINGS: Form = Form::new(layer_settings);
 /// Color Theme: the theme's name and its colours, added to the swatches on OK.
 pub(crate) const COLOR_THEME: Form = Form::new(color_theme);
 
+/// Held by a test that changes the process-wide colour settings (`designcraft_color::cms::set_active`, Color
+/// Settings' OK) and by one that types into fields showing inks converted through them: the test threads share the
+/// settings, and a change under an open typing run moves the value the field shows, which ends the run uncommitted.
+#[cfg(test)]
+pub(crate) static COLOR_SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// `s` in the interface language.
 fn tr(app: &DesignApp, s: &str) -> String {
     crate::i18n::tr(&app.ui.language, s).to_owned()
@@ -642,6 +648,10 @@ mod tests {
 
     #[test]
     fn the_color_picker_edits_the_draft_applies_once_and_adds_a_cmyk_swatch() {
+        // Harness setup: the Cyan field shows inks converted through the process-wide colour settings, which Color
+        // Settings' test changes from another thread; a change between the typed "50" and the Tab moves the value the
+        // field shows, the framework ends the typing run uncommitted, and the draft keeps its old inks. Hold them still.
+        let _settings = COLOR_SETTINGS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut app = app();
         let id = app.run("frame.create", json!({"rect": [72, 72, 200, 200], "shape": "rectangle"})).unwrap()["id"].as_u64().unwrap();
         app.run("object.color", json!({"color": Color::from_hex("#7c1315").unwrap(), "target": "fill"})).unwrap();
