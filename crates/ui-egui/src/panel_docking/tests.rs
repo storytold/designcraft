@@ -1551,3 +1551,20 @@ fn a_changing_panel_title_makes_a_new_spec_model_only_when_it_changes() {
     assert!(!std::sync::Arc::ptr_eq(&changed, &plain), "and so does a title that ends");
     assert!(format!("{:?}", plain.spec(&"tabs".to_string()).label).contains("Tabs"));
 }
+
+/// The flyout of a low icon (Attributes, near the bottom of the iconic column) opens with its panel's room inside the
+/// window: it asks for `OPEN_PANEL_HEIGHT` (`Specs::spec`) and moves up from its icon by what would pass the window's
+/// bottom, instead of sitting at its icon with only its first line above the window's bottom edge.
+#[test]
+fn a_low_icons_flyout_opens_with_its_room_inside_the_window() {
+    let mut app = app();
+    app.run("window.panel", json!({"panel": "attributes"})).unwrap();
+    assert!(in_iconic_column(&layout_of(&app), "attributes"));
+    assert_eq!(app.ui.docking_flyout.as_deref(), Some("attributes"));
+    let size = vec2(1280.0, 900.0);
+    let mut h = harness(app, size);
+    h.run_steps(2);
+    let tab = tab_rect(&h, "attributes");
+    assert!(tab.top() >= 0.0, "{tab:?}");
+    assert!(tab.top() + super::OPEN_PANEL_HEIGHT <= size.y + 0.5, "the flyout's room passes the window's bottom: {tab:?}");
+}
