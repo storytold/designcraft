@@ -81,6 +81,83 @@ pub fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
     if text.trim().is_empty() { s } else { text }
 }
 
+include!(concat!(env!("OUT_DIR"), "/craft_i18n.rs"));
+
+/// Effective Swedish catalog combining optional `craft-i18n` catalogs (`CRAFT_I18N_DIR`) with
+/// the app-local Swedish tables:
+/// 1. DesignCraft's canonical Swedish rows (`locales/sv/designcraft.tsv`),
+/// 2. App-local `sv::TABLE` / `sv::CONTEXT` (keeping DesignCraft-specific wording over generic
+///    shared rows until full cutover),
+/// 3. Shared Craft Swedish rows (`locales/sv/common.tsv`).
+struct SwedishCatalog {
+    app: Option<(craft_i18n::I18n, craft_i18n::Lang)>,
+    local: HashMap<&'static str, &'static str>,
+    shared: Option<(craft_i18n::I18n, craft_i18n::Lang)>,
+}
+
+impl SwedishCatalog {
+    fn new(app_embedded: &'static craft_i18n::Embedded, shared_embedded: &'static craft_i18n::Embedded) -> Self {
+        let load = |embedded: &'static craft_i18n::Embedded| -> Option<(craft_i18n::I18n, craft_i18n::Lang)> {
+            if embedded.is_empty() {
+                return None;
+            }
+            let (i18n, problems) = craft_i18n::I18n::new(embedded, &["sv"]);
+            for problem in problems {
+                log::warn!("interface catalogs: {problem}");
+            }
+            let lang = i18n.from_code("sv")?;
+            Some((i18n, lang))
+        };
+        Self { app: load(app_embedded), local: sv::TABLE.iter().copied().collect(), shared: load(shared_embedded) }
+    }
+
+    fn get<'a>(&'a self, s: &'a str) -> Option<&'a str> {
+        let non_empty = |text: &&str| !text.trim().is_empty();
+        if let Some((i18n, lang)) = &self.app
+            && let Some(text) = i18n.get(*lang, "", s).filter(non_empty)
+        {
+            return Some(text);
+        }
+        if let Some(text) = self.local.get(s).copied().filter(non_empty) {
+            return Some(text);
+        }
+        if let Some((i18n, lang)) = &self.shared
+            && let Some(text) = i18n.get(*lang, "", s).filter(non_empty)
+        {
+            return Some(text);
+        }
+        None
+    }
+
+    fn get_context<'a>(&'a self, s: &'a str, context: &str) -> Option<&'a str> {
+        let non_empty = |text: &&str| !text.trim().is_empty();
+        if let Some((i18n, lang)) = &self.app
+            && let Some(text) = i18n.get(*lang, context, s).filter(non_empty)
+        {
+            return Some(text);
+        }
+        if let Some(text) = sv::CONTEXT.iter().find(|(key, scope, _)| *key == s && *scope == context).map(|(_, _, text)| *text).filter(non_empty) {
+            return Some(text);
+        }
+        if let Some((i18n, lang)) = &self.shared
+            && let Some(text) = i18n.get(*lang, context, s).filter(non_empty)
+        {
+            return Some(text);
+        }
+        None
+    }
+
+    #[cfg(test)]
+    fn has(&self, s: &str) -> bool {
+        self.get(s).is_some()
+    }
+}
+
+fn swedish_catalog() -> &'static SwedishCatalog {
+    static SWEDISH: OnceLock<SwedishCatalog> = OnceLock::new();
+    SWEDISH.get_or_init(|| SwedishCatalog::new(CRAFT_I18N_SV_APP, CRAFT_I18N_SV_SHARED))
+}
+
 /// Looks up a label in lazily cached language tables, using the shared table where supported.
 /// Unknown languages and missing keys keep the source text; `tr` also handles blank entries.
 fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
@@ -100,7 +177,6 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     if lang == "hu" {
         return HUNGARIAN.get_or_init(|| hu::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
-    static SWEDISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
@@ -135,7 +211,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
         return GEORGIAN.get_or_init(|| ka::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     if lang == "sv" {
-        return SWEDISH.get_or_init(|| sv::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+        return swedish_catalog().get(s).unwrap_or(s);
     }
     if lang == "uk" {
         return UKRAINIAN.get_or_init(|| uk::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
@@ -158,6 +234,9 @@ const CONTEXT: &[(&str, &str, [&str; 5])] = &[
 
 /// Context-sensitive UI captions; unsupported contexts keep the shared translation.
 pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
+    if lang == "sv" {
+        return swedish_catalog().get_context(s, context).unwrap_or_else(|| tr(lang, s));
+    }
     let contexts = match lang {
         "hu" => hu::CONTEXT,
         "uk" => uk::CONTEXT,
@@ -166,7 +245,6 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "pl" => pl::CONTEXT,
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
-        "sv" => sv::CONTEXT,
         _ => &[],
     };
     let written = |text: &&str| !text.trim().is_empty();
@@ -192,10 +270,11 @@ pub(crate) fn russian_catalog() -> Vec<&'static str> {
     ru::TABLE.iter().map(|(_, text)| *text).chain(ru::CONTEXT.iter().map(|(_, _, text)| *text)).collect()
 }
 
-/// Whether the Swedish catalog has an entry for `s` (many Swedish labels read like the English ones).
+/// Whether the effective Swedish catalog (shared `craft-i18n` + app-local fallback) has an entry
+/// for `s` (many Swedish labels read like the English ones).
 #[cfg(test)]
 pub(crate) fn swedish_has(s: &str) -> bool {
-    sv::TABLE.iter().any(|(key, _)| *key == s)
+    swedish_catalog().has(s)
 }
 
 /// Ukrainian, Russian, Polish and Georgian put the category before the value in count captions
@@ -301,6 +380,35 @@ mod swedish_tests {
         assert_eq!(count_label("sv", "pages", 1), "1 sida");
         assert_eq!(count_label("sv", "warnings", 1), "1 varning");
         assert_eq!(count_label("sv", "errors", 1), "1 fel");
+    }
+
+    #[test]
+    fn swedish_effective_catalog_reads_craft_i18n_and_keeps_local_and_english_fallbacks() {
+        const APP_TSV: &str = "\tAdjust Layout…\tAnpassa layout…\n\tFile\tArkiv (app)\nmenu\tColumns\tKolumner (app)\n";
+        const SHARED_TSV: &str = "\tType\tTyp\n\tShared Only Label\tDelad etikett\nmenu\tShared Context\tDelad kontext\n";
+        static APP_EMBEDDED: &[(&str, &str, &str)] = &[("sv", "", APP_TSV)];
+        static SHARED_EMBEDDED: &[(&str, &str, &str)] = &[("sv", SHARED_TSV, "")];
+
+        let catalog = SwedishCatalog::new(APP_EMBEDDED, SHARED_EMBEDDED);
+        // App-catalog-only row from craft-i18n is found by both lookup and `has`.
+        assert_eq!(catalog.get("Adjust Layout…"), Some("Anpassa layout…"));
+        assert!(catalog.has("Adjust Layout…"));
+        // DesignCraft's craft-i18n app row wins over the app-local table.
+        assert_eq!(catalog.get("File"), Some("Arkiv (app)"));
+        // App-local DesignCraft wording beats a conflicting generic shared `common.tsv` row.
+        assert_eq!(catalog.get("Type"), Some("Text"));
+        assert!(catalog.has("Type"));
+        // Keys absent from both app catalog and local table fall back to shared `common.tsv`.
+        assert_eq!(catalog.get("Shared Only Label"), Some("Delad etikett"));
+        assert!(catalog.has("Shared Only Label"));
+        // Keys absent from every catalog report none/false (UI falls back to English).
+        assert_eq!(catalog.get("Untranslated Swedish Label"), None);
+        assert!(!catalog.has("Untranslated Swedish Label"));
+        // Context lookup follows app -> local -> shared.
+        assert_eq!(catalog.get_context("Columns", "menu"), Some("Kolumner (app)"));
+        assert_eq!(catalog.get_context("Columns", "table"), Some("Kolumner"));
+        assert_eq!(catalog.get_context("Shared Context", "menu"), Some("Delad kontext"));
+        assert_eq!(catalog.get_context("Shared Context", "unknown"), None);
     }
 }
 

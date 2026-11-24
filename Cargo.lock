@@ -2102,6 +2102,7 @@ version = "0.21.1"
 dependencies = [
  "craft-dialogs",
  "craft-file-formats",
+ "craft-i18n",
  "craft-keymap",
  "craft-prepress",
  "craft-ui",
