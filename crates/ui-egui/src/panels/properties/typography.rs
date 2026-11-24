@@ -227,7 +227,8 @@ pub(crate) fn para_field_min(key: &str) -> f64 {
 mod framework {
     use super::*;
     use crate::framework_transform::{
-        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, letters_button, menu, number_field, swatch_select, icon_toggle,
+        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, icon_toggle,
+        letters_button, menu, number_field, swatch_select,
     };
     use crate::panels::properties::text::framework::{kerning_field, language_select};
     use craft_behavior::EditEvent;
@@ -307,7 +308,8 @@ mod framework {
             let label = tr(name);
             caption(ui, Some(cap), &label);
             let id = cid(ui, ("char-field", k, auto));
-            if let Some(Some(v)) = number_field(ui, Some(field), id, Number::new(&label, value, quantity)) {
+            let n = Number::new(&label, value, quantity).derived(auto && attrs == "leading");
+            if let Some(Some(v)) = number_field(ui, Some(field), id, n) {
                 let v = if attrs == "leading" { json!({"kind": "points", "value": v}) } else { json!(v) };
                 let _ = app.run("type.char", json!({"attrs": {attrs: v}}));
             }

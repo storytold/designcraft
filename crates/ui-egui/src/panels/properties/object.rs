@@ -462,7 +462,7 @@ pub(super) mod framework {
     use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
     use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
     use craft_ui_widgets::style::UiTokens;
-    use craft_ui_widgets::text::{NumberField, NumberPick, link_toggle};
+    use craft_ui_widgets::text::{NumberField, NumberPick, StepArrows, link_toggle};
 
     /// A Fill or Stroke chip as the panel has always drawn it: the swatch's colour or gradient, a stroke as a ring
     /// around a dark centre, inside the field edge.
@@ -506,9 +506,10 @@ pub(super) mod framework {
         ui.id().with(("properties-object", key))
     }
 
-    /// A link to another panel at `at`: whether it was clicked this pass.
+    /// A link to another panel at `at`: whether it was clicked this pass. It is the panel's text colour, underlined, as
+    /// the app's panel links have always been, not the accent of a web link.
     fn link(ui: &mut Ui, at: Rect, id: egui::Id, label: &str) -> bool {
-        Link::new(label.to_owned()).id(id).show_at(ui, at).clicked()
+        Link::new(label.to_owned()).id(id).tone(Tone::Neutral).show_at(ui, at).clicked()
     }
 
     /// The `•••` button at the end of its own row under the section `section`: whether it was clicked this pass.
@@ -633,6 +634,7 @@ pub(super) mod framework {
                 let out = NumberField::new(tip.to_owned(), Bind::given(tv_get(key)))
                     .id(control_id(ui, ("angle", key)))
                     .unit_kind(kind)
+                    .step_arrows(StepArrows::Leading)
                     .show_at(ui, sub(b, x + 19.0, yy, 54.0, FIELD_H));
                 if let Some(v) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
                     set.insert(key.into(), json!(v));
@@ -676,6 +678,7 @@ pub(super) mod framework {
             NumberField::length(tr("Stroke Weight"), Bind::given(Some(i.stroke_weight)), LengthUnits::new(UnitKind::Points, UnitKind::Points, 72.0))
                 .id(control_id(ui, "stroke-weight"))
                 .range(0.0..=800.0)
+                .step_arrows(StepArrows::Leading)
                 .presets(&presets)
                 .show_at(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H));
         let picked = match weight.preset {
@@ -700,6 +703,7 @@ pub(super) mod framework {
         let corner = NumberField::length(tr("Corner Size"), Bind::given(Some(size)), LengthUnits::new(UnitKind::Points, UnitKind::Points, 72.0))
             .id(control_id(ui, "corner-size"))
             .range(0.0..=1000.0)
+            .step_arrows(StepArrows::Leading)
             .show_at(ui, sub(b, 96.0, 0.0, 69.0, FIELD_H));
         if let Some(v) = corner.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
             let _ = app.run("object.cornerOptions", corner_size_params(shape, v));
@@ -739,7 +743,9 @@ pub(super) mod framework {
         let held = STROKE_TYPES.iter().find(|(_, kind)| *kind == current).map_or(Mixed::Mixed, |&(_, kind)| Mixed::Same(kind));
         let picked = Select::new(crate::i18n::tr(&lang, "Stroke Type").to_owned(), Bind::given(held), &entries)
             .id(id)
-            .picture(|kind: &&'static str, cx: &ContentPainterCx<'_>, rect: Rect| paint_stroke_type(&cx.painter, rect, kind, cx.ink()))
+            .picture(|kind: &&'static str, cx: &ContentPainterCx<'_>, rect: Rect| {
+                paint_stroke_type(&cx.painter, sample_tile(&cx.painter, rect), kind, SAMPLE_INK)
+            })
             .picture_only()
             .show_at(ui, at)
             .events
@@ -748,6 +754,17 @@ pub(super) mod framework {
         if let Some(kind) = picked {
             let _ = app.run("object.stroke", stroke_type_params(kind));
         }
+    }
+
+    /// The ink a stroke type or corner shape sample draws in, on its white tile.
+    const SAMPLE_INK: egui::Color32 = egui::Color32::BLACK;
+
+    /// The white tile a stroke type or corner shape sample sits on, as the app's pickers have always shown them, painted
+    /// over `rect`: the rect inside it the sample draws in.
+    fn sample_tile(painter: &egui::Painter, rect: Rect) -> Rect {
+        let tile = rect.shrink2(vec2(1.0, (rect.height() - 14.0).max(0.0) / 2.0));
+        painter.rect_filled(tile, 2.0, egui::Color32::WHITE);
+        tile.shrink(2.0)
     }
 
     /// The corner shape picker at `at` with the id `id`: the face is the current shape's glyph, the list each shape's
@@ -759,7 +776,9 @@ pub(super) mod framework {
             CornerShape::ALL.into_iter().map(|s| Entry::new(s, crate::i18n::tr(&lang, s.label()).to_owned())).collect();
         let picked = Select::new(crate::i18n::tr(&lang, "Corner Shape").to_owned(), Bind::given(shape), &entries)
             .id(id)
-            .picture(|shape: &CornerShape, cx: &ContentPainterCx<'_>, rect: Rect| paint_corner_shape(&cx.painter, rect, *shape, cx.ink()))
+            .picture(|shape: &CornerShape, cx: &ContentPainterCx<'_>, rect: Rect| {
+                paint_corner_shape(&cx.painter, sample_tile(&cx.painter, rect), *shape, SAMPLE_INK)
+            })
             .picture_only()
             .show_at(ui, at)
             .events
