@@ -502,11 +502,17 @@ pub(crate) fn font_style_select_in(
     picked
 }
 
-/// A check box at `at` (or in the flow) labelled `label`: its new value when it was toggled this pass.
+/// A check box at `at` (or in the flow) labelled `label`, its label shown after the box: its new value when it was
+/// toggled this pass.
 pub(crate) fn check(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, label: &str, value: bool, enabled: bool) -> Option<bool> {
     let field = Checkbox::new(Bind::given(value)).id(id).label(label.to_owned()).enabled(enabled);
     let out = match at {
-        Some(at) => field.show_at(ui, at),
+        // A check box shows its label after the box only in the flow (`show_at` draws the box alone), so a placed one
+        // is shown in a flow of its own over `at`.
+        Some(at) => {
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(at).layout(layout), |ui| field.show(ui)).inner
+        }
         None => field.show(ui),
     };
     out.events.committed().copied().filter(|v| *v != value)

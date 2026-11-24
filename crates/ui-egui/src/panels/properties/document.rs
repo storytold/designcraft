@@ -483,6 +483,10 @@ mod framework_tests {
         type_into(&mut h, "Number of Pages", "3");
         assert_eq!(h.state().session.active().unwrap().doc.page_count(), 3);
         let facing = settings(&h).facing_pages;
+        // The box shows its label after it, so the check box is wider than its box (the label is part of its target).
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let shown = h.get_by_role_and_label(Role::CheckBox, "Facing Pages").rect();
+        assert!(shown.width() > 2.5 * shown.height(), "Facing Pages shows its label: {shown:?}");
         click(&mut h, Role::CheckBox, "Facing Pages");
         assert_eq!(settings(&h).facing_pages, !facing);
         type_into(&mut h, "Top", "2p0");
