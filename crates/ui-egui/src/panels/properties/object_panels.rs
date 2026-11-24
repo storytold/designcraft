@@ -364,9 +364,7 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// Invert, and the Attributes check boxes, are drawn by `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`.
 mod framework {
     use super::*;
-    use crate::framework_transform::{
-        Letters, MenuRow, Number, Quantity, button, caption as text, check, choice, icon_button, menu, number_field, swatch_select,
-    };
+    use crate::framework_transform::{Letters, MenuRow, Number, Quantity, button, caption as text, check, choice, menu, number_field, swatch_select};
     use crate::panels::properties::{block, sub};
     use crate::widgets::FIELD_H;
     use craft_behavior::Mixed;
@@ -401,6 +399,22 @@ mod framework {
         field
     }
 
+    /// A command strip's icon button at `at`: the app's artwork `icon` at the tool glyph size (`GlyphRole::Tool`,
+    /// `size.icon.md`), as the old panels drew their align, distribute and pathfinder glyphs at 17 pt in a 23 × 21
+    /// button, named and tipped `label`: whether it was clicked this pass.
+    fn tool_button(ui: &mut Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str) -> bool {
+        use craft_ui_widgets::buttons::IconButton;
+        use craft_ui_widgets::primitives::IconSpec;
+        use craft_ui_widgets::style::GlyphRole;
+        IconButton::new(IconSpec::glyph(&crate::framework_transform::Artwork(icon)))
+            .id(id)
+            .label(label.to_owned())
+            .tooltip(label.to_owned())
+            .glyphs(GlyphRole::Tool)
+            .show_at(ui, at)
+            .clicked()
+    }
+
     /// A row of icon buttons wrapped to the panel's width, 23 pt each at `pitch`: the index of the one clicked.
     fn icon_row(app: &DesignApp, ui: &mut Ui, key: &str, buttons: &[(&'static str, &str)], pitch: f32) -> Option<usize> {
         let width = full_width(ui);
@@ -411,7 +425,7 @@ mod framework {
         for (k, (artwork, tip)) in buttons.iter().enumerate() {
             let (row, col) = (k / per_row, k % per_row);
             let (at, id) = (sub(b, col as f32 * pitch, row as f32 * 29.0, 23.0, 21.0), cid(ui, (key, k)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&app.ui.language, tip), false) {
+            if tool_button(ui, at, id, artwork, crate::i18n::tr(&app.ui.language, tip)) {
                 clicked = Some(k);
             }
         }
@@ -677,7 +691,7 @@ mod framework {
         let start = b.width() - 4.0 - (CONVERT_POINT.len() as f32 * 23.0 + (CONVERT_POINT.len() - 1) as f32 * 14.0);
         for (k, (artwork, kind, tip)) in CONVERT_POINT.into_iter().enumerate() {
             let (at, id) = (sub(b, start + k as f32 * 37.0, 1.0, 23.0, 21.0), cid(ui, ("convert-point", kind)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+            if tool_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip)) {
                 let _ = app.run("path.convertPoints", json!({"kind": kind}));
             }
         }
@@ -693,10 +707,12 @@ mod framework {
     }
 
     pub(super) fn pathfinder_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
+        // The framework caption stands about 2 pt taller than the old label, so the spaces around it give that back and
+        // each section keeps the old pitch.
         let title = |ui: &mut egui::Ui, app: &DesignApp, title: &str| {
-            ui.add_space(4.0);
+            ui.add_space(3.0);
             text(ui, None, crate::i18n::tr(&app.ui.language, title));
-            ui.add_space(2.0);
+            ui.add_space(1.0);
         };
         title(ui, app, "Paths:");
         let paths: Vec<(&'static str, &str)> = PATHS.iter().map(|(icon, _, _, tip)| (*icon, *tip)).collect();
@@ -723,16 +739,17 @@ mod framework {
 
     pub(super) fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let lang = app.ui.language.clone();
-        let b = block(ui, 2.0 * 21.0 + 6.0);
+        // Two rows of 23 × 21 buttons at the old panel's spacing: 6 pt between buttons, 4 pt between rows.
+        let b = block(ui, 2.0 * 21.0 + 4.0);
         for (k, (edge, artwork, tip)) in ALIGN_EDGES.into_iter().enumerate() {
-            let (at, id) = (sub(b, k as f32 * 27.0, 0.0, 23.0, 21.0), cid(ui, ("align", edge)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+            let (at, id) = (sub(b, k as f32 * 29.0, 0.0, 23.0, 21.0), cid(ui, ("align", edge)));
+            if tool_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip)) {
                 let _ = app.run("object.align", json!({"edge": edge}));
             }
         }
         for (k, (axis, artwork, tip)) in DISTRIBUTE.into_iter().enumerate() {
-            let (at, id) = (sub(b, k as f32 * 27.0, 27.0, 23.0, 21.0), cid(ui, ("distribute", axis)));
-            if icon_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip), false) {
+            let (at, id) = (sub(b, k as f32 * 29.0, 25.0, 23.0, 21.0), cid(ui, ("distribute", axis)));
+            if tool_button(ui, at, id, artwork, crate::i18n::tr(&lang, tip)) {
                 let _ = app.run("object.distribute", json!({"axis": axis}));
             }
         }
