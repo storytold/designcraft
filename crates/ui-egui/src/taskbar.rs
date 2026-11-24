@@ -150,7 +150,8 @@ mod framework {
                     hasher.finish()
                 };
                 let face = FacePaint::new(key, move |cx, rect| widgets::paint_chip(&cx.painter, rect, c, g));
-                let row = MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(sw.name == current).sample(ThumbAspect::SQUARE, face);
+                let row =
+                    MenuItem::new(sw.name.clone()).id_salt(("swatch", sw.name.clone())).check(sw.name == current).sample(ThumbAspect::SQUARE, face);
                 if row.show(ui).ran {
                     picked = Some(sw.name.clone());
                 }
