@@ -77,7 +77,7 @@ pub fn decode_pixmap_page(bytes: &[u8], page: u32) -> Option<Pixmap> {
     premultiplied(img.width(), img.height(), img.into_raw())
 }
 
-/// [`decode_pixmap`] of a JPEG at 1/2^`shrink` of its size, `shrink` 1 to
+/// [`decode_pixmap`] of a JPEG or TIFF at 1/2^`shrink` of its size, `shrink` 1 to
 /// [`designcraft_images::MAX_REDUCED_SHRINK`], without a full-size decode. `None` where only a
 /// full decode applies (other formats, CMYK JPEGs).
 pub(crate) fn decode_pixmap_reduced(bytes: &[u8], shrink: u8) -> Option<Pixmap> {

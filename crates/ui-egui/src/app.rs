@@ -19,6 +19,8 @@ mod frame;
 mod ime;
 mod input;
 mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod opening;
 mod quit;
 mod screenshot;
 mod view;
@@ -130,6 +132,8 @@ impl DesignApp {
             quit_without_asking: false,
             quitting: None,
             waiting_save: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            opening: Vec::new(),
             cursors: cursors::Images::default(),
             live_preview: LivePreview::default(),
             updates_rt: updates_ui::Runtime::default(),
