@@ -120,6 +120,8 @@ fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
             .show(ui);
     });
     let _ = count;
+    // Room under the footer line, so the panel does not end at the window's edge.
+    ui.add_space(8.0);
     if let Some(c) = insert {
         match app.run("text.insert", json!({"text": c.to_string(), "raw": true})) {
             Ok(_) => {

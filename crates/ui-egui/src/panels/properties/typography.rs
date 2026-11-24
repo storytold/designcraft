@@ -184,7 +184,7 @@ const PANEL_FIELD_W: f32 = 52.0;
 
 /// The caption font of the Character panel's rows.
 fn caption_font() -> egui::FontId {
-    egui::FontId::proportional(11.5)
+    egui::FontId::proportional(13.0)
 }
 
 /// The width of the widest of `labels` in the interface language: a column's caption cells.
@@ -194,7 +194,9 @@ fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
         .iter()
         .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(&app.ui.language, l).to_string(), caption_font(), t.text).size().x)
         .fold(0.0, f32::max)
+        // The framework's text takes its own room around a word: a caption cell as wide as the bare word wraps it.
         .ceil()
+        + 4.0
 }
 
 /// Whether `composer` (a paragraph's `composer` attribute) is a single-line composer, and the
@@ -227,7 +229,8 @@ pub(crate) fn para_field_min(key: &str) -> f64 {
 mod framework {
     use super::*;
     use crate::framework_transform::{
-        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, letters_button, menu, number_field, swatch_select, icon_toggle,
+        Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, icon_toggle,
+        letters_button, menu, number_field, swatch_select,
     };
     use crate::panels::properties::text::framework::{kerning_field, language_select};
     use craft_behavior::EditEvent;
@@ -237,9 +240,24 @@ mod framework {
     use craft_ui_widgets::primitives::IconSpec;
     use craft_ui_widgets::value_drag::Slider;
 
+    /// The type sizes the Leading list offers.
+    const LEADING_SIZES: &[f64] = &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 14.0, 18.0, 21.0, 24.0, 30.0, 36.0, 48.0, 60.0, 72.0];
+
     /// The id of the control `key` of the panel the `ui` shows.
     fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
         ui.id().with(("typography-panels", key))
+    }
+
+    /// A caption in its cell: one line, centred on the field beside it, cut with an ellipsis where the cell is too narrow
+    /// (a cell narrower than its word would otherwise wrap the word and show only its first line).
+    fn cell_label(ui: &mut egui::Ui, at: Option<egui::Rect>, text: &str) {
+        use craft_ui_widgets::display::{Elide, Text};
+        match at {
+            Some(at) => {
+                Text::new(text.to_owned()).elide(Elide::End).show_at(ui, at);
+            }
+            None => caption(ui, None, text),
+        }
     }
 
     /// A caption cell and a field after it on one row of `width` from `x` in block `b` at `y`: their rects.
@@ -273,12 +291,12 @@ mod framework {
         let b = block(ui, 2.0 * row);
         let current = c["language"].as_str().unwrap_or("English: USA").to_string();
         let (cap, field) = cells(b, 0.0, 0.0, label_w + 6.0 + 170.0, label_w);
-        caption(ui, Some(cap), &tr("Language"));
+        cell_label(ui, Some(cap), &tr("Language"));
         let id = cid(ui, "language");
         language_select(app, ui, Some(field), id, &current);
         let digits = c["digits"].as_str().unwrap_or("default").to_string();
         let (cap, field) = cells(b, 0.0, row, label_w + 6.0 + 150.0, label_w);
-        caption(ui, Some(cap), &tr("Digits"));
+        cell_label(ui, Some(cap), &tr("Digits"));
         let choices: Vec<(&'static str, String)> = DIGIT_OPTIONS.iter().map(|o| (o.0, digit_label(&lang, *o))).collect();
         let held = DIGIT_OPTIONS.iter().find(|o| o.0 == digits).map_or(DIGIT_OPTIONS[0].0, |o| o.0);
         let id = cid(ui, "digits");
@@ -298,22 +316,26 @@ mod framework {
             (left(0.0), "Size", c["size"].as_f64(), Quantity::Points, "size"),
             (left(2.0 * row), "Baseline", c["baselineShift"].as_f64(), Quantity::Points, "baselineShift"),
             (right(0.0), "Leading", lv, Quantity::Points, "leading"),
-            (right(row), "Tracking", c["tracking"].as_f64(), Quantity::Plain { decimals: 0 }, "tracking"),
+            (right(2.0 * row), "Tracking", c["tracking"].as_f64(), Quantity::Plain { decimals: 0 }, "tracking"),
         ]
         .into_iter()
         .enumerate()
         {
             let (cap, field) = cell;
             let label = tr(name);
-            caption(ui, Some(cap), &label);
+            cell_label(ui, Some(cap), &label);
             let id = cid(ui, ("char-field", k, auto));
-            if let Some(Some(v)) = number_field(ui, Some(field), id, Number::new(&label, value, quantity)) {
+            // Automatic leading shows the value it works out to in parentheses, with the type sizes as its list.
+            let n = Number::new(&label, value, quantity);
+            let n = if attrs == "leading" { n.presets(LEADING_SIZES).range(0.0, 5000.0).derived(auto) } else { n };
+            if let Some(Some(v)) = number_field(ui, Some(field), id, n) {
                 let v = if attrs == "leading" { json!({"kind": "points", "value": v}) } else { json!(v) };
                 let _ = app.run("type.char", json!({"attrs": {attrs: v}}));
             }
         }
-        let (cap, field) = left(row);
-        caption(ui, Some(cap), &tr("Kerning"));
+        // Kerning keeps a row of its own: its Metrics and Optical words need more room than a column's field has.
+        let (cap, field) = cells(b, 0.0, row, (left_w + 6.0 + 130.0).min(b.width()), left_w);
+        cell_label(ui, Some(cap), &tr("Kerning"));
         let id = cid(ui, "kerning");
         kerning_field(app, ui, Some(field), id, &c["kerning"]);
         // The text colour.
@@ -321,7 +343,7 @@ mod framework {
             let label_w = caption_width(app, ui, &["Color:"]);
             let b = block(ui, row);
             let (cap, field) = cells(b, 0.0, 0.0, label_w + 6.0 + 180.0, label_w);
-            caption(ui, Some(cap), &tr("Color:"));
+            cell_label(ui, Some(cap), &tr("Color:"));
             let id = cid(ui, "fill");
             if let Some(n) = swatch_select(ui, Some(field), id, &tr("Color:"), &doc, c["fill"].as_str(), c["fill"].as_str()) {
                 let _ = app.run("type.char", json!({"attrs": {"fill": n}}));
@@ -348,7 +370,11 @@ mod framework {
             ("S", true, tr("Strikethrough"), st, "type.char", json!({"attrs": {"strikethrough": !st}})),
             ("T¹", false, tr("Superscript"), sup, "type.char", json!({"attrs": {"position": if sup { "normal" } else { "superscript" }}})),
         ];
-        let b = block(ui, 22.0);
+        // OpenType follows the six buttons when the panel has the room for its word, and takes a row below them when not.
+        let strip = 6.0 * 30.0;
+        let wanted = caption_width(app, ui, &["OpenType"]) + 24.0;
+        let beside = full_width(ui) - strip >= wanted;
+        let b = block(ui, if beside { 22.0 } else { 22.0 + 4.0 + 22.0 });
         for (k, (text, struck, label, on, cmd, params)) in buttons.into_iter().enumerate() {
             let (at, id) = (sub(b, k as f32 * 30.0, 0.0, 26.0, 22.0), cid(ui, ("char-button", k)));
             if letters_button(ui, at, id, Letters { text, struck }, &label, on) {
@@ -356,7 +382,7 @@ mod framework {
             }
         }
         let id = cid(ui, "opentype");
-        let at = sub(b, 6.0 * 30.0, 0.0, (b.width() - 6.0 * 30.0).max(60.0), 22.0);
+        let at = if beside { sub(b, strip, 0.0, b.width() - strip, 22.0) } else { sub(b, 0.0, 26.0, wanted.max(80.0), 22.0) };
         let opentype = craft_ui_widgets::buttons::Button::new(tr("OpenType")).id(id).tooltip(tr("Show the Typography panel")).show_at(ui, at);
         if opentype.clicked() {
             show_typography_panel(app);
@@ -368,6 +394,8 @@ mod framework {
             }
             line_options(app, ui, &c, key, &tr(title));
         }
+        // Room under the last row, so the panel does not end at the window's edge.
+        ui.add_space(8.0);
     }
 
     /// The options of the underline or strikethrough `key`, under a disclosure titled `title`: weight, offset and
@@ -386,7 +414,7 @@ mod framework {
             .events
             .committed()
             .copied();
-        caption(ui, Some(sub(b, 24.0, 0.0, b.width() - 24.0, FIELD_H)), title);
+        cell_label(ui, Some(sub(b, 24.0, 0.0, b.width() - 24.0, FIELD_H)), title);
         if let Some(on) = toggled {
             ui.data_mut(|d| d.insert_temp(open_id, on));
         }
@@ -407,7 +435,7 @@ mod framework {
         {
             let (cap, field) = cells(b, 0.0, k as f32 * row, label_w + 6.0 + 60.0, label_w);
             let label = tr(name);
-            caption(ui, Some(cap), &label);
+            cell_label(ui, Some(cap), &label);
             let id = cid(ui, (key, name));
             if let Some(Some(v)) = number_field(ui, Some(field), id, Number::new(&label, Some(value), Quantity::Points)) {
                 let v = if name == "Weight" { v.max(0.0) } else { v };
@@ -416,7 +444,7 @@ mod framework {
         }
         if let Some(doc) = app.session.active().map(|d| d.doc.clone()) {
             let (cap, field) = cells(b, 0.0, 2.0 * row, label_w + 6.0 + 180.0, label_w);
-            caption(ui, Some(cap), &tr("Color:"));
+            cell_label(ui, Some(cap), &tr("Color:"));
             let current = c[format!("{key}Color")].as_str().filter(|s| !s.is_empty()).map(str::to_string);
             let text_color = tr("(Text Color)");
             let id = cid(ui, (key, "color"));
@@ -451,7 +479,7 @@ mod framework {
         for ((tag, name, min, _, max), value) in axes.iter().zip(values.iter_mut()) {
             // Caption, a slider filling the middle, then the value field: every slider is as long.
             let b = block(ui, FIELD_H);
-            caption(ui, Some(sub(b, 0.0, 0.0, label_w, FIELD_H)), name);
+            cell_label(ui, Some(sub(b, 0.0, 0.0, label_w, FIELD_H)), name);
             let slider_w = (width - label_w - PANEL_FIELD_W - 12.0).max(40.0);
             let (step, decimals) = axis_step(*min, *max);
             let id = cid(ui, ("axis", tag));
