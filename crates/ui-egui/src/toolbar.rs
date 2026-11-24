@@ -128,7 +128,7 @@ mod framework {
     use crate::DesignApp;
     use crate::framework_transform::{self as kit, Artwork, MenuRow};
     use craft_behavior::Mixed;
-    use craft_color_ui::ui::{PairWell, SwatchPair, Well};
+    use craft_color_ui::ui::{Paint, PairWell, SwatchPair, Well};
     use craft_theme::{ControlSize, Srgba};
     use craft_ui_panels::docking::{DockGrid, DockSizes};
     use craft_ui_panels::rails::{LastUsed, RailFooter, RailTool, ToolRail, ToolSlot};
@@ -310,6 +310,11 @@ mod framework {
             .show(ui)
     }
 
+    /// What a well shows for swatch `name`: no paint for the None swatch, else its colour (see [`well_color`]).
+    fn paint_of(doc: Option<&designcraft_doc::Document>, name: &str) -> Paint {
+        if name == designcraft_color::swatch::NONE { Paint::None } else { Paint::Solid(well_color(doc, name)) }
+    }
+
     /// The colour a swatch shows on a well: its colour, a gradient's first stop, or clear for None.
     fn well_color(doc: Option<&designcraft_doc::Document>, name: &str) -> Srgba {
         let (color, gradient) = doc.map_or((None, None), |d| crate::widgets::swatch_colors(d, name, 1.0));
@@ -337,11 +342,9 @@ mod framework {
             // The Fill and Stroke proxy with Default Fill and Stroke and Swap over it; a click brings a box to the
             // front, a double click opens the Color Picker for it.
             let wells = [
-                // A None swatch shows the "no colour" diagonal, as the native panel's red slash did.
-                PairWell::new(tr("Fill (X)"), Mixed::Same(well_color(doc.as_deref(), &fill_sw))).none(fill_sw == designcraft_color::swatch::NONE),
-                PairWell::new(tr("Stroke (X)"), Mixed::Same(well_color(doc.as_deref(), &stroke_sw)))
-                    .ring(true)
-                    .none(stroke_sw == designcraft_color::swatch::NONE),
+                // A None swatch shows the "no colour" face, as the native panel's red slash did.
+                PairWell::paint(tr("Fill (X)"), Mixed::Same(paint_of(doc.as_deref(), &fill_sw))),
+                PairWell::paint(tr("Stroke (X)"), Mixed::Same(paint_of(doc.as_deref(), &stroke_sw))).ring(true),
             ];
             let active = if stroke_front { Well::Secondary } else { Well::Primary };
             let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
