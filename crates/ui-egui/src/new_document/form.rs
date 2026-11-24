@@ -8,24 +8,26 @@ use super::{
 use crate::DesignApp;
 use crate::dialogs::Dialog;
 use crate::dialogs::framework::Form;
+use craft_behavior::ColumnWidth;
 use craft_behavior::{DisplayOrder, ItemSource, Mixed, Selection, SelectionChange, keyed};
 use craft_ui_panels::sections::Section;
 use craft_ui_widgets::buttons::{Button, IconButton, ToggleButton};
 use craft_ui_widgets::choice::{Checkbox, Segmented};
 use craft_ui_widgets::contract::{
-    Bind, CollectionEvent, Entry, FieldLayout, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
+    Bind, CollectionEvent, Entry, FieldLayout, Gap, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
 };
-use craft_ui_widgets::display::{Shade, Text};
+use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::form::Field;
-use craft_ui_widgets::layout_components::{Row, Stack};
+use craft_ui_widgets::layout::CellAlign;
+use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::list::ThumbAspect;
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::popover::Popover;
 use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
-use craft_ui_widgets::style::{TypeRole, UiTokens};
+use craft_ui_widgets::style::{SurfaceKind, TypeRole, UiTokens};
 use craft_ui_widgets::tabs::{Tab, TabKind, TabStrip};
 use craft_ui_widgets::text::{NumberField, TextField};
-use craft_ui_widgets::tile_grid::{CardText, Tile, TileGrid};
+use craft_ui_widgets::tile_grid::{CardText, GridZoom, Tile, TileGrid};
 use designcraft_geom::Unit;
 use egui::{Color32, Rect, Ui};
 use serde_json::{Value, json};
@@ -49,6 +51,12 @@ const DIALOG_WIDTH_SHARE: f32 = 0.8;
 /// The dialog width below which the presets go under the details, in one column the dialog's body scrolls, as the native
 /// dialog did in a small window.
 const TWO_PANES: f32 = 700.0;
+/// The details' two columns of captioned controls, each as wide as the native dialog's.
+const DETAIL_COLUMNS: &[ColumnWidth] = &[ColumnWidth::Fixed(124.0), ColumnWidth::Fixed(124.0)];
+/// The preset cards' picture: this share of the card thumbnail side wide, and this much wider than high, so a card is
+/// about 125 by 140 points with its name and size under the page, as the native cards were.
+const CARD_ZOOM: f64 = 0.82;
+const CARD_ASPECT: f32 = 1.5;
 
 /// One of the app's icons, by its name in `crate::icons`.
 #[derive(craft_ui::contract::MemoProps)]
@@ -100,22 +108,35 @@ fn show(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let mut create = false;
     let window = ui.ctx().content_rect();
     if window.width() * DIALOG_WIDTH_SHARE < TWO_PANES {
-        Stack::new().id_salt("new_document_column").fill_width().show(ui, |ui, _| {
+        Stack::new().id_salt("new_document_column").fill_width().gap(Gap::Section).show(ui, |ui, _| {
             details(app, ui, d);
             tabs(app, ui, d);
-            create = presets(app, ui, d);
+            inset(ui, false, |ui| create = presets(app, ui, d));
         });
         return create.then_some(true);
     }
     let room = (window.height() * DIALOG_HEIGHT_SHARE - DIALOG_CHROME_H).clamp(LEAST_PANE_ROOM, PANE_ROOM);
-    Row::new().id_salt("new_document_form").fill_width().show(ui, |ui, _| {
-        Stack::new().id_salt("new_document_presets").fill_width().scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| {
+    Row::new().id_salt("new_document_form").fill_width().gap(Gap::Section).show(ui, |ui, _| {
+        Stack::new().id_salt("new_document_presets").fill_width().room_height(room).gap(Gap::Item).show(ui, |ui, _| {
             tabs(app, ui, d);
-            create = presets(app, ui, d);
+            inset(ui, true, |ui| create = presets(app, ui, d));
         });
-        Stack::new().id_salt("new_document_details").scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| details(app, ui, d));
+        Stack::new()
+            .id_salt("new_document_details")
+            .gap(Gap::Item)
+            .scroll(Scroll::vertical())
+            .room_height(room)
+            .show(ui, |ui, _| details(app, ui, d));
     });
     create.then_some(true)
+}
+
+/// The presets' inset: a darker, rounded panel with padding that holds the heading and the cards, and scrolls them.
+/// Beside the details it fills the column down to the footer (`fill`).
+fn inset(ui: &mut Ui, fill: bool, mut body: impl FnMut(&mut Ui)) {
+    let stack = Stack::new().id_salt("new_document_presets_inset").surface(SurfaceKind::Sunken).pad(Pad::Regular).gap(Gap::Item);
+    let stack = if fill { stack.fill().scroll(Scroll::vertical()) } else { stack.fill_width() };
+    stack.show(ui, |ui, _| body(ui));
 }
 
 /// Preview, and the reason Create was refused. Preview makes the document it shows here, after the check box.
@@ -192,8 +213,10 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         .select(SelectMode::Single)
         .deletable(saved)
         .rows_stamp(list.len() as u64)
+        .zoom(GridZoom::Fixed(CARD_ZOOM))
+        .aspect(CARD_ASPECT)
         .selection(Bind::given(selection))
-        // The presets column scrolls; the grid takes its whole height inside it.
+        // The presets' inset scrolls; the grid takes its whole height inside it.
         .natural_height(true)
         .show_items(ui, &Cards(&list), &mut |at, _| tile(&list[*at], card_units));
     let mut create = false;
@@ -266,12 +289,21 @@ fn count_field(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) {
     }
 }
 
-/// A check box over the bool draft field `key`.
+/// A check box over the bool draft field `key`, under its caption as the native dialog set it: the caption names the
+/// box (the field's label step), and the box paints no label of its own.
 fn check(ui: &mut Ui, d: &mut Dialog, key: &str, label: String) {
-    let out = Checkbox::new(Bind::given(d.b(key))).id_salt(("new_document_check", key)).label(label).show(ui);
-    if let Some(on) = out.events.committed() {
-        d.fields.insert(key.into(), json!(on));
-    }
+    cell(ui, label, |ui| {
+        let out = Checkbox::new(Bind::given(d.b(key))).id_salt(("new_document_check", key)).show(ui);
+        if let Some(on) = out.events.committed() {
+            d.fields.insert(key.into(), json!(on));
+        }
+    });
+}
+
+/// Captioned controls in the details' two columns, a row of two at a time, each caption above its control.
+fn columns(ui: &mut Ui, salt: &'static str, body: impl FnMut(&mut Ui)) {
+    let mut body = body;
+    Grid::new(DETAIL_COLUMNS).id_salt(salt).cells(CellAlign::Top).show(ui, |ui, _| body(ui));
 }
 
 /// A captioned control over its caption, in one of the details' two columns.
@@ -331,17 +363,13 @@ fn edges(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, group: &str) {
     let labels = if d.b("facingPages") { EDGES } else { ["Top", "Bottom", "Left", "Right"] };
     let (mut changed, mut source) = (None, None);
     Row::new().id_salt(("new_document_edges", group)).show(ui, |ui, _| {
-        Stack::new().id_salt(("new_document_edge_fields", group)).show(ui, |ui, _| {
-            for pair in [[0, 1], [2, 3]] {
-                Row::new().id_salt(("new_document_edge_row", group, pair[0])).show(ui, |ui, _| {
-                    for at in pair {
-                        let key = format!("{group}{}", EDGES[at]);
-                        let caption = tr(app, labels[at]);
-                        cell(ui, caption.clone(), |ui| {
-                            if text(ui, d, &key, caption, None) {
-                                changed = Some(key.clone());
-                            }
-                        });
+        Grid::new(DETAIL_COLUMNS).id_salt(("new_document_edge_fields", group)).cells(CellAlign::Top).show(ui, |ui, _| {
+            for at in 0..4 {
+                let key = format!("{group}{}", EDGES[at]);
+                let caption = tr(app, labels[at]);
+                cell(ui, caption.clone(), |ui| {
+                    if text(ui, d, &key, caption, None) {
+                        changed = Some(key.clone());
                     }
                 });
             }
@@ -377,7 +405,8 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
         save_preset_control(app, ui, d);
     });
     let u = units(d);
-    Row::new().id_salt("new_document_width_row").show(ui, |ui, _| {
+    // The page: two columns of captioned controls, each caption above its control, as the native dialog set them.
+    columns(ui, "new_document_page", |ui| {
         cell(ui, tr(app, "Width"), |ui| {
             text(ui, d, "width", tr(app, "Width"), None);
         });
@@ -393,8 +422,6 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 set_units(d, next);
             }
         });
-    });
-    Row::new().id_salt("new_document_height_row").show(ui, |ui, _| {
         cell(ui, tr(app, "Height"), |ui| {
             text(ui, d, "height", tr(app, "Height"), None);
         });
@@ -413,16 +440,13 @@ fn details(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) {
                 d.fields.insert("height".into(), w);
             }
         });
-    });
-    Row::new().id_salt("new_document_pages_row").show(ui, |ui, _| {
         cell(ui, tr(app, "Pages"), |ui| count_field(ui, d, "pages", tr(app, "Pages")));
         check(ui, d, "facingPages", tr(app, "Facing Pages"));
-    });
-    Row::new().id_salt("new_document_start_row").show(ui, |ui, _| {
         cell(ui, tr(app, "Start #"), |ui| count_field(ui, d, "startPage", tr(app, "Start #")));
         check(ui, d, "primaryTextFrame", tr(app, "Primary Text Frame"));
     });
-    Row::new().id_salt("new_document_columns_row").show(ui, |ui, _| {
+    Divider::horizontal().show(ui);
+    columns(ui, "new_document_columns", |ui| {
         cell(ui, tr(app, "Columns"), |ui| count_field(ui, d, "columns", tr(app, "Columns")));
         cell(ui, tr(app, "Column Gutter"), |ui| {
             text(ui, d, "gutter", tr(app, "Column Gutter"), None);
