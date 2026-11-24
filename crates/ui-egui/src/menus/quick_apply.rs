@@ -19,7 +19,7 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     let lang = app.ui.language.clone();
     let entries = palette_entries(app);
     let suggested: Vec<CommandRef> =
-        quick_apply_items(&app.session, "", crate::cjk_features(app)).into_iter().map(|it| CommandRef::new(it.id)).collect();
+        quick_apply_items(&app.session, "", crate::cjk_features(app)).into_iter().map(|it| CommandRef::new(listed_command(&it.id))).collect();
     let mut open = true;
     // This area only supplies a parent: the palette mounts its own modal layer. The area spans the window from its
     // corner, so the palette's box centres in the window (an auto-placed area put it wherever egui found room).
@@ -62,8 +62,22 @@ fn palette_entries(app: &DesignApp) -> Vec<HelpEntry> {
         }
     }
     let commands = quick_commands().filter(|(id, _, _)| cjk || !CJK_ONLY.contains(id));
-    out.extend(commands.map(|(id, label, _)| HelpEntry::new(CommandRef::new(id), crate::i18n::tr(lang, label).to_owned()).with_english(label)));
+    out.extend(
+        commands
+            .map(|(id, label, _)| HelpEntry::new(CommandRef::new(listed_command(id)), crate::i18n::tr(lang, label).to_owned()).with_english(label)),
+    );
     out
+}
+
+/// The command the palette lists for the searched command `id`: for an engine command whose default key a UI command
+/// stands in for (`keys::build_catalog`: ⌘N is the New Document dialog, ⌘S `app.save`), that UI command, else `id`. The
+/// key, the menu row and the palette's row then run the same command, so the row shows the key, and its pick works
+/// without the path an engine command such as `file.saveAs` needs. The UI command's own entry lists the same command,
+/// which the palette lists once.
+pub(super) fn listed_command(id: &str) -> &str {
+    let trigger = |shortcut: Option<&str>| shortcut.and_then(|key| craft_keymap::Binding::parse(key).ok()).map(|binding| binding.trigger);
+    let Some(key) = designcraft_engine::find_command(id).and_then(|spec| trigger(spec.shortcut)) else { return id };
+    UI_COMMANDS.iter().find(|command| trigger(command.2) == Some(key)).map_or(id, |command| command.0)
 }
 
 /// Each kind of style Quick Apply applies: the command that applies it, the kind's name, and the document's styles of

@@ -2023,20 +2023,24 @@ fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
     frame(&mut app, vec![]);
     assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
-    assert_eq!(app.session.documents().len(), 1, "the first entry (New Document) didn't run");
+    let dialog = |app: &crate::DesignApp| app.ui.dialog.as_ref().map(|d| d.id.clone());
+    assert_eq!(dialog(&app), None, "the first entry (Document…, the New Document dialog) didn't run");
     // Pressing the shortcut again, or holding it until it repeats, doesn't run it either.
     frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
     let repeat = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };
     frame(&mut app, vec![repeat, cmd_return(false)]);
     assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
-    assert_eq!(app.session.documents().len(), 1, "a second ⌘Return or a repeat doesn't run the first entry");
+    assert_eq!(dialog(&app), None, "a second ⌘Return or a repeat doesn't run the first entry");
     // A plain Return still does.
     let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
     frame(&mut app, vec![enter(true), enter(false)]);
     // The palette's list takes the Return the field hands it in the next pass.
     frame(&mut app, vec![]);
     assert_eq!(app.ui.palette, None, "Return runs the first entry and closes Quick Apply");
-    assert_eq!(app.session.documents().len(), 2);
+    // Document… runs what ⌘N and File › New › Document… run, the New Document dialog (`listed_command`), rather than
+    // making a bare document.
+    assert_eq!(dialog(&app).as_deref(), Some("newDocument"));
+    assert_eq!(app.session.documents().len(), 1);
 }
 
 /// The x of the last text shape that reads `label`: the palette is painted last, over anything else with the same text.
@@ -2103,6 +2107,37 @@ fn quick_apply_style_commands_name_their_style() {
     }
     assert_eq!(picked_run(&craft_keymap::CommandRef::new("app.preferences")), ("app.preferences".to_owned(), json!({})));
     assert_eq!(picked_run(&crate::keys::tool("pen")), ("tool.select".to_owned(), json!({"tool": "pen"})));
+}
+
+/// Quick Apply lists File › New › Document…, Open…, Save, Save As… and Place… as the UI commands their keys and menu
+/// rows run, so each row shows its key, as Close (an engine command no UI command stands in for) does.
+#[test]
+fn quick_apply_rows_show_the_keys_of_the_file_commands() {
+    use super::quick_apply::listed_command;
+    let stand_ins = [
+        ("file.new", "app.newDocumentDialog"),
+        ("file.open", "app.openDialog"),
+        ("file.save", "app.save"),
+        ("file.saveAs", "app.saveDialog"),
+        ("file.place", "app.placeDialog"),
+        ("file.close", "file.close"),
+        ("file.revert", "file.revert"),
+        ("app.preferences", "app.preferences"),
+    ];
+    for (id, listed) in stand_ins {
+        assert_eq!(listed_command(id), listed, "{id}");
+    }
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.ui.palette = Some(String::new());
+    let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    for (_, listed) in stand_ins.iter().take(6) {
+        let command = craft_keymap::CommandRef::new(*listed);
+        assert!(craft_ui::runtime::commands::chord(&ctx, &command).is_some(), "Quick Apply's row for {listed} shows no key");
+    }
 }
 
 #[test]
