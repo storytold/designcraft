@@ -94,6 +94,10 @@ pub struct FontFace {
     pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
+    /// The `post` table's underline position (the middle of the stroke below the baseline, positive
+    /// down) and thickness in font units; 0 when the font has none.
+    pub underline_position: f64,
+    pub underline_thickness: f64,
     /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
     /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
     /// baseline offsets.
@@ -434,6 +438,8 @@ pub(super) fn make_face(
         ascent: m.ascent as f64,
         typo_ascent: typo_ascent(&f, &location, upem).unwrap_or(m.ascent as f64),
         descent: -(m.descent as f64),
+        underline_position: underline(&f).0,
+        underline_thickness: underline(&f).1,
         // Fonts with an OS/2 table older than version 2 don't declare these: measure them from
         // flat-topped letters before falling back to a share of the ascent, which can be far off
         // (drop caps are sized from the cap height).
@@ -494,6 +500,15 @@ pub(crate) fn measured_top(f: &skrifa::FontRef<'_>, location: LocationRef<'_>, c
         g.draw(DrawSettings::unhinted(Size::unscaled(), location), &mut pen).ok()?;
         plausible(Some(f64::from(pen.0)), upem)
     })
+}
+
+/// The `post` table's underline position (positive down) and thickness in font units, 0 when the
+/// table is missing or the thickness is not above 0.
+fn underline(f: &skrifa::FontRef<'_>) -> (f64, f64) {
+    use skrifa::raw::TableProvider;
+    let Ok(post) = f.post() else { return (0.0, 0.0) };
+    let (position, thickness) = (-(post.underline_position().to_i16() as f64), post.underline_thickness().to_i16() as f64);
+    if thickness > 0.0 && position > 0.0 { (position, thickness) } else { (0.0, 0.0) }
 }
 
 /// The OS/2 typographic ascender in font units at `location`, if the font has an OS/2 table and

@@ -153,7 +153,12 @@ fn decoration_offsets_are_centers_for_explicit_and_automatic_rules() {
             let baseline = 84.222687;
             let rules: Vec<_> = style.rules(10.0, 50.0, baseline).collect();
             assert_eq!(rules.len(), 2);
-            let expected = if automatic { [(size * 0.12, size / 14.0), (-size * 0.3, size / 14.0)] } else { [(-3.0, 12.0), (-8.0, 6.0)] };
+            // Automatic: the font's own underline position and thickness (post table), and a strike a
+            // third of an em above the baseline (measured in InDesign 2026).
+            let face = &cs.frames[0].lines[0].glyphs[0].face;
+            let (pos, thick) = (face.underline_position / face.upem, face.underline_thickness / face.upem);
+            assert!(thick > 0.0, "the fixture font declares an underline");
+            let expected = if automatic { [(size * pos, size * thick), (-size / 3.0, size * thick)] } else { [(-3.0, 12.0), (-8.0, 6.0)] };
             for ((rule, rect), (offset, weight)) in rules.iter().zip(expected) {
                 assert!((rect.center().y - (baseline + offset)).abs() < 1e-9, "offset must locate the center: {rect:?}");
                 assert!((rect.height() - weight).abs() < 1e-9);
