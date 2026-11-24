@@ -492,9 +492,11 @@ mod framework_tests {
         use egui_kittest::kittest::{NodeT as _, Queryable as _};
         let shown = h.get_by_role_and_label(Role::CheckBox, "Facing Pages").rect();
         // The label's text may be the node's name or its value (a label leaf carries its words as its value).
-        let words = |n: &egui_kittest::Node<'_>| n.label().as_deref() == Some("Facing Pages") || n.value().as_deref() == Some("Facing Pages");
+        let words = |n: &egui_kittest::kittest::AccessKitNode<'_>| {
+            n.label().as_deref() == Some("Facing Pages") || n.value().as_deref() == Some("Facing Pages")
+        };
         let label = h
-            .query_all_by(|n| n.accesskit_node().role() != Role::CheckBox && words(n))
+            .query_all_by(|n| n.role() != Role::CheckBox && words(n))
             .map(|n| n.rect())
             .find(|r| r.width() > 0.0 && r.left() >= shown.right() - 1.0 && r.top() < shown.bottom() && r.bottom() > shown.top());
         let named: Vec<_> = h.query_all_by(|n| words(n)).map(|n| (n.accesskit_node().role(), n.rect())).collect();

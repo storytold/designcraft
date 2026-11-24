@@ -407,17 +407,16 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     app.session.set_tool("type");
     let mut h = test_window::open(app, vec2(1800.0, 700.0));
     let bar = test_window::panel_rect(&h, "control_bar");
-    let in_bar = |r: &egui::Rect| bar.y_range().contains(r.center().y);
     // The number fields of the Control panel are named by what they set.
-    let field = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+    fn field<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>, bar: egui::Rect, label: &str) -> egui_kittest::Node<'h> {
         h.query_all_by_label(label)
-            .filter(|n| matches!(n.accesskit_node().role(), Role::SpinButton | Role::TextInput))
-            .find(|n| in_bar(&n.rect()))
+            .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .find(|n| bar.y_range().contains(n.rect().center().y))
             .unwrap_or_else(|| panic!("no {label:?} field in the Control panel"))
-    };
+    }
     // The field takes the keyboard as a screen reader gives it: the pointer would move the text selection with it.
     let focus = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
-        field(h, label).focus();
+        field(h, bar, label).focus();
         h.run_steps(2);
     };
     // Alt+Down opens a field's list of presets.
