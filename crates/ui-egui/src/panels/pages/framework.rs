@@ -361,7 +361,7 @@ fn menu_rows(ui: &mut Ui, entries: &[MenuEntry], picked: &mut Option<Act>) {
                 Divider::horizontal().show(ui);
             }
             MenuEntry::Item { label, enabled, check, hint, act } => {
-                let mut item = MenuItem::new(label.clone()).id_salt(at).enabled(*enabled);
+                let mut item = MenuItem::new(crate::menus::row_label(label)).id_salt(at).enabled(*enabled);
                 if let Some(on) = check {
                     item = item.check(*on);
                 }
@@ -982,12 +982,12 @@ fn size_rows(ui: &mut Ui, lang: &str, doc: &designcraft_doc::Document, cur: usiz
     let mut picked = None;
     for (name, w, h) in crate::panels::properties::PAGE_PRESETS {
         let (w, h) = if landscape { (h, w) } else { (w, h) };
-        if MenuItem::new(crate::i18n::tr(lang, name).to_owned()).id_salt(*name).radio_mark(current == *name).show(ui).ran {
+        if MenuItem::new(crate::menus::row_label(crate::i18n::tr(lang, name))).id_salt(*name).radio_mark(current == *name).show(ui).ran {
             picked = Some(SizePick::Preset(*w, *h));
         }
     }
     Divider::horizontal().show(ui);
-    if MenuItem::new(crate::i18n::tr(lang, "Custom Page Size…").to_owned()).id_salt("custom").show(ui).ran {
+    if MenuItem::new(crate::menus::row_label(crate::i18n::tr(lang, "Custom Page Size…"))).id_salt("custom").show(ui).ran {
         picked = Some(SizePick::Custom(pg.width, pg.height));
     }
     picked
