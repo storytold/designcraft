@@ -10,7 +10,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$ARCH" == x86_64 && "$(uname -s)" == Linux ]] || { echo 'only native Linux x86_64 nightly packaging is supported' >&2; exit 2; }
-# shellcheck source=../nightly-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../nightly-common.sh"
 nightly_init linux "$ARCH" x86_64-unknown-linux-gnu
 OUTPUT="$DIST/designcraft-$VERSION-linux-x86_64-nightly.tar.gz"
@@ -20,7 +19,7 @@ STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
 cp "$NIGHTLY_GUI" "$STAGE/designcraft"
 chmod 755 "$STAGE/designcraft"
-cp "$ROOT/assets/app-icon/designcraft-1024.png" "$STAGE/designcraft.png"
+cp "$ROOT/assets/app-icon/designcraft-nightly.png" "$STAGE/designcraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The private mktemp cwd is the helper authority root, not a CLI path parent.
 (cd "$NIGHTLY_WORK" && python3 "$ROOT/packaging/nightly-archive.py" linux stage archive.tar.gz)

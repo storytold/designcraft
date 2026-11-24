@@ -23,7 +23,6 @@ nightly_init() {
     nightly_die 'declared CRAFT_FONTS_DIR has no fonts directory'
   fi
   # env.sh retains the established notice copier. Required values above prohibit its stable fallbacks.
-  # shellcheck source=env.sh
   . "$ROOT/packaging/env.sh"
   export CARGO_TARGET_DIR="$CARGO_TARGET_DIR/nightly-v1/$os-$arch"
   NIGHTLY_RUST_TARGET="$target"
@@ -32,9 +31,10 @@ nightly_init() {
   trap 'rm -rf -- "$NIGHTLY_WORK"' EXIT
 }
 
-# Compile only: macOS runs the version query after signing (packaging/macos/nightly-verify.sh).
+# Compile only: the version query runs on the unpacked payload (Linux) or the signed bundle
+# (macOS, packaging/macos/nightly-verify.sh). DesignCraft's GUI needs no optional features.
 nightly_compile_gui() {
-  (cd "$ROOT" && DESIGNCRAFT_OVERRIDE_VERSION="$VERSION" cargo build --release --locked -p designcraft --target "$NIGHTLY_RUST_TARGET")
+  (cd "$ROOT" && DESIGNCRAFT_BUILD_CHANNEL=nightly-v1 cargo build --release --locked -p designcraft --target "$NIGHTLY_RUST_TARGET")
   NIGHTLY_GUI="$CARGO_TARGET_DIR/$NIGHTLY_RUST_TARGET/release/designcraft"
   [[ -f "$NIGHTLY_GUI" && ! -L "$NIGHTLY_GUI" ]] || nightly_die 'the owned GUI build did not produce a regular executable'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$DESIGNCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the build'
@@ -44,7 +44,7 @@ nightly_build_gui() {
   nightly_compile_gui
   local actual
   actual="$("$NIGHTLY_GUI" --version)" || nightly_die 'side-effect-free nightly version verification failed'
-  [[ "$actual" == "DesignCraft $VERSION (nightly-v1)" || "$actual" == "designcraft "* ]] || nightly_die 'the built version/flavor is not the prepared identity'
+  [[ "$actual" == "DesignCraft $VERSION (nightly-v1)" ]] || nightly_die 'the built version/flavor is not the prepared identity'
   [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$DESIGNCRAFT_BUILD_SHA" && -z "$(git -C "$ROOT" status --porcelain)" ]] || nightly_die 'source changed during the version query'
 }
 
@@ -59,6 +59,9 @@ nightly_refuse_signing_env() {
   done
 }
 
+# DesignCraft has no ATTRIBUTION.md of its own (its credits are the About window's), so the
+# required app notices are the licence, the notice file and the readme; an ATTRIBUTION.md is copied
+# when a checkout does have one.
 nightly_copy_notices() {
   local destination="$1" required
   for required in README.md LICENSE-MIT LICENSE-APACHE NOTICE; do
