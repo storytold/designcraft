@@ -144,6 +144,7 @@ impl DesignApp {
             key_dispatcher: crate::key_dispatch::Dispatcher::new(),
             shortcut_dialog: None,
             shortcut_answers: Default::default(),
+            shortcut_codes: Default::default(),
             last_time: now,
             last_recovery: now,
             recovery_writing: false,

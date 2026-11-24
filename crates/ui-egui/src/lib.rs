@@ -282,8 +282,10 @@ pub struct DesignApp {
     pub(crate) key_dispatcher: key_dispatch::Dispatcher,
     /// The open Keyboard Shortcuts dialog.
     pub(crate) shortcut_dialog: Option<Box<shortcuts_dialog::Host>>,
-    /// Answers the user gave in an import review (item → command), for later imports.
-    pub(crate) shortcut_answers: std::collections::BTreeMap<String, craft_keymap::CommandRef>,
+    /// Answers the user gave in an import review (item → command, or none for "No equivalent"), for later imports.
+    pub(crate) shortcut_answers: std::collections::BTreeMap<String, Option<craft_keymap::CommandRef>>,
+    /// The key codes the user answered in an import review (`key:N` / `mods:N` → chord text, or none), for later imports.
+    pub(crate) shortcut_codes: std::collections::BTreeMap<String, Option<String>>,
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
