@@ -286,8 +286,8 @@ mod framework {
         run_all(app, commands);
     }
 
-    /// A Tags action: small and quiet, named in full (`name`) while it shows `painted`; `fill` takes the row's free
-    /// width. Only an editable panel (enabled, not measuring) takes it.
+    /// A Tags action: small, named in full (`name`) while it shows `painted`; `fill` takes the row's free width and is
+    /// a quiet list row, any other is a framed button. Only an editable panel (enabled, not measuring) takes it.
     fn tag_action(ui: &mut egui::Ui, id: egui::Id, name: &str, painted: &str, enabled: bool, fill: bool) -> bool {
         let enabled = enabled && tags_editable(ui);
         let button = Button::new(name.to_owned())
@@ -295,7 +295,7 @@ mod framework {
             .id(id)
             .enabled(enabled)
             .size(ControlSize::Sm)
-            .variant(Variant::GHOST)
+            .variant(if fill { Variant::GHOST } else { Variant::SECONDARY })
             .tooltip(name.to_owned());
         let button = if fill { button.align(HAlign::Start).sizing(Sizing::FillWidth) } else { button };
         button.show(ui).clicked() && enabled
@@ -479,6 +479,8 @@ mod framework {
                 }
             });
         });
+        // Room under the last row, so the panel does not end at the window's edge.
+        ui.add_space(8.0);
         if editable && tags_identity(app).map(|(uid, epoch, _)| (uid, epoch)) == document {
             ui.data_mut(|d| d.insert_temp(memory, draft));
         }

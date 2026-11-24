@@ -20,6 +20,8 @@ fn apply_condition(app: &mut DesignApp, name: &str, has_text: bool, applied: &[S
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     show_framework(app, ui);
+    // Room under the last row, so the panel does not end at the window's edge.
+    ui.add_space(8.0);
 }
 
 /// App-owned mapping only: the framework supplies input and focus; the engine still owns eligibility,

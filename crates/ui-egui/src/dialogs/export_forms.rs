@@ -3,12 +3,12 @@
 //! settings kept are what the native windows produced.
 
 use super::find_forms::picker;
-use super::frame_forms::{captioned, check, field, select, text};
+use super::frame_forms::{captioned, check, field, select, text, text_chars};
 use super::framework::Form;
 use super::{Bound, Dialog, PDF_EXPORT_PRESETS, apply_pdf_preset, set_epub_cover};
 use crate::DesignApp;
 use craft_theme::variant::Tone;
-use craft_ui_panels::sections::GroupBox;
+use craft_ui_panels::sections::{GroupBox, HeaderStrength, Section};
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
 use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
@@ -24,6 +24,9 @@ pub(crate) const PDF_EXPORT: Form = Form::new(pdf_export);
 pub(crate) const EPUB_EXPORT: Form = Form::new(epub_export);
 /// Print.
 pub(crate) const PRINT: Form = Form::new(print);
+
+/// How many characters wide a printer's mark measure (weight, offset) asks to be.
+const MARK_CHARS: u16 = 8;
 
 fn note(ui: &mut Ui, text: &str) {
     Text::new(text.to_owned()).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
@@ -82,12 +85,17 @@ fn pdf_export(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> 
             check(ui, d, "marksCrop", &tr("Crop Marks"), true);
             check(ui, d, "marksBleed", &tr("Bleed Marks"), true);
             check(ui, d, "marksPageInfo", &tr("Page Information"), true);
-            FieldGroup::new(tr("Marks and Bleeds")).id_salt("pdf_export_marks_fields").show(ui, |ui, _| {
-                field(ui, &tr("Weight:"), "marks_weight", |ui| {
-                    text(ui, d, "marksWeight", &tr("Weight:"), true);
+            // Weight and Offset side by side, each a short measure.
+            Row::new().id_salt("pdf_export_marks_fields").show(ui, |ui, _| {
+                FieldGroup::new(tr("Marks and Bleeds")).id_salt("pdf_export_marks_weight").show(ui, |ui, _| {
+                    field(ui, &tr("Weight:"), "marks_weight", |ui| {
+                        text_chars(ui, d, "marksWeight", &tr("Weight:"), true, MARK_CHARS);
+                    });
                 });
-                field(ui, &tr("Offset:"), "marks_offset", |ui| {
-                    text(ui, d, "marksOffset", &tr("Offset:"), true);
+                FieldGroup::new(tr("Marks and Bleeds")).id_salt("pdf_export_marks_offset").show(ui, |ui, _| {
+                    field(ui, &tr("Offset:"), "marks_offset", |ui| {
+                        text_chars(ui, d, "marksOffset", &tr("Offset:"), true, MARK_CHARS);
+                    });
                 });
             });
         });
@@ -129,9 +137,14 @@ fn epub_export(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
         check(ui, d, "split", &tr("Split Document"), true);
         let split = d.b("split");
         let mode = if d.s("mode") == "exportTags" { "exportTags" } else { "style" };
+        let style_before = d.s("style");
+        // The options sit under Split Document, and the paragraph style menu beside the first, dimmed with it.
         let shown = RadioGroup::new(tr("Split Document"), Bind::given(mode.to_owned())).id_salt("epub_split_mode").show(ui, |ui, _| {
-            Stack::new().id_salt("epub_split_modes").show(ui, |ui, _| {
-                Radio::new("style".to_owned()).label(tr("Single Paragraph Style")).id_salt("epub_split_style_radio").enabled(split).show(ui);
+            Stack::new().id_salt("epub_split_modes").indent(1).show(ui, |ui, _| {
+                Row::new().id_salt("epub_split_style_row").show(ui, |ui, _| {
+                    Radio::new("style".to_owned()).label(tr("Single Paragraph Style")).id_salt("epub_split_style_radio").enabled(split).show(ui);
+                    select(ui, d, "style", &tr("Paragraph Style:"), &styles, split);
+                });
                 Radio::new("exportTags".to_owned())
                     .label(tr("Based on Paragraph Style Export Tags"))
                     .id_salt("epub_split_tags_radio")
@@ -142,12 +155,10 @@ fn epub_export(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
         if let Some(next) = shown.output.events.landed().filter(|next| *next != mode).cloned() {
             d.fields.insert("mode".into(), json!(next));
         }
-        field(ui, &tr("Paragraph Style:"), "split_style", |ui| {
-            if let Some(next) = picker(ui, "split_style", &tr("Paragraph Style:"), &d.s("style"), &styles, false) {
-                d.fields.insert("style".into(), json!(next));
-                d.fields.insert("mode".into(), json!("style"));
-            }
-        });
+        // Picking a style splits at that style.
+        if d.s("style") != style_before {
+            d.fields.insert("mode".into(), json!("style"));
+        }
         // The cover: the first page rendered, or an image file (PNG or JPEG) named here.
         field(ui, &tr("Cover Image:"), "cover", |ui| {
             Row::new().id_salt("epub_cover_row").fill_width().show(ui, |ui, _| {
@@ -191,24 +202,29 @@ fn print(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
                 }
             });
             field(ui, &tr("Copies:"), "copies", |ui| {
-                text(ui, d, "copies", &tr("Copies:"), true);
+                text_chars(ui, d, "copies", &tr("Copies:"), true, 6);
             });
         });
         let before = d.s("range");
-        let shown = RadioGroup::new(tr("Pages:"), Bind::given(before.clone())).id_salt("print_range").show(ui, |ui, _| {
-            Stack::new().id_salt("print_ranges").show(ui, |ui, _| {
-                for (value, caption) in &ranges {
-                    Radio::new((*value).to_owned()).label(tr(*caption)).id_salt(("print_range_radio", *value)).show(ui);
-                }
+        // The page range is a group of its own: its name over the options, with the range typed beside Range.
+        Section::fixed(tr("Pages:")).strength(HeaderStrength::Caption).id_salt("print_pages_section").show(ui, |ui, _| {
+            let shown = RadioGroup::new(tr("Pages:"), Bind::given(before.clone())).id_salt("print_range").show(ui, |ui, _| {
+                Stack::new().id_salt("print_ranges").show(ui, |ui, _| {
+                    for (value, caption) in &ranges {
+                        if *value == "range" {
+                            Row::new().id_salt("print_range_row").show(ui, |ui, _| {
+                                Radio::new((*value).to_owned()).label(tr(*caption)).id_salt(("print_range_radio", *value)).show(ui);
+                                text_chars(ui, d, "pages", &tr("Pages:"), true, 12);
+                            });
+                        } else {
+                            Radio::new((*value).to_owned()).label(tr(*caption)).id_salt(("print_range_radio", *value)).show(ui);
+                        }
+                    }
+                });
             });
-        });
-        if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
-            d.fields.insert("range".into(), json!(next));
-        }
-        FieldGroup::new(tr("Pages:")).id_salt("print_pages").show(ui, |ui, _| {
-            field(ui, &tr("Pages:"), "pages", |ui| {
-                text(ui, d, "pages", &tr("Pages:"), true);
-            });
+            if let Some(next) = shown.output.events.landed().filter(|next| **next != before).cloned() {
+                d.fields.insert("range".into(), json!(next));
+            }
         });
         if layouts.len() > 1 {
             let on = d.s("range") == "layouts";

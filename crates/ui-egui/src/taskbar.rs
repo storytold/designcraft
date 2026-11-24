@@ -78,10 +78,10 @@ fn inside(at: egui::Pos2, w: f32, canvas: Rect) -> egui::Pos2 {
 /// The bar's members on the framework: the same grip, controls and More menu, with the same commands.
 mod framework {
     use super::{DesignApp, Rect, Sense, Tokens, Ui, inside, json, panels, vec2, widgets};
-    use craft_ui_widgets::bars::{Bar, BarKind};
     use craft_ui_widgets::buttons::{Button, IconButton, SplitButton};
-    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Sizing, Trigger};
+    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Trigger};
     use craft_ui_widgets::display::{Divider, Picture};
+    use craft_ui_widgets::layout_components::Row;
     use craft_ui_widgets::list::ThumbAspect;
     use craft_ui_widgets::menu::{Menu, MenuItem};
     use craft_ui_widgets::primitives::{FacePaint, IconSpec};
@@ -189,7 +189,9 @@ mod framework {
             } else if grip.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
-            Bar::new(tr("Contextual Task Bar"), BarKind::Tool).sizing(Sizing::Content).show(ui, |ui, _| {
+            // A framework Bar clips the members that do not fit the width it measured (here the Group and More buttons), so the
+            // members sit in a plain row: the bar's surface is the egui frame around it.
+            Row::new().id_salt("task_bar_row").show(ui, |ui, _| {
                 if has_text || text_frame {
                     text_controls(app, ui, has_text, &tr, &mut asks);
                 } else {

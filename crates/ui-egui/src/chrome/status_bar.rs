@@ -114,8 +114,8 @@ mod framework {
             Some(0) => egui::Color32::from_rgb(60, 200, 90),
             Some(_) => egui::Color32::from_rgb(235, 50, 50),
         };
-        // The native bar's height: the readout's small controls sit on its middle line.
-        egui::Panel::bottom("status_bar").frame(egui::Frame::NONE).exact_size(17.0).show(ui, |ui| {
+        // The bar is as tall as its small controls: a panel given less (the native bar's 17 pt) hides members that don't fit it whole.
+        egui::Panel::bottom("status_bar").frame(egui::Frame::NONE).resizable(false).show(ui, |ui| {
             Bar::new(tr("Status"), BarKind::Status).show(ui, |ui, _| {
                 if !has_doc {
                     Text::new(status.clone()).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);

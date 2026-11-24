@@ -26,12 +26,12 @@ fn ink_color(ink: &Ink) -> egui::Color32 {
     }
 }
 
+/// A mode button: it stays pressed (the accent fill) while its mode is the current one. True when it was clicked.
 fn mode_button(ui: &mut egui::Ui, kind: &str, label: &str, on: bool) -> bool {
-    use craft_ui_widgets::buttons::Button;
-    use craft_ui_widgets::contract::{Props as _, Show as _};
-    use craft_ui_widgets::style::Variant;
+    use craft_ui_widgets::buttons::ToggleButton;
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
 
-    Button::new(label.to_owned()).id_salt(("separations-mode", kind)).variant(Variant::GHOST).selected(on).show(ui).clicked()
+    ToggleButton::new(label.to_owned(), Bind::given(on)).id_salt(("separations-mode", kind)).show(ui).events.committed().is_some()
 }
 
 fn mode_actions(ui: &mut egui::Ui, lang: &str, on: bool, limit: Option<f32>) -> Option<serde_json::Value> {
@@ -196,6 +196,8 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     show_framework(app, ui);
+    // Room under the last row, so the panel does not end at the window's edge.
+    ui.add_space(8.0);
 }
 
 #[cfg(test)]
