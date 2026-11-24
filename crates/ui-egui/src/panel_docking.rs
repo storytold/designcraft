@@ -14,7 +14,7 @@ use craft_behavior::dock::{
     Target, Workspace,
 };
 use craft_ui::contract::{Bind, BodyCx, PlainData, Tracked};
-use craft_ui::docking::{DockConfig, DockEvent, DockPanels, DockSizes, FloatSpace, GroupAt, PanelSpec, PanelSpecs};
+use craft_ui::docking::{DockConfig, DockEvent, DockHeights, DockPanels, DockSizes, FloatSpace, GroupAt, PanelSpec, PanelSpecs};
 use craft_ui::patterns::dock::DockArea;
 use egui::{Rect, pos2, vec2};
 use serde_json::{Value, json};
@@ -84,8 +84,13 @@ const COLUMN_WIDTH: f32 = 260.0;
 /// Width of an iconic column of bare icons, and of one whose groups show their names.
 const ICON_WIDTH: f32 = 37.0;
 const NAMED_ICON_WIDTH: f32 = 150.0;
-/// Height of the group a workspace opens below Properties · Pages · Layers.
+/// Height of the group a workspace opens below Properties · Pages · Layers, and of any other panel's group in a column.
 const OPEN_PANEL_HEIGHT: f32 = 260.0;
+/// The height Properties · Pages · Layers asks for: the whole column, giving way to the groups below it down to
+/// [`DOCK_TABS_COMPACT`].
+const DOCK_TABS_REACH: f32 = 10_000.0;
+/// The least height Properties · Pages · Layers gives way to before every group shrinks.
+const DOCK_TABS_COMPACT: f32 = 200.0;
 
 fn registered(id: &str) -> bool {
     id == CANVAS || normalize(id) == Some(id)
@@ -227,12 +232,10 @@ pub(crate) fn default_layout(ui: &crate::UiState) -> Layout<String> {
         if !panels.is_empty() {
             groups.push(Group::new(panels, active));
         }
-        // The panel a workspace opens (Printing and Proofing: Swatches) goes below at a fixed
-        // height, so Properties keeps most of the column.
+        // The panel a workspace opens (Printing and Proofing: Swatches) goes below, where it fills the rest of the
+        // column at `OPEN_PANEL_HEIGHT` and Properties keeps most of it: the panels' `DockHeights` (`Specs::spec`).
         if let Some(id) = ui.open_panel.as_deref().and_then(|id| placed.take(id)) {
-            let mut group = Group::new(vec![id], 0);
-            group.height = Some(OPEN_PANEL_HEIGHT);
-            groups.push(group);
+            groups.push(Group::new(vec![id], 0));
         }
         if !groups.is_empty() {
             columns.push(column(groups, !ui.dock_expanded, ICON_WIDTH));
@@ -1054,7 +1057,14 @@ impl PanelSpecs<String> for Specs {
         if panel == CANVAS {
             return spec.canvas().limits(craft_ui::contract::SizeLimits::at_least(vec2(200.0, 120.0)));
         }
-        let spec = spec.limits(craft_ui::contract::SizeLimits::at_least(vec2(220.0, 80.0))).float_size(floating_size(panel));
+        // As the native dock had them: Properties · Pages · Layers keeps most of its column, and a panel below it (the one
+        // a workspace opens) fills the rest at `OPEN_PANEL_HEIGHT`, giving way down to its minimum when stacked.
+        let heights = if crate::dock::DOCK_TABS.iter().any(|tab| tab.0 == panel) {
+            DockHeights::new(DOCK_TABS_REACH).compact(DOCK_TABS_COMPACT)
+        } else {
+            DockHeights::new(OPEN_PANEL_HEIGHT).compact(80.0).fill(OPEN_PANEL_HEIGHT)
+        };
+        let spec = spec.limits(craft_ui::contract::SizeLimits::at_least(vec2(220.0, 80.0))).float_size(floating_size(panel)).heights(heights);
         match panel_artwork(panel) {
             Some(artwork) => spec.icon(craft_ui::primitives::IconSpec::glyph(artwork)),
             None => spec,
