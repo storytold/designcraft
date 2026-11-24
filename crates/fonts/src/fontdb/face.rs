@@ -94,6 +94,9 @@ pub struct FontFace {
     pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
+    /// OS/2 typographic descender in font units, positive down (the descent when the font has no
+    /// usable one): the bottom of a paragraph box's Descent origin.
+    pub typo_descent: f64,
     /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
     /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
     /// baseline offsets.
@@ -434,6 +437,7 @@ pub(super) fn make_face(
         ascent: m.ascent as f64,
         typo_ascent: typo_ascent(&f, &location, upem).unwrap_or(m.ascent as f64),
         descent: -(m.descent as f64),
+        typo_descent: typo_descent(&f, &location, upem).unwrap_or(-(m.descent as f64)),
         // Fonts with an OS/2 table older than version 2 don't declare these: measure them from
         // flat-topped letters before falling back to a share of the ascent, which can be far off
         // (drop caps are sized from the cap height).
@@ -494,6 +498,19 @@ pub(crate) fn measured_top(f: &skrifa::FontRef<'_>, location: LocationRef<'_>, c
         g.draw(DrawSettings::unhinted(Size::unscaled(), location), &mut pen).ok()?;
         plausible(Some(f64::from(pen.0)), upem)
     })
+}
+
+/// The OS/2 typographic descender in font units at `location`, positive down, if the font has an
+/// OS/2 table and the value is [`plausible`].
+fn typo_descent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Option<f64> {
+    use skrifa::raw::TableProvider;
+    let mut v = -(f.os2().ok()?.s_typo_descender() as f64);
+    if !location.coords().is_empty()
+        && let Ok(mvar) = f.mvar()
+    {
+        v -= mvar.metric_delta(skrifa::raw::tables::mvar::tags::HDSC, location.coords()).map_or(0.0, |d| d.to_f64());
+    }
+    plausible(Some(v), upem)
 }
 
 /// The OS/2 typographic ascender in font units at `location`, if the font has an OS/2 table and
