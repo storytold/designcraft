@@ -38,13 +38,14 @@ impl DesignApp {
     }
 
     /// What the app sets for the framework before each frame: the root values, the host with the interface language's command
-    /// labels (which the Keyboard Shortcuts dialog shows) and the command catalog. The tools are commands on the board, without
-    /// chords, so the Tools rail resolves and fires them; while Quick Apply is open, its commands and the document's styles are
-    /// too, so its palette resolves and picks them.
+    /// labels (which the Keyboard Shortcuts dialog shows) and the command catalog. The tools are commands on the board, with
+    /// the app keymap's chords shown only, so the Tools rail resolves, fires and shows them while the app's keymap dispatches
+    /// their keys; while Quick Apply is open, its commands and the document's styles are too, so its palette resolves and
+    /// picks them.
     pub(crate) fn frame_input(&self) -> craft_ui_widgets::runtime::frame::FrameInput {
         use craft_ui_widgets::runtime::commands::CommandInput;
         use craft_ui_widgets::runtime::frame::FrameInput;
-        let catalog = menus::quick_apply_catalog(self).unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language));
+        let catalog = menus::quick_apply_catalog(self).unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
         let commands = CommandInput::new().catalog(catalog);
         FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands)
     }

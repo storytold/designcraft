@@ -16,6 +16,8 @@ mod tables;
 mod tree;
 mod ui_commands;
 
+/// A label as a framework menu row takes it: `&` doubled, since a single one marks the row's mnemonic.
+pub(crate) use bar::row_label;
 pub use bar::{menu_bar, menu_button};
 #[cfg(test)]
 use bar::{menu_bar_submenu, menu_column};

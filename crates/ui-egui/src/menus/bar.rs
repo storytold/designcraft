@@ -106,7 +106,7 @@ impl Pick {
 
 /// A label as a framework menu row or title takes it: the framework reads `&` as the mnemonic marker and `&&` as one
 /// `&`, so "Grids & Guides" keeps its ampersand.
-pub(super) fn row_label(label: &str) -> String {
+pub(crate) fn row_label(label: &str) -> String {
     label.replace('&', "&&")
 }
 
