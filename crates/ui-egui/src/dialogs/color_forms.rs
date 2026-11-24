@@ -16,7 +16,7 @@ use craft_behavior::{ColumnWidth, Mixed};
 use craft_color_ui::AreaMode;
 use craft_color_ui::ui::{ColorPicker, ColorPickerLayout, ColorPopover, PickedColor, ScreenPickGesture};
 use craft_theme::{Channel, ColorModel, DefaultOn, HsbModel, LabModel, MAX_CHANNELS, ModelValues, RgbModel, Srgba};
-use craft_ui_widgets::buttons::Button;
+use craft_ui_panels::dialog::ButtonPlace;
 use craft_ui_widgets::choice::Swatch;
 use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _};
 use craft_ui_widgets::display::{Shade, Text};
@@ -30,8 +30,12 @@ use egui::Ui;
 use serde_json::{Value, json};
 
 /// The Color Picker: the colour space view's caption over the area and strip, the new colour over the one it replaces,
-/// every model's channels, the hex field and the eyedropper; Add CMYK Swatch under them.
-pub(crate) const COLOR_PICKER: Form = Form::new(color_picker).width(580.0);
+/// every model's channels, the hex field and the eyedropper; OK, Cancel and Add CMYK Swatch in the column the picker
+/// keeps for them at the top right.
+pub(crate) const COLOR_PICKER: Form =
+    Form::new(color_picker).width(580.0).button_place(ButtonPlace::Body).actions(&[("Add CMYK Swatch", ADD_SWATCH)]);
+/// The draft field the Color Picker's Add CMYK Swatch button sets.
+const ADD_SWATCH: &str = "_addSwatch";
 /// Swatch Options: the swatch's name and what its kind lets the user change.
 pub(crate) const SWATCH_OPTIONS: Form = Form::new(swatch_options);
 /// Color Group Options: the group's name.
@@ -238,7 +242,7 @@ fn color_picker(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
         d.fields.insert("component".into(), json!(key));
         app.ui.color_picker_component = (*key).to_owned();
     }
-    if Button::new(tr(app, "Add CMYK Swatch")).id_salt("color_picker_add_swatch").show(ui).clicked() {
+    if d.fields.remove(ADD_SWATCH).is_some() {
         // The inks the fields show: as typed or given, else the colour converted.
         let inks = nums::<4>(d, "cmyk").map_or_else(|| working_cmyk(picked_of(d).rgb).map(f64::from), |c| c);
         let [c, m, y, k] = inks.map(f64::round);
