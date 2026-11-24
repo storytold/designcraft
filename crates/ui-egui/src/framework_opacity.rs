@@ -81,7 +81,6 @@ fn field(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacity:
             // document's ratio to, so its own write-back is the very number it proposed (an exact match, whatever the
             // precision it shows). `fixed_decimals(0)` is the look only: a field that shows one decimal still matches.
             .fixed_decimals(0)
-            .exact_decimals(true)
             .commit_decimals(0)
             .show_at(ui, at)
     });

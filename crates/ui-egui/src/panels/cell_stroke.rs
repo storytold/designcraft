@@ -551,7 +551,6 @@ pub(crate) mod framework {
             .unit_kind(UnitKind::Percent)
             .range(0.0..=100.0)
             .fixed_decimals(0)
-            .exact_decimals(true)
             .show(ui)
             .edit
             .events

@@ -891,9 +891,8 @@ pub(super) mod framework {
                         .unit_kind(UnitKind::Percent)
                         .range(0.0..=100.0)
                         .step(1.0)
-                        .fixed_decimals(0)
                         // Whole percents, as "100%": not the one-decimal percent look.
-                        .exact_decimals(true)
+                        .fixed_decimals(0)
                         .commit_decimals(0)
                         .show(ui);
                     if let Some(v) = out.edit.events.committed().copied().flatten().filter(|v| v.is_finite()) {
