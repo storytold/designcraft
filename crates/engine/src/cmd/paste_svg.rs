@@ -74,11 +74,11 @@ fn paint(p: &SvgPaint, notes: &mut Notes) -> Option<Paint> {
     let (rgb, opacity) = match p {
         SvgPaint::Color { rgb, opacity } => (*rgb, *opacity),
         // Gradients and patterns are retained as their first color where available.
-        SvgPaint::Gradient { first_rgb, opacity } => {
+        SvgPaint::Gradient { stops, opacity, .. } => {
             notes.gradients += 1;
-            (*first_rgb.as_ref()?, *opacity)
+            (stops.first()?.rgb, *opacity)
         }
-        SvgPaint::Pattern => {
+        SvgPaint::Pattern { .. } => {
             notes.gradients += 1;
             return None;
         }
@@ -142,7 +142,7 @@ fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
                 }
                 out.push(Art::Path { path: bezpath(&path.segments), fill, stroke, opacity: 1.0 });
             }
-            SvgNode::Group { children, opacity } => {
+            SvgNode::Group { children, opacity, .. } => {
                 let mut items = Vec::new();
                 convert(children, notes, &mut items);
                 // usvg wraps nodes in groups for transforms and opacity; only a group of several
@@ -156,6 +156,8 @@ fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
                     }
                 }
             }
+            // Embedded images are left out; the scene's image count gives the warning.
+            SvgNode::Image(_) => {}
         }
     }
 }
