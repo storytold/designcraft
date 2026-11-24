@@ -32,7 +32,8 @@ fn main() {
         }
         // An empty value (an unset CI input) means the default stable build.
         Ok("stable" | "") | Err(std::env::VarError::NotPresent) => false,
-        Ok(_) => die("unsupported DESIGNCRAFT_BUILD_CHANNEL (expected stable or nightly-v1)"),
+        // A non-UTF-8 value is as unusable as an unknown one: refuse it instead of guessing.
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => die("unsupported DESIGNCRAFT_BUILD_CHANNEL (expected stable or nightly-v1)"),
     };
     let built_version = if nightly {
         // The shared workflow exports the prepared version as `DESIGNCRAFT_VERSION` and, for the
