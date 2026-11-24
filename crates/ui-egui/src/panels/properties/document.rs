@@ -350,9 +350,14 @@ mod framework {
             resize_document(app, n, nv);
         }
         let id = cid(ui, "facing-pages");
-        if let Some(on) =
-            check(ui, Some(sub(b, 126.0, 26.0, 100.0, FIELD_H)), id, crate::i18n::tr(&lang, "Facing Pages"), d.settings.facing_pages, true)
-        {
+        if let Some(on) = check(
+            ui,
+            Some(sub(b, 126.0, 26.0, (b.width() - 126.0).max(100.0), FIELD_H)),
+            id,
+            crate::i18n::tr(&lang, "Facing Pages"),
+            d.settings.facing_pages,
+            true,
+        ) {
             let _ = app.run("layout.documentSetup", json!({"facingPages": on}));
         }
         margin_section(app, ui);
@@ -486,12 +491,14 @@ mod framework_tests {
         // The box shows its label after it: the label is a node of its own, named for the box, beside it on its row.
         use egui_kittest::kittest::{NodeT as _, Queryable as _};
         let shown = h.get_by_role_and_label(Role::CheckBox, "Facing Pages").rect();
+        // The label's text may be the node's name or its value (a label leaf carries its words as its value).
+        let words = |n: &egui_kittest::Node<'_>| n.label().as_deref() == Some("Facing Pages") || n.value().as_deref() == Some("Facing Pages");
         let label = h
-            .query_all_by_label("Facing Pages")
-            .filter(|n| n.accesskit_node().role() != Role::CheckBox)
+            .query_all_by(|n| n.accesskit_node().role() != Role::CheckBox && words(n))
             .map(|n| n.rect())
-            .find(|r| r.width() > 0.0 && r.left() >= shown.right() - 1.0 && r.center().y > shown.top() && r.center().y < shown.bottom());
-        assert!(label.is_some(), "Facing Pages shows its label after its box {shown:?}");
+            .find(|r| r.width() > 0.0 && r.left() >= shown.right() - 1.0 && r.top() < shown.bottom() && r.bottom() > shown.top());
+        let named: Vec<_> = h.query_all_by(|n| words(n)).map(|n| (n.accesskit_node().role(), n.rect())).collect();
+        assert!(label.is_some(), "Facing Pages shows its label after its box {shown:?}; nodes with its words: {named:?}");
         click(&mut h, Role::CheckBox, "Facing Pages");
         assert_eq!(settings(&h).facing_pages, !facing);
         type_into(&mut h, "Top", "2p0");
