@@ -1345,19 +1345,24 @@ struct PanelContent<'a> {
 }
 
 impl DockPanels<String> for PanelContent<'_> {
-    /// A panel's body: content taller than the group scrolls in an egui scroll area, as before the port. The bodies
-    /// lay themselves out in egui, and their native rows ask the scroll area to bring them into view (a Tab to a
-    /// field, an AccessKit scroll-into-view), which only an egui scroll area answers. The Pages panel scrolls its own
-    /// parts.
+    /// A panel's body: content taller than the group scrolls in a framework scrolling stack. The panels' controls are
+    /// framework components, members of the dock's arena with no egui widget of their own: a Tab to one, or an
+    /// AccessKit Scroll Into View on it, reveals its rect in the innermost framework scroll owner around it, which an
+    /// egui scroll area is not, so in one they stayed below the group's clipped bottom (in the group under it). The
+    /// stack is as tall as its content and at most the group's room, so a flyout still sizes to its panel. The Pages
+    /// panel and the Story Editor scroll their own parts.
     fn body(&mut self, panel: &String, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
+        use craft_ui::contract::{Props as _, ShowContainer as _};
         if crate::dock::scrolls_itself(panel) {
             crate::dock::panel_body(self.app, ui, panel);
             return;
         }
-        egui::ScrollArea::vertical()
-            .id_salt(("shared-panel-body", panel))
-            .auto_shrink([false, true])
-            .show(ui, |ui| crate::dock::panel_body(self.app, ui, panel));
+        let app = &mut *self.app;
+        craft_ui::layout_components::Stack::new()
+            .id_salt(("shared-panel-body", panel.as_str()))
+            .fill_width()
+            .scroll(craft_ui::contract::Scroll::vertical())
+            .show(ui, |ui, _| crate::dock::panel_body(app, ui, panel));
     }
 
     fn group_view(&mut self, panels: &[String], _: usize, ui: &mut egui::Ui, at: GroupAt, _: &mut BodyCx<'_>) -> Option<f32> {
