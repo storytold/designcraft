@@ -114,6 +114,25 @@ impl ExportControls {
         out
     }
 
+    /// A line of controls in `columns`, each child a cell, so the same column of every version's line has one width.
+    fn grid<R>(
+        &self,
+        ui: &mut egui::Ui,
+        scope: impl std::hash::Hash + std::fmt::Debug,
+        columns: &'static [craft_behavior::ColumnWidth],
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<R> {
+        use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+        let mut add = Some(add);
+        let mut out = None;
+        craft_ui_widgets::layout_components::Grid::new(columns).id_salt(scope).show(ui, |ui, _| {
+            if let Some(add) = add.take() {
+                out = Some(add(ui));
+            }
+        });
+        out
+    }
+
     /// Ids scoped by `scope` for what `add` shows, one under another.
     fn scope(&self, ui: &mut egui::Ui, scope: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut egui::Ui)) {
         use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
@@ -278,6 +297,16 @@ impl ExportControls {
     }
 }
 
+/// A version's line: its folder name, the format, the PDF settings (or the resolution), Duplicate and the remove button.
+/// The format and the other cells are as wide as their content asks, so the buttons stay near the fields.
+const VERSION_COLUMNS: &[craft_behavior::ColumnWidth] = &[
+    craft_behavior::ColumnWidth::Fixed(170.0),
+    craft_behavior::ColumnWidth::Fixed(88.0),
+    craft_behavior::ColumnWidth::Content,
+    craft_behavior::ColumnWidth::Content,
+    craft_behavior::ColumnWidth::Content,
+];
+
 /// Export Layouts and Versions on the framework's dialog host.
 pub(crate) const FORM: crate::dialogs::framework::Form = crate::dialogs::framework::Form::new(form).width(660.0);
 
@@ -382,7 +411,7 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let mut expanded: Vec<u64> = d.fields.get("expanded").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     for (i, v) in job.versions.iter_mut().enumerate() {
         controls.scope(ui, ("export_version", version_generation, i), |ui| {
-            controls.row(ui, "export_version_line", false, |ui| {
+            controls.grid(ui, "export_version_line", VERSION_COLUMNS, |ui| {
                 controls.text(ui, &tr("Folder name"), &mut v.name, true);
                 let formats = [ExportFormat::Pdf, ExportFormat::Png, ExportFormat::Jpeg];
                 let names: Vec<String> = ["PDF", "PNG", "JPEG"].into_iter().map(str::to_string).collect();
@@ -413,14 +442,17 @@ fn show_body(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         }
                     }
                     ExportFormat::Png | ExportFormat::Jpeg => {
-                        controls.number(ui, &tr("Resolution"), &mut v.ppi, 36.0..=1200.0, false);
-                        if v.format == ExportFormat::Jpeg {
-                            let mut quality = f64::from(v.quality);
-                            if controls.number(ui, tr("Quality ").trim_end(), &mut quality, 1.0..=100.0, true) {
-                                let q = quality.round().clamp(1.0, 100.0) as u32;
-                                v.quality = u8::try_from(q.clamp(1, 100)).unwrap_or(85);
+                        // The resolution (and a JPEG's quality) fill the one cell the PDF settings fill.
+                        controls.row(ui, "export_version_raster", false, |ui| {
+                            controls.number(ui, &tr("Resolution"), &mut v.ppi, 36.0..=1200.0, false);
+                            if v.format == ExportFormat::Jpeg {
+                                let mut quality = f64::from(v.quality);
+                                if controls.number(ui, tr("Quality ").trim_end(), &mut quality, 1.0..=100.0, true) {
+                                    let q = quality.round().clamp(1.0, 100.0) as u32;
+                                    v.quality = u8::try_from(q.clamp(1, 100)).unwrap_or(85);
+                                }
                             }
-                        }
+                        });
                     }
                 }
                 if controls.small_button(ui, &tr("Duplicate"), &tr("Duplicate version")).clicked {
