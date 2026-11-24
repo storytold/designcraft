@@ -174,24 +174,29 @@ fn item_area(it: &Item) -> Option<Rect> {
     // and feathers stay inside the shape.
     let scale = max_scale(it.xf)?;
     let stroke = it.stroke.extent().max(0.0) * scale;
-    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset_scaled(it, scale);
+    let pad = stroke + 2.0 + if it.is_text_frame() { GLYPH_OVERHANG } else { 0.0 } + crate::fx::outset_scaled(it, scale);
     if !pad.is_finite() {
         return None;
     }
     Some(painted_bounds(it)?.inflate(pad, pad))
 }
 
+/// How far a text frame's glyphs paint past its text box: descenders below a frame fitted to its
+/// last baseline, italics, swashes and big initials.
+const GLYPH_OVERHANG: f64 = 24.0;
+
 /// An item's bounds, grown to its text: text is composed in the box around the frame's path in
 /// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
-/// Its children's bounds include their strokes. None when a child's transform is not finite.
+/// Its children's bounds include their strokes and, for text frames, their glyphs' overhang. None
+/// when a child's transform is not finite.
 fn painted_bounds(it: &Item) -> Option<Rect> {
     let mut b = it.bounds();
     if it.is_text_frame() {
         b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
     }
     for c in it.children() {
-        let stroke = c.stroke.extent().max(0.0) * max_scale(c.xf)?;
-        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
+        let pad = (c.stroke.extent().max(0.0) + if c.is_text_frame() { GLYPH_OVERHANG } else { 0.0 }) * max_scale(c.xf)?;
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(pad, pad)));
     }
     Some(b)
 }
