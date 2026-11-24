@@ -14,14 +14,15 @@
 use super::Dialog;
 use super::framework::Form;
 use crate::DesignApp;
-use craft_behavior::{DisplayOrder, EditEvent, ItemSource, Mixed, Selection};
+use craft_behavior::{ColumnWidth, DisplayOrder, EditEvent, ItemSource, Mixed, Selection};
 use craft_theme::variant::Tone;
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::choice::{Checkbox, Segmented};
-use craft_ui_widgets::contract::{Bind, Entry, Props as _, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing};
+use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, SelectMode, Show as _, ShowCollection as _, ShowContainer as _, Sizing};
 use craft_ui_widgets::display::{Shade, Text};
 use craft_ui_widgets::form::{Field, FieldGroup};
-use craft_ui_widgets::layout_components::{Row, Stack};
+use craft_ui_widgets::layout::empty_cell;
+use craft_ui_widgets::layout_components::{Grid, Row, Stack};
 use craft_ui_widgets::list::{List, ListRow};
 use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::style::SurfaceKind;
@@ -657,55 +658,62 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
             }
             check(ui, d, &a, "on", &tr("Rule On"), true);
         });
-        FieldGroup::new(tr("Paragraph Rules")).id_salt(("paragraph_rules_fields", which)).show(ui, |ui, _| {
-            field(ui, &tr("Weight:"), "weight", |ui| number(ui, d, &a, "weight", &tr("Weight:"), &Spec::real(0.0, 1000.0).unit("pt"), on));
-            field(ui, &tr("Type:"), "type", |ui| {
-                if let Some(picked) = select_at(ui, &a.field("type"), &tr("Type:"), &type_captions, type_at, None, on)
-                    && let Some(kind) = types.get(picked)
-                {
-                    a.set(d, "type", serde_json::to_value(kind).unwrap_or_default());
-                }
+        // Two columns of paired fields, as the native dialog's: Weight beside Type, Color beside Tint, Gap Color beside
+        // Gap Tint, Width beside Offset and Left beside Right Indent. Each column lines up its own labels.
+        Row::new().id_salt(("paragraph_rules_columns", which)).fill_width().gap(Gap::Section).show(ui, |ui, _| {
+            FieldGroup::new(tr("Paragraph Rules")).id_salt(("paragraph_rules_fields", which)).show(ui, |ui, _| {
+                field(ui, &tr("Weight:"), "weight", |ui| number(ui, d, &a, "weight", &tr("Weight:"), &Spec::real(0.0, 1000.0).unit("pt"), on));
+                field(ui, &tr("Color:"), "color", |ui| {
+                    if let Some(picked) = swatch_choice(ui, d, &a, "color", &tr("Color:"), &colors, on) {
+                        a.set(d, "color", picked);
+                    }
+                });
+                // A solid rule has no gaps.
+                field(ui, &tr("Gap Color:"), "gapColor", |ui| {
+                    // A rule with no gap colour has [None] there, as the rule is drawn.
+                    if let Some(picked) = swatch_value(ui, &a.field("gapColor"), &tr("Gap Color:"), &swatches, &json!(gap_color), on && gaps) {
+                        a.set(d, "gapColor", picked);
+                    }
+                });
+                field(ui, &tr("Width:"), "columnWidth", |ui| {
+                    let column = a.get(d, "columnWidth").as_bool().unwrap_or(true);
+                    let at = Some(usize::from(!column));
+                    let captions: Vec<String> = widths.iter().map(|(_, caption)| caption.clone()).collect();
+                    if let Some(picked) = select_at(ui, &a.field("columnWidth"), &tr("Width:"), &captions, at, None, on) {
+                        a.set(d, "columnWidth", json!(picked == 0));
+                    }
+                });
+                field(ui, &tr("Left Indent:"), "leftIndent", |ui| measure(ui, d, &a, "leftIndent", &tr("Left Indent:"), h_units, on));
             });
-            field(ui, &tr("Color:"), "color", |ui| {
-                if let Some(picked) = swatch_choice(ui, d, &a, "color", &tr("Color:"), &colors, on) {
-                    a.set(d, "color", picked);
-                }
+            FieldGroup::new(tr("Paragraph Rules")).id_salt(("paragraph_rules_fields_paired", which)).show(ui, |ui, _| {
+                field(ui, &tr("Type:"), "type", |ui| {
+                    if let Some(picked) = select_at(ui, &a.field("type"), &tr("Type:"), &type_captions, type_at, None, on)
+                        && let Some(kind) = types.get(picked)
+                    {
+                        a.set(d, "type", serde_json::to_value(kind).unwrap_or_default());
+                    }
+                });
+                field(ui, &tr("Tint:"), "tint", |ui| {
+                    let shown = tint(a.get(d, "tint"));
+                    if let Some(Some(v)) =
+                        number_edit(ui, &a.field("tint"), &tr("Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), on)
+                    {
+                        a.set(d, "tint", json!(v.clamp(0.0, 1.0)));
+                    }
+                });
+                field(ui, &tr("Gap Tint:"), "gapTint", |ui| {
+                    // A full gap tint is left out of the rule's JSON: it reads 100%.
+                    let shown = Some(a.get(d, "gapTint").as_f64().unwrap_or(1.0));
+                    let enabled = on && gaps && gap_color != designcraft_color::swatch::NONE;
+                    if let Some(Some(v)) =
+                        number_edit(ui, &a.field("gapTint"), &tr("Gap Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), enabled)
+                    {
+                        a.set(d, "gapTint", json!(v.clamp(0.0, 1.0)));
+                    }
+                });
+                field(ui, &tr("Offset:"), "offset", |ui| measure(ui, d, &a, "offset", &tr("Offset:"), v_units, on));
+                field(ui, &tr("Right Indent:"), "rightIndent", |ui| measure(ui, d, &a, "rightIndent", &tr("Right Indent:"), h_units, on));
             });
-            field(ui, &tr("Tint:"), "tint", |ui| {
-                let shown = tint(a.get(d, "tint"));
-                if let Some(Some(v)) = number_edit(ui, &a.field("tint"), &tr("Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), on) {
-                    a.set(d, "tint", json!(v.clamp(0.0, 1.0)));
-                }
-            });
-            // A solid rule has no gaps.
-            field(ui, &tr("Gap Color:"), "gapColor", |ui| {
-                // A rule with no gap colour has [None] there, as the rule is drawn.
-                if let Some(picked) = swatch_value(ui, &a.field("gapColor"), &tr("Gap Color:"), &swatches, &json!(gap_color), on && gaps) {
-                    a.set(d, "gapColor", picked);
-                }
-            });
-            field(ui, &tr("Gap Tint:"), "gapTint", |ui| {
-                // A full gap tint is left out of the rule's JSON: it reads 100%.
-                let shown = Some(a.get(d, "gapTint").as_f64().unwrap_or(1.0));
-                let enabled = on && gaps && gap_color != designcraft_color::swatch::NONE;
-                if let Some(Some(v)) =
-                    number_edit(ui, &a.field("gapTint"), &tr("Gap Tint:"), shown, &Spec::whole(0.0, 100.0).scaled(100.0).unit("%"), enabled)
-                {
-                    a.set(d, "gapTint", json!(v.clamp(0.0, 1.0)));
-                }
-            });
-            field(ui, &tr("Width:"), "columnWidth", |ui| {
-                let column = a.get(d, "columnWidth").as_bool().unwrap_or(true);
-                let at = Some(usize::from(!column));
-                let captions: Vec<String> = widths.iter().map(|(_, caption)| caption.clone()).collect();
-                if let Some(picked) = select_at(ui, &a.field("columnWidth"), &tr("Width:"), &captions, at, None, on) {
-                    a.set(d, "columnWidth", json!(picked == 0));
-                }
-            });
-            field(ui, &tr("Offset:"), "offset", |ui| measure(ui, d, &a, "offset", &tr("Offset:"), v_units, on));
-            for (caption, key) in [("Left Indent:", "leftIndent"), ("Right Indent:", "rightIndent")] {
-                field(ui, &tr(caption), key, |ui| measure(ui, d, &a, key, &tr(caption), h_units, on));
-            }
         });
         if which == "ruleAbove" {
             check(ui, d, &a, "keepInFrame", &tr("Keep In Frame"), on);
@@ -732,18 +740,26 @@ pub(crate) fn justification_form(lang: &str, ui: &mut Ui, d: &mut Dialog, prefix
     let (single, [paragraph, single_line]) = crate::panels::properties::composer_choice(a.get(d, "composer").as_str());
     let composers = [(paragraph, tr("Paragraph Composer")), (single_line, tr("Single-line Composer"))];
     Stack::new().id_salt(("justification_form", prefix.to_owned())).fill_width().show(ui, |ui, _| {
-        for (label, stem, (least, most)) in super::JUSTIFY_ROWS {
-            GroupBox::new(tr(label), None).id_salt(("justification_group", stem)).show(ui, |ui, _| {
-                FieldGroup::new(tr(label)).id_salt(("justification_fields", stem)).show(ui, |ui, _| {
-                    for (suffix, caption) in [("Min", "Minimum"), ("Desired", "Desired"), ("Max", "Maximum")] {
-                        let key = format!("{stem}{suffix}");
-                        let name = format!("{}:", tr(caption));
-                        let spec = Spec::whole(least, most).scaled(100.0).unit("%");
-                        field(ui, &name, &key, |ui| number(ui, d, &a, &key, &name, &spec, true));
-                    }
-                });
-            });
-        }
+        // The spacing table, as the native dialog's: Minimum, Desired and Maximum across, one row each for Word
+        // Spacing, Letter Spacing and Glyph Scaling, so the three values of a row compare side by side. Each field is
+        // named by its column's caption with the colon a field caption has; the row's caption stands before them.
+        const SPACING: &[ColumnWidth] = &[ColumnWidth::Content, ColumnWidth::Content, ColumnWidth::Content, ColumnWidth::Content];
+        const COLUMNS: [(&str, &str); 3] = [("Min", "Minimum"), ("Desired", "Desired"), ("Max", "Maximum")];
+        Grid::new(SPACING).id_salt(("justification_spacing", prefix.to_owned())).show(ui, |ui, _| {
+            empty_cell(ui);
+            for (_, caption) in COLUMNS {
+                Text::new(tr(caption)).shade(Shade::Muted).show(ui);
+            }
+            for (label, stem, (least, most)) in super::JUSTIFY_ROWS {
+                Text::new(format!("{}:", tr(label))).show(ui);
+                for (suffix, caption) in COLUMNS {
+                    let key = format!("{stem}{suffix}");
+                    let name = format!("{}:", tr(caption));
+                    let spec = Spec::whole(least, most).scaled(100.0).unit("%");
+                    number(ui, d, &a, &key, &name, &spec, true);
+                }
+            }
+        });
         FieldGroup::new(tr("Justification")).id_salt(("justification_options", prefix.to_owned())).show(ui, |ui, _| {
             field(ui, &tr("Auto Leading:"), "autoLeading", |ui| {
                 let spec = Spec::whole(super::AUTO_LEADING_RANGE.0, super::AUTO_LEADING_RANGE.1).scaled(100.0).unit("%");
