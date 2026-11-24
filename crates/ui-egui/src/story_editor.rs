@@ -820,7 +820,7 @@ mod tests {
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
         h.run_steps(2);
         let text_x = |h: &egui_kittest::Harness<'_, crate::test_window::Window>| {
-            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).rect().min.x
+            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some("Ruler story")).rect().min.x
         };
         let with = text_x(&h);
         h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
@@ -844,7 +844,7 @@ mod tests {
     }
 
     fn text_left(h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str) -> f32 {
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect().min.x
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
     }
 
     /// View › Story Editor › Show/Hide Style Name Column: hiding the column takes away the style
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn typing_goes_on_after_the_columns_show_or_hide() {
         let mut h = story_editor_harness("Focus story");
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Focus story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some("Focus story")).focus();
         h.run_steps(2);
         h.event(egui::Event::Text("1".into()));
         h.run_steps(2);
@@ -1008,7 +1008,7 @@ mod tests {
         let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ruler story", "caret": false})).unwrap();
         app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some("Ruler story")).focus();
         h.run_steps(2);
         for (toggle, typed) in [("!", "Ruler story!"), ("?", "Ruler story!?")] {
             h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
         app.run("file.activate", json!({"index": 0})).unwrap();
         app.run("app.storyEditor", json!({"story": stories[0]})).unwrap();
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Alpha story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.accesskit_node().is_hidden() && n.value().as_deref() == Some("Alpha story")).focus();
         h.run_steps(2);
         h.event(egui::Event::Text("!".into()));
         h.run_steps(2);
