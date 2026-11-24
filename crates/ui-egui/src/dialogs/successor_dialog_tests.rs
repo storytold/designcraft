@@ -816,7 +816,11 @@ fn new_document_form_vertical_scroll_reaches_every_field_and_preset() {
         assert!(kit::in_view(&h, expected), "{expected} is in the window; {}", fit_report(&h, "New Document"));
     }
     // The wheel over a field, the focused name field first, scrolls the column too: a field passes it on.
-    wheel_into_view_over(&mut h, "Bleed and Slug", |h| kit::rect_of(h, "Bleed and Slug"), true);
+    // The heading row: the smallest node named so, not the section's group, which is taller than the column's view.
+    let heading = |h: &egui_kittest::Harness<'_, DesignApp>| {
+        h.query_all_by_label("Bleed and Slug").map(|node| node.rect()).filter(|rect| rect.area() > 0.0).min_by(|a, b| a.area().total_cmp(&b.area()))
+    };
+    wheel_into_view_over(&mut h, "Bleed and Slug", heading, true);
     // The one column scrolls under the title and over the footer: the wheel over it reaches what lies below.
     let at = wheel_into_view(&mut h, "Primary Text Frame", |h| kit::rect_of(h, "Primary Text Frame")).center();
     kit::click_at(&mut h, at);
