@@ -440,7 +440,7 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         "up" | "down" => vertical(&cs, pos, variable_side, dir == "up").map_or(pos, |hit| {
-            picked_side = hit.variable_side;
+            picked_side = Some(hit.variable_side);
             hit.byte
         }),
         "lineStart" => line_of(&cs, pos).map(|l| l.0).unwrap_or(0),
@@ -454,7 +454,7 @@ pub(super) fn move_caret(s: &mut Session, p: &Value) -> Result<Value> {
     let next = if extend { TextSel { focus: new, ..t } } else { TextSel { anchor: new, focus: new, ..t } };
     stm.selection.text = Some(next);
     if let Some(side) = picked_side.filter(|_| next.is_caret()) {
-        stm.selection.text_variable_caret = Some((next, side));
+        stm.selection.text_variable_caret = side.map(|side| (next, side));
     } else if next != t {
         stm.selection.text_variable_caret = None;
     }

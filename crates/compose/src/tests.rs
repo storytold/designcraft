@@ -3752,6 +3752,24 @@ fn text_variable_selection_and_caret_use_the_whole_value() {
 }
 
 #[test]
+fn offset_variable_glyphs_do_not_create_a_second_selection_row() {
+    let marker = designcraft_doc::vars::var_char(0).unwrap();
+    let start = "A".len();
+    let end = start + marker.len_utf8();
+    let story = compose_text_variable(&format!("A{marker}Z"), "אב", ParaAttrs::default());
+    let mut line = (*all_lines(&story)[0]).clone();
+    let lead = line.glyphs.iter().find(|g| g.byte == start && g.len > 0).unwrap();
+    // Model a continuation glyph whose ink overlaps the lead at a different vertical offset.
+    let (x, adv) = (lead.x, lead.adv);
+    let continuation = line.glyphs.iter_mut().find(|g| g.byte == start && g.len == 0).unwrap();
+    continuation.x = x + adv * 0.25;
+    continuation.adv = adv * 0.5;
+    continuation.y += 8.0;
+
+    assert_eq!(highlight_quads(&line, start, end, false).len(), 1);
+}
+
+#[test]
 fn text_variable_caret_uses_bidi_levels_at_both_logical_ends() {
     let marker = designcraft_doc::vars::var_char(0).unwrap();
     let start = "A".len();

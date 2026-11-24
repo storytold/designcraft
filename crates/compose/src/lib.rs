@@ -6698,7 +6698,8 @@ fn band_quad(x0: f64, x1: f64, top: f64, bot: f64) -> [Point; 4] {
 /// selection continues onto the next line. Stacked rows (warichu) each get their own band.
 pub fn highlight_quads(l: &Line, s: usize, e: usize, past_end: bool) -> Vec<[Point; 4]> {
     let selected: Vec<&PlacedGlyph> = l.glyphs.iter().filter(|g| g.represents_source_text() && g.byte >= s && g.byte < e).collect();
-    let stacked = selected.iter().any(|g| on_stacked_row(&selected, g));
+    let rows: Vec<_> = selected.iter().copied().filter(|g| g.len > 0).collect();
+    let stacked = rows.iter().any(|g| on_stacked_row(&rows, g));
     if stacked {
         let mut items: Vec<(f64, f64, f64, f64, f64)> = selected
             .iter()
