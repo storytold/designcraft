@@ -1146,6 +1146,367 @@ fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_o
     assert_eq!(gray.dimensions(), (1_280, 550));
 }
 
+/// PackBits-compressed run of `len` identical bytes (`val`).
+fn packbits_repeat(len: usize, val: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity((len / 128 + 1) * 2);
+    let mut left = len;
+    while left >= 128 {
+        out.push(129);
+        out.push(val);
+        left -= 128;
+    }
+    if left > 1 {
+        out.push((1 - left as isize) as u8);
+        out.push(val);
+    } else if left == 1 {
+        out.push(0);
+        out.push(val);
+    }
+    out
+}
+
+/// Minimal little-endian single-IFD TIFF builder supporting multiple strips, arbitrary `RowsPerStrip`,
+/// `Compression`, `InkSet` (tag 332), and `ExtraSamples` (tag 338).
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
+    custom_striped_tiff_with(w, h, rows_per_strip, photometric, compression, spp, 8, None, None, strips, extra_sample, ink_set)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff_with(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    bps: u16,
+    sample_format: Option<u16>,
+    orientation: Option<u16>,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
+    let n_strips = strips.len();
+    assert_eq!(n_strips as u32, h.div_ceil(rows_per_strip));
+    let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, u32::from(spp), if spp == 1 { u32::from(bps) } else { 0 }),
+        (259, 3, 1, u32::from(compression)),
+        (262, 3, 1, u32::from(photometric)),
+        (273, 4, n_strips as u32, 0),
+        (277, 3, 1, u32::from(spp)),
+        (278, 4, 1, rows_per_strip),
+        (279, 4, n_strips as u32, 0),
+    ];
+    if let Some(orient) = orientation {
+        entries.push((274, 3, 1, u32::from(orient)));
+    }
+    if let Some(set) = ink_set {
+        entries.push((332, 3, 1, u32::from(set)));
+    }
+    if let Some(es) = extra_sample {
+        entries.push((338, 3, 1, u32::from(es)));
+    }
+    if let Some(fmt) = sample_format {
+        entries.push((339, 3, 1, u32::from(fmt)));
+    }
+    entries.sort_by_key(|e| e.0);
+
+    let ifd_start = 8usize;
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let mut extra_data_off = ifd_start + ifd_len;
+    let bps_off = extra_data_off;
+    if spp > 1 {
+        extra_data_off += usize::from(spp) * 2;
+    }
+    let offsets_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+    let counts_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+
+    let mut data_off = extra_data_off;
+    let mut strip_offsets = Vec::with_capacity(n_strips);
+    let mut strip_counts = Vec::with_capacity(n_strips);
+    for s in strips {
+        strip_offsets.push(u32::try_from(data_off).unwrap());
+        strip_counts.push(u32::try_from(s.len()).unwrap());
+        data_off += s.len();
+    }
+
+    for (tag, _, _, val) in &mut entries {
+        match *tag {
+            258 if spp > 1 => *val = bps_off as u32,
+            273 => *val = if n_strips == 1 { strip_offsets[0] } else { offsets_off as u32 },
+            279 => *val = if n_strips == 1 { strip_counts[0] } else { counts_off as u32 },
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::with_capacity(data_off);
+    out.extend(b"II*\0");
+    out.extend(8u32.to_le_bytes());
+    out.extend((entries.len() as u16).to_le_bytes());
+    for (tag, kind, count, val) in entries {
+        out.extend(tag.to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(val.to_le_bytes());
+    }
+    out.extend(0u32.to_le_bytes());
+    if spp > 1 {
+        for _ in 0..spp {
+            out.extend(bps.to_le_bytes());
+        }
+    }
+    if n_strips > 1 {
+        for o in strip_offsets {
+            out.extend(o.to_le_bytes());
+        }
+        for c in strip_counts {
+            out.extend(c.to_le_bytes());
+        }
+    }
+    for s in strips {
+        out.extend_from_slice(s);
+    }
+    out
+}
+
+#[test]
+fn reduced_tiffs_decode_rgb_cmyk_alpha_and_cross_strip_boundaries() {
+    // 33 × 25 RGB gradient split across 9 strips of 3 rows each (every 8×8 cell crosses strip joins).
+    let (w, h, rps) = (33u32, 25u32, 3u32);
+    let mut strips_owned: Vec<Vec<u8>> = Vec::new();
+    for y0 in (0..h).step_by(rps as usize) {
+        let rows = (h - y0).min(rps);
+        let mut s = Vec::with_capacity((rows * w * 3) as usize);
+        for dy in 0..rows {
+            let y = y0 + dy;
+            for x in 0..w {
+                s.extend_from_slice(&[((x * 255) / w) as u8, ((y * 255) / h) as u8, 128]);
+            }
+        }
+        strips_owned.push(s);
+    }
+    let refs: Vec<&[u8]> = strips_owned.iter().map(Vec::as_slice).collect();
+    let rgb_tiff = custom_striped_tiff(w, h, rps, 2, 1, 3, &refs, None, None);
+    let full_rgb = decode_rgba(&rgb_tiff).unwrap();
+    for (shrink, want_size) in [(1u8, (17, 13)), (2, (9, 7)), (3, (5, 4))] {
+        let img = decode_rgba_reduced(&rgb_tiff, shrink).unwrap();
+        assert_eq!(img.dimensions(), want_size, "RGB shrink {shrink}");
+        let est = reduced_estimate(&rgb_tiff, shrink).unwrap();
+        assert_eq!((est.0, est.1), want_size);
+        let step = 1u32 << shrink;
+        let (mut diff, mut n) = (0u64, 0u64);
+        for ry in 0..want_size.1 {
+            for rx in 0..want_size.0 {
+                let (ux0, ux1) = (rx * step, ((rx + 1) * step).min(w));
+                let (uy0, uy1) = (ry * step, ((ry + 1) * step).min(h));
+                let mut sum = [0u64; 3];
+                let cnt = u64::from((ux1 - ux0) * (uy1 - uy0));
+                for y in uy0..uy1 {
+                    for x in ux0..ux1 {
+                        let p = full_rgb.get_pixel(x, y).0;
+                        for c in 0..3 {
+                            sum[c] += u64::from(p[c]);
+                        }
+                    }
+                }
+                let got = img.get_pixel(rx, ry).0;
+                for (c, &s) in sum.iter().enumerate() {
+                    let avg = ((s + cnt / 2) / cnt) as u8;
+                    diff += u64::from(got[c].abs_diff(avg));
+                    n += 1;
+                }
+                assert_eq!(got[3], 255);
+            }
+        }
+        assert!(diff / n <= 1, "RGB shrink {shrink} mean diff {}", diff / n);
+    }
+
+    // Odd-sized CMYK TIFF via the `tiff` encoder matches `decode_rgba` averaged over each block.
+    use tiff::encoder::colortype::{CMYK8, CMYKA8};
+    let mut cmyk_px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            cmyk_px.extend_from_slice(&[0, ((x * 255) / w) as u8, ((y * 255) / h) as u8, 20]);
+        }
+    }
+    let cmyk_tiff = tiff_of::<CMYK8>(w, h, &cmyk_px, false);
+    let full_cmyk = decode_rgba(&cmyk_tiff).unwrap();
+    let red_cmyk = decode_rgba_reduced(&cmyk_tiff, 2).unwrap();
+    assert_eq!(red_cmyk.dimensions(), (9, 7));
+    for ry in 0..6 {
+        for rx in 0..8 {
+            let p = red_cmyk.get_pixel(rx, ry).0;
+            let q = full_cmyk.get_pixel(rx * 4 + 2, ry * 4 + 2).0;
+            for c in 0..4 {
+                assert!(p[c].abs_diff(q[c]) <= 12, "CMYK ({rx},{ry}) c{c}: {} vs {}", p[c], q[c]);
+            }
+        }
+    }
+
+    // CMYKA with transparent black pixels beside an opaque pixel: alpha-weighted averaging prevents
+    // transparent pixels from darkening opaque colour.
+    #[rustfmt::skip]
+    let cmyka_px: [u8; 4 * 4 * 5] = [
+        0, 255, 255, 0, 255,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 0,       0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+    ];
+    let cmyka_tiff = tiff_of::<CMYKA8>(4, 4, &cmyka_px, true);
+    let reduced_alpha = decode_rgba_reduced(&cmyka_tiff, 1).unwrap();
+    assert_eq!(reduced_alpha.dimensions(), (2, 2));
+    let opaque_want = decode_rgba(&tiff_of::<CMYK8>(1, 1, &[0, 255, 255, 0], false)).unwrap().get_pixel(0, 0).0;
+    let tl = reduced_alpha.get_pixel(0, 0).0;
+    assert_eq!(tl[3], 64, "quarter opaque: {tl:?}");
+    for c in 0..3 {
+        assert!(tl[c].abs_diff(opaque_want[c]) <= 1, "no dark bleed in top-left {tl:?} vs {opaque_want:?}");
+    }
+    assert_eq!(reduced_alpha.get_pixel(1, 0).0[3], 0, "fully transparent cell stays alpha 0");
+
+    // Non-CMYK InkSet (InkSet = 2) is refused just like `decode_cmyk_tiff`.
+    let spot_cmyk = custom_striped_tiff(4, 4, 4, 5, 1, 4, &[&[0; 64]], None, Some(2));
+    assert!(decode_rgba_reduced(&spot_cmyk, 1).is_none());
+}
+
+/// Oversized multi-strip TIFFs (> 256 MP / 1 GiB RGBA) are refused by `decode_rgba`, yet decode
+/// cleanly at reduced proxy resolution via banded streaming (`#2381`).
+#[test]
+fn oversized_multi_strip_tiff_decodes_at_reduced_size_while_full_decode_is_refused() {
+    // 65,536 × 4,097 RGBA8 PackBits (~1.0002 GiB RGBA > MAX_RGBA_BYTES, ~16 MiB compressed).
+    let (w, h, rps) = (65_536u32, 4_097u32, 64u32);
+    let pb_row = packbits_repeat(w as usize * 4, 200);
+    let full_strip = pb_row.repeat(rps as usize);
+    let rem_rows = (h % rps) as usize;
+    let rem_strip = pb_row.repeat(rem_rows);
+    let full_strips = (h / rps) as usize;
+    let mut strips: Vec<&[u8]> = vec![&full_strip; full_strips];
+    if rem_rows > 0 {
+        strips.push(&rem_strip);
+    }
+    let big_tiff = custom_striped_tiff(w, h, rps, 2, 32773, 4, &strips, Some(2), None);
+
+    assert_eq!(pixel_size(&big_tiff), Some((w, h)));
+    assert!(too_large_to_decode(&big_tiff));
+    assert!(decode_rgba(&big_tiff).is_none(), "full decode exceeds 1 GiB RGBA limit");
+
+    let reduced = decode_rgba_reduced(&big_tiff, 3).expect("reduced 1/8 decode succeeds via TiffBands");
+    assert_eq!(reduced.dimensions(), (8_192, 513));
+    assert_eq!(reduced.get_pixel(0, 0).0, [200, 200, 200, 200]);
+    assert_eq!(reduced.get_pixel(8_191, 512).0, [200, 200, 200, 200]);
+
+    // A complete PackBits single-strip 1-bit monochrome TIFF works within the 512 MiB band cap,
+    // and is refused before pixel allocation once its single strip exceeds 512 MiB (~1 MiB file).
+    let mono_row = packbits_repeat(w as usize / 8, 0);
+    let small_strip = mono_row.repeat(16);
+    let small_single = custom_striped_tiff_with(w, 16, 16, 1, 32773, 1, 1, None, None, &[&small_strip], None, None);
+    let small_out = decode_rgba_reduced(&small_single, 3).expect("16-row 1-bit strip is within 512 MiB cap");
+    assert_eq!(small_out.dimensions(), (8_192, 2));
+
+    let over_h = 8_200u32; // 65,536 × 8,200 = 537.4 MiB > 512 MiB band cap
+    let over_strip = mono_row.repeat(over_h as usize);
+    let single_strip_over_band = custom_striped_tiff_with(w, over_h, over_h, 1, 32773, 1, 1, None, None, &[&over_strip], None, None);
+    assert!(reduced_estimate(&single_strip_over_band, 3).is_none());
+    assert!(decode_rgba_reduced(&single_strip_over_band, 3).is_none());
+}
+
+#[test]
+fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
+    let (w, h) = (16u32, 12u32);
+    let px_count = (w * h) as usize;
+
+    // Orientations 2..=8 keep `bands.dimensions() == pixel_size` after `upright()`,
+    // adding a full group copy alongside the band during `TiffBands::decode`.
+    // Orientations 5..=8 also swap the reduced output dimensions.
+    let rgba_raw = vec![120u8; px_count * 4];
+    let mut rgba_swapped = rgba_raw.clone();
+    let paint_2x2 = |buf: &mut [u8], x0: usize, y0: usize, px: [u8; 4]| {
+        for y in y0..y0 + 2 {
+            for x in x0..x0 + 2 {
+                let off = (y * w as usize + x) * 4;
+                buf[off..off + 4].copy_from_slice(&px);
+            }
+        }
+    };
+    paint_2x2(&mut rgba_swapped, 0, 0, [240, 20, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 0, [20, 240, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 0, 10, [20, 20, 240, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 10, [240, 240, 20, 255]);
+    let upright = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(1), &[&rgba_raw], Some(2), None);
+    let flipped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(3), &[&rgba_raw], Some(2), None);
+    let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_swapped], Some(2), None);
+    let est_upright = reduced_estimate(&upright, 1).unwrap();
+    let est_flip = reduced_estimate(&flipped, 1).unwrap();
+    let est_swapped = reduced_estimate(&swapped, 1).unwrap();
+    assert_eq!((est_upright.0, est_upright.1), (8, 6));
+    assert_eq!((est_flip.0, est_flip.1), (8, 6));
+    assert_eq!(est_flip.2, est_upright.2 + px_count * 4);
+    assert_eq!(decode_rgba_reduced(&flipped, 1).unwrap().dimensions(), (8, 6));
+    assert_eq!((est_swapped.0, est_swapped.1), (6, 8));
+    assert_eq!(est_swapped.2, est_upright.2 + px_count * 4);
+    let swapped_out = decode_rgba_reduced(&swapped, 1).unwrap();
+    assert_eq!(swapped_out.dimensions(), (6, 8));
+    // Orientation 6 rotates 90 deg CW: stored (TL=red, TR=green, BL=blue, BR=yellow)
+    // maps to upright (TR=red, BR=green, TL=blue, BL=yellow).
+    assert_eq!(swapped_out.get_pixel(0, 0).0, [20, 20, 240, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 0).0, [240, 20, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(0, 7).0, [240, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 7).0, [20, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(2, 3).0, [120, 120, 120, 120]);
+
+    // Lab8 and Rgb32F convert through normalized 32-bit float intermediates before U8 output.
+    let rgb_raw = vec![128u8; px_count * 3];
+    let rgb8 = custom_striped_tiff(w, h, h, 2, 1, 3, &[&rgb_raw], None, None);
+    let lab8 = custom_striped_tiff(w, h, h, 8, 1, 3, &[&rgb_raw], None, None);
+    let est_rgb8 = reduced_estimate(&rgb8, 1).unwrap();
+    let est_lab8 = reduced_estimate(&lab8, 1).unwrap();
+    assert_eq!(est_lab8.2 - est_rgb8.2, px_count * (32 - 4));
+    assert!(decode_rgba_reduced(&lab8, 1).is_some());
+
+    let f32_raw: Vec<u8> = [0.5f32, 0.25, 0.75].repeat(px_count).into_iter().flat_map(f32::to_le_bytes).collect();
+    let rgb32f = custom_striped_tiff_with(w, h, h, 2, 1, 3, 32, Some(3), None, &[&f32_raw], None, None);
+    let est_f32 = reduced_estimate(&rgb32f, 1).unwrap();
+    let partial_16x12 = 32 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert_eq!(est_f32.2, px_count * 12 + px_count * 32 + partial_16x12 + (8 * 6) * 8);
+    assert!(decode_rgba_reduced(&rgb32f, 1).is_some());
+
+    // Multi-strip with Orientation = 3 crossing shrink boundaries still decodes cleanly.
+    let strip_rows = 3usize;
+    let strip_bytes = w as usize * strip_rows * 4;
+    let rgba_strips: Vec<&[u8]> = (0..4).map(|i| &rgba_raw[i * strip_bytes..(i + 1) * strip_bytes]).collect();
+    let multi_flip = custom_striped_tiff_with(w, h, strip_rows as u32, 2, 1, 4, 8, None, Some(3), &rgba_strips, Some(2), None);
+    assert_eq!(decode_rgba_reduced(&multi_flip, 2).unwrap().dimensions(), (4, 3));
+
+    // Wide 1-row-per-strip grayscale TIFF counts the bounded partial-cell table at shrink = 3.
+    let wide_w = 262_136u32;
+    let wide_row = packbits_repeat(wide_w as usize, 180);
+    let wide_strips = vec![wide_row.as_slice(); 8];
+    let wide_tiff = custom_striped_tiff(wide_w, 8, 1, 1, 32773, 1, &wide_strips, None, None);
+    let est_wide = reduced_estimate(&wide_tiff, 3).unwrap();
+    assert_eq!((est_wide.0, est_wide.1), (32_767, 1));
+    let min_partial = 65_536 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert!(est_wide.2 >= min_partial + wide_w as usize * 8 + 32_767 * 8);
+    assert_eq!(decode_rgba_reduced(&wide_tiff, 3).unwrap().dimensions(), (32_767, 1));
+}
+
 /// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
 /// the shared decoder, so the PDF export's RGB fallback is only for other inks and oversized files.
 #[test]
@@ -1388,4 +1749,113 @@ fn tiff_exif_orientation_and_progressive_jpeg_probes() {
     let prog = progressive_jpeg(16, 8, 3);
     assert_eq!(pixel_size(&prog), Some((16, 8)));
     assert!(decode_bytes_per_pixel(&prog) >= 8);
+}
+
+#[test]
+fn jpeg_orientation_keeps_first_exif_app1_segment() {
+    let mut first_wins = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6));
+    first_wins.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1)));
+    assert_eq!(raster_resolution(&jpeg_with(&first_wins)), Some((150.0, 300.0)));
+
+    let mut upright_first = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1));
+    upright_first.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(raster_resolution(&jpeg_with(&upright_first)), Some((300.0, 150.0)));
+}
+
+#[test]
+fn jpeg_orientation_requires_exact_exif_prefix_and_complete_app1() {
+    let tiff_rot6 = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+
+    // Looser prefix ("Exif\0\x01" instead of "Exif\0\0") must not be treated as EXIF.
+    let mut looser_payload = b"Exif\0\x01".to_vec();
+    looser_payload.extend_from_slice(&tiff_rot6);
+    let mut looser_seg = vec![0xFF, 0xE1];
+    looser_seg.extend_from_slice(&((looser_payload.len() + 2) as u16).to_be_bytes());
+    looser_seg.extend_from_slice(&looser_payload);
+    let mut with_looser = jfif_app(1, 300, 150);
+    with_looser.extend_from_slice(&looser_seg);
+    assert_eq!(raster_resolution(&jpeg_with(&with_looser)), Some((300.0, 150.0)));
+
+    // Truncated APP1 segment (declared length past end of file) must be ignored.
+    let mut truncated = vec![0xFF, 0xD8];
+    truncated.extend_from_slice(&jfif_app(1, 300, 150));
+    truncated.extend_from_slice(&exif_app(&tiff_rot6));
+    truncated.pop();
+    assert_eq!(raster_resolution(&truncated), Some((300.0, 150.0)));
+}
+
+#[test]
+fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
+    fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = kind.to_vec();
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        out
+    }
+    fn png_with_chunks(width: u32, height: u32, extra: &[Vec<u8>]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        let mut base = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut base), image::ImageFormat::Png).unwrap();
+        let mut out = base[..33].to_vec();
+        for c in extra {
+            out.extend_from_slice(c);
+        }
+        out.extend_from_slice(&base[33..]);
+        out
+    }
+    fn phys_data(x: u32, y: u32, unit: u8) -> Vec<u8> {
+        let mut d = x.to_be_bytes().to_vec();
+        d.extend_from_slice(&y.to_be_bytes());
+        d.push(unit);
+        d
+    }
+
+    // Independent pHYs axes (144 x 72 ppi) and exact placement size (#1648 parity), plus exact unsnapped f64 DPI.
+    let asym = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &phys_data(5669, 2835, 1))]);
+    let (ax, ay) = raster_resolution(&asym).unwrap();
+    assert!((ax - 5669.0 * 0.0254).abs() < 1e-12 && (ay - 2835.0 * 0.0254).abs() < 1e-12, "{ax} x {ay}");
+    let (nw, nh) = natural_size(&asym).unwrap();
+    assert!((nw - 144.0 * 72.0 / (5669.0 * 0.0254)).abs() < 1e-9 && (nh - 72.0 * 72.0 / (2835.0 * 0.0254)).abs() < 1e-9, "{nw} x {nh}");
+
+    let exact_330 = png_with_chunks(330, 510, &[png_chunk(b"pHYs", &phys_data(1181, 1181, 1))]);
+    let (ew, eh) = natural_size(&exact_330).unwrap();
+    assert!((ew - 330.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9 && (eh - 510.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9, "{ew} x {eh}");
+
+    // Unitless or zero pHYs without eXIf falls back to 1 px = 1 pt.
+    for bad in [phys_data(5669, 5669, 0), phys_data(0, 5669, 1)] {
+        let png = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &bad)]);
+        assert_eq!(raster_resolution(&png), None);
+        assert_eq!(natural_size(&png), Some((144.0, 72.0)));
+    }
+
+    // eXIf fallback when pHYs is absent or unusable; pHYs wins when valid.
+    let exif_300 = tiff_bytes((300, 1), (300, 1), Some(2));
+    let only_exif = png_with_chunks(4, 4, &[png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&only_exif), Some((300.0, 300.0)));
+    let unitless_plus_exif = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5669, 5669, 0)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&unitless_plus_exif), Some((300.0, 300.0)));
+    let phys_wins = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5906, 5906, 1)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&phys_wins), Some((5906.0 * 0.0254, 5906.0 * 0.0254)));
+
+    // Orientation 6 swaps pHYs axes.
+    let rotated = png_with_chunks(
+        4,
+        4,
+        &[png_chunk(b"pHYs", &phys_data(11811, 5906, 1)), png_chunk(b"eXIf", &tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6))],
+    );
+    assert_eq!(raster_resolution(&rotated), Some((5906.0 * 0.0254, 11811.0 * 0.0254)));
+
+    // Shared resolution_probe chunk limit (MAX_CHUNKS = 4096, counting IHDR as chunk 0).
+    let phys = png_chunk(b"pHYs", &phys_data(11811, 11811, 1));
+    let text = png_chunk(b"tEXt", b"k\x00v");
+    let mut at_limit = vec![text.clone(); 4094];
+    at_limit.push(phys.clone());
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &at_limit)), Some((11811.0 * 0.0254, 11811.0 * 0.0254)));
+
+    let mut past_limit = vec![text; 4095];
+    past_limit.push(phys);
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &past_limit)), None);
 }
