@@ -451,11 +451,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             copy_items(s)?;
             // The whole objects are on the clipboard, so the whole objects go, not just selected points.
-            if p.get("ids").is_none() {
+            let result = if p.get("ids").is_none() {
                 let ids: Vec<u64> = s.doc()?.selection.items.iter().map(|i| i.0).collect();
-                return s.execute("edit.clear", &json!({"ids": ids}));
-            }
-            s.execute("edit.clear", p)
+                s.execute("edit.clear", &json!({"ids": ids}))
+            } else {
+                s.execute("edit.clear", p)
+            }?;
+            // Only a successful object Cut replaces the earlier formatted text copy.
+            s.text_clipboard = None;
+            Ok(result)
         }),
         cmd!(
             "edit.pasteWithoutFormatting",
@@ -669,6 +673,8 @@ fn graphic_alone(frame: &designcraft_doc::Item, g: &designcraft_doc::Graphic, pa
     it
 }
 
+#[cfg(test)]
+mod object_cut_clipboard_tests;
 #[cfg(test)]
 mod text_clipboard_tests;
 
