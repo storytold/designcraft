@@ -126,9 +126,28 @@ fn apply(app: &mut DesignApp, sid: StoryId, changes: Changes) {
 pub fn follow_target(app: &mut DesignApp) {
     let open = crate::panel_docking::floating_panels(app).iter().any(|p| p == PANEL);
     if app.story_editor.is_some() {
-        let _ = crate::panel_docking::command(app, "window.panel", &json!({"panel": PANEL}));
+        if open {
+            let _ = crate::panel_docking::command(app, "window.panel", &json!({"panel": PANEL}));
+        } else {
+            let _ = crate::panel_docking::command(app, "window.panel.float", &opening_place(app));
+        }
     } else if open {
         let _ = crate::panel_docking::command(app, "window.panel.dock", &json!({"panel": PANEL}));
+    }
+}
+
+/// Where the editor's window opens: at the lower left of the canvas, clear of the frame the story is in, and inside the
+/// canvas where its size lets it.
+fn opening_place(app: &DesignApp) -> serde_json::Value {
+    const SIZE: (f32, f32) = (560.0, 520.0);
+    const MARGIN: f32 = 16.0;
+    match app.canvas_rect {
+        Some(canvas) => {
+            let x = canvas.min.x + MARGIN;
+            let y = (canvas.max.y - SIZE.1 - MARGIN).max(canvas.min.y + MARGIN);
+            json!({"panel": PANEL, "x": x, "y": y})
+        }
+        None => json!({"panel": PANEL}),
     }
 }
 

@@ -224,8 +224,12 @@ mod framework {
                 }
             }
             Row::new().id_salt("counts").wrap(true).show(ui, |ui, _| {
-                caption(ui, tr("Rows"));
-                if let Some(v) = count(ui, identity, "rows", tr("Rows"), Some(rows.len() as f64)) {
+                // A caption stays beside its field when the row wraps: each pair is a row of its own.
+                let rows_pair = Row::new().id_salt("rows-pair").show(ui, |ui, _| {
+                    caption(ui, tr("Rows"));
+                    count(ui, identity, "rows", tr("Rows"), Some(rows.len() as f64))
+                });
+                if let Some(v) = rows_pair.inner.flatten() {
                     let n = v.round().max(1.0) as usize;
                     if n > rows.len() {
                         let last = rows.len() - 1;
@@ -235,8 +239,11 @@ mod framework {
                     }
                 }
                 let columns = crate::i18n::tr_context(&lang, "Columns", "table").to_owned();
-                caption(ui, columns.clone());
-                if let Some(v) = count(ui, identity, "columns", columns, Some(cols.len() as f64)) {
+                let cols_pair = Row::new().id_salt("columns-pair").show(ui, |ui, _| {
+                    caption(ui, columns.clone());
+                    count(ui, identity, "columns", columns, Some(cols.len() as f64))
+                });
+                if let Some(v) = cols_pair.inner.flatten() {
                     let n = v.round().max(1.0) as usize;
                     if n > cols.len() {
                         let last = cols.len() - 1;
@@ -286,8 +293,11 @@ mod framework {
                 Row::new().id_salt(("insets", pair[0])).wrap(true).show(ui, |ui, _| {
                     for i in pair {
                         let label = tr(["Top", "Left", "Bottom", "Right"][i]);
-                        caption(ui, label.clone());
-                        if let Some(v) = measure(ui, identity, &format!("inset{i}"), label, insets.get(i).copied(), unit) {
+                        let edited = Row::new().id_salt(("inset-pair", i)).show(ui, |ui, _| {
+                            caption(ui, label.clone());
+                            measure(ui, identity, &format!("inset{i}"), label, insets.get(i).copied(), unit)
+                        });
+                        if let Some(v) = edited.inner.flatten() {
                             let mut n = insets.clone();
                             n.resize(4, 4.0);
                             n[i] = v.max(0.0);
@@ -332,8 +342,11 @@ mod framework {
             }
             Row::new().id_salt("header-footer").wrap(true).show(ui, |ui, _| {
                 for (label, key, option) in [("Header Rows", "header-rows", "headerRows"), ("Footer Rows", "footer-rows", "footerRows")] {
-                    caption(ui, tr(label));
-                    if let Some(v) = count(ui, identity, key, tr(label), info[option].as_f64()) {
+                    let edited = Row::new().id_salt((key, "pair")).show(ui, |ui, _| {
+                        caption(ui, tr(label));
+                        count(ui, identity, key, tr(label), info[option].as_f64())
+                    });
+                    if let Some(v) = edited.inner.flatten() {
                         run("table.options", json!({ (option): v.max(0.0) as u64 }), false);
                     }
                 }

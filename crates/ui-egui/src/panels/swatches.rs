@@ -491,7 +491,7 @@ mod framework {
     use craft_ui_widgets::runtime::drag::{DragPreview, DropMark, DropTarget};
     use craft_ui_widgets::runtime::env::{Env, Label, UnitKind};
     use craft_ui_widgets::runtime::focus::KeyUse;
-    use craft_ui_widgets::style::{ComponentStyle, DataColor, GlyphRole, StyleColor, StyleCx, UiTokens};
+    use craft_ui_widgets::style::{ComponentStyle, DataColor, FocusLook, GlyphRole, StyleColor, StyleCx, UiTokens};
     use craft_ui_widgets::text::NumberField;
     use craft_ui_widgets::value_drag::{Slider, SliderThumb, TrackFace};
     use designcraft_color::{ColorType, SwatchValue};
@@ -589,6 +589,99 @@ mod framework {
 
     impl Glyph for Proxy {
         fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, _color: Color32, _mirrored: bool) {
+            self.draw(painter, rect);
+        }
+    }
+
+    /// The proxy as a button of its own size: the pair of squares at the size the panel has always drawn them (an icon
+    /// button's glyph is the control's icon size, too small for two squares one over the other). A click or the keyboard
+    /// brings the other of fill and stroke to the front.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(content_painter)]
+    struct ProxyButton {
+        #[common]
+        common: Common,
+        proxy: Proxy,
+        clicked: bool,
+    }
+
+    impl ProxyButton {
+        fn new(label: impl Into<Label>, proxy: Proxy) -> Self {
+            ProxyButton { common: Common::new(), proxy, clicked: false }.label(label)
+        }
+    }
+
+    /// The look of the proxy button: no surface of its own, the squares are its painting, and a focus ring around it.
+    #[derive(Clone, Debug, PartialEq)]
+    struct ProxyButtonStyle {
+        focus: FocusLook,
+    }
+
+    impl ComponentStyle for ProxyButtonStyle {
+        fn focus(&self) -> Option<&FocusLook> {
+            Some(&self.focus)
+        }
+
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// What the proxy button reports: its response and whether it was activated.
+    #[derive(Debug)]
+    struct ProxyOutput {
+        response: egui::Response,
+        clicked: bool,
+    }
+
+    impl Outcome for ProxyOutput {
+        type Value = NoValue;
+
+        fn response(&self) -> &egui::Response {
+            &self.response
+        }
+    }
+
+    impl Component for ProxyButton {
+        const ROLE: Role = Role::BUTTON;
+        const OVERLAYS: bool = false;
+        type Style = ProxyButtonStyle;
+        type Output = ProxyOutput;
+
+        fn style(cx: &StyleCx<'_>, _: ProxyButtonStyleKey) -> ProxyButtonStyle {
+            ProxyButtonStyle { focus: cx.focus_look() }
+        }
+
+        fn measure(&mut self, _: &MeasureCx<'_, Self>) -> Vec2 {
+            vec2(PROXY_SIZE, PROXY_SIZE)
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::CLICK | Sense::FOCUS
+        }
+
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            if cx.activation().is_some() {
+                self.clicked = true;
+            }
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let content = ui.content_painter(cx);
+            self.proxy.draw(&content.painter, cx.rect);
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> ProxyOutput {
+            ProxyOutput { response: cx.response.clone(), clicked: self.clicked }
+        }
+    }
+
+    /// The side of the proxy button, in points: the native proxy's own 27 points and a margin.
+    const PROXY_SIZE: f32 = 30.0;
+
+    impl Proxy {
+        /// Draws the pair of squares in `rect`.
+        fn draw(&self, painter: &egui::Painter, rect: Rect) {
             let t = Tokens::get(painter.ctx());
             // The native proxy's 27-point drawing, scaled to the button's icon.
             let k = rect.width().min(rect.height()) / 27.0;
@@ -1024,7 +1117,7 @@ mod framework {
         ui.add_space(3.0);
         let shown = Row::new().id_salt("swatches-header").show(ui, |ui, _| {
             let tip = tr(&lang, if stroke_front { "Stroke" } else { "Fill" }).to_owned();
-            let toggle = IconButton::new(IconSpec::glyph(&proxy)).id_salt("swatches-proxy").label(tip.clone()).tooltip(tip).show(ui).clicked();
+            let toggle = ProxyButton::new(tip.clone(), proxy).id_salt("swatches-proxy").tooltip(tip).show(ui).clicked;
             let mut affects = None;
             for (k, (icon, tip)) in
                 [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()

@@ -1354,7 +1354,8 @@ fn floating_size(panel: &str) -> egui::Vec2 {
         "characterStyles" | "paragraphStyles" => egui::vec2(290.0, 340.0),
         "glyphs" | "library" | "links" | "preflight" | "dataMerge" => egui::vec2(320.0, 400.0),
         // The Tabs panel spans a text column: its window moves over the frame at the column's width (`TABS_PLACE`).
-        "tabs" => egui::vec2(560.0, 150.0),
+        // Tall enough for the panel strip, the controls (on two rows where Leader and Align On wrap) and the whole ruler.
+        "tabs" => egui::vec2(560.0, 210.0),
         crate::story_editor::PANEL => egui::vec2(560.0, 520.0),
         _ => egui::vec2(280.0, 360.0),
     }

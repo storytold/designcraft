@@ -662,7 +662,13 @@ fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: 
                         }
                     }
                 }
-                FieldGroup::new(if legend.is_empty() { tr("Stroke") } else { legend.to_owned() })
+                FieldGroup::new(if !legend.is_empty() {
+                    legend.to_owned()
+                } else if matches!(kind, Side::Weight) {
+                    tr("Stroke")
+                } else {
+                    tr("Offsets")
+                })
                     .id_salt(("paragraph_sides_fields", key.to_owned(), column))
                     .show(ui, |ui, _| {
                         for i in indices {
@@ -846,12 +852,15 @@ pub(super) fn border_shading(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs,
         });
         corners(lang, ui, d, a, &key("Corners"), units);
         // The offsets, and beside them the edges and width the box follows, as InDesign's.
-        Row::new().id_salt(("paragraph_offsets_row", border)).fill_width().show(ui, |ui, _| {
-            sides(lang, ui, d, a, &key("Offsets"), &tr("Offsets"), Side::Offset(units));
-            FieldGroup::new(tr("Offsets")).id_salt(("paragraph_edges", border)).show(ui, |ui, _| {
-                field(ui, &tr("Top Edge:"), &key("Top"), |ui| choice(ui, d, a, &key("Top"), &tr("Top Edge:"), &tops, true));
-                field(ui, &tr("Bottom Edge:"), &key("Bottom"), |ui| choice(ui, d, a, &key("Bottom"), &tr("Bottom Edge:"), &bottoms, true));
-                field(ui, &tr("Width:"), &key("Width"), |ui| choice(ui, d, a, &key("Width"), &tr("Width:"), &widths, true));
+        // One Offsets box holds the four distances and, beside them, the edges and width the box follows.
+        GroupBox::new(tr("Offsets"), None).id_salt(("paragraph_offsets_box", border)).show(ui, |ui, _| {
+            Row::new().id_salt(("paragraph_offsets_row", border)).show(ui, |ui, _| {
+                sides(lang, ui, d, a, &key("Offsets"), "", Side::Offset(units));
+                FieldGroup::new(tr("Offsets")).id_salt(("paragraph_edges", border)).show(ui, |ui, _| {
+                    field(ui, &tr("Top Edge:"), &key("Top"), |ui| choice(ui, d, a, &key("Top"), &tr("Top Edge:"), &tops, true));
+                    field(ui, &tr("Bottom Edge:"), &key("Bottom"), |ui| choice(ui, d, a, &key("Bottom"), &tr("Bottom Edge:"), &bottoms, true));
+                    field(ui, &tr("Width:"), &key("Width"), |ui| choice(ui, d, a, &key("Width"), &tr("Width:"), &widths, true));
+                });
             });
         });
         if border {

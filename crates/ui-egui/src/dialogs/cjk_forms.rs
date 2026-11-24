@@ -8,7 +8,8 @@ use crate::dialogs::style_cjk::{RUBY_SECTIONS, kinsoku_sets, mojikumi_sets, pick
 use crate::dialogs::text_forms::{self, Spec, Swatches, field, heading, line, message, number_edit, pick, swatch_value, toggle};
 use crate::dialogs::{CharFields, Dialog};
 use craft_ui_panels::sections::GroupBox;
-use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Gap, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::display::Divider;
 use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
 use designcraft_doc::cjk_settings::KentenKind;
@@ -655,8 +656,9 @@ pub(crate) fn ruby(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<b
         field(ui, &ruby_label, "ruby_text", |ui| text_forms::text(ui, d, &ruby_reading, "text", &ruby_label, true));
         message(ui, &hint, false);
         heading(ui, &title);
-        Row::new().id_salt("ruby_layout").fill_width().show(ui, |ui, _| {
+        Row::new().id_salt("ruby_layout").fill_width().gap(Gap::Section).show(ui, |ui, _| {
             super::section_nav(app, ui, d, RUBY_SECTIONS, &title);
+            Divider::vertical().show(ui);
             page(app, ui, d, &section, &cf, None, &doc);
         });
     });
