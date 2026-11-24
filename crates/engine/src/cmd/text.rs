@@ -24,8 +24,8 @@ pub(crate) use edit::delete_selection;
 pub use edit::{PLACEHOLDER, quote_marks};
 use edit::{change_case, delete, delete_surrounding, fill_placeholder, insert};
 pub(crate) use format::{
-    Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_targets, format_targets_pub,
-    justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
+    Target, TypingFormat, apply_char_attrs, effective_char_format, format_chars, format_paras, format_paras_mirrored, format_targets,
+    format_targets_pub, justification_order_error, justification_rows_changed, justification_rows_named, rename_typing_swatch, validate_char_fill,
     validate_justification_order, validate_para_values,
 };
 use format::{break_link, kern_pair, kern_step, link_style, para_toggle, pick_up_format, step_size, swap_fill_stroke};
@@ -235,9 +235,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paragraph Formatting",
             [],
             None,
-            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}}",
+            "{attrs: {align?, leftIndent?, rightIndent?, spaceBefore?, spaceAfter?, sameParaStyleSpacing? (pt, each 0..15552), firstLineIndent?, lastLineIndent? (pt, each -15552..15552), wordSpaceMin?/wordSpaceDesired?/wordSpaceMax? (0..10, 1 = 100%), letterSpaceMin?/…Desired?/…Max? (-1..5), glyphScaleMin?/…Desired?/…Max? (0.5..2) (each row Minimum ≤ Desired ≤ Maximum), autoLeading? (0..5 of the type size), singleWordJustify?: left|center|right|fullyJustified, dropCapLines?, dropCapChars?, dropCapStyle?, dropCapAlignLeft?, dropCapScaleDescenders?, hyphenate?: bool (default true), composer?, opticalMargin?: bool (hang at each character's own size; a story with story.options opticalMargin overrides it), ignoreOpticalMargin?: bool (no hang in the paragraph), tabs?, ruleAbove?/ruleBelow?: {on?, weight?, color?, tint?, columnWidth?, offset?, leftIndent?, rightIndent?} (only the named rule fields change), …}, mirrorAlign?: bool (each paragraph whose direction changes swaps its own left or right alignment)}",
             has_text_or_frames,
-            |s, p| format_paras(s, p.get("attrs").unwrap_or(p))
+            |s, p| match p.get("attrs") {
+                Some(attrs) => format_paras_mirrored(s, attrs, p.get("mirrorAlign").and_then(Value::as_bool).unwrap_or(false)),
+                None => format_paras(s, p),
+            }
         ),
         cmd!("type.align", "Align", [], None, "{align: left|center|right|leftJustified|…|null} (required)", has_text_or_frames, |s, p| {
             let align = p.get("align").cloned().ok_or_else(|| bad("type.align", "`align` required"))?;
@@ -606,6 +609,30 @@ mod alignment_shortcut_tests {
         let bytes = designcraft_idml::export_idml(&s.doc().unwrap().doc);
         s.execute("file.openIdml", &json!({"base64": crate::cmd::base64_encode(&bytes), "name": "in.idml"})).unwrap();
         assert_eq!(story_aligns(&s.doc().unwrap().doc, "Spring"), [Align::FullyJustified, Align::Left]);
+    }
+
+    /// Switching paragraph direction over a mixed selection mirrors each paragraph's own left or
+    /// right alignment (#3123); a paragraph already in that direction keeps its alignment.
+    #[test]
+    fn a_direction_switch_mirrors_each_paragraphs_own_alignment() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "One\nTwo\nThree\nFour";
+        let r = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": text})).unwrap();
+        let sid = r["story"].clone();
+        for (at, align, direction) in
+            [(0, "left", "leftToRight"), (4, "center", "leftToRight"), (8, "right", "leftToRight"), (14, "left", "rightToLeft")]
+        {
+            s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at})).unwrap();
+            s.execute("type.para", &json!({"attrs": {"align": align, "direction": direction}})).unwrap();
+        }
+        s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": text.len()})).unwrap();
+        let rtl = json!({"attrs": {"direction": "rightToLeft"}, "mirrorAlign": true});
+        s.execute("type.para", &rtl).unwrap();
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "One"), [Align::Right, Align::Center, Align::Left, Align::Left]);
+        let ltr = json!({"attrs": {"direction": "leftToRight"}, "mirrorAlign": true});
+        s.execute("type.para", &ltr).unwrap();
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "One"), [Align::Left, Align::Center, Align::Right, Align::Right]);
     }
 }
 
