@@ -444,17 +444,18 @@ mod framework_form {
                 Text::new(tr(app, "Scope:")).show(ui);
                 Text::new(tr(app, "Entire Publication")).show(ui);
             });
-            // Each count is one line across the page, as InDesign's: it does not wrap at the dialog's paragraph width,
-            // and is cut (shown whole in its tooltip) only where the page is narrower than it. A line that wrapped in
-            // the drawn run but not in the measuring one made the block taller than it was measured, and cut its last
-            // line (Colors and Inks) off.
+            // Each count is one whole line across the page, as InDesign's: it neither wraps at the dialog's paragraph
+            // width nor is cut. A line that wrapped in the drawn run but not in the measuring one made the block taller
+            // than it was measured, and cut its last line (Colors and Inks) off.
             Stack::new().id_salt("package_summary_counts").indent(2).fill_width().show(ui, |ui, _| {
                 for (at, (line, warn)) in summary_lines(&app.ui.language, d).into_iter().enumerate() {
                     Row::new().id_salt(("package_summary", at)).fill_width().show(ui, |ui, _| {
                         if warn {
                             Text::new("\u{26A0}").tone(Tone::Warn).show(ui);
                         }
-                        Text::new(line.clone()).elide(Elide::End).sizing(Sizing::FillWidth).show(ui);
+                        // The line's own text is its sample, so its least width is the whole line: the dialog's frame
+                        // is as wide as its content, and a line that may shrink to the other rows' width is cut there.
+                        Text::new(line.clone()).sample(line.clone()).elide(Elide::End).sizing(Sizing::FillWidth).show(ui);
                     });
                 }
             });
