@@ -80,15 +80,33 @@ impl Host {
     }
 }
 
+/// The width in points the dialog opens at: wide enough for the keyboard pane's keys to stay readable beside the key
+/// list.
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_WIDTH: f32 = 1130.0;
+
+/// The share of the window's height the dialog opens at.
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_HEIGHT_SHARE: f32 = 0.9;
+
+/// The least height in points the dialog opens at in a short window.
+#[cfg(not(target_arch = "wasm32"))]
+const OPEN_MIN_HEIGHT: f32 = 480.0;
+
+/// The size the dialog opens at in a window whose content is `content` high: [`OPEN_WIDTH`] wide and most of the
+/// window high. The size the user gives it is remembered over this.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_size(content: f32) -> egui::Vec2 {
+    egui::vec2(OPEN_WIDTH, (content * OPEN_HEIGHT_SHARE).max(OPEN_MIN_HEIGHT))
+}
+
 /// The owner-approved behavior: live editing with Cancel restoring, conflicts asked about, no
 /// double presses, the US keyboard pane, InDesign sets to import, and no rows for the engine
-/// commands only scripts run.
+/// commands only scripts run. The size it opens at follows the window ([`open_size`], set in [`show`]).
 #[cfg(not(target_arch = "wasm32"))]
 fn options() -> Options {
     Options::default().with(|o| {
         o.keyboard = true;
-        // Wide enough for the keyboard pane's keys to stay readable beside the key list.
-        o.width = Some(1130.0);
         o.import_formats = vec![INDESIGN_FORMAT];
         o.visible = Some(crate::keys::listed);
     })
@@ -134,6 +152,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let lang = app.ui.language.clone();
     host.options.title = Some(tr(&lang, "Keyboard Shortcuts").to_owned());
     host.options.custom_set_name = Some(tr(&lang, CUSTOM_SET).to_owned());
+    host.options.size = Some(open_size(ctx.content_rect().height()));
     let words = crate::framework_host::words(&lang);
     let direction = if crate::i18n::is_rtl(&lang) { Direction::Rtl } else { Direction::Ltr };
     let asked_ok = host.pending.iter().any(|p| matches!(p, Pending::Ok));
