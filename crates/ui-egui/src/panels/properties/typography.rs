@@ -309,14 +309,20 @@ mod framework {
         let lv = if auto { c["size"].as_f64().map(|s| s * a["para"]["autoLeading"].as_f64().unwrap_or(1.2)) } else { c["leading"]["value"].as_f64() };
         let (left_w, right_w) = (caption_width(app, ui, &["Size", "Kerning", "Baseline"]), caption_width(app, ui, &["Leading", "Tracking"]));
         let col = (full_width(ui) - 10.0) / 2.0;
-        let b = block(ui, 3.0 * row);
-        let left = |y: f32| cells(b, 0.0, y, col, left_w);
-        let right = |y: f32| cells(b, col + 10.0, y, col, right_w);
+        // Two columns when each field keeps room for its value (automatic leading reads "(14.4 pt)"), else one column of rows.
+        let two = col - left_w.max(right_w) - 6.0 >= 96.0;
+        let wide = left_w.max(right_w);
+        let b = block(ui, if two { 3.0 * row } else { 5.0 * row });
+        let left = |y: f32| if two { cells(b, 0.0, y, col, left_w) } else { cells(b, 0.0, y, b.width().min(wide + 6.0 + 130.0), wide) };
+        let right = |y: f32| if two { cells(b, col + 10.0, y, col, right_w) } else { cells(b, 0.0, y, b.width().min(wide + 6.0 + 130.0), wide) };
+        // The rows' places: the one column puts Leading under Size, and Tracking after Baseline.
+        let (size_y, leading_y, kerning_y, baseline_y, tracking_y) =
+            if two { (0.0, 0.0, row, 2.0 * row, 2.0 * row) } else { (0.0, row, 2.0 * row, 3.0 * row, 4.0 * row) };
         for (k, (cell, name, value, quantity, attrs)) in [
-            (left(0.0), "Size", c["size"].as_f64(), Quantity::Points, "size"),
-            (left(2.0 * row), "Baseline", c["baselineShift"].as_f64(), Quantity::Points, "baselineShift"),
-            (right(0.0), "Leading", lv, Quantity::Points, "leading"),
-            (right(2.0 * row), "Tracking", c["tracking"].as_f64(), Quantity::Plain { decimals: 0 }, "tracking"),
+            (left(size_y), "Size", c["size"].as_f64(), Quantity::Points, "size"),
+            (left(baseline_y), "Baseline", c["baselineShift"].as_f64(), Quantity::Points, "baselineShift"),
+            (right(leading_y), "Leading", lv, Quantity::Points, "leading"),
+            (right(tracking_y), "Tracking", c["tracking"].as_f64(), Quantity::Plain { decimals: 0 }, "tracking"),
         ]
         .into_iter()
         .enumerate()
@@ -334,7 +340,8 @@ mod framework {
             }
         }
         // Kerning keeps a row of its own: its Metrics and Optical words need more room than a column's field has.
-        let (cap, field) = cells(b, 0.0, row, (left_w + 6.0 + 130.0).min(b.width()), left_w);
+        let kerning_label_w = if two { left_w } else { wide };
+        let (cap, field) = cells(b, 0.0, kerning_y, (kerning_label_w + 6.0 + 130.0).min(b.width()), kerning_label_w);
         cell_label(ui, Some(cap), &tr("Kerning"));
         let id = cid(ui, "kerning");
         kerning_field(app, ui, Some(field), id, &c["kerning"]);

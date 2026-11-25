@@ -823,9 +823,12 @@ pub(crate) mod framework {
         })
         .id_salt(("font_field_well", id))
         .show_at(ui, slot);
+        // The search glyph before the family says the field opens a menu that searches.
+        let search = FontGlyph("search");
         let opener = Button::new(label.clone())
             .painted(shown.clone())
             .id(id)
+            .icon(IconSpec::glyph(&search))
             .align(HAlign::Start)
             .variant(Variant::GHOST)
             .tooltip(label.clone())

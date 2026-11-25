@@ -79,7 +79,7 @@ fn inside(at: egui::Pos2, w: f32, canvas: Rect) -> egui::Pos2 {
 mod framework {
     use super::{DesignApp, Rect, Sense, Tokens, Ui, inside, json, panels, vec2, widgets};
     use craft_ui_widgets::buttons::{Button, IconButton, SplitButton};
-    use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Trigger};
+    use craft_ui_widgets::contract::{Bind, Entry, Gap, Props as _, Show as _, ShowContainer as _, Trigger};
     use craft_ui_widgets::display::{Divider, Picture};
     use craft_ui_widgets::layout_components::Row;
     use craft_ui_widgets::list::ThumbAspect;
@@ -173,7 +173,7 @@ mod framework {
         let mut asks: Vec<Ask> = Vec::new();
         let pinned = app.ui.task_bar_pin.is_some();
         ui.horizontal_centered(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
             // Dragging the grip moves the bar, and pins it where it is dropped. The grip is the egui area's own, before the
             // bar: its press is the area's, not a member of the bar's roving group.
             let (g, _) = ui.allocate_exact_size(vec2(12.0, 20.0), Sense::hover());
@@ -191,7 +191,7 @@ mod framework {
             }
             // A framework Bar clips the members that do not fit the width it measured (here the Group and More buttons), so the
             // members sit in a plain row: the bar's surface is the egui frame around it.
-            Row::new().id_salt("task_bar_row").show(ui, |ui, _| {
+            Row::new().id_salt("task_bar_row").gap(Gap::Tight).show(ui, |ui, _| {
                 if has_text || text_frame {
                     text_controls(app, ui, has_text, &tr, &mut asks);
                 } else {

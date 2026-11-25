@@ -443,6 +443,9 @@ impl ItemSource<usize> for Rows {}
 /// The least height of a list well: a few rows, as a list of styles or fonts has in InDesign.
 const LIST_LEAST_HEIGHT: f32 = 96.0;
 
+/// The widths of New Cross-Reference's two lists.
+const XREF_COLUMNS: &[ColumnWidth] = &[ColumnWidth::Fixed(250.0), ColumnWidth::Fixed(250.0)];
+
 /// The least height of New Cross-Reference's lists, which show many styles and paragraphs.
 const XREF_LIST_LEAST_HEIGHT: f32 = 200.0;
 
@@ -929,7 +932,8 @@ fn insert_xref(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
                 }
             }
         } else {
-            Row::new().id_salt("xref_paragraphs").fill_width().show(ui, |ui, _| {
+            // Two lists side by side, each a definite width: a list that fills would take as much room as the window gives.
+            Grid::new(XREF_COLUMNS).id_salt("xref_paragraphs").show(ui, |ui, _| {
                 let at = styles.iter().position(|name| *name == cur_style);
                 if let Some(picked) = pick_list_at_least(ui, "xref_styles", &tr("Paragraph Styles"), &styles, at, 10, XREF_LIST_LEAST_HEIGHT) {
                     d.fields.insert("style".into(), json!(styles[picked]));
