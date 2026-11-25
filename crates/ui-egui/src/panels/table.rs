@@ -110,7 +110,12 @@ mod framework {
     }
 
     fn button(ui: &mut Ui, identity: Identity, key: &str, label: String, (enabled, selected): (bool, bool), tooltip: Option<String>) -> bool {
-        let button = Button::new(label).id_salt(("table-action", identity, key)).enabled(enabled).selected(selected);
+        // A button in its on state shows as the selected choice: the tinted accent a current row has.
+        let on = craft_ui_widgets::style::Variant::look(craft_theme::variant::Emphasis::Soft, craft_theme::variant::Tone::Accent);
+        let mut button = Button::new(label).id_salt(("table-action", identity, key)).enabled(enabled).selected(selected);
+        if selected {
+            button = button.variant(on);
+        }
         match tooltip {
             Some(tooltip) => button.tooltip(tooltip).show(ui).clicked(),
             None => button.show(ui).clicked(),
@@ -255,12 +260,13 @@ mod framework {
             });
             let row = rows.get(r0).cloned().unwrap_or(Value::Null);
             let exactly = row["mode"] == "exactly";
-            Row::new().id_salt("row-height").wrap(true).show(ui, |ui, _| {
+            // One line: the caption, the rule and the height stay together (the measure field is narrow).
+            Row::new().id_salt("row-height").show(ui, |ui, _| {
                 let row_label = tr("Row Height");
                 caption(ui, row_label.clone());
                 let modes: Vec<_> = [("At Least", "atLeast"), ("Exactly", "exactly")].into_iter().map(|(label, mode)| (mode.to_owned(), tr(label))).collect();
                 if let Some(mode) =
-                    table_committed_choice(app, ui, &info, "row-height-mode", &row_label, &modes, if exactly { "exactly" } else { "atLeast" }, 70.0)
+                    table_committed_choice(app, ui, &info, "row-height-mode", &row_label, &modes, if exactly { "exactly" } else { "atLeast" }, 92.0)
                 {
                     run("table.setRowHeight", json!({"mode": mode}), false);
                 }

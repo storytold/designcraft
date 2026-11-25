@@ -53,7 +53,7 @@ fn command_form(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
 /// The control of one parameter.
 /// `layouts` and `command` are the document's layouts and the command the dialog runs.
 fn parameter(ui: &mut Ui, d: &mut Dialog, a: &Attrs, lang: &str, f: &CommandField, label: &str, (layouts, command): (&[(String, (f64, f64))], &str)) {
-    if f.key == "layout" && layouts.len() > 1 {
+    if f.key == "layout" && !layouts.is_empty() {
         // Pick which layout: its name, size and the rest of the draft follow it in Alternate Layout Options.
         let current = d.s("layout");
         let captions: Vec<String> = layouts.iter().map(|(name, _)| name.clone()).collect();
