@@ -368,7 +368,25 @@ fn a_linked_file_over_the_cap_is_refused_instead_of_read() {
     let msg = err.to_string();
     assert!(msg.contains("big.png") && msg.contains("larger than"), "the error names the file and the limit: {msg}");
 
-    // The real cap is the one packaging uses, so an ordinary graphic still loads.
+    // Size check catches oversized files from metadata before reading the payload.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_err() {
+            let err = reload_capped(&path, (bytes.len() - 1) as u64).expect_err("metadata check refuses oversized file without reading it");
+            assert!(err.to_string().contains("larger than"), "{err}");
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    // `reload` aligns with `Storage::Linked`'s 1 GiB cap (`MAX_LINKED_BYTES`) and checks it from metadata.
+    let huge = dir.join("over_limit.tif");
+    std::fs::File::create(&huge).unwrap().set_len(designcraft_doc::asset_data::MAX_LINKED_BYTES + 1).unwrap();
+    let huge_err = reload(&huge).expect_err("a file over MAX_LINKED_BYTES must be refused");
+    assert!(huge_err.to_string().contains("larger than 1024 MB"), "expected MAX_LINKED_BYTES (1024 MB) limit message, got: {huge_err}");
+
+    // The real cap is the one Storage::Linked uses, so an ordinary graphic still loads.
     assert!(reload(&path).is_ok(), "a normal linked graphic is unaffected");
     let _ = std::fs::remove_dir_all(&dir);
 }

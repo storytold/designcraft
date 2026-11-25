@@ -858,19 +858,22 @@ fn reimport(d: &mut Document, sid: StoryId, path: &str, bytes: &[u8], before: Fi
 
 #[cfg(not(target_arch = "wasm32"))]
 fn reload(path: impl AsRef<Path>) -> Result<(Vec<u8>, (u32, u32))> {
-    reload_capped(path, super::interchange::MAX_LINKED_FILE_BYTES)
+    reload_capped(path, designcraft_doc::asset_data::MAX_LINKED_BYTES)
 }
 
 /// A linked graphic read again from disk, and its pixel size, reading at most `cap` bytes.
 ///
 /// How large a linked file is belongs to whoever wrote the document, not to whoever opens it: the
 /// path comes out of the document, and Update, Relink and Relink Folder all follow it. An
-/// unbounded `read` of a link pointing at a multi-GB file exhausted memory (#1596). The cap is
-/// the one packaging already applies to a linked file, and a file over it is refused by name
-/// rather than read.
+/// unbounded `read` of a link pointing at a multi-GB file exhausted memory (#1596). By default
+/// `cap` matches [`designcraft_doc::asset_data::MAX_LINKED_BYTES`], and a file over it is refused
+/// by name rather than read.
 #[cfg(not(target_arch = "wasm32"))]
 fn reload_capped(path: impl AsRef<Path>, cap: u64) -> Result<(Vec<u8>, (u32, u32))> {
     let path = path.as_ref();
+    if crate::io::file_metadata(path).is_some_and(|m| m.len() > cap) {
+        return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));
+    }
     let b = crate::io::read_capped(path, cap).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     if b.len() as u64 > cap {
         return Err(bad("links", format!("{}: the linked file is larger than {} MB", path.display(), cap / (1024 * 1024))));

@@ -337,9 +337,8 @@ impl<'r> Importer<'r> {
             // Every placement of a linked file with one page and crop shares one asset; read the
             // file once.
             let key = (p.clone(), page, pdf_crop);
-            if let Some(id) = self.linked_assets.get(&key) {
-                let size = self.assets.get(id).and_then(|a| svg_viewbox_size(a.data.embedded_bytes()?)).unwrap_or(size);
-                return graphic(*id, size);
+            if let Some(&(id, svg_size)) = self.linked_assets.get(&key) {
+                return graphic(id, svg_size.unwrap_or(size));
             }
             if let Some(d) = (self.read_link)(p) {
                 data = d;
@@ -358,7 +357,8 @@ impl<'r> Importer<'r> {
         });
         // InDesign draws a viewBox-only SVG at one unit to the point: its GraphicBounds are the
         // art's bounds, which can overhang the viewBox, so they must not size the viewBox.
-        let size = svg_viewbox_size(&data).unwrap_or(size);
+        let svg_size = svg_viewbox_size(&data);
+        let size = svg_size.unwrap_or(size);
         let (mime, px) = if preview.is_some() { (None, None) } else { sniff_image(&data) };
         let mime = mime.map(str::to_string).unwrap_or_else(|| model.fallback_mime().to_owned());
         let pixels = px.or_else(|| {
@@ -369,23 +369,24 @@ impl<'r> Importer<'r> {
             uri.as_deref().and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| "image".into());
         let fresh = AssetId(self.alloc());
         let link_path = uri.filter(|p| p.contains('/') || p.contains('\\'));
-        let id = self.asset_index.insert_asset(
-            &mut self.assets,
-            Asset {
-                page,
-                id: fresh,
-                name,
-                mime,
-                link: link_path,
-                data: designcraft_doc::AssetData::embedded(preview.cloned().unwrap_or_else(|| Arc::new(data))),
-                pixels,
-                pdf_crop,
-                proxy,
-                ..Default::default()
-            },
-        );
+        let mut asset = Asset {
+            page,
+            id: fresh,
+            name,
+            mime,
+            link: link_path,
+            data: designcraft_doc::AssetData::embedded(preview.cloned().unwrap_or_else(|| Arc::new(data))),
+            pixels,
+            pdf_crop,
+            proxy,
+            ..Default::default()
+        };
+        if read_from.is_some() {
+            (self.link_asset)(&mut asset);
+        }
+        let id = self.asset_index.insert_asset(&mut self.assets, asset);
         if let Some(key) = read_from {
-            self.linked_assets.insert(key, id);
+            self.linked_assets.insert(key, (id, svg_size));
         }
         graphic(id, size)
     }

@@ -5,7 +5,7 @@
 //! link's trailing names beside the package (where a package moved from its author's computer
 //! keeps them). Links to other computers and devices are not followed
 //! ([`crate::io::document_path`]). Only regular files that hold an image or a graphic format are
-//! read, and only up to [`MAX_LINKED_FILE_BYTES`].
+//! read, and only up to [`designcraft_doc::asset_data::MAX_LINKED_BYTES`].
 
 use designcraft_doc::Document;
 use serde_json::{Value, json};
@@ -144,20 +144,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
 /// beside `package` (the package's file, if it has one), so the automation read root applies to
 /// the paths the package names, and its PDF crops resolved.
 pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Path>) -> designcraft_idml::Result<Document> {
-    let read = |link: &str| -> Option<Vec<u8>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            read_packaged_link(link, package).map(|(_, data, _)| data)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (link, package);
-            None
-        }
-    };
-    let mut d = designcraft_idml::import_idml_with(bytes, &read)?;
-    resolve_pdf_crops(&mut d);
-    Ok(d)
+    import_within(bytes, package, &std::collections::HashMap::new(), designcraft_doc::asset_data::MAX_LINKED_BYTES).map(|(document, _, _)| document)
 }
 
 /// Import IDML bytes; `package` is the package's file (its folder is where links are looked for).
@@ -176,12 +163,24 @@ fn import_report_with_previews(
     package: Option<&std::path::Path>,
     previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
 ) -> Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
+    import_within(bytes, package, previews, designcraft_doc::asset_data::MAX_LINKED_BYTES).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+fn import_within(
+    bytes: &[u8],
+    package: Option<&std::path::Path>,
+    previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
+    cap: u64,
+) -> designcraft_idml::Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
+    crate::asset_io::install();
     #[cfg(not(target_arch = "wasm32"))]
     let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
+    #[cfg(target_arch = "wasm32")]
+    let _ = cap;
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (path, data, fingerprint) = read_packaged_link(link, package)?;
+            let (path, data, fingerprint) = read_packaged_link(link, package, cap)?;
             resolved.borrow_mut().insert(link.to_string(), (path, fingerprint, data.len() as u64));
             Some(data)
         }
@@ -191,29 +190,27 @@ fn import_report_with_previews(
             None
         }
     };
-    let designcraft_idml::Imported { mut document, warnings, story_ids } =
-        designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
-    resolve_pdf_crops(&mut document);
-    #[cfg(not(target_arch = "wasm32"))]
-    let document = {
-        let mut document = document;
-        for asset in document.assets.values_mut() {
-            if let Some((path, fingerprint, len)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
-                // Relocated packages must also use the new path for preflight and link updates.
-                std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
-                // Bytes read from the file stay a link to it; graphics embedded in the IDML (whose
-                // size differs from the file's, or that share no read) stay embedded.
-                if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
-                    link_read_file(std::sync::Arc::make_mut(asset), package);
-                } else if asset.proxy.is_some() {
-                    // An embedded graphic draws its own bytes.
-                    std::sync::Arc::make_mut(asset).proxy = None;
-                }
+    let link_asset = |asset: &mut designcraft_doc::Asset| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((path, fingerprint, len)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
+            // Relocated packages must also use the new path for preflight and link updates.
+            asset.set_link(Some(path), fingerprint);
+            // Bytes read from the file stay a link to it; graphics embedded in the IDML (whose
+            // size differs from the file's, or that share no read) stay embedded.
+            if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
+                link_read_file(asset, package);
+            } else if asset.proxy.is_some() {
+                // An embedded graphic draws its own bytes.
+                asset.proxy = None;
             }
         }
-        resolve_packaged_links(&mut document, package);
-        document
+        #[cfg(target_arch = "wasm32")]
+        let _ = asset;
     };
+    let designcraft_idml::Imported { mut document, warnings, story_ids } = designcraft_idml::import_idml_linked(bytes, &read, previews, &link_asset)?;
+    resolve_pdf_crops(&mut document);
+    #[cfg(not(target_arch = "wasm32"))]
+    resolve_packaged_links(&mut document, package);
     Ok((document, warnings, story_ids))
 }
 
@@ -358,10 +355,6 @@ const MAX_LINK_PATH_BYTES: usize = 128 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_LINK_SUFFIX_PARTS: usize = 8;
 
-/// Largest linked file read when a package is opened (bytes); bigger files stay missing.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) const MAX_LINKED_FILE_BYTES: u64 = 256 * 1024 * 1024;
-
 /// The files to try for `link` in the package at `package`: the link itself, then its trailing
 /// names beside the package (without a package file, only an absolute link). Each is a path
 /// [`crate::io::document_path`] allows.
@@ -447,10 +440,10 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
 }
 
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
-/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path and the size and
-/// time to keep with its bytes ([`super::links::loaded_fingerprint`]).
+/// than `cap` ([`designcraft_doc::asset_data::MAX_LINKED_BYTES`]) holding an image or a graphic,
+/// with its path and the size and time to keep with its bytes ([`super::links::loaded_fingerprint`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>, cap: u64) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
     for path in packaged_link_candidates(link, package) {
         if !crate::io::is_file(&path) {
             continue;
@@ -458,13 +451,13 @@ fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(
         // The version about to be read: one that replaces it during the read (a syncing or
         // network file) has other metadata, and the next Links check compares the bytes.
         let Ok(metadata) = crate::io::metadata(&path) else { continue };
-        if metadata.len() > MAX_LINKED_FILE_BYTES {
+        if metadata.len() > cap {
             continue;
         }
         let before = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
-        let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
-        if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
+        let Ok(bytes) = crate::io::read_capped(&path, cap) else { continue };
+        if bytes.len() as u64 > cap || !is_graphic(&bytes) {
             continue;
         }
         let loaded = super::links::loaded_fingerprint(Some(before), &bytes);
@@ -871,6 +864,42 @@ mod tests {
         assert!(!is_indd("Brochure.idml", b"PK"));
         assert_eq!(without_document_extension("Brochure.INDD"), "Brochure");
         assert_eq!(without_document_extension("notes.txt"), "notes.txt");
+    }
+
+    #[test]
+    fn packaged_links_respect_cap_link_immediately_and_skip_oversized_metadata() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("Links").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (idml, png) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let package = dir.join("x.idml");
+
+        // Over the cap: read_packaged_link skips the file without reading its bytes.
+        let (skipped, _, _) = import_within(&idml, Some(&package), &Default::default(), (png.len() - 1) as u64).unwrap();
+        let skipped_asset = skipped.assets.values().next().unwrap();
+        assert_eq!(skipped_asset.storage, designcraft_doc::Storage::Embedded);
+        assert!(skipped_asset.data.is_empty());
+
+        // Within the cap: imported directly into Storage::Linked (both open and confined import paths).
+        let (linked, _, _) = import_within(&idml, Some(&package), &Default::default(), png.len() as u64).unwrap();
+        let asset = linked.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none());
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+
+        let confined = import_idml_confined(&idml, Some(&package)).unwrap();
+        let confined_asset = confined.assets.values().next().unwrap();
+        assert_eq!(confined_asset.storage, designcraft_doc::Storage::Linked);
+        assert!(confined_asset.data.embedded_bytes().is_none());
+
+        // Sparse file above MAX_LINKED_BYTES (1 GiB) is rejected via metadata without reading.
+        let huge = dir.join("Links").join("huge.png");
+        std::fs::File::create(&huge).unwrap().set_len(designcraft_doc::asset_data::MAX_LINKED_BYTES + 1).unwrap();
+        assert!(read_packaged_link("Links/huge.png", Some(&package), designcraft_doc::asset_data::MAX_LINKED_BYTES).is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
