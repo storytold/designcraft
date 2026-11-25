@@ -16,7 +16,11 @@ fn pinch_id() -> Id {
 /// Turn fractional Ctrl + wheel from a precision touchpad into `Event::Zoom` events.
 pub(super) fn fold_legacy_pinch(ctx: &Context, raw: &mut RawInput) {
     // A native zoom event already carries the pinch; folding the wheel beside it would zoom twice.
+    // Some backends also send the same gesture as Ctrl + wheel in that frame: drop that duplicate,
+    // or egui smooths it into a sideways pan after the zoom frame and moves the point under the
+    // pointer. Ordinary wheel input without Ctrl stays.
     if raw.events.iter().any(|event| matches!(event, Event::Zoom(_))) {
+        raw.events.retain(|event| !matches!(event, Event::MouseWheel { modifiers, .. } if modifiers.ctrl));
         ctx.data_mut(|d| d.remove::<f64>(pinch_id()));
         return;
     }
@@ -125,12 +129,24 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_with_a_zoom_event_is_not_folded() {
+    fn a_frame_with_a_zoom_event_drops_its_ctrl_wheel() {
         let ctx = Context::default();
         configure(&ctx);
-        let mut input = raw(1.0, vec![Event::Zoom(1.2), wheel(MouseWheelUnit::Line, Vec2::new(0.0, 1.0), Modifiers::CTRL)]);
+        let mut input = raw(
+            1.0,
+            vec![
+                Event::Zoom(1.2),
+                wheel(MouseWheelUnit::Line, Vec2::new(0.0, 1.0), Modifiers::CTRL),
+                wheel(MouseWheelUnit::Line, Vec2::new(0.0, 1.0), Modifiers::NONE),
+            ],
+        );
         fold_legacy_pinch(&ctx, &mut input);
-        assert!(matches!(input.events.as_slice(), [Event::Zoom(_), Event::MouseWheel { .. }]));
+        // The duplicate Ctrl + wheel is gone, so there is no smoothing tail to pan afterwards;
+        // the ordinary wheel stays.
+        assert!(matches!(
+            input.events.as_slice(),
+            [Event::Zoom(_), Event::MouseWheel { modifiers, .. }] if !modifiers.ctrl
+        ));
     }
 
     #[test]
