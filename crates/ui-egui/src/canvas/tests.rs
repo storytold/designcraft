@@ -3380,14 +3380,21 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     h.run_steps(2);
     assert!(h.state().app.session.tool_composing());
     let canvas_owner = h.output().platform_output.ime.as_ref().expect("the canvas owns the composition").owner;
-    let field = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field");
-    field.click();
-    // A reset the frames ask for waits for the integration's answer, as egui-winit gives it: a request egui dropped is
-    // retired, a published one completes. The harness is the integration here and answers whatever the steps publish.
+    let at = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field").rect().center();
+    // The click is three frames, one per event: kittest's `Node::click` queues them and `step` runs a frame for each,
+    // keeping only the last frame's output, so the press frame's IME output would never be seen or answered. Each
+    // frame runs here on its own, and the harness answers what each one publishes, as egui-winit does: a request egui
+    // dropped is retired, a published one completes (before the next IME input, below).
+    let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    let click = [("click: move", Some(egui::Event::PointerMoved(at))), ("click: press", Some(press(true))), ("click: release", Some(press(false)))];
+    let idle = (0..4).map(|_| ("after the click", None));
     let mut reset = None;
-    // What each step published and who had the keyboard, for a failure to show.
+    // What each frame published and who had the keyboard, for a failure to show.
     let mut trail = Vec::new();
-    for step in 0..6 {
+    for (step, (label, event)) in click.into_iter().chain(idle).enumerate() {
+        if let Some(event) = event {
+            h.event(event);
+        }
         h.step();
         let output = &h.output().platform_output;
         let retired = output.retired_ime_resets.clone();
@@ -3397,16 +3404,13 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
         let canvas_composing = h.state().app.session.tool_composing();
         let text_edit = h.ctx.text_edit_focused();
         trail.push(format!(
-            "step {step}: ime (owner, generation, interrupt, reset) {ime:?}, retired {retired:?}, field focused {field_focused}, \
-             egui text edit focused {text_edit}, canvas composing {canvas_composing}"
+            "frame {step} ({label}): ime (owner, generation, interrupt, reset) {ime:?}, retired {retired:?}, field focused \
+             {field_focused}, egui text edit focused {text_edit}, canvas composing {canvas_composing}"
         ));
-        for request_id in retired {
-            h.event(egui::Event::ImeResetRetired { request_id });
-        }
-        if request.is_some() {
-            reset = request;
-            break;
-        }
+        // The answers go into the next frame's input, with its own event.
+        h.input_mut().events.extend(retired.into_iter().map(|request_id| egui::Event::ImeResetRetired { request_id }));
+        // The fence waits for the latest request.
+        reset = request.or(reset);
     }
     // A handover may publish no reset at all (the composition can end in the field's own pass); the commit check below
     // reports what each step published either way.
