@@ -3382,7 +3382,14 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     let canvas_owner = h.output().platform_output.ime.as_ref().expect("the canvas owns the composition").owner;
     let field = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field");
     field.click();
-    h.run_steps(2);
+    // The interrupt asks the platform to reset its composition; IME events wait behind that fence until the integration
+    // reports the reset done, as eframe does after the native reset. The harness is the integration here.
+    let mut reset = None;
+    for _ in 0..2 {
+        h.step();
+        reset = h.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request).or(reset);
+    }
+    let reset = reset.expect("interrupting the canvas composition asks the platform for a reset");
     assert!(!h.state().app.session.tool_composing(), "the composition ended where the field took the keyboard");
     assert!(h.state_mut().app.take_ime_discard());
     assert!(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().unwrap().is_focused(), "the field has the keyboard");
@@ -3390,6 +3397,7 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     assert_ne!(ime.owner, canvas_owner, "the field owns the IME, not the canvas");
     let typed = story_text(&mut h.state_mut().app, &sid);
     assert!(typed.contains('い'), "the marked text stays as typed: {typed:?}");
+    h.event(egui::Event::ImeResetCompleted { request_id: reset });
     h.event(egui::Event::Ime(egui::ImeEvent::Commit("X".into())));
     h.run_steps(2);
     let edited = story_text(&mut h.state_mut().app, &sid);
@@ -3410,7 +3418,10 @@ fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
     let press = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p), press(true)]).expect("still at a text caret");
     assert!(ime.should_interrupt_composition);
-    ime_frame(&mut app, &ctx, vec![press(false)]);
+    // The platform resets its composition and reports it done, as the integration does; until then the IME's events
+    // wait behind the fence.
+    let reset = ime.reset_request.expect("the interrupt asks the platform for a reset");
+    ime_frame(&mut app, &ctx, vec![egui::Event::ImeResetCompleted { request_id: reset }, press(false)]);
     assert!(!app.session.tool_composing());
     assert_eq!(story_text(&mut app, &sid), "しょうこ");
     assert!(app.take_ime_discard(), "the host tells the system IME to drop its marked text");
