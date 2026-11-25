@@ -247,6 +247,43 @@ class Checks(unittest.TestCase):
         self.assertNotEqual(lib("mac_nightly_identity_is_team", line, IDENTITY, "ZZZZZ99999")[0], 0)
         self.assertNotEqual(lib("mac_nightly_identity_is_team", line.replace("Developer ID Application", "Apple Development"), IDENTITY, TEAM)[0], 0)
 
+    def zip_check(self, archive, **limits):
+        """The preflight alone, with the archive limits optionally lowered after the library is sourced."""
+        lowered = "".join(f"{name}={value}; " for name, value in limits.items())
+        script = f'. {str(HERE / "nightly-lib.sh")!r}; {lowered}mac_nightly_check_zip_entries "$1"'
+        return subprocess.run(["bash", "-c", script, "lib", str(archive)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).returncode
+
+    def make_zip(self, directory, method=zipfile.ZIP_DEFLATED, files=None):
+        path = Path(directory) / "bundle.zip"
+        with zipfile.ZipFile(path, "w", method) as z:
+            for name, data in (files or {f"{APP}/Contents/MacOS/DesignCraft": b"x" * 4096, f"{APP}/Contents/Info.plist": b"<plist/>"}).items():
+                z.writestr(zipfile.ZipInfo(name), data, compress_type=method)
+        return path
+
+    def test_the_archive_is_bounded_before_anything_is_unpacked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                with self.subTest(method=method):
+                    path = self.make_zip(directory, method)
+                    self.assertEqual(self.zip_check(path), 0, "a normal bundle is accepted")
+                    self.assertNotEqual(self.zip_check(path, MAC_NIGHTLY_ZIP_MAX_ENTRIES=1), 0, "too many entries")
+                    self.assertNotEqual(self.zip_check(path, MAC_NIGHTLY_ZIP_MAX_EXPANDED=1000), 0, "too much expanded data")
+                    self.assertNotEqual(self.zip_check(path, MAC_NIGHTLY_ZIP_MAX_ARCHIVE=10), 0, "too large an archive")
+            bzip = self.make_zip(directory, zipfile.ZIP_BZIP2)
+            self.assertNotEqual(self.zip_check(bzip), 0, "only stored and deflated entries are inflated and counted")
+
+    def test_an_entry_whose_header_understates_its_size_is_refused(self):
+        import struct
+        size = 3_000_000
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.make_zip(directory, files={f"{APP}/Contents/MacOS/DesignCraft": b"\0" * size})
+            self.assertEqual(self.zip_check(path), 0)
+            data = bytearray(path.read_bytes())
+            packed, understated = struct.pack("<I", size), struct.pack("<I", 10)
+            self.assertEqual(data.count(packed), 2, "the local and central headers")
+            path.write_bytes(bytes(data).replace(packed, understated))
+            self.assertNotEqual(self.zip_check(path), 0, "ditto would trust the header; the preflight counts the real output")
+
 
 class Sign(unittest.TestCase):
     def setUp(self):

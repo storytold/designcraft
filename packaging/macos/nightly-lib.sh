@@ -54,14 +54,34 @@ mac_nightly_check_assessment() {
   grep -q 'accepted' <<<"$1" && grep -qx 'source=Notarized Developer ID' <<<"$1"
 }
 
+# Limits on an archive handed to `ditto -x`, set well above a normal Nightly bundle (the stable macOS
+# app is about 280 MB packed) and low enough that a hostile archive cannot fill the runner's disk.
+MAC_NIGHTLY_ZIP_MAX_ARCHIVE=$((1024 * 1024 * 1024))
+MAC_NIGHTLY_ZIP_MAX_EXPANDED=$((2 * 1024 * 1024 * 1024))
+MAC_NIGHTLY_ZIP_MAX_ENTRIES=20000
+
 # Before anything is unpacked: every ZIP entry is a regular file or directory inside the one Nightly
 # bundle, with no absolute path, `..`, backslash or empty component, and no link or special file.
+# The archive is also bounded: its size, entry count and compressed bytes (so entries cannot overlap),
+# and the bytes each entry really expands to, which are counted by inflating it here, not taken from
+# the header that `ditto` would trust. Only stored and deflated entries are accepted.
 mac_nightly_check_zip_entries() {
-  python3 -I - "$1" "$MAC_NIGHTLY_APP" <<'PY' || mac_nightly_die 'the archive has an entry outside the bundle, a link or a special file'
-import stat, sys, zipfile
-archive, app = sys.argv[1:]
-with zipfile.ZipFile(archive) as z:
-    for info in z.infolist():
+  python3 -I - "$1" "$MAC_NIGHTLY_APP" "$MAC_NIGHTLY_ZIP_MAX_ARCHIVE" "$MAC_NIGHTLY_ZIP_MAX_EXPANDED" "$MAC_NIGHTLY_ZIP_MAX_ENTRIES" <<'PY' \
+    || mac_nightly_die 'the archive has an entry outside the bundle, a link, a special file or more data than a Nightly bundle holds'
+import os, stat, struct, sys, zipfile, zlib
+archive, app = sys.argv[1:3]
+max_archive, max_expanded, max_entries = map(int, sys.argv[3:6])
+if os.path.getsize(archive) > max_archive:
+    sys.exit("the archive is larger than a Nightly bundle")
+CHUNK = 1 << 20
+with zipfile.ZipFile(archive) as z, open(archive, "rb") as raw:
+    infos = z.infolist()
+    if len(infos) > max_entries:
+        sys.exit(f"too many entries: {len(infos)}")
+    if sum(info.compress_size for info in infos) > os.path.getsize(archive):
+        sys.exit("entries share compressed data")
+    expanded = 0
+    for info in infos:
         name = info.filename
         parts = name.rstrip("/").split("/")
         mode = info.external_attr >> 16
@@ -69,6 +89,46 @@ with zipfile.ZipFile(archive) as z:
                 or any(part in ("", ".", "..") for part in parts)
                 or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)):
             sys.exit(f"refused entry: {name!r}")
+        if info.is_dir():
+            if info.file_size or info.compress_size:
+                sys.exit(f"directory with data: {name!r}")
+            continue
+        if not info.file_size and not info.compress_size:
+            continue
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            sys.exit(f"unsupported compression in {name!r}")
+        if info.file_size > max_expanded - expanded:
+            sys.exit("the archive expands to more than a Nightly bundle holds")
+        # Inflate the entry's own compressed bytes and count what comes out.
+        raw.seek(info.header_offset)
+        header = raw.read(30)
+        if len(header) != 30 or header[:4] != b"PK\x03\x04":
+            sys.exit(f"bad local header: {name!r}")
+        name_len, extra_len = struct.unpack("<HH", header[26:30])
+        raw.seek(info.header_offset + 30 + name_len + extra_len)
+        left = info.compress_size
+        if info.compress_type == zipfile.ZIP_STORED:
+            if info.compress_size != info.file_size:
+                sys.exit(f"stored entry with a wrong size: {name!r}")
+            total = info.file_size
+        else:
+            inflater = zlib.decompressobj(-15)
+            total = 0
+            while left > 0 and not inflater.eof:
+                data = raw.read(min(CHUNK, left))
+                if not data:
+                    sys.exit(f"truncated entry: {name!r}")
+                left -= len(data)
+                pending = data
+                while pending:
+                    out = inflater.decompress(pending, CHUNK)
+                    total += len(out)
+                    if total > info.file_size or total > max_expanded - expanded:
+                        sys.exit(f"entry expands past its declared size: {name!r}")
+                    pending = inflater.unconsumed_tail
+            if not inflater.eof or left or inflater.unused_data or total != info.file_size:
+                sys.exit(f"entry size does not match its data: {name!r}")
+        expanded += total
 PY
 }
 
