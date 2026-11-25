@@ -1325,7 +1325,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         app.ui.docking_focused = Some(panel);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    open_window_drops(app, &output.window_files);
+    for dropped in &output.window_files {
+        open_window_drops(app, &dropped.files);
+    }
     // Keys pressed in a floating panel's own OS window that nothing there took run the main window's shortcuts.
     crate::menus::forwarded_shortcuts(app, ui.ctx(), output.forwarded_events, output.forwarded_modifiers.unwrap_or_default());
 }
