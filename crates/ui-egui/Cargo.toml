@@ -20,6 +20,8 @@ designcraft-doc = { workspace = true }
 designcraft-fonts = { workspace = true }
 designcraft-compose = { workspace = true }
 designcraft-render = { workspace = true }
+# A page range typed in Export to Interactive PDF is checked with the rules the export applies.
+designcraft-pdf = { workspace = true }
 designcraft-tools = { workspace = true }
 designcraft-engine = { workspace = true }
 designcraft-textimport = { workspace = true }
