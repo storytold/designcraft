@@ -27,7 +27,8 @@ use craft_ui_widgets::menu::{Menu, MenuItem};
 use craft_ui_widgets::primitives::IconSpec;
 use craft_ui_widgets::runtime::drag::{self, DragPreview};
 use craft_ui_widgets::runtime::env::{Direction, Label, with_env};
-use craft_ui_widgets::style::{ComponentStyle, Flags, FocusLook, StyleCx, TypeRole, Variant};
+use craft_ui_widgets::primitives::PaintShape;
+use craft_ui_widgets::style::{ComponentStyle, Flags, FocusLook, StyleColor, StyleCx, TypeRole, Variant};
 use designcraft_doc::SpreadId;
 use egui::{Color32, Pos2, Rect, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};
 use serde_json::json;
@@ -77,6 +78,8 @@ type Paint<'a> = Box<dyn FnOnce(&egui::Painter, Rect, Look) + 'a>;
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PageCellStyle {
     focus: FocusLook,
+    /// The fill of a chosen cell that asks for it: the framework's selected-row colour.
+    selected: StyleColor,
 }
 
 impl ComponentStyle for PageCellStyle {
@@ -144,6 +147,8 @@ pub(super) struct PageCell<'a> {
     dropped: Option<(PageDrag, DropOperation)>,
     moved: Option<f32>,
     follow: bool,
+    /// A chosen cell is filled with the selection colour: how far it is inset from the cell's rect, and its corner radius.
+    fills: Option<(Vec2, u8)>,
 }
 
 impl<'a> PageCell<'a> {
@@ -161,6 +166,7 @@ impl<'a> PageCell<'a> {
             dropped: None,
             moved: None,
             follow: false,
+            fills: None,
         }
         .label(label)
     }
@@ -204,6 +210,13 @@ impl<'a> PageCell<'a> {
         self
     }
 
+    /// The cell, while chosen, is filled with the framework's selection colour, `inset` from its rect and with corners of
+    /// `radius`.
+    pub(super) fn fills_selection(mut self, inset: Vec2, radius: u8) -> Self {
+        self.fills = Some((inset, radius));
+        self
+    }
+
     /// The cell asks the scroll region around it to bring it into view, in each pass it is shown with this on.
     pub(super) fn following(mut self) -> Self {
         self.follow = true;
@@ -228,7 +241,7 @@ impl Component for PageCell<'_> {
     type Output = PageCellOutput;
 
     fn style(cx: &StyleCx<'_>, _: PageCellStyleKey) -> PageCellStyle {
-        PageCellStyle { focus: cx.focus_look() }
+        PageCellStyle { focus: cx.focus_look(), selected: cx.color(cx.tokens.color.state.selected) }
     }
 
     fn measure(&mut self, _: &MeasureCx<'_, Self>) -> Vec2 {
@@ -296,6 +309,10 @@ impl Component for PageCell<'_> {
     }
 
     fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+        if let (true, Some((inset, radius))) = (self.selected, self.fills) {
+            let shape = PaintShape::Rect(cx.rect.shrink2(inset), egui::CornerRadius::same(radius));
+            ui.draw().fill(&shape, cx.style.selected);
+        }
         let Some(paint) = self.paint.take() else { return };
         let content = ui.content_painter(cx);
         paint(&content.painter, cx.rect, self.look);
@@ -650,16 +667,16 @@ fn parent_tile(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document
         (p.parent_thumbnails && ui.is_rect_visible(tile)).then_some(id).flatten().and_then(|id| thumb(app, &ctx, ThumbOf::Parent(id), p.icon_h));
     let (pages, h, unit_w) = (row.pages.clone(), p.icon_h, row.unit_w);
     let short = row.prefix.clone().unwrap_or_else(|| row.label.clone());
-    let (selected_fill, hover_fill, ink, border) = (t.row_selected, t.hover, t.text_strong, t.border);
+    let (hover_fill, ink, border) = (t.hover, t.text_strong, t.border);
     let out = PageCell::button(row.label.clone())
         .id_salt(("pages_parent", id.map(|id| id.0)))
         .chosen(active)
+        .fills_selection(Vec2::ZERO, 0)
         .drags(PageDrag::Parent(id), row.label.clone())
         .tooltip(row.label.clone())
         .painted(move |painter, rect, look| {
-            if active {
-                painter.rect_filled(rect, 0.0, selected_fill);
-            } else if look.hovered {
+            // The selection's fill is the cell's (`fills_selection`); the pointer's tint shows on the others.
+            if !active && look.hovered {
                 painter.rect_filled(rect, 0.0, hover_fill);
             }
             let icon = Rect::from_min_size(pos2(rect.center().x - h * unit_w / 2.0, rect.min.y + 3.0), vec2(h * unit_w, h));
@@ -750,12 +767,16 @@ fn layout_header(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Docume
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), LAYOUT_HEADER_H));
     let (w, h) = layout_size(doc, l);
     let (name, size) = (l.name.clone(), format!("{} × {}", w.round(), h.round()));
-    let (fill, strong, dim) = (if current { t.row_selected } else { t.panel_darker }, t.text_strong, t.text_dim);
+    let (rest, strong, dim) = (t.panel_darker, t.text_strong, t.text_dim);
     let header = PageCell::button(l.name.clone())
         .id_salt(("pages_layout", k))
         .chosen(current)
+        // The current layout's header is filled with the selection colour (`fills_selection`); the others at rest.
+        .fills_selection(vec2(0.0, 2.0), 2)
         .painted(move |painter, rect, _| {
-            painter.rect_filled(rect.shrink2(vec2(0.0, 2.0)), 2.0, fill);
+            if !current {
+                painter.rect_filled(rect.shrink2(vec2(0.0, 2.0)), 2.0, rest);
+            }
             let galley = painter.layout(name.clone(), crate::theme::semibold(11.0), strong, (rect.width() - 26.0).max(8.0));
             let galley =
                 if galley.rows.len() > 1 { painter.layout_no_wrap(truncate(&name, 14), crate::theme::semibold(11.0), strong) } else { galley };
