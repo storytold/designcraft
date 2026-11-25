@@ -639,9 +639,14 @@ fn held(modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::ModifiersChanged(modifiers)
 }
 
+/// Construct a point-unit mouse-wheel event with an unknown source.
+fn wheel_delta(phase: egui::TouchPhase, delta: egui::Vec2, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase, modifiers, source: egui::MouseWheelSource::Unknown }
+}
+
 /// Construct a point-unit vertical mouse-wheel event with an unknown source.
 fn wheel(phase: egui::TouchPhase, up: f32, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, up), phase, modifiers, source: egui::MouseWheelSource::Unknown }
+    wheel_delta(phase, vec2(0.0, up), modifiers)
 }
 
 // Plays `events` with the pointer at `at`, a frame each, and lets the motion settle.
@@ -675,39 +680,131 @@ fn alt_wheel_zooms_at_the_pointer() {
     assert!(scrolled.zoom == back.zoom && scrolled.origin.y < back.origin.y, "{back:?} -> {scrolled:?}");
 }
 
-/// Alt zooms exactly as Ctrl/Cmd does, also when the key is let go while the wheel's motion is
-/// still arriving: the rest of it zooms too and does not scroll the page.
+/// Ctrl/Cmd + wheel pans sideways and does not zoom (#470).
 #[test]
-fn alt_wheel_zooms_like_ctrl_wheel_to_the_end_of_the_motion() {
+fn ctrl_wheel_pans_sideways_and_keeps_the_zoom() {
+    use egui::{Modifiers, TouchPhase::Move};
+    let mut h = new_document();
+    let rect = h.state().canvas_rect.unwrap();
+    let at = rect.center() + vec2(150.0, 90.0);
+    let before = *h.state().view().unwrap();
+    let panned = play(&mut h, at, &[held(Modifiers::COMMAND), wheel(Move, 100.0, Modifiers::COMMAND)]);
+    assert_eq!(panned.zoom, before.zoom, "Ctrl + wheel does not zoom");
+    assert!(panned.origin.x < before.origin.x, "wheel up pans left: {:?} -> {:?}", before.origin, panned.origin);
+    assert!((panned.origin.y - before.origin.y).abs() < 1e-9, "no vertical pan: {:?} -> {:?}", before.origin, panned.origin);
+    let back = play(&mut h, at, &[held(Modifiers::COMMAND), wheel(Move, -100.0, Modifiers::COMMAND)]);
+    assert!((back.origin.x - before.origin.x).abs() < 1e-6, "wheel down pans back: {:?} -> {:?}", panned.origin, back.origin);
+    assert_eq!(back.zoom, before.zoom);
+}
+
+/// A Ctrl/Cmd wheel notch pans as far sideways as the same plain notch scrolls vertically.
+#[test]
+fn ctrl_wheel_pans_as_far_as_a_plain_wheel_notch() {
+    use egui::{Modifiers, TouchPhase::Move};
+    let (mut sideways, mut down) = (new_document(), new_document());
+    let at = sideways.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+    let before = *sideways.state().view().unwrap();
+    let plain_before = *down.state().view().unwrap();
+    let across = play(&mut sideways, at, &[held(Modifiers::COMMAND), wheel(Move, 100.0, Modifiers::COMMAND)]);
+    let vertical = play(&mut down, at, &[held(Modifiers::NONE), wheel(Move, 100.0, Modifiers::NONE)]);
+    let across = before.origin.x - across.origin.x;
+    let vertical = plain_before.origin.y - vertical.origin.y;
+    assert!(across > 0.0 && vertical > 0.0, "{across} and {vertical}");
+    assert!((across - vertical).abs() < vertical * 0.02 + 1e-6, "{across} vs {vertical}");
+}
+
+/// A Ctrl/Cmd motion keeps panning after the key is let go — a trackpad's coasting swipe and a
+/// mouse wheel's smooth tail alike — and never turns into a zoom or a vertical scroll.
+#[test]
+fn ctrl_wheel_keeps_panning_after_ctrl_is_released() {
     use egui::{
         Modifiers,
         TouchPhase::{End, Move, Start},
     };
     const NONE: Modifiers = Modifiers::NONE;
-    // Each motion in steps; the views are compared after every step.
-    let motions: [fn(Modifiers) -> Vec<Vec<egui::Event>>; 4] = [
-        |key| vec![vec![held(key), wheel(Move, 100.0, key)]],
-        // A wheel turned fast, the key let go a frame later.
-        |key| vec![vec![held(key), wheel(Move, 400.0, key), held(NONE)]],
-        // A trackpad swipe that coasts on after the key is let go; once it has ended, the wheel scrolls.
-        |key| {
-            vec![
-                vec![held(key), wheel(Start, 0.0, key), wheel(Move, 50.0, key), held(NONE), wheel(Move, 200.0, NONE)],
-                vec![wheel(End, 0.0, NONE), wheel(Move, 100.0, NONE)],
-            ]
-        },
-        |key| vec![vec![held(key | Modifiers::SHIFT), wheel(Move, 100.0, key | Modifiers::SHIFT)]],
-    ];
-    for (i, motion) in motions.iter().enumerate() {
-        let (mut with_alt, mut with_command) = (new_document_60fps(), new_document_60fps());
-        let at = with_alt.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
-        let start = *with_alt.state().view().unwrap();
-        for (alt, command) in motion(Modifiers::ALT).iter().zip(motion(Modifiers::COMMAND)) {
-            let (alt, command) = (play(&mut with_alt, at, alt), play(&mut with_command, at, &command));
-            assert!(command.zoom > start.zoom, "motion {i} zooms");
-            assert_eq!(alt, command, "motion {i}");
-        }
+    let mut h = new_document_60fps();
+    let at = h.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+    let before = *h.state().view().unwrap();
+    let panned = play(
+        &mut h,
+        at,
+        &[
+            held(Modifiers::COMMAND),
+            wheel(Start, 0.0, Modifiers::COMMAND),
+            wheel(Move, 50.0, Modifiers::COMMAND),
+            held(NONE),
+            wheel(Move, 200.0, NONE),
+        ],
+    );
+    assert_eq!(panned.zoom, before.zoom, "the whole motion pans, never zooms");
+    assert!(panned.origin.x < before.origin.x, "{:?} -> {:?}", before.origin, panned.origin);
+    assert!((panned.origin.y - before.origin.y).abs() < 1e-9, "no vertical scroll: {:?} -> {:?}", before.origin, panned.origin);
+
+    let mut h = new_document_60fps();
+    let at = h.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+    let before = *h.state().view().unwrap();
+    let tail = play(&mut h, at, &[held(Modifiers::COMMAND), wheel(Move, 400.0, Modifiers::COMMAND), held(NONE)]);
+    assert_eq!(tail.zoom, before.zoom, "the smooth tail pans, never zooms");
+    assert!(tail.origin.x < before.origin.x);
+    assert!((tail.origin.y - before.origin.y).abs() < 1e-9);
+    let after = play(&mut h, at, &[held(NONE), wheel(End, 0.0, NONE), wheel(Move, 100.0, NONE)]);
+    assert!(after.origin.y < tail.origin.y, "a later plain wheel scrolls vertically: {:?} -> {:?}", tail.origin, after.origin);
+    assert!((after.origin.x - tail.origin.x).abs() < 1e-9);
+}
+
+/// Ctrl + Alt + wheel still zooms exactly as Alt does: Alt is the wheel zoom.
+#[test]
+fn ctrl_alt_wheel_zooms_like_alt() {
+    use egui::{Modifiers, TouchPhase::Move};
+    let (mut with_alt, mut with_both) = (new_document(), new_document());
+    let at = with_alt.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+    let start = *with_alt.state().view().unwrap();
+    let with_alt = play(&mut with_alt, at, &[held(Modifiers::ALT), wheel(Move, 100.0, Modifiers::ALT)]);
+    let with_both = play(&mut with_both, at, &[held(Modifiers::ALT | Modifiers::COMMAND), wheel(Move, 100.0, Modifiers::ALT | Modifiers::COMMAND)]);
+    assert!(with_alt.zoom > start.zoom, "Alt zooms");
+    assert_eq!(with_alt, with_both, "Ctrl + Alt zooms as Alt does");
+}
+
+/// Shift + wheel and Ctrl + Shift + wheel both pan sideways, with no zoom.
+#[test]
+fn shift_and_ctrl_shift_wheel_pan_sideways() {
+    use egui::{Modifiers, TouchPhase::Move};
+    for key in [Modifiers::SHIFT, Modifiers::SHIFT | Modifiers::COMMAND] {
+        let mut h = new_document();
+        let at = h.state().canvas_rect.unwrap().center() + vec2(150.0, 90.0);
+        let before = *h.state().view().unwrap();
+        let panned = play(&mut h, at, &[held(key), wheel(Move, 100.0, key)]);
+        assert_eq!(panned.zoom, before.zoom, "{key:?}");
+        assert!(panned.origin.x < before.origin.x, "{key:?}: {:?} -> {:?}", before.origin, panned.origin);
+        assert!((panned.origin.y - before.origin.y).abs() < 1e-9, "{key:?}");
     }
+}
+
+/// A pinch (egui's own zoom event) still zooms at the pointer.
+#[test]
+fn pinch_zooms_at_the_pointer() {
+    let mut h = new_document();
+    let rect = h.state().canvas_rect.unwrap();
+    let at = rect.center() + vec2(150.0, 90.0);
+    let before = *h.state().view().unwrap();
+    let under = Xf::new(rect, &before).to_canvas(at);
+    let zoomed = play(&mut h, at, &[egui::Event::Zoom(1.25)]);
+    assert!(zoomed.zoom > before.zoom * 1.2, "{} -> {}", before.zoom, zoomed.zoom);
+    let still = Xf::new(rect, &zoomed).to_canvas(at);
+    assert!((still.x - under.x).abs() < 0.01 && (still.y - under.y).abs() < 0.01, "the point under the pointer stays: {under:?} -> {still:?}");
+}
+
+/// The plain wheel still pans both axes from its own horizontal and vertical deltas.
+#[test]
+fn plain_wheel_still_pans_both_axes() {
+    use egui::{Modifiers, TouchPhase::Move};
+    let mut h = new_document();
+    let at = h.state().canvas_rect.unwrap().center();
+    let before = *h.state().view().unwrap();
+    let moved = play(&mut h, at, &[held(Modifiers::NONE), wheel_delta(Move, vec2(60.0, -40.0), Modifiers::NONE)]);
+    assert_eq!(moved.zoom, before.zoom);
+    assert!(moved.origin.x < before.origin.x, "positive x scrolls left: {:?} -> {:?}", before.origin, moved.origin);
+    assert!(moved.origin.y > before.origin.y, "negative y scrolls down: {:?} -> {:?}", before.origin, moved.origin);
 }
 
 fn units(h: &Harness<'_, DesignApp>) -> (Unit, Unit) {

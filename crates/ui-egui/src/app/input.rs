@@ -2,6 +2,19 @@
 use super::PendingDrop;
 use super::{DesignApp, InputGeneration, Value, menus};
 
+/// Ctrl/Cmd + wheel pans the canvas sideways as Shift + wheel does; only a pinch zooms the wheel.
+///
+/// egui folds a wheel with Ctrl/Cmd into `zoom_delta` and clears `smooth_scroll_delta` before the
+/// canvas sees it, so the canvas cannot tell Ctrl from Alt. With no wheel zoom modifier, egui
+/// folds Ctrl/Cmd (and Shift) into the horizontal scroll delta instead: the canvas pans by it and
+/// leaves Alt as the wheel zoom.
+pub(crate) fn configure_wheel(ctx: &egui::Context) {
+    ctx.options_mut(|o| {
+        o.input_options.zoom_modifier = egui::Modifiers::NONE;
+        o.input_options.horizontal_scroll_modifier = egui::Modifiers::SHIFT | egui::Modifiers::COMMAND;
+    });
+}
+
 impl DesignApp {
     /// Keep pending synthetic input and screenshot settlement repainting while the window may be
     /// hidden.
@@ -23,6 +36,14 @@ impl DesignApp {
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // Set before egui reads this frame's events, so even the first wheel of a session follows
+        // the Ctrl/Cmd pans / Alt zooms contract.
+        configure_wheel(ctx);
+        // Windows precision touchpads and some Linux Wayland compositors report a pinch as
+        // fractional Ctrl + wheel. Turn it back into a zoom before egui folds it into a sideways
+        // scroll, so a pinch keeps zooming while a whole-notch Ctrl + wheel pans.
+        #[cfg(all(not(target_arch = "wasm32"), any(target_os = "windows", target_os = "linux")))]
+        super::legacy_pinch::fold_legacy_pinch(ctx, raw);
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#1295).
         if let Some(window_frame) = self.services.window_frame.as_mut() {

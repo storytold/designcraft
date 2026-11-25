@@ -22,7 +22,7 @@ graphics driver loses the user entirely. Overall numbers: [target-app-parity.md]
 | Multi-monitor, floating document windows | ✓ | ~ one window; New Window for the same document; the window may span monitors up to the GPU's largest texture (16384 px on DirectX 12, Vulkan and Metal hardware), and beyond it draws wrongly instead of closing | ~ | ~ | ✗ |
 | Printing | system print with PPDs, PostScript, separations | PDF to CUPS (`craft-print`) | Windows PDF raster spooler (`craft-print`) | PDF to CUPS (`craft-print`) | browser download |
 | Colour-managed display (monitor profile) | ✓ | ✗ (working CMYK profile simulated; monitor profile not applied) | ✗ | ✗ | ✗ |
-| Touch / pen | Touch workspace (Windows), gestures | trackpad pinch/scroll | ~ | ~ | ~ |
+| Touch / pen | Touch workspace (Windows), gestures | trackpad scroll/pan; pinch zooms | Ctrl/Cmd + wheel pans sideways; precision-touchpad pinch zooms | same | ~ |
 | Multi-core composition | single-threaded composer per story (documented by Adobe as mostly single-threaded) | parallel story composition (rayon), 6.7× on the sample | ✓ | ✓ | single-threaded |
 
 ## Platforms

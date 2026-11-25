@@ -184,18 +184,19 @@ pub fn drop_frame(app: &DesignApp, screen: Option<Pos2>) -> Option<designcraft_d
     (!it.locked && it.path.encloses_area() && it.takes_graphic()).then_some(id)
 }
 
-/// Wheel, pinch and Alt/Ctrl/Cmd + wheel over the canvas: zoom at the pointer, else scroll.
+/// Wheel, pinch and Alt + wheel over the canvas: zoom at the pointer, else pan. egui folds
+/// Ctrl/Cmd + wheel (and Shift + wheel) into a sideways scroll before this runs, so Ctrl pans;
+/// only Alt and a pinch reach the zoom below.
 fn wheel_navigate(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf: &Xf) {
     let alt = wheel_alt(ui);
     if resp.hovered() {
-        let (scroll, zoom_delta, m, hover) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers, i.pointer.hover_pos()));
+        let (scroll, zoom_delta, hover) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.pointer.hover_pos()));
         if let Some(hp) = hover {
             if zoom_delta != 1.0 {
                 zoom_at(app, hp, zoom_delta as f64);
-            } else if m.command && scroll.y != 0.0 {
-                zoom_at(app, hp, (1.0 + scroll.y as f64 * 0.003).clamp(0.5, 2.0));
             } else if alt && scroll != egui::Vec2::ZERO {
-                // Alt + wheel zooms by as much as Ctrl/Cmd + wheel, which egui turns into `zoom_delta`.
+                // Alt + wheel is the wheel zoom; egui keeps Alt vertical, so a mouse wheel's delta
+                // is in scroll.y (and a sideways trackpad swipe is in scroll.x).
                 let speed = ui.ctx().options(|o| o.input_options.scroll_zoom_speed);
                 zoom_at(app, hp, (speed * (scroll.x + scroll.y)).exp() as f64);
             } else if scroll != egui::Vec2::ZERO
