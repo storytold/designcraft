@@ -5496,12 +5496,16 @@ fn layout_line(
         // Single word: Single Word Justification.
         match pp.single_word_justify {
             Align::FullyJustified => {
+                // A kashida's tatweels, and the letter they follow on the line, open no gap: the
+                // tatweels would come apart, or from their letter.
+                let kashida = |g: &Glyph| g.len == 0 && g.ch == '\u{0640}';
                 let gaps: Vec<_> = line
                     .iter()
                     .enumerate()
                     .take(line.len() - 1)
                     .skip(seg)
                     .filter(|(_, g)| !g.moji.active && (!g.locked_advance || g.break_after != Some(false)))
+                    .filter(|&(i, g)| !kashida(g) && !line.get(i + 1).is_some_and(kashida))
                     .map(|(i, _)| i)
                     .collect();
                 if !gaps.is_empty() {
