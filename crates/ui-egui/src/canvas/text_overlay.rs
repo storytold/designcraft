@@ -120,10 +120,10 @@ pub(super) fn draw_text_selection(
     }
 }
 
-/// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
+/// Caret / text highlight inside a table cell or footnote part, offset by its origin.
 #[allow(clippy::too_many_arguments)]
 fn draw_cell_selection(
-    _app: &DesignApp,
+    app: &DesignApp,
     painter: &egui::Painter,
     xf: &Xf,
     doc: &Document,
@@ -132,43 +132,149 @@ fn draw_cell_selection(
     ts: designcraft_doc::TextSel,
     cell: designcraft_doc::CellAddr,
 ) {
-    // Footnote text or a cell: its composed story and where it sits in the frame.
-    let found = match cell.footnote_id() {
-        Some(id) => compose::find_note(cs, id).map(|(fi, n)| (fi, n.origin, n.text.clone())),
-        None => compose::find_cell(cs, cell.table, cell.row, cell.col).map(|(fi, _, pc)| (fi, pc.origin, pc.text.clone())),
-    };
-    let Some((fi, origin, text)) = found else { return };
-    let Some(ft) = cs.frames.get(fi) else { return };
-    let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { return };
-    let m = a * doc.text_xf(it) * designcraft_geom::Affine::translate(origin.to_vec2());
-    let range = ts.range();
-    if !range.is_empty()
-        && let Some(cft) = text.frames.first()
-    {
-        for l in &cft.lines {
-            let s = range.start.max(l.range.start);
-            let e = range.end.min(l.range.end);
-            if s > e || (s == e && !(l.range.end < range.end && e == l.range.end)) {
-                continue;
+    let draw_part = |fi: usize, origin: Point, text: &compose::ComposedStory, draw_caret: bool| {
+        let Some(ft) = cs.frames.get(fi) else { return };
+        let Some(it) = doc.item(ft.frame).or_else(|| doc.anchored_item(ft.frame)) else { return };
+        // Anchored parts have no document location; use the same placement as composition.
+        // Both paths still require their spread to be present on this canvas.
+        let a = if doc.find(ft.frame).is_some() {
+            item_canvas_xf(doc, layout, ft.frame).map(|(a, _)| a)
+        } else {
+            app.session.cache.placement(doc, cs.story, ft.frame).and_then(|p| layout.slot(p.spread).map(|slot| slot.xf * p.xf))
+        };
+        let Some(a) = a else { return };
+        let m = a * doc.text_xf(it) * designcraft_geom::Affine::translate(origin.to_vec2());
+        let range = ts.range();
+        if !range.is_empty()
+            && let Some(cft) = text.frames.first()
+        {
+            for l in &cft.lines {
+                let s = range.start.max(l.range.start);
+                let e = range.end.min(l.range.end);
+                if s > e || (s == e && !(l.range.end < range.end && e == l.range.end)) {
+                    continue;
+                }
+                let past = e == l.range.end && range.end > l.range.end;
+                for q in compose::highlight_quads(l, s, e, past) {
+                    let poly = q.map(|p| xf.to_screen(m * p));
+                    painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+                }
             }
-            let past = e == l.range.end && range.end > l.range.end;
-            for q in compose::highlight_quads(l, s, e, past) {
-                let poly = q.map(|p| xf.to_screen(m * p));
-                painter.add(egui::Shape::convex_polygon(poly.to_vec(), Color32::from_rgba_unmultiplied(80, 140, 255, 110), Stroke::NONE));
+        }
+        if draw_caret
+            && ts.is_caret()
+            && let Some((_, x, bl, asc, desc)) = match cell.footnote_id() {
+                Some(id) => compose::note_caret(cs, id, ts.focus),
+                None => compose::cell_caret(cs, cell.table, cell.row, cell.col, ts.focus),
+            }
+        {
+            let m = a * doc.text_xf(it);
+            let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
+            if caret::visible(painter.ctx(), ts) {
+                painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
+            }
+        }
+    };
+    match cell.footnote_id() {
+        Some(id) => {
+            let caret_part = compose::find_note_part(cs, id, ts.focus);
+            for (fi, ft) in cs.frames.iter().enumerate() {
+                for note in ft.notes.iter().filter(|n| n.id == id) {
+                    let draw_caret = caret_part.is_some_and(|(_, part)| std::ptr::eq(part, note));
+                    draw_part(fi, note.origin, &note.text, draw_caret);
+                }
+            }
+        }
+        None => {
+            if let Some((fi, _, pc)) = compose::find_cell(cs, cell.table, cell.row, cell.col) {
+                draw_part(fi, pc.origin, &pc.text, true);
             }
         }
     }
-    if ts.is_caret()
-        && let Some((_, x, bl, asc, desc)) = match cell.footnote_id() {
-            Some(id) => compose::note_caret(cs, id, ts.focus),
-            None => compose::cell_caret(cs, cell.table, cell.row, cell.col, ts.focus),
+}
+
+#[cfg(test)]
+mod note_overlay_tests {
+    use super::*;
+    use designcraft_doc::build::NewDocument;
+    use designcraft_doc::{AnchoredObject, CellAddr, Content, Item, ItemId, ParaFormat, Shape, SpreadRef, Story, StoryId, TextFrame, TextSel};
+    use std::sync::Arc;
+
+    #[test]
+    fn split_note_overlays_follow_anchored_and_regular_parts() {
+        let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut doc = Document::new(&NewDocument { facing_pages: false, ..Default::default() });
+        let layer = doc.default_layer();
+        let (_, host) = doc
+            .add_text_frame(SpreadRef::Doc(0), designcraft_geom::Rect::new(60.0, 70.0, 300.0, 600.0), layer, "Host", ParaFormat::default())
+            .unwrap();
+        let (fid, sid) = (ItemId(doc.alloc()), StoryId(doc.alloc()));
+        let mut story = Story::with_text(sid, "Opening.\nReference.\nClosing.", ParaFormat::default());
+        story.frames.push(fid);
+        let text = (0..40).map(|i| format!("Note line {i}.")).collect::<Vec<_>>().join("\n");
+        let id = story.insert_note(14, &text, ParaFormat::default()).unwrap();
+        doc.stories.insert(sid, Arc::new(story));
+        let mut item =
+            Item::new(fid, layer, Shape::Rectangle, designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 220.0, 360.0)));
+        item.content = Content::Text(TextFrame { story: sid, options: Default::default() });
+        doc.story_mut(host).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+        let (next, empty) =
+            doc.add_text_frame(SpreadRef::Doc(0), designcraft_geom::Rect::new(320.0, 40.0, 540.0, 400.0), layer, "", ParaFormat::default()).unwrap();
+        // Native files can contain anchored text threads; the threading command only accepts
+        // spread frames, so construct this persisted arrangement directly.
+        doc.stories.remove(&empty);
+        doc.item_mut(next).unwrap().text_frame_mut().unwrap().story = sid;
+        doc.story_mut(sid).unwrap().frames.push(next);
+        let cs = app.session.cache.get(&doc, sid, None);
+        let parts: Vec<_> = cs.frames.iter().flat_map(|f| f.notes.iter().map(move |n| (f, n))).collect();
+        assert_eq!(parts.len(), 2, "the fixture must split from an anchor into a spread frame");
+        assert_eq!((parts[0].0.frame, parts[1].0.frame), (fid, next));
+        assert!(doc.find(fid).is_none());
+        let placement = app.session.cache.placement(&doc, sid, fid).unwrap();
+        let layout = CanvasLayout::new(&doc, false);
+        let xf = Xf { min: Pos2::ZERO, origin: Point::ORIGIN, zoom: 1.0, rot: 0, pivot: Pos2::ZERO };
+        let paint = |layout: &CanvasLayout, ts| {
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("note-overlay-test")));
+                draw_cell_selection(&app, &painter, &xf, &doc, layout, &cs, ts, CellAddr::footnote(id));
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+        let selected = TextSel { story: sid, anchor: 0, focus: text.len(), frame: None, cell: Some(CellAddr::footnote(id)) };
+        let shapes = paint(&layout, selected);
+        let highlights = shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Path(_))).count();
+        let expected: usize = parts
+            .iter()
+            .map(|(_, n)| {
+                n.text.frames[0]
+                    .lines
+                    .iter()
+                    .map(|l| compose::highlight_quads(l, l.range.start, l.range.end, l.range.end < text.len()).len())
+                    .sum::<usize>()
+            })
+            .sum();
+        assert_eq!(highlights, expected, "every line in both parts must be highlighted");
+        for (ft, note) in parts {
+            let pos = note.text.frames[0].range.start;
+            let ts = TextSel { anchor: pos, focus: pos, ..selected };
+            let (_, x, bl, asc, desc) = compose::note_caret(&cs, id, pos).unwrap();
+            let a = if ft.frame == fid {
+                layout.slot(placement.spread).unwrap().xf * placement.xf
+            } else {
+                item_canvas_xf(&doc, &layout, next).unwrap().0
+            };
+            let m = a * doc.text_xf(doc.item(ft.frame).or_else(|| doc.anchored_item(ft.frame)).unwrap());
+            let want = [xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc))];
+            let shapes = paint(&layout, ts);
+            assert!(
+                shapes.iter().any(|s| matches!(&s.shape, egui::Shape::LineSegment { points, .. } if *points == want)),
+                "caret must use the selected part's painted transform"
+            );
         }
-    {
-        let m = a * doc.text_xf(it);
-        let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
-        if caret::visible(painter.ctx(), ts) {
-            painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
-        }
+        let absent = CanvasLayout::default();
+        assert!(paint(&absent, selected).is_empty(), "neither anchored nor regular parts may paint on an absent spread");
     }
 }
 

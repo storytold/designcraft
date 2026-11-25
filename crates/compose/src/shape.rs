@@ -178,8 +178,7 @@ pub struct SubstCtx {
     /// Footnote reference labels by story byte of the reference character.
     pub notes: HashMap<usize, String>,
     /// Footnote reference formatting: position and character style (`None` = the text's).
-    pub note_position: designcraft_doc::Position,
-    pub note_style: Option<String>,
+    pub note_formats: HashMap<usize, (designcraft_doc::Position, String)>,
     /// Cross-reference texts by story byte of the cross-reference mark.
     pub xrefs: HashMap<usize, String>,
     /// Anchored objects by story byte of their mark.
@@ -474,14 +473,6 @@ fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Ve
         }
         // Footnote references take the reference position / character style; endnote references
         // are superscript.
-        let mut rf = fmt.clone();
-        if let Some(cs) = &sub.note_style {
-            rf.style = cs.clone();
-        }
-        rf.over.position = Some(sub.note_position);
-        let rprops = styles.resolve_char(&resolved_base, &rf);
-        let rstyle = table.intern(db, &rprops);
-        let renv = table.env_for(auto_leading, rstyle);
         let mut ef = fmt.clone();
         ef.over.position = Some(designcraft_doc::Position::Superscript);
         let eprops = styles.resolve_char(&resolved_base, &ef);
@@ -497,6 +488,16 @@ fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Ve
             if m.starts_with(designcraft_doc::ENDNOTE_REF) {
                 pieces.push(Piece { range: i..e, props: eprops.clone(), style: estyle, env: eenv, hidden: false, composite_note: false });
             } else {
+                let mut rf = fmt.clone();
+                if let Some((position, cs)) = sub.note_formats.get(&i) {
+                    if cs != designcraft_doc::NO_CHAR_STYLE {
+                        rf.style = cs.clone();
+                    }
+                    rf.over.position = Some(*position);
+                }
+                let rprops = styles.resolve_char(&resolved_base, &rf);
+                let rstyle = table.intern(db, &rprops);
+                let renv = table.env_for(auto_leading, rstyle);
                 if styles.composite_font(&rprops.font_family).is_some() {
                     // Shaped entry by entry below, from the run's env: the composite font's own
                     // name is never an installed family, so `renv` would force glyph fallback.

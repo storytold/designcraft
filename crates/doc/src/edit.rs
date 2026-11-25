@@ -630,6 +630,27 @@ impl Document {
         item.xf * self.text_local(item)
     }
 
+    /// Whether an item and all its containing groups and layers are shown.
+    pub fn item_is_visible(&self, id: ItemId) -> bool {
+        let Some(loc) = self.find(id) else { return false };
+        let Some(spread) = self.spread(loc.spread) else { return false };
+        let mut children = spread.items.as_slice();
+        for (depth, &index) in loc.path.iter().enumerate() {
+            let Some(item) = children.get(index) else { return false };
+            if item.hidden || self.layer(item.layer).is_some_and(|layer| !layer.visible) {
+                return false;
+            }
+            if let Some(&next) = loc.path.get(depth + 1)
+                && !item.states.is_empty()
+                && next != item.active_state
+            {
+                return false;
+            }
+            children = item.children();
+        }
+        true
+    }
+
     /// Hit test: the frontmost visible, unlocked-layer item on spread `si` containing `p` (spread space).
     /// Frames hit by area if they have a fill or are text/graphic frames; otherwise near the outline.
     pub fn hit_item(&self, si: usize, p: Point, tol: f64) -> Option<ItemId> {
@@ -1208,7 +1229,7 @@ mod placed_item_tests {
         );
         for _ in 0..MAX_PLACEMENT_DEPTH + 2 {
             let mut outer = Story::new(sid);
-            outer.notes.push(Arc::new(crate::Footnote { id: 1, text: story }));
+            outer.notes.push(Arc::new(crate::Footnote { id: 1, series: 0, text: story }));
             story = outer;
         }
         d.stories.insert(sid, Arc::new(story));

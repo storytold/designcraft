@@ -63,7 +63,7 @@ impl<'a> Ex<'a> {
             show_prefix_suffix: Some(affix.into()),
             marker_positioning: Some(names::note_marker_out(o.ref_position).into()),
         };
-        crate::xml::from_craft(values.to_el())
+        crate::xml::from_craft(values.to_el()).attr("NoSplitting", !o.allow_split)
     }
 
     /// `<Footnote>`: the footnote's paragraphs, the first starting with the footnote number marker

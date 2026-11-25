@@ -205,6 +205,41 @@ impl Exporter<'_> {
         s.pop();
     }
 
+    /// Margin notes can paint on an adjacent page even when this item's own box misses it.
+    /// Include containing groups and anchored frames; their ordinary page clips still apply.
+    fn may_paint_margin_notes(&self, it: &Item) -> bool {
+        let mut items = vec![it];
+        let mut stories = Vec::new();
+        let mut seen_items = std::collections::HashSet::new();
+        let mut seen_stories = std::collections::HashSet::new();
+        while !items.is_empty() || !stories.is_empty() {
+            if let Some(item) = items.pop() {
+                if !seen_items.insert(std::ptr::from_ref(item)) || !item_exported(item) {
+                    continue;
+                }
+                items.extend(drawn_children(item).map(AsRef::as_ref));
+                if let Some(story) = item.text_frame().and_then(|frame| self.doc.story(frame.story)) {
+                    stories.push(story);
+                }
+            } else if let Some(story) = stories.pop() {
+                if !seen_stories.insert(std::ptr::from_ref(story)) {
+                    continue;
+                }
+                if story
+                    .notes
+                    .iter()
+                    .any(|note| matches!(self.doc.note_options(note.series).placement, designcraft_doc::NotePlacement::Margin { .. }))
+                {
+                    return true;
+                }
+                items.extend(story.objects.iter().map(|object| &object.item));
+                stories.extend(story.tables.values().flat_map(|table| table.cells.iter().map(|cell| &cell.text)));
+                stories.extend(story.notes.iter().chain(&story.endnotes).map(|note| &note.text));
+            }
+        }
+        false
+    }
+
     fn item_inner(&mut self, s: &mut Surface, it: &Item, parent: Affine, page: Option<usize>) {
         if !item_exported(it) {
             return;
@@ -212,7 +247,7 @@ impl Exporter<'_> {
         let ds = &it.effects.drop_shadow;
         let grow = it.stroke.extent() + 2.0 + if ds.on { ds.distance.abs() + ds.size.abs() } else { 0.0 };
         let vb = parent.transform_rect_bbox(it.bounds()).inflate(grow, grow);
-        if !rects_overlap(vb, self.clip) {
+        if !rects_overlap(vb, self.clip) && !self.may_paint_margin_notes(it) {
             return;
         }
         let xf = parent * it.xf;

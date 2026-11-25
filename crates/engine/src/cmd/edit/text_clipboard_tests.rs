@@ -333,3 +333,27 @@ fn change_case_leaves_georgian_without_initial_capitals() {
     s.execute("type.changeCase", &json!({"case": "upper"})).unwrap();
     assert_eq!(s.doc().unwrap().doc.story(a).unwrap().text, "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ ᲛᲡᲝᲤᲚᲘᲝ. ᲐᲮᲐᲚᲘ WORD");
 }
+
+#[test]
+fn formatted_paste_preserves_series_meaning_when_document_ids_conflict() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = frame(&mut s, "Source body");
+    let series = s.execute("footnote.series.create", &json!({"name":"Sources","style":"lowerLetters"})).unwrap()["id"].clone();
+    s.execute("footnote.insert", &json!({"series":series,"text":"Source note"})).unwrap();
+    let len = s.doc().unwrap().doc.story(a).unwrap().len();
+    s.execute("text.select", &json!({"story":a.0,"anchor":0,"focus":len})).unwrap();
+    s.execute("edit.copy", &json!({})).unwrap();
+    s.execute("file.new", &json!({})).unwrap();
+    let other = s.execute("footnote.series.create", &json!({"name":"Other","startAt":20})).unwrap()["id"].clone();
+    assert_eq!(other, series);
+    let b = frame(&mut s, "Target body");
+    s.execute("edit.paste", &json!({})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    let note = &d.story(b).unwrap().notes[0];
+    assert_ne!(json!(note.series), other);
+    assert_eq!(d.note_options(note.series).style, designcraft_doc::NumberStyle::LowerLetters);
+    assert_eq!(d.note_options(other.as_u64().unwrap()).start_at, 20);
+    s.execute("edit.paste", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.note_series.len(), 2);
+}

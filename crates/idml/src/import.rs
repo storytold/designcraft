@@ -805,6 +805,7 @@ impl<'r> Importer<'r> {
             toc: self.toc.take(),
             text_variables: self.text_vars.take().unwrap_or_else(designcraft_doc::vars::defaults),
             footnote_options: std::mem::take(&mut self.footnote_options),
+            note_series: Vec::new(),
             xref_formats: std::mem::take(&mut self.xref_formats),
             index: None,
             created: self.created.unwrap_or_else(designcraft_doc::vars::now),

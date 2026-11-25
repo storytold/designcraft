@@ -52,7 +52,8 @@ impl<'r> Importer<'r> {
                 tables.insert(t.id, Arc::new(t));
             }
         }
-        let notes = notes.into_iter().enumerate().map(|(i, text)| Arc::new(designcraft_doc::Footnote { id: i as u64 + 1, text })).collect();
+        let notes =
+            notes.into_iter().enumerate().map(|(i, text)| Arc::new(designcraft_doc::Footnote { id: i as u64 + 1, series: 0, text })).collect();
         let mut anchor_list = Vec::new();
         for (k, (me, name)) in anchors.into_iter().enumerate() {
             let aid = (id.0 << 24) | (k as u64 + 1);

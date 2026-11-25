@@ -1,8 +1,10 @@
 # DesignCraft roadmap
 
+- **2026-11-20** · Margin note series can stack contiguously from the page margin top with `placement.stack: "top"`; omitted stack retains beside-anchor placement. Native saves retain the mode; IDML warns that margin placement becomes ordinary footnotes (#2871).
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
+- 2026-11-16: a long footnote continues at the foot of the next column or frame; Allow Split Footnotes (IDML `NoSplitting`) turns it off (#1941).
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
@@ -14,6 +16,8 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-17** · A pending split note advances before deferring the next reference, using its own series' splitting and spacing options. Deleting a series resets memberships inside table cells and note bodies before its numeric ID can be reused; undo restores them (#2871, #1941). No readiness percentage change.
+- **2026-11-16** · Independent footnote series retain their own numbering and styles, with series 0 preserving existing documents and commands. Margin series follow their reference baselines, mirror inside/outside on facing pages, and stack across series without shortening body text; overflowing notes remain placed and report warnings. Margin-note clicks respect foreground frames and table borders; anchored hosts share the page stack, indexed wrap neighbours retain stacked-note host placements and displayed variable/reference text, and PDF exports retain notes beyond the host page. Cached layouts follow resolved cross-references, running headers and table-cell note spacing changes. Running-header source pages also use resolved references (#2871). No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot

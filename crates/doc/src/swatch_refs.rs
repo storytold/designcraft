@@ -271,6 +271,9 @@ impl Document {
             n.s(b);
         }
         n.s(&mut self.footnote_options.rule.color);
+        for series in &mut self.note_series {
+            n.s(&mut series.options.rule.color);
+        }
         n.styles(self.styles_mut());
         for sp in self.spreads.iter_mut().chain(self.parents.iter_mut()) {
             for it in &mut Arc::make_mut(sp).items {

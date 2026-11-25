@@ -728,6 +728,9 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
         rename(&mut st.default_paragraph);
         let (fo, eo) = (&mut d.footnote_options, &mut d.endnote_options);
         [&mut fo.para_style, &mut eo.para_style, &mut eo.heading_style].into_iter().for_each(rename);
+        for series in &mut d.note_series {
+            rename(&mut series.options.para_style);
+        }
         d.toc.iter_mut().flat_map(|t| t.entries.iter_mut().map(|e| &mut e.style)).for_each(rename);
         for t in d.toc.iter_mut() {
             let formats = t.entries.iter_mut().map(|e| &mut e.entry_style).chain([&mut t.title_style]);
@@ -750,6 +753,9 @@ fn redirect_style_refs(d: &mut designcraft_doc::Document, para: bool, from: &str
         }
         rename(&mut st.default_character);
         rename(&mut d.footnote_options.ref_char_style);
+        for series in &mut d.note_series {
+            rename(&mut series.options.ref_char_style);
+        }
     }
     // The table of contents' character styles ([None] is stored as no style).
     if !para && let Some(toc) = d.toc.as_mut() {

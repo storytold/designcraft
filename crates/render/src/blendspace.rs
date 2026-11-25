@@ -112,6 +112,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         toc,
         text_variables,
         footnote_options,
+        note_series,
         xref_formats,
         index,
         created,
@@ -154,6 +155,7 @@ fn same_document(old: &Document, new: &Document) -> bool {
         && old.toc == *toc
         && old.text_variables == *text_variables
         && old.footnote_options == *footnote_options
+        && old.note_series == *note_series
         && old.xref_formats == *xref_formats
         && old.index == *index
         && old.created == *created
