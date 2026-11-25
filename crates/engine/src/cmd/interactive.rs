@@ -65,7 +65,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(Value::Null)
             })
         }),
-        cmd!("bookmark.add", "New Bookmark", [], None, "{name?, page? (1-based; default: current selection's page or 1)}", has_doc, |s, p| {
+        cmd!("bookmark.add", "New Bookmark", [], None, "{name?, page? (1-based; default: 1)}", has_doc, |s, p| {
             let page = p.get("page").and_then(Value::as_u64).map(|v| (v as usize).saturating_sub(1)).unwrap_or(0);
             let n = s.doc()?.doc.page_count();
             if page >= n {
