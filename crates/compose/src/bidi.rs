@@ -7,7 +7,11 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
     let mut direction = D::Default;
     let mut previous: Option<(usize, usize, usize)> = None;
     for g in glyphs {
-        if g.len == 0
+        // Generated clusters share the marker's byte, but their displayed letters determine
+        // bidi order. Empty continuations keep the preceding cluster's offsets.
+        let generated = g.generated_text.as_deref().filter(|s| !s.is_empty());
+        if generated.is_none()
+            && g.len == 0
             && let Some((byte, start, end)) = previous
             && byte == g.byte
         {
@@ -27,7 +31,9 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
             }
         }
         g.bidi_offset = text.len();
-        if g.len > 0 && g.display_char == g.ch {
+        if let Some(shown) = generated {
+            text.push_str(shown);
+        } else if g.len > 0 && g.display_char == g.ch {
             match source.get(g.byte..g.byte.saturating_add(g.len)) {
                 Some(s) => text.push_str(s),
                 None => text.push(g.display_char),
@@ -36,7 +42,9 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
             text.push(g.display_char);
         }
         g.bidi_end = text.len();
-        previous = (g.len > 0).then_some((g.byte, g.bidi_offset, g.bidi_end));
+        if g.len > 0 || generated.is_some() {
+            previous = Some((g.byte, g.bidi_offset, g.bidi_end));
+        }
     }
     if direction != D::Default {
         text.push('\u{202C}');
@@ -49,15 +57,28 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
 pub fn resolve_mirroring(glyphs: &mut [Glyph], info: &unicode_bidi::BidiInfo<'_>) {
     for i in 0..glyphs.len() {
         let g = &glyphs[i];
-        if g.len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte) {
-            continue;
-        }
+        let ch = if let Some(shown) = g.generated_text.as_deref() {
+            if shown.is_empty() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte && next.bidi_offset == g.bidi_offset) {
+                continue;
+            }
+            let mut chars = shown.chars();
+            let Some(ch) = chars.next() else { continue };
+            if chars.next().is_some() {
+                continue;
+            }
+            ch
+        } else {
+            if g.len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte) {
+                continue;
+            }
+            g.display_char
+        };
         let rtl = info.levels.get(g.bidi_offset).is_some_and(|l| l.is_rtl());
         if rtl == g.shaping_rtl {
             continue;
         }
-        let Some(mirror) = unicode_bidi_mirroring::get_mirrored(g.display_char) else { continue };
-        let gid = g.face.glyph_for(if rtl { mirror } else { g.display_char });
+        let Some(mirror) = unicode_bidi_mirroring::get_mirrored(ch) else { continue };
+        let gid = g.face.glyph_for(if rtl { mirror } else { ch });
         if gid != 0 {
             let g = &mut glyphs[i];
             g.adv += (g.face.advance(gid) - g.face.advance(g.gid)) * g.sx;

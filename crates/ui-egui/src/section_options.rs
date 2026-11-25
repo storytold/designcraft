@@ -11,7 +11,7 @@ use crate::dialogs::Dialog;
 use crate::theme::Tokens;
 
 /// The page numbering styles and how the Style menus show them.
-const STYLES: [(NumberStyle, &str); 8] = [
+const STYLES: [(NumberStyle, &str); 10] = [
     (NumberStyle::Arabic, "1, 2, 3, 4…"),
     (NumberStyle::UpperRoman, "I, II, III, IV…"),
     (NumberStyle::LowerRoman, "i, ii, iii, iv…"),
@@ -20,6 +20,8 @@ const STYLES: [(NumberStyle, &str); 8] = [
     (NumberStyle::ArabicLeadingZero, "01, 02, 03…"),
     (NumberStyle::ArabicThreeDigits, "001, 002, 003…"),
     (NumberStyle::ArabicFourDigits, "0001, 0002, 0003…"),
+    (NumberStyle::Hebrew, "א׳, ב׳, ג׳, ד׳…"),
+    (NumberStyle::HebrewPlain, "א, ב, ג, ד…"),
 ];
 /// The OK and Cancel column beside the options.
 pub(crate) const ACTIONS_W: f32 = 104.0;
@@ -297,6 +299,16 @@ mod tests {
         crate::dialogs::confirm(&mut app).unwrap();
         let doc = &app.session.active().unwrap().doc;
         assert_eq!(doc.page_name(2), "3", "unchecking Start Section removes the section");
+    }
+
+    #[test]
+    fn hebrew_section_and_chapter_styles_apply_from_the_dialog() {
+        let mut app = open_app();
+        set(&mut app, json!({"style": "hebrew", "chapterStyle": "hebrewPlain", "chapterSource": "userDefined", "chapterStart": "15"}));
+        crate::dialogs::confirm(&mut app).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!(doc.page_name(0), "א׳");
+        assert_eq!(doc.chapter_label(), "טו");
     }
 
     #[test]

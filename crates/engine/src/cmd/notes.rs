@@ -22,7 +22,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Document Footnote Options…",
             ["Type"],
             None,
-            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
+            "{style?: arabic|upperRoman|lowerRoman|upperLetters|lowerLetters|symbols|kanji|hebrew|hebrewPlain, startAt?, restart?: never|page|spread|section, prefix?, suffix?, affixIn?: none|reference|text|both, refPosition?: superscript|subscript|normal|otSuperscript, refCharStyle?, paraStyle?, separator?, spaceBefore?, spaceBetween?, firstBaseline?: ascent|capHeight|leading|xHeight|emboxHeight|fixed, firstBaselineMin?, spanColumns?, rule?: {on, weight, color, tint, width, offset, leftIndent}} → the options (no params: just read them)",
             has_doc,
             options
         ),
@@ -201,6 +201,32 @@ mod tests {
         let r = s.execute("frame.create", &json!({"rect": [72, 72, 300, 400], "content": "text", "text": "Body text with a note here."})).unwrap();
         let sid = s.doc().unwrap().doc.item(designcraft_doc::ItemId(r["id"].as_u64().unwrap())).unwrap().text_frame().unwrap().story;
         (s, sid)
+    }
+
+    #[test]
+    fn generated_hebrew_note_numbers_read_right_to_left() {
+        let (mut s, sid) = session_with_text();
+        s.execute("footnote.options", &json!({"style": "hebrewPlain", "startAt": 15, "separator": " "})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 4, "focus": 4})).unwrap();
+        s.execute("footnote.insert", &json!({"text": "Note"})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let cs = s.cache.get(&d, sid, None);
+        let x = |glyphs: &[designcraft_compose::PlacedGlyph], ch: char| glyphs.iter().find(|g| g.rendered_char == ch).unwrap().x;
+        let body = &cs.frames[0].notes[0].text.frames[0].lines[0].glyphs;
+        assert!(x(body, 'ט') > x(body, 'ו'), "note body numeral reads left to right");
+        let main = &cs.frames[0].lines.iter().find(|l| l.glyphs.iter().any(|g| g.rendered_char == 'ט')).unwrap().glyphs;
+        assert!(x(main, 'ט') > x(main, 'ו'), "reference numeral reads left to right");
+    }
+
+    #[test]
+    fn hebrew_note_options_parse_both_styles() {
+        let (mut s, _) = session_with_text();
+        for style in ["hebrew", "hebrewPlain"] {
+            for command in ["footnote.options", "endnote.options"] {
+                let options = s.execute(command, &json!({"style": style})).unwrap();
+                assert_eq!(options["style"], style);
+            }
+        }
     }
 
     #[test]

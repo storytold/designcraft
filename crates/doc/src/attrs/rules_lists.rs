@@ -134,11 +134,16 @@ pub enum NumberStyle {
     Symbols,
     /// 一, 二, 三, …: Chinese numerals written digit by digit, so 10 is 一〇 and 38 is 三八.
     Kanji,
+    /// א׳, ב׳ … י״א … ט״ו: Hebrew letter numerals with geresh (one letter) or gershayim (before the last letter), 1–999.
+    Hebrew,
+    /// Hebrew letter numerals without geresh or gershayim, as often printed for page numbers.
+    HebrewPlain,
 }
 
 /// Numbers past this are written in Arabic digits by the styles that repeat characters (roman
 /// numerals, letters, symbols), so a hostile start number can't build a huge label.
 const MAX_REPEATED_FORM: u32 = 3999;
+const MAX_HEBREW: u32 = 999;
 
 impl NumberStyle {
     pub fn format(self, n: u32) -> String {
@@ -165,6 +170,8 @@ impl NumberStyle {
                 std::iter::repeat_n(SYM[n % SYM.len()], n / SYM.len() + 1).collect()
             }
             NumberStyle::Kanji => kanji_digits(n),
+            NumberStyle::Hebrew => hebrew(n, true),
+            NumberStyle::HebrewPlain => hebrew(n, false),
         }
     }
 }
@@ -232,6 +239,43 @@ pub fn expand_list_levels(s: &str, number: &str, levels: &[String]) -> String {
         out.push(r);
     }
     out
+}
+
+fn hebrew(n: u32, marks: bool) -> String {
+    if n == 0 || n > MAX_HEBREW {
+        return n.to_string();
+    }
+    const HUNDREDS: [char; 4] = ['\0', 'ק', 'ר', 'ש'];
+    const TENS: [char; 10] = ['\0', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ'];
+    const UNITS: [char; 10] = ['\0', 'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט'];
+    let mut letters = String::new();
+    let h = n / 100;
+    for _ in 0..h / 4 {
+        letters.push('ת');
+    }
+    if let Some(&c) = HUNDREDS.get((h % 4) as usize).filter(|&&c| c != '\0') {
+        letters.push(c);
+    }
+    match n % 100 {
+        15 => letters.push_str("טו"),
+        16 => letters.push_str("טז"),
+        rest => {
+            if let Some(&c) = TENS.get((rest / 10) as usize).filter(|&&c| c != '\0') {
+                letters.push(c);
+            }
+            if let Some(&c) = UNITS.get((rest % 10) as usize).filter(|&&c| c != '\0') {
+                letters.push(c);
+            }
+        }
+    }
+    if marks {
+        if letters.chars().count() == 1 {
+            letters.push('׳');
+        } else if let Some((last, _)) = letters.char_indices().next_back() {
+            letters.insert(last, '״');
+        }
+    }
+    letters
 }
 
 fn kanji_digits(n: u32) -> String {

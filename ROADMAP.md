@@ -1,6 +1,7 @@
 # DesignCraft roadmap
 
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
+- **2026-11-18** · Generated Hebrew page numbers and note references contribute their displayed letters to paragraph bidi analysis, preserving right-to-left order in mixed lines (#2860).
 
 **Stage: pre-alpha** · next: alpha, ~5–7 h away; beta ~28 points and ~420–750 h beyond that (the core-workflow gate, not the percentage: ready for real work is already ~47%)
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
@@ -14,6 +15,7 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-16** · Hebrew letter numerals (א׳ … ט״ו … תתקצ״ט, with or without geresh and gershayim) number pages, chapters, footnotes, endnotes and lists; IDML writes them as Hebrew Biblical and lists as Arabic with an export warning (#2860, Hebrew half of #1355). No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot

@@ -54,7 +54,7 @@ Fidelity: **unmeasured** unless stated.
 | Balance columns | ✓ | ✓ (IDML `VerticalBalanceColumns`) | ✓ | evens out the columns of the frame the story ends in, after its last column break (#609) |
 | Keep options and breaks | keep with next, lines together, start in next column/frame/page/odd/even | ✓ | ✓ | break characters end paragraphs (#285); the line before a break is a last line (#283) |
 | Drop caps, nested, line and GREP styles | ✓ | ✓ | ✓ | |
-| Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Convert Bullets/Numbering to Text missing |
+| Bullets and numbering | lists, levels, formats, restart, across stories | ✓ | ~ | numbering expressions from IDML (#298); Hebrew letter numerals, marked or plain, through 999 (#2860), with an explicit Arabic-list fallback warning on IDML export; Convert Bullets/Numbering to Text missing |
 | Tabs | left/center/right/decimal/align-on, leaders, right-indent tab | ✓ | ~ | Tabs panel with a ruler over the text column, and a Tabs section in Paragraph Style Options (#343); wrapping of lines with tabs fixed (#282) |
 | Paragraph rules, borders, shading | ✓ | ✓ | ✓ | |
 | Balance ragged lines | ✓ | ✓ | ✓ | |

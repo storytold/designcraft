@@ -292,8 +292,116 @@ fn modified_link(d: &Document, it: &Item, page: Option<usize>, document: Option<
     })
 }
 
+/// Warns once per Hebrew-numbered section at its first page numbered past 999, and when Hebrew
+/// footnote, endnote or list numbering reaches past 999: those numbers print in Arabic digits
+/// (`NumberStyle::format`'s fallback).
+fn hebrew_number_range(d: &Document, out: &mut Vec<Issue>) {
+    use designcraft_doc::NumberStyle::{Hebrew, HebrewPlain};
+    let numbers = d.page_numbers(d.page_count());
+    for section in &d.sections {
+        if !matches!(section.style, Hebrew | HebrewPlain) {
+            continue;
+        }
+        let first = (section.start..d.page_count())
+            .take_while(|&abs| d.section_of(abs) == Some(section))
+            .find_map(|abs| numbers.get(abs).filter(|&&n| n > 999).map(|&n| (abs, n)));
+        if let Some((page, n)) = first {
+            // `Document::page_name` from the precomputed number (it would recount the sections).
+            let num = section.style.format(n);
+            let name = if section.include_prefix { format!("{}{num}", section.prefix) } else { num };
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("Page {name}: Hebrew page numbers stop at 999, so later pages print in Arabic digits"),
+                item: None,
+                page: Some(page),
+            });
+        }
+    }
+    let count = |notes: fn(&designcraft_doc::Story) -> usize| d.stories.values().map(|st| notes(st)).sum::<usize>();
+    let footnotes = &d.footnote_options;
+    let mut footnote_count = count(|st| st.notes.len());
+    if footnotes.restart != designcraft_doc::notes::NoteRestart::Never {
+        // Numbering that restarts every page, spread or section is judged by its start
+        // only; counting the notes per page needs the composed layout.
+        footnote_count = footnote_count.min(1);
+    }
+    let notes = [
+        ("Footnote", footnotes.style, footnotes.start_at, footnote_count),
+        ("Endnote", d.endnote_options.style, d.endnote_options.start_at, count(|st| st.endnotes.len())),
+    ];
+    for (kind, style, start, count) in notes {
+        let last = start.saturating_add(u32::try_from(count).unwrap_or(u32::MAX)).saturating_sub(1);
+        if matches!(style, Hebrew | HebrewPlain) && count > 0 && last > 999 {
+            let first = start.max(1000);
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("{kind} {first}: Hebrew numbers stop at 999, so it and later notes print in Arabic digits"),
+                item: None,
+                page: None,
+            });
+        }
+    }
+    let mut stories: Vec<_> = d.stories.values().collect();
+    stories.sort_by_key(|st| st.id.0);
+    for st in stories {
+        let item = st.frames.first().map(|f| f.0);
+        let page = st.frames.first().and_then(|f| d.page_of_item(*f));
+        hebrew_list_range(d, st, item, page, 0, out);
+    }
+}
+
+fn hebrew_list_range(d: &Document, story: &designcraft_doc::Story, item: Option<u64>, page: Option<usize>, depth: usize, out: &mut Vec<Issue>) {
+    use designcraft_doc::{
+        ListCounter, ListType,
+        NumberStyle::{Hebrew, HebrewPlain},
+    };
+    use std::collections::HashMap;
+    if depth > 16 {
+        return;
+    }
+    let mut unnamed = ListCounter::default();
+    let mut named: HashMap<String, ListCounter> = HashMap::new();
+    let mut warned = false;
+    for (p, r) in story.paras.iter().zip(story.para_ranges()) {
+        let (pp, _) = d.styles.resolve_para(p);
+        let n = match pp.list_type {
+            ListType::Numbers if r.is_empty() => continue,
+            ListType::Numbers if !pp.list_name.is_empty() => {
+                named.entry(pp.list_name.clone()).or_insert_with(|| d.list_start(story.id, &pp.list_name)).advance(&pp)
+            }
+            ListType::Numbers => unnamed.advance(&pp),
+            ListType::None => {
+                unnamed = ListCounter::default();
+                continue;
+            }
+            ListType::Bullets => continue,
+        };
+        if !warned && matches!(pp.number_style, Hebrew | HebrewPlain) && n > 999 {
+            out.push(Issue {
+                severity: "warning",
+                kind: "hebrewNumberRange",
+                message: format!("List {n}: Hebrew numbers stop at 999, so it and later items print in Arabic digits"),
+                item,
+                page,
+            });
+            warned = true;
+        }
+    }
+    for table in story.tables.values() {
+        for cell in &table.cells {
+            hebrew_list_range(d, &cell.text, item, page, depth + 1, out);
+        }
+    }
+    for note in story.notes.iter().chain(&story.endnotes) {
+        hebrew_list_range(d, &note.text, item, page, depth + 1, out);
+    }
+}
+
 pub fn check_document(d: &Document, cache: &Cache, document: Option<&std::path::Path>, min_ppi: f64, links: &mut LinkListChecks) -> Vec<Issue> {
     let mut out = Vec::new();
+    hebrew_number_range(d, &mut out);
     // Stories: overset and fonts.
     let mut missing_fonts: Vec<String> = Vec::new();
     let mut unsupported_typography = std::collections::BTreeSet::new();

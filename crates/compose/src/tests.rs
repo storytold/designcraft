@@ -504,6 +504,41 @@ fn page_number_wider_than_its_frame_stays_whole() {
 }
 
 #[test]
+fn generated_hebrew_page_number_reads_right_to_left() {
+    for direction in [designcraft_doc::TextDirection::LeftToRight, designcraft_doc::TextDirection::RightToLeft] {
+        let text = format!("abc {} def", designcraft_doc::story::PAGE_NUMBER);
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs { direction: Some(direction), ..Default::default() });
+        let mut specs = frame_specs(&d, sid);
+        specs[0].page_name = Some(designcraft_doc::NumberStyle::HebrewPlain.format(15));
+        let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+        let glyphs = &all_lines(&cs)[0].glyphs;
+        let x = |ch| glyphs.iter().find(|g| g.rendered_char == ch).unwrap().x;
+        assert!(x('ט') > x('ו'), "generated Hebrew numeral reads left to right in {direction:?}: {glyphs:?}");
+    }
+}
+
+#[test]
+fn generated_parentheses_mirror_in_rtl_paragraph() {
+    let text = format!("אבג {} דהו", designcraft_doc::story::PAGE_NUMBER);
+    let (d, sid, _) = doc_with(
+        &text,
+        Rect::new(0.0, 0.0, 400.0, 100.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() },
+    );
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("(15)".into());
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let glyphs = &all_lines(&cs)[0].glyphs;
+    let open = glyphs.iter().find(|g| g.rendered_char == '(').unwrap();
+    let close = glyphs.iter().find(|g| g.rendered_char == ')').unwrap();
+    let one = glyphs.iter().find(|g| g.rendered_char == '1').unwrap();
+    let five = glyphs.iter().find(|g| g.rendered_char == '5').unwrap();
+    assert!(open.x > five.x && one.x > close.x && five.x > one.x, "unexpected visual order: {glyphs:?}");
+    assert_eq!(open.gid, open.face.glyph_for(')'));
+    assert_eq!(close.gid, close.face.glyph_for('('));
+}
+
+#[test]
 fn hostile_wrap_geometry_terminates() {
     let (d, sid) = wrap_doc(ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, &[]);
     let mut specs = frame_specs(&d, sid);

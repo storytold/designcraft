@@ -316,3 +316,54 @@ fn list_labels_expand_metacharacters() {
     assert_eq!(expand_list_text("a\nb^p", "1"), "ab");
     assert_eq!(ParaProps::default().bullet_label(), "\u{2022}\t");
 }
+
+#[test]
+fn hebrew_number_table() {
+    for (n, expected) in [
+        (1, "א׳"),
+        (2, "ב׳"),
+        (3, "ג׳"),
+        (4, "ד׳"),
+        (5, "ה׳"),
+        (6, "ו׳"),
+        (7, "ז׳"),
+        (8, "ח׳"),
+        (9, "ט׳"),
+        (10, "י׳"),
+        (11, "י״א"),
+        (12, "י״ב"),
+        (13, "י״ג"),
+        (14, "י״ד"),
+        (15, "ט״ו"),
+        (16, "ט״ז"),
+        (17, "י״ז"),
+        (18, "י״ח"),
+        (19, "י״ט"),
+        (20, "כ׳"),
+        (99, "צ״ט"),
+        (100, "ק׳"),
+        (115, "קט״ו"),
+        (116, "קט״ז"),
+        (400, "ת׳"),
+        (499, "תצ״ט"),
+        (500, "ת״ק"),
+        (999, "תתקצ״ט"),
+        (1000, "1000"),
+        (0, "0"),
+        (u32::MAX, "4294967295"),
+    ] {
+        assert_eq!(NumberStyle::Hebrew.format(n), expected, "{n}");
+    }
+    for (n, expected) in [(1, "א"), (15, "טו"), (115, "קטו"), (116, "קטז"), (999, "תתקצט"), (1000, "1000")] {
+        assert_eq!(NumberStyle::HebrewPlain.format(n), expected, "{n}");
+    }
+}
+
+#[test]
+fn hebrew_number_styles_serde() {
+    for (style, name) in [(NumberStyle::Hebrew, "hebrew"), (NumberStyle::HebrewPlain, "hebrewPlain")] {
+        let value = serde_json::json!(name);
+        assert_eq!(serde_json::to_value(style).unwrap(), value);
+        assert_eq!(serde_json::from_value::<NumberStyle>(value).unwrap(), style);
+    }
+}
