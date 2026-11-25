@@ -24,7 +24,7 @@ Shortcuts on this page use Ctrl. On macOS, use Cmd instead of Ctrl.
 
 The **Preset** list has these page sizes:
 
-- Print: Letter, Legal, Tabloid, Letter - Half, A3, A4, A5, A6, B5, Business Card, Postcard.
+- Print: Letter, Legal, Tabloid, Letter - Half, A3, A4, A5, A6, B5, Bunko (105 × 148 mm), Shinsho (103 × 182 mm), Shiroku (127 × 188 mm), Kiku (152 × 227 mm), AB (210 × 257 mm), Japanese Postcard (100 × 148 mm), Japanese Double Postcard (148 × 200 mm), B6 (JIS 128 × 182 mm), Japanese Business Card (91 × 55 mm), Business Card, Postcard.
 - Web: Web 1920 × 1080, Web 1366 × 768, Web 1024 × 768.
 - Mobile: Mobile 1080 × 1920, Mobile 390 × 844, Tablet 1024 × 1366.
 
