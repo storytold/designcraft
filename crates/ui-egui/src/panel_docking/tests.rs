@@ -707,6 +707,24 @@ fn dock_menu_button_opens_the_active_panel_menu() {
     assert!(!shown(&h, "Duplicate Spread"), "picking a row closes the menu");
 }
 
+/// With Pages in front, the Pages panel's own menu button stands before the tab strip and Properties · Pages · Layers
+/// still all show: the strip shrinks Properties to its readable least before Layers goes to the overflow menu (scene
+/// 82 of the port review, where the button at the standard size left the strip short of the three tabs' least).
+#[test]
+fn pages_menu_button_leaves_room_for_every_dock_tab() {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    app.ui.dock_tab = "pages".into();
+    let h = harness(app, vec2(1280.0, 800.0));
+    let opener = find(&h, Role::Button, "Pages Panel Menu").expect("the Pages panel's menu button");
+    let (properties, pages) = (tab_rect(&h, "properties"), tab_rect(&h, "pages"));
+    let layers = find(&h, Role::Tab, "Layers").unwrap_or_else(|| panic!("Layers went to the overflow menu: {:?}", named_nodes(&h, "More tabs")));
+    assert!(opener.right() <= properties.left(), "the menu button stands before the tabs: {opener:?} {properties:?}");
+    assert!(properties.right() <= pages.left() + 0.5 && pages.right() <= layers.left() + 0.5, "{properties:?} {pages:?} {layers:?}");
+    assert!((layers.center().y - pages.center().y).abs() < 1.0, "Layers is in the same row: {pages:?} {layers:?}");
+    assert!(!shown(&h, "More tabs"), "no tab overflows");
+}
+
 /// InDesign's panel tab menu (Learn Skills Daily's InDesign course, 6:20): Close, Close Tab Group,
 /// Minimize and Collapse to Icons. Close Tab Group hides the panels tabbed together.
 #[test]
