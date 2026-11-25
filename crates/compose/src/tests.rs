@@ -10601,18 +10601,18 @@ fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
 fn justification_alternates_fill_only_the_room_a_line_has() {
     use designcraft_fonts::testing::{font_mapping, with_jalt};
     // ن is drawn as `n`, its justification alternate as the wider `w` (mapped to W only to look
-    // the glyph up).
-    let glyphs = [('ب', 'o'), ('ن', 'n'), (' ', ' '), ('\u{0640}', '_'), ('W', 'w')];
+    // the glyph up). The Latin `o` and `n` draw as themselves, so `n` has the same alternate.
+    let glyphs = [('ب', 'o'), ('ن', 'n'), ('o', 'o'), ('n', 'n'), (' ', ' '), ('\u{0640}', '_'), ('W', 'w')];
     let db = FontDb::with_font_dirs(Vec::new());
     db.set_system_fallback(false);
     db.add_font(with_jalt(&font_mapping("DC Test Justification Alternates", &glyphs).unwrap(), &[('n', 'w')]).unwrap());
     let text = "بنن بنن بنن بنن";
-    let compose = |width: f64, align: Align, alternates: bool, kashidas: bool| {
+    let compose_in = |text: &str, direction: designcraft_doc::TextDirection, width: f64, align: Align, alternates: bool, kashidas: bool| {
         let (mut d, sid, fid) = doc_with(
             text,
             Rect::new(0.0, 0.0, width, 100.0),
             ParaAttrs {
-                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                direction: Some(direction),
                 align: Some(align),
                 justification_alternates: Some(alternates),
                 kashidas: Some(kashidas),
@@ -10628,6 +10628,9 @@ fn justification_alternates_fill_only_the_room_a_line_has() {
         assert_eq!(lines.len(), 1, "the text fits one line");
         lines[0].clone()
     };
+    let compose = |width: f64, align: Align, alternates: bool, kashidas: bool| {
+        compose_in(text, designcraft_doc::TextDirection::RightToLeft, width, align, alternates, kashidas)
+    };
     let face = compose(400.0, Align::Right, false, false).glyphs[0].face;
     let (n, w) = (face.glyph_for('ن'), face.glyph_for('W'));
     let all = designcraft_fonts::shape(face.get(), "نن", &[designcraft_fonts::feature("jalt").unwrap()], |c| c);
@@ -10636,10 +10639,10 @@ fn justification_alternates_fill_only_the_room_a_line_has() {
     assert!(gain > 1.0, "the alternate is wider");
     // The words' alternates, by the byte of their word's first letter.
     let swapped = |line: &Line| line.glyphs.iter().filter(|g| g.gid == w).map(|g| g.byte).collect::<Vec<_>>();
-    let natural = {
-        let line = compose(400.0, Align::Right, false, false);
+    let span = |line: &Line| {
         line.glyphs.iter().map(|g| g.x - g.dx + g.adv).fold(f64::MIN, f64::max) - line.glyphs.iter().map(|g| g.x - g.dx).fold(f64::MAX, f64::min)
     };
+    let natural = span(&compose(400.0, Align::Right, false, false));
     // Room for one and a half alternates: one, in the last word, on its last letter.
     let one = compose(natural + 1.5 * gain, Align::FullyJustified, true, false);
     assert_eq!(swapped(&one), vec![text.len() - 'ن'.len_utf8()], "one alternate, on the line's last letter");
@@ -10656,6 +10659,16 @@ fn justification_alternates_fill_only_the_room_a_line_has() {
     let mut with_kashidas = swapped(&compose(natural + 40.0 * gain, Align::FullyJustified, true, true));
     with_kashidas.sort_unstable();
     assert_eq!(with_kashidas, ends);
+    // Left to right, a Latin line works the same way: one alternate, on the last word's last
+    // letter, and none without the room for one.
+    let latin = "onn onn onn onn";
+    let ltr = |width: f64, alternates: bool| {
+        compose_in(latin, designcraft_doc::TextDirection::LeftToRight, width, Align::FullyJustified, alternates, false)
+    };
+    let natural = span(&compose_in(latin, designcraft_doc::TextDirection::LeftToRight, 400.0, Align::Left, false, false));
+    assert_eq!(swapped(&ltr(natural + 1.5 * gain, true)), vec![latin.len() - 1], "one alternate, on the Latin line's last letter");
+    assert!(swapped(&ltr(natural + 0.5 * gain, true)).is_empty(), "a Latin line with too little room keeps its forms");
+    assert!(swapped(&ltr(natural + 3.5 * gain, false)).is_empty(), "off, no Latin alternate");
 }
 
 /// Kashidas on a line of mixed sizes: each join takes at most 1.5 em of its own size. The line's
