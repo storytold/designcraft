@@ -1210,7 +1210,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let offered = flyout.clone();
     let opened_before = app.ui.docking_opened.clone();
     // The panel a command showed comes to the front once: a floating window that holds it, through the dock's focus
-    // request below. A flyout stands in the floating windows' own order, so opening it puts it in front by itself.
+    // request below. A flyout stands in the floating windows' own order, so opening it puts it in front by itself, as long
+    // as it is a first show: one shown again inside its own exit fade keeps the place it had, since the framework asks no
+    // raise for a layer it reopens.
     let raised = app.ui.docking_raise.take();
     // A floating window that holds the panel comes in front of the windows it overlaps: the dock's focus request raises
     // it, and moves key focus to its group.
