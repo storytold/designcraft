@@ -423,7 +423,8 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
 }
 
 /// [`format_paras`]; with `mirror_align`, a paragraph whose direction the attributes change
-/// swaps its own left or right alignment, so each paragraph keeps its alignment's meaning.
+/// swaps its own left or right alignment, so each paragraph keeps its alignment's meaning. An
+/// `align` named in the attributes wins over the mirror.
 pub(crate) fn format_paras_mirrored(s: &mut Session, attrs: &Value, mirror_align: bool) -> Result<Value> {
     let empty = serde_json::Map::new();
     let obj = attrs.as_object().unwrap_or(&empty);
@@ -438,6 +439,7 @@ pub(crate) fn format_paras_mirrored(s: &mut Session, attrs: &Value, mirror_align
     let rows = justification_rows_named(obj.keys().map(String::as_str));
     // `null` removes the override (back to the style's value).
     let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
+    let mirror_align = mirror_align && !obj.contains_key("align");
     let targets = format_targets(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();

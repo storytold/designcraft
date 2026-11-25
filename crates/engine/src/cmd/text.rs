@@ -633,6 +633,10 @@ mod alignment_shortcut_tests {
         let ltr = json!({"attrs": {"direction": "leftToRight"}, "mirrorAlign": true});
         s.execute("type.para", &ltr).unwrap();
         assert_eq!(story_aligns(&s.doc().unwrap().doc, "One"), [Align::Left, Align::Center, Align::Right, Align::Right]);
+        // An `align` named with the direction is applied as given, not mirrored.
+        let both = json!({"attrs": {"direction": "rightToLeft", "align": "center"}, "mirrorAlign": true});
+        s.execute("type.para", &both).unwrap();
+        assert_eq!(story_aligns(&s.doc().unwrap().doc, "One"), [Align::Center; 4]);
     }
 }
 
