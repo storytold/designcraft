@@ -115,7 +115,12 @@ mod framework {
     /// A button with the app's artwork on it; whether it was clicked.
     fn icon(ui: &mut Ui, salt: &str, glyph: &'static str, label: &str) -> craft_ui_widgets::buttons::ButtonOutput {
         let face = TabGlyph(glyph);
-        IconButton::new(IconSpec::glyph(&face)).id_salt(salt.to_owned()).label(label.to_owned()).tooltip(label.to_owned()).show(ui)
+        IconButton::new(IconSpec::glyph(&face))
+            .id_salt(salt.to_owned())
+            .label(label.to_owned())
+            .tooltip(label.to_owned())
+            .size(craft_theme::ControlSize::Sm)
+            .show(ui)
     }
 
     /// A swatch button (its chip) and the menu of the document's swatches it opens: the swatch picked.
@@ -125,6 +130,7 @@ mod framework {
         let opener = Button::new(label.to_owned())
             .painted(" ".to_owned())
             .id_salt(format!("{salt}_button"))
+            .size(craft_theme::ControlSize::Sm)
             .tooltip(tip.to_owned())
             .variant(Variant::GHOST)
             .picture(
@@ -233,6 +239,7 @@ mod framework {
             let out = SplitButton::new(tr("Fit Text"), &entries)
                 .icon(IconSpec::glyph(&face))
                 .id_salt("task_bar_fit_text")
+                .size(craft_theme::ControlSize::Sm)
                 .tooltip(tr("Fit frame height to text"))
                 .show(ui);
             if out.response.clicked() {
@@ -256,6 +263,7 @@ mod framework {
         let presets: Vec<Entry<NumberPick>> = SIZES.iter().map(|v| Entry::new(NumberPick::Number(*v), format!("{v}"))).collect();
         let out = NumberField::new(size_label.clone(), Bind::given(c["size"].as_f64()))
             .id_salt("task_bar_size")
+            .size(craft_theme::ControlSize::Sm)
             .unit("pt".to_owned())
             .range(0.1..=1296.0)
             .step(1.0)
@@ -327,6 +335,7 @@ mod framework {
         let presets: Vec<Entry<NumberPick>> = WEIGHTS.iter().map(|v| Entry::new(NumberPick::Number(*v), format!("{v}"))).collect();
         let out = NumberField::new(tr("Stroke Weight"), Bind::given(Some(i.stroke_weight)))
             .id_salt("task_bar_stroke_weight")
+            .size(craft_theme::ControlSize::Sm)
             .unit("pt".to_owned())
             .range(0.0..=800.0)
             .step(1.0)
@@ -342,7 +351,7 @@ mod framework {
                 asks.push(Ask::Run(cmd, json!({})));
             }
         }
-        if i.count > 1 && Button::new(tr("Group")).id_salt("task_bar_group").show(ui).clicked() {
+        if i.count > 1 && Button::new(tr("Group")).id_salt("task_bar_group").size(craft_theme::ControlSize::Sm).show(ui).clicked() {
             asks.push(Ask::Run("object.group", json!({})));
         }
     }
