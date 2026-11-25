@@ -241,7 +241,7 @@ mod framework {
                 let columns = crate::i18n::tr_context(&lang, "Columns", "table").to_owned();
                 let cols_pair = Row::new().id_salt("columns-pair").show(ui, |ui, _| {
                     caption(ui, columns.clone());
-                    count(ui, identity, "columns", columns, Some(cols.len() as f64))
+                    count(ui, identity, "columns", columns.clone(), Some(cols.len() as f64))
                 });
                 if let Some(v) = cols_pair.inner.flatten() {
                     let n = v.round().max(1.0) as usize;
@@ -295,7 +295,7 @@ mod framework {
                         let label = tr(["Top", "Left", "Bottom", "Right"][i]);
                         let edited = Row::new().id_salt(("inset-pair", i)).show(ui, |ui, _| {
                             caption(ui, label.clone());
-                            measure(ui, identity, &format!("inset{i}"), label, insets.get(i).copied(), unit)
+                            measure(ui, identity, &format!("inset{i}"), label.clone(), insets.get(i).copied(), unit)
                         });
                         if let Some(v) = edited.inner.flatten() {
                             let mut n = insets.clone();

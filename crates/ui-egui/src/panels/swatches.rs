@@ -578,7 +578,7 @@ mod framework {
     static BLANK: Mark = Mark::Blank;
 
     /// The Swatches panel's Fill/Stroke proxy: the stroke as a frame of its colour, the one in front drawn last.
-    #[derive(craft_ui::contract::MemoProps)]
+    #[derive(Clone, craft_ui::contract::MemoProps)]
     struct Proxy {
         fill: Option<Color32>,
         fill_gradient: Option<(Color32, Color32)>,
@@ -1117,7 +1117,7 @@ mod framework {
         ui.add_space(3.0);
         let shown = Row::new().id_salt("swatches-header").show(ui, |ui, _| {
             let tip = tr(&lang, if stroke_front { "Stroke" } else { "Fill" }).to_owned();
-            let toggle = ProxyButton::new(tip.clone(), proxy).id_salt("swatches-proxy").tooltip(tip).show(ui).clicked;
+            let toggle = ProxyButton::new(tip.clone(), proxy.clone()).id_salt("swatches-proxy").tooltip(tip).show(ui).clicked;
             let mut affects = None;
             for (k, (icon, tip)) in
                 [("format-container", "Formatting affects container (J)"), ("format-text", "Formatting affects text (J)")].into_iter().enumerate()
