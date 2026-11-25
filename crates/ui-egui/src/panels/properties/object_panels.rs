@@ -382,25 +382,12 @@ mod framework {
         ui.id().with(("object-panels", key))
     }
 
-<<<<<<< HEAD
-    /// The width of the widest of `labels` in the interface language, for a column of captions: measured as the caption
-    /// text the panel shows them in, so no caption is cut.
-    fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
-        labels
-            .iter()
-            .map(|l| {
-                craft_ui_widgets::display::Text::new(crate::i18n::tr(&app.ui.language, l).to_string())
-                    .measure_in(ui, craft_behavior::Proposal::Ideal)
-                    .x
-            })
-=======
     /// The width of the widest of `labels` in the interface language, for a column of captions: each measured as the
     /// framework `Text` that `text` shows it with, so a caption cell this wide holds its caption on one line.
     fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
         labels
             .iter()
             .map(|l| Text::new(crate::i18n::tr(&app.ui.language, l).to_string()).measure_in(ui, craft_behavior::Proposal::Ideal).x)
->>>>>>> wave2/object-style
             .fold(0.0, f32::max)
             .ceil()
     }
