@@ -1222,8 +1222,9 @@ mod framework_tests {
             modal.query_all_by(|node| node.is_focused()).map(|node| node.accesskit_node().id()).collect::<Vec<_>>()
         };
 
-        // A pointer command can release text focus to its pane. Keep its genuine refusal,
-        // draft/status/identity/domain/IO coverage; do not count the outer Window as modal focus.
+        // A press on a footer button keeps a dialog's focus inside it: the focused text field keeps it (next's press
+        // rule in a trapping scope). Keep its genuine refusal, draft/status/identity/domain/IO coverage; do not count the
+        // outer Window as modal focus.
         for _ in 0..2 {
             h.state_mut().ui.status = "pointer refusal invocation sentinel".into();
             click(&mut h, Role::Button, "Continue");
@@ -1235,6 +1236,11 @@ mod framework_tests {
 
         // Before ANY Tab after the pointer path, a fresh ordinary Enter must still reach
         // this existing modal's default/refusal route. A stale status cannot prove that call.
+        // The pointer path left focus in the Instructions field, where Enter is a new line, as typed text: the Enter goes
+        // from a single-line field, which the pointer puts focus in, as a person clicks back into the form.
+        click(&mut h, Role::TextInput, "Contact:");
+        assert!(h.get_by_role_and_label(Role::TextInput, "Contact:").is_focused());
+        assert_refusal(&h);
         h.state_mut().ui.status = "modal default routing invocation sentinel".into();
         key(&mut h, Key::Enter, Modifiers::NONE);
         assert_refusal(&h);
