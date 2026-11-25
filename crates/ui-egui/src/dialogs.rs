@@ -1990,7 +1990,7 @@ fn text_frame_options_dialog(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     ui.add_space(6.0);
     check(ui, d, "preview", tr("Preview"));
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -2862,7 +2862,7 @@ fn margins_and_columns_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Di
     link_margins(d);
     layout_dialog_preview(app, d, "layout.marginsAndColumns", "Margins and Columns");
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -2928,7 +2928,7 @@ fn create_guides_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) 
     });
     layout_dialog_preview(app, d, "layout.createGuides", "Create Guides");
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        ui.label(egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        ui.label(egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -4488,7 +4488,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                         hyphenation_preview(app, &mut d);
                         if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
                             ui.add_space(6.0);
-                            crate::rtl::label(ui, egui::RichText::new(st).color(ui.visuals().error_fg_color));
+                            crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, st)).color(ui.visuals().error_fg_color));
                         }
                     }
                     "insertXref" => insert_xref(app, ui, &mut d),
@@ -7123,7 +7123,7 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     // Why OK didn't apply (a pattern that can't compile, a taken name).
     let status = d.s("status");
     if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, &status)).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
     }
 }
 
@@ -8624,7 +8624,7 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
     // Why OK didn't apply (a taken name, an action in progress), below every section.
     let status = d.s("status");
     if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, &status)).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
     }
 }
 
@@ -10279,7 +10279,7 @@ fn step_and_repeat_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog
     step_and_repeat_preview(app, d);
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 
@@ -10509,7 +10509,7 @@ fn corner_options_dialog(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog)
     corner_options_preview(app, d);
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
         ui.add_space(6.0);
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
 }
 

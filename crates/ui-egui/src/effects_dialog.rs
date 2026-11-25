@@ -816,7 +816,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         d.fields.insert("preview".into(), json!(p));
     }
     if let Some(st) = d.fields.get("status").and_then(Value::as_str) {
-        crate::rtl::label(ui, egui::RichText::new(st).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
+        crate::rtl::label(ui, egui::RichText::new(tr(st)).color(crate::theme::Tokens::get(ui.ctx()).text_dim));
     }
     preview(app, d);
 }
