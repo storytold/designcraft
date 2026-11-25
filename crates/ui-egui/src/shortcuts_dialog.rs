@@ -85,6 +85,10 @@ impl Host {
 #[cfg(not(target_arch = "wasm32"))]
 const OPEN_WIDTH: f32 = 1130.0;
 
+/// The least height in points of the keyboard pane: six rows and the gap at 40 points a key.
+#[cfg(not(target_arch = "wasm32"))]
+const KEYBOARD_HEIGHT: f32 = 250.0;
+
 /// The share of the window's height the dialog opens at.
 #[cfg(not(target_arch = "wasm32"))]
 const OPEN_HEIGHT_SHARE: f32 = 0.9;
@@ -107,6 +111,8 @@ fn open_size(content: f32) -> egui::Vec2 {
 fn options() -> Options {
     Options::default().with(|o| {
         o.keyboard = true;
+        // The keys stay about 40 points wide (the pane sizes them by its height) so their names are readable.
+        o.keyboard_height = Some(KEYBOARD_HEIGHT);
         o.import_formats = vec![INDESIGN_FORMAT];
         o.visible = Some(crate::keys::listed);
     })
