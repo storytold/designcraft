@@ -3382,12 +3382,24 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     let canvas_owner = h.output().platform_output.ime.as_ref().expect("the canvas owns the composition").owner;
     let field = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field");
     field.click();
-    // The interrupt asks the platform to reset its composition; IME events wait behind that fence until the integration
-    // reports the reset done, as eframe does after the native reset. The harness is the integration here.
+    // The interrupt asks the platform to reset its composition, and IME events wait behind that fence until the
+    // integration answers, as egui-winit does: it reports a request egui dropped as retired and the native reset of a
+    // published one as completed. The harness is the integration here. The canvas's request is written in the pass the
+    // field takes the keyboard, and a later pass of that frame publishes the field's output, so egui retires it
+    // (`PlatformOutput::append`); the framework then asks again on the field's output, and that request completes.
     let mut reset = None;
-    for _ in 0..2 {
+    for _ in 0..6 {
         h.step();
-        reset = h.output().platform_output.ime.as_ref().and_then(|ime| ime.reset_request).or(reset);
+        let output = &h.output().platform_output;
+        let retired = output.retired_ime_resets.clone();
+        let request = output.ime.as_ref().and_then(|ime| ime.reset_request);
+        for request_id in retired {
+            h.event(egui::Event::ImeResetRetired { request_id });
+        }
+        if request.is_some() {
+            reset = request;
+            break;
+        }
     }
     let reset = reset.expect("interrupting the canvas composition asks the platform for a reset");
     assert!(!h.state().app.session.tool_composing(), "the composition ended where the field took the keyboard");
