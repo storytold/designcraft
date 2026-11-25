@@ -342,7 +342,8 @@ fn quick_match(query_lower: &str, texts: &[&str]) -> bool {
 
 /// The application bar's search: the commands whose label in the interface language, English
 /// label or id contains `query`, labelled in the interface language with the shortcut in effect.
-/// Nothing for an empty query; at most 14.
+/// An engine command a UI command stands in for (⌘S `app.save`) is listed as that command, as
+/// Quick Apply lists it. Nothing for an empty query; at most 14.
 pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
     let ql = query.trim().to_lowercase();
     if ql.is_empty() {
@@ -352,10 +353,12 @@ pub fn command_search(app: &DesignApp, query: &str) -> Vec<QuickItem> {
     let mut out: Vec<QuickItem> = Vec::new();
     for (id, label, _) in quick_commands() {
         let shown = crate::i18n::tr(lang, label);
-        if out.len() >= 14 || !self::shown(app, id) || out.iter().any(|it| it.id == id) || !quick_match(&ql, &[shown, label, id]) {
+        // The command the key and the menu row run for it (`listed_command`), so the row shows that key.
+        let listed = listed_command(id);
+        if out.len() >= 14 || !self::shown(app, id) || out.iter().any(|it| it.id == listed) || !quick_match(&ql, &[shown, label, id]) {
             continue;
         }
-        out.push(QuickItem { label: shown.to_string(), id: id.to_string(), params: Value::Null, shortcut: shortcut_of(app, id), kind: "" });
+        out.push(QuickItem { label: shown.to_string(), id: listed.to_string(), params: Value::Null, shortcut: shortcut_of(app, listed), kind: "" });
     }
     out
 }

@@ -2487,6 +2487,16 @@ fn command_search_matches_labels_in_the_interface_language() {
     assert!(command_search(&app, "e").len() <= 14);
 }
 
+/// The app bar's search lists the file commands as the keys and the File menu run them, with those keys: Save is
+/// `app.save` with ⌘S, as in Quick Apply.
+#[test]
+fn command_search_lists_the_file_commands_with_their_keys() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let save = command_search(&app, "save").into_iter().find(|i| i.id == "app.save").expect("Save is listed as the command its key runs");
+    assert_eq!(save.shortcut.as_deref(), Some("Cmd+S"));
+    assert!(!command_search(&app, "save").iter().any(|i| i.id == "file.save"), "and not again as the engine command");
+}
+
 #[test]
 fn quick_apply_lists_styles_then_commands() {
     let mut s = designcraft_engine::Session::new();
