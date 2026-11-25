@@ -85,6 +85,22 @@ pub fn commit() -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    /// A version and a commit must match the channel, and the errors are returned rather than
+    /// stored, so a refusal leaves the selection untouched.
+    #[test]
+    fn select_refuses_a_missing_version_and_a_commit_that_does_not_match_the_channel() {
+        assert_eq!(select(Channel::Stable, "", None).unwrap_err(), "the build channel needs a version");
+        assert_eq!(
+            select(Channel::Stable, "0.2.1", Some("0123456789abcdef0123456789abcdef01234567")).unwrap_err(),
+            "only a nightly channel carries a source commit"
+        );
+        assert_eq!(
+            select(Channel::NightlyV1, "0.2.1-nightly.20261124.17.1.gabcdef012345", None).unwrap_err(),
+            "only a nightly channel carries a source commit"
+        );
+        assert_eq!(current(), Channel::Stable, "a refused selection leaves the channel as it was");
+    }
+
     #[test]
     fn the_default_is_the_stable_identity() {
         assert_eq!(current(), Channel::Stable, "the web build and tests never select a channel");
