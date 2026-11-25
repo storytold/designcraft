@@ -87,11 +87,12 @@ pub(crate) fn apply_none(app: &mut DesignApp) -> Result<Value, String> {
 
 /// The tools as framework commands, for the board in the language `lang`: each tool's own keymap command
 /// (`keys::tool`), its translated label, its artwork's name and the bindings `keymap` (the app's, with the user's
-/// overrides) gives it. Their chords are shown only (`AppCatalog::shown_only`): the Tools rail's tooltips and flyout
-/// rows show them, while the app's keymap stays the one dispatcher of every key, and the board only resolves and fires
-/// these for the rail. One catalog per language, built again with a new generation when the keymap's platform or the
-/// user's overrides change, so a rebound tool shows its new chord.
+/// overrides) gives it. Each def says the app runs its keys itself (`Dispatch::App`): the Tools rail's tooltips and
+/// flyout rows show the chords while the app's keymap stays the one dispatcher of every key, and the board matches none
+/// of them. One catalog per language, built again with a new generation when the keymap's platform or the user's
+/// overrides change, so a rebound tool shows its new chord.
 pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_ui_widgets::runtime::commands::AppCatalog {
+    use craft_ui::runtime::commands::Dispatch;
     use craft_ui_widgets::runtime::commands::AppCatalog;
     use std::hash::{Hash as _, Hasher as _};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,7 +111,6 @@ pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_u
     if let Some((_, _, catalog)) = held.and_then(|at| catalogs.get(at)).filter(|(_, hash, _)| *hash == overrides) {
         return catalog.clone();
     }
-    let mut tools = Vec::new();
     let defs: Vec<craft_keymap::CommandDef> = crate::keys::catalog()
         .iter()
         .filter_map(|def| {
@@ -122,12 +122,11 @@ pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_u
             if let Some(icon) = icon {
                 def = def.with_icon(icon);
             }
-            tools.push(def.command.id.clone());
-            Some(def)
+            Some(def.with_dispatch(Dispatch::App))
         })
         .collect();
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(tools)).unwrap_or_else(|error| {
+    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
         log::warn!("the tool commands are not on the framework's board: {error}");
         AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
     });

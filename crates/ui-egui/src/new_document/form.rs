@@ -10,6 +10,7 @@ use crate::dialogs::Dialog;
 use crate::dialogs::framework::Form;
 use craft_behavior::ColumnWidth;
 use craft_behavior::{DisplayOrder, ItemSource, Mixed, Selection, SelectionChange, keyed};
+use craft_ui::patterns::form_dialogs::PresetCardLook;
 use craft_ui_panels::sections::Section;
 use craft_ui_widgets::buttons::{Button, IconButton, ToggleButton};
 use craft_ui_widgets::choice::{Checkbox, Segmented};
@@ -27,7 +28,7 @@ use craft_ui_widgets::primitives::{ContentPainterCx, Glyph, IconSpec};
 use craft_ui_widgets::style::{SurfaceKind, TypeRole, UiTokens};
 use craft_ui_widgets::tabs::{Tab, TabKind, TabStrip};
 use craft_ui_widgets::text::{NumberField, StepArrows, TextField};
-use craft_ui_widgets::tile_grid::{CardText, Tile, TileGrid};
+use craft_ui_widgets::tile_grid::{CardText, GridZoom, Tile, TileGrid};
 use designcraft_geom::Unit;
 use egui::{Color32, Rect, Ui};
 use serde_json::{Value, json};
@@ -67,8 +68,13 @@ const TWO_PANES: f32 = 700.0;
 const DETAIL_COLUMNS: &[ColumnWidth] = &[ColumnWidth::Fixed(124.0), ColumnWidth::Fixed(124.0)];
 /// The preset cards' picture: this many points wide, and this much wider than high, so a card is
 /// about 125 by 140 points with its name and size under the page, as the native cards were.
-const CARD_SIDE: f32 = 108.0;
+const CARD_PICTURE_SIDE: f32 = 108.0;
 const CARD_ASPECT: f32 = 1.5;
+/// The grid's card thumbnail (`base.size.thumb.card`), the picture side a card has at zoom 1: a grid sizes a card's
+/// picture from its thumbnail side and the zoom, taking no size in points.
+const CARD_THUMB_SIDE: f32 = 160.0;
+/// The grid's zoom for [`CARD_PICTURE_SIDE`].
+const CARD_ZOOM: f64 = (CARD_PICTURE_SIDE / CARD_THUMB_SIDE) as f64;
 
 /// One of the app's icons, by its name in `crate::icons`.
 #[derive(craft_ui::contract::MemoProps)]
@@ -237,8 +243,8 @@ fn tile(card: &Card, units: Unit) -> Tile<'static> {
     Tile::new(card.label.clone())
         .detail(size_text(&card.nd, units))
         .flat_thumbnail()
-        // The picked preset is outlined in the accent, as it always was; the flat thumbnail marks a pick with a fill alone.
-        .pick_ring()
+        // The flat thumbnail marks a pick with a fill alone, as the framework's cards do: a card draws no ring of its own
+        // round the picture, and the page keeps the preset's proportions in the room the grid gives it.
         .thumb(ThumbAspect::new(1, 1), move |cx: &ContentPainterCx<'_>, rect: Rect| paint_page(&cx.painter, rect, &nd, custom, cx.ink()))
 }
 
@@ -256,16 +262,23 @@ fn presets(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     let current = d.s("preset");
     let card_units = units(d);
     let saved = tab == "saved";
+    // The cards' look, set at the app's root (`PresetCardLook::OutlineStrong`): the preset's name in the strong body type,
+    // as the framework's New Document pattern shows its cards in that look.
+    let card_text = match craft_ui::runtime::env::Env::of(ui).get::<PresetCardLook>() {
+        PresetCardLook::OutlineStrong => CardText::PresetStrong,
+        PresetCardLook::Page => CardText::Page,
+        _ => CardText::Preset,
+    };
     let selection = list.iter().position(|card| card.key == current).map_or_else(|| Selection::new(Vec::new(), None, None), Selection::single);
     let shown = TileGrid::<usize>::new(tr(app, heading))
         .id_salt(("new_document_cards", tab.as_str()))
         .card()
-        .card_text(CardText::Preset)
+        .card_text(card_text)
         .detail_line()
         .select(SelectMode::Single)
         .deletable(saved)
         .rows_stamp(list.len() as u64)
-        .card_size(CARD_SIDE)
+        .zoom(GridZoom::Fixed(CARD_ZOOM))
         .aspect(CARD_ASPECT)
         .selection(Bind::given(selection))
         // The presets' inset scrolls; the grid takes its whole height inside it.

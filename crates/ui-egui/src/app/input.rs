@@ -41,6 +41,9 @@ impl DesignApp {
         // ("12 pt", "0°", "100%"), not a centred mono number with the unit apart, and percentages whole.
         root.values.set(craft_ui_widgets::text::NumberLook::Inline);
         root.values.set(craft_ui_widgets::text::NumberPrecision::Measured);
+        // New Document's preset cards in the outline look with the preset's name in the strong body type, as the framework's
+        // pattern shows them; the dialog's card grid reads the look back from these values.
+        root.values.set(craft_ui::patterns::form_dialogs::PresetCardLook::OutlineStrong);
         root
     }
 
