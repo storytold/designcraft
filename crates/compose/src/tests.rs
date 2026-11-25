@@ -10547,6 +10547,26 @@ fn joining_types_cover_heh_goal_with_hamza_and_arabic_supplement() {
     for c in right {
         assert!(!joins_next(c) && joins_prev(c), "U+{:04X} is right-joining", c as u32);
     }
-    // Past the block: Syriac and Thaana letters aren't Arabic letters here.
+    // Marks and letters of scripts that don't join stay out.
     assert!(!joins_prev('\u{0749}') && !joins_prev('\u{0780}'));
+}
+
+/// The joining types reach past Arabic Supplement: the Arabic Extended blocks and the other
+/// scripts that join. They were missing, so a custom glyph drawing one of these letters stood in
+/// the shaper's joining context as a ZWNJ and cut its neighbours' joins.
+#[test]
+fn joining_types_cover_arabic_extended_and_the_other_joining_scripts() {
+    // Arabic Extended-A and -B, Syriac, NKo, Mandaic, Mongolian, Hanifi Rohingya, Adlam.
+    let dual = ['\u{08A0}', '\u{08A9}', '\u{08C8}', '\u{0883}', '\u{0712}', '\u{07CA}', '\u{0841}', '\u{1820}', '\u{10D01}', '\u{1E900}'];
+    for c in dual {
+        assert!(joins_next(c) && joins_prev(c), "U+{:04X} is dual-joining", c as u32);
+    }
+    let right = ['\u{08AA}', '\u{08B9}', '\u{0870}', '\u{0710}', '\u{0840}', '\u{10D22}'];
+    for c in right {
+        assert!(!joins_next(c) && joins_prev(c), "U+{:04X} is right-joining", c as u32);
+    }
+    // Non-joining letters in those blocks, and the join-causing tatweel and ZWJ, which aren't letters.
+    for c in ['\u{08AD}', '\u{0887}', '\u{0640}', '\u{200D}'] {
+        assert!(!joins_next(c) && !joins_prev(c), "U+{:04X} doesn't join as a letter", c as u32);
+    }
 }
