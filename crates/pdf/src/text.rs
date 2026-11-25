@@ -477,16 +477,16 @@ impl Exporter<'_> {
             let range = if let Some(t) = src {
                 prev_src = Some(g.byte);
                 let a = text.len();
-                // All Caps draws a lowercase source letter as its uppercase glyph. Use the
-                // displayed spelling so that glyph has one Unicode mapping across the document;
-                // otherwise every later spelling needs ActualText nested in the structure span,
-                // which tag-aware readers such as poppler truncate.
+                // All Caps uppercases the source before shaping, including before OpenType
+                // substitutions. Use that displayed spelling even when a feature replaces the
+                // cmap-default uppercase glyph; otherwise the alternate gets ActualText nested
+                // in the structure span, which tag-aware readers such as poppler truncate.
                 let mut chars = t.chars();
                 let single = chars.next().filter(|_| chars.next().is_none());
                 match single {
                     Some(c) => {
                         let upper = c.to_uppercase().next().unwrap_or(c);
-                        if all_caps && upper != c && g.face.glyph_for(upper) == g.gid {
+                        if all_caps && upper != c {
                             text.push(upper);
                         } else {
                             text.push_str(t);

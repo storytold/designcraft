@@ -823,6 +823,35 @@ fn all_caps_extracts_complete_display_text_when_glyphs_are_reused() {
     }
 }
 
+#[test]
+fn all_caps_uses_display_text_when_opentype_substitutes_an_alternate_glyph() {
+    // `c2sc` maps the capital to a small-cap alternate, not the cmap-default capital glyph.
+    // The ordinary capital establishes that alternate's Unicode mapping before All Caps reuses it.
+    let mut d = doc_with_text("A");
+    let first_story = *d.stories.keys().next().unwrap();
+    let (_, second_story) =
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 120.0, 576.0, 180.0), d.default_layer(), "a", ParaFormat::default()).unwrap();
+    d.story_mut(first_story).unwrap().format_chars(0..1, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.otf_features = Some(vec!["c2sc".into()]);
+    });
+    d.story_mut(second_story).unwrap().format_chars(0..1, |f| {
+        f.over.font_family = Some("Source Sans 3".into());
+        f.over.otf_features = Some(vec!["c2sc".into()]);
+        f.over.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
+    });
+    let first = designcraft_compose::compose_story(&d, first_story, &Default::default());
+    let second = designcraft_compose::compose_story(&d, second_story, &Default::default());
+    let first_gid = first.frames[0].lines[0].glyphs[0].gid;
+    let second_gid = second.frames[0].lines[0].glyphs[0].gid;
+    assert_eq!(first_gid, second_gid, "the fixture must share the small-cap alternate");
+
+    let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { compress: false, tagged: true, ..Default::default() }).unwrap();
+    assert_eq!(extract_text(&bytes)[0].split_whitespace().collect::<String>(), "AA");
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("/ActualText"), "All Caps and the ordinary capital share one displayed spelling: {raw}");
+}
+
 /// Links and buttons from an imported document still go through the export allowlist.
 #[test]
 fn link_annotation_export_refuses_non_web_schemes() {
