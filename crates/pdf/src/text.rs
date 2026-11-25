@@ -466,7 +466,7 @@ impl Exporter<'_> {
     }
 
     /// Unicode text for a run's glyphs: (text, per-glyph byte range into it).
-    fn run_text(&mut self, glyphs: &[PlacedGlyph], story: &str) -> (String, Vec<Range<usize>>) {
+    fn run_text(&mut self, glyphs: &[PlacedGlyph], story: &str, all_caps: bool) -> (String, Vec<Range<usize>>) {
         let cmap = self.reverse_cmap(&glyphs[0].face);
         let mut text = String::new();
         let mut ranges: Vec<Range<usize>> = Vec::with_capacity(glyphs.len());
@@ -486,7 +486,7 @@ impl Exporter<'_> {
                 match single {
                     Some(c) => {
                         let upper = c.to_uppercase().next().unwrap_or(c);
-                        if upper != c && g.face.glyph_for(upper) == g.gid {
+                        if all_caps && upper != c && g.face.glyph_for(upper) == g.gid {
                             text.push(upper);
                         } else {
                             text.push_str(t);
@@ -582,7 +582,7 @@ impl Exporter<'_> {
         if g0.gid == 0 {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
         } else if let Some(font) = self.font(&face) {
-            self.text_run(s, glyphs, story, font, origin, size, hs, tan, fill, stroke, weight);
+            self.text_run(s, glyphs, story, st.all_caps, font, origin, size, hs, tan, fill, stroke, weight);
         } else {
             self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
@@ -602,6 +602,7 @@ impl Exporter<'_> {
         s: &mut Surface,
         glyphs: &[PlacedGlyph],
         story: &str,
+        all_caps: bool,
         font: Font,
         origin: Affine,
         size: f64,
@@ -612,7 +613,7 @@ impl Exporter<'_> {
         stroke_weight: f64,
     ) {
         let Some(g0) = glyphs.first() else { return };
-        let (text, mut ranges) = self.run_text(glyphs, story);
+        let (text, mut ranges) = self.run_text(glyphs, story, all_caps);
         let order = split_clusters(glyphs, &text, &mut ranges);
         let k = 1.0 / (hs * size);
         // Glyphs are placed absolutely: each advance reaches the next glyph drawn, a vertical offset

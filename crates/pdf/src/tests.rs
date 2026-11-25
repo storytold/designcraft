@@ -782,6 +782,19 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
 }
 
 #[test]
+fn ordinary_lowercase_keeps_its_source_when_case_forms_share_a_glyph() {
+    const FAMILY: &str = "DC Test PDF Shared Case Glyph";
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'A'), ('A', 'A')]).unwrap());
+    let mut d = doc_with_text("a");
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..1, |f| f.over.font_family = Some(FAMILY.into()));
+    for tagged in [false, true] {
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { tagged, ..Default::default() }).unwrap();
+        assert_eq!(extract_text(&bytes)[0], "a", "ordinary text is not All Caps, tagged={tagged}");
+    }
+}
+
+#[test]
 fn all_caps_extracts_complete_display_text_when_glyphs_are_reused() {
     // The second paragraph reuses the first paragraph's uppercase glyphs for lowercase source
     // letters. Per-letter ActualText inside the structure span made poppler truncate it to `FE`.

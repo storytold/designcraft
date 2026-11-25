@@ -73,6 +73,8 @@ pub struct RunStyle {
     pub strike_rule: Rule,
     pub skew: f64,
     pub size: f64,
+    /// Display capitalization is All Caps (PDF export maps transformed letters to their display form).
+    pub all_caps: bool,
     /// The run's font isn't installed (shown in a substitute; highlighted on screen).
     pub missing_font: bool,
     /// Tracking or manual kerning (Highlight Custom Tracking/Kerning).

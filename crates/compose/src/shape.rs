@@ -277,6 +277,7 @@ impl StyleTable<'_> {
             },
             skew: p.skew,
             size: p.size,
+            all_caps: p.capitalization == Capitalization::AllCaps,
             missing_font: *self.missing.entry(p.font_family.clone()).or_insert_with(|| !p.font_family.is_empty() && !db.has_family(&p.font_family)),
             custom_tracking: p.tracking.abs() > 1e-9 || matches!(p.kerning, designcraft_doc::Kerning::Manual(_)),
             condition: p.conditions.first().cloned(),
