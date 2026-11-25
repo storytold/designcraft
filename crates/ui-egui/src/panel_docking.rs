@@ -1308,8 +1308,14 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     if let Some(error) = output.error {
         app.ui.status = error.error.to_string();
     }
-    // The user's own gesture keeps the focus on the panel it moves, while that panel stays open.
-    let focused = app.ui.docking_focused.clone();
+    // The user's own gesture keeps the focus on the panel it moves, while that panel stays open. A press on a dock tab
+    // leaves key focus where it was (the framework's `TabStrip::keeps_focus`), so the dock reports no focus for a tab
+    // drag: the panel the person dragged out or into place by its tab, or floated, is the one they last picked.
+    let moved = output.actions.iter().rev().find_map(|action| match action {
+        Action::Move { panel, .. } | Action::MovePanel { panel, .. } | Action::Float { panel, .. } => Some(panel.clone()),
+        _ => None,
+    });
+    let focused = moved.or_else(|| app.ui.docking_focused.clone());
     for action in output.actions.into_iter().chain(output.requested) {
         if let Err(error) = app.run("window.panel.layout", json!({"action": action})) {
             app.ui.status = error;

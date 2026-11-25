@@ -1631,8 +1631,14 @@ fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
     let at = json!({"panel": "layers", "x": tab.left() - 320.0, "y": tab.top() - 80.0, "width": 420.0, "height": 320.0});
     h.state_mut().run("window.panel.float", at).unwrap();
     h.run_steps(4);
-    let window = window_of(&h, "layers");
-    let clear = pos2(window.left() + 24.0, window.top() + 12.0);
+    // Probe: the place asked for starts above the dock (the Swatches flyout opens at the column's top), and the
+    // framework draws a floating window clamped into its float bounds while the layout keeps the place asked for
+    // (`DockArea`, `FloatingGroup::bounds`). So the press goes to the window's title row where it is drawn, and the
+    // window's rect is its layout size with its top at that row.
+    let asked = window_of(&h, "layers");
+    let row = title_rect(&h, tab_rect(&h, "layers"));
+    let window = Rect::from_min_size(pos2(asked.left(), row.top()), asked.size());
+    let clear = on_title(row);
     let window_layer = h.ctx.layer_id_at(clear).expect("the window is drawn");
     // Window › Swatches: the flyout opens over the window.
     h.state_mut().run("window.panel", json!({"panel": "swatches"})).unwrap();
@@ -1640,7 +1646,9 @@ fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
     let tab = tab_rect(&h, "swatches");
     assert!(window.contains(tab.center()), "the window {window:?} covers the flyout's tab {tab:?}");
-    assert!(clear.x < tab.left() - 120.0 && clear.y < tab.top() - 30.0, "the press point {clear:?} is clear of the flyout at {tab:?}");
+    // Probe: far left of the Swatches tab, past the flyout's left edge, so clear of the flyout. With the window drawn at
+    // the dock's top its title row can be level with the flyout's tabs, so the distance above the tab no longer counts.
+    assert!(clear.x < tab.left() - 240.0, "the press point {clear:?} is clear of the flyout at {tab:?}");
     let top = h.ctx.layer_id_at(tab.center());
     assert!(top.is_some_and(|layer| layer != window_layer), "the Swatches flyout is the top layer at its tab, not the window: {top:?}");
     // A press on the window takes it back to the front; the flyout stays open below it.
