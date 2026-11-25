@@ -183,7 +183,7 @@ fn import_within(
 ) -> designcraft_idml::Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
     crate::asset_io::install();
     #[cfg(not(target_arch = "wasm32"))]
-    let resolved_links = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
+    let resolved_links = std::cell::RefCell::new(std::collections::HashMap::<String, (String, bool)>::new());
     #[cfg(not(target_arch = "wasm32"))]
     let resolved_files = std::cell::RefCell::new(std::collections::HashMap::<String, ResolvedFile>::new());
     #[cfg(not(target_arch = "wasm32"))]
@@ -194,14 +194,16 @@ fn import_within(
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(path) = resolved_links.borrow().get(link).cloned()
+            let cached = resolved_links.borrow().get(link).cloned();
+            if let Some((path, _)) = cached
                 && let Some((data, _)) = resolved_files.borrow().get(&path).and_then(|file| file.linked.as_ref())
                 && let Some(bytes) = data.resident()
             {
+                resolved_links.borrow_mut().insert(link.to_string(), (path, true));
                 return Some((*bytes).clone());
             }
             let (path, data, fingerprint) = read_packaged_link(link, package, cap)?;
-            resolved_links.borrow_mut().insert(link.to_string(), path.clone());
+            resolved_links.borrow_mut().insert(link.to_string(), (path.clone(), false));
             resolved_files
                 .borrow_mut()
                 .entry(path)
@@ -218,7 +220,7 @@ fn import_within(
     let link_asset = |link: &str, asset: &mut designcraft_doc::Asset| {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(path) = resolved_links.borrow().get(link).cloned() else { return };
+            let Some((path, from_resident)) = resolved_links.borrow().get(link).cloned() else { return };
             let (fingerprint, existing) = {
                 let files = resolved_files.borrow();
                 let Some(file) = files.get(&path) else { return };
@@ -231,12 +233,12 @@ fn import_within(
             let crop_size = (!asset.content_box_pending())
                 .then(|| asset.data.embedded_bytes().cloned().and_then(|b| super::file::crop_pdf_from(asset, &b)))
                 .flatten();
-            if let Some((data, hash)) = link_read_file_with(asset, package, existing) {
+            if let Some((data, hash)) = link_read_file_with(asset, package, existing, from_resident) {
                 if let Some(size) = crop_size {
                     crop_sizes.borrow_mut().insert((data.key(), asset.page, asset.pdf_crop), size);
                 }
                 if let Some(file) = resolved_files.borrow_mut().get_mut(&path)
-                    && file.linked.is_none()
+                    && file.linked.as_ref().map(|(d, _)| d.key()) != Some(data.key())
                 {
                     file.linked = Some((data, hash));
                 }
@@ -250,7 +252,7 @@ fn import_within(
     for asset in document.assets.values_mut() {
         if asset.storage != designcraft_doc::Storage::Linked
             && let Some(link) = asset.link.as_deref()
-            && let Some(path) = resolved_links.borrow().get(link).cloned()
+            && let Some((path, _)) = resolved_links.borrow().get(link).cloned()
         {
             // Embedded graphics sharing a relocated link URI also keep the relocated path.
             let keep_original =
@@ -277,7 +279,7 @@ fn import_within(
 /// [`shows_whole`]), else one made from the file, else the preview.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
-    let _ = link_read_file_with(asset, package, None);
+    let _ = link_read_file_with(asset, package, None, false);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -285,6 +287,7 @@ fn link_read_file_with(
     asset: &mut designcraft_doc::Asset,
     package: Option<&std::path::Path>,
     existing: Option<(designcraft_doc::SourceKey, String)>,
+    from_resident: bool,
 ) -> Option<(designcraft_doc::AssetData, String)> {
     let bytes = asset.data.embedded_bytes().cloned()?;
     let path = asset.link.clone()?;
@@ -293,7 +296,14 @@ fn link_read_file_with(
         Some(p) if shows_whole(asset, &bytes, &p) => (Some(p), None),
         p => (None, p),
     };
-    let (key, hash) = existing.unwrap_or_else(|| (designcraft_doc::SourceKey::fresh(), crate::asset_io::content_hash(&bytes)));
+    let (key, hash) = match existing {
+        Some((key, known)) if from_resident => (key, known),
+        Some((key, known)) => {
+            let current = crate::asset_io::content_hash(&bytes);
+            if known == current { (key, known) } else { (designcraft_doc::SourceKey::fresh(), current) }
+        }
+        None => (designcraft_doc::SourceKey::fresh(), crate::asset_io::content_hash(&bytes)),
+    };
     // The fingerprint kept by the read (none for a file just written: its hash tells its bytes).
     let file = super::links::FileLink::of(std::path::Path::new(&path), asset.link_fingerprint);
     super::links::link_to_file_under(asset, bytes, file, key, hash.clone(), package, whole);
@@ -1148,6 +1158,40 @@ mod tests {
         assert!(imported.assets.values().all(|a| a.storage == designcraft_doc::Storage::Linked));
         let keys: Vec<_> = imported.assets.values().map(|a| a.data.key()).collect();
         assert!(keys.windows(2).all(|w| w[0] == w[1]), "{keys:?}");
+    }
+
+    #[test]
+    fn link_read_file_with_mints_fresh_source_key_when_reread_bytes_changed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("photo.png");
+        let original = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![10; 16] }.to_png();
+        let modified = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![200; 16] }.to_png();
+        std::fs::write(&path, &original).unwrap();
+
+        let make_asset = |bytes: &[u8]| designcraft_doc::Asset {
+            name: "photo.png".into(),
+            mime: "image/png".into(),
+            link: Some(path.to_str().unwrap().into()),
+            data: designcraft_doc::AssetData::embedded(bytes.to_vec()),
+            ..Default::default()
+        };
+
+        let mut first = make_asset(&original);
+        let (first_data, first_hash) = link_read_file_with(&mut first, None, None, false).unwrap();
+
+        // Same bytes re-read from disk keep the existing SourceKey and hash.
+        let mut same = make_asset(&original);
+        let (same_data, same_hash) = link_read_file_with(&mut same, None, Some((first_data.key(), first_hash.clone())), false).unwrap();
+        assert_eq!(same_data.key(), first_data.key());
+        assert_eq!(same_hash, first_hash);
+
+        // Modified bytes re-read from disk must mint a fresh SourceKey and updated hash.
+        std::fs::write(&path, &modified).unwrap();
+        let mut changed = make_asset(&modified);
+        let (changed_data, changed_hash) = link_read_file_with(&mut changed, None, Some((first_data.key(), first_hash.clone())), false).unwrap();
+        assert_ne!(changed_data.key(), first_data.key());
+        assert_eq!(changed_hash, crate::asset_io::content_hash(&modified));
+        assert_eq!(changed.link_hash.as_deref(), Some(changed_hash.as_str()));
     }
 }
 
