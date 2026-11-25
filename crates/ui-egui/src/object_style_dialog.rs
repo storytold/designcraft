@@ -340,13 +340,12 @@ mod framework {
     use craft_behavior::{ColumnKey, ColumnWidth, DisplayOrder, ItemSource, Selection, SelectionChange};
     use craft_ui_widgets::choice::Checkbox;
     use craft_ui_widgets::contract::{
-        ActivateOn, Bind, CollectionEvent, ColumnSpec, Entry, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _,
+        ActivateOn, Bind, CollectionEvent, ColumnSpec, Entry, Gap, Pad, Props as _, Scroll, SelectMode, Show as _, ShowCollection as _,
         ShowContainer as _, Sizing,
     };
     use craft_ui_widgets::display::{Shade, Text};
     use craft_ui_widgets::form::Field;
-    use craft_ui_widgets::layout::CellAlign;
-    use craft_ui_widgets::layout_components::{Grid, Row, Stack};
+    use craft_ui_widgets::layout_components::{Row, Stack};
     use craft_ui_widgets::list::{List, ListRow};
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::ContentPainterCx;
@@ -358,13 +357,11 @@ mod framework {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// The page lists beside the page shown, each at the top of its column; the page takes the rest of the width.
-    const COLUMNS: [ColumnWidth; 2] = [ColumnWidth::Content, ColumnWidth::fill(1.0)];
-
     /// The Style Name field's width, in characters: InDesign's field, not the dialog's whole width.
     const NAME_CHARS: u16 = 40;
 
-    /// The height of the Style Settings box under its heading: room for several settings, as InDesign's.
+    /// The height of the Style Settings box under its heading: room for several settings, as InDesign's. The box is
+    /// this tall with a line or two, and scrolls past it.
     const SETTINGS_ROOM: f32 = 170.0;
 
     /// The column of a page list's include boxes, and the column of its page names.
@@ -394,7 +391,11 @@ mod framework {
             if !status.is_empty() {
                 Text::new(status).show(ui);
             }
-            Grid::new(&COLUMNS).id_salt("object_style_columns").cells(CellAlign::Top).fill_width().show(ui, |ui, _| {
+            // The page lists beside the page shown, at the top of the row; the page takes the rest of the dialog's width.
+            // A row, as Paragraph Style Options', not a grid with a fill column: a grid that fills gives that column the
+            // whole room the host allows a dialog, and the dialog opened that wide. In the row the dialog is its least
+            // width or its content's.
+            Row::new().id_salt("object_style_columns").fill_width().gap(Gap::Section).show(ui, |ui, _| {
                 Stack::new().id_salt("object_style_list").show(ui, |ui, _| navigation(app, ui, d));
                 Stack::new().id_salt("object_style_page").fill_width().show(ui, |ui, _| page_form(app, ui, d, &page));
             });
@@ -531,17 +532,21 @@ mod framework {
                     Select::new(tr("Based On:"), Bind::given(based.clone()), &entries).id_salt("os_based_on").enabled(false).show(ui);
                 });
                 let lines = settings(app, d);
-                // Style Settings: the heading over a box that fills the page's width and the room under it, as InDesign's.
+                // Style Settings: the heading over a box that fills the page's width, SETTINGS_ROOM tall, as InDesign's. The
+                // room caps the box (more lines scroll in it); the row's least height is its floor, since a box that fills
+                // the room takes only its content's height there.
                 Text::new(tr("Style Settings:")).role(TypeRole::BodyStrong).show(ui);
                 Stack::new().id_salt("os_style_settings_room").fill_width().room_height(SETTINGS_ROOM).show(ui, |ui, _| {
-                    let settings_box = Stack::new().id_salt("os_style_settings").surface(SurfaceKind::Sunken).pad(Pad::Control);
-                    settings_box.scroll(Scroll::vertical()).fill().show(ui, |ui, _| {
-                        if lines.is_empty() {
-                            Text::new(tr("(no attributes)")).shade(Shade::Muted).show(ui);
-                        }
-                        for line in &lines {
-                            Text::new(line.clone()).show(ui);
-                        }
+                    Row::new().id_salt("os_style_settings_line").fill_width().least_height(SETTINGS_ROOM).show(ui, |ui, _| {
+                        let settings_box = Stack::new().id_salt("os_style_settings").surface(SurfaceKind::Sunken).pad(Pad::Control);
+                        settings_box.scroll(Scroll::vertical()).fill().show(ui, |ui, _| {
+                            if lines.is_empty() {
+                                Text::new(tr("(no attributes)")).shade(Shade::Muted).show(ui);
+                            }
+                            for line in &lines {
+                                Text::new(line.clone()).show(ui);
+                            }
+                        });
                     });
                 });
             }

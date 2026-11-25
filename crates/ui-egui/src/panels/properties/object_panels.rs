@@ -372,7 +372,8 @@ mod framework {
     use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::ContentPainterCx;
-    use craft_ui_widgets::text::link_toggle;
+    use craft_ui_widgets::runtime::env::UnitKind;
+    use craft_ui_widgets::text::{NumberField, StepArrows, link_toggle};
     use egui::Rect;
 
     /// The id of the control `key` of the panel the `ui` shows.
@@ -433,6 +434,8 @@ mod framework {
     }
 
     /// A segmented choice of `choices` (label and value) at `at`, named `label`, showing `current`: the value picked.
+    /// The segments are the small size, whose tighter side padding fits a row's longest labels ("Projecting",
+    /// "Outside") whole in the panel's width beside the caption column, as the old panel showed them.
     fn segmented(
         app: &DesignApp,
         ui: &mut Ui,
@@ -445,7 +448,13 @@ mod framework {
         let entries: Vec<Entry<&'static str>> =
             choices.iter().map(|(l, v)| Entry::new(*v, crate::i18n::tr(&app.ui.language, l).to_owned())).collect();
         let held = current.map_or(Mixed::Mixed, Mixed::Same);
-        Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied()
+        Segmented::new(label.to_owned(), Bind::given(held), &entries)
+            .id(id)
+            .size(craft_theme::ControlSize::Sm)
+            .show_at(ui, at)
+            .events
+            .committed()
+            .copied()
     }
 
     pub(super) fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -489,9 +498,15 @@ mod framework {
         }
         let at = labelled(ui, &tr("Miter Limit:"), label_w, 60.0);
         let id = cid(ui, "miter");
-        let miter = tr("Miter Limit:");
-        let n = Number::new(&miter, Some(st.miter_limit), Quantity::Plain { decimals: 0 });
-        if let Some(Some(v)) = number_field(ui, Some(at), id, n) {
+        // The miter limit is a multiple of the stroke weight: it shows its times sign ("4×"), as the old panel's "4 x".
+        let miter = NumberField::new(tr("Miter Limit:"), Bind::given(Some(st.miter_limit)))
+            .id(id)
+            .unit_kind(UnitKind::Times)
+            .step(1.0)
+            .commit_decimals(0)
+            .step_arrows(StepArrows::Leading)
+            .show_at(ui, at);
+        if let Some(Some(v)) = miter.edit.events.committed().copied().filter(|v| v.is_some_and(f64::is_finite)) {
             let _ = app.run("object.stroke", json!({"miterLimit": v.clamp(1.0, 500.0)}));
         }
         let at = labelled(ui, &tr("Align Stroke:"), label_w, wide);
@@ -2162,6 +2177,29 @@ mod framework_panel_tests {
         assert_eq!(journal(&h, "object.stroke").last(), Some(&json!({"cap": "projecting"})));
         assert_eq!(item(&h, id).stroke.cap, designcraft_doc::Cap::Projecting);
         assert_eq!(undo_steps(&h), steps + 2, "one undo step each");
+    }
+
+    /// At the docked panel's width (about 242 pt inside its padding) the Cap row's segments show their labels whole:
+    /// a segment cut to the row's end would be narrower than its label, so "Projecting" would no longer outgrow
+    /// "Round" by more than "Round" outgrows "Butt", as their labels do.
+    #[test]
+    fn the_stroke_panels_cap_segments_fit_their_labels_at_the_panel_width() {
+        let mut app = document();
+        rectangle(&mut app);
+        let h = open(app, |app, ui| {
+            ui.set_max_width(242.0);
+            crate::panels::properties::stroke_panel(app, ui);
+        });
+        let rect = |label: &str| h.query_all_by_label(label).next().unwrap_or_else(|| panic!("the {label} cap")).rect();
+        let (butt, projecting) = (rect("Butt"), rect("Projecting"));
+        // "Round" is a cap and a join: the cap is the one in Butt's row.
+        let round = h
+            .query_all_by_label("Round")
+            .map(|n| n.rect())
+            .min_by(|a, b| (a.center().y - butt.center().y).abs().total_cmp(&(b.center().y - butt.center().y).abs()))
+            .expect("the Round cap");
+        assert!(butt.max.x <= round.min.x && round.max.x <= projecting.min.x, "the segments run in order without overlapping");
+        assert!(projecting.width() - round.width() > round.width() - butt.width(), "Projecting is shown whole: {butt:?} {round:?} {projecting:?}");
     }
 
     #[test]
