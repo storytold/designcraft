@@ -373,7 +373,7 @@ mod framework {
     use craft_ui_widgets::display::Text;
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::ContentPainterCx;
-    use craft_ui_widgets::runtime::env::{UnitKind, with_env};
+    use craft_ui_widgets::runtime::env::UnitKind;
     use craft_ui_widgets::text::{NumberField, StepArrows, link_toggle};
     use egui::Rect;
 
@@ -436,9 +436,7 @@ mod framework {
 
     /// A segmented choice of `choices` (label and value) at `at`, named `label`, showing `current`: the value picked.
     /// The segments are the small size, whose tighter side padding fits a row's longest labels ("Projecting",
-    /// "Outside") whole in the panel's width beside the caption column, as the old panel showed them. The size is the
-    /// scope's, not the row's own `size`: a segment's face is measured at the row's size but painted at the scope's,
-    /// so a row alone at the small size paints its labels in the wider medium padding and cuts every one short.
+    /// "Outside") whole in the panel's width beside the caption column, as the old panel showed them.
     fn segmented(
         app: &DesignApp,
         ui: &mut Ui,
@@ -451,13 +449,13 @@ mod framework {
         let entries: Vec<Entry<&'static str>> =
             choices.iter().map(|(l, v)| Entry::new(*v, crate::i18n::tr(&app.ui.language, l).to_owned())).collect();
         let held = current.map_or(Mixed::Mixed, Mixed::Same);
-        crate::panels::properties::place(ui, at, |ui| {
-            with_env(
-                ui,
-                |env| env.size = Some(craft_theme::ControlSize::Sm),
-                |ui| Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied(),
-            )
-        })
+        Segmented::new(label.to_owned(), Bind::given(held), &entries)
+            .id(id)
+            .size(craft_theme::ControlSize::Sm)
+            .show_at(ui, at)
+            .events
+            .committed()
+            .copied()
     }
 
     pub(super) fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
