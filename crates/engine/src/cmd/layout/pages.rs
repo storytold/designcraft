@@ -7,8 +7,11 @@ fn _r(_: Result<()>) {}
 /// Layout › Page Size (the Page tool): resize pages one by one. Left pages grow to the left
 /// (the spine stays put); objects move with their page.
 pub(super) fn page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
-    let pages: Vec<usize> =
-        p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as usize).collect()).unwrap_or_default();
+    let pages: Vec<usize> = p
+        .get("pages")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok())).collect::<Option<Vec<_>>>())
+        .unwrap_or_default();
     let n = s.doc()?.doc.page_count();
     if pages.is_empty() || pages.iter().any(|x| *x == 0 || *x > n) {
         return Err(bad("layout.pageSize", "give `pages` (1-based)"));
@@ -33,8 +36,11 @@ pub(super) fn page_size(s: &mut crate::Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn page_options(s: &mut crate::Session, p: &Value) -> Result<Value> {
-    let pages: Vec<usize> =
-        p.get("pages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as usize).collect()).unwrap_or_default();
+    let pages: Vec<usize> = p
+        .get("pages")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok())).collect::<Option<Vec<_>>>())
+        .unwrap_or_default();
     let n = s.doc()?.doc.page_count();
     if pages.is_empty() || pages.iter().any(|x| *x == 0 || *x > n) {
         return Err(bad("layout.pageOptions", "give `pages` (1-based)"));
@@ -330,6 +336,63 @@ mod setup_tests {
 #[cfg(test)]
 mod page_size_tests {
     use serde_json::json;
+
+    #[test]
+    fn malformed_page_lists_leave_document_and_history_unchanged() {
+        for command in ["layout.pageSize", "layout.pageOptions"] {
+            let params = |pages: serde_json::Value| {
+                if command == "layout.pageSize" { json!({"pages": pages, "width": 300}) } else { json!({"pages": pages, "showParentOverlay": true}) }
+            };
+            let mut s = crate::Session::new();
+            s.execute("file.new", &json!({"pages": 2, "facingPages": false, "width": 400, "height": 500})).unwrap();
+            let before = serde_json::to_value(&s.doc().unwrap().doc).unwrap();
+            // A valid edit followed by Undo leaves a redo entry that a refused command must keep.
+            s.execute(command, &params(json!([1]))).unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before, "{command}");
+            let history = (s.doc().unwrap().history.undo.len(), s.doc().unwrap().history.redo.len());
+            assert_eq!(history.1, 1);
+            let revision = s.doc().unwrap().revision;
+            for pages in [
+                json!([1, "oops", 2]),
+                json!([1, -1]),
+                json!([1, 1.5]),
+                json!([1, null]),
+                json!([1, true]),
+                json!([1, {}]),
+                json!([1, []]),
+                json!([1, 4_294_967_297u64]),
+                json!([1, u64::MAX]),
+                json!([]),
+                json!([0]),
+                json!([3]),
+                json!(null),
+                json!("1"),
+            ] {
+                let p = params(pages.clone());
+                assert!(s.execute(command, &p).is_err(), "{command}: {pages}");
+                let st = s.doc().unwrap();
+                assert_eq!(serde_json::to_value(&st.doc).unwrap(), before, "{command}: {pages}");
+                assert_eq!((st.history.undo.len(), st.history.redo.len()), history, "{command}: {pages}");
+                assert_eq!(st.revision, revision, "{command}: {pages}");
+            }
+            // Valid addresses, including duplicates, retain their existing count and one undo step.
+            let r = s.execute(command, &params(json!([1, 2, 1]))).unwrap();
+            assert_eq!(r["pages"], 3);
+            let st = s.doc().unwrap();
+            assert_eq!(st.history.undo.len(), history.0 + 1);
+            for page in [0, 1] {
+                let pg = st.doc.page(page).unwrap();
+                if command == "layout.pageSize" {
+                    assert_eq!((pg.width, pg.height), (300.0, 500.0));
+                } else {
+                    assert!(pg.show_parent_overlay);
+                }
+            }
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before, "{command}");
+        }
+    }
 
     #[test]
     fn document_page_resize_preserves_shifted_spread_objects_and_guides() {
