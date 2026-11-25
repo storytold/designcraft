@@ -6,6 +6,11 @@ fn app() -> DesignApp {
     app
 }
 
+/// The preset cards' size line reads in the dialog's units.
+///
+/// Probe: the cards themselves are no longer sized in points — the grid draws a card's picture its thumbnail side times
+/// the zoom (`form::CARD_ZOOM`), as the framework's grids do — so this test keeps to the size line under the page, and
+/// the geometry is the grid's.
 #[test]
 fn card_sizes_follow_the_dialog_units() {
     let card = NewDocument::from_preset("Business Card").unwrap();

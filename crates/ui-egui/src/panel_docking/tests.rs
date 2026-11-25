@@ -1633,7 +1633,11 @@ fn window_of(h: &Harness<'static, DesignApp>, panel: &str) -> Rect {
 
 /// Window › a panel whose column is collapsed to icons opens its flyout in front of a floating window over that place,
 /// as InDesign brings a panel it shows to the front (the leftover Story Editor hid Tags and Scripts); a press on the
-/// window sends the flyout back below the windows.
+/// window brings the window back in front of the flyout.
+///
+/// Probe: the flyout stands in the floating windows' own order now (the framework's `Flyout`), so the window and the
+/// flyout are drawn in one order and the check reads which of them is on top at that point, where it used to read the
+/// layer the app switched for the flyout. The outcome is the same: the panel the Window menu just showed is on top.
 #[test]
 fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
     let mut h = harness(app(), vec2(1280.0, 800.0));
@@ -1667,6 +1671,7 @@ fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
     // Probe: far left of the Swatches tab, past the flyout's left edge, so clear of the flyout. With the window drawn at
     // the dock's top its title row can be level with the flyout's tabs, so the distance above the tab no longer counts.
     assert!(clear.x < tab.left() - 240.0, "the press point {clear:?} is clear of the flyout at {tab:?}");
+    // Probe: the two areas share the floating windows' order, so the one opened last is the top layer at the tab.
     let top = h.ctx.layer_id_at(tab.center());
     assert!(top.is_some_and(|layer| layer != window_layer), "the Swatches flyout is the top layer at its tab, not the window: {top:?}");
     // A press on the window takes it back to the front; the flyout stays open below it.

@@ -141,9 +141,9 @@ pub(super) fn picked_run(command: &CommandRef) -> (String, Value) {
 
 /// The app's commands on the framework's board while Quick Apply is open: the tools (as `toolbar::tool_catalog` has
 /// them, for the Tools rail), every command Quick Apply searches and the document's styles, so the palette resolves
-/// and picks each of them. The keymap's commands keep its chords for display only (`AppCatalog::shown_only`), so the
-/// rail and the palette's rows show them; the styles have none. The app's keymap stays the one dispatcher of every key.
-/// `None` while Quick Apply is closed; the board then has the tools alone.
+/// and picks each of them. The keymap's commands say the app runs their keys itself (`Dispatch::App`), so the rail and
+/// the palette's rows show their chords while the app's keymap stays the one dispatcher of every key; the styles have
+/// none. `None` while Quick Apply is closed; the board then has the tools alone.
 ///
 /// One catalog per interface language and set of style names; the generation changes whenever the rows do.
 #[cfg(not(target_arch = "wasm32"))]
@@ -173,8 +173,8 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
         return Some(catalog.clone());
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-    let (defs, shown) = board_defs(lang, styles.as_ref(), &app.keymap);
-    let catalog = AppCatalog::new(defs, generation).map(|catalog| catalog.shown_only(shown)).unwrap_or_else(|error| {
+    let defs = board_defs(lang, styles.as_ref(), &app.keymap);
+    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
         log::warn!("Quick Apply's commands are not on the framework's board: {error}");
         AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
     });
@@ -183,34 +183,32 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
 }
 
 /// The definitions of [`quick_apply_catalog`], labelled in `lang`: the keymap's tool and searched commands with the
-/// chords `keymap` binds them to (the board shows them; their ids are returned to mark them shown-only), then a command
-/// for each style.
+/// chords `keymap` binds them to, which the app's own key handling runs (`Dispatch::App`), then a command for each style.
 #[cfg(not(target_arch = "wasm32"))]
 fn board_defs(
     lang: &str,
     styles: Option<&[(&'static str, &'static str, Vec<String>); 3]>,
     keymap: &craft_keymap::Keymap,
-) -> (Vec<craft_keymap::CommandDef>, Vec<String>) {
+) -> Vec<craft_keymap::CommandDef> {
+    use craft_ui::runtime::commands::Dispatch;
     let searched: std::collections::HashSet<&str> = quick_commands().map(|(id, _, _)| id).collect();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut defs: Vec<craft_keymap::CommandDef> = Vec::new();
-    let mut shown: Vec<String> = Vec::new();
     for def in crate::keys::catalog() {
         let tool = crate::keys::tool_of(&def.command);
         let quick = def.command.params.is_null() && searched.contains(def.command.id.as_str());
         if !(tool.is_some() || quick) || !seen.insert(def.command.id.clone()) {
             continue;
         }
-        // Every keymap command on the board keeps the chords the app's keymap binds it to, for display only: the
-        // rail's tools and the palette's rows show them, and the app's keymap dispatches them.
+        // Every keymap command on the board keeps the chords the app's keymap binds it to and says the app runs them:
+        // the rail's tools and the palette's rows show them, and the app's keymap dispatches them.
         let mut def = def.clone();
         def.defaults = keymap.bindings(&def.command);
-        shown.push(def.command.id.clone());
         def.label = crate::i18n::tr(lang, &def.label).to_owned();
         if let Some(icon) = designcraft_tools::TOOL_GROUPS.iter().flat_map(|g| g.iter()).find(|t| Some(t.id) == tool).map(|t| t.icon) {
             def = def.with_icon(icon);
         }
-        defs.push(def);
+        defs.push(def.with_dispatch(Dispatch::App));
     }
     for (apply, _, names) in styles.into_iter().flatten() {
         for name in names {
@@ -220,7 +218,7 @@ fn board_defs(
             }
         }
     }
-    (defs, shown)
+    defs
 }
 
 /// One Quick Apply entry: a style to apply or a command to run.
