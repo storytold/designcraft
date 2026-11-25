@@ -103,11 +103,22 @@ fn painted_bounds(it: &Item) -> Rect {
         excluded.apply_affine(g.xf);
         let hole = excluded.bounding_box();
         // Only a rectangular hole removes whole strips; any other shape leaves pixels inside its box.
-        // It is one rectangle when it is a single subpath of straight lines between its box's
-        // corners and covers the whole box (which rules out a bow tie through the same corners).
+        // It is one rectangle when it is a single subpath of straight lines that run along its
+        // box's sides, from corner to corner, and covers the box once: such a path winds the same
+        // number of times round every point inside the box, so covering it once means once
+        // everywhere (a triangle drawn twice, or a bow tie, has diagonal sides).
         let corner = |p: Point| (p.x == hole.x0 || p.x == hole.x1) && (p.y == hole.y0 || p.y == hole.y1);
         let els = excluded.elements();
+        let pts: Vec<Point> = els
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        let along_sides = pts.iter().zip(pts.iter().cycle().skip(1)).all(|(a, b)| a.x == b.x || a.y == b.y);
         let one_rect = els.iter().filter(|e| matches!(e, PathEl::MoveTo(_))).count() == 1
+            && along_sides
             && els.iter().all(|e| match e {
                 PathEl::MoveTo(p) | PathEl::LineTo(p) => corner(*p),
                 PathEl::ClosePath => true,
@@ -1360,6 +1371,35 @@ mod tests {
         assert!(lum(160) < 60, "solid left of the box: {}", lum(160));
         assert!(lum(225) > 700, "hidden by one rectangle: {}", lum(225));
         assert!(lum(255) < 500, "the overlap still shows: {}", lum(255));
+    }
+
+    /// A triangle drawn twice in one subpath touches only its box's corners and covers as much
+    /// area as the box, yet an inverted (even-odd) clip shows the whole image through it.
+    #[test]
+    fn directional_feather_keeps_pixels_under_an_inverted_clip_drawn_twice() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // The frame's right half's triangle, twice: 2 x 10,000 = the box's 20,000.
+            let mut hole = BezPath::new();
+            hole.move_to((100.0, 0.0));
+            for _ in 0..2 {
+                hole.line_to((200.0, 0.0));
+                hole.line_to((100.0, 200.0));
+                hole.line_to((100.0, 0.0));
+            }
+            hole.close_path();
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // Nothing is cut away, so the fade runs 230..300 at the frame's edge, not 130..200.
+        assert!(lum(180) < 60, "solid before the fade: {}", lum(180));
+        assert!(lum(215) < 60, "inside the twice-drawn triangle: {}", lum(215));
+        assert!(lum(295) > 600, "nearly transparent at the frame's edge: {}", lum(295));
     }
 
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
