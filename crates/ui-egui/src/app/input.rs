@@ -2,34 +2,6 @@
 use super::PendingDrop;
 use super::{DesignApp, InputGeneration, Value, menus};
 
-/// The suite's default theme with the app's selection blue: the fill of a selected row (`state.selected`, and its
-/// hover) and the text on it, in both modes. The tokens the framework derives from a neutral step of the ramp give a grey
-/// row; the app's lists have always selected in blue.
-fn selection_theme() -> Option<std::sync::Arc<craft_theme::ThemeDef>> {
-    use craft_theme::{ColorToken, Rgba};
-    static THEME: std::sync::OnceLock<Option<std::sync::Arc<craft_theme::ThemeDef>>> = std::sync::OnceLock::new();
-    THEME
-        .get_or_init(|| {
-            let mut def = craft_theme::builtins().iter().find(|t| t.id.as_str() == craft_theme::SUITE_DEFAULT).cloned()?;
-            if let Ok(id) = craft_theme::ThemeId::parse("designcraft") {
-                def.id = id;
-            }
-            "DesignCraft".clone_into(&mut def.name);
-            let pins = |fill: u32, hover: u32, ink: u32| {
-                let rgb = |hex: u32| Rgba::rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
-                craft_theme::Pins::from_iter([
-                    (ColorToken::StateSelected, rgb(fill)),
-                    (ColorToken::StateSelectedHover, rgb(hover)),
-                    (ColorToken::TextOnSelected, rgb(ink)),
-                ])
-            };
-            def.pins.light.colors.extend(pins(0xc4dbf7, 0xb3d0f3, 0x14233a).colors);
-            def.pins.dark.colors.extend(pins(0x2d4f7c, 0x365d92, 0xffffff).colors);
-            Some(std::sync::Arc::new(def))
-        })
-        .clone()
-}
-
 impl DesignApp {
     /// Keep pending synthetic input and screenshot settlement repainting while the window may be
     /// hidden.
@@ -66,11 +38,7 @@ impl DesignApp {
         // ("12 pt", "0°", "100%"), not a centred mono number with the unit apart, and percentages whole.
         root.values.set(craft_ui_widgets::text::NumberLook::Inline);
         root.values.set(craft_ui_widgets::text::NumberPrecision::Measured);
-        // The selection of a list, a layer row or a swatch shows in the app's own blue, as it always has.
-        match selection_theme() {
-            Some(theme) => root.library_theme(theme),
-            None => root,
-        }
+        root
     }
 
     /// What the app sets for the framework before each frame: the root values, the host with the interface language's command
