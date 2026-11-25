@@ -381,8 +381,8 @@ impl<'r> Importer<'r> {
             proxy,
             ..Default::default()
         };
-        if read_from.is_some() {
-            (self.link_asset)(&mut asset);
+        if let Some((link, _, _)) = &read_from {
+            (self.link_asset)(link, &mut asset);
         }
         let id = self.asset_index.insert_asset(&mut self.assets, asset);
         if let Some(key) = read_from {

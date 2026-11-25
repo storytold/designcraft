@@ -268,9 +268,25 @@ pub(crate) fn give_placed(
 /// time, content hash) and a proxy to draw while the file can't be read (`preview` when there is
 /// one, else made from the bytes). The bytes stay in memory for the first draw.
 pub(crate) fn link_to_file(a: &mut Asset, bytes: Arc<Vec<u8>>, file: FileLink, document: Option<&Path>, preview: Option<designcraft_doc::Proxy>) {
+    let key = designcraft_doc::SourceKey::fresh();
+    let hash = crate::asset_io::content_hash(&bytes);
+    link_to_file_under(a, bytes, file, key, hash, document, preview);
+}
+
+/// [`link_to_file`] reusing an existing [`designcraft_doc::SourceKey`] and content `hash` for
+/// another asset of the same file (for example, another PDF page or crop).
+pub(crate) fn link_to_file_under(
+    a: &mut Asset,
+    bytes: Arc<Vec<u8>>,
+    file: FileLink,
+    key: designcraft_doc::SourceKey,
+    hash: String,
+    document: Option<&Path>,
+    preview: Option<designcraft_doc::Proxy>,
+) {
     record_file(a, &bytes, file, document);
-    a.link_hash = Some(crate::asset_io::content_hash(&bytes));
-    link_recorded(a, bytes, designcraft_doc::SourceKey::fresh(), document, |a, bytes| preview.or_else(|| proxy_of(a, bytes)));
+    a.link_hash = Some(hash);
+    link_recorded(a, bytes, key, document, |a, bytes| preview.or_else(|| proxy_of(a, bytes)));
 }
 
 /// Add to a graphic placed with [`give_placed`] (or opened with a link that has no hash) its

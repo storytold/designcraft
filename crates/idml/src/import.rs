@@ -85,17 +85,18 @@ pub fn import_idml_report_with_previews(
     read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
     previews: &HashMap<String, Arc<Vec<u8>>>,
 ) -> Result<Imported> {
-    import_idml_linked(bytes, read_link, previews, &|_| {})
+    import_idml_linked(bytes, read_link, previews, &|_, _| {})
 }
 
 /// [`import_idml_report_with_previews`], passing each asset whose bytes came from `read_link`
-/// to `link_asset` as it is imported, so the caller can move its bytes into linked storage instead
-/// of holding every linked file in memory at once.
+/// (together with the link string passed to `read_link`) to `link_asset` as it is imported, so the
+/// caller can move its bytes into linked storage instead of holding every linked file in memory at
+/// once.
 pub fn import_idml_linked(
     bytes: &[u8],
     read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
     previews: &HashMap<String, Arc<Vec<u8>>>,
-    link_asset: &dyn Fn(&mut Asset),
+    link_asset: &dyn Fn(&str, &mut Asset),
 ) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
     let package = pkg.document()?;
@@ -157,7 +158,7 @@ struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
-    link_asset: &'r dyn Fn(&mut Asset),
+    link_asset: &'r dyn Fn(&str, &mut Asset),
     next_id: u64,
     /// Cells every table in this import has reserved. One table is capped, but a file chooses
     /// how many tables it has, so the cap has to be document-wide as well (noted in review).
@@ -261,7 +262,11 @@ struct Importer<'r> {
 }
 
 impl<'r> Importer<'r> {
-    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Arc<Vec<u8>>>, link_asset: &'r dyn Fn(&mut Asset)) -> Self {
+    fn new(
+        read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
+        previews: &'r HashMap<String, Arc<Vec<u8>>>,
+        link_asset: &'r dyn Fn(&str, &mut Asset),
+    ) -> Self {
         let specials: Vec<Swatch> = designcraft_color::default_swatches().into_iter().filter(|s| s.locked).collect();
         let mut swatch_names = HashMap::new();
         swatch_names.insert("Swatch/None".to_string(), swatch::NONE.to_string());

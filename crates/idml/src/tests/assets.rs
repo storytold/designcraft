@@ -152,7 +152,7 @@ fn import_idml_linked_converts_each_resolved_link_before_reading_the_next() {
             Some(vec![uri.len() as u8; 16])
         },
         &Default::default(),
-        &|asset| {
+        &|_, asset| {
             let link = asset.link.clone().unwrap_or_default();
             links_seen.borrow_mut().push(link.clone());
             let source =
