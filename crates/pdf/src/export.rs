@@ -95,7 +95,7 @@ pub(crate) struct Exporter<'a> {
     too_new: Vec<String>,
     /// Parsed placed SVGs.
     svgs: HashMap<AssetId, Option<Arc<craft_pdf::write::svg::Document>>>,
-    pub fonts: HashMap<u32, Option<krilla::text::Font>>,
+    pub fonts: HashMap<(u32, bool), Option<krilla::text::Font>>,
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
     pub rgb_only: bool,

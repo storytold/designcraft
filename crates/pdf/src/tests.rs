@@ -824,6 +824,32 @@ fn all_caps_extracts_complete_display_text_when_glyphs_are_reused() {
 }
 
 #[test]
+fn all_caps_and_ordinary_text_keep_complete_structure_with_a_shared_glyph() {
+    const FAMILY: &str = "DC Test PDF Shared Case Tagged";
+    designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_mapping(FAMILY, &[('a', 'A'), ('A', 'A')]).unwrap());
+    for ordinary_first in [true, false] {
+        let mut d = doc_with_text("a");
+        let first_story = *d.stories.keys().next().unwrap();
+        let (_, second_story) =
+            d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 120.0, 576.0, 180.0), d.default_layer(), "a", ParaFormat::default()).unwrap();
+        for (sid, all_caps) in [(first_story, !ordinary_first), (second_story, ordinary_first)] {
+            d.story_mut(sid).unwrap().format_chars(0..1, |f| {
+                f.over.font_family = Some(FAMILY.into());
+                f.over.capitalization = all_caps.then_some(designcraft_doc::Capitalization::AllCaps);
+            });
+        }
+        let first = designcraft_compose::compose_story(&d, first_story, &Default::default());
+        let second = designcraft_compose::compose_story(&d, second_story, &Default::default());
+        assert_eq!(first.frames[0].lines[0].glyphs[0].gid, second.frames[0].lines[0].glyphs[0].gid);
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { compress: false, tagged: true, ..Default::default() }).unwrap();
+        let expected = if ordinary_first { "aA" } else { "Aa" };
+        assert_eq!(extract_text(&bytes)[0].split_whitespace().collect::<String>(), expected, "ordinary_first={ordinary_first}");
+        let raw = String::from_utf8_lossy(&bytes);
+        assert!(!raw.contains("/ActualText"), "each spelling has its own ToUnicode map, ordinary_first={ordinary_first}: {raw}");
+    }
+}
+
+#[test]
 fn all_caps_uses_display_text_when_opentype_substitutes_an_alternate_glyph() {
     // `c2sc` maps the capital to a small-cap alternate, not the cmap-default capital glyph.
     // The ordinary capital establishes that alternate's Unicode mapping before All Caps reuses it.
