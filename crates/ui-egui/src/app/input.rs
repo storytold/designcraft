@@ -34,6 +34,9 @@ impl DesignApp {
         // Document tabs cut a long name short (at most 22 digits wide) and shrink before they overflow, so a very long
         // file name never pushes the close button and the tabs after it out of the strip (#603).
         root.values.set(craft_ui_widgets::tabs::DocumentTabLook::Shrinking);
+        // Icon groups in the dock's iconic columns part with a thin rule, not a grip strip over each, so a full column
+        // of the app's nineteen groups fits the window. Set at the root: the dock sizes iconic columns from it.
+        root.values.set(craft_ui::docking::IconGroupSeparator::Rule);
         // Number fields as the app has always shown them: the number and its unit as one run in the interface face
         // ("12 pt", "0°", "100%"), not a centred mono number with the unit apart, and percentages whole.
         root.values.set(craft_ui_widgets::text::NumberLook::Inline);

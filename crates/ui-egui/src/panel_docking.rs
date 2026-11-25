@@ -1451,7 +1451,9 @@ impl DockPanels<String> for PanelContent<'_> {
     }
 
     /// The Pages panel's own menu, before its tab strip: its page commands. The dock's own rows (Float, Dock Panel,
-    /// Move Panel To, Close, Collapse to Icons) are in the group's menu at the end of the strip.
+    /// Move Panel To, Close, Collapse to Icons) are in the group's menu at the end of the strip. Its button is the
+    /// small control the group's menu button is: the header's room past it is the tab strip's, and at the standard
+    /// size the strip was short of the least of Properties · Pages · Layers, so Layers went to the overflow menu.
     fn group_header(&mut self, panels: &[String], active: usize, ui: &mut egui::Ui, _: &mut BodyCx<'_>) {
         use craft_ui::contract::{Props as _, Remember as _, Show as _, ShowContainer as _};
         if panels.get(active).map(String::as_str) != Some("pages") {
@@ -1478,6 +1480,7 @@ impl DockPanels<String> for PanelContent<'_> {
             let state = cx.memory::<Open>();
             let opener = craft_ui::buttons::IconButton::new(craft_ui::primitives::IconSpec::glyph(&MENU))
                 .id(egui::Id::new("designcraft-pages-panel-menu"))
+                .size(craft_theme::ControlSize::Sm)
                 .label(label.clone())
                 .tooltip(label.clone())
                 .show(ui);
