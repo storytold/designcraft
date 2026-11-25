@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Synthetic contract for the Linux nightly launchers: no native build or executable launch.
 
-Every Linux nightly format (deb/rpm wrapper, AppImage AppRun, Arch launcher, Flatpak wrapper and
-the unpacked tar) must start the compiled nightly-v1 flavor the Launcher's way, because the app
-refuses a DESIGNCRAFT_CONFIG_DIR override and refuses a bare start as stable.
+The unpacked tar's `designcraft` is craft-common-actions's canonical launcher template
+(scripts/nightly-launcher.sh.in) rendered for this app, which the shared nightly producer accepts
+byte for byte; `TarTemplate` pins its exact argv. Every distro format (deb/rpm wrapper, AppImage
+AppRun, Arch launcher, Flatpak wrapper) must start the compiled nightly-v1 flavor the Launcher's
+way, because the app refuses a DESIGNCRAFT_CONFIG_DIR override and refuses a bare start as stable.
 """
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -37,20 +40,12 @@ def launchers():
         "AppImage AppRun": body("packaging/linux/package.sh", "APPRUN"),
         "Arch launcher": (LINUX / "nightly-arch-launch.sh").read_text(encoding="utf-8").splitlines(),
         "Flatpak wrapper": body("packaging/linux/flatpak-bundle.sh", "WRAPPER"),
-        "tar launcher": body("packaging/linux/nightly.sh", "LAUNCHER"),
     }
 
 
-def tar_launcher(scratch):
-    """The tar's launcher beside a recorder that prints its argv, one argument per line."""
-    directory = Path(scratch)
-    launcher = directory / "designcraft"
-    launcher.write_text("\n".join(body("packaging/linux/nightly.sh", "LAUNCHER")) + "\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    recorder = directory / "designcraft-bin"
-    recorder.write_text('#!/bin/sh\nfor arg in "$@"; do printf "<%s>\\n" "$arg"; done\n', encoding="utf-8")
-    recorder.chmod(0o755)
-    return directory, launcher
+TAR_LAUNCHER = LINUX / "nightly-launch.sh"
+TAR_IDENTITY = "ai.storyteller.designcraft.nightly"
+RECORDER = '#!/bin/sh\nfor arg in "$@"; do printf "<%s>\\n" "$arg"; done\n'
 
 
 def constant(name):
@@ -106,63 +101,95 @@ class LinuxLaunchers(unittest.TestCase):
         self.assertIn('"designcraft-bin", "designcraft-nightly.png", "README.md"', policy)
         nightly = (LINUX / "nightly.sh").read_text(encoding="utf-8")
         self.assertIn('cp "$NIGHTLY_GUI" "$STAGE/designcraft-bin"', nightly)
+        self.assertIn('install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/designcraft"', nightly,
+                      "the tar installs the canonical template, not its own copy of the protocol")
 
     def test_every_format_passes_an_existing_profile_pair_through(self):
         for label, lines in launchers().items():
             with self.subTest(launcher=label):
                 self.assertEqual(sum(line == PASSTHROUGH for line in lines), 1, "a caller's own profile pair is never doubled")
 
-    def test_the_tar_launcher_passes_an_existing_profile_pair_through_untouched(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            directory, launcher = tar_launcher(scratch)
-            supplied = ["--launch-profile", "nightly-v1", "--profile-root", "/launcher/root/designcraft", "--", "doc.dc", "--version"]
-            run = subprocess.run(
-                [str(launcher), *supplied], cwd="/", env={"HOME": str(directory), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=15
-            )
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.splitlines(), [f"<{arg}>" for arg in supplied], "the Launcher's protocol reached the binary unchanged")
+class TarTemplate(unittest.TestCase):
+    """The plain nightly tar's launcher: the canonical shared template, byte for byte."""
 
-    def test_the_tar_launcher_never_adds_a_second_separator(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            directory, launcher = tar_launcher(scratch)
-            profile = directory / ".local/share/designcraft-nightly"
-            run = subprocess.run(
-                [str(launcher), "--", "--version"], cwd="/", env={"HOME": str(directory), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=15
-            )
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(
-                run.stdout.splitlines(),
-                ["<--launch-profile>", "<nightly-v1>", "<--profile-root>", f"<{profile}>", "<-->", "<--version>"],
-                "the caller's separator stays the only one, and a flag after it is a document",
-            )
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name).resolve()
+        self.tree = self.root / "unpacked"
+        self.tree.mkdir()
+        self.program = self.tree / "designcraft-bin"
+        self.program.write_text(RECORDER, encoding="utf-8")
+        self.program.chmod(0o755)
+        self.command = self.tree / "designcraft"
+        shutil.copyfile(TAR_LAUNCHER, self.command)
+        self.command.chmod(0o755)
+        self.home = self.root / "home with space"
+        self.home.mkdir()
 
-    def test_the_tar_launcher_starts_its_binary_with_the_profile_pair(self):
-        lines = body("packaging/linux/nightly.sh", "LAUNCHER")
-        with tempfile.TemporaryDirectory() as scratch:
-            directory = Path(scratch)
-            launcher = directory / "designcraft"
-            launcher.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            launcher.chmod(0o755)
-            recorder = directory / "designcraft-bin"
-            recorder.write_text('#!/bin/sh\nfor arg in "$@"; do printf "<%s>\\n" "$arg"; done\n', encoding="utf-8")
-            recorder.chmod(0o755)
-            environment = {"HOME": str(directory), "PATH": "/usr/bin:/bin"}
-            run = subprocess.run([str(launcher), "doc with spaces.dc", "--other-name.dc"], cwd="/", env=environment, capture_output=True, text=True, timeout=15)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(
-                run.stdout.splitlines(),
-                [
-                    "<--launch-profile>",
-                    "<nightly-v1>",
-                    "<--profile-root>",
-                    f"<{directory / '.local/share/designcraft-nightly'}>",
-                    "<-->",
-                    "<doc with spaces.dc>",
-                    "<--other-name.dc>",
-                ],
-            )
-            query = subprocess.run([str(launcher), "--version"], cwd="/", env=environment, capture_output=True, text=True, timeout=15)
-            self.assertEqual(query.stdout.splitlines(), ["<--version>"], "a version query reaches the binary untouched")
+    def execute(self, *arguments, env=None):
+        environment = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **(env or {})}
+        environment = {key: value for key, value in environment.items() if value is not None}
+        return subprocess.run([str(self.command), *arguments], cwd="/", env=environment,
+                              capture_output=True, text=True, timeout=15)
+
+    def argv(self, *arguments, env=None):
+        run = self.execute(*arguments, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return run.stdout.splitlines()
+
+    def profile(self, data_home=None):
+        return str(Path(data_home or self.home / ".local/share") / TAR_IDENTITY)
+
+    def test_the_file_is_the_rendered_template(self):
+        source = TAR_LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn("# Nightly launcher generated by craft-common-actions scripts/nightly-launcher.sh.in.", source)
+        self.assertIn('target="$dir/designcraft-bin"', source)
+        self.assertIn(f'profile_root="${{XDG_DATA_HOME:-$HOME/.local/share}}/{TAR_IDENTITY}"', source)
+        for placeholder in ("@BINARY@", "@APP_ID@"):
+            self.assertNotIn(placeholder, source)
+
+    def test_a_launch_adds_the_profile_pair_and_the_files_follow_the_delimiter(self):
+        files = ["doc with spaces.dc", "--other-name.dc"]
+        self.assertEqual(self.argv(*files),
+                         ["<--launch-profile>", "<nightly-v1>", "<--profile-root>", f"<{self.profile()}>", "<-->",
+                          *[f"<{name}>" for name in files]])
+        self.assertEqual(self.argv(),
+                         ["<--launch-profile>", "<nightly-v1>", "<--profile-root>", f"<{self.profile()}>", "<-->"])
+
+    def test_the_profile_follows_xdg_data_home(self):
+        data_home = self.root / "xdg with space"
+        self.assertEqual(self.argv("doc.dc", env={"XDG_DATA_HOME": str(data_home)})[3],
+                         f"<{self.profile(data_home)}>")
+
+    def test_both_version_spellings_ask_for_one_plain_version(self):
+        for flag in ("--version", "-V"):
+            with self.subTest(flag=flag):
+                self.assertEqual(self.argv(flag),
+                                 ["<--launch-profile>", "<nightly-v1>", "<--profile-root>",
+                                  f"<{self.profile()}>", "<--version>"])
+
+    def test_a_launcher_command_line_is_wrapped_like_any_other_argument(self):
+        # The template has no pass-through: its own profile root is the one used, and what the caller
+        # wrote arrives after the template's delimiter, unchanged.
+        supplied = ["--launch-profile", "nightly-v1", "--profile-root", "/launcher/root/designcraft", "--", "doc.dc"]
+        self.assertEqual(self.argv(*supplied),
+                         ["<--launch-profile>", "<nightly-v1>", "<--profile-root>", f"<{self.profile()}>", "<-->",
+                          *[f"<{name}>" for name in supplied]])
+
+    def test_it_starts_only_the_binary_beside_it(self):
+        self.program.unlink()
+        for arguments in ((), ("--version",), ("doc.dc",)):
+            with self.subTest(arguments=arguments):
+                run = self.execute(*arguments)
+                self.assertNotEqual(run.returncode, 0, run.stdout)
+                self.assertEqual(run.stdout, "")
+
+    def test_no_data_folder_means_no_launch(self):
+        run = self.execute("doc.dc", env={"HOME": None})
+        self.assertNotEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "")
+        self.assertIn("HOME", run.stderr)
 
 
 if __name__ == "__main__":
