@@ -19,28 +19,11 @@ STAGE="$NIGHTLY_WORK/stage"
 mkdir -p "$STAGE"
 cp "$NIGHTLY_GUI" "$STAGE/designcraft-bin"
 chmod 755 "$STAGE/designcraft-bin"
-# An unpacked nightly starts the flavor the way every other Linux package does (the Launcher's
-# selector/root pair), so it never falls back to stable's ~/.config/designcraft profile.
-cat >"$STAGE/designcraft" <<'LAUNCHER'
-#!/bin/sh
-set -eu
-here="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-real_bin="$here/designcraft-bin"
-if [ "${1:-}" = "--launch-profile" ] || [ "${1:-}" = "--profile-root" ]; then
-  # The Launcher already supplied the protocol: pass its command line through untouched.
-  exec "$real_bin" "$@"
-fi
-if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
-  exec "$real_bin" "$@"
-fi
-profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
-if [ "${1:-}" = "--" ]; then
-  # The caller's own separator stays the only one.
-  exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" "$@"
-fi
-exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
-LAUNCHER
-chmod 755 "$STAGE/designcraft"
+# An unpacked nightly starts through the canonical shared launcher template
+# (packaging/linux/nightly-launch.sh, rendered from craft-common-actions's
+# scripts/nightly-launcher.sh.in): `designcraft` starts `designcraft-bin` beside it on the
+# nightly-v1 profile under the Nightly package identity.
+install -m755 "$ROOT/packaging/linux/nightly-launch.sh" "$STAGE/designcraft"
 cp "$ROOT/assets/app-icon/designcraft-nightly.png" "$STAGE/designcraft-nightly.png"
 nightly_copy_notices "$STAGE"
 # The staged launcher must reach the built flavor, not just the binary it names.
