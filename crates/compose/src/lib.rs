@@ -1849,12 +1849,15 @@ struct PositionLineInput<'a, 'font> {
     tops: Tops,
     descent: f64,
     lead: f64,
+    /// Ruby Adjusts Leading below this line, returned by `line_metrics` for the line above's gap.
+    below: f64,
     reference: f64,
     model: designcraft_doc::cjk::LeadingModel,
     advance: f64,
     base_size: f64,
     rtl: bool,
     db: &'a ScopedFonts<'font>,
+    styles_tab: &'a [RunStyle],
     mark_leading: f64,
     mark_chars: &'a designcraft_doc::CharProps,
     last_line_mark: Option<f64>,
@@ -1892,12 +1895,14 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         tops,
         descent: desc,
         lead,
+        below,
         reference,
         model,
         advance,
         base_size,
         rtl,
         db,
+        styles_tab,
         mark_leading,
         mark_chars,
         last_line_mark,
@@ -1942,20 +1947,34 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                     let r = grid::reference_offset(line_glyphs, pp.grid_reference);
                     let block = n > 0 && pp.paragraph_gyoudori && line_no == 0;
                     let span = if block {
+                        // From this line's reference point to the paragraph's last line's:
+                        // each gap is the line above's below-ruby room on top of either
+                        // leading model's advance.
                         let aki_below = |line_model, line_lead| (line_model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(line_lead);
-                        let (mut down, mut prev, mut prev_aki, mut last_r) = (0.0, reference, aki_below(model, lead), r);
+                        let (mut down, mut prev, mut prev_aki, mut last_r, mut prev_below) = (0.0, reference, aki_below(model, lead), r, below);
                         for (j, next_break) in breaks.iter().enumerate().skip(k + 1) {
                             let (ns, ne) = (g0 + next_break.start, g0 + next_break.end);
                             let next_glyphs = glyphs.get(ns..ne.max(ns)).unwrap_or_default();
-                            let (_, _, _, next_lead) = line_metrics(next_glyphs, glyphs, ns, mark_leading, mark_chars.size, db, mark_chars);
+                            let (_, _, _, next_lead, next_below) = line_metrics(LineMetricsInput {
+                                line: next_glyphs,
+                                all: glyphs,
+                                s: ns,
+                                base_leading: mark_leading,
+                                base_size: mark_chars.size,
+                                db,
+                                base: mark_chars,
+                                styles: styles_tab,
+                                vertical: f.vertical,
+                            });
                             let next_lead = match last_line_mark {
                                 Some(mark) if j + 1 == breaks.len() => next_lead.max(mark),
                                 _ => next_lead,
                             };
                             let (next_reference, next_model) = cjk_line_reference(next_glyphs);
-                            down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
+                            down += prev_aki.unwrap_or(next_lead) + prev_below + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
+                            prev_below = next_below;
                             last_r = grid::reference_offset(next_glyphs, pp.grid_reference);
                         }
                         (down + last_r - r).max(0.0)
@@ -2437,16 +2456,9 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         let col = if spanning { span_rect(&cols[cur.fi], Rect::new(col.x0, col.y0, col.x1, base.y1), pp.span_columns) } else { col };
         let col = cur.split_rect(col);
         // Estimate slots for the breaker with the paragraph's base leading.
-        // A shaped frame's slots change from line to line, so they are estimated with the
-        // band the lines are placed with (or a taller one, so no line outgrows its slot).
-        let (est_asc, est_band) = if f.outline.is_some() {
-            let (a, _, d, _) = line_metrics(&[], glyphs, g0, mark_leading, mark_chars.size, db, mark_chars);
-            (a, (a.max(base_chars.size * 0.8), d.max(base_chars.size * 0.25)))
-        } else {
-            (base_chars.size * 0.75, (base_chars.size * 0.8, 0.0))
-        };
+        let (est_asc, est_band) = estimate_line_extent(f, &glyphs[g0..], base_chars, mark_leading, mark_chars, db, styles_tab);
         let est_tops = Tops { typo_ascent: est_asc, cap: est_asc * 0.72, xh: est_asc * 0.5, em: base_chars.size * 0.88 };
-        let est_first = if carry.is_empty() { cur.next_baseline(f, col, base_leading, est_asc, est_tops, pp) } else { carry_baseline + base_leading };
+        let est_first = estimate_first_baseline(&carry, carry_baseline, base_leading, cur.next_baseline(f, col, base_leading, est_asc, est_tops, pp));
         let est_jump = cur.jump(f, base_leading, est_asc, est_tops);
         let slots = estimate_slots(f, col, est_first, est_jump, base_leading, base_chars.size, est_band, &glyphs[g0..], rtl, &carry);
         let breaks = choose_paragraph_breaks(BreakInput {
@@ -2468,13 +2480,30 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         for (k, b) in breaks.iter().enumerate() {
             let (s, e) = (g0 + b.start, g0 + b.end);
             let line_glyphs = &glyphs[s..e.max(s)];
-            let (asc, tops, desc, lead) = line_metrics(line_glyphs, glyphs, s, mark_leading, mark_chars.size, db, mark_chars);
+            let (asc, tops, desc, lead, below_grow) = line_metrics(LineMetricsInput {
+                line: line_glyphs,
+                all: glyphs,
+                s,
+                base_leading: mark_leading,
+                base_size: mark_chars.size,
+                db,
+                base: mark_chars,
+                styles: styles_tab,
+                vertical: f.vertical,
+            });
             let lead = match last_line_mark {
                 Some(m) if k + 1 == breaks.len() => lead.max(m),
                 _ => lead,
             };
+            // Ruby set below the previous line takes its room from the gap to this line, on top
+            // of either leading model's advance.
+            let below = cur.ruby_below.filter(|(fi, column, _)| *fi == cur.fi && *column == cur.col).map_or(0.0, |(_, _, v)| v);
             let (reference, model) = cjk_line_reference(line_glyphs);
-            let advance = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
+            let base = if cur.last_baseline.is_some() { cur.aki_below.unwrap_or(lead) } else { lead };
+            let advance = if cur.last_baseline.is_some() { base + below } else { base };
+            // The line's stored leading grows by the room the line above's below ruby needs (the
+            // above ruby's room is already in `lead`).
+            let line_lead = if cur.last_baseline.is_some() { lead + below } else { lead };
             let position = position_line(PositionLineInput {
                 frame: f,
                 column: col,
@@ -2498,12 +2527,14 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 tops,
                 descent: desc,
                 lead,
+                below: below_grow,
                 reference,
                 model,
                 advance,
                 base_size,
                 rtl,
                 db,
+                styles_tab,
                 mark_leading,
                 mark_chars,
                 last_line_mark,
@@ -2579,19 +2610,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             };
             let col_w = notes.area(&cols[cur.fi], cur.col).map_or(0.0, |r| r.width());
             let note_column = NoteColumn { frame_index: cur.fi, column_index: cur.col, width: col_w, frame: f };
-            // A drop cap sits at the start-side indent; the first-line indent doesn't move it.
-            let beside = beside_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
-            let first_line = if line_no == 0 { pp.first_line_indent } else { 0.0 };
-            let (ind_l, ind_r) = match beside {
-                Some(w) if rtl => (pp.left_indent, pp.right_indent + w),
-                Some(w) => (pp.left_indent + w, pp.right_indent),
-                // The first-line indent is at the paragraph's start side, which is the right
-                // one in a right-to-left paragraph: applied on the left it moved the line the
-                // wrong way, out of the frame for the hanging indent a numbered list uses
-                // (#1448).
-                None if rtl => (pp.left_indent, pp.right_indent + first_line),
-                None => (pp.left_indent + first_line, pp.right_indent),
-            };
+            let (ind_l, ind_r) = line_indents(pp, beside_cap, line_no, col_first_line, rtl);
             let lx0 = x0 + ind_l;
             let lx1 = x1 - ind_r;
             let last = k + 1 == breaks.len();
@@ -2608,15 +2627,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             // Warichu runs before ruby so a reading is placed over the stacked note, and before
             // the trimmed spaces and the drop cap join the line, so neither is stacked.
             let end_x = end_x + warichu::place(styles_tab, &mut placed);
-            // The spaces the break trimmed off the end follow the line undrawn, so the caret
-            // and the selection reach them; alignment and justification ignore them.
-            if pp.direction != designcraft_doc::TextDirection::RightToLeft && !placed.iter().any(|g| g.rtl) {
-                let mut x = end_x;
-                for g in glyphs.get(e..(g0 + b.next).min(glyphs.len())).unwrap_or(&[]).iter().filter(|g| g.is_space()) {
-                    placed.push(PlacedGlyph { visible: false, ..place(g, x) });
-                    x += g.adv;
-                }
-            }
+            push_trailing_spaces(&mut placed, glyphs, e, (g0 + b.next).min(glyphs.len()), end_x, pp.direction);
             let mut drop_box = None;
             if line_no == 0
                 && let Some(dc) = &drop_cap
@@ -2645,6 +2656,14 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 sb.sub_lines += 1;
                 sb.part_lines += 1;
             }
+            // Segments that share a baseline pool their below-ruby room: the next row clears
+            // the largest room any segment of the row needs.
+            let same_row = cur.last_baseline == Some(baseline);
+            if same_row && let Some((fi, column, v)) = cur.ruby_below.filter(|(fi, column, _)| *fi == cur.fi && *column == cur.col) {
+                cur.ruby_below = Some((fi, column, v.max(below_grow)));
+            } else {
+                cur.ruby_below = Some((cur.fi, cur.col, below_grow));
+            }
             ft.lines.push(Line {
                 column: cur.col as u32,
                 baseline,
@@ -2652,7 +2671,7 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
                 x1,
                 ascent: asc,
                 descent: desc,
-                leading: lead,
+                leading: line_lead,
                 range: range_start..range_end,
                 para: pi,
                 glyphs: placed,
@@ -2720,6 +2739,79 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
         }
     }
     LinePlacement::Complete { line_no, col_first_line, first_line_rect }
+}
+
+/// Estimates the ascent and the vertical band (`top` and `bottom`) a line of the paragraph will
+/// occupy in `frame`, for the breaker's slots. A shaped frame's slots change from line to line, so
+/// they are estimated with the band the lines are placed with (or a taller one, so no line
+/// outgrows its slot). `glyphs` are the paragraph's glyphs from this line's start.
+fn estimate_line_extent(
+    frame: &FrameSpec,
+    glyphs: &[Glyph],
+    base_chars: &designcraft_doc::CharProps,
+    mark_leading: f64,
+    mark_chars: &designcraft_doc::CharProps,
+    db: &ScopedFonts<'_>,
+    styles: &[RunStyle],
+) -> (f64, (f64, f64)) {
+    if frame.outline.is_some() {
+        let (a, _, d, _, _) = line_metrics(LineMetricsInput {
+            line: &[],
+            all: glyphs,
+            s: 0,
+            base_leading: mark_leading,
+            base_size: mark_chars.size,
+            db,
+            base: mark_chars,
+            styles,
+            vertical: frame.vertical,
+        });
+        (a, (a.max(base_chars.size * 0.8), d.max(base_chars.size * 0.25)))
+    } else {
+        (base_chars.size * 0.75, (base_chars.size * 0.8, 0.0))
+    }
+}
+
+/// The baseline the first estimated slot starts at: after the carried line's band when the
+/// previous line left segments for this one to fill, else the cursor's next baseline.
+fn estimate_first_baseline(carry: &[(f64, f64)], carry_baseline: f64, base_leading: f64, next: f64) -> f64 {
+    if carry.is_empty() { next } else { carry_baseline + base_leading }
+}
+
+/// The spaces the break trimmed off the end follow the line undrawn, so the caret and the selection
+/// reach them; alignment and justification ignore them. They are not drawn, so `end_x` stays.
+fn push_trailing_spaces(
+    placed: &mut Vec<PlacedGlyph>,
+    glyphs: &[Glyph],
+    from: usize,
+    to: usize,
+    end_x: f64,
+    direction: designcraft_doc::TextDirection,
+) {
+    if direction == designcraft_doc::TextDirection::RightToLeft || placed.iter().any(|g| g.rtl) {
+        return;
+    }
+    let mut x = end_x;
+    for g in glyphs.get(from..to).unwrap_or(&[]).iter().filter(|g| g.is_space()) {
+        placed.push(PlacedGlyph { visible: false, ..place(g, x) });
+        x += g.adv;
+    }
+}
+
+/// A line's start- and end-side indents: the drop cap the line sits beside (only on its first
+/// lines), and the first-line indent. A drop cap sits at the start-side indent, so the first-line
+/// indent doesn't move it. The first-line indent is at the paragraph's start side, which is the
+/// right one in a right-to-left paragraph: applied on the left it moved the line the wrong way, out
+/// of the frame for the hanging indent a numbered list uses (#1448).
+fn line_indents(props: &designcraft_doc::ParaProps, drop_cap: Option<&DropCap>, line_no: usize, col_first_line: usize, rtl: bool) -> (f64, f64) {
+    let beside = drop_cap.filter(|dc| line_no < dc.lines && col_first_line == 0).map(|dc| dc.indent());
+    let first_line = if line_no == 0 { props.first_line_indent } else { 0.0 };
+    match beside {
+        Some(w) if rtl => (props.left_indent, props.right_indent + w),
+        Some(w) => (props.left_indent + w, props.right_indent),
+        None if rtl => (props.left_indent, props.right_indent + first_line),
+        None => (props.left_indent + first_line, props.right_indent),
+    }
 }
 
 struct ParagraphShapeInput<'a, 'font> {
@@ -3220,6 +3312,7 @@ fn compose_run(
         last_descent: 0.0,
         last_reference: 0.0,
         aki_below: None,
+        ruby_below: None,
         pending: 0.0,
         pi: 0,
         band: Band::default(),
@@ -4309,6 +4402,10 @@ struct Cursor {
     /// The line above's leading when it sets the advance to the next line: under the Japanese
     /// composers' Aki Below model the leading is the space below its line.
     aki_below: Option<f64>,
+    /// Ruby Adjusts Leading below the last placed line, for the gap to the next line: its frame
+    /// and column, and the room needed; an entry for another column never matches. Kept with the
+    /// rest of the cursor state so a rewind restores the room of the line that stays.
+    ruby_below: Option<(usize, usize, f64)>,
     /// Space before/after waiting to be added to the next line.
     pending: f64,
     /// The paragraph being laid.
@@ -4379,6 +4476,7 @@ struct Resume {
     last_descent: f64,
     last_reference: f64,
     aki_below: Option<f64>,
+    ruby_below: Option<(usize, usize, f64)>,
     pending: f64,
 }
 
@@ -4558,6 +4656,7 @@ impl Cursor {
             last_descent: self.last_descent,
             last_reference: self.last_reference,
             aki_below: self.aki_below,
+            ruby_below: self.ruby_below,
             pending: self.pending,
         }
     }
@@ -4580,6 +4679,7 @@ impl Cursor {
         self.last_descent = r.last_descent;
         self.last_reference = r.last_reference;
         self.aki_below = r.aki_below;
+        self.ruby_below = r.ruby_below;
         self.pending = r.pending;
     }
     /// Within a split block, the next sub-column when there's one to go to.
@@ -4598,6 +4698,9 @@ impl Cursor {
     }
     /// Start the current column at the top of the band.
     fn resume(&mut self) {
+        // A new column's first line is measured from the column top, not from a line in another
+        // column, so no ruby room is carried into it.
+        self.ruby_below = None;
         match self.band.above {
             Some(a) => {
                 self.last_baseline = Some(a.baseline);
@@ -4774,22 +4877,30 @@ fn cjk_line_reference(line: &[Glyph]) -> (f64, designcraft_doc::cjk::LeadingMode
     (reference, g.leading_model)
 }
 
-fn line_metrics(
-    line: &[Glyph],
-    all: &[Glyph],
+/// One `line_metrics` call: the line, the paragraph's glyphs, the line's first glyph index, the
+/// paragraph's base leading and size, the fonts, its character settings, the runs, and whether the
+/// frame is vertical (Ruby Adjusts Leading is for horizontal text only).
+struct LineMetricsInput<'a, 'font> {
+    line: &'a [Glyph],
+    all: &'a [Glyph],
     s: usize,
     base_leading: f64,
     base_size: f64,
-    db: &ScopedFonts<'_>,
-    base: &designcraft_doc::CharProps,
-) -> (f64, Tops, f64, f64) {
+    db: &'a ScopedFonts<'font>,
+    base: &'a designcraft_doc::CharProps,
+    styles: &'a [RunStyle],
+    vertical: bool,
+}
+
+fn line_metrics(m: LineMetricsInput<'_, '_>) -> (f64, Tops, f64, f64, f64) {
+    let LineMetricsInput { line, all, s, base_leading, base_size, db, base, styles, vertical } = m;
     let src: &[Glyph] = if line.is_empty() { all.get(s..(s + 1).min(all.len())).unwrap_or(&[]) } else { line };
     let face = || db.face(&base.font_family, &base.font_style);
     if src.is_empty() {
         let face = face();
         let k = base_size / face.upem;
         let tops = Tops { typo_ascent: face.typo_ascent * k, cap: face.cap_height * k, xh: face.x_height * k, em: em_box_top(&face, base_size) };
-        return (face.ascent * k, tops, face.descent * k, base_leading);
+        return (face.ascent * k, tops, face.descent * k, base_leading, 0.0);
     }
     let mut asc: f64 = 0.0;
     let mut tops = Tops::default();
@@ -4820,7 +4931,53 @@ fn line_metrics(
         tops.typo_ascent = face.typo_ascent * base_size / face.upem;
         tops.em = em_box_top(&face, base_size);
     }
-    (asc, tops, desc, lead)
+    let RubyLeading { asc, tops, desc, lead, below } = ruby_leading(src, styles, vertical, asc, tops, desc, lead);
+    (asc, tops, desc, lead, below)
+}
+
+/// A line's metrics after the Ruby Adjusts Leading growth: the ascent, descent, first-baseline
+/// heights and leading the line is placed with, and `below`, the room its ruby needs below the
+/// parent, which the caller carries to the next line's gap.
+struct RubyLeading {
+    asc: f64,
+    tops: Tops,
+    desc: f64,
+    lead: f64,
+    below: f64,
+}
+
+/// Ruby Adjusts Leading: the line grows by the room its ruby needs, above and/or below the parent, so
+/// the ruby no longer runs into the line beside it. Vertical ruby is placed along the frame's across
+/// axis, so this leading rule belongs to horizontal text (as in the plan).
+fn ruby_leading(src: &[Glyph], styles: &[RunStyle], vertical: bool, asc: f64, tops: Tops, desc: f64, lead: f64) -> RubyLeading {
+    let (mut asc, mut desc, mut tops, mut lead) = (asc, desc, tops, lead);
+    let mut below_room = 0.0;
+    if !vertical {
+        let (mut above, mut below) = (0.0_f64, 0.0_f64);
+        for g in src {
+            let Some(st) = styles.get(g.style as usize) else { continue };
+            if let Some(spec) = st.ruby_spec.as_ref().filter(|s| s.adjust_leading) {
+                let (a, b) = spec.leading_extent(g.size);
+                above = above.max(a);
+                below = below.max(b);
+            }
+        }
+        let grow_asc = (above - asc).max(0.0);
+        let grow_desc = (below - desc).max(0.0);
+        asc += grow_asc;
+        desc += grow_desc;
+        // The Ascent first baseline sits at the tallest typographic ascender; above ruby now
+        // reaches higher, so the first baseline has to move down with it (the other first-baseline
+        // kinds keep their own heights).
+        if grow_asc > 0.0 {
+            tops.typo_ascent = tops.typo_ascent.max(asc);
+        }
+        // The gap before this line grows with ruby above it; the room below is returned for the
+        // next line's gap (the caller carries it).
+        lead += grow_asc;
+        below_room = grow_desc;
+    }
+    RubyLeading { asc, tops, desc, lead, below: below_room }
 }
 
 /// How a line clears Jump Object wraps. The line occupies `[baseline − top, baseline]` (its leading,
