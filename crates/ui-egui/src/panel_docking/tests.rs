@@ -1647,7 +1647,11 @@ fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
     assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
     let tab = tab_rect(&h, "swatches");
     h.state_mut().run("window.panel", json!({"panel": "swatches"})).unwrap();
-    h.run_steps(4);
+    // The flyout's layer fades out over the theme's open motion (150 ms, nine frames of the harness's 1/60 s), and egui
+    // raises a layer only when it was not shown in the pass before (`Area::show`); the framework's reopen resets what the
+    // layer remembers but asks no raise. A flyout shown again inside that fade is no first show, so it keeps the place it
+    // had below the window: wait the exit out, as Window › Swatches taken after the fade is a fresh open.
+    h.run_steps(12);
     assert!(h.state().ui.docking_flyout.is_none());
     // A floating window over that place, reaching well past the flyout's start.
     let at = json!({"panel": "layers", "x": tab.left() - 320.0, "y": tab.top() - 80.0, "width": 420.0, "height": 320.0});
