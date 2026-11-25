@@ -1220,6 +1220,100 @@ mod color_theme_tests {
         }
     }
 
+    /// A field that takes the preview off the page while Preview stays on (a value OK would
+    /// refuse, or every field back to the value shown) keeps the preview's document: with another
+    /// document active, the corrected field is not previewed there, and the preview starts again
+    /// once its own document is active.
+    #[test]
+    fn a_preview_taken_off_by_a_field_stays_with_its_document() {
+        for back_to_shown in [false, true] {
+            let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            let frame = |app: &mut DesignApp| {
+                app.run("file.new", json!({})).unwrap();
+                let f = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Text", "caret": false})).unwrap();
+                app.run("selection.set", json!({"ids": [f["id"]]})).unwrap();
+            };
+            frame(&mut app);
+            let mut d = Dialog::new("textFrameOptions", json!({}));
+            seed_text_frame_options(&app, &mut d);
+            let shown = d.fields.get("columns").cloned().unwrap_or_default();
+            d.fields.insert("columns".into(), json!("2"));
+            d.fields.insert("preview".into(), json!(true));
+            let before = app.session.active().unwrap().doc.clone();
+            text_frame_preview(&mut app, &mut d);
+            assert!(app.session.active().unwrap().interaction.is_some(), "{back_to_shown}: previewed {:?}", d.fields.get("status"));
+            d.fields.insert("columns".into(), if back_to_shown { shown } else { json!("two") });
+            text_frame_preview(&mut app, &mut d);
+            let first = &app.session.documents()[0];
+            assert_eq!(first.doc, before, "{back_to_shown}: the preview goes from the page");
+            assert!(first.interaction.is_none(), "{back_to_shown}");
+            frame(&mut app);
+            let second = app.session.active().unwrap().doc.clone();
+            d.fields.insert("columns".into(), json!("3"));
+            text_frame_preview(&mut app, &mut d);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.doc, second, "{back_to_shown}: no preview in the second document");
+            assert!(st.interaction.is_none(), "{back_to_shown}");
+            assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)), "{back_to_shown}");
+            app.session.set_active(0);
+            text_frame_preview(&mut app, &mut d);
+            assert!(!d.fields.contains_key("status"), "{back_to_shown}: {:?}", d.fields.get("status"));
+            let st = app.session.active().unwrap();
+            assert!(st.interaction.is_some(), "{back_to_shown}: the preview starts again in the first document");
+            assert_ne!(st.doc, before, "{back_to_shown}");
+            assert_eq!(app.session.documents()[1].doc, second, "{back_to_shown}");
+        }
+    }
+
+    /// A Hyphenation preview of settings the paragraphs refuse keeps its document and its reason:
+    /// another document is not previewed, and back in the first document the reason shows again.
+    #[test]
+    fn a_refused_hyphenation_preview_shows_its_reason_again_in_its_document() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let frame = |app: &mut DesignApp| {
+            app.run("file.new", json!({})).unwrap();
+            let f = app.run("frame.create", json!({"rect": [36, 36, 300, 120], "content": "text", "text": "Text", "caret": false})).unwrap();
+            app.run("selection.set", json!({"ids": [f["id"]]})).unwrap();
+        };
+        frame(&mut app);
+        let before = app.session.active().unwrap().doc.clone();
+        let mut d = Dialog::new("hyphenation", json!({"hyphMinWord": "many", "preview": true}));
+        hyphenation_preview(&mut app, &mut d);
+        let refused = d.fields.get("status").cloned().expect("the reason shows");
+        assert_ne!(refused, json!(PREVIEW_IN_OTHER_DOCUMENT));
+        assert_eq!(app.session.active().unwrap().doc, before);
+        assert!(app.session.active().unwrap().interaction.is_none());
+        frame(&mut app);
+        let second = app.session.active().unwrap().doc.clone();
+        hyphenation_preview(&mut app, &mut d);
+        assert_eq!(d.fields.get("status"), Some(&json!(PREVIEW_IN_OTHER_DOCUMENT)));
+        assert_eq!(app.session.active().unwrap().doc, second, "no preview in the second document");
+        assert!(app.session.active().unwrap().interaction.is_none());
+        app.session.set_active(0);
+        hyphenation_preview(&mut app, &mut d);
+        assert_eq!(d.fields.get("status"), Some(&refused), "the reason shows again");
+        assert_eq!(app.session.active().unwrap().doc, before);
+        assert!(app.session.active().unwrap().interaction.is_none());
+    }
+
+    /// A dialog that names a preview but records no interaction does not own the interaction open
+    /// in that document: OK waits for it, and Cancel leaves it open.
+    #[test]
+    fn a_dialog_without_a_recorded_interaction_does_not_own_an_open_one() {
+        let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let uid = app.session.active().unwrap().uid;
+        app.session.begin_interaction("Move").unwrap();
+        let gesture = |app: &DesignApp| app.session.active().unwrap().interaction.as_ref().map(|it| it.label.clone());
+        let fields = json!({"rows": "2", "columns": "2", "rowGutter": "0", "columnGutter": "0", "fitTo": "page", "preview": true, PREVIEWED: {}, PREVIEW_DOC: uid});
+        app.ui.dialog = Some(Dialog::new("createGuides", fields));
+        assert_eq!(confirm(&mut app).unwrap_err(), FINISH_OPEN_INTERACTION);
+        assert_eq!(gesture(&app).as_deref(), Some("Move"), "OK leaves the gesture open");
+        cancel(&mut app);
+        assert!(app.ui.dialog.is_none());
+        assert_eq!(gesture(&app).as_deref(), Some("Move"), "Cancel leaves the gesture open");
+    }
+
     #[test]
     fn toc_right_indent_separator_survives_the_dialog_and_update() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -1950,7 +2044,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
         Err(e) => {
             // Values OK would refuse don't stay on the page: it goes back to how it was.
             if shown.is_some() {
-                end_dialog_preview(app, d);
+                take_off_dialog_preview(app, d);
             }
             d.fields.insert("status".into(), json!(e));
             return;
@@ -1962,7 +2056,7 @@ fn text_frame_preview(app: &mut DesignApp, d: &mut Dialog) {
     // Nothing edited (yet, or any more): the page as it was.
     if params.as_object().is_some_and(|m| m.keys().all(|k| k == "ids")) {
         if shown.is_some() {
-            end_dialog_preview(app, d);
+            take_off_dialog_preview(app, d);
         }
         return;
     }
@@ -1997,6 +2091,17 @@ pub(crate) fn end_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
     }
 }
 
+/// Takes a dialog's preview off the page while Preview stays on (a field OK would refuse, or every
+/// field back to the value shown). The dialog keeps the document the preview was shown in, so the
+/// next update shows the preview there again and not in another document made active meanwhile.
+fn take_off_dialog_preview(app: &mut DesignApp, d: &mut Dialog) {
+    let doc = d.fields.get(PREVIEW_DOC).cloned();
+    end_dialog_preview(app, d);
+    if let Some(doc) = doc {
+        d.fields.insert(PREVIEW_DOC.into(), doc);
+    }
+}
+
 /// Records the document and the interaction a dialog's preview was just begun in.
 pub(crate) fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
     let st = app.session.active();
@@ -2008,10 +2113,10 @@ pub(crate) fn record_preview_owner(app: &DesignApp, d: &mut Dialog) {
 }
 
 /// Whether `st`'s open interaction is the one the dialog's preview was begun in, and not one that
-/// replaced it. A dialog that records no interaction counts any open interaction as its own.
+/// replaced it. A dialog that records no interaction does not own any open interaction.
 fn is_preview_interaction(st: &designcraft_engine::DocState, d: &Dialog) -> bool {
     let Some(it) = st.interaction.as_ref() else { return false };
-    d.fields.get(PREVIEW_INTERACTION).is_none_or(|rec| rec.as_u64() == Some(it.id))
+    d.fields.get(PREVIEW_INTERACTION).and_then(Value::as_u64) == Some(it.id)
 }
 
 /// The status line while a dialog's preview is shown in a document that is not the active one.
@@ -6694,7 +6799,7 @@ fn style_options_preview(app: &mut DesignApp, d: &mut Dialog) {
     // line says why.
     if paragraph && let Err(e) = check_paragraph_style_justification(app, d) {
         if shown.is_some() {
-            end_dialog_preview(app, d);
+            take_off_dialog_preview(app, d);
         }
         d.fields.insert("status".into(), json!(e));
         return;
@@ -8427,10 +8532,6 @@ fn character_style_general(
         let _ = crate::widgets::name_combo(combo, crate::i18n::tr(lang, "Based On"));
         ui.end_row();
     });
-    let status = d.s("status");
-    if !status.is_empty() {
-        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
-    }
     ui.add_space(8.0);
     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(lang, "Style Settings:")).font(semibold(12.0)));
     // What OK would leave the style setting, after its Based On.
@@ -8520,6 +8621,11 @@ fn character_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
             }
         });
     });
+    // Why OK didn't apply (a taken name, an action in progress), below every section.
+    let status = d.s("status");
+    if !status.is_empty() {
+        crate::rtl::label(ui, egui::RichText::new(status).color(crate::theme::Tokens::get(ui.ctx()).text_strong));
+    }
 }
 
 /// An attribute's name as Style Settings shows it: the field's label where the name reads poorly.
@@ -9238,7 +9344,12 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
         return;
     }
     let params = json!({"attrs": hyphenation_edits(d)});
-    if preview_in_other_document(app, d) || shown.as_ref() == Some(&params) || d.fields.get(PREVIEW_FAILED) == Some(&params) {
+    if preview_in_other_document(app, d) || shown.as_ref() == Some(&params) {
+        return;
+    }
+    // Refused settings are tried again only once their reason is gone from the status line
+    // (another document's reason replaced it), so the reason shows again.
+    if d.fields.get(PREVIEW_FAILED) == Some(&params) && d.fields.contains_key("status") {
         return;
     }
     if shown.is_none()
@@ -9258,7 +9369,7 @@ fn hyphenation_preview(app: &mut DesignApp, d: &mut Dialog) {
         }
         // Rejected settings: the paragraphs go back, and the reason shows until they change.
         Err(e) => {
-            end_dialog_preview(app, d);
+            take_off_dialog_preview(app, d);
             d.fields.insert("status".into(), json!(e.to_string()));
             d.fields.insert(PREVIEW_FAILED.into(), params);
         }

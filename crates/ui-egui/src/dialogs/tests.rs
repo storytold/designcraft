@@ -3622,6 +3622,29 @@ fn character_style_options_dialog_saves_edits() {
     assert_eq!(st.doc.styles.char_style(&name).unwrap().chars.tracking, Some(20.0));
 }
 
+/// The reason OK is refused shows in every Character Style Options section, not only General.
+#[test]
+fn character_style_options_show_why_ok_waits_in_every_section() {
+    let mut app = test_app();
+    let name = app.session.execute("style.character.create", &json!({"name": "Key Term"})).unwrap()["name"].as_str().unwrap().to_string();
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+    for section in ["general", "advanced", "openType"] {
+        app.ui.dialog = Some(Dialog::new("characterStyleOptions", json!({"name": name, "section": section, "c.tracking": 20.0})));
+        app.session.begin_interaction("Move").unwrap();
+        assert_eq!(confirm(&mut app).unwrap_err(), FINISH_OPEN_INTERACTION, "{section}");
+        // The window grows to the status line over the next frames.
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, screen, vec![]);
+        }
+        let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.s("section")).as_deref(), Some(section));
+        visible_label(&labels, screen, FINISH_OPEN_INTERACTION);
+        app.session.cancel_interaction();
+        cancel(&mut app);
+    }
+}
+
 #[test]
 fn delete_character_style_dialog_removes_the_style_and_reassigns_text() {
     let mut app = test_app();
