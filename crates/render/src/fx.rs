@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Asset, AssetId, DocSettings, Document, InkManager, Item, ItemId, Layer, StrokeStyleDef};
-use designcraft_geom::{Affine, BezPath, Rect, Shape, Vec2};
+use designcraft_geom::{Affine, BezPath, PathEl, Point, Rect, Shape, Vec2};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
 use vello_cpu::{Pixmap, RenderContext, kurbo};
@@ -103,7 +103,17 @@ fn painted_bounds(it: &Item) -> Rect {
         excluded.apply_affine(g.xf);
         let hole = excluded.bounding_box();
         // Only a rectangular hole removes whole strips; any other shape leaves pixels inside its box.
-        if (excluded.area().abs() - hole.area()).abs() > 1e-6 * hole.area().max(1.0) {
+        // It is one rectangle when it is a single subpath of straight lines between its box's
+        // corners and covers the whole box (which rules out a bow tie through the same corners).
+        let corner = |p: Point| (p.x == hole.x0 || p.x == hole.x1) && (p.y == hole.y0 || p.y == hole.y1);
+        let els = excluded.elements();
+        let one_rect = els.iter().filter(|e| matches!(e, PathEl::MoveTo(_))).count() == 1
+            && els.iter().all(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => corner(*p),
+                PathEl::ClosePath => true,
+                _ => false,
+            });
+        if !one_rect || (excluded.area().abs() - hole.area()).abs() > 1e-6 * hole.area().max(1.0) {
             return shown;
         }
         let kept = bounds_without(shown, hole);
@@ -1319,6 +1329,37 @@ mod tests {
         assert!(lum(180) < 60, "solid before the fade: {}", lum(180));
         assert!(lum(225) > 700, "the triangle's part of the row: {}", lum(225));
         assert!(lum(295) > 600, "nearly transparent at the visible edge: {}", lum(295));
+    }
+
+    /// Two overlapping rectangles cover as much area as their combined box, yet an inverted
+    /// (even-odd) clip shows the image where they overlap, so they are not a rectangular hole.
+    #[test]
+    fn directional_feather_keeps_pixels_where_two_inverted_clip_rectangles_overlap() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // 150..200 x 0..200 and 100..180 x 0..125 in the frame: 10,000 each, 20,000 together,
+            // the same as their box, the frame's right half. On the sampled row (the middle) they
+            // overlap at 150..180 (250..280 on the page), which shows.
+            let mut hole = BezPath::new();
+            for (x0, y0, x1, y1) in [(150.0, 0.0, 200.0, 200.0), (100.0, 0.0, 180.0, 125.0)] {
+                hole.move_to((x0, y0));
+                hole.line_to((x1, y0));
+                hole.line_to((x1, y1));
+                hole.line_to((x0, y1));
+                hole.close_path();
+            }
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fade runs 230..300 at the frame's edge, not 130..200 at the left edge of the box.
+        assert!(lum(160) < 60, "solid left of the box: {}", lum(160));
+        assert!(lum(225) > 700, "hidden by one rectangle: {}", lum(225));
+        assert!(lum(255) < 500, "the overlap still shows: {}", lum(255));
     }
 
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
