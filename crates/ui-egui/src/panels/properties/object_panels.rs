@@ -370,9 +370,10 @@ mod framework {
     use craft_behavior::Mixed;
     use craft_ui_widgets::choice::Segmented;
     use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    use craft_ui_widgets::display::Text;
     use craft_ui_widgets::pickers::Select;
     use craft_ui_widgets::primitives::ContentPainterCx;
-    use craft_ui_widgets::runtime::env::UnitKind;
+    use craft_ui_widgets::runtime::env::{UnitKind, with_env};
     use craft_ui_widgets::text::{NumberField, StepArrows, link_toggle};
     use egui::Rect;
 
@@ -381,12 +382,12 @@ mod framework {
         ui.id().with(("object-panels", key))
     }
 
-    /// The width of the widest of `labels` in the interface language, for a column of captions.
+    /// The width of the widest of `labels` in the interface language, for a column of captions: each measured as the
+    /// framework `Text` that `text` shows it with, so a caption cell this wide holds its caption on one line.
     fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
-        let t = Tokens::get(ui.ctx());
         labels
             .iter()
-            .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(&app.ui.language, l).to_string(), egui::FontId::proportional(11.5), t.text).size().x)
+            .map(|l| Text::new(crate::i18n::tr(&app.ui.language, l).to_string()).measure_in(ui, craft_behavior::Proposal::Ideal).x)
             .fold(0.0, f32::max)
             .ceil()
     }
@@ -435,7 +436,9 @@ mod framework {
 
     /// A segmented choice of `choices` (label and value) at `at`, named `label`, showing `current`: the value picked.
     /// The segments are the small size, whose tighter side padding fits a row's longest labels ("Projecting",
-    /// "Outside") whole in the panel's width beside the caption column, as the old panel showed them.
+    /// "Outside") whole in the panel's width beside the caption column, as the old panel showed them. The size is the
+    /// scope's, not the row's own `size`: a segment's face is measured at the row's size but painted at the scope's,
+    /// so a row alone at the small size paints its labels in the wider medium padding and cuts every one short.
     fn segmented(
         app: &DesignApp,
         ui: &mut Ui,
@@ -448,13 +451,13 @@ mod framework {
         let entries: Vec<Entry<&'static str>> =
             choices.iter().map(|(l, v)| Entry::new(*v, crate::i18n::tr(&app.ui.language, l).to_owned())).collect();
         let held = current.map_or(Mixed::Mixed, Mixed::Same);
-        Segmented::new(label.to_owned(), Bind::given(held), &entries)
-            .id(id)
-            .size(craft_theme::ControlSize::Sm)
-            .show_at(ui, at)
-            .events
-            .committed()
-            .copied()
+        crate::panels::properties::place(ui, at, |ui| {
+            with_env(
+                ui,
+                |env| env.size = Some(craft_theme::ControlSize::Sm),
+                |ui| Segmented::new(label.to_owned(), Bind::given(held), &entries).id(id).show_at(ui, at).events.committed().copied(),
+            )
+        })
     }
 
     pub(super) fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -2200,6 +2203,35 @@ mod framework_panel_tests {
             .expect("the Round cap");
         assert!(butt.max.x <= round.min.x && round.max.x <= projecting.min.x, "the segments run in order without overlapping");
         assert!(projecting.width() - round.width() > round.width() - butt.width(), "Projecting is shown whole: {butt:?} {round:?} {projecting:?}");
+    }
+
+    /// At the docked panel's width every Cap, Join and Align Stroke segment paints its whole label on one line, the
+    /// picked ones too, and the "Align Stroke:" caption stays on one line: what is painted, not the segments' rects,
+    /// which hold their measure even when the face paints in other padding and cuts its label.
+    #[test]
+    fn the_stroke_panels_segments_and_captions_paint_their_whole_labels() {
+        fn collect(shape: &egui::Shape, texts: &mut Vec<(String, bool, usize)>) {
+            match shape {
+                egui::Shape::Text(t) => texts.push((t.galley.job.text.clone(), t.galley.elided, t.galley.rows.len())),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, texts)),
+                _ => {}
+            }
+        }
+        let mut app = document();
+        rectangle(&mut app);
+        let h = open(app, |app, ui| {
+            ui.set_max_width(242.0);
+            crate::panels::properties::stroke_panel(app, ui);
+        });
+        let mut texts = Vec::new();
+        h.output().shapes.iter().for_each(|shape| collect(&shape.shape, &mut texts));
+        for label in ["Butt", "Round", "Projecting", "Miter", "Bevel", "Center", "Inside", "Outside", "Align Stroke:"] {
+            let painted: Vec<_> = texts.iter().filter(|(text, ..)| text == label).collect();
+            assert!(!painted.is_empty(), "{label} is painted: {texts:?}");
+            for (_, elided, rows) in painted {
+                assert!(!elided && *rows == 1, "{label} is painted whole on one line: elided {elided}, {rows} rows");
+            }
+        }
     }
 
     #[test]
