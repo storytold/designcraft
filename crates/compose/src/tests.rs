@@ -10671,3 +10671,41 @@ fn a_kashida_keeps_a_marks_hand_set_offset() {
     assert!(stretched, "the word with the mark takes a kashida");
     assert!((plain.0 - justified.0).abs() < 1e-6 && (plain.1 - justified.1).abs() < 1e-6, "the mark moved from {plain:?} to {justified:?}");
 }
+
+/// Single Word Justification spreads a one-word line's length over its letter gaps. Those gaps
+/// went between a kashida's tatweels too, and broke its stroke into dashes.
+#[test]
+fn single_word_justification_keeps_a_kashida_in_one_piece() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Single Word Kashida", &glyphs).unwrap());
+    let text = "بسم بسم";
+    // Too narrow for both words: the first line holds one word and is justified.
+    let (mut d, sid, fid) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 95.0, 200.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Single Word Kashida".into());
+        f.over.size = Some(24.0);
+    });
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let lines = &cs.frame(fid).unwrap().lines;
+    assert_eq!(lines.len(), 2, "one word per line");
+    let glyphs = &lines[0].glyphs;
+    let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
+    let tatweel = letter.face.glyph_for('\u{0640}');
+    // Each glyph's ink box, left to right.
+    let mut boxes: Vec<(f64, f64, bool)> =
+        glyphs.iter().map(|g| (g.x - g.dx, g.x - g.dx + g.face.advance(g.gid) * g.sx, g.len == 0 && g.gid == tatweel)).collect();
+    boxes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(boxes.iter().filter(|b| b.2).count() > 1, "the word takes a kashida of several tatweels");
+    // The line is still justified: its letters spread to the frame's edges.
+    assert!(boxes.windows(2).any(|p| p[1].0 - p[0].1 > 1.0), "the word's other letters open gaps");
+    for p in boxes.windows(2).filter(|p| p[0].2 || p[1].2) {
+        assert!((p[1].0 - p[0].1).abs() < 1e-6, "a gap of {} beside a tatweel", p[1].0 - p[0].1);
+    }
+}
