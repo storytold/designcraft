@@ -485,8 +485,10 @@ impl Exporter<'_> {
                 let single = chars.next().filter(|_| chars.next().is_none());
                 match single {
                     Some(c) => {
-                        let upper = c.to_uppercase().next().unwrap_or(c);
-                        if all_caps && upper != c && g.face.glyph_for(upper) == g.gid {
+                        let mut ups = c.to_uppercase();
+                        let upper = ups.next().unwrap_or(c);
+                        let one = ups.next().is_none();
+                        if all_caps && one && upper != c && g.face.glyph_for(upper) == g.gid {
                             text.push(upper);
                         } else {
                             text.push_str(t);
