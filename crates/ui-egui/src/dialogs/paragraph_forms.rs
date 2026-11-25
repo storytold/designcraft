@@ -12,7 +12,7 @@ use crate::DesignApp;
 use craft_ui_panels::sections::GroupBox;
 use craft_ui_widgets::buttons::Button;
 use craft_ui_widgets::choice::{Checkbox, Radio, RadioGroup};
-use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
 use craft_ui_widgets::display::Text;
 use craft_ui_widgets::form::FieldGroup;
 use craft_ui_widgets::layout_components::{Row, Stack};
@@ -670,6 +670,8 @@ fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: 
                     tr("Offsets")
                 })
                     .id_salt(("paragraph_sides_fields", key.to_owned(), column))
+                    // As wide as its fields, so the link button and the second column stand beside the first, not at the far end.
+                    .sizing(Sizing::Content)
                     .show(ui, |ui, _| {
                         for i in indices {
                             let caption = tr(["Top:", "Left:", "Bottom:", "Right:"][i]);
