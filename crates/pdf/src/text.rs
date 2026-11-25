@@ -477,7 +477,23 @@ impl Exporter<'_> {
             let range = if let Some(t) = src {
                 prev_src = Some(g.byte);
                 let a = text.len();
-                text.push_str(t);
+                // All Caps draws a lowercase source letter as its uppercase glyph. Use the
+                // displayed spelling so that glyph has one Unicode mapping across the document;
+                // otherwise every later spelling needs ActualText nested in the structure span,
+                // which tag-aware readers such as poppler truncate.
+                let mut chars = t.chars();
+                let single = chars.next().filter(|_| chars.next().is_none());
+                match single {
+                    Some(c) => {
+                        let upper = c.to_uppercase().next().unwrap_or(c);
+                        if upper != c && g.face.glyph_for(upper) == g.gid {
+                            text.push(upper);
+                        } else {
+                            text.push_str(t);
+                        }
+                    }
+                    None => text.push_str(t),
+                }
                 a..text.len()
             } else if g.len == 0 && prev_src == Some(g.byte) && !ranges.is_empty() {
                 // Second glyph of a multi-glyph cluster: share the cluster's text.

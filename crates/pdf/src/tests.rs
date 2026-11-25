@@ -781,6 +781,35 @@ fn small_caps_and_small_cap_figures_extract_as_typed() {
     assert!(uncompressed(&d, PdfOptions::default()).contains("/ActualText"));
 }
 
+#[test]
+fn all_caps_extracts_complete_display_text_when_glyphs_are_reused() {
+    // The second paragraph reuses the first paragraph's uppercase glyphs for lowercase source
+    // letters. Per-letter ActualText inside the structure span made poppler truncate it to `FE`.
+    let first = "THE SPRING ISSUE · NO. 01";
+    let second = "Feature · Design";
+    let mut d = doc_with_text(first);
+    let lid = d.default_layer();
+    let (_, second_story) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 120.0, 576.0, 180.0), lid, second, ParaFormat::default()).unwrap();
+    let first_story = *d.stories.keys().next().unwrap();
+    for (sid, len) in [(first_story, first.len()), (second_story, second.len())] {
+        d.story_mut(sid).unwrap().format_paras(0..len, |f| {
+            f.chars.font_family = Some("Source Sans 3".into());
+            f.chars.font_style = Some("Semibold".into());
+            f.chars.size = Some(9.0);
+            f.chars.capitalization = Some(designcraft_doc::Capitalization::AllCaps);
+            f.chars.tracking = Some(160.0);
+        });
+    }
+    for tagged in [false, true] {
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions { compress: false, tagged, ..Default::default() }).unwrap();
+        let text = extract_text(&bytes)[0].clone();
+        assert!(text.contains("THE SPRING ISSUE · NO. 01"), "tagged={tagged}: {text}");
+        assert!(text.contains("FEATURE · DESIGN"), "tagged={tagged}: {text}");
+        let raw = String::from_utf8_lossy(&bytes);
+        assert!(!raw.contains("/ActualText"), "display capitalization needs no alternate spelling, tagged={tagged}");
+    }
+}
+
 /// Links and buttons from an imported document still go through the export allowlist.
 #[test]
 fn link_annotation_export_refuses_non_web_schemes() {
