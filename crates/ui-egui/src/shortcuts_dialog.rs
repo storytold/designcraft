@@ -154,11 +154,15 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
         host.pending.push(Pending::Cancel);
         host.closing = true;
     }
+    // The size it opens at is set once, in the frame that first draws it, and then left alone: the user's own resize is
+    // what the dialog keeps from then on, and the overlay it is shown in does not change from frame to frame.
+    if !host.shown {
+        host.options.size = Some(open_size(ctx.content_rect().height()));
+    }
     host.shown = true;
     let lang = app.ui.language.clone();
     host.options.title = Some(tr(&lang, "Keyboard Shortcuts").to_owned());
     host.options.custom_set_name = Some(tr(&lang, CUSTOM_SET).to_owned());
-    host.options.size = Some(open_size(ctx.content_rect().height()));
     let words = crate::framework_host::words(&lang);
     let direction = if crate::i18n::is_rtl(&lang) { Direction::Rtl } else { Direction::Ltr };
     let asked_ok = host.pending.iter().any(|p| matches!(p, Pending::Ok));
