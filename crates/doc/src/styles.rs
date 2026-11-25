@@ -1,5 +1,7 @@
 //! Paragraph, character and object styles with based-on inheritance.
 
+use std::collections::BTreeMap;
+
 use designcraft_geom::corners::CornerOptions;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,19 @@ pub struct CharacterStyle {
     pub shortcut: String,
 }
 
+/// Anchored-object options kept on an object style. Attribute strings preserve the settings that
+/// DesignCraft does not interpret for layout, while `enabled` retains the category's inheritance
+/// boundary (`None` means the flag was absent).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AnchoredObjectStyleOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// `None` means the XML child was absent; `Some(empty)` preserves an explicit empty child.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BTreeMap<String, String>>,
+}
+
 /// Object style: each attribute group is optional ("not included in style" when `None`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -60,6 +75,9 @@ pub struct ObjectStyle {
     pub apply_next_style: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_frame: Option<TextFrameOptions>,
+    /// Anchored-object category settings. These remain editable and are written back to IDML.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchored_options: Option<AnchoredObjectStyleOptions>,
     /// Effects (drop shadow, feather, glows…). An item using the style follows them until its own
     /// effects differ from the style's (a local override).
     #[serde(skip_serializing_if = "Option::is_none")]
