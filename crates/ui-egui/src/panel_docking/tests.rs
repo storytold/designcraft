@@ -1606,3 +1606,66 @@ fn a_low_icons_flyout_opens_with_its_room_inside_the_window() {
     let rect = last.rect();
     assert!(flyout.expand(0.5).contains_rect(rect), "the last Attributes control {rect:?} is cut from the flyout {flyout:?}");
 }
+
+/// The rect of the floating window that holds `panel`.
+fn window_of(h: &Harness<'static, DesignApp>, panel: &str) -> Rect {
+    let key = panel.to_string();
+    layout_of(h.state()).floating.iter().find(|w| w.contains(&key)).map(|w| w.rect).unwrap_or_else(|| panic!("{panel} floats"))
+}
+
+/// Window › a panel whose column is collapsed to icons opens its flyout in front of a floating window over that place,
+/// as InDesign brings a panel it shows to the front (the leftover Story Editor hid Tags and Scripts); a press on the
+/// window sends the flyout back below the windows.
+#[test]
+fn a_flyout_the_window_menu_opens_stands_in_front_of_a_floating_window() {
+    let mut h = harness(app(), vec2(1280.0, 800.0));
+    // Where the Swatches flyout shows its tab.
+    h.state_mut().run("window.panel", json!({"panel": "swatches"})).unwrap();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
+    let tab = tab_rect(&h, "swatches");
+    h.state_mut().run("window.panel", json!({"panel": "swatches"})).unwrap();
+    h.run_steps(4);
+    assert!(h.state().ui.docking_flyout.is_none());
+    // A floating window over that place, reaching well past the flyout's start.
+    let at = json!({"panel": "layers", "x": tab.left() - 320.0, "y": tab.top() - 80.0, "width": 420.0, "height": 320.0});
+    h.state_mut().run("window.panel.float", at).unwrap();
+    h.run_steps(4);
+    let window = window_of(&h, "layers");
+    let clear = pos2(window.left() + 24.0, window.top() + 12.0);
+    let window_layer = h.ctx.layer_id_at(clear).expect("the window is drawn");
+    // Window › Swatches: the flyout opens over the window.
+    h.state_mut().run("window.panel", json!({"panel": "swatches"})).unwrap();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"));
+    let tab = tab_rect(&h, "swatches");
+    assert!(window.contains(tab.center()), "the window {window:?} covers the flyout's tab {tab:?}");
+    assert!(clear.x < tab.left() - 120.0 && clear.y < tab.top() - 30.0, "the press point {clear:?} is clear of the flyout at {tab:?}");
+    let top = h.ctx.layer_id_at(tab.center());
+    assert!(top.is_some_and(|layer| layer != window_layer), "the Swatches flyout is the top layer at its tab, not the window: {top:?}");
+    // A press on the window takes it back to the front; the flyout stays open below it.
+    click(&mut h, clear, PointerButton::Primary);
+    assert_eq!(h.state().ui.docking_flyout.as_deref(), Some("swatches"), "the flyout stays open");
+    assert_eq!(h.ctx.layer_id_at(tab.center()), Some(window_layer), "the window is in front again");
+}
+
+/// Window › a floating panel brings its window in front of the floating window over it.
+#[test]
+fn the_window_menu_brings_a_floating_panels_window_to_the_front() {
+    let mut app = app();
+    app.run("window.panel.float", json!({"panel": "layers", "x": 200, "y": 160, "width": 320, "height": 300})).unwrap();
+    app.run("window.panel.float", json!({"panel": "pages", "x": 360, "y": 220, "width": 320, "height": 300})).unwrap();
+    let mut h = harness(app, vec2(1280.0, 800.0));
+    let (layers, pages) = (window_of(&h, "layers"), window_of(&h, "pages"));
+    let overlap = layers.intersect(pages);
+    assert!(overlap.width() > 40.0 && overlap.height() > 40.0, "{layers:?} {pages:?}");
+    // Each window's title row, clear of the other window.
+    let layers_layer = h.ctx.layer_id_at(pos2(layers.left() + 24.0, layers.top() + 12.0)).expect("Layers is drawn");
+    let pages_layer = h.ctx.layer_id_at(pos2(pages.right() - 24.0, pages.top() + 12.0)).expect("Pages is drawn");
+    assert_ne!(layers_layer, pages_layer);
+    for (panel, layer) in [("pages", pages_layer), ("layers", layers_layer), ("pages", pages_layer)] {
+        h.state_mut().run("window.panel", json!({"panel": panel})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.ctx.layer_id_at(overlap.center()), Some(layer), "Window › {panel} brings its window to the front");
+    }
+}

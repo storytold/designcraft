@@ -13,6 +13,7 @@ use craft_behavior::dock::{
     Action, Column, DockEdge, DockPlacement, Floating, Group, Layout, Location, MAX_DEPTH, MAX_PANELS, Node, PanelState, Permissions, SplitSize,
     Target, Workspace,
 };
+use craft_ui::contract::overlay::PopupLayer;
 use craft_ui::contract::{Bind, BodyCx, PlainData, Tracked};
 use craft_ui::docking::{DockConfig, DockEvent, DockHeights, DockPanels, DockSizes, FloatSpace, FlyoutHeight, GroupAt, PanelSpec, PanelSpecs};
 use craft_ui::patterns::dock::DockArea;
@@ -1135,6 +1136,31 @@ fn specs(language: &str, titles: Vec<(String, String)>) -> Arc<Tracked<Specs>> {
     })
 }
 
+/// Where the context keeps the flyout that stands above the floating windows ([`front_flyout`]).
+fn front_key() -> egui::Id {
+    egui::Id::new("designcraft-dock-front-flyout")
+}
+
+/// The flyout that stands above the floating windows in this pass, as InDesign brings a panel it shows to the front:
+/// the open flyout of the panel a command just showed (`raised`), or the one a command or a click on its icon showed
+/// earlier, while it stays open (`open`) and until a press lands on a floating window. The other flyouts stay below
+/// the windows ([`dock_config`]).
+fn front_flyout(ctx: &egui::Context, raised: Option<&String>, open: Option<&String>) -> Option<String> {
+    let kept = ctx.data(|data| data.get_temp::<Option<String>>(front_key())).flatten();
+    // The floating windows show in egui's middle order, above the docked columns and the canvas, below the popups and
+    // the flyout in front.
+    let on_window = ctx
+        .input(|i| i.pointer.primary_pressed().then(|| i.pointer.press_origin()).flatten())
+        .and_then(|at| ctx.layer_id_at(at))
+        .is_some_and(|layer| layer.order == egui::Order::Middle);
+    let front = match raised.filter(|panel| open == Some(*panel)) {
+        Some(panel) => Some(panel.clone()),
+        None => kept.filter(|panel| open == Some(panel) && !on_window),
+    };
+    ctx.data_mut(|data| data.insert_temp(front_key(), front.clone()));
+    front
+}
+
 /// How DesignCraft's dock behaves, as InDesign's: new docks at the docked area's free sides but no full-height column
 /// from the window's edges, a drop on no target (the canvas) floats, a floating window's title bar docks the whole
 /// window, a panel menu button on every group (as InDesign's panel menus, with their three-line mark) with Minimize and
@@ -1153,10 +1179,13 @@ fn dock_config() -> DockConfig {
         .tab_close_buttons(false)
         .group_order_items(true)
         .panel_menu_always(true)
+        // The panel menu's three-line mark, so it reads apart from the tab strip's "⋯" overflow beside it.
+        .panel_menu_icon(craft_behavior::IconId::new("menu"))
         // Long tab titles end with "…" and the tabs that do not fit go to the strip's overflow menu, as InDesign's.
         .tab_shrink(craft_ui::tabs::PanelTabShrink::Ellipsis)
-        // Floating panels stay above the docked columns' flyouts, as InDesign's.
-        .flyout_layer(craft_ui::contract::overlay::PopupLayer::BelowWindows)
+        // Floating panels stay above the docked columns' flyouts, as InDesign's; the flyout a command or its icon just
+        // opened stands above them until the person goes back to a window (`front_flyout`).
+        .flyout_layer(PopupLayer::BelowWindows)
         .native_windows(!cfg!(target_arch = "wasm32"))
 }
 
@@ -1211,7 +1240,14 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let mut flyout = app.ui.docking_flyout.clone().filter(|panel| in_iconic_column(workspace.layout(), panel));
     let offered = flyout.clone();
     let opened_before = app.ui.docking_opened.clone();
-    app.ui.docking_raise = None;
+    // The panel a command showed comes to the front once: its floating window above the others, its flyout above the
+    // floating windows.
+    let raised = app.ui.docking_raise.take();
+    let front = front_flyout(&ctx, raised.as_ref(), flyout.as_ref());
+    let layer = if front.is_some() { PopupLayer::AboveWindows } else { PopupLayer::BelowWindows };
+    // A floating window that holds the panel comes in front of the windows it overlaps: the dock's focus request raises
+    // it, and moves key focus to its group.
+    let focus = raised.clone().filter(|panel| workspace.layout().floating.iter().any(|window| window.contains(panel)));
     let auto_collapse = app.ui.dock_auto_collapse;
     // The dock lays out in the interface language's direction (the dock at the end edge: the left in right-to-left
     // languages), with its words in that language.
@@ -1225,17 +1261,24 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         },
         |ui| {
             let mut content = PanelContent { app: &mut *app };
-            let mut area =
-                DockArea::new(AREA, Bind::given(Arc::clone(&workspace)), &*specs, &mut content, dock_config()).flyout(Bind::bound(&mut flyout));
+            let mut area = DockArea::new(AREA, Bind::given(Arc::clone(&workspace)), &*specs, &mut content, dock_config().flyout_layer(layer))
+                .flyout(Bind::bound(&mut flyout));
             if auto_collapse {
                 area = area.auto_collapse();
+            }
+            if let Some(panel) = focus {
+                area = area.focus(panel);
             }
             area.show(ui)
         },
     );
     // The dock's own change of the flyout (an icon click, Escape, Auto-Collapse) is written back; a panel body that
-    // opened a flyout itself this pass (the Properties panel's Stroke link runs `window.panel`) keeps its request.
+    // opened a flyout itself this pass (the Properties panel's Stroke link runs `window.panel`) keeps its request. A
+    // flyout a click on its icon opened comes to the front, as one Window › the panel opens does.
     if flyout != offered {
+        if flyout.is_some() {
+            ctx.data_mut(|data| data.insert_temp(front_key(), flyout.clone()));
+        }
         app.ui.docking_flyout = flyout;
     }
     ui.ctx().data_mut(|data| {
