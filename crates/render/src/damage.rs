@@ -174,7 +174,7 @@ fn item_area(it: &Item) -> Option<Rect> {
     // and feathers stay inside the shape.
     let scale = max_scale(it.xf)?;
     let stroke = it.stroke.extent().max(0.0) * scale;
-    let pad = stroke + 2.0 + if it.is_text_frame() { GLYPH_OVERHANG } else { 0.0 } + crate::fx::outset_scaled(it, scale);
+    let pad = stroke + 2.0 + if it.is_text_frame() { GLYPH_OVERHANG * scale } else { 0.0 } + crate::fx::outset_scaled(it, scale);
     if !pad.is_finite() {
         return None;
     }
