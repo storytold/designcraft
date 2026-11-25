@@ -21,6 +21,7 @@ fn spreads_of(d: &designcraft_doc::Document, p: &Value) -> Result<Vec<usize>> {
         return Err(bad("page.transition", "give `pages` (1-based), `spread` or `all`"));
     }
     let mut v: Vec<usize> = pages.iter().filter_map(|n| n.checked_sub(1).and_then(|i| d.page_loc(i)).map(|(si, _)| si)).collect();
+    v.sort_unstable();
     v.dedup();
     Ok(v)
 }
@@ -111,6 +112,22 @@ mod tests {
         let last = &text[text.rfind("/Type/Page/").unwrap()..];
         assert!(last.contains("/S/Fade") && last[..last.find("endobj").unwrap()].contains("/S/Transparency"), "{last}");
         s.execute("page.transition", &json!({"all": true, "kind": "none"})).unwrap();
+        assert!(s.execute("page.transitions", &json!({})).unwrap().as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unsorted_pages_count_each_transition_spread_once() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3})).unwrap();
+        // Pages 2 and 3 share a spread, with page 1's spread between them in the request.
+        let result = s.execute("page.transition", &json!({"pages": [2, 1, 3], "kind": "fade"})).unwrap();
+        assert_eq!(result["spreads"], 2);
+        let transitions = s.execute("page.transitions", &json!({})).unwrap();
+        assert_eq!(transitions.as_array().unwrap().len(), 2);
+        assert_eq!(transitions[0]["spread"], 0);
+        assert_eq!(transitions[1]["spread"], 1);
+        assert!(transitions.as_array().unwrap().iter().all(|t| t["kind"] == "fade"));
+        s.execute("edit.undo", &json!({})).unwrap();
         assert!(s.execute("page.transitions", &json!({})).unwrap().as_array().unwrap().is_empty());
     }
 }
