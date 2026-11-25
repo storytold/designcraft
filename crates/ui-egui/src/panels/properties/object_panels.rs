@@ -381,12 +381,16 @@ mod framework {
         ui.id().with(("object-panels", key))
     }
 
-    /// The width of the widest of `labels` in the interface language, for a column of captions.
+    /// The width of the widest of `labels` in the interface language, for a column of captions: measured as the caption
+    /// text the panel shows them in, so no caption is cut.
     fn caption_width(app: &DesignApp, ui: &Ui, labels: &[&str]) -> f32 {
-        let t = Tokens::get(ui.ctx());
         labels
             .iter()
-            .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(&app.ui.language, l).to_string(), egui::FontId::proportional(11.5), t.text).size().x)
+            .map(|l| {
+                craft_ui_widgets::display::Text::new(crate::i18n::tr(&app.ui.language, l).to_string())
+                    .measure_in(ui, craft_behavior::Proposal::Ideal)
+                    .x
+            })
             .fold(0.0, f32::max)
             .ceil()
     }
