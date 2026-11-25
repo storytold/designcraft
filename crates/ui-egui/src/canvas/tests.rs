@@ -3388,11 +3388,21 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     // field takes the keyboard, and a later pass of that frame publishes the field's output, so egui retires it
     // (`PlatformOutput::append`); the framework then asks again on the field's output, and that request completes.
     let mut reset = None;
-    for _ in 0..6 {
+    // What each step published and who had the keyboard, for a failure to show.
+    let mut trail = Vec::new();
+    for step in 0..6 {
         h.step();
         let output = &h.output().platform_output;
         let retired = output.retired_ime_resets.clone();
         let request = output.ime.as_ref().and_then(|ime| ime.reset_request);
+        let ime = output.ime.as_ref().map(|ime| (ime.owner, ime.context_generation, ime.should_interrupt_composition, ime.reset_request));
+        let field_focused = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().is_some_and(|field| field.is_focused());
+        let canvas_composing = h.state().app.session.tool_composing();
+        let text_edit = h.ctx.text_edit_focused();
+        trail.push(format!(
+            "step {step}: ime (owner, generation, interrupt, reset) {ime:?}, retired {retired:?}, field focused {field_focused}, \
+             egui text edit focused {text_edit}, canvas composing {canvas_composing}"
+        ));
         for request_id in retired {
             h.event(egui::Event::ImeResetRetired { request_id });
         }
@@ -3401,7 +3411,9 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
             break;
         }
     }
-    let reset = reset.expect("interrupting the canvas composition asks the platform for a reset");
+    let reset = reset.unwrap_or_else(|| {
+        panic!("interrupting the canvas composition asks the platform for a reset (canvas owner {canvas_owner:?}):\n{}", trail.join("\n"))
+    });
     assert!(!h.state().app.session.tool_composing(), "the composition ended where the field took the keyboard");
     assert!(h.state_mut().app.take_ime_discard());
     assert!(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().unwrap().is_focused(), "the field has the keyboard");
