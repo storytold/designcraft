@@ -207,15 +207,18 @@ fn draw_inverse_highlight(
     );
     let (w, h) = (((bbox.width() * ppp).round() as u32).clamp(1, 8192), ((bbox.height() * ppp).round() as u32).clamp(1, 8192));
     let Some(st) = app.session.active() else { return };
-    let key = egui::Id::unique(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
+    // Include the full canvas-to-texture transform so scrolling, panning, rotating or DPI changes
+    // invalidate the cache even when the selection extends past both viewport edges and keeps the
+    // clipped `bbox` unchanged.
+    let view = xf.affine(ppp as f64, bbox.min);
+    let key = egui::Id::unique(("inverse_sel", st.uid, st.revision, st.editing_parents, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
         .with((runs.iter().map(|r| r.2.len() + r.3.len() * 7919).sum::<usize>(), w, h))
-        .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus))));
-    let cache_id = egui::Id::unique("inverse_sel_tex");
+        .with((view.as_coeffs().map(|c| (c + 0.0).to_bits()), st.selection.text.map(|t| (t.anchor, t.focus))));
+    let cache_id = egui::Id::unique(("inverse_sel_tex", app.pane));
     let cached: Option<(egui::Id, egui::TextureHandle)> = ctx.data(|d| d.get_temp(cache_id));
     let tex = match cached {
         Some((k, t)) if k == key => t,
         _ => {
-            let view = xf.affine(ppp as f64, bbox.min);
             let mut rc = vello_cpu::RenderContext::new_with(w as u16, h as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
             rc.set_paint(peniko::Color::from_rgba8(0, 0, 0, 255));
             for (_, m, quads, _) in runs {
@@ -441,5 +444,108 @@ mod tests {
         assert!((pts[1].x - 18.0).abs() < 1e-4);
         assert!((pts[1].y - 12.0).abs() < 1e-4);
         assert!(pts[10].x.abs() < 1e-4);
+    }
+
+    #[test]
+    fn inverse_selection_highlight_scrolls_when_both_ends_are_clipped() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", serde_json::json!({})).unwrap();
+        // Multi-line text with varying line lengths and gaps so every vertical and horizontal slice
+        // inside the clipped viewport has distinct pixels.
+        let lines = [
+            "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+            "Short",
+            "One two three four five six seven eight nine ten eleven twelve thirteen",
+            "",
+            "Quick brown fox jumps over the lazy dog again and again across the frame",
+            "Midline words here",
+            "Another wide paragraph line that extends well past both sides of the view",
+            "Trailing line",
+            "Final wide line reaching past the bottom and right edges of the viewport",
+        ];
+        let text = lines.join("\n");
+        let created = app.run("frame.create", serde_json::json!({"rect": [0, 0, 500, 400], "content": "text", "text": text})).unwrap();
+        let story = created["story"].as_u64().unwrap();
+        app.run("text.select", serde_json::json!({"story": story, "anchor": 0, "focus": text.len()})).unwrap();
+        let st = app.session.active().unwrap();
+        let ts = st.selection.text.unwrap();
+        let layout = CanvasLayout::new(&st.doc, st.editing_parents);
+        let viewport = Rect::from_min_max(pos2(0.0, 0.0), pos2(120.0, 60.0));
+        let ctx = egui::Context::default();
+        // Warm up the context so the font atlas is already allocated before inspecting deltas.
+        let mut warmup = ctx.run_ui(egui::RawInput { screen_rect: Some(viewport), ..Default::default() }, |_| {});
+        warmup.textures_delta.clear();
+
+        let render_at = |origin: Point| -> (egui::TextureId, Option<std::sync::Arc<egui::ColorImage>>) {
+            let xf = Xf { min: viewport.min, origin, zoom: 1.0, rot: 0, pivot: viewport.center() };
+            let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(viewport), ..Default::default() }, |ui| {
+                let painter = ui.painter_at(viewport);
+                draw_text_selection(&app, &painter, &xf, &st.doc, &layout, ts, None);
+            });
+            let tex_id = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Mesh(m) => Some(m.texture_id),
+                    _ => None,
+                })
+                .expect("inverse highlight mesh");
+            let img = output.textures_delta.set.iter().find_map(|(id, deltas)| {
+                if *id == tex_id {
+                    deltas.last().map(|d| match &d.image {
+                        egui::ImageData::Color(c) => c.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+            output.textures_delta.clear();
+            (tex_id, img)
+        };
+
+        // Start in the interior of the selection so top, bottom, left and right are all clipped.
+        let base = Point::new(80.0, 30.0);
+        let (tex0, img0) = render_at(base);
+        let img0 = img0.expect("initial inverse highlight texture");
+        assert_eq!(img0.size, [120, 60], "clipped selection fills the viewport on all sides");
+
+        // Stationary view reuses the cached texture.
+        let (tex_same, img_same) = render_at(base);
+        assert_eq!(tex_same, tex0);
+        assert!(img_same.is_none(), "unchanged view should hit the inverse highlight cache");
+
+        // Vertical scroll while both selection ends remain off-screen: texture must re-render and shift up.
+        let dy = 12usize;
+        let (_, img_v) = render_at(Point::new(base.x, base.y + dy as f64));
+        let img_v = img_v.expect("vertical scroll must invalidate cached inverse highlight");
+        assert_eq!(img_v.size, img0.size);
+        assert_ne!(img_v.pixels, img0.pixels, "vertically scrolled highlight must move with the text");
+        for y in 0..(img0.size[1] - dy) {
+            for x in 0..img0.size[0] {
+                assert_eq!(
+                    img_v.pixels[y * img0.size[0] + x],
+                    img0.pixels[(y + dy) * img0.size[0] + x],
+                    "pixel ({x}, {y}) should match pre-scroll pixel ({x}, {})",
+                    y + dy
+                );
+            }
+        }
+
+        // Horizontal scroll while both selection ends remain off-screen: texture must re-render and shift left.
+        let dx = 15usize;
+        let (_, img_h) = render_at(Point::new(base.x + dx as f64, base.y + dy as f64));
+        let img_h = img_h.expect("horizontal scroll must invalidate cached inverse highlight");
+        assert_eq!(img_h.size, img_v.size);
+        assert_ne!(img_h.pixels, img_v.pixels, "horizontally scrolled highlight must move with the text");
+        for y in 0..img_v.size[1] {
+            for x in 0..(img_v.size[0] - dx) {
+                assert_eq!(
+                    img_h.pixels[y * img_v.size[0] + x],
+                    img_v.pixels[y * img_v.size[0] + (x + dx)],
+                    "pixel ({x}, {y}) should match pre-scroll pixel ({}, {y})",
+                    x + dx
+                );
+            }
+        }
     }
 }
