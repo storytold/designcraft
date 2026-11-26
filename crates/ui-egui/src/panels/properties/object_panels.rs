@@ -97,15 +97,17 @@ fn wrap_linked(ui: &Ui, offsets: Option<[f64; 4]>) -> bool {
     ui.data(|d| d.get_temp::<bool>(wrap_link_id())).unwrap_or_else(|| offsets.is_none_or(|o| o.iter().all(|v| (v - o[0]).abs() < 1e-9)))
 }
 
-/// The offsets an edit of the offset `side` to `v` sets: all four while linked, else that side alone.
-fn wrap_offsets_set(offsets: Option<[f64; 4]>, linked: bool, side: usize, v: f64) -> [f64; 4] {
-    let mut o = offsets.unwrap_or([0.0; 4]);
+/// The offsets an edit of the offset `side` to `v` sets, `[top, left, bottom, right]`: all four while linked, else that
+/// side alone, each selected object keeping its own other sides (`None`). The panel shows the first object's offsets;
+/// an edit never copies them onto the others.
+fn wrap_offsets_set(linked: bool, side: usize, v: f64) -> [Option<f64>; 4] {
     if linked {
-        o = [v; 4];
+        [Some(v); 4]
     } else {
-        o[side] = v;
+        let mut o = [None; 4];
+        o[side] = Some(v);
+        o
     }
-    o
 }
 
 /// Stroke panel: weight, cap, miter limit, join, alignment, type, arrowheads, gap colour.
@@ -636,7 +638,7 @@ mod framework {
             let id = cid(ui, ("wrap-offset", side));
             let n = Number::new(&name, offsets.map(|o| o[side]), Quantity::Length(u)).enabled(enabled);
             if let Some(Some(v)) = number_field(ui, Some(sub(b, x + caption_w + gap, y, field_w, FIELD_H)), id, n) {
-                set = Some(wrap_offsets_set(offsets, linked, side, v));
+                set = Some(wrap_offsets_set(linked, side, v));
             }
         }
         let tip = tr("Make all settings the same");
@@ -653,7 +655,8 @@ mod framework {
             ui.data_mut(|d| d.insert_temp(wrap_link_id(), on));
         }
         if let Some(o) = set {
-            let _ = app.run("object.textWrap", json!({"mode": mode, "offset": o}));
+            // Each object keeps its own mode (null): only the edited offsets change.
+            let _ = app.run("object.textWrap", json!({"mode": null, "offset": o}));
         }
         ui.add_space(6.0);
         let Some(i) = info.filter(|i| i.wrap == "boundingBox" || i.wrap == "contour") else { return };
@@ -936,6 +939,34 @@ mod wrap_panel_tests {
             );
         }
         assert!(app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().wrap.invert);
+    }
+
+    /// An edit of one offset in a mixed selection changes that side alone on every object, and keeps each object's
+    /// mode and other sides: the panel shows the first object's offsets, and never copies them onto the others.
+    #[test]
+    fn an_offset_edit_in_a_mixed_selection_keeps_each_objects_mode_and_other_sides() {
+        use designcraft_doc::{ItemId, WrapMode};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 144, 144]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [200, 72, 272, 144]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.textWrap", json!({"ids": [a], "mode": "contour", "offset": [1, 2, 3, 4]})).unwrap();
+        app.run("object.textWrap", json!({"ids": [b], "mode": "jumpObject", "offset": [5, 6, 7, 8]})).unwrap();
+        app.run("selection.set", json!({"ids": [a, b]})).unwrap();
+        // Top to 9, unlinked: what the panel sends for that edit.
+        let o = wrap_offsets_set(false, 0, 9.0);
+        app.run("object.textWrap", json!({"mode": null, "offset": o})).unwrap();
+        let wrap = |app: &DesignApp, id: u64| {
+            let w = app.session.doc().unwrap().doc.item(ItemId(id)).unwrap().wrap.clone();
+            (w.offsets, w.mode)
+        };
+        assert_eq!(wrap(&app, a), ([9.0, 2.0, 3.0, 4.0], WrapMode::Contour));
+        assert_eq!(wrap(&app, b), ([9.0, 6.0, 7.0, 8.0], WrapMode::JumpObject));
+        // Linked: all four sides of each, still each with its own mode.
+        let o = wrap_offsets_set(true, 2, 5.0);
+        app.run("object.textWrap", json!({"mode": null, "offset": o})).unwrap();
+        assert_eq!(wrap(&app, a), ([5.0; 4], WrapMode::Contour));
+        assert_eq!(wrap(&app, b), ([5.0; 4], WrapMode::JumpObject));
     }
 }
 
