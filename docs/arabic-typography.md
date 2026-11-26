@@ -1,6 +1,6 @@
 # Arabic import and composition
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-07 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-11-08 · **Last updated:** 2026-11-08 · **Change:** minor (kashida boundaries in AAT fonts) · **Target:** Adobe InDesign 2026
 
 Task: AR1. These changes repair verified gaps in the existing typesetting pipeline.
 They do not claim full InDesign or vendor-specific Naskh composition parity.
@@ -32,7 +32,7 @@ positions are reversed. Physical left/right insertion commands account for direc
 | Digits | European, Arabic-Indic and Persian conversion in both directions, contextual defaults, language-sensitive native digits, original UTF-8 source ranges retained |
 | Diacritics | Font GDEF classification and OpenType mark anchors; explicit X/Y offsets affect marks only, in thousandths of an em |
 | Positional forms | Explicit isolated/initial/medial/final OpenType feature selection; automatic forms remain the default |
-| Kashidas | Paragraph and character switches, actual font coverage, shaper-approved insertion boundaries, nonjoiner protection, whole-cluster movement to keep marks attached |
+| Kashidas | Paragraph and character switches, actual font coverage, shaper-approved insertion boundaries (in AAT fonts, which the shaper gives none, joins between letters that join, judged by a ligature's last letter), nonjoiner protection, whole-cluster movement to keep marks attached |
 | Story direction | Independent right-to-left column flow, including span-column bounds |
 | Table direction | Right-to-left cell placement, merged spans, physical edge styles/borders, hit testing and left/right column insertion |
 | Serialization | Character controls, paragraph policy/width values, story/table directions survive native data and IDML round trips |
@@ -81,5 +81,6 @@ compatibility warnings remain, along with separate font/link/overset findings.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | minor | Kashidas: AAT fonts (the macOS system Arabic fonts) take them at joins between joining letters (#2391) |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-07 | major | Created: AR1: Arabic import and composition |
