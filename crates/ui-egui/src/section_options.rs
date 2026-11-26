@@ -372,9 +372,9 @@ mod tests {
 
     use craft_ui_widgets::runtime::inspect::{Recorded, record};
     use egui::accesskit::Role;
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
     use egui::{Event, Key, Modifiers, PointerButton, vec2};
     use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
     use std::sync::Arc;
 
     type Window = (DesignApp, Option<Arc<Recorded>>, bool, bool, bool);
@@ -590,7 +590,6 @@ mod tests {
         event(h, Event::Text(text.into()));
         step(h);
     }
-
 
     /// A four-page document with Numbering & Section Options open (on page 1).
     fn open_app() -> DesignApp {
@@ -966,7 +965,10 @@ mod tests {
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some(), "the real SDK Accept must retain the modal after validation refusal");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
+        assert!(
+            craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal),
+            "refusal keeps the SDK modal, not a close/reopen shim"
+        );
         assert_quiet(h, prior);
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().s("startNumber"), "0", "a refused draft remains editable");
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);

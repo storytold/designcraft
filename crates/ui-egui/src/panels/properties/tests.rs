@@ -149,7 +149,6 @@ fn a_live_preview_held_over_many_frames_is_one_undo_step_once_let_go() {
     assert_eq!(undo_steps(&app), steps + 2);
 }
 
-
 /// A row is as wide as its translated name needs: a long one isn't cut at a fixed width.
 #[test]
 fn preview_rows_fit_long_translated_names() {
