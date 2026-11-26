@@ -2,7 +2,8 @@ use super::asian::bool_param;
 use super::caret::hit_byte_with;
 use super::story::selection_attrs;
 use super::{
-    CellAddr, CharAttrs, ParaAttrs, Result, Session, StoryId, TextSel, Value, bad, compose, floor_char_boundary, id_param, json, ok, point_param,
+    Align, CellAddr, CharAttrs, ParaAttrs, Result, Session, StoryId, TextSel, Value, bad, compose, floor_char_boundary, id_param, json, ok,
+    point_param,
 };
 
 /// The Eyedropper with text selected: the formatting of the text under `point` in `frame` goes to
@@ -418,6 +419,13 @@ pub(crate) fn apply_char_attrs(d: &mut designcraft_doc::Document, targets: &[Tar
 }
 
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
+    format_paras_mirrored(s, attrs, false)
+}
+
+/// [`format_paras`]; with `mirror_align`, a paragraph whose direction the attributes change
+/// swaps its own left or right alignment, so each paragraph keeps its alignment's meaning. An
+/// `align` named in the attributes wins over the mirror.
+pub(crate) fn format_paras_mirrored(s: &mut Session, attrs: &Value, mirror_align: bool) -> Result<Value> {
     let empty = serde_json::Map::new();
     let obj = attrs.as_object().unwrap_or(&empty);
     // A rule object changes only the rule fields it names, so each paragraph gets its own attrs
@@ -431,6 +439,7 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
     let rows = justification_rows_named(obj.keys().map(String::as_str));
     // `null` removes the override (back to the style's value).
     let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
+    let mirror_align = mirror_align && !obj.contains_key("align");
     let targets = format_targets(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();
@@ -447,6 +456,13 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
                     p.para.merge(&a);
                     for k in &cleared {
                         let _ = p.para.set_json(k, &Value::Null);
+                    }
+                    if mirror_align && styles.resolve_para(p).0.direction != current.direction {
+                        match current.align {
+                            Align::Left => p.para.align = Some(Align::Right),
+                            Align::Right => p.para.align = Some(Align::Left),
+                            _ => {}
+                        }
                     }
                     if refused.is_none()
                         && let Err(e) = validate_justification_order(&styles.resolve_para(p).0, rows, "type.para")

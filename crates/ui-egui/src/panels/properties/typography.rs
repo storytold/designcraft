@@ -409,21 +409,19 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     if item(ui, "Define Lists…", None, true) {
         command = Some("list.define");
     }
-    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment.
+    // Paragraph Direction (World-Ready): switching also mirrors each paragraph's left or right
+    // alignment.
     ui.separator();
     let rtl = p["direction"] == "rightToLeft";
+    let mut mirror_align = false;
     for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
         if item(ui, label, Some(on), true) && !on {
-            let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
-                Align::Left => Align::Right,
-                Align::Right => Align::Left,
-                a => a,
-            };
-            attrs = Some(json!({"direction": dir, "align": align}));
+            attrs = Some(json!({"direction": dir}));
+            mirror_align = true;
         }
     }
     if let Some(attrs) = attrs {
-        let _ = app.run("type.para", json!({"attrs": attrs}));
+        let _ = app.run("type.para", json!({"attrs": attrs, "mirrorAlign": mirror_align}));
     }
     // As a menu choice: Define Lists… and the other commands open their dialogs.
     if let Some(id) = command {
