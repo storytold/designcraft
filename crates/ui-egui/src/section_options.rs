@@ -371,6 +371,7 @@ mod tests {
     use super::*;
 
     use craft_ui_widgets::runtime::inspect::{Recorded, record};
+    use egui::accesskit::Role;
     use egui::{Event, Key, Modifiers, PointerButton, vec2};
     use egui_kittest::Harness;
     use std::sync::Arc;
@@ -735,7 +736,7 @@ mod tests {
             .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == "Dialog" && f.name.as_deref() == Some("Numbering & Section Options")))
             .collect();
         assert_eq!(dialogs.len(), 1, "the real SDK986 Dialog");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         let initial = effects(&h);
         let initial_fields = h.state().0.ui.dialog.as_ref().unwrap().fields.clone();
         idle_and_inert_passes_keep_the_draft(&mut h, &initial, initial_fields);
@@ -1167,7 +1168,7 @@ mod tests {
         h.input_mut().max_texture_side = Some(8192);
         section_steps(&mut h, 3);
         let _ = h.get_by_role_and_label(Role::Dialog, "Numbering & Section Options");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         h
     }
 
@@ -1515,7 +1516,7 @@ mod tests {
         // craft's dialogs, like InDesign's, cancel on one Escape: the field's typing goes with the dialog.
         section_key(&mut h, Key::Escape, Modifiers::NONE);
         assert!(h.state().ui.dialog.is_none(), "one real Escape over a field draft cancels the SDK modal");
-        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().session.doc().unwrap().doc, before);
         assert_eq!(numbering_undo(&h), undo);
         assert!(numbering_commands(&h).is_empty());
