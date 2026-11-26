@@ -58,10 +58,16 @@ pub(super) fn flatten(d: &designcraft_doc::Document, cache: &designcraft_compose
         if whole {
             // Parent items involve transparency: every page of the spread as one image.
             let first = d.first_page_of_spread(si);
-            let lid = out.default_layer();
+            // The page image must survive the PDF layer filter. Layers are listed top first, so
+            // this is the default (top) layer when it prints, else the top-most printing one.
+            // The spread's own items and parent items are all removed below, so the layer's
+            // stacking order can't change what composites. If nothing can print, leave the
+            // spread alone: the normal export pipeline already emits an empty page.
+            let Some(lid) = out.layers.iter().find(|layer| designcraft_pdf::layer_exported(layer)).map(|layer| layer.id) else { continue };
+            let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
             let mut images = Vec::new();
             for (pi, pg) in sp.pages.iter().enumerate() {
-                if let Some(img) = rr.render_page(d, cache, first + pi, k, false, &Default::default()) {
+                if let Some(img) = rr.render_page(d, cache, first + pi, k, false, &opts) {
                     images.push((pg.bounds(), img));
                 }
             }

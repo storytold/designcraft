@@ -17,6 +17,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod about;
 pub mod canvas;
+pub mod channel;
 pub mod chrome;
 pub mod control;
 pub mod credits;
@@ -312,6 +313,11 @@ pub struct DesignApp {
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save waiting for the answer to "IDML can't keep all of this document" (`idmlLoss`).
+    pub(crate) lossy_save: Option<menus::LossySave>,
+    /// Documents (by uid) whose IDML losses were accepted with Don't ask again: for this session
+    /// only, never saved.
+    pub(crate) idml_loss_accepted: std::collections::HashSet<u64>,
     /// A save asked for while the open-time checks of the document's linked files run: it runs
     /// once they are done, so the first save already writes the links they confirm.
     pub(crate) waiting_save: Option<WaitingSave>,

@@ -3,9 +3,10 @@
 //! Delegates container resolution probes to `craft-image-codecs` (`file_resolution`, which reads
 //! JPEG Photoshop ResolutionInfo -> XMP -> EXIF -> JFIF, PNG eXIf, WebP EXIF, and classic TIFF;
 //! plus `exif_resolution`, `png_probe::pixels_per_meter`, and `bmp_probe::pixels_per_meter`) and
-//! PSD `ResolutionInfo` to [`crate::psd`]. JPEG EXIF orientation keeps the strict local APP1 scan
-//! (`"Exif\0\0"` with complete segment bounds). GIF and files without (usable) metadata report
-//! nothing and keep the pixel-is-a-point size.
+//! PSD `ResolutionInfo` to [`crate::psd`]. JPEG EXIF orientation uses the shared strict APP1
+//! reader (`jpeg_probe::strict_exif_orientation`: `"Exif\0\0"` with complete segment bounds,
+//! before the first scan). GIF and files without (usable) metadata report nothing and keep the
+//! pixel-is-a-point size.
 
 /// Dots per inch in x and y, when the file carries usable resolution metadata.
 pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
@@ -29,7 +30,7 @@ pub fn raster_resolution(bytes: &[u8]) -> Option<(f64, f64)> {
 /// The EXIF/TIFF orientation (1–8) of `bytes`, or 1 when absent or unreadable.
 fn orientation(bytes: &[u8]) -> u16 {
     if bytes.starts_with(b"\xFF\xD8\xFF") {
-        return jpeg_orientation(bytes);
+        return craft_image_codecs::jpeg_probe::strict_exif_orientation(bytes);
     }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return craft_image_codecs::png_probe::header(bytes).map_or(1, |(_, _, o)| o);
@@ -39,40 +40,6 @@ fn orientation(bytes: &[u8]) -> u16 {
     }
     if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
         return craft_image_codecs::tiff_orientation(bytes);
-    }
-    1
-}
-
-/// EXIF orientation from a JPEG's first APP1 `"Exif\0\0"` segment before the first scan.
-fn jpeg_orientation(bytes: &[u8]) -> u16 {
-    let mut i = 2usize;
-    while i + 4 <= bytes.len() {
-        if bytes[i] != 0xFF {
-            break;
-        }
-        let marker = bytes[i + 1];
-        if marker == 0xFF {
-            i += 1;
-            continue;
-        }
-        if marker == 0xD8 || (0xD0..=0xD7).contains(&marker) || marker == 0x01 {
-            i += 2;
-            continue;
-        }
-        if marker == 0xDA || marker == 0xD9 {
-            break;
-        }
-        let len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-        if len < 2 || i + 2 + len > bytes.len() {
-            break;
-        }
-        let seg = &bytes[i + 4..i + 2 + len];
-        if marker == 0xE1
-            && let Some(exif) = seg.strip_prefix(b"Exif\0\0")
-        {
-            return craft_image_codecs::exif_orientation(exif);
-        }
-        i += 2 + len;
     }
     1
 }

@@ -2654,6 +2654,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "显示/隐藏面板(工具除外)",
         ],
     ),
+    (
+        "Show/Hide Paragraph Break Marks",
+        [
+            "Show/Hide Paragraph Break Marks",
+            "Afficher/Masquer les marques de fin de paragraphe",
+            "Mostrar/ocultar marcas de fin de párrafo",
+            "Show/Hide Paragraph Break Marks",
+            "显示/隐藏段落结束标记",
+        ],
+    ),
     ("Show/Hide Rulers", ["Show/Hide Rulers", "Afficher/Masquer les règles", "Show/Hide Rulers", "Show/Hide Rulers", "显示/隐藏标尺"]),
     (
         "Show/Hide Style Name Column",
@@ -2678,6 +2688,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
         "Show/Hide Text Threads",
         ["Show/Hide Text Threads", "Afficher/Masquer le chaînage du texte", "Show/Hide Text Threads", "Show/Hide Text Threads", "显示/隐藏文本串接"],
+    ),
+    (
+        "Show/Hide Link Badge",
+        [
+            "Show/Hide Link Badge",
+            "Afficher/Masquer le badge de lien",
+            "Mostrar/ocultar distintivo de vínculo",
+            "Show/Hide Link Badge",
+            "显示/隐藏链接标记",
+        ],
     ),
     ("Smooth", ["Smooth", "Lisse", "Smooth", "Smooth", "平滑"]),
     ("Sort", ["Sort", "Trier", "Sort", "Sort", "排序"]),
