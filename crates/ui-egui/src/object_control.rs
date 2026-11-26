@@ -636,8 +636,8 @@ mod auto_fit_workflow_tests {
 
         // The real Selection-tool handle reaches transform.resize, which owns downstream refitting.
         // The unchanged W/H numeric path is transform.set and is deliberately not substituted for it.
-        let (_resized, graphic_xf) = resize_by_handle(&mut h, ids[0]);
-        documents.push(mark(&h).0);
+        let (resized, graphic_xf) = resize_by_handle(&mut h, ids[0]);
+        documents.push(resized);
 
         // A real content-move command establishes the moved picture that turning Auto-Fit off must preserve.
         h.state_mut().app.run("transform.move", json!({"dx":7.0,"dy":9.0,"content":true})).unwrap();
@@ -704,7 +704,7 @@ mod auto_fit_workflow_tests {
 
     /// The real Selection-tool handle resizes the frame at `id` by 80 points: one committed `transform.resize`,
     /// which refits the graphic downstream. The document mark after it, and the graphic's transform.
-    fn resize_by_handle(h: &mut Harness<'_, Rig>, id: u64) -> (u64, designcraft_geom::Affine) {
+    fn resize_by_handle(h: &mut Harness<'_, Rig>, id: u64) -> (std::sync::Arc<designcraft_doc::Document>, designcraft_geom::Affine) {
         h.state_mut().canvas = true;
         idle(h, 3);
         let frame_before = item(h, id).bounds();
