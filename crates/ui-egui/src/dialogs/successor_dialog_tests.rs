@@ -1110,6 +1110,29 @@ fn paragraph_style_options_form_ruby_alignment_and_shatai_angle_reach_the_style_
     assert_eq!(a["para"]["gridGyoudori"], 2);
 }
 
+/// #2397: opening Text Frame Options puts the keyboard in the Columns count, so two Up presses and Return change one
+/// column to three without the mouse. The framework form focuses its first field on opening, as the native dialog did.
+#[test]
+fn text_frame_options_opens_with_the_columns_count_focused() {
+    let mut app = kit::app(1, false);
+    let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "content": "text", "text": "Hello"})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+    app.ui.dialog = Some(Dialog::new("textFrameOptions", json!({})));
+    let mut h = kit::harness_sized(app, vec2(1000.0, 800.0));
+    h.run_steps(3);
+    // The count field ("Number:") holds the keyboard before anything is clicked.
+    let count = h.get_by_role_and_label(Role::SpinButton, "Number:");
+    assert!(count.is_focused(), "the Columns count opens focused");
+    let before = h.state().ui.dialog.as_ref().unwrap().n("columns");
+    h.key_press(Key::ArrowUp);
+    h.run_steps(2);
+    h.key_press(Key::ArrowUp);
+    h.run_steps(2);
+    let d = h.state().ui.dialog.as_ref().unwrap();
+    assert_eq!(d.n("columns"), before.map(|n| n + 2.0), "two Up presses step the count by two: {:?}", d.fields.get("columns"));
+}
+
 /// Successor of `layer_options_lock_the_layers_guides` (with the double click that opens it, which the Layers panel's own
 /// tests cover): Lock Guides sits beside Lock Layer in the framework Layer Options and OK locks the guides only.
 #[test]
