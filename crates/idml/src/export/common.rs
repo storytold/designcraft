@@ -25,12 +25,40 @@ pub(super) fn pct(v: f64) -> String {
     num(v * 100.0)
 }
 
-/// (model, space, value) for a colour.
+/// Use the coarsest decimal that still imports as the original normalized channel.
+fn color_units(value: f32, scale: f64) -> f64 {
+    let scaled = f64::from(value) * scale;
+    let mut factor = 1.0;
+    for _ in 0..=9 {
+        let rounded = (scaled * factor).round() / factor;
+        if (rounded / scale) as f32 == value {
+            return rounded;
+        }
+        factor *= 10.0;
+    }
+    scaled
+}
+
+pub(super) fn color_percent(value: f32) -> f64 {
+    color_units(value, 100.0)
+}
+
+pub(super) fn tint_value(value: f32) -> String {
+    color_percent(value).to_string()
+}
+
+/// (space, value) for a colour.
 pub(super) fn color_value(c: &Color) -> (&'static str, String) {
     match *c {
-        Color::Cmyk { c, m, y, k } => ("CMYK", format!("{} {} {} {}", pct(c as f64), pct(m as f64), pct(y as f64), pct(k as f64))),
-        Color::Rgb { r, g, b } => ("RGB", format!("{} {} {}", num(r as f64 * 255.0), num(g as f64 * 255.0), num(b as f64 * 255.0))),
-        Color::Gray { k } => ("CMYK", format!("0 0 0 {}", pct(k as f64))),
+        Color::Cmyk { c, m, y, k } => {
+            let [c, m, y, k] = [c, m, y, k].map(color_percent);
+            ("CMYK", format!("{c} {m} {y} {k}"))
+        }
+        Color::Rgb { r, g, b } => {
+            let [r, g, b] = [r, g, b].map(|v| color_units(v, 255.0));
+            ("RGB", format!("{r} {g} {b}"))
+        }
+        Color::Gray { k } => ("CMYK", format!("0 0 0 {}", color_percent(k))),
     }
 }
 

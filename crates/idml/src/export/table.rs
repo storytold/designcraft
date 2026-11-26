@@ -1,15 +1,15 @@
-use super::common::{bool_s, pct, uid};
+use super::common::{bool_s, tint_value, uid};
 use super::{Affine, CharFormat, Content, El, Ex, Item, ParaFormat, Shape, names, num};
 
 impl<'a> Ex<'a> {
     pub(super) fn cell_stroke_attrs(&self, el: &mut El, prefix: &str, s: &designcraft_doc::CellStroke) {
         el.set(&format!("{prefix}StrokeWeight"), num(s.weight));
         el.set(&format!("{prefix}StrokeColor"), self.sw(&s.color));
-        el.set(&format!("{prefix}StrokeTint"), pct(s.tint as f64));
+        el.set(&format!("{prefix}StrokeTint"), tint_value(s.tint));
         el.set(&format!("{prefix}StrokeType"), names::stroke_type_out(&s.kind));
         if s.gap_color != designcraft_color::swatch::NONE || s.gap_tint != 1.0 {
             el.set(&format!("{prefix}StrokeGapColor"), self.sw(&s.gap_color));
-            el.set(&format!("{prefix}StrokeGapTint"), pct(s.gap_tint as f64));
+            el.set(&format!("{prefix}StrokeGapTint"), tint_value(s.gap_tint));
         }
     }
 
@@ -42,10 +42,10 @@ impl<'a> Ex<'a> {
             if let Some(a) = alt {
                 el.set(&format!("Start{kind}FillColor"), self.sw(&a.first_color));
                 el.set(&format!("Start{kind}FillCount"), a.first);
-                el.set(&format!("Start{kind}FillTint"), pct(a.first_tint as f64));
+                el.set(&format!("Start{kind}FillTint"), tint_value(a.first_tint));
                 el.set(&format!("End{kind}FillColor"), self.sw(&a.next_color));
                 el.set(&format!("End{kind}FillCount"), a.next);
-                el.set(&format!("End{kind}FillTint"), pct(a.next_tint as f64));
+                el.set(&format!("End{kind}FillTint"), tint_value(a.next_tint));
                 el.set(&format!("SkipFirstAlternatingFill{kind}s"), a.skip_first);
                 el.set(&format!("SkipLastAlternatingFill{kind}s"), a.skip_last);
             } else {
@@ -112,7 +112,7 @@ impl<'a> Ex<'a> {
                         ),
                     )
                     .attr("FillColor", self.sw(&cell.fill))
-                    .attr("FillTint", pct(cell.fill_tint as f64))
+                    .attr("FillTint", tint_value(cell.fill_tint))
                     .attr("TopInset", num(cell.insets[0]))
                     .attr("LeftInset", num(cell.insets[1]))
                     .attr("BottomInset", num(cell.insets[2]))

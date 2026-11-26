@@ -1,4 +1,4 @@
-use super::common::{bool_s, p, pct, pkg_root, with_props};
+use super::common::{bool_s, color_percent, p, pkg_root, tint_value, with_props};
 use super::item::text_frame_pref;
 use super::story::with_list_tab;
 use super::{CHAR_BUILTINS, El, Ex, NO_PARA_ID, OBJECT_BUILTINS, PARA_BUILTINS, Rule, TOC_STYLE_ID, TOC_STYLE_NAME, document, names, num, st};
@@ -120,7 +120,7 @@ impl<'a> Ex<'a> {
             }
             if let Some(f) = &os.fill {
                 el.set("FillColor", self.sw(&f.swatch));
-                el.set("FillTint", pct(f.tint as f64));
+                el.set("FillTint", tint_value(f.tint));
             }
             if let Some(s) = &os.stroke {
                 self.stroke_attrs(&mut el, s);
@@ -162,13 +162,13 @@ impl<'a> Ex<'a> {
         let mut out = craft_idml::model::StrokeValues {
             weight: Some(s.weight),
             color: Some(self.sw(&s.color)),
-            tint: Some(f64::from(s.tint) * 100.0),
+            tint: Some(color_percent(s.tint)),
             kind: Some(names::stroke_type_out(&s.kind)),
             ..craft_idml::model::StrokeValues::default()
         };
         if s.gap_color != designcraft_color::swatch::NONE || s.gap_tint != 1.0 {
             out.gap_color = Some(self.sw(&s.gap_color));
-            out.gap_tint = Some(f64::from(s.gap_tint) * 100.0);
+            out.gap_tint = Some(color_percent(s.gap_tint));
         }
         out
     }
@@ -181,7 +181,7 @@ impl<'a> Ex<'a> {
             out.color = Some(self.sw(value));
         }
         if let Some(value) = attrs.tint {
-            out.tint = Some(f64::from(value) * 100.0);
+            out.tint = Some(color_percent(value));
         }
         if let Some(value) = &attrs.kind {
             out.kind = Some(names::stroke_type_out(value));
@@ -190,7 +190,7 @@ impl<'a> Ex<'a> {
             out.gap_color = Some(self.sw(value));
         }
         if let Some(value) = attrs.gap_tint {
-            out.gap_tint = Some(f64::from(value) * 100.0);
+            out.gap_tint = Some(color_percent(value));
         }
     }
 
@@ -198,10 +198,10 @@ impl<'a> Ex<'a> {
         craft_idml::model::AlternatingFillValues {
             first_count: attrs.first.map(f64::from),
             first_color: attrs.first_color.as_deref().map(|c| self.sw(c)),
-            first_tint: attrs.first_tint.map(|t| f64::from(t) * 100.0),
+            first_tint: attrs.first_tint.map(color_percent),
             next_count: attrs.next.map(f64::from),
             next_color: attrs.next_color.as_deref().map(|c| self.sw(c)),
-            next_tint: attrs.next_tint.map(|t| f64::from(t) * 100.0),
+            next_tint: attrs.next_tint.map(color_percent),
             skip_first: attrs.skip_first.map(f64::from),
             skip_last: attrs.skip_last.map(f64::from),
         }
@@ -253,7 +253,7 @@ impl<'a> Ex<'a> {
                 name: Some(names::style_name_out(names::CELL_BUILTINS, &cs.name)),
                 based_on: (base != designcraft_doc::NO_CELL_STYLE).then(|| names::style_self("CellStyle", names::CELL_BUILTINS, base)),
                 fill: cs.fill.as_deref().map(|f| self.sw(f)),
-                fill_tint: cs.fill_tint.map(|t| f64::from(t) * 100.0),
+                fill_tint: cs.fill_tint.map(color_percent),
                 insets,
                 vertical_justification: cs.vj.map(|vj| names::vj_out(vj).into()),
                 first_baseline: cs.first_baseline.map(|fb| names::first_baseline_out(fb).into()),
@@ -297,10 +297,10 @@ impl<'a> Ex<'a> {
             if let Some(a) = &ts.alt_rows {
                 row_fills.first_color = Some(self.sw(&a.first_color));
                 row_fills.first_count = Some(f64::from(a.first));
-                row_fills.first_tint = Some(f64::from(a.first_tint) * 100.0);
+                row_fills.first_tint = Some(color_percent(a.first_tint));
                 row_fills.next_color = Some(self.sw(&a.next_color));
                 row_fills.next_count = Some(f64::from(a.next));
-                row_fills.next_tint = Some(f64::from(a.next_tint) * 100.0);
+                row_fills.next_tint = Some(color_percent(a.next_tint));
             }
             let overlay = self.map_alt_fill_attrs(&ts.row_fills);
             row_fills.first_count = overlay.first_count.or(row_fills.first_count);
@@ -385,7 +385,7 @@ impl<'a> Ex<'a> {
     pub(super) fn rule(&mut self, el: &mut El, props: &mut Vec<El>, k: &str, r: &Rule) {
         el.set(k, bool_s(r.on));
         el.set(&format!("{k}LineWeight"), num(r.weight));
-        el.set(&format!("{k}Tint"), pct(r.tint as f64));
+        el.set(&format!("{k}Tint"), tint_value(r.tint));
         el.set(&format!("{k}Width"), if r.column_width { "ColumnWidth" } else { "TextWidth" });
         el.set(&format!("{k}Offset"), num(r.offset));
         el.set(&format!("{k}LeftIndent"), num(r.left_indent));
@@ -397,7 +397,7 @@ impl<'a> Ex<'a> {
         } else {
             el.set(&format!("{k}GapColor"), self.sw(&r.gap_color));
         }
-        el.set(&format!("{k}GapTint"), pct(r.gap_tint as f64));
+        el.set(&format!("{k}GapTint"), tint_value(r.gap_tint));
         if k == "RuleAbove" {
             el.set("KeepRuleAboveInFrame", bool_s(r.keep_in_frame));
         }
@@ -411,7 +411,7 @@ impl<'a> Ex<'a> {
     pub(super) fn stroke_attrs(&self, el: &mut El, s: &designcraft_doc::Stroke) {
         el.set("StrokeColor", self.sw(&s.swatch));
         el.set("StrokeWeight", num(if s.is_none() { 0.0 } else { s.weight }));
-        el.set("StrokeTint", pct(s.tint as f64));
+        el.set("StrokeTint", tint_value(s.tint));
         el.set("StrokeType", names::stroke_type_out(&s.kind));
         el.set("StrokeAlignment", names::stroke_align_out(s.align));
         el.set("EndCap", names::cap_out(s.cap));
@@ -420,7 +420,7 @@ impl<'a> Ex<'a> {
         el.set("LeftLineEnd", names::arrow_out(s.start));
         el.set("RightLineEnd", names::arrow_out(s.end));
         el.set("GapColor", self.sw(&s.gap_swatch));
-        el.set("GapTint", pct(s.gap_tint as f64));
+        el.set("GapTint", tint_value(s.gap_tint));
         el.set("OverprintStroke", bool_s(s.overprint));
         el.set("OverprintGap", bool_s(s.gap_overprint));
     }

@@ -1,4 +1,4 @@
-use super::common::{change_type, uid, with_props, xref_format_self};
+use super::common::{change_type, color_percent, uid, with_props, xref_format_self};
 use super::{CHAR_BUILTINS, CharFormat, El, Ex, ListType, NO_CHAR_ID, Node, PARA_BUILTINS, ParaAttrs, ParaFormat, Story, TOC_STYLE_ID, names, st};
 
 impl<'a> Ex<'a> {
@@ -53,7 +53,7 @@ impl<'a> Ex<'a> {
             span_columns: Some(o.span_columns),
             rule_on: Some(o.rule.on),
             rule_weight: Some(o.rule.weight),
-            rule_tint: Some(f64::from(o.rule.tint) * 100.0),
+            rule_tint: Some(color_percent(o.rule.tint)),
             rule_left_indent: Some(o.rule.left_indent),
             rule_width: Some(o.rule.width),
             rule_offset: Some(o.rule.offset),
