@@ -243,23 +243,27 @@ impl Document {
         Ok(id)
     }
 
+    /// Remove an item (and its descendants) from its spread or group, leaving text frames in
+    /// their stories' threads. Anchoring a text frame needs its story to stay threaded to it
+    /// after the frame is no longer a spread item.
+    pub fn take_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
+        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
+        let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
+        if loc.path.len() == 1 {
+            return Ok(sp.items.remove(loc.path[0]));
+        }
+        let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
+        for &i in &loc.path[1..loc.path.len() - 1] {
+            it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
+        }
+        let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
+        Ok(it.children_mut().ok_or(DocError::NoItem(id))?.remove(last))
+    }
+
     /// Remove an item (and its descendants) from the document. Text frames leave their threads;
     /// stories that lose their last frame are deleted.
     pub fn remove_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
-        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
-        let removed = {
-            let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
-            if loc.path.len() == 1 {
-                sp.items.remove(loc.path[0])
-            } else {
-                let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
-                for &i in &loc.path[1..loc.path.len() - 1] {
-                    it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
-                }
-                let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
-                it.children_mut().ok_or(DocError::NoItem(id))?.remove(last)
-            }
-        };
+        let removed = self.take_item(id)?;
         let mut frames = Vec::new();
         removed.walk(&mut |i| {
             if let Some(t) = i.text_frame() {
