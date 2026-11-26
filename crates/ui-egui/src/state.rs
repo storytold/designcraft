@@ -241,6 +241,8 @@ pub struct UiState {
     /// Width of the Story Editor's style name column, in screen points (set by dragging its bar or by
     /// `view.storyEditorStyleColumn` `width`).
     pub story_editor_style_width: f32,
+    /// View › Story Editor › Show/Hide Paragraph Break Marks.
+    pub story_editor_paragraph_marks: bool,
     /// The Color Picker's component (its radio button, as `PickComp::key`: `h`, `s`, `b`, `l`,
     /// `la`, `lb`, `r`, `g`, `bl`), kept between openings and sessions, as Photoshop's picker is.
     pub color_picker_component: String,
@@ -421,6 +423,7 @@ impl Default for UiState {
             story_editor_depth_ruler: true,
             story_editor_style_column: true,
             story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_paragraph_marks: false,
             color_picker_component: "r".into(),
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
@@ -576,6 +579,8 @@ impl CanvasCache {
             patches: 0,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
+            pixels: None,
+            pixels_generation: 0,
         }
     }
 }
@@ -612,6 +617,10 @@ pub struct CanvasCache {
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
     /// it (ms): finished background decodes are taken up in batches, one render for many.
     pub images: (u64, f64),
+    /// The pixels the canvas texture shows (full resolution, as uploaded), and a counter that
+    /// changes with them: a text highlight inverts what it covers from these, without rendering.
+    pub pixels: Option<std::sync::Arc<designcraft_render::Rendered>>,
+    pub pixels_generation: u64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
