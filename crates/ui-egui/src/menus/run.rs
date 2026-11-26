@@ -19,8 +19,6 @@ pub(crate) fn with_save_extension(path: &str, ext: &str) -> String {
     if typed { path.to_string() } else { format!("{path}.{ext}") }
 }
 
-/// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
-
 /// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it. It is a floating window of
 /// the docking layout that never docks.
 fn toggle_tabs_panel(app: &mut DesignApp) {
