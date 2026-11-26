@@ -4805,10 +4805,16 @@ fn line_metrics(
         // A list's bullet or number doesn't raise the Ascent offset: only the line's own text does.
         if !g.list_label {
             own_text = true;
-            tops.typo_ascent = tops.typo_ascent.max(g.typo_ascent + up);
+            // The first baseline offsets do not rise with a raised run, nor with the lift of
+            // superscript (measured in InDesign, with fixed and auto leading); the CJK alignment
+            // shift counts as before.
+            let first_up = align.max(0.0);
+            tops.typo_ascent = tops.typo_ascent.max(g.typo_ascent + first_up);
             // The em box sits at the unshifted baseline: a baseline shift moves only the drawn glyphs.
             tops.em = tops.em.max(em_box_top(&g.face, g.size) + align.max(0.0));
         }
+        // The Cap Height and x Height offsets still rise with a raised run (only the Ascent offset
+        // was measured).
         tops.cap = tops.cap.max(g.cap + up);
         tops.xh = tops.xh.max(g.xh + up);
         desc = desc.max(g.descent - shift.min(0.0));

@@ -10489,3 +10489,62 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// InDesign sets the first baseline of a frame (Ascent offset) from the font's ascender at the
+/// paragraph's size: a raised or lowered run does not move it, and neither does the lift of
+/// superscript or subscript, nor the smaller size of a whole subscript line (measured with 10 pt Arial
+/// in 12 pt leading and in auto leading, a word or the whole line raised 10 pt, lowered 5 pt,
+/// superscript and subscript).
+#[test]
+fn a_raised_or_lowered_run_does_not_move_the_first_baseline() {
+    let first_baseline = |auto: bool, tweak: &dyn Fn(&mut designcraft_doc::Story)| {
+        let (mut d, sid, _) = doc_with("Ca Cb Cc\nMARK", Rect::new(0.0, 0.0, 300.0, 200.0), ParaAttrs::default());
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..13, |f| {
+            f.over.size = Some(10.0);
+            f.over.leading = Some(if auto { designcraft_doc::Leading::Auto } else { designcraft_doc::Leading::Points(12.0) });
+        });
+        tweak(st);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines;
+        (l[0].baseline, l[1].baseline)
+    };
+    for auto in [false, true] {
+        let plain = first_baseline(auto, &|_| {});
+        let cases: [(&str, Box<dyn Fn(&mut designcraft_doc::Story)>); 6] = [
+            ("a raised word", Box::new(|st| st.format_chars(6..8, |f| f.over.baseline_shift = Some(10.0)))),
+            ("a raised line", Box::new(|st| st.format_chars(0..8, |f| f.over.baseline_shift = Some(10.0)))),
+            ("a lowered word", Box::new(|st| st.format_chars(0..2, |f| f.over.baseline_shift = Some(-5.0)))),
+            ("a superscript word", Box::new(|st| st.format_chars(3..5, |f| f.over.position = Some(designcraft_doc::Position::Superscript)))),
+            ("a subscript word", Box::new(|st| st.format_chars(3..5, |f| f.over.position = Some(designcraft_doc::Position::Subscript)))),
+            ("a subscript line", Box::new(|st| st.format_chars(0..8, |f| f.over.position = Some(designcraft_doc::Position::Subscript)))),
+        ];
+        for (name, tweak) in &cases {
+            let got = first_baseline(auto, tweak.as_ref());
+            assert!((got.0 - plain.0).abs() < 1e-6 && (got.1 - plain.1).abs() < 1e-6, "auto={auto}, {name}: {got:?} vs {plain:?}");
+        }
+    }
+}
+
+/// So a table row does not grow with a raised run either: the row is the same height as without it.
+#[test]
+fn a_raised_run_does_not_grow_a_table_row() {
+    let heights = |raise: Option<f64>| {
+        let mut t = filled(2, 1, 0, 100.0);
+        t.options.border.weight = 0.0;
+        let c = t.cell_mut(0, 0).unwrap();
+        c.insets = [0.0; 4];
+        if let Some(r) = raise {
+            c.text.format_chars(0..2, |f| f.over.baseline_shift = Some(r));
+        }
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let tf = &cs.frames[0].tables[0];
+        (tf.cell(0, 0).unwrap().rect.height(), tf.rect.height())
+    };
+    let plain = heights(None);
+    for r in [10.0, 25.0] {
+        let got = heights(Some(r));
+        assert!((got.0 - plain.0).abs() < 1e-6 && (got.1 - plain.1).abs() < 1e-6, "{r}: {got:?} vs {plain:?}");
+    }
+}
