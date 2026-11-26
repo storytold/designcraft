@@ -298,6 +298,10 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::align_panel(app, ui);
 }
 
+/// The width of the shadow's Distance and Size fields: room for a measurement with its unit (`35.278 mm`), as the
+/// Effects dialog has.
+const SHADOW_FIELD_W: f32 = 66.0;
+
 pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::effects_panel(app, ui);
 }
@@ -829,7 +833,7 @@ mod framework {
             text(ui, Some(cell(0.0, 0.0, 52.0)), &tr("Distance"));
             let id = cid(ui, "shadow-distance");
             if let Some(Some(v)) =
-                number_field(ui, Some(cell(56.0, 0.0, 56.0)), id, Number::new(&tr("Distance"), Some(ds.distance), Quantity::Length(u)))
+                number_field(ui, Some(cell(56.0, 0.0, SHADOW_FIELD_W)), id, Number::new(&tr("Distance"), Some(ds.distance), Quantity::Length(u)))
             {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
@@ -858,7 +862,7 @@ mod framework {
             text(ui, Some(cell(120.0, 2.0 * row, 40.0)), &tr("Size"));
             let id = cid(ui, "shadow-size");
             if let Some(Some(v)) =
-                number_field(ui, Some(cell(164.0, 2.0 * row, 56.0)), id, Number::new(&tr("Size"), Some(ds.size), Quantity::Length(u)))
+                number_field(ui, Some(cell(164.0, 2.0 * row, SHADOW_FIELD_W)), id, Number::new(&tr("Size"), Some(ds.size), Quantity::Length(u)))
             {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
