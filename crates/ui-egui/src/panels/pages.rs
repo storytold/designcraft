@@ -692,7 +692,8 @@ enum Act {
     AlternateOptions(usize),
     ExportLayout(usize),
     DeleteAlternate(usize),
-    Section,
+    /// Numbering & Section Options… for the page named: the page the menu was opened on.
+    Section(usize),
     Shuffle {
         si: usize,
         allow: bool,
@@ -745,7 +746,16 @@ impl Act {
                     app.views.clear();
                 }
             }
-            Act::Section => {
+            Act::Section(page) => {
+                // The dialog opens on the page in view, so the clicked page is brought into view first, leaving Edit Parents
+                // as a page click does, as the section marker does.
+                if app.session.active().is_some_and(|st| st.editing_parents) {
+                    let _ = app.run("layout.parents.edit", json!({"on": false}));
+                    if let Some(v) = app.view_mut() {
+                        v.fitted = false;
+                    }
+                }
+                crate::canvas::go_to_page(app, page);
                 crate::menus::activate(app, "layout.section", &serde_json::Value::Null);
             }
             Act::Shuffle { si, allow } => {
@@ -879,7 +889,7 @@ fn page_entries(app: &DesignApp, doc: &designcraft_doc::Document, layouts: &[des
     });
     entries.push(MenuEntry::Sep);
     entries.extend(layout_entries(lang, layouts.len(), layout_index(layouts, abs)));
-    entries.push(MenuEntry::item(tr("Numbering & Section Options…"), Act::Section));
+    entries.push(MenuEntry::item(tr("Numbering & Section Options…"), Act::Section(abs)));
     entries.push(MenuEntry::Sep);
     let shuffle = doc.spreads.get(si).is_none_or(|sp| sp.allow_shuffle);
     entries.push(MenuEntry::Item {
