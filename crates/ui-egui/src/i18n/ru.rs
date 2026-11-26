@@ -1,4 +1,3 @@
-// Russian translation © 2026 SuperSfera LLC, MIT OR Apache-2.0
 //! Russian interface translations. Publishing terms follow established Russian desktop-publishing
 //! usage (рамка, выпуск под обрез, интерлиньяж, плашечный/триадный цвет) and are reviewed in context.
 //! The translations are our own; counted nouns are genitive plurals because the caption puts the
