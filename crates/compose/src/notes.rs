@@ -257,10 +257,24 @@ impl Notes {
             let top = col.y1 - total;
             let ft = &mut out.frames[fi];
             if o.rule.on && o.rule.weight > 0.0 {
-                let x0 = col.x0 + o.rule.left_indent;
+                // The rule starts at the start side of the first footnote below it: the right of
+                // the column, indent measured from there, when that footnote is right to left
+                // (#2965).
+                let rtl = here
+                    .first()
+                    .and_then(|p| story.notes.get(p.k))
+                    .and_then(|n| n.text.paras.first())
+                    .is_some_and(|pf| doc.styles.resolve_para(pf).0.direction == designcraft_doc::TextDirection::RightToLeft);
+                let (x0, x1) = if rtl {
+                    let x1 = col.x1 - o.rule.left_indent;
+                    ((x1 - o.rule.width).max(col.x0), x1)
+                } else {
+                    let x0 = col.x0 + o.rule.left_indent;
+                    (x0, (x0 + o.rule.width).min(col.x1))
+                };
                 let y = top + o.rule.offset - o.rule.weight;
                 ft.decos.push(Deco {
-                    rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
+                    rect: Rect::new(x0, y, x1, y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
                     ..Deco::default()
