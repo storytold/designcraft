@@ -129,7 +129,6 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
                     app.status_error("Relink", e);
                 }
             }
-            }
         }
         if link_button(app, ui, (kind, aid, "go_to"), "Go To", None, true).clicked {
             let _ = app.run("links.goTo", target.clone());
@@ -171,12 +170,6 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
         let browser = app.services.open_async.is_some();
         let tip = crate::i18n::tr(&app.ui.language, "Choose the folder holding the moved graphics");
         if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked {
-            if browser {
-                app.request_files("relinkFiles");
-            } else if let Err(e) = relink_to_folder(app) {
-                app.status_error("Relink", e);
-            }
-        {
             if browser {
                 app.request_files("relinkFiles");
             } else if let Err(e) = relink_to_folder(app) {

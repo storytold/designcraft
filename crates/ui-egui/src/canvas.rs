@@ -31,10 +31,11 @@ mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
 #[cfg(test)]
-use frames::{LinkBadge, frame_x, item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
-use frames::{draw_frames, draw_link_badge, draw_selection, link_badges, link_statuses};
-#[cfg(test)]
 pub(crate) use frames::item_canvas_xf;
+#[cfg(test)]
+#[cfg(test)]
+use frames::{LinkBadge, frame_x, overset_frames, overset_marks, ported_frames, text_frames_in};
+use frames::{draw_frames, draw_link_badge, draw_selection, link_badges, link_statuses};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};
 #[cfg(test)]
 use guides::{guide_at, guide_drag_delta, guide_measure};
@@ -259,6 +260,7 @@ pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
         return;
     }
     ctx.memory_mut(|memory| memory.request_focus(canvas));
+}
 
 /// View ▸ Show Link Badges: each placed graphic's link status in its corner.
 fn draw_link_badges(app: &mut DesignApp, ctx: &egui::Context, painter: &egui::Painter, doc: &Document, layout: &CanvasLayout, xf: &Xf) {
