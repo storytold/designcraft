@@ -791,6 +791,7 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(json!({"on": app.ui.story_editor_style_column, "width": app.ui.story_editor_style_width}))
         }
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
+        "view.storyEditorParagraphMarks" => flag(&mut app.ui.story_editor_paragraph_marks),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
