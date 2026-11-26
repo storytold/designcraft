@@ -475,8 +475,7 @@ fn click_in_dialog(h: &mut egui_kittest::Harness<'_, DesignApp>, title: &str, la
         own.last().copied().unwrap_or_else(|| {
             h.query_all_by_role_and_label(Role::Button, label)
                 .map(|node| node.rect())
-                .filter(|rect| bounds.contains_rect(*rect))
-                .next_back()
+                .rfind(|rect| bounds.contains_rect(*rect))
                 .unwrap_or_else(|| panic!("no button {label:?} in the dialog {title:?}"))
                 .center()
         })

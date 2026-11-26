@@ -372,6 +372,7 @@ mod tests {
 
     use craft_ui_widgets::runtime::inspect::{Recorded, record};
     use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
     use egui::{Event, Key, Modifiers, PointerButton, vec2};
     use egui_kittest::Harness;
     use std::sync::Arc;
@@ -832,7 +833,7 @@ mod tests {
         }
         assert!(h.state().0.ui.dialog.is_none(), "page Escape cancels the dialog with its draft");
         assert_quiet(h, &quiet);
-        open(h.state_mut().0);
+        open(&mut h.state_mut().0);
         let d = h.state().0.ui.dialog.as_ref().unwrap();
         assert!(d.b("automatic"), "reopened, the page mode is the one from before Update");
         assert_eq!(d.s("startNumber"), page_draft);
@@ -860,7 +861,7 @@ mod tests {
         assert_eq!(app.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "canceled drafts never edit the document");
         assert_eq!(app.session.active().unwrap().history.undo.len(), history, "no undo step before dialog confirmation");
         assert_quiet(h, quiet);
-        open(h.state_mut().0);
+        open(&mut h.state_mut().0);
         let d = h.state().0.ui.dialog.as_ref().unwrap();
         assert_eq!(d.fields["chapterSource"], json!(source), "reopened, the source is automatic or SameAsPrevious, not UserDefined");
         assert_eq!(d.s("chapterStart"), opening.s("chapterStart"));
@@ -868,7 +869,7 @@ mod tests {
         step(h);
         // The independent existing controller receives the PRE-INPUT opening DTO.
         // The shared guard must make accepting these unchanged settings a true model no-op.
-        let native = expected_confirm(&h.state().0, &opening);
+        let native = expected_confirm(&h.state().0, opening);
         assert_quiet(h, quiet);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_none(), "the real Accept closes the successfully confirmed dialog");
@@ -909,7 +910,6 @@ mod tests {
     /// The style list opens and Escape closes it with the modal still up; the two drafts typed after it change only the
     /// draft. The invalid page draft both fields then describe.
     fn popup_recovery_and_drafts(h: &mut Harness<'_, Window>, prior: &Effects, atomic_opening: &Dialog) -> Dialog {
-        use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
         click_control(h, egui::accesskit::Role::ComboBox, "Page Numbering");
         assert!(style_popup(h), "the actual accessible SDK style listbox opened inside the modal");
         let style_before = h.state().0.ui.dialog.as_ref().unwrap().fields["style"].clone();
@@ -933,7 +933,7 @@ mod tests {
             step(h);
         }
         assert!(!style_popup(h));
-        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, atomic_opening.fields);
         assert_quiet(h, prior);
         type_draft(h, "Start Page Numbering at:", "0");
@@ -960,14 +960,13 @@ mod tests {
         invalid_page: &Dialog,
         history: usize,
     ) -> Dialog {
-        use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
         let mut refused_native = native_from_same_state(&h.state().0, invalid_page);
         let page_error = crate::dialogs::confirm(&mut refused_native).unwrap_err();
         assert_app_quiet(&refused_native, prior);
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some(), "the real SDK Accept must retain the modal after validation refusal");
-        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
         assert_quiet(h, prior);
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().s("startNumber"), "0", "a refused draft remains editable");
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
@@ -995,7 +994,7 @@ mod tests {
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some());
-        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         assert_eq!(h.state().0.ui.status, chapter_error);
         assert_quiet(h, prior);
@@ -1085,7 +1084,7 @@ mod tests {
         let restored = assert_native_outcome(h, native, redone);
         assert_eq!(restored.document.as_ref(), prior.document.as_ref());
         assert_eq!((restored.undo, restored.redo), (history, 1));
-        open(h.state_mut().0);
+        open(&mut h.state_mut().0);
         step(h);
         let canceled = effects(h);
         let cancel_opening = h.state().0.ui.dialog.as_ref().unwrap().clone();
@@ -1104,7 +1103,7 @@ mod tests {
             step(h);
         }
         assert_quiet(h, &canceled);
-        open(h.state_mut().0);
+        open(&mut h.state_mut().0);
         step(h);
         assert_eq!(
             h.state().0.ui.dialog.as_ref().unwrap().fields,
@@ -1123,7 +1122,7 @@ mod tests {
             event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
         assert!(h.state().0.ui.dialog.is_none(), "one Escape cancels the draft and the actual SDK dialog host");
-        assert!(!any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), before.as_ref(), "Cancel never edits either numbering part");
         assert_eq!(
             h.state().0.session.active().unwrap().doc.as_ref(),

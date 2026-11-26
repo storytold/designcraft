@@ -1,4 +1,4 @@
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::kittest::Queryable;
 
 use super::object::{preview_row, transform_anchors};
 use super::*;
@@ -149,22 +149,6 @@ fn a_live_preview_held_over_many_frames_is_one_undo_step_once_let_go() {
     assert_eq!(undo_steps(&app), steps + 2);
 }
 
-fn panel(app: DesignApp) -> Harness<'static, DesignApp> {
-    let mut h = crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
-        |ui, app: &mut DesignApp| {
-            let id = egui::Id::unique("test_fonts");
-            if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
-                crate::theme::install_fonts(ui.ctx(), "");
-                ui.data_mut(|d| d.insert_temp(id, true));
-                return;
-            }
-            show(app, ui);
-        },
-        app,
-    );
-    h.run_steps(3);
-    h
-}
 
 /// A row is as wide as its translated name needs: a long one isn't cut at a fixed width.
 #[test]
