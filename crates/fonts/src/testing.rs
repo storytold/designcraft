@@ -256,6 +256,41 @@ pub fn with_base(font: &[u8], baselines: &[([u8; 4], i16)]) -> Option<Vec<u8>> {
     with_tables(font, vec![(*b"BASE", base)])
 }
 
+/// `font` (one of [`font_mapping`]'s, which keep Source Sans 3's glyphs) with a `GSUB` table
+/// whose `jalt` feature (Justification Alternates, default script) swaps each pair's first glyph
+/// for its second, both named by the Source Sans 3 character drawn with them: `('n', 'm')` gives
+/// the glyph `n` the alternate `m`. Replaces the font's own `GSUB`. `None` if the bundled font
+/// can't be read or lacks a glyph asked for.
+pub fn with_jalt(font: &[u8], pairs: &[(char, char)]) -> Option<Vec<u8>> {
+    let base = *crate::bundled().first()?;
+    let cmap = skrifa::FontRef::new(base).ok()?.charmap();
+    let gid = |c: char| u16::try_from(cmap.map(c)?.to_u32()).ok();
+    let mut subst: Vec<(u16, u16)> = pairs.iter().map(|(a, b)| Some((gid(*a)?, gid(*b)?))).collect::<Option<_>>()?;
+    subst.sort_unstable();
+    subst.dedup_by_key(|p| p.0);
+    let n = u16::try_from(subst.len()).ok()?;
+    let u16s = |out: &mut Vec<u8>, vs: &[u16]| vs.iter().for_each(|v| out.extend_from_slice(&v.to_be_bytes()));
+    // Header (version 1.0; script list at 10, feature list at 30, lookup list at 44).
+    let mut gsub = Vec::new();
+    u16s(&mut gsub, &[1, 0, 10, 30, 44]);
+    // Script list: one `DFLT` script (at 8) whose default language system (at 4) has feature 0.
+    u16s(&mut gsub, &[1]);
+    gsub.extend_from_slice(b"DFLT");
+    u16s(&mut gsub, &[8, 4, 0, 0, 0xFFFF, 1, 0]);
+    // Feature list: `jalt` (at 8), lookup 0.
+    u16s(&mut gsub, &[1]);
+    gsub.extend_from_slice(b"jalt");
+    u16s(&mut gsub, &[8, 0, 1, 0]);
+    // Lookup list: one single-substitution lookup (at 4) with one subtable (at 8): format 2, its
+    // coverage after the substitutes.
+    u16s(&mut gsub, &[1, 4, 1, 0, 1, 8]);
+    u16s(&mut gsub, &[2, 6 + 2 * n, n]);
+    subst.iter().for_each(|p| u16s(&mut gsub, &[p.1]));
+    u16s(&mut gsub, &[1, n]);
+    subst.iter().for_each(|p| u16s(&mut gsub, &[p.0]));
+    with_tables(font, vec![(*b"GSUB", gsub)])
+}
+
 /// `font` with its OS/2 `fsType` (embedding licence bits) set to `fs_type`. `None` if the font has
 /// no OS/2 table.
 pub fn with_fs_type(mut font: Vec<u8>, fs_type: u16) -> Option<Vec<u8>> {

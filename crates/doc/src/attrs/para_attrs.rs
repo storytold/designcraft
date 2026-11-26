@@ -64,8 +64,15 @@ attr_set! {
         single_word_justify: Align = Align::FullyJustified,
         /// Insert Kashidas (World-Ready): justified Arabic lines stretch at joins before spaces.
         kashidas: bool = true,
+        /// Justification Alternates: a justified line swaps in the font's wider letter forms
+        /// (OpenType `jalt`), one word at a time from the line's end, while they fit the length
+        /// the line still needs, before kashidas and wider spaces.
+        justification_alternates: bool = false,
         /// Preserved vendor policy; non-default policies require a dedicated composer.
         arabic_justification: String = String::new(),
+        /// Kashida Width: the longest a kashida may grow at one join, counted in the font's own
+        /// tatweels (0 = no elongation, at most [`MAX_KASHIDA_WIDTH`]). Unset, a join may take up to
+        /// 1.5 em. A fraction counts as the whole number below it.
         paragraph_kashida_width: Option<f64> = None => "deserialize_explicit_value",
         /// Korean text breaks between any two syllables (character-based breaking); otherwise
         /// it breaks at spaces, word by word.
@@ -208,6 +215,9 @@ attr_set! {
         bullet_font_style: String = String::new(),
     }
 }
+
+/// The largest Kashida Width: tatweels at one join.
+pub const MAX_KASHIDA_WIDTH: f64 = 20.0;
 
 impl ParaAttrs {
     /// [`set_json`](Self::set_json), except that a `ruleAbove` / `ruleBelow` object names only the

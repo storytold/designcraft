@@ -6236,6 +6236,9 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
     assert!(with.iter().any(|g| g.len == 0 && g.gid == g.face.glyph_for('\u{0640}')));
     d.story_mut(sid).unwrap().paras[0].para.kashidas = Some(false);
     let without = compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].glyphs.clone();
+    // The kashidas' tatweels sit inside the words; the other glyphs are as without them.
+    let with: Vec<_> = with.iter().filter(|g| !(g.len == 0 && g.gid == g.face.glyph_for('\u{0640}'))).cloned().collect();
+    assert_eq!(with.len(), without.len());
     for (a, b) in with.iter().zip(&without) {
         assert_eq!((a.gid, a.byte), (b.gid, b.byte));
         let first_a = with.iter().find(|g| g.byte == a.byte).unwrap();
@@ -10487,5 +10490,300 @@ fn cross_reference_text_breaks_at_its_spaces() {
         for w in l.split(' ').filter(|w| !w.is_empty()) {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
+    }
+}
+
+/// Kashida Width caps how many tatweels a kashida takes at one join (#3096): 0 none, and a larger
+/// width lets the same justified line take longer kashidas, the spaces taking what is left.
+#[test]
+fn kashida_width_caps_the_tatweels_at_each_join() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Width", &glyphs).unwrap());
+    let text = "بسم بسم بسم";
+    // The longest run of tatweels at one join, and the line's right edge.
+    let longest = |width: Option<f64>| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 400.0, 100.0),
+            ParaAttrs {
+                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                align: Some(Align::FullyJustified),
+                paragraph_kashida_width: width.map(Some),
+                ..Default::default()
+            },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Kashida Width".into());
+            f.over.size = Some(24.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let line = &cs.frame(fid).unwrap().lines[0];
+        let tatweel = line.glyphs.iter().find(|g| g.len > 0).unwrap().face.glyph_for('\u{0640}');
+        let mut runs: HashMap<usize, usize> = HashMap::new();
+        for g in line.glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel) {
+            *runs.entry(g.byte).or_default() += 1;
+        }
+        let right = line.glyphs.iter().map(|g| g.x + g.adv).fold(f64::MIN, f64::max);
+        (runs.values().copied().max().unwrap_or(0), right)
+    };
+    let (none, none_right) = longest(Some(0.0));
+    let (one, _) = longest(Some(1.0));
+    let (four, four_right) = longest(Some(4.0));
+    assert_eq!(none, 0, "width 0 inserts no kashida");
+    assert_eq!(one, 1, "width 1 takes one tatweel at a join");
+    assert!(four > one && four <= 4, "width 4 takes longer kashidas, at most four tatweels: {four}");
+    // Either way the line is justified to the same edge: the spaces take what the kashidas don't.
+    assert!((none_right - four_right).abs() < 0.5, "{none_right} and {four_right}");
+}
+
+/// A kashida is drawn with the font's tatweels at their natural size, as many as the gap takes, so
+/// their shaped ends and the font's own kashida forms stay as designed. One tatweel was stretched
+/// over the gap, and its shaped ends stretched with it: a bend at each join in Lotus Linotype and
+/// long pointed ends in Amiri.
+#[test]
+fn a_kashida_is_drawn_with_unstretched_tatweels_that_fill_its_gap() {
+    use designcraft_fonts::testing::font_mapping;
+    // Arabic letters drawn with Latin glyphs, and the tatweel as `_`.
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    // A private database: in the global one, these Arabic letters would become other tests'
+    // fallback.
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Tatweel Run", &glyphs).unwrap());
+    let text = "بسم بسم";
+    // Tracking opens every join; the kashida still starts where the letter after the join ends.
+    for tracking in [0.0, 200.0] {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 300.0, 100.0),
+            ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Tatweel Run".into());
+            f.over.size = Some(24.0);
+            f.over.tracking = Some(tracking);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let glyphs = &cs.frame(fid).unwrap().lines[0].glyphs;
+        let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
+        let tatweel = letter.face.glyph_for('\u{0640}');
+        let tatweels: Vec<_> = glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel).collect();
+        assert!(tatweels.len() > 2, "a long kashida takes several tatweels: {}", tatweels.len());
+        let width = letter.face.advance(tatweel) * letter.sx;
+        for t in &tatweels {
+            assert!((t.sx - letter.sx).abs() < 1e-9, "drawn at its natural size, not stretched: {} for {}", t.sx, letter.sx);
+        }
+        // In runs side by side, each run starting where the letter on its left ends and, without
+        // tracking, ending where the letter on its right starts.
+        let letters: Vec<_> = glyphs.iter().filter(|g| g.len > 0 && g.adv > 0.0).collect();
+        let starts: Vec<f64> = letters.iter().map(|g| g.x - g.dx).collect();
+        let ends: Vec<f64> = letters.iter().map(|g| g.x - g.dx + g.face.advance(g.gid) * g.sx).collect();
+        for t in &tatweels {
+            let end = t.x + width;
+            let left = tatweels.iter().any(|o| (o.x + width - t.x).abs() < 1e-6) || ends.iter().any(|&x| (x - t.x).abs() < 1e-6);
+            assert!(left, "tracking {tracking}: the tatweel at {} starts at no tatweel or letter", t.x);
+            if tracking == 0.0 {
+                let right = tatweels.iter().any(|o| (o.x - end).abs() < 1e-6) || starts.iter().any(|&x| (x - end).abs() < 1e-6);
+                assert!(right, "the tatweel at {} ends at {end}, at no tatweel or letter", t.x);
+            }
+        }
+    }
+}
+
+/// Justification Alternates (#3097): a justified line swaps in the font's `jalt` forms only as far
+/// as its shortfall takes them, one letter per word (the word's last), before kashidas; off, or
+/// on a line with too little room, the default forms stay. Turning `jalt` on for the whole run
+/// would swap every letter that has an alternate.
+#[test]
+fn justification_alternates_fill_only_the_room_a_line_has() {
+    use designcraft_fonts::testing::{font_mapping, with_jalt};
+    // ن is drawn as `n`, its justification alternate as the wider `w` (mapped to W only to look
+    // the glyph up). The Latin `o` and `n` draw as themselves, so `n` has the same alternate.
+    let glyphs = [('ب', 'o'), ('ن', 'n'), ('o', 'o'), ('n', 'n'), (' ', ' '), ('\u{0640}', '_'), ('W', 'w')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(with_jalt(&font_mapping("DC Test Justification Alternates", &glyphs).unwrap(), &[('n', 'w')]).unwrap());
+    let text = "بنن بنن بنن بنن";
+    let compose_in = |text: &str, direction: designcraft_doc::TextDirection, width: f64, align: Align, alternates: bool, kashidas: bool| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, width, 100.0),
+            ParaAttrs {
+                direction: Some(direction),
+                align: Some(align),
+                justification_alternates: Some(alternates),
+                kashidas: Some(kashidas),
+                ..Default::default()
+            },
+        );
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Justification Alternates".into());
+            f.over.size = Some(24.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let lines = &cs.frame(fid).unwrap().lines;
+        assert_eq!(lines.len(), 1, "the text fits one line");
+        lines[0].clone()
+    };
+    let compose = |width: f64, align: Align, alternates: bool, kashidas: bool| {
+        compose_in(text, designcraft_doc::TextDirection::RightToLeft, width, align, alternates, kashidas)
+    };
+    let face = compose(400.0, Align::Right, false, false).glyphs[0].face;
+    let (n, w) = (face.glyph_for('ن'), face.glyph_for('W'));
+    let all = designcraft_fonts::shape(face.get(), "نن", &[designcraft_fonts::feature("jalt").unwrap()], |c| c);
+    assert!(all.iter().all(|g| g.gid == w), "the font's jalt swaps ن: {all:?} {n} {w}");
+    let gain = (face.advance(w) - face.advance(n)) * 24.0 / face.units_per_em();
+    assert!(gain > 1.0, "the alternate is wider");
+    // The words' alternates, by the byte of their word's first letter.
+    let swapped = |line: &Line| line.glyphs.iter().filter(|g| g.gid == w).map(|g| g.byte).collect::<Vec<_>>();
+    let span = |line: &Line| {
+        line.glyphs.iter().map(|g| g.x - g.dx + g.adv).fold(f64::MIN, f64::max) - line.glyphs.iter().map(|g| g.x - g.dx).fold(f64::MAX, f64::min)
+    };
+    let natural = span(&compose(400.0, Align::Right, false, false));
+    // Room for one and a half alternates: one, in the last word, on its last letter.
+    let one = compose(natural + 1.5 * gain, Align::FullyJustified, true, false);
+    assert_eq!(swapped(&one), vec![text.len() - 'ن'.len_utf8()], "one alternate, on the line's last letter");
+    // Room for less than one: none. Off: none.
+    assert!(swapped(&compose(natural + 0.5 * gain, Align::FullyJustified, true, false)).is_empty(), "a line with too little room keeps its forms");
+    assert!(swapped(&compose(natural + 3.5 * gain, Align::FullyJustified, false, false)).is_empty(), "off, no alternate");
+    // Plenty of room: one per word, each on the word's last letter, and the line still ends at its edge.
+    let wide = compose(natural + 40.0 * gain, Align::FullyJustified, true, false);
+    let ends: Vec<usize> = text.match_indices(' ').map(|(i, _)| i - 'ن'.len_utf8()).chain([text.len() - 'ن'.len_utf8()]).collect();
+    let mut got = swapped(&wide);
+    got.sort_unstable();
+    assert_eq!(got, ends, "each word's last letter, and only that");
+    // Alternates come before kashidas: with kashidas on, the same letters swap.
+    let mut with_kashidas = swapped(&compose(natural + 40.0 * gain, Align::FullyJustified, true, true));
+    with_kashidas.sort_unstable();
+    assert_eq!(with_kashidas, ends);
+    // Left to right, a Latin line works the same way: one alternate, on the last word's last
+    // letter, and none without the room for one.
+    let latin = "onn onn onn onn";
+    let ltr = |width: f64, alternates: bool| {
+        compose_in(latin, designcraft_doc::TextDirection::LeftToRight, width, Align::FullyJustified, alternates, false)
+    };
+    let natural = span(&compose_in(latin, designcraft_doc::TextDirection::LeftToRight, 400.0, Align::Left, false, false));
+    assert_eq!(swapped(&ltr(natural + 1.5 * gain, true)), vec![latin.len() - 1], "one alternate, on the Latin line's last letter");
+    assert!(swapped(&ltr(natural + 0.5 * gain, true)).is_empty(), "a Latin line with too little room keeps its forms");
+    assert!(swapped(&ltr(natural + 3.5 * gain, false)).is_empty(), "off, no Latin alternate");
+}
+
+/// Kashidas on a line of mixed sizes: each join takes at most 1.5 em of its own size. The line's
+/// length was shared evenly across the joins, so a small word beside a large one took the large
+/// word's share and stretched far past its own limit.
+#[test]
+fn a_small_word_beside_a_large_one_keeps_its_own_kashida_limit() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Sizes", &glyphs).unwrap());
+    let text = "بسم بسم";
+    let (mut d, sid, fid) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 600.0, 200.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    let small = text.find(' ').unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Kashida Sizes".into());
+        f.over.size = Some(48.0);
+    });
+    d.story_mut(sid).unwrap().format_chars(0..small, |f| f.over.size = Some(12.0));
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let line = &cs.frame(fid).unwrap().lines[0];
+    let tatweel = line.glyphs.iter().find(|g| g.len > 0).unwrap().face.glyph_for('\u{0640}');
+    let added = |words: std::ops::Range<usize>| {
+        line.glyphs.iter().filter(|g| g.len == 0 && g.gid == tatweel && words.contains(&g.byte)).map(|g| g.adv).sum::<f64>()
+    };
+    let (small_added, large_added) = (added(0..small), added(small..text.len()));
+    assert!(small_added > 0.0 && large_added > 0.0, "both words take a kashida: {small_added}, {large_added}");
+    assert!(small_added <= 12.0 * 1.5 + 1e-6, "the 12 pt word's kashida is {small_added} pt, past its 18 pt limit");
+}
+
+/// A word shaped again for a kashida keeps the offset its marks were given by hand (Diacritic
+/// Position): only the shaper's own offset is replaced.
+#[test]
+fn a_kashida_keeps_a_marks_hand_set_offset() {
+    use designcraft_fonts::testing::font_mapping;
+    // The damma is drawn with Source Sans 3's combining acute, a mark in its GDEF.
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), ('\u{064F}', '\u{0301}'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Kashida Marks", &glyphs).unwrap());
+    let text = "بُسم بسم";
+    // The mark's position from its letter, and whether the word took a kashida.
+    let compose = |kashidas: bool| {
+        let (mut d, sid, fid) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, 400.0, 100.0),
+            ParaAttrs {
+                direction: Some(designcraft_doc::TextDirection::RightToLeft),
+                align: Some(Align::FullyJustified),
+                kashidas: Some(kashidas),
+                ..Default::default()
+            },
+        );
+        // Diacritic Position set on the whole text, as for a paragraph: it moves only the marks.
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("DC Test Kashida Marks".into());
+            f.over.size = Some(24.0);
+            f.over.diacritic_x_offset = Some(300.0);
+            f.over.diacritic_y_offset = Some(200.0);
+        });
+        let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+        let line = &cs.frame(fid).unwrap().lines[0];
+        let face = line.glyphs[0].face;
+        let m = line.glyphs.iter().find(|g| g.gid == face.glyph_for('\u{064F}')).unwrap();
+        assert!(m.face.glyph_is_mark(m.gid), "the damma is a mark");
+        let base = line.glyphs.iter().find(|g| g.byte == 0 && g.gid == face.glyph_for('ب')).unwrap();
+        let tatweel = m.face.glyph_for('\u{0640}');
+        let stretched = line.glyphs.iter().any(|g| g.len == 0 && g.gid == tatweel && g.byte < text.find(' ').unwrap());
+        ((m.x - base.x, m.y - base.y), stretched)
+    };
+    let (plain, _) = compose(false);
+    let (justified, stretched) = compose(true);
+    assert!(stretched, "the word with the mark takes a kashida");
+    assert!((plain.0 - justified.0).abs() < 1e-6 && (plain.1 - justified.1).abs() < 1e-6, "the mark moved from {plain:?} to {justified:?}");
+}
+
+/// Single Word Justification spreads a one-word line's length over its letter gaps. Those gaps
+/// went between a kashida's tatweels too, and broke its stroke into dashes.
+#[test]
+fn single_word_justification_keeps_a_kashida_in_one_piece() {
+    use designcraft_fonts::testing::font_mapping;
+    let glyphs = [('ب', 'o'), ('س', 'n'), ('م', 'm'), (' ', ' '), ('\u{0640}', '_')];
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    db.add_font(font_mapping("DC Test Single Word Kashida", &glyphs).unwrap());
+    let text = "بسم بسم";
+    // Too narrow for both words: the first line holds one word and is justified.
+    let (mut d, sid, fid) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 95.0, 200.0),
+        ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), align: Some(Align::FullyJustified), ..Default::default() },
+    );
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| {
+        f.over.font_family = Some("DC Test Single Word Kashida".into());
+        f.over.size = Some(24.0);
+    });
+    let cs = compose_with_db(&d, d.story(sid).unwrap(), &frame_specs(&d, sid), &ComposeOptions::default(), &db);
+    let lines = &cs.frame(fid).unwrap().lines;
+    assert_eq!(lines.len(), 2, "one word per line");
+    let glyphs = &lines[0].glyphs;
+    let letter = glyphs.iter().find(|g| g.len > 0 && g.adv > 0.0).unwrap();
+    let tatweel = letter.face.glyph_for('\u{0640}');
+    // Each glyph's ink box, left to right.
+    let mut boxes: Vec<(f64, f64, bool)> =
+        glyphs.iter().map(|g| (g.x - g.dx, g.x - g.dx + g.face.advance(g.gid) * g.sx, g.len == 0 && g.gid == tatweel)).collect();
+    boxes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert!(boxes.iter().filter(|b| b.2).count() > 1, "the word takes a kashida of several tatweels");
+    // The line is still justified: its letters spread to the frame's edges.
+    assert!(boxes.windows(2).any(|p| p[1].0 - p[0].1 > 1.0), "the word's other letters open gaps");
+    for p in boxes.windows(2).filter(|p| p[0].2 || p[1].2) {
+        assert!((p[1].0 - p[0].1).abs() < 1e-6, "a gap of {} beside a tatweel", p[1].0 - p[0].1);
     }
 }
