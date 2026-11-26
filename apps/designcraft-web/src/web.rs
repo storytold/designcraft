@@ -1,6 +1,7 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use super::browser_policy::{has_query_flag, mime_for};
+use super::prefs_store::{self, PrefsSync};
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
@@ -75,10 +76,16 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    // The preferences saved by an earlier visit (as the desktop app reads prefs.json).
+                    let stored = local_storage().and_then(|s| s.get_item(prefs_store::KEY).ok().flatten());
+                    if let Some(prefs) = prefs_store::decode(stored.as_deref()) {
+                        app.session.prefs = prefs;
+                    }
+                    let prefs_sync = PrefsSync::new(stored);
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics, prefs_sync }))
                 }),
             )
             .await;
@@ -337,6 +344,11 @@ fn add_document_recovery_controls(snapshots: Vec<RecoveryDocument>) -> Result<bo
     Ok(true)
 }
 
+/// The page's local storage; `None` where the browser refuses it (some private modes).
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
@@ -349,6 +361,8 @@ struct WebShell {
     /// Why a dropped file couldn't be read, for the status bar (the read finishes outside a frame).
     read_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     graphics: GraphicsState,
+    /// Writes the preferences to local storage when they change.
+    prefs_sync: PrefsSync,
 }
 
 impl eframe::App for WebShell {
@@ -359,6 +373,34 @@ impl eframe::App for WebShell {
             self.app.status(error);
         }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        // Changed preferences go to local storage, so they survive a reload.
+        let now = ctx.input(|i| i.time);
+        if let Some(wait) = self.prefs_sync.wait(now) {
+            // Not due yet: a frame then checks, even if nothing else happens until then.
+            if let Ok(d) = std::time::Duration::try_from_secs_f64(wait) {
+                ctx.request_repaint_after(d);
+            }
+        } else if self.prefs_sync.due(now)
+            && let Some(json) = self.prefs_sync.changed(&self.app.session.prefs)
+        {
+            // Counted as stored only once written; otherwise it's tried again at the next check.
+            let written = match local_storage() {
+                Some(storage) => match storage.set_item(prefs_store::KEY, &json) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("couldn't keep the preferences in local storage: {e:?}");
+                        false
+                    }
+                },
+                None => false,
+            };
+            if written {
+                self.prefs_sync.stored(json);
+            } else if let Some(d) = self.prefs_sync.wait(now).and_then(|w| std::time::Duration::try_from_secs_f64(w).ok()) {
+                // Still pending: a frame at the next check retries, even if the app is idle.
+                ctx.request_repaint_after(d);
+            }
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
