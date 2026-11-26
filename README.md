@@ -230,8 +230,8 @@ and `apps/designcraft/src/gpu/backend.rs` (the backend).
 ### Web
 
 ```sh
-cd apps/designcraft-web && trunk build --release          # → dist/web (serve it with any static server)
-cd apps/designcraft-web && trunk serve --release          # http://127.0.0.1:8767
+(cd apps/designcraft-web && trunk build --release)        # → dist/web (serve it with any static server)
+(cd apps/designcraft-web && trunk serve --release)        # http://127.0.0.1:8767
 ```
 
 You need [trunk](https://trunkrs.dev) and the `wasm32-unknown-unknown` target. The same app runs
