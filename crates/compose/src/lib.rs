@@ -2901,15 +2901,15 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     let mut label_aligned = 0usize;
     let mut label_tab = false;
     if let Some(label) = &list_label {
-        let mut chars = label_chars(doc, pp, base_chars);
-        // The number is drawn in the Digits of the paragraph's first run, so Persian text
-        // gets Persian numbers whether Digits is set on the paragraph style or on the text
-        // (unless the number's character style sets its own).
-        if chars.digits == base_chars.digits
-            && let Some((_, fmt)) = story.runs().find(|(rr, _)| rr.end > prange.start && rr.start < prange.end)
-        {
-            chars.digits = doc.styles.resolve_char(base_chars, fmt).digits;
-        }
+        // The label is set like the paragraph's first character, local formatting included (a
+        // 20 pt first letter gives a 20 pt bullet, whatever the rest of the paragraph is), under
+        // the bullet's or number's own character style. This is also why Persian text gets Persian
+        // numbers whether Digits is set on the paragraph style or on the text.
+        let first_chars = story
+            .runs()
+            .find(|(rr, _)| rr.end > prange.start && rr.start < prange.end)
+            .map_or_else(|| base_chars.clone(), |(_, fmt)| doc.styles.resolve_char(base_chars, fmt));
+        let chars = label_chars(doc, pp, &first_chars);
         let n = prepend_label(db, &mut sp.glyphs, label, prange.start, &chars, label_env, &mut table);
         for g in sp.glyphs.iter_mut().take(n) {
             g.list_label = true;

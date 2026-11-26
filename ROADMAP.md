@@ -405,6 +405,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-24** · A bullet or number is set like the paragraph's first character, local formatting included (#3220), as in InDesign: a 20 pt first letter gives a 20 pt bullet, a big word later in the paragraph does not, and a local font and size on the whole paragraph are followed (the label only took the paragraph style's formatting before, so a list set with local formatting got a label in the default font, which also made the lines taller). The label's own character style still goes on top. Measured with six bulleted and numbered paragraphs and a 44-line list of bullets, numbers, letters and Roman numerals: every text word and label matches. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
