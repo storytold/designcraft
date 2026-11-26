@@ -512,7 +512,9 @@ fn the_type_control_panel_has_character_and_paragraph_modes() {
         h.run_steps(3);
     };
     let has = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| h.query_all_by_label(label).any(|n| in_bar(n.rect()));
-    assert!(has(&h, "Small Caps") && has(&h, "Vertical Scale") && !has(&h, "Drop Cap Number of Lines"));
+    // A wide window also shows paragraph controls after the character ones (see
+    // `a_wide_type_control_panel_also_shows_paragraph_controls`).
+    assert!(has(&h, "Small Caps") && has(&h, "Vertical Scale"));
     click(&mut h, "Small Caps");
     click(&mut h, "Paragraph Formatting Controls");
     assert!(has(&h, "Drop Cap Number of Lines") && has(&h, "Space Before") && !has(&h, "Small Caps"));
@@ -524,6 +526,45 @@ fn the_type_control_panel_has_character_and_paragraph_modes() {
     assert_eq!(a["para"]["align"], "center");
     click(&mut h, "Character Formatting Controls");
     assert!(has(&h, "Small Caps"));
+}
+
+/// In A mode, the paragraph controls follow the character controls as far as the window's width
+/// leaves room, as whole groups and inside the bar, and act as they do in ¶ mode; a narrow
+/// window shows the character controls only.
+#[test]
+fn a_wide_type_control_panel_also_shows_paragraph_controls() {
+    let open = |width: f32| {
+        let mut app = app();
+        app.run("file.new", serde_json::json!({})).unwrap();
+        let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Bulbs"})).unwrap();
+        app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        app.session.set_tool("type");
+        test_window::open(app, vec2(width, 700.0))
+    };
+    let in_bar = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+        let bar = test_window::panel_rect(h, "control_bar");
+        h.query_all_by_label(label).map(|n| n.rect()).find(|r| bar.y_range().contains(r.center().y))
+    };
+    let narrow = open(1100.0);
+    assert!(in_bar(&narrow, "Small Caps").is_some());
+    assert!(in_bar(&narrow, "Align center").is_none(), "no room after the character controls");
+    let mut wide = open(1920.0);
+    let bar = test_window::panel_rect(&wide, "control_bar");
+    assert!(in_bar(&wide, "Small Caps").is_some(), "still the character controls");
+    let center = in_bar(&wide, "Align center").expect("the alignment after the character controls");
+    // A group shows whole or not at all, and never past the bar's right edge.
+    for label in ["Align center", "Align away from spine", "Space Before", "Space After", "Drop Cap Number of Lines"] {
+        if let Some(r) = in_bar(&wide, label) {
+            assert!(r.right() <= bar.right(), "{label} {r:?} lies inside the bar {bar:?}");
+        }
+    }
+    assert_eq!(in_bar(&wide, "Space Before").is_some(), in_bar(&wide, "Space After").is_some());
+    assert!(in_bar(&wide, "Skew (False Italic)").unwrap().right() < center.left(), "after the character controls");
+    wide.hover_at(center.center());
+    wide.drag_at(center.center());
+    wide.drop_at(center.center());
+    wide.run_steps(3);
+    assert_eq!(crate::panels::text_attrs(&mut wide.state_mut().app).unwrap()["para"]["align"], "center");
 }
 
 /// The course's chapter 21: the ¶ Control panel has InDesign's Bulleted and Numbered List
