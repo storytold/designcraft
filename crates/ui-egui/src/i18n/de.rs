@@ -297,6 +297,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Flattener preset", "Voreinstellung für Transparenzreduzierung"),
     ("Font Family:", "Schriftfamilie:"),
     ("Font Size:", "Schriftgrad:"),
+    ("Font Style", "Schriftschnitt"),
     ("Font Style:", "Schriftschnitt:"),
     ("Footer Rows", "Tabellenfußzeilen"),
     ("Footnote Options", "Fußnotenoptionen"),

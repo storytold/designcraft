@@ -357,14 +357,6 @@ impl DesignApp {
         self.open_dropped_at(path, None)
     }
 
-    /// Open or place each file dropped on a floating panel's own window. `pointer` is in the main
-    /// window's coordinates.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn open_dropped_files(&mut self, files: &[egui::DroppedFileHandle], pointer: Option<egui::Pos2>) {
-        let drops = files.iter().map(|f| f.path().to_string_lossy().to_string()).filter(|p| !p.is_empty()).map(|p| (p, pointer)).collect();
-        self.open_dropped_batch(drops);
-    }
-
     /// Files dropped on the window together, each with the pointer it was dropped at, handled in
     /// the order they came. Each that isn't an image opens or is placed as
     /// [`Self::open_dropped_at`] does at its own pointer. One image is dropped as that does too

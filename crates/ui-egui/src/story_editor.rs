@@ -1,8 +1,11 @@
 //! Story Editor (Edit → Edit in Story Editor, ⌘Y): the story as plain text with each paragraph's
 //! style in the left column, the depth ruler beside it and the overset point marked. Edits are
 //! applied as minimal range replacements, so formatting around them is kept.
+//!
+//! The editor is a float-only panel of the dock (`dock::FLOATING_PANELS`): a floating window that takes no other
+//! panel.
 
-use egui::{pos2, vec2};
+use egui::pos2;
 use serde_json::json;
 
 use designcraft_compose::ComposedStory;
@@ -11,6 +14,8 @@ use designcraft_doc::StoryId;
 use crate::DesignApp;
 use crate::theme::Tokens;
 
+/// The editor's panel id in the dock.
+pub const PANEL: &str = "storyEditor";
 /// Width of the style name column before its bar is dragged, in screen points.
 pub const STYLE_COLUMN_WIDTH: f32 = 130.0;
 /// Narrowest and widest the style name column can be dragged, in screen points.
@@ -23,9 +28,17 @@ const RULER_WIDTH: f32 = 34.0;
 const RULER_LABEL_GAP: f32 = 10.0;
 /// Color of the overset line and label.
 const OVERSET_RED: egui::Color32 = egui::Color32::from_rgb(230, 40, 40);
-/// The mark after each paragraph that a paragraph break ends while View › Story Editor › Show Paragraph
-/// Break Marks is on, as Type › Show Hidden Characters marks paragraph ends on the canvas.
+/// Size of a style name in the column, and its row's height, in screen points.
+const LABEL_SIZE: f32 = 11.0;
+const LABEL_HEIGHT: f32 = 14.0;
+/// Size of the depth ruler's labels, in screen points.
+const RULER_LABEL_SIZE: f32 = 9.0;
+/// The mark after each paragraph that a paragraph break ends, while View › Story Editor › Show Paragraph Break Marks
+/// is on, as Type › Show Hidden Characters marks paragraph ends on the canvas.
 const PARAGRAPH_MARK: &str = "¶";
+
+/// Rows the text shows at least.
+const TEXT_ROWS: usize = 20;
 
 /// The story open in the Story Editor. Story ids are counted per document, so the editor is bound
 /// to the document the story belongs to.
@@ -41,171 +54,214 @@ pub fn visible(app: &DesignApp) -> bool {
     app.story_editor.is_some_and(|t| app.session.active().is_some_and(|st| st.uid == t.doc))
 }
 
-/// Draws the editor while its document is active; it hides while another document is active and
-/// closes with its document.
-pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
-    let Some(target) = app.story_editor else { return };
-    if !app.session.documents().iter().any(|d| d.uid == target.doc) {
-        app.story_editor = None;
-        return;
-    }
-    let Some(st) = app.session.active().filter(|st| st.uid == target.doc) else { return };
-    let sid = target.story;
-    let Some(story) = st.doc.story(sid).cloned() else {
-        app.story_editor = None;
-        return;
-    };
-    let t = Tokens::get(ctx);
-    let cs = app.session.cache.get(&st.doc, sid, None);
-    let overset = cs.overset_at;
-    let depths = app.ui.story_editor_depth_ruler.then(|| line_depths(&cs));
-    let unit = st.doc.settings.vertical_units;
-    let style_width = app.ui.story_editor_style_column.then(|| style_column_width(app.ui.story_editor_style_width));
-    let mut open = true;
-    let mut edit: Option<(usize, usize, String)> = None;
-    let mut dragged_width: Option<f32> = None;
+/// The editor's title while it shows a story: its name and the story's word count.
+pub fn title(app: &DesignApp) -> Option<String> {
+    let target = app.story_editor?;
+    let story = app.session.active().filter(|st| st.uid == target.doc)?.doc.story(target.story)?;
     let words = story.text.split_whitespace().count().to_string();
-    egui::Window::new(crate::i18n::tr(&app.ui.language, "Story Editor — {count} words").replace("{count}", &words))
-        .id(egui::Id::unique("story_editor"))
-        .open(&mut open)
-        .default_size(vec2(560.0, 520.0))
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    // Style column: the labels are painted after the text, at the rows the text really wraps to,
-                    // and so is the bar that resizes it.
-                    let column = style_width.map(|w| {
-                        let column = ui.allocate_exact_size(vec2(w, 0.0), egui::Sense::hover()).0;
-                        let bar = ui.allocate_exact_size(vec2(STYLE_BAR_WIDTH, 0.0), egui::Sense::hover()).0;
-                        (column, bar)
-                    });
-                    // Depth ruler: painted after the text too, beside the rows the lines start on.
-                    let ruler = depths.as_ref().map(|_| ui.allocate_exact_size(vec2(RULER_WIDTH, 0.0), egui::Sense::hover()).0);
-                    let mut text = story.text.clone();
-                    let font = egui::FontId::proportional(app.ui.story_editor_size.clamp(8.0, 36.0));
-                    // With paragraph break marks shown, the text wraps one text size short of the right edge and
-                    // starts one text size in from the left, so a mark after a full row, left-to-right or
-                    // right-to-left, stays within the width the text has without marks.
-                    let marks = app.ui.story_editor_paragraph_marks;
-                    let width = if marks { (ui.available_width() - font.size).max(font.size) } else { f32::INFINITY };
-                    let left = if marks { font.size.round().clamp(0.0, f32::from(i8::MAX)) as i8 } else { 0 };
-                    // The text field has a fixed id, so it keeps its focus and caret when the columns before it
-                    // are shown or hidden.
-                    let out = egui::TextEdit::multiline(&mut text)
-                        .id(egui::Id::unique("story_editor_text"))
-                        .font(font.clone())
-                        .desired_width(width)
-                        .desired_rows(20)
-                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left, ..egui::Margin::ZERO }))
-                        .show(ui);
-                    let r = out.response;
-                    let changed = r.changed();
-                    if let Some((column, bar)) = column {
-                        let starts = paragraph_start_offsets(out.galley.rows.iter().map(|row| (row.pos.y, row.ends_with_newline)));
-                        for (i, y) in starts.into_iter().enumerate() {
-                            let Some(para) = story.paras.get(i) else { break };
-                            let rect = egui::Rect::from_min_size(egui::pos2(column.min.x, out.galley_pos.y + y), vec2(column.width(), 14.0));
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                                let name = crate::i18n::style_name(&app.ui.language, &para.style);
-                                crate::rtl::label(ui, egui::RichText::new(name).size(11.0).color(t.text_dim));
-                            });
-                        }
-                        // The bar between the column and the text: drag it to make the column wider or narrower.
-                        let bar = egui::Rect::from_x_y_ranges(bar.x_range(), r.rect.y_range());
-                        let drag = ui.interact(bar, egui::Id::unique("story_editor_style_bar"), egui::Sense::drag());
-                        let line = egui::Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
-                        ui.painter().rect_filled(line, 0.0, if drag.hovered() || drag.dragged() { t.text_dim } else { t.section_divider });
-                        let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                        // The width follows the pointer from where the drag started, so the bar comes back
-                        // with the pointer after the drag passes the narrowest or widest width.
-                        if drag.drag_started() {
-                            let origin = ui.input(|i| i.pointer.press_origin()).or(drag.interact_pointer_pos());
-                            if let Some(origin) = origin {
-                                ui.data_mut(|d| d.insert_temp(drag.id, (column.width(), origin.x)));
-                            }
-                        }
-                        if drag.dragged() {
-                            let start = ui.data(|d| d.get_temp::<(f32, f32)>(drag.id));
-                            let width = match (start, drag.interact_pointer_pos()) {
-                                (Some((width, origin)), Some(pos)) => width + pos.x - origin,
-                                _ => column.width() + drag.drag_delta().x,
-                            };
-                            dragged_width = Some(style_column_width(width));
-                        }
-                        drag.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Style name column divider"));
-                    }
-                    if app.ui.story_editor_paragraph_marks {
-                        for (spot, corner) in paragraph_mark_spots(&out.galley) {
-                            ui.painter().text(out.galley_pos + spot.to_vec2(), corner, PARAGRAPH_MARK, font.clone(), t.text_dim);
-                        }
-                    }
-                    let overset_y = overset.filter(|_| !changed).map(|o| {
-                        let ci = char_offsets(&story.text, std::iter::once(o));
-                        out.galley_pos.y + start_rows(&out.galley, &ci).first().map_or(0.0, |row| row.0)
-                    });
-                    if let (Some(ruler), Some(depths)) = (ruler, depths.as_ref().filter(|_| !changed)) {
-                        let bottom = overset_y.unwrap_or(out.galley_pos.y + out.galley.size().y);
-                        let bar = egui::Rect::from_min_max(pos2(ruler.min.x, out.galley_pos.y), pos2(ruler.min.x + RULER_WIDTH, bottom));
-                        ui.painter().rect_filled(bar, 0.0, t.ruler);
-                        let ticks = depth_ticks(depths, unit.ruler_ticks(1.0).0);
-                        let rows = start_rows(&out.galley, &char_offsets(&story.text, ticks.iter().map(|tick| tick.0)));
-                        let marks = ticks.iter().zip(rows).map(|(&(_, depth), row)| (out.galley_pos.y + row.1, depth));
-                        for (y, depth) in spaced_marks(marks, RULER_LABEL_GAP) {
-                            ui.painter().line_segment([pos2(bar.max.x - 8.0, y), pos2(bar.max.x, y)], egui::Stroke::new(1.0, t.ruler_tick));
-                            ui.painter().text(
-                                pos2(bar.min.x + 2.0, y - 1.0),
-                                egui::Align2::LEFT_BOTTOM,
-                                crate::canvas::fmt_tick(unit.from_pt(depth)),
-                                egui::FontId::proportional(9.0),
-                                t.ruler_text,
-                            );
-                        }
-                    }
-                    // The overset line: across the text, and the ruler when it shows, above the first character that doesn't fit.
-                    if let Some(y) = overset_y {
-                        let x0 = ruler.map_or(r.rect.min.x, |rr| rr.min.x);
-                        ui.painter().line_segment([pos2(x0, y), pos2(r.rect.max.x, y)], egui::Stroke::new(1.5, OVERSET_RED));
-                    }
-                    if changed {
-                        // Minimal diff: common prefix and suffix.
-                        let old = &story.text;
-                        let pre = old.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
-                        let pre = (0..=pre).rev().find(|&i| old.is_char_boundary(i) && text.is_char_boundary(i)).unwrap_or(0);
-                        let max_suf = old.len().min(text.len()) - pre;
-                        let suf = old.bytes().rev().zip(text.bytes().rev()).take(max_suf).take_while(|(a, b)| a == b).count();
-                        let suf =
-                            (0..=suf).rev().find(|&k| old.is_char_boundary(old.len() - k) && text.is_char_boundary(text.len() - k)).unwrap_or(0);
-                        edit = Some((pre, old.len() - suf, text[pre..text.len() - suf].to_string()));
-                    }
-                });
-                if let Some(o) = overset {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label(crate::rtl::widget(
-                            ui,
-                            egui::RichText::new(crate::i18n::tr(&app.ui.language, "OVERSET")).color(OVERSET_RED).strong(),
-                        ));
-                        crate::rtl::label(
-                            ui,
-                            egui::RichText::new(
-                                crate::i18n::tr(&app.ui.language, "{count} characters don't fit")
-                                    .replace("{count}", &story.text[o.min(story.text.len())..].chars().count().to_string()),
-                            )
-                            .color(t.text_dim),
-                        );
-                    });
-                }
-            });
-        });
-    if let Some(w) = dragged_width {
+    Some(crate::i18n::tr(&app.ui.language, "Story Editor — {count} words").replace("{count}", &words))
+}
+
+/// What the editor shows of its story this frame.
+struct Snapshot {
+    sid: StoryId,
+    text: String,
+    /// Each paragraph's style name, in the interface language.
+    styles: Vec<String>,
+    /// The first byte that does not fit the story's frames.
+    overset: Option<usize>,
+    /// The depth ruler's values, while it shows.
+    depths: Option<Vec<(usize, f64)>>,
+    unit: designcraft_geom::Unit,
+    /// The style name column's width, while it shows.
+    style_width: Option<f32>,
+    /// The text size, in points.
+    size: f32,
+    /// View › Story Editor › Show Paragraph Break Marks: a ¶ after each paragraph's last row, as Type › Show Hidden
+    /// Characters marks paragraph ends on the canvas.
+    marks: bool,
+}
+
+impl Snapshot {
+    /// The story the editor is open on, while its document is the active one.
+    fn of(app: &DesignApp) -> Option<Snapshot> {
+        let target = app.story_editor?;
+        let st = app.session.active().filter(|st| st.uid == target.doc)?;
+        let sid = target.story;
+        let story = st.doc.story(sid)?;
+        let cs = app.session.cache.get(&st.doc, sid, None);
+        let lang = app.ui.language.as_str();
+        Some(Snapshot {
+            sid,
+            text: story.text.clone(),
+            styles: story.paras.iter().map(|para| crate::i18n::style_name(lang, &para.style).to_owned()).collect(),
+            overset: cs.overset_at,
+            depths: app.ui.story_editor_depth_ruler.then(|| line_depths(&cs)),
+            unit: st.doc.settings.vertical_units,
+            style_width: app.ui.story_editor_style_column.then(|| style_column_width(app.ui.story_editor_style_width)),
+            size: app.ui.story_editor_size.clamp(8.0, 36.0),
+            marks: app.ui.story_editor_paragraph_marks,
+        })
+    }
+
+    /// The characters of the text after the overset point.
+    fn overset_chars(&self, overset: usize) -> usize {
+        self.text[overset.min(self.text.len())..].chars().count()
+    }
+}
+
+/// What the person did in the editor this frame.
+#[derive(Default)]
+struct Changes {
+    /// The text edit as a range replacement: start and end bytes of the story's text, and the new text.
+    edit: Option<(usize, usize, String)>,
+    /// The style name column's width the bar was dragged to.
+    width: Option<f32>,
+}
+
+/// Applies `changes` to the story `sid`: the column width, then the text edit.
+fn apply(app: &mut DesignApp, sid: StoryId, changes: Changes) {
+    if let Some(w) = changes.width {
         let _ = app.run("view.storyEditorStyleColumn", json!({"width": w}));
     }
-    if let Some((a, b, text)) = edit {
+    if let Some((a, b, text)) = changes.edit {
         let _ = app.run("story.replaceRange", json!({"story": sid.0, "start": a, "end": b, "text": text}));
     }
-    if !open {
-        app.story_editor = None;
+}
+
+/// Floats the editor's panel while it has a story, and closes it while it has none: `app.storyEditor` calls it after
+/// it picked the story.
+pub fn follow_target(app: &mut DesignApp) {
+    let open = crate::panel_docking::floating_panels(app).iter().any(|p| p == PANEL);
+    if app.story_editor.is_some() {
+        if open {
+            let _ = crate::panel_docking::command(app, "window.panel", &json!({"panel": PANEL}));
+        } else {
+            let _ = crate::panel_docking::command(app, "window.panel.float", &opening_place(app));
+        }
+    } else if open {
+        let _ = crate::panel_docking::command(app, "window.panel.dock", &json!({"panel": PANEL}));
+    }
+}
+
+/// Where the editor's window opens: at the lower left of the canvas, clear of the frame the story is in, and inside the
+/// canvas where its size lets it.
+fn opening_place(app: &DesignApp) -> serde_json::Value {
+    const SIZE: (f32, f32) = (560.0, 520.0);
+    const MARGIN: f32 = 16.0;
+    match app.canvas_rect {
+        Some(canvas) => {
+            let x = canvas.min.x + MARGIN;
+            let y = (canvas.max.y - SIZE.1 - MARGIN).max(canvas.min.y + MARGIN);
+            json!({"panel": PANEL, "x": x, "y": y})
+        }
+        None => json!({"panel": PANEL}),
+    }
+}
+
+/// Where the editor's window was when its document stopped being the active one, kept to open it there again.
+#[derive(Clone, Copy)]
+struct Parked {
+    target: Target,
+    at: Option<egui::Pos2>,
+}
+
+fn parked_id() -> egui::Id {
+    egui::Id::unique("story_editor_parked")
+}
+
+/// Keeps the editor with its story: it closes with its document or story, and hides while another document is active.
+/// The dock draws its panel.
+pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
+    if let Some(target) = app.story_editor {
+        let doc = app.session.documents().iter().find(|d| d.uid == target.doc);
+        let active = app.session.active().is_some_and(|st| st.uid == target.doc);
+        if doc.is_none() || (active && doc.is_some_and(|d| d.doc.story(target.story).is_none())) {
+            app.story_editor = None;
+        }
+    }
+    sync_panel(app, ctx);
+}
+
+/// The editor's panel follows its story: it closes while another document is active and opens again where it was
+/// when that document is back; a panel the person closed closes the editor.
+fn sync_panel(app: &mut DesignApp, ctx: &egui::Context) {
+    let open = crate::panel_docking::floating_panels(app).iter().any(|p| p == PANEL);
+    let parked = ctx.data(|d| d.get_temp::<Parked>(parked_id()));
+    let target = app.story_editor;
+    match target {
+        None => {
+            ctx.data_mut(|d| d.remove::<Parked>(parked_id()));
+            if open {
+                let _ = crate::panel_docking::command(app, "window.panel.dock", &json!({"panel": PANEL}));
+            }
+        }
+        Some(target) if visible(app) => {
+            if open {
+                return;
+            }
+            match parked.filter(|p| p.target == target) {
+                Some(p) => {
+                    ctx.data_mut(|d| d.remove::<Parked>(parked_id()));
+                    let params = match p.at {
+                        Some(at) => json!({"panel": PANEL, "x": at.x, "y": at.y}),
+                        None => json!({"panel": PANEL}),
+                    };
+                    let _ = crate::panel_docking::command(app, "window.panel.float", &params);
+                }
+                // The person closed the window.
+                None => app.story_editor = None,
+            }
+        }
+        Some(target) => {
+            if open {
+                let at = crate::panel_docking::floating_rect(app, PANEL).map(|r| r.min);
+                ctx.data_mut(|d| d.insert_temp(parked_id(), Parked { target, at }));
+                let _ = crate::panel_docking::command(app, "window.panel.dock", &json!({"panel": PANEL}));
+            }
+        }
+    }
+}
+
+/// The editor's contents in its panel.
+pub fn body(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let Some(s) = Snapshot::of(app) else { return };
+    let changes = framework::body(app, ui, &s);
+    apply(app, s.sid, changes);
+}
+
+/// The edit that turns `old` into `new` as one range replacement: the bytes of `old` between their common prefix and
+/// suffix, and what replaces them. `None` when they are equal.
+fn minimal_edit(old: &str, new: &str) -> Option<(usize, usize, String)> {
+    if old == new {
+        return None;
+    }
+    let pre = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    let pre = (0..=pre).rev().find(|&i| old.is_char_boundary(i) && new.is_char_boundary(i)).unwrap_or(0);
+    let max_suf = old.len().min(new.len()) - pre;
+    let suf = old.bytes().rev().zip(new.bytes().rev()).take(max_suf).take_while(|(a, b)| a == b).count();
+    let suf = (0..=suf).rev().find(|&k| old.is_char_boundary(old.len() - k) && new.is_char_boundary(new.len() - k)).unwrap_or(0);
+    Some((pre, old.len() - suf, new[pre..new.len() - suf].to_string()))
+}
+
+/// The depth ruler of `s` in `bar`, beside its text laid out as `galley` from screen y `top`: its strip, and a tick and
+/// a label at the row each mark's line starts on.
+fn paint_ruler(painter: &egui::Painter, s: &Snapshot, depths: &[(usize, f64)], bar: egui::Rect, galley: &egui::Galley, top: f32) {
+    let t = Tokens::get(painter.ctx());
+    let unit = s.unit;
+    painter.rect_filled(bar, 0.0, t.ruler);
+    let ticks = depth_ticks(depths, unit.ruler_ticks(1.0).0);
+    let rows = start_rows(galley, &char_offsets(&s.text, ticks.iter().map(|tick| tick.0)));
+    let marks = ticks.iter().zip(rows).map(|(&(_, depth), row)| (top + row.1, depth));
+    for (y, depth) in spaced_marks(marks, RULER_LABEL_GAP) {
+        painter.line_segment([pos2(bar.max.x - 8.0, y), pos2(bar.max.x, y)], egui::Stroke::new(1.0, t.ruler_tick));
+        painter.text(
+            pos2(bar.min.x + 2.0, y - 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            crate::canvas::fmt_tick(unit.from_pt(depth)),
+            egui::FontId::proportional(RULER_LABEL_SIZE),
+            t.ruler_text,
+        );
     }
 }
 
@@ -232,21 +288,6 @@ fn paragraph_mark_spots(galley: &egui::Galley) -> Vec<(egui::Pos2, egui::Align2)
             }
         })
         .collect()
-}
-
-/// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)`
-/// in layout order. A paragraph that wraps spans several rows, so counting characters per line
-/// drifts from what the editor draws; the rows themselves are the truth.
-fn paragraph_start_offsets(rows: impl Iterator<Item = (f32, bool)>) -> Vec<f32> {
-    let mut starts = Vec::new();
-    let mut at_start = true;
-    for (y, ends_with_newline) in rows {
-        if at_start {
-            starts.push(y);
-        }
-        at_start = ends_with_newline;
-    }
-    starts
 }
 
 /// The depth ruler's values: for each composed line that fits, its first byte and how deep the
@@ -369,6 +410,308 @@ fn char_offsets(text: &str, bytes: impl Iterator<Item = usize>) -> Vec<usize> {
         out.push(count);
     }
     out
+}
+
+/// The editor's body on the craft UI framework, while it is installed: one app-defined component holds the story's
+/// text part and paints the style name column, its bar, the depth ruler and the overset line beside the rows the text
+/// part laid out; the OVERSET line under it is framework text.
+/// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)` in layout
+/// order. A paragraph that wraps spans several rows, so counting characters per line drifts from what the editor
+/// draws; the rows themselves are the truth.
+fn paragraph_start_offsets(rows: impl Iterator<Item = (f32, bool)>) -> Vec<f32> {
+    let mut starts = Vec::new();
+    let mut at_start = true;
+    for (y, ends_with_newline) in rows {
+        if at_start {
+            starts.push(y);
+        }
+        at_start = ends_with_newline;
+    }
+    starts
+}
+
+mod framework {
+    use super::{
+        Changes, LABEL_HEIGHT, LABEL_SIZE, OVERSET_RED, RULER_WIDTH, STYLE_BAR_WIDTH, Snapshot, TEXT_ROWS, char_offsets, minimal_edit, paint_ruler,
+        paragraph_start_offsets, start_rows, style_column_width,
+    };
+    use crate::DesignApp;
+    use crate::theme::Tokens;
+    use craft_behavior::{CursorIcon, Metrics, PartKey, PlainText, PressPhase, Proposal, Sense};
+    use craft_theme::variant::Tone;
+    use craft_ui_widgets::contract::{
+        Access, Bind, BindMut, Common, Component, Cx, Edit as _, EditResponse, Input, MeasureCx, Name, Outcome, PaintUi, PartsCx, Pointer as _,
+        Props as _, Remember as _, Role, Show as _, ShowContainer as _, Sizing,
+    };
+    use craft_ui_widgets::display::{Shade, Text};
+    use craft_ui_widgets::layout_components::{Row, Stack};
+    use craft_ui_widgets::primitives::{TextKey, TextLayout, TextOptions};
+    use craft_ui_widgets::style::{ComponentStyle, StyleCx, TypeRole};
+    use egui::{Pos2, Rect, Response, Stroke, Vec2, pos2, vec2};
+
+    const TEXT: PartKey = PartKey::new("text");
+    const BAR: PartKey = PartKey::new("bar");
+    const STYLE: PartKey = PartKey::new("style");
+    /// The least room the text takes beside the columns, in screen points.
+    const LEAST_TEXT: Vec2 = Vec2::new(120.0, 60.0);
+
+    fn text_key() -> TextKey<String> {
+        TextKey::new(TEXT)
+    }
+
+    /// The look of the editor's body: no surface of its own; the text part and the columns are the body.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct StoryTextStyle;
+
+    impl ComponentStyle for StoryTextStyle {
+        fn metrics(&self) -> Metrics {
+            Metrics::new()
+        }
+    }
+
+    /// A drag of the bar: the column's width and the pointer's x where it started.
+    #[derive(Clone, Default)]
+    struct Held {
+        drag: Option<(f32, f32)>,
+    }
+
+    /// What the body reports: the text's edit and the column width the bar was dragged to in this pass.
+    #[derive(Debug)]
+    pub(super) struct StoryTextOutput {
+        pub(super) edit: EditResponse<String>,
+        pub(super) width: Option<f32>,
+    }
+
+    impl Outcome for StoryTextOutput {
+        type Value = String;
+
+        fn response(&self) -> &Response {
+            &self.edit.response
+        }
+    }
+
+    /// Where the body's columns are: the style names and their bar while the column shows, the depth ruler while it
+    /// shows, and the text in the rest, left to right.
+    struct Geometry {
+        column: Option<Rect>,
+        bar: Option<Rect>,
+        ruler: Option<Rect>,
+        text: Rect,
+    }
+
+    fn geometry(s: &Snapshot, rect: Rect) -> Geometry {
+        let mut x = rect.min.x;
+        let mut take = |width: Option<f32>| {
+            width.map(|width| {
+                let taken = Rect::from_x_y_ranges(x..=(x + width).min(rect.max.x), rect.y_range());
+                x = taken.max.x;
+                taken
+            })
+        };
+        let column = take(s.style_width);
+        let bar = take(s.style_width.map(|_| STYLE_BAR_WIDTH));
+        let ruler = take(s.depths.as_ref().map(|_| RULER_WIDTH));
+        let text = Rect::from_x_y_ranges(x.min(rect.max.x)..=rect.max.x, rect.y_range());
+        Geometry { column, bar, ruler, text }
+    }
+
+    /// Each paragraph's style name and the screen y of the first row it is laid out on.
+    fn labels<'s>(s: &'s Snapshot, layout: &TextLayout, origin: Pos2) -> impl Iterator<Item = (&'s String, f32)> {
+        let starts = paragraph_start_offsets(layout.galley.rows.iter().map(|row| (row.pos.y, row.ends_with_newline)));
+        s.styles.iter().zip(starts).map(move |(name, y)| (name, origin.y + y))
+    }
+
+    /// The story's text beside its paragraphs' style names and its depth ruler. The text part is the framework's
+    /// multi-line text at the editor's text size; the columns are painted at the rows it laid out this pass. The bar
+    /// between the names and the text resizes the column with the pointer; the column's width is also a View menu
+    /// command, so the bar takes no keys, as the native bar takes none.
+    #[derive(craft_ui_widgets::contract::Component, craft_ui_widgets::contract::Props)]
+    #[component(content_painter)]
+    pub(super) struct StoryText<'a> {
+        #[common]
+        common: Common,
+        value: Bind<'a, String>,
+        s: &'a Snapshot,
+        /// The bar's accessible name.
+        divider: String,
+        width: Option<f32>,
+    }
+
+    impl Component for StoryText<'_> {
+        const ROLE: Role = Role::MULTILINE_TEXT_INPUT;
+        const INPUT: Input = Input::Text;
+        const OVERLAYS: bool = false;
+        type Style = StoryTextStyle;
+        type Output = StoryTextOutput;
+
+        fn style(_: &StyleCx<'_>, _: StoryTextStyleKey) -> StoryTextStyle {
+            StoryTextStyle
+        }
+
+        fn sense(&self) -> Sense {
+            Sense::CLICK | Sense::FOCUS | Sense::TAKE_FOCUS
+        }
+
+        /// The room it is given, as a filling multi-line field takes; at least the columns and a little text.
+        fn measure(&mut self, cx: &MeasureCx<'_, Self>) -> Vec2 {
+            if let Proposal::Size(room) = cx.proposal
+                && room.x.is_finite()
+                && room.y.is_finite()
+            {
+                return room;
+            }
+            let columns = self.s.style_width.map_or(0.0, |w| w + STYLE_BAR_WIDTH) + self.s.depths.as_ref().map_or(0.0, |_| RULER_WIDTH);
+            vec2(columns + LEAST_TEXT.x, LEAST_TEXT.y)
+        }
+
+        fn parts(&mut self, _: Rect, cx: &mut PartsCx<'_, Self>) {
+            let g = geometry(self.s, cx.content_rect);
+            if let Some(bar) = g.bar {
+                let _ = cx.part(BAR, bar).sense(Sense::DRAG).cursor(CursorIcon::ResizeHorizontal).drag_cursor(CursorIcon::ResizeHorizontal);
+            }
+            let mut options = TextOptions::new();
+            options.lines = Some(TEXT_ROWS);
+            options.size = Some(self.s.size);
+            // A paragraph that just fills the editor wraps while its mark shows, so the mark is drawn inside the field's
+            // width rather than in its margin or cut off.
+
+            // The text starts at the top of the editor, beside the style names and the ruler that follow its rows.
+            options.top = true;
+            // The editor has no edit menu of its own, as the native editor has none.
+            options.own_menu = true;
+            if let Some(value) = cx.value() {
+                // A paragraph that just fills the editor wraps while its mark shows, so the mark is drawn inside the
+                // field's width rather than in its margin or cut off.
+                let mut text_rect = g.text;
+                if self.s.marks {
+                    text_rect.max.x = (text_rect.max.x - self.s.size.round()).max(text_rect.min.x);
+                }
+                cx.text(text_key(), text_rect, &PlainText, value, &options);
+            }
+        }
+
+        fn bind(&mut self) -> Option<BindMut<'_, String>> {
+            Some(self.value.reborrow())
+        }
+
+        /// A drag of the bar sets the column's width: the width it had when the drag started plus how far the pointer
+        /// has moved since, so the bar comes back with the pointer after the drag passes the narrowest or widest width.
+        fn update(&mut self, cx: &mut Cx<'_, Self>) {
+            let Some(width) = self.s.style_width else { return };
+            let mut held = cx.memory::<Held>().clone();
+            let to = |held: &Held, x: f32| held.drag.map(|(width, origin)| style_column_width(width + x - origin));
+            match cx.part(BAR).press.phase {
+                PressPhase::DragStart { start, pos, .. } => {
+                    held.drag = Some((width, start.origin.x));
+                    self.width = to(&held, pos.x);
+                }
+                PressPhase::Drag { pos, .. } => self.width = to(&held, pos.x),
+                PressPhase::Release { .. } => held.drag = None,
+                _ => {}
+            }
+            *cx.memory::<Held>() = held;
+        }
+
+        fn paint(&mut self, ui: &mut PaintUi<'_>, cx: &Cx<'_, Self>) {
+            let content = ui.content_painter(cx);
+            let painter = &content.painter;
+            let t = Tokens::get(painter.ctx());
+            let g = geometry(self.s, cx.content_rect);
+            if let Some(bar) = g.bar {
+                let part = cx.part(BAR);
+                let lit = part.hovered || part.press.phase.is_drag();
+                let line = Rect::from_center_size(bar.center(), vec2(1.0, bar.height()));
+                painter.rect_filled(line, 0.0, if lit { t.text_dim } else { t.section_divider });
+            }
+            let Some(outcome) = cx.text(&text_key()) else { return };
+            let Some(layout) = outcome.layout.as_ref() else { return };
+            let origin = outcome.origin;
+            if let Some(column) = g.column {
+                for (name, y) in labels(self.s, layout, origin) {
+                    let galley = crate::rtl::truncated(painter.ctx(), name, egui::FontId::proportional(LABEL_SIZE), t.text_dim, column.width());
+                    painter.galley(pos2(column.min.x, y), galley, t.text_dim);
+                }
+            }
+            // The ruler and the overset line place the composed story's offsets on the rows: not in a pass whose typing
+            // the story does not hold yet, whose rows show other text.
+            if layout.full() != self.s.text {
+                return;
+            }
+            let overset_y = self.s.overset.map(|o| {
+                let at = char_offsets(&self.s.text, std::iter::once(o));
+                origin.y + start_rows(&layout.galley, &at).first().map_or(0.0, |row| row.0)
+            });
+            if let (Some(ruler), Some(depths)) = (g.ruler, self.s.depths.as_ref()) {
+                let bottom = overset_y.unwrap_or(origin.y + layout.galley.size().y);
+                let bar = Rect::from_min_max(pos2(ruler.min.x, origin.y), pos2(ruler.max.x, bottom));
+                paint_ruler(painter, self.s, depths, bar, &layout.galley, origin.y);
+            }
+            // A ¶ past each paragraph's last row, in the faint text, while the View menu shows them.
+            if self.s.marks {
+                let font = egui::FontId::proportional(self.s.size);
+                for (at, align) in super::paragraph_mark_spots(&layout.galley) {
+                    painter.text(origin + at.to_vec2(), align, super::PARAGRAPH_MARK, font.clone(), t.text_dim);
+                }
+            }
+            // The overset line: across the text, and the ruler when it shows, above the first character that doesn't fit.
+            if let Some(y) = overset_y {
+                let x0 = g.ruler.map_or(g.text.min.x, |ruler| ruler.min.x);
+                painter.line_segment([pos2(x0, y), pos2(g.text.max.x, y)], Stroke::new(1.5, OVERSET_RED));
+            }
+        }
+
+        /// The bar, and each style name the column shows, as nodes of their own.
+        fn access(&self, access: &mut Access, cx: &Cx<'_, Self>) {
+            let g = geometry(self.s, cx.content_rect);
+            if let Some(bar) = g.bar {
+                let node = access.node(BAR, Role::SPLITTER);
+                node.name = Name::Text(self.divider.clone());
+                node.bounds(bar);
+            }
+            let (Some(column), Some(outcome)) = (g.column, cx.text(&text_key())) else { return };
+            let Some(layout) = outcome.layout.as_ref() else { return };
+            for (at, (name, y)) in labels(self.s, layout, outcome.origin).enumerate() {
+                let rect = Rect::from_min_size(pos2(column.min.x, y), vec2(column.width(), LABEL_HEIGHT));
+                if !rect.intersects(cx.rect) {
+                    continue;
+                }
+                let node = access.node(STYLE.at(at as u64), Role::LABEL);
+                node.name = Name::Text(name.clone());
+                node.bounds(rect.intersect(cx.rect));
+            }
+        }
+
+        fn finish(self, cx: Cx<'_, Self>) -> StoryTextOutput {
+            StoryTextOutput { edit: cx.edit_response(), width: self.width }
+        }
+    }
+
+    /// The editor's body: the text with its columns, filling the panel, and the OVERSET line under it while text does
+    /// not fit.
+    pub(super) fn body(app: &DesignApp, ui: &mut egui::Ui, s: &Snapshot) -> Changes {
+        let lang = app.ui.language.as_str();
+        let tr = |text: &str| crate::i18n::tr(lang, text).to_owned();
+        let mut changes = Changes::default();
+        let room = ui.available_rect_before_wrap();
+        Stack::new().id_salt("story_editor_body").fill().show_at(ui, room, |ui, _| {
+            // The text has a fixed id, so it keeps its focus and caret when the columns before it show or hide.
+            let editor =
+                StoryText { common: Common::new(), value: Bind::given(s.text.clone()), s, divider: tr("Style name column divider"), width: None }
+                    .label(tr("Story Editor"))
+                    .id_salt("story_editor_text")
+                    .sizing(Sizing::Fill)
+                    .show(ui);
+            changes.width = editor.width;
+            changes.edit = editor.edit.value().and_then(|text| minimal_edit(&s.text, text));
+            if let Some(o) = s.overset {
+                Row::new().id_salt("story_editor_overset").show(ui, |ui, _| {
+                    Text::new(tr("OVERSET")).role(TypeRole::BodyStrong).tone(Tone::Bad).show(ui);
+                    Text::new(tr("{count} characters don't fit").replace("{count}", &s.overset_chars(o).to_string())).shade(Shade::Muted).show(ui);
+                });
+            }
+        });
+        changes
+    }
 }
 
 #[cfg(test)]
@@ -539,7 +882,7 @@ mod tests {
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
         h.run_steps(2);
         let text_x = |h: &egui_kittest::Harness<'_, crate::test_window::Window>| {
-            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).rect().min.x
+            h.get_by(|n| n.role() == egui::accesskit::Role::TextRun && !n.is_hidden() && n.value().as_deref() == Some("Ruler story")).rect().min.x
         };
         let with = text_x(&h);
         h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
@@ -562,8 +905,10 @@ mod tests {
         h
     }
 
+    /// Where the story's text starts: its text run, which sits after the style column and the ruler. (The editor's own node
+    /// spans the columns and the text, so its edge does not move with them.)
     fn text_left(h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str) -> f32 {
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect().min.x
+        h.get_by(|n| n.role() == egui::accesskit::Role::TextRun && !n.is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
     }
 
     /// View › Story Editor › Show/Hide Style Name Column: hiding the column takes away the style
@@ -672,7 +1017,7 @@ mod tests {
     #[test]
     fn typing_goes_on_after_the_columns_show_or_hide() {
         let mut h = story_editor_harness("Focus story");
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Focus story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some("Focus story")).focus();
         h.run_steps(2);
         h.event(egui::Event::Text("1".into()));
         h.run_steps(2);
@@ -702,164 +1047,6 @@ mod tests {
         assert_eq!((app.ui.story_editor_style_column, app.ui.story_editor_style_width), (true, 400.0));
     }
 
-    /// Every ¶ painted in the window: its rect and the rect it is clipped to.
-    fn paragraph_marks(h: &egui_kittest::Harness<'_, crate::test_window::Window>) -> Vec<(egui::Rect, egui::Rect)> {
-        fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<(egui::Rect, egui::Rect)>) {
-            match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
-                egui::Shape::Text(t) if t.galley.text() == super::PARAGRAPH_MARK => out.push((t.visual_bounding_rect(), clip)),
-                _ => {}
-            }
-        }
-        let mut out = Vec::new();
-        for c in &h.output().shapes {
-            walk(&c.shape, c.clip_rect, &mut out);
-        }
-        out
-    }
-
-    /// View › Story Editor › Show/Hide Paragraph Break Marks: off at first; on, a ¶ follows each of the
-    /// first two paragraphs and none the last; the setting is remembered.
-    #[test]
-    fn paragraph_break_marks_show_and_hide_from_the_view_menu() {
-        let text = format!("First\n{}\nLast", "A paragraph long enough to wrap over several rows in the editor. ".repeat(12).trim_end());
-        let mut h = story_editor_harness(&text);
-        assert!(!h.state().app.ui.story_editor_paragraph_marks, "hidden by default");
-        let before = paragraph_marks(&h);
-        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
-        h.run_steps(2);
-        let field = h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text.as_str())).rect();
-        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
-        assert_eq!(marks.len(), 2, "one mark after each of the first two paragraphs: {marks:?}");
-        let (first, second) = (marks[0].0, marks[1].0);
-        assert!(first.min.x > field.min.x && first.min.x < field.center().x, "the first mark follows the short first row: {first:?} in {field:?}");
-        assert!(
-            second.min.y > first.min.y + 2.0 * first.height(),
-            "the second mark is below the first, past the wrapped paragraph's first rows: {first:?}, {second:?}"
-        );
-        let app = &h.state().app;
-        assert_eq!(crate::menus::checked(app, "view.storyEditorParagraphMarks", &json!({})), Some(true));
-        let saved = serde_json::to_vec(&app.ui).unwrap();
-        assert!(crate::UiState::from_preferences_json(&saved).unwrap().story_editor_paragraph_marks);
-        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
-        h.run_steps(2);
-        assert_eq!(paragraph_marks(&h), before, "hiding them takes the marks away");
-    }
-
-    /// A paragraph that would just fill the editor's width wraps while the marks show, so its mark is
-    /// drawn within the width the text has without marks, not in the window's margin or cut off.
-    #[test]
-    fn a_mark_after_a_full_row_stays_in_the_window() {
-        let field = |h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str| {
-            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect()
-        };
-        let h = story_editor_harness("x");
-        let full = field(&h, "x").width();
-        let size = h.state().app.ui.story_editor_size;
-        let width = |s: &str| h.ctx.fonts_mut(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(size), egui::Color32::WHITE)).size().x;
-        let mut line = String::from("i");
-        while width(&format!("{line}i")) < full - 1.0 {
-            line.push('i');
-        }
-        assert!(full - width(&line) < 4.0, "the row fills the editor: {} of {full}", width(&line));
-        drop(h);
-        let text = format!("{line}\nEnd");
-        let mut h = story_editor_harness(&text);
-        let edge = field(&h, &text).max.x;
-        let before = paragraph_marks(&h);
-        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
-        h.run_steps(2);
-        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
-        assert_eq!(marks.len(), 1, "{marks:?}");
-        let (rect, clip) = marks[0];
-        assert!(clip.contains_rect(rect), "the mark is not cut off: {rect:?} in {clip:?}");
-        assert!(rect.max.x <= edge, "the mark stays left of the text's right edge {edge}: {rect:?}");
-    }
-
-    /// A right-to-left paragraph ends on the left, so its mark goes left of its last row, within
-    /// the editor even when that row starts at the text's left edge.
-    #[test]
-    fn a_right_to_left_paragraph_has_its_mark_on_the_left() {
-        let field = |h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str| {
-            h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some(text)).rect()
-        };
-        // The right-to-left row is wider than "End", so it starts at the text's left edge.
-        let text = format!("{}\nEnd", "\u{628}".repeat(12));
-        let mut h = story_editor_harness(&text);
-        let size = h.state().app.ui.story_editor_size;
-        let before = paragraph_marks(&h);
-        h.state_mut().app.run("view.storyEditorParagraphMarks", json!({})).unwrap();
-        h.run_steps(2);
-        let field = field(&h, &text);
-        let marks: Vec<_> = paragraph_marks(&h).into_iter().filter(|m| !before.contains(m)).collect();
-        assert_eq!(marks.len(), 1, "{marks:?}");
-        let (rect, clip) = marks[0];
-        assert!(rect.max.x <= field.min.x + size, "the mark is left of the row, where the paragraph ends: {rect:?} in {field:?}");
-        assert!(rect.min.x >= field.min.x, "the mark stays within the editor: {rect:?} in {field:?}");
-        assert!(clip.contains_rect(rect), "the mark is not cut off: {rect:?} in {clip:?}");
-    }
-
-    /// A mark goes after the last row of a wrapped paragraph and after an empty paragraph, and not
-    /// after the story's last paragraph, which no paragraph break ends.
-    #[test]
-    fn paragraph_marks_go_after_each_paragraph_break() {
-        let ctx = egui::Context::default();
-        let mut galley = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            galley = Some(ui.fonts_mut(|f| f.layout("aa\nbbbb bbbb\n\ncc".into(), egui::FontId::proportional(14.0), egui::Color32::WHITE, 40.0)));
-        });
-        output.textures_delta.clear();
-        let galley = galley.expect("laid out");
-        let spots = super::paragraph_mark_spots(&galley);
-        assert!(spots.iter().all(|s| s.1 == egui::Align2::LEFT_TOP), "{spots:?}");
-        let spots: Vec<_> = spots.into_iter().map(|s| s.0).collect();
-        assert_eq!(spots.len(), 3, "{spots:?}");
-        let rows = &galley.rows;
-        assert!(rows.len() >= 5, "the second paragraph wraps: {} rows", rows.len());
-        assert_eq!(spots[0], egui::pos2(rows[0].rect().max.x + 1.0, rows[0].rect().min.y));
-        assert_eq!(spots[1].y, rows[2].rect().min.y, "after the wrapped row, not the paragraph's first");
-        assert!(spots[1].x > rows[2].rect().min.x + 1.0);
-        assert_eq!(spots[2], egui::pos2(rows[3].rect().min.x + 1.0, rows[3].rect().min.y), "the empty paragraph");
-    }
-
-    #[test]
-    fn depth_marks_wait_for_composition_after_editing() {
-        fn marks(shape: &egui::epaint::Shape, tick: egui::Color32) -> usize {
-            match shape {
-                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(|s| marks(s, tick)).sum(),
-                egui::epaint::Shape::LineSegment { points, stroke }
-                    if stroke.color == super::OVERSET_RED || (stroke.color == tick && (points[1].x - points[0].x - 8.0).abs() < 0.01) =>
-                {
-                    1
-                }
-                _ => 0,
-            }
-        }
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({})).unwrap();
-        let text = "First line\nSecond line\nThird line\n".repeat(4);
-        let r = app.run("frame.create", json!({"rect": [72, 72, 372, 172], "content": "text", "text": text, "caret": false})).unwrap();
-        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(900.0, 700.0))
-            .with_accessibility_check(false)
-            .build_ui_state(|ui, app| super::show(app, ui.ctx()), app);
-        h.run_steps(3);
-        let tick = crate::theme::Tokens::get(&h.ctx).ruler_tick;
-        let count = |h: &egui_kittest::Harness<'_, DesignApp>| h.output().shapes.iter().map(|s| marks(&s.shape, tick)).sum::<usize>();
-        assert!(count(&h) >= 2, "the fixture paints ruler ticks and an overset line");
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput).focus();
-        h.run_steps(2);
-        h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Home);
-        h.run_steps(2);
-        h.event(egui::Event::Text("Inserted line\n".into()));
-        h.step();
-        assert_eq!(story_text(h.state(), 0), format!("Inserted line\n{text}"));
-        assert_eq!(count(&h), 0, "the edit frame must not map old composition offsets to new text");
-        h.step();
-        assert!(count(&h) >= 2, "the next frame paints the updated composition");
-    }
-
     /// The Show/Hide Depth Ruler menu label is translated in every interface language.
     #[test]
     fn depth_ruler_menu_label_is_translated_in_every_language() {
@@ -885,7 +1072,7 @@ mod tests {
         let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Ruler story", "caret": false})).unwrap();
         app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Ruler story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some("Ruler story")).focus();
         h.run_steps(2);
         for (toggle, typed) in [("!", "Ruler story!"), ("?", "Ruler story!?")] {
             h.state_mut().app.run("view.storyEditorDepthRuler", json!({})).unwrap();
@@ -911,7 +1098,7 @@ mod tests {
         app.run("file.activate", json!({"index": 0})).unwrap();
         app.run("app.storyEditor", json!({"story": stories[0]})).unwrap();
         let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && n.value().as_deref() == Some("Alpha story")).focus();
+        h.get_by(|n| n.role() == egui::accesskit::Role::MultilineTextInput && !n.is_hidden() && n.value().as_deref() == Some("Alpha story")).focus();
         h.run_steps(2);
         h.event(egui::Event::Text("!".into()));
         h.run_steps(2);
@@ -930,4 +1117,204 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().app.story_editor, None);
     }
+
+    /// The editor's panel follows its document: it closes while another document is active and opens again with it;
+    /// closing the panel's window closes the editor.
+    #[test]
+    fn the_editor_panel_follows_its_document_and_its_window() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+        let mut stories = Vec::new();
+        for text in ["Alpha story", "Bravo story"] {
+            app.run("file.new", json!({})).unwrap();
+            let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": text, "caret": false})).unwrap();
+            stories.push(r["story"].as_u64().unwrap());
+        }
+        app.run("file.activate", json!({"index": 0})).unwrap();
+        app.run("app.storyEditor", json!({"story": stories[0]})).unwrap();
+        let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+        let open = |h: &egui_kittest::Harness<'_, crate::test_window::Window>| {
+            crate::panel_docking::floating_panels(&h.state().app).iter().any(|p| p == super::PANEL)
+        };
+        assert!(open(&h), "the editor opens as a floating panel");
+        h.state_mut().app.run("file.activate", json!({"index": 1})).unwrap();
+        h.run_steps(2);
+        assert!(!open(&h), "the panel closes while another document is active");
+        assert!(h.state().app.story_editor.is_some(), "the editor waits for its document");
+        h.state_mut().app.run("file.activate", json!({"index": 0})).unwrap();
+        h.run_steps(2);
+        assert!(open(&h), "the panel opens again with its document");
+        h.state_mut().app.run("window.panel.close", json!({"panel": super::PANEL})).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().app.story_editor, None, "closing the panel's window closes the editor");
+    }
 }
+
+/// The editor's body on the framework, alone on a context with the framework's runtime, driven by real pointer and
+/// key events.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod framework_tests {
+    use egui::{Event, Key, Modifiers, PointerButton, vec2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use serde_json::{Value, json};
+
+    use crate::DesignApp;
+
+    type Window = Harness<'static, DesignApp>;
+
+    /// The editor open on a story of `text` set in a frame at `frame`, its body alone in a panel of `size`.
+    fn open(text: &str, frame: [f64; 4], size: egui::Vec2) -> Window {
+        let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
+        app.ui.language = "en".to_owned();
+        app.run("file.new", json!({})).unwrap();
+        let r = app.run("frame.create", json!({"rect": frame, "content": "text", "text": text, "caret": false})).unwrap();
+        app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
+        let ctx = egui::Context::default();
+        app.install_framework(&ctx);
+        let mut ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(size).with_step_dt(0.05).build_ui_state(
+            move |ui, app: &mut DesignApp| {
+                if !ready {
+                    crate::theme::install_fonts(ui.ctx(), &app.ui.language);
+                    crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(Default::default()));
+                    ready = true;
+                    return;
+                }
+                super::body(app, ui);
+            },
+            app,
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        steps(&mut h, 4);
+        h
+    }
+
+    fn steps(h: &mut Window, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    fn event(h: &mut Window, event: Event) {
+        h.input_mut().events.push(event);
+        steps(h, 1);
+    }
+
+    fn key(h: &mut Window, key: Key) {
+        event(h, Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+        event(h, Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+    }
+
+    /// Presses at `from`, moves to `to` in steps and releases there.
+    fn drag(h: &mut Window, from: egui::Pos2, to: egui::Pos2) {
+        event(h, Event::PointerMoved(from));
+        event(h, Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        for k in 1..=6 {
+            event(h, Event::PointerMoved(from.lerp(to, k as f32 / 6.0)));
+        }
+        event(h, Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        steps(h, 3);
+    }
+
+    fn story_text(h: &Window) -> String {
+        h.state().session.active().unwrap().doc.stories.values().next().unwrap().text.clone()
+    }
+
+    /// The paragraph style name the column shows for the story's first paragraph.
+    fn style_name(h: &Window) -> String {
+        let app = h.state();
+        let style = &app.session.active().unwrap().doc.stories.values().next().unwrap().paras[0].style;
+        crate::i18n::style_name(&app.ui.language, style).to_owned()
+    }
+
+    /// The parameters of every `story.replaceRange` the session ran.
+    fn replacements(h: &Window) -> Vec<Value> {
+        h.state().session.journal.iter().filter(|(id, _)| id == "story.replaceRange").map(|(_, params)| params.clone()).collect()
+    }
+
+    /// The overset lines painted this frame.
+    fn overset_lines(h: &Window) -> usize {
+        fn count(shape: &egui::epaint::Shape) -> usize {
+            match shape {
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+                egui::epaint::Shape::LineSegment { stroke, .. } if stroke.color == super::OVERSET_RED => 1,
+                _ => 0,
+            }
+        }
+        h.output().shapes.iter().map(|clipped| count(&clipped.shape)).sum()
+    }
+
+    /// A key typed in the text reaches the story as one range replacement of what changed: an insert at the caret,
+    /// the rest of the story kept.
+    #[test]
+    fn typing_applies_one_minimal_range_replacement() {
+        let mut h = open("Typed story", [72.0, 72.0, 300.0, 200.0], vec2(560.0, 420.0));
+        // Focus goes to the text, its caret at the end.
+        key(&mut h, Key::Tab);
+        steps(&mut h, 2);
+        let before = replacements(&h);
+        event(&mut h, Event::Text("!".into()));
+        steps(&mut h, 3);
+        assert_eq!(story_text(&h), "Typed story!");
+        let after = replacements(&h);
+        assert_eq!(after.len(), before.len() + 1, "one key, one replacement: {after:?}");
+        let last = after.last().unwrap();
+        assert_eq!((&last["start"], &last["end"], &last["text"]), (&json!(11), &json!(11), &json!("!")), "only the insert: {last}");
+    }
+
+    /// Each style name sits at the row its paragraph starts on: a paragraph that wraps over several rows puts the next
+    /// paragraph's name that many rows further down, while a one-row paragraph puts it one row down.
+    #[test]
+    fn style_names_sit_at_the_rows_their_paragraphs_start_on() {
+        let long = "Words that wrap over several rows of the editor. ".repeat(8);
+        let mut h = open(&format!("First\n{long}\nThird"), [72.0, 72.0, 372.0, 672.0], vec2(560.0, 600.0));
+        steps(&mut h, 2);
+        let style = style_name(&h);
+        let mut tops: Vec<f32> = h.query_all_by_label(&style).map(|node| node.rect().min.y).collect();
+        tops.sort_by(f32::total_cmp);
+        assert_eq!(tops.len(), 3, "a name for each paragraph: {tops:?}");
+        let (one_row, wrapped) = (tops[1] - tops[0], tops[2] - tops[1]);
+        assert!(one_row > 0.0, "the second paragraph starts below the first: {tops:?}");
+        assert!(wrapped > 2.0 * one_row, "the wrapped paragraph's rows come before the third name: {tops:?}");
+    }
+
+    /// Dragging the bar between the style names and the text runs the column width command with the width the
+    /// pointer moved it to, and the names take the wider column.
+    #[test]
+    fn dragging_the_bar_resizes_the_style_column() {
+        let mut h = open("Resize story", [72.0, 72.0, 300.0, 200.0], vec2(560.0, 420.0));
+        let style = style_name(&h);
+        let name_before = h.get_by_label(&style).rect();
+        let a = h.get_by_label("Style name column divider").rect().center();
+        drag(&mut h, a, a + vec2(60.0, 0.0));
+        let width = h.state().ui.story_editor_style_width;
+        assert!((width - super::STYLE_COLUMN_WIDTH - 60.0).abs() < 1.0, "the column is 60 points wider: {width}");
+        let name_after = h.get_by_label(&style).rect();
+        assert!(name_after.width() > name_before.width() + 50.0, "the name's column widened: {name_before:?} → {name_after:?}");
+        let bar = h.get_by_label("Style name column divider").rect().center();
+        assert!((bar.x - a.x - 60.0).abs() < 1.0, "the bar moved with the pointer: {a:?} → {bar:?}");
+    }
+
+    /// Text that does not fit its frames shows the overset line and the OVERSET label; a story that fits shows
+    /// neither.
+    #[test]
+    fn overset_text_shows_the_overset_line_and_label() {
+        let mut h = open(&"First line\nSecond line\nThird line\n".repeat(4), [72.0, 72.0, 372.0, 172.0], vec2(560.0, 520.0));
+        steps(&mut h, 2);
+        assert!(h.query_by_label("OVERSET").is_some(), "the OVERSET label shows");
+        assert_eq!(overset_lines(&h), 1, "one overset line");
+        let mut fits = open("Fits", [72.0, 72.0, 372.0, 672.0], vec2(560.0, 520.0));
+        steps(&mut fits, 2);
+        assert!(fits.query_by_label("OVERSET").is_none());
+        assert_eq!(overset_lines(&fits), 0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod successor_tests;

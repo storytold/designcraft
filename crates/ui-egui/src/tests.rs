@@ -7,7 +7,7 @@ fn control_bar_shows_its_second_row() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
     app.run("file.newSample", json!({})).unwrap();
     app.ui.control_bar = true;
-    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -144,7 +144,7 @@ fn app_with_unsaved_document() -> DesignApp {
 /// gigabytes of linked files the window stopped answering for minutes after every edit.
 #[test]
 fn the_recovery_timer_writes_off_the_interface_thread() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     let dir = tempfile::tempdir().unwrap();
     app.session.recovery_dir = Some(dir.path().to_path_buf());
@@ -262,7 +262,7 @@ fn dialog_uid(app: &DesignApp) -> Option<u64> {
 /// Quitting closed the window at once, losing unsaved changes (#544).
 #[test]
 fn quitting_with_unsaved_changes_asks_and_cancel_keeps_everything() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     let cmds = quit_frame(&mut app, &ctx, true);
     assert!(cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
@@ -283,7 +283,7 @@ fn quitting_with_unsaved_changes_asks_and_cancel_keeps_everything() {
 
 #[test]
 fn quitting_asks_about_each_unsaved_document_then_closes() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [36, 36, 136, 136]})).unwrap();
@@ -307,7 +307,7 @@ fn quitting_asks_about_each_unsaved_document_then_closes() {
 /// A later Cancel must not destroy documents already approved for discard.
 #[test]
 fn quitting_later_cancel_retains_every_document_and_active_tab() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     app.run("file.new", json!({})).unwrap();
     app.run("frame.create", json!({"rect": [20, 20, 120, 120]})).unwrap();
@@ -344,7 +344,7 @@ fn discard_quit_dialog(app: &mut DesignApp) {
 
 #[test]
 fn native_quit_prompts_restore_window_visibility_without_focusing_completed_quits() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     let commands = quit_frame(&mut app, &ctx, true);
     assert!(commands.contains(&egui::ViewportCommand::CancelClose));
@@ -377,7 +377,7 @@ fn native_quit_prompts_restore_window_visibility_without_focusing_completed_quit
 /// Dock Quit may arrive again while the first request's dialogs are still open.
 #[test]
 fn repeated_native_quit_requests_preserve_partial_approvals_and_cancel() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let original_active = app.session.active().unwrap().uid;
@@ -412,7 +412,7 @@ fn repeated_native_quit_requests_preserve_partial_approvals_and_cancel() {
 
 #[test]
 fn repeated_native_quit_requests_save_and_discard_only_after_all_answers() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let uids: Vec<_> = app.session.documents().iter().map(|d| d.uid).collect();
@@ -444,7 +444,7 @@ fn repeated_native_quit_requests_save_and_discard_only_after_all_answers() {
 
 #[test]
 fn quitting_first_cancel_restores_original_clean_active_document() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     app.run("file.new", json!({})).unwrap();
     let original_active = app.session.active().unwrap().uid;
@@ -458,7 +458,7 @@ fn quitting_first_cancel_restores_original_clean_active_document() {
 
 #[test]
 fn quitting_save_as_cancel_after_discard_keeps_all_documents() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let active = app.session.active().unwrap().uid;
@@ -474,7 +474,7 @@ fn quitting_save_as_cancel_after_discard_keeps_all_documents() {
 
 #[test]
 fn quitting_save_failure_after_discard_keeps_documents_and_can_retry() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let path = std::env::temp_dir()
@@ -502,7 +502,7 @@ fn quitting_save_failure_after_discard_keeps_documents_and_can_retry() {
 /// document stays open with its changes.
 #[test]
 fn quit_save_cancelled_in_the_save_dialog_stops_quitting() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(None));
     quit_frame(&mut app, &ctx, true);
@@ -531,7 +531,7 @@ fn close_save_cancelled_in_the_save_dialog_keeps_the_document_open() {
 
 #[test]
 fn quitting_save_then_later_cancel_keeps_saved_document_open() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let first = app.session.documents()[0].uid;
@@ -554,7 +554,7 @@ fn quitting_save_then_later_cancel_keeps_saved_document_open() {
 
 #[test]
 fn quitting_rechecks_discard_approval_after_a_later_edit() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let first = app.session.documents()[0].uid;
@@ -571,7 +571,7 @@ fn quitting_rechecks_discard_approval_after_a_later_edit() {
 
 #[test]
 fn quitting_final_close_rechecks_new_unsaved_document() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     quit_frame(&mut app, &ctx, true);
     discard_quit_dialog(&mut app);
@@ -585,7 +585,7 @@ fn quitting_final_close_rechecks_new_unsaved_document() {
 
 #[test]
 fn quitting_pending_save_uses_dialog_uid_after_tab_switch() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     second_unsaved_document(&mut app);
     let first = app.session.documents()[0].uid;
@@ -606,7 +606,7 @@ fn quitting_pending_save_uses_dialog_uid_after_tab_switch() {
 
 #[test]
 fn quitting_discard_preserves_recovery_until_final_commit() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     let uid = app.session.active().unwrap().uid;
     let dir = std::env::temp_dir().join(format!("designcraft-quit-recovery-{}-{uid}", std::process::id()));
@@ -625,7 +625,7 @@ fn quitting_discard_preserves_recovery_until_final_commit() {
 
 #[test]
 fn quitting_native_exit_commits_completed_approvals_before_close_event() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     quit_frame(&mut app, &ctx, true);
     discard_quit_dialog(&mut app);
@@ -638,7 +638,7 @@ fn quitting_native_exit_commits_completed_approvals_before_close_event() {
 #[test]
 fn quitting_native_exit_retains_incomplete_stale_and_new_document_plans() {
     for case in ["incomplete", "stale", "new document"] {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut app = app_with_unsaved_document();
         if case == "incomplete" {
             second_unsaved_document(&mut app);
@@ -674,7 +674,7 @@ fn quitting_native_exit_retains_incomplete_stale_and_new_document_plans() {
 
 #[test]
 fn quitting_without_unsaved_changes_closes_at_once() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
     app.run("file.new", json!({})).unwrap();
     // Quit (⌘Q) closes the window like its close button.
@@ -687,7 +687,7 @@ fn quitting_without_unsaved_changes_closes_at_once() {
 /// Scripts must not hang on a question: the control channel's quit never asks.
 #[test]
 fn control_channel_quit_does_not_ask() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_unsaved_document();
     let (req, _rx) = control::ControlRequest::new("app.quit", json!({}));
     let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -1007,7 +1007,7 @@ fn a_file_dropped_without_pointer_events_fills_the_frame_under_the_system_pointe
         let window = egui::vec2(300.0, 200.0);
         app.services.pointer = Some(Box::new(move || Some(((inside + window).to_vec2() * zoom).to_pos2())));
         let path = dropped_png("drop-system-pointer");
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         ctx.set_zoom_factor(zoom);
         // The zoom takes effect from the next pass, as it has by the time the system drops a file.
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
@@ -1036,7 +1036,7 @@ fn a_pointerless_drop_keeps_the_system_pointer_of_its_own_input() {
     let at = std::rc::Rc::new(std::cell::Cell::new(inside));
     let reported = at.clone();
     app.services.pointer = Some(Box::new(move || Some(reported.get())));
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let path = dropped_png("drop-own-input");
     let mut raw = pointerless_drop(&path, window);
@@ -1067,7 +1067,7 @@ fn separate_drops_before_one_pass_are_not_one_batch() {
     let at = std::rc::Rc::new(std::cell::Cell::new(inside));
     let reported = at.clone();
     app.services.pointer = Some(Box::new(move || Some(reported.get())));
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
     let (first, second) = (dropped_png("separate-drop-a"), dropped_png("separate-drop-b"));
     let mut raw = pointerless_drop(&first, window);
@@ -1314,7 +1314,7 @@ fn other_command_errors_stay_in_the_status_line() {
     assert!(!app.ui.status.is_empty());
     // The control channel's app.open answers with the error; no alert waits for a click.
     let (req, _rx) = control::ControlRequest::new("app.open", json!({"path": "/nonexistent/x.designcraft"}));
-    let control::Outcome::Done(r) = control::handle(&mut app, &egui::Context::default(), &req) else { panic!("app.open answers") };
+    let control::Outcome::Done(r) = control::handle(&mut app, &crate::test_window::context(), &req) else { panic!("app.open answers") };
     assert_eq!(r["ok"], json!(false), "{r}");
     assert!(app.ui.dialog.is_none(), "a control-channel app.open doesn't raise an alert");
 }
@@ -1443,7 +1443,7 @@ fn screenshot_app() -> (DesignApp, egui::Context, std::sync::Arc<std::sync::Mute
         },
     );
     app.run("file.new", json!({"title": "shots"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     for _ in 0..4 {
         let mut output = shot_frame(&mut app, &ctx, egui::vec2(640.0, 480.0));
         output.textures_delta.clear();
@@ -1680,7 +1680,7 @@ fn control_screenshot_times_out_without_writing_a_file() {
 fn discarded_pass_runs_the_frame_stage_once_but_ticks_every_pass() {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({"title": "multipass"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
     let mut raw = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
     raw.viewports
@@ -1759,7 +1759,7 @@ fn hidden_logic_requests_exactly_one_paint_per_tick_until_a_settled_ui_pass() {
 fn font_gated_first_pass_requeues_injected_input_instead_of_acknowledging_it() {
     let mut app = DesignApp::new(Session::new(), Services::default());
     app.run("file.new", json!({"title": "fonts"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.control_synthetic.push(egui::Event::Text("x".into()));
     let mut raw = hidden_raw();
     app.raw_input_hook(&ctx, &mut raw);
@@ -2521,7 +2521,7 @@ fn the_eyedropper_samples_an_image_still_decoding() {
     };
     // Nothing decoded: the canvas would draw the grey placeholder here.
     designcraft_render::images::clear();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     assert_eq!(canvas::color_at(&mut app, &ctx, at), Some([255, 0, 0]));
 }
 
@@ -2550,7 +2550,7 @@ fn a_save_waits_for_the_checks_of_linked_files() {
     assert_eq!(app.run("app.save", json!({})).unwrap()["waiting"], true);
     assert_eq!(std::fs::read(&doc).unwrap(), before, "nothing is written while the check runs");
     assert!(app.ui.status.contains("Checking 1 linked image"), "{}", app.ui.status);
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     for _ in 0..1000 {
         if app.waiting_save.is_none() {
             break;

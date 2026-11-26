@@ -304,7 +304,7 @@ impl Session {
         st.selection = it.selection.clone();
         // Not through `execute`: a preview is part of the gesture (an IME composition included),
         // not a command that ends it.
-        let r = self.guarded(cmd, |s| s.execute_unguarded(cmd, &params));
+        let r = self.guarded(cmd, |s| s.execute_unguarded(cmd, &params, crate::find_command(cmd)));
         if let Some(st) = self.active_mut()
             && let Some(i) = st.interaction.as_mut()
         {

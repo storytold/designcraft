@@ -1,0 +1,783 @@
+//! The craft UI framework pieces the Properties panel and its small panels share: the runtime's install, the app's
+//! own artwork and lettering as framework glyphs, the number, length, choice, swatch and font fields their rows are
+//! made of, and Properties › Transform's X/Y/W/H rows.
+//!
+//! A length is kept in points and shown in the document's ruler unit. Where the framework names that unit, the field
+//! is its `NumberField` over the unit (its own range, step and keys); where it does not — picas, which it writes as
+//! decimal picas instead of the app's `1p6`, and ciceros, agates, Q, Ha and pixels, which it has no kind for — the
+//! field is the framework's `TextField` over the app's own spelling of a measure ([`MeasureCodec`]), so the person
+//! sees and types exactly what the rest of the app writes and nothing is converted behind their back. Either way
+//! a commit (Enter, Tab, focus loss, a step key on a number field) is one engine command and one undo step; live
+//! updates are not applied, so the document does not move while a value is being typed.
+//!
+//! The framework's runtime must be installed on the context once, outside a pass, before its first one
+//! ([`install_with`], called from the shell's creation context).
+
+use crate::DesignApp;
+use crate::panels::SelInfo;
+use craft_behavior::{Codec, IconId, Mixed, NotAValue};
+use craft_theme::Srgba;
+use craft_ui_widgets::buttons::{Button, ButtonOutput, IconButton, ToggleButton};
+use craft_ui_widgets::choice::Checkbox;
+use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _, ShowContainer as _, Trigger};
+use craft_ui_widgets::display::{Divider, Icon, Text};
+use craft_ui_widgets::menu::{Menu, MenuItem};
+use craft_ui_widgets::pickers::Select;
+use craft_ui_widgets::primitives::{Glyph, IconSpec};
+use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
+use craft_ui_widgets::style::UiTokens;
+use craft_ui_widgets::style::Variant;
+use craft_ui_widgets::text::{NumberField, NumberPick, StepArrows, TextField};
+use designcraft_geom::Unit;
+use designcraft_geom::units::{format_measure, parse_measure};
+use egui::{Rect, pos2, vec2};
+use serde_json::{Map, Value, json};
+use std::ops::RangeInclusive;
+
+/// Installs the framework's runtime on `ctx`, once, before its first pass.
+///
+/// It refuses to install inside a pass ([`craft_ui_widgets::InstallError::DuringPass`]), so a host calls this
+/// where it made the context: the desktop shell's eframe creation context, or a test's own context. A
+/// second call on the same context is not an error.
+#[cfg(test)]
+pub(crate) fn install(ctx: &egui::Context) {
+    install_with(ctx, craft_host::target::WindowChrome::Native);
+}
+
+/// [`install`] for a main window whose frame is `chrome`: the app's own title bar (`Integrated`, decorations off) or the bar
+/// under the macOS traffic lights (`Inset`). The shell's title bar draws and moves the window by it.
+pub(crate) fn install_with(ctx: &egui::Context, chrome: craft_host::target::WindowChrome) {
+    use craft_host::target::{ShellInfo, WindowInfo, WindowKind};
+    // The running platform's window services, so floating dock panels open OS windows of their own where it allows.
+    let shell = ShellInfo::default().window(WindowInfo::new(WindowKind::Main).chrome(chrome));
+    let spec = craft_ui_widgets::InstallSpec::new(shell, std::sync::Arc::new(craft_window_sdk::system::SystemWindows));
+    match craft_ui_widgets::install(ctx, spec) {
+        Ok(()) | Err(craft_ui_widgets::InstallError::AlreadyInstalled) => crate::panel_docking::note_runtime(ctx),
+        Err(error) => log::warn!("the craft UI runtime was not installed; the interface takes no input: {error}"),
+    }
+}
+
+/// The app's own artwork for the icon `name` (`crate::icons`), as a framework glyph: the panel's buttons and icons
+/// keep the drawings the app has always shown.
+#[derive(craft_ui::contract::MemoProps)]
+pub(crate) struct Artwork(pub(crate) &'static str);
+
+impl Glyph for Artwork {
+    fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+        crate::icons::paint(painter, rect, self.0, color);
+    }
+}
+
+/// An icon button at `at` showing the app's artwork `icon`, named and tipped `label`, in its on look while
+/// `selected`: whether it was clicked this pass.
+pub(crate) fn icon_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str, selected: bool) -> bool {
+    IconButton::new(IconSpec::glyph(&Artwork(icon)))
+        .id(id)
+        .label(label.to_owned())
+        .tooltip(label.to_owned())
+        .selected(selected)
+        .show_at(ui, at)
+        .clicked()
+}
+
+/// The app's artwork `icon` at `at`, named `label` (its tooltip) when it has one.
+pub(crate) fn icon(ui: &mut egui::Ui, at: Rect, icon: &'static str, label: Option<&str>, enabled: bool) {
+    let artwork = Artwork(icon);
+    let shown = Icon::new(IconSpec::glyph(&artwork)).enabled(enabled);
+    match label {
+        Some(label) => shown.label(label.to_owned()).show_at(ui, at),
+        None => shown.show_at(ui, at),
+    };
+}
+
+/// The app's artwork `icon` at `at` beside a field: `tip` is its tooltip, and the field it stands beside carries the
+/// name, so the icon is not a second accessible node of the same name.
+pub(crate) fn icon_tip(ui: &mut egui::Ui, at: Rect, icon: &'static str, tip: &str, enabled: bool) {
+    let artwork = Artwork(icon);
+    Icon::new(IconSpec::glyph(&artwork)).enabled(enabled).tooltip(tip.to_owned()).show_at(ui, at);
+}
+
+/// The `•••` button at the end of its own row under a panel section, with the id `id`: whether it was clicked this
+/// pass.
+pub(crate) fn more_options(ui: &mut egui::Ui, language: &str, id: egui::Id) -> bool {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), egui::Sense::hover());
+    let at = Rect::from_min_max(pos2(row.max.x - 26.0, row.min.y), pos2(row.max.x - 4.0, row.max.y));
+    let label = crate::i18n::tr(language, "More Options");
+    IconButton::new(IconSpec::svg(IconId::new("more"))).id(id).label(label.to_owned()).tooltip(label.to_owned()).show_at(ui, at).clicked()
+}
+
+/// A few letters as a framework glyph (`TT`, `T¹`), for a button whose face the app has always lettered; `struck`
+/// draws a line through them (Strikethrough's face, which a combining stroke does not draw in every font).
+#[derive(craft_ui::contract::MemoProps)]
+pub(crate) struct Letters {
+    pub(crate) text: &'static str,
+    pub(crate) struck: bool,
+}
+
+impl Glyph for Letters {
+    fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, self.text, egui::FontId::proportional(13.0), color);
+        if self.struck {
+            let c = rect.center();
+            painter.line_segment([c + vec2(-6.0, 0.5), c + vec2(6.0, 0.5)], egui::Stroke::new(1.2, color));
+        }
+    }
+}
+
+/// A toggle button at `at` lettered `letters`, named and tipped `label`, pressed while `on`: whether it was clicked
+/// this pass. Assistive technology reads its pressed state.
+pub(crate) fn letters_button(ui: &mut egui::Ui, at: Rect, id: egui::Id, letters: Letters, label: &str, on: bool) -> bool {
+    toggle_glyph(ui, at, id, &letters, label, on)
+}
+
+/// A toggle button at `at` showing the app's artwork `icon`, named and tipped `label`, pressed while `on`: whether it
+/// was clicked this pass. For a button with a state (Align to Baseline Grid, an alignment, a list); a button that only
+/// acts is an [`icon_button`]. Assistive technology reads its pressed state.
+pub(crate) fn icon_toggle(ui: &mut egui::Ui, at: Rect, id: egui::Id, icon: &'static str, label: &str, on: bool) -> bool {
+    toggle_glyph(ui, at, id, &Artwork(icon), label, on)
+}
+
+/// A toggle button showing `glyph`: whether it was clicked (either way) this pass.
+fn toggle_glyph(ui: &mut egui::Ui, at: Rect, id: egui::Id, glyph: &(dyn Glyph + 'static), label: &str, on: bool) -> bool {
+    ToggleButton::new(label.to_owned(), Bind::given(on))
+        .id(id)
+        .icon(IconSpec::glyph(glyph))
+        .icon_only()
+        .tooltip(label.to_owned())
+        .show_at(ui, at)
+        .events
+        .committed()
+        .is_some()
+}
+
+/// What a number field counts and how it reads typed text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Quantity {
+    /// A length in points shown in this document unit.
+    Length(Unit),
+    /// A length in points shown in points (type size, leading, stroke weight); any length spelling reads.
+    Points,
+    /// A percentage.
+    Percent,
+    /// An angle in degrees.
+    Degrees,
+    /// A plain number written with at most `decimals` decimals (a count, tracking in 1/1000 em).
+    Plain { decimals: usize },
+}
+
+/// A number field: its name, value, quantity and limits.
+pub(crate) struct Number<'a> {
+    label: &'a str,
+    value: Option<f64>,
+    quantity: Quantity,
+    range: Option<RangeInclusive<f64>>,
+    step: Option<f64>,
+    presets: &'a [f64],
+    ignore: Option<&'a str>,
+    enabled: bool,
+    derived: bool,
+}
+
+/// The presets row that empties a field that may be unset (`Number::ignore`).
+const IGNORE: u32 = 0;
+
+impl<'a> Number<'a> {
+    /// A field named `label` over `value` (`None` shows the blank), counting `quantity`.
+    pub(crate) fn new(label: &'a str, value: Option<f64>, quantity: Quantity) -> Self {
+        Number { label, value, quantity, range: None, step: None, presets: &[], ignore: None, enabled: true, derived: false }
+    }
+
+    /// The range a committed value stays in (in points for a length).
+    pub(crate) fn range(mut self, min: f64, max: f64) -> Self {
+        self.range = Some(min..=max);
+        self
+    }
+
+    /// One arrow press or wheel notch, in the shown unit.
+    pub(crate) fn step(mut self, step: f64) -> Self {
+        self.step = Some(step);
+        self
+    }
+
+    /// The values the presets list offers.
+    pub(crate) fn presets(mut self, presets: &'a [f64]) -> Self {
+        self.presets = presets;
+        self
+    }
+
+    /// The value may be unset: the presets list offers `word` first, and picking it or emptying the field unsets it.
+    pub(crate) fn ignore(mut self, word: &'a str) -> Self {
+        self.ignore = Some(word);
+        self
+    }
+
+    /// Whether the person may edit it.
+    pub(crate) fn enabled(mut self, on: bool) -> Self {
+        self.enabled = on;
+        self
+    }
+
+    /// Whether the value is derived (automatic leading): it shows in parentheses until the person types a value.
+    pub(crate) fn derived(mut self, on: bool) -> Self {
+        self.derived = on;
+        self
+    }
+}
+
+/// A text field over the app's own spelling of a length in `unit`, at `at` or in the flow: the value it committed
+/// (points), `Some(None)` when it was emptied. A field left as it shows its value commits nothing: reading the shown
+/// text back would round the value (13Q is 9.2126 pt, shown as 9.213). Up and Down Arrow step the value by the unit's
+/// step (1 pt, 1/16 in, 1 mm; one point in picas), Shift by ten steps, as the app's spinners did.
+#[allow(clippy::too_many_arguments)]
+fn measure_text(
+    ui: &mut egui::Ui,
+    at: Option<Rect>,
+    id: egui::Id,
+    label: &str,
+    value: Option<f64>,
+    unit: Unit,
+    enabled: bool,
+    derived: bool,
+) -> Option<Option<f64>> {
+    let mut stepped = if enabled { measure_step(ui, id, unit) } else { None };
+    // A placed field has the up and down step halves at its start, as the app's spinners had; the framework's text
+    // field has none of its own.
+    let at = at.map(|at| {
+        let halves = Rect::from_min_size(at.min, vec2(STEP_W, at.height()));
+        if let Some(by) = step_halves(ui, halves, id, label, unit, enabled) {
+            stepped = Some(by);
+        }
+        Rect::from_min_max(egui::pos2(halves.max.x, at.min.y), at.max)
+    });
+    let codec = MeasureCodec { unit, derived };
+    let field = TextField::with_codec(label.to_owned(), Bind::given(value), codec).id(id).enabled(enabled);
+    let out = match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    };
+    if let Some(by) = stepped {
+        return Some(Some(value.unwrap_or(0.0) + by));
+    }
+    out.events.committed().copied().filter(|v| match (v, value) {
+        (Some(v), Some(old)) => v.is_finite() && format_measure(*v, unit) != format_measure(old, unit),
+        (Some(v), None) => v.is_finite(),
+        // An emptied field: a value that may be unset (`Number::ignore`) is cleared.
+        (None, old) => old.is_some(),
+    })
+}
+
+/// The width of a measure field's step halves.
+const STEP_W: f32 = 14.0;
+
+/// The up and down halves at `at` that step the measure field `id` named `label`: the step a click asked for this
+/// pass, in points (ten steps with Shift). They are no Tab stops: the field's own Up and Down Arrow step it.
+fn step_halves(ui: &mut egui::Ui, at: Rect, id: egui::Id, label: &str, unit: Unit, enabled: bool) -> Option<f64> {
+    let step = crate::widgets::NumKind::Measure(unit).step();
+    let mid = at.center().y;
+    let mut by = None;
+    for (up, half) in [(true, Rect::from_min_max(at.min, egui::pos2(at.max.x, mid))), (false, Rect::from_min_max(egui::pos2(at.min.x, mid), at.max))]
+    {
+        let name = format!("{} {label}", if up { "Increase" } else { "Decrease" });
+        let glyph = StepChevron(up);
+        let clicked = IconButton::new(IconSpec::glyph(&glyph))
+            .id(id.with(("step", up)))
+            .label(name)
+            .focusable(false)
+            .variant(Variant::GHOST)
+            .enabled(enabled)
+            .show_at(ui, half)
+            .clicked();
+        if clicked {
+            let times = if ui.input(|input| input.modifiers.shift) { 10.0 } else { 1.0 };
+            by = Some(if up { step } else { -step } * times);
+        }
+    }
+    by
+}
+
+/// The up and down step halves of a measure text field shown in the flow, before the field: a strip as tall as a field,
+/// named for `label`. The step a click asked for this pass, in points (the unit's step, ten with Shift). The framework's
+/// text field has no step arrows of its own; a dialog's measure field shows these in a row with it.
+pub(crate) fn measure_steps(ui: &mut egui::Ui, id: egui::Id, label: &str, unit: Unit, enabled: bool) -> Option<f64> {
+    let height = ui.spacing().interact_size.y.max(crate::widgets::FIELD_H);
+    let (at, _) = ui.allocate_exact_size(vec2(STEP_W, height), egui::Sense::hover());
+    step_halves(ui, at, id, label, unit, enabled)
+}
+
+/// The chevron of a step half: up, or down.
+#[derive(craft_ui::contract::MemoProps)]
+struct StepChevron(bool);
+
+impl Glyph for StepChevron {
+    fn paint(&self, painter: &egui::Painter, _tokens: &UiTokens, rect: Rect, color: egui::Color32, _mirrored: bool) {
+        let c = rect.center();
+        let (w, h) = (3.5_f32.min(rect.width() / 2.0 - 1.0), 2.0_f32.min(rect.height() / 2.0 - 1.0));
+        let (tip, ends) = if self.0 { (c.y - h, c.y + h) } else { (c.y + h, c.y - h) };
+        let stroke = egui::Stroke::new(1.0, color);
+        painter.line_segment([egui::pos2(c.x - w, ends), egui::pos2(c.x, tip)], stroke);
+        painter.line_segment([egui::pos2(c.x, tip), egui::pos2(c.x + w, ends)], stroke);
+    }
+}
+
+/// The step an Up or Down Arrow pressed in the measure field `id` asks for this pass, in points: the unit's step, ten
+/// with Shift, down for Down. The field has the keyboard (as of the last pass), so the keys are its: they are taken
+/// before it runs, and the canvas does not nudge the selection with them.
+fn measure_step(ui: &mut egui::Ui, id: egui::Id, unit: Unit) -> Option<f64> {
+    if !craft_ui_widgets::runtime::focus::has(ui.ctx(), id) {
+        return None;
+    }
+    let step = crate::widgets::NumKind::Measure(unit).step();
+    ui.input_mut(|input| {
+        let mut by = 0.0;
+        for (key, sign) in [(egui::Key::ArrowUp, 1.0), (egui::Key::ArrowDown, -1.0)] {
+            for (modifiers, times) in [(egui::Modifiers::SHIFT, 10.0), (egui::Modifiers::NONE, 1.0)] {
+                while input.consume_key(modifiers, key) {
+                    by += sign * times * step;
+                }
+            }
+        }
+        (by != 0.0).then_some(by)
+    })
+}
+
+/// The number field `n` at `at` (or in the flow when `None`), with the id `id`: `Some(Some(v))` when it committed
+/// `v`, `Some(None)` when a field that may be unset (`Number::ignore`) was emptied or its Ignore row picked.
+pub(crate) fn number_field(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, n: Number<'_>) -> Option<Option<f64>> {
+    let Number { label, value, quantity, range, step, presets, ignore, enabled, derived } = n;
+    let clamp = |v: f64| range.as_ref().map_or(v, |r| v.clamp(*r.start(), *r.end()));
+    // A length the framework's field cannot spell in the app's way: a unit it has no kind for, or points, where the app
+    // reads every unit it knows ("13Q", "5mm", "2H") and the framework's length field has no kind for Q or H. A points
+    // field with presets (a type size's list) stays the framework's number field, to keep its list and step keys.
+    let spelled = match quantity {
+        Quantity::Length(unit) if unit_kind(unit).is_none() => Some(unit),
+        Quantity::Points if presets.is_empty() => Some(Unit::Points),
+        _ => None,
+    };
+    if let Some(unit) = spelled {
+        return match measure_text(ui, at, id, label, value, unit, enabled, derived)? {
+            Some(v) => Some(Some(clamp(v))),
+            None => ignore.map(|_| None),
+        };
+    }
+    let rows: Vec<Entry<NumberPick>> = ignore
+        .map(|word| Entry::new(NumberPick::Choice(IGNORE), word.to_owned()))
+        .into_iter()
+        .chain(presets.iter().map(|&v| Entry::new(NumberPick::Number(v), preset_label(quantity, v))))
+        .collect();
+    let field = match quantity {
+        Quantity::Length(unit) => {
+            let shown = unit_kind(unit).unwrap_or(UnitKind::Points);
+            NumberField::length(label.to_owned(), Bind::given(value), LengthUnits::new(UnitKind::Points, shown, 72.0))
+                .step(crate::widgets::NumKind::Measure(unit).step() / unit.points())
+        }
+        Quantity::Points => NumberField::length(label.to_owned(), Bind::given(value), LengthUnits::new(UnitKind::Points, UnitKind::Points, 72.0)),
+        Quantity::Percent => NumberField::new(label.to_owned(), Bind::given(value)).unit_kind(UnitKind::Percent),
+        Quantity::Degrees => NumberField::new(label.to_owned(), Bind::given(value)).unit_kind(UnitKind::Degrees),
+        Quantity::Plain { decimals } => NumberField::new(label.to_owned(), Bind::given(value)).commit_decimals(decimals),
+    };
+    // The up and down step halves at the field's start, as the app's spinners had.
+    let mut field = field.id(id).enabled(enabled).derived(derived).step_arrows(StepArrows::Leading);
+    if let Some(range) = range.clone() {
+        field = field.range(range);
+    }
+    if let Some(step) = step {
+        field = field.step(step);
+    }
+    if !rows.is_empty() {
+        field = field.presets(&rows);
+    }
+    let out = match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    };
+    match (out.edit.events.committed().copied(), out.preset) {
+        (_, Some(NumberPick::Choice(IGNORE))) if ignore.is_some() => Some(None),
+        (Some(Some(v)), _) if v.is_finite() => Some(Some(v)),
+        (Some(None), _) if ignore.is_some() => Some(None),
+        (_, Some(NumberPick::Number(v))) => Some(Some(clamp(v))),
+        _ => None,
+    }
+}
+
+/// How a presets row writes `v`: as the field writes it.
+fn preset_label(quantity: Quantity, v: f64) -> String {
+    match quantity {
+        Quantity::Length(unit) => format_measure(v, unit),
+        Quantity::Points => crate::widgets::NumKind::Points { decimals: 3 }.format(v),
+        Quantity::Percent => crate::widgets::NumKind::Number { suffix: "%", decimals: 2 }.format(v),
+        Quantity::Degrees => crate::widgets::NumKind::Number { suffix: "°", decimals: 2 }.format(v),
+        Quantity::Plain { decimals } => crate::widgets::NumKind::Number { suffix: "", decimals }.format(v),
+    }
+}
+
+/// A number field after its icon, as the panels lay a field out: the icon at `icon_at` (the field's label is its
+/// tooltip) and the field at `field_at`. What the field did, as [`number_field`].
+pub(crate) fn icon_number(
+    ui: &mut egui::Ui,
+    icon_at: Rect,
+    field_at: Rect,
+    id: egui::Id,
+    artwork: &'static str,
+    n: Number<'_>,
+) -> Option<Option<f64>> {
+    // The icon shows the field's name as its tooltip but is not a second accessible node of that name: the field
+    // itself is named.
+    icon_tip(ui, icon_at, artwork, n.label, n.enabled);
+    number_field(ui, Some(field_at), id, n)
+}
+
+/// A select at `at` (or in the flow) named `label`, over `choices` (value and shown label), showing `current`
+/// (`None` for none of them, with `placeholder` when given): the value picked this pass.
+pub(crate) fn choice<T: craft_behavior::Value>(
+    ui: &mut egui::Ui,
+    at: Option<Rect>,
+    id: egui::Id,
+    label: &str,
+    current: Option<T>,
+    choices: &[(T, String)],
+    placeholder: Option<&str>,
+) -> Option<T> {
+    let entries: Vec<Entry<T>> = choices.iter().map(|(value, shown)| Entry::new(value.clone(), shown.clone())).collect();
+    select(ui, at, id, Picker { label, current, entries: &entries, placeholder }, false)
+}
+
+/// What a select over `entries` shows: its name, the current value (`None` for none of them) and the text it shows
+/// then.
+struct Picker<'e, 'a, T> {
+    label: &'a str,
+    current: Option<T>,
+    entries: &'e [Entry<T>],
+    placeholder: Option<&'a str>,
+}
+
+/// The select `picker` at `at` (or in the flow); `searchable` puts a filter field over a long list. The value
+/// picked this pass.
+fn select<T: craft_behavior::Value>(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, picker: Picker<'_, '_, T>, searchable: bool) -> Option<T> {
+    let Picker { label, current, entries, placeholder } = picker;
+    let held = current.map_or(Mixed::Mixed, Mixed::Same);
+    let mut field = Select::new(label.to_owned(), Bind::given(held), entries).id(id);
+    if let Some(placeholder) = placeholder {
+        field = field.placeholder(placeholder.to_owned());
+    }
+    if searchable {
+        field = field.searchable();
+    }
+    let out = match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    };
+    out.events.committed().cloned()
+}
+
+/// A swatch's colour as a framework icon: its colour, a gradient's first stop, or the empty swatch for None.
+pub(crate) fn swatch_icon(doc: &designcraft_doc::Document, name: &str) -> IconSpec<'static> {
+    let (color, gradient) = crate::widgets::swatch_colors(doc, name, 1.0);
+    match color.or(gradient.map(|(first, _)| first)) {
+        Some(c) => IconSpec::swatch(Srgba::rgb(f32::from(c.r()) / 255.0, f32::from(c.g()) / 255.0, f32::from(c.b()) / 255.0)),
+        None => IconSpec::empty_swatch(),
+    }
+}
+
+/// A select of the document's swatches, each with its colour, at `at` (or in the flow), named `label`, showing
+/// `current` (`placeholder` when it is none of them): the swatch picked this pass.
+pub(crate) fn swatch_select(
+    ui: &mut egui::Ui,
+    at: Option<Rect>,
+    id: egui::Id,
+    label: &str,
+    doc: &designcraft_doc::Document,
+    current: Option<&str>,
+    placeholder: Option<&str>,
+) -> Option<String> {
+    let entries: Vec<Entry<String>> =
+        doc.swatches.iter().map(|sw| Entry::new(sw.name.clone(), sw.name.clone()).icon(swatch_icon(doc, &sw.name))).collect();
+    let current = current.filter(|c| doc.swatches.iter().any(|sw| sw.name == *c)).map(str::to_owned);
+    select(ui, at, id, Picker { label, current, entries: &entries, placeholder }, false)
+}
+
+/// The font style select of `family` at `at` (or in the flow), showing `current` (a style with axis settings shows
+/// its axes, as the native field does): the style picked this pass. The styles come from the app's fonts.
+pub(crate) fn font_style_select(app: &DesignApp, ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, family: &str, current: &str) -> Option<String> {
+    font_style_select_in(app, ui, at, id, &crate::panels::fonts(app), crate::panels::font_scope(app), family, current)
+}
+
+/// [`font_style_select`] over `fonts`, the font database (in document scope `scope`) the styles are read from.
+///
+/// The styles are listed without loading the font while the select is closed: a catalogued variable font shows its Regular
+/// style until the select is opened. Opening it (a click, or Enter or Space on it) loads the font once, which finds its
+/// named instances, and the list then holds them until it is closed: a family whose font file has gone is not tried again
+/// every frame of the open list, but opening the list again (or drawing the select again after it was hidden for a frame,
+/// or in another scope) tries again.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn font_style_select_in(
+    app: &DesignApp,
+    ui: &mut egui::Ui,
+    at: Option<Rect>,
+    id: egui::Id,
+    fonts: &designcraft_fonts::ScopedFonts<'_>,
+    scope: u32,
+    family: &str,
+    current: &str,
+) -> Option<String> {
+    /// The styles read when the list was opened: the family and scope they are of, the last frame the select was drawn in, whether
+    /// the list is open, and the styles.
+    #[derive(Clone)]
+    struct Opened {
+        family: String,
+        scope: u32,
+        frame: u64,
+        open: bool,
+        styles: Vec<String>,
+    }
+    let key = id.with(("font_style_opened", scope));
+    let frame = ui.ctx().cumulative_frame_nr();
+    // What the last pass left: still valid while the select was drawn in the frame before this one, for this family.
+    let held = ui
+        .data(|data| data.get_temp::<Opened>(key))
+        .filter(|o| o.open && o.family == family && o.scope == scope && o.frame.saturating_add(1) >= frame);
+    let styles = held.as_ref().map_or_else(|| fonts.styles(family), |o| o.styles.clone());
+    let entries: Vec<Entry<String>> = styles.iter().map(|s| Entry::new(s.clone(), s.clone())).collect();
+    let label = crate::i18n::tr(&app.ui.language, "Font Style");
+    let selected = styles.iter().find(|s| *s == current).cloned();
+    let field = Select::new(label.to_owned(), Bind::given(selected.map_or(Mixed::Mixed, Mixed::Same)), &entries)
+        .id(id)
+        .placeholder(crate::panels::style_shown(current));
+    let out = match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    };
+    let picked = out.events.committed().cloned();
+    // Its list is open while a popup layer of the last frame hangs from the select. Opening it loads the font, which finds the
+    // named instances, once; the list then keeps what that found until it is closed.
+    let ctx = ui.ctx().clone();
+    let open = picked.is_none()
+        && craft_ui_widgets::runtime::overlay::top(&ctx)
+            .and_then(|top| craft_ui_widgets::runtime::overlay::entry(&ctx, top))
+            .is_some_and(|entry| !entry.rank.is_modal() && entry.anchor.is_some_and(|anchor| anchor.intersects(out.response.rect)));
+    if open {
+        let styles = match held {
+            Some(held) => held.styles,
+            None => {
+                let _ = fonts.face(family, current);
+                fonts.styles(family)
+            }
+        };
+        ui.data_mut(|data| data.insert_temp(key, Opened { family: family.to_owned(), scope, frame, open: true, styles }));
+    } else {
+        ui.data_mut(|data| data.remove::<Opened>(key));
+    }
+    picked
+}
+
+/// A check box at `at` (or in the flow) labelled `label`, its label shown after the box: its new value when it was
+/// toggled this pass.
+pub(crate) fn check(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, label: &str, value: bool, enabled: bool) -> Option<bool> {
+    let field = Checkbox::new(Bind::given(value)).id(id).label(label.to_owned()).enabled(enabled);
+    let out = match at {
+        // A check box shows its label after the box only in the flow (`show_at` draws the box alone), so a placed one
+        // is shown in a flow of its own over `at`.
+        Some(at) => {
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(at).layout(layout), |ui| field.show(ui)).inner
+        }
+        None => field.show(ui),
+    };
+    out.events.committed().copied().filter(|v| *v != value)
+}
+
+/// The width a push button labelled `label` takes to show its whole label, padding included.
+pub(crate) fn button_width(ui: &egui::Ui, label: &str) -> f32 {
+    Button::new(label.to_owned()).measure_in(ui, craft_behavior::Proposal::Ideal).x.ceil()
+}
+
+/// A push button at `at` (or in the flow) labelled `label`.
+pub(crate) fn button(ui: &mut egui::Ui, at: Option<Rect>, id: egui::Id, label: &str, enabled: bool) -> ButtonOutput {
+    let field = Button::new(label.to_owned()).id(id).enabled(enabled);
+    match at {
+        Some(at) => field.show_at(ui, at),
+        None => field.show(ui),
+    }
+}
+
+/// Text in the panel's caption look at `at` (or in the flow).
+pub(crate) fn caption(ui: &mut egui::Ui, at: Option<Rect>, text: &str) {
+    let text = Text::new(text.to_owned());
+    match at {
+        Some(at) => text.show_at(ui, at),
+        None => text.show(ui),
+    };
+}
+
+/// A menu row: its label, whether it shows checked (`None` for a command row), and whether it can run.
+pub(crate) struct MenuRow<'a, K> {
+    pub(crate) key: K,
+    pub(crate) label: &'a str,
+    pub(crate) checked: Option<bool>,
+    pub(crate) enabled: bool,
+    /// The shortcut text the row shows at its end.
+    pub(crate) shortcut: Option<String>,
+}
+
+/// The menu `label` opened by a click on `opener`, its rows in groups set off by dividers: the key of the row run
+/// this pass.
+pub(crate) fn menu<K: Clone>(ui: &mut egui::Ui, id: egui::Id, label: &str, opener: &ButtonOutput, groups: &[Vec<MenuRow<'_, K>>]) -> Option<K> {
+    Menu::new(label.to_owned())
+        .id(id)
+        .opened_by(opener, Trigger::Click)
+        .show(ui, |ui, _| {
+            let mut ran = None;
+            for (g, rows) in groups.iter().enumerate() {
+                if g > 0 {
+                    Divider::horizontal().show(ui);
+                }
+                for (r, row) in rows.iter().enumerate() {
+                    let mut item = MenuItem::new(row.label.to_owned()).id(id.with(("row", g, r))).enabled(row.enabled);
+                    if let Some(on) = row.checked {
+                        item = item.check(on);
+                    }
+                    if let Some(shortcut) = &row.shortcut {
+                        item = item.shortcut(shortcut.clone());
+                    }
+                    if item.show(ui).ran {
+                        ran = Some(row.key.clone());
+                    }
+                }
+            }
+            ran
+        })
+        .inner
+        .flatten()
+}
+
+/// The framework's unit for a document unit, or `None` when its number field cannot show it as the app does.
+fn unit_kind(unit: Unit) -> Option<UnitKind> {
+    Some(match unit {
+        Unit::Points => UnitKind::Points,
+        Unit::Inches | Unit::InchesDecimal => UnitKind::Inches,
+        Unit::Millimeters => UnitKind::Millimetres,
+        Unit::Centimeters => UnitKind::Centimetres,
+        // Picas: the framework shows and reads decimal picas ("1.5 pica") and refuses the app's `1p6`. A cicero (12
+        // didot points), an agate, Q, Ha and pixels have no kind in the framework. These fields are text fields over
+        // the app's own measure spelling instead.
+        Unit::Picas | Unit::Ciceros | Unit::Agates | Unit::Pixels | Unit::Q | Unit::Ha => return None,
+    })
+}
+
+/// A length in points as the app writes and reads it in a document unit: `format_measure` and `parse_measure`, the
+/// spelling of every measurement field of the app (`3p6`, `2c4`, `12 pt + 1p`). Empty text is no value.
+#[derive(Clone)]
+struct MeasureCodec {
+    unit: Unit,
+    /// The value is derived (automatic leading): it shows in parentheses, as "(14.4 pt)".
+    derived: bool,
+}
+
+impl Codec for MeasureCodec {
+    type Value = Option<f64>;
+
+    fn format(&self, value: &Option<f64>) -> String {
+        let shown = value.filter(|v| v.is_finite()).map(|v| format_measure(v, self.unit)).unwrap_or_default();
+        if self.derived && !shown.is_empty() { format!("({shown})") } else { shown }
+    }
+
+    fn parse(&self, text: &str, _start: &Option<f64>) -> Result<Option<f64>, NotAValue> {
+        // An emptied field is no value: the caller unsets a value that may be unset and keeps any other.
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        let text = text.trim().trim_start_matches('(').trim_end_matches(')');
+        parse_measure(text, self.unit).map(Some).map_err(|_| NotAValue)
+    }
+}
+
+/// What a length field edits: a value in points, the document unit it is shown in, and the range a value stays in.
+pub(crate) struct Length {
+    /// The value, in points; `None` for no value (several guides).
+    pub(crate) value: Option<f64>,
+    /// The document unit the field shows.
+    pub(crate) unit: Unit,
+    /// The range a committed value stays in, in points.
+    pub(crate) range: Option<RangeInclusive<f64>>,
+}
+
+/// One length field at `at`, named `label`: what it committed this pass (points), and the rect of its text part as
+/// the framework laid it out (the element whose node is the spin button or the text input; the component's box for
+/// anything else), for the tests and the control channel.
+pub(crate) fn length_field(ui: &mut egui::Ui, at: Rect, id: egui::Id, label: &str, length: Length, enabled: bool) -> (Option<f64>, Rect) {
+    let Length { value, unit, range } = length;
+    let (committed, recorded) = craft_ui_widgets::runtime::inspect::record(ui, id.with("record"), |ui| match unit_kind(unit) {
+        Some(shown) => {
+            // The arrow and wheel step the native field had (1 pt, 1/16 in, 1 mm), in the shown unit the framework
+            // steps in.
+            let step = crate::widgets::NumKind::Measure(unit).step() / unit.points();
+            let mut field = NumberField::length(label.to_owned(), Bind::given(value), LengthUnits::new(UnitKind::Points, shown, 72.0))
+                .id(id)
+                .step(step)
+                .step_arrows(StepArrows::Leading)
+                .enabled(enabled);
+            if let Some(range) = range.clone() {
+                field = field.range(range);
+            }
+            field.show_at(ui, at).edit.events.committed().copied().flatten()
+        }
+        None => measure_text(ui, Some(at), id, label, value, unit, enabled, false)
+            .flatten()
+            .map(|v| range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))),
+    });
+    let mut rect = at;
+    if let Some(recorded) = recorded {
+        rect = recorded.elements.first().map_or(at, |element| element.rect);
+        for element in &recorded.elements {
+            let Some(facts) = &element.facts else { continue };
+            if facts.role == "SpinButton" || facts.role == "TextInput" {
+                rect = recorded.hits.iter().find(|hit| hit.owner == element.id && hit.part == element.part).map_or(element.rect, |hit| hit.rect);
+                break;
+            }
+        }
+    }
+    (committed.filter(|v| v.is_finite()), rect)
+}
+
+/// The four transform fields of the panel's block `block` and their captions, reporting what one of them committed as
+/// the params of `transform.set` (`{x?, y?, width?, height?}`, in points, about the reference point `rp`). Empty when
+/// no field committed this pass. A locked selection's fields are disabled: `transform.set` itself moves a locked
+/// frame, so the disabled field is the guard.
+pub(crate) fn rows(app: &mut DesignApp, ui: &mut egui::Ui, block: Rect, i: &SelInfo, rp: u8, constrain: bool) -> Map<String, Value> {
+    let mut set = Map::new();
+    let unit = crate::panels::properties::units(app);
+    let r = i.page_rect;
+    let (fx, fy) = ((rp % 3) as f64 / 2.0, (rp / 3) as f64 / 2.0);
+    let values = [("x", r.x0 + r.width() * fx), ("y", r.y0 + r.height() * fy), ("width", r.width()), ("height", r.height())];
+    let grid =
+        [[("x", "X:", 40.0, 18.0, 59.0), ("width", "W:", 120.0, 19.0, 140.0)], [("y", "Y:", 40.0, 18.0, 59.0), ("height", "H:", 120.0, 19.0, 140.0)]];
+    app.framework_fields.clear();
+    for (row, cells) in grid.into_iter().enumerate() {
+        let yy = row as f32 * 25.0;
+        for (key, caption, cx, cw, x) in cells {
+            Text::new(caption).show_at(ui, crate::panels::properties::sub(block, cx, yy, cw, crate::widgets::FIELD_H));
+            let value = values.iter().find(|(k, _)| *k == key).map_or(0.0, |(_, v)| *v);
+            let at = Rect::from_min_size(block.min + vec2(x, yy), vec2(54.0, crate::widgets::FIELD_H));
+            let label = crate::i18n::tr(&app.ui.language, caption.trim_end_matches(':')).to_owned();
+            let id = ui.scope_id().with(("framework-transform", key));
+            let (committed, rect) = length_field(ui, at, id, &label, Length { value: Some(value), unit, range: None }, !i.locked);
+            app.framework_fields.push((key.to_string(), rect));
+            let Some(committed) = committed else { continue };
+            set.insert(key.into(), json!(committed));
+            // Constrain proportions: the other side follows by the same ratio, as the native link does.
+            if constrain && matches!(key, "width" | "height") {
+                let (other, from) = if key == "width" { ("height", r.height()) } else { ("width", r.width()) };
+                if from > 1e-9 && value > 0.0 {
+                    set.insert(other.into(), json!(from * (committed / value)));
+                }
+            }
+        }
+    }
+    set
+}
+
+/// The rects of the transform fields from the last pass, for the control channel's `ui.inspect`.
+pub(crate) fn inspect(app: &DesignApp) -> Value {
+    Value::Object(
+        app.framework_fields.iter().map(|(key, rect)| (key.clone(), json!([rect.left(), rect.top(), rect.width(), rect.height()]))).collect(),
+    )
+}

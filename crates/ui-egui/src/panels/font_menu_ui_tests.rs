@@ -307,11 +307,30 @@ fn font_fields_in_panels_and_dialogs_search() {
 fn rows_shown(h: &Harness<'static, Window>, search: egui::Rect) -> (usize, f32) {
     let families: Vec<String> = crate::panels::font_menu(&h.state().app).iter().map(|f| f.label(true).to_string()).collect();
     let rows: Vec<egui::Rect> = h
-        .query_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().is_some_and(|l| families.contains(&l)))
+        .query_all_by(|n| {
+            // A row of the Font menu is a button; a row of a dialog's family list (a combo box's) is an option.
+            matches!(n.role(), egui::accesskit::Role::Button | egui::accesskit::Role::ListBoxOption)
+                && n.label().is_some_and(|l| families.contains(&l))
+        })
         .map(|n| n.rect())
         .filter(|r| r.min.y > search.max.y)
         .collect();
-    (rows.len(), rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max))
+    // A dialog's family list keeps rows past its ends that are cut off, and which of them it keeps follows where the list was
+    // scrolled to (to the current family when it opened, to the top once a search is cleared): only the rows that show whole
+    // count, as the rows the menu shows.
+    let list = h
+        .query_all_by(|n| n.role() == egui::accesskit::Role::ListBox)
+        .map(|n| n.rect())
+        .filter(|r| r.min.y > search.min.y)
+        .min_by(|a, b| a.min.y.total_cmp(&b.min.y));
+    let rows: Vec<egui::Rect> = match list {
+        Some(list) => rows.into_iter().filter(|r| r.min.y >= list.min.y - 0.5 && r.max.y <= list.max.y + 0.5).collect(),
+        None => rows,
+    };
+    // How far the menu reaches: a dialog's list ends where its box does (the whole rows in it stop short of that by however far
+    // the list is scrolled, which differs between the menu as it opened and after a cleared search); the Font menu's rows end where it does.
+    let bottom = list.map_or_else(|| rows.iter().map(|r| r.max.y).fold(f32::MIN, f32::max), |list| list.max.y);
+    (rows.len(), bottom)
 }
 
 /// Opens the font menu of the field at `at`, searches for a font that doesn't exist and clears

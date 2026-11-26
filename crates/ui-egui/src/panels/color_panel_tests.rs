@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::DesignApp;
 
 fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
-    Harness::builder().with_size(vec2(320.0, 320.0)).build_ui_state(|ui, app: &mut DesignApp| super::swatches::color_panel(app, ui), app)
+    crate::test_window::builder().with_size(vec2(320.0, 320.0)).build_ui_state(|ui, app: &mut DesignApp| super::swatches::color_panel(app, ui), app)
 }
 
 fn fill_tint(app: &DesignApp, id: u64) -> f32 {
@@ -30,8 +30,9 @@ fn click_tint_field(h: &mut Harness<'static, DesignApp>) {
     h.run_steps(2);
 }
 
+/// The text of the focused field, without the unit the field now writes after the number ("60 %").
 fn typed(h: &Harness<'static, DesignApp>) -> Option<String> {
-    h.query_by(|n| n.is_focused()).and_then(|n| n.value())
+    h.query_by(|n| n.is_focused()).and_then(|n| n.value()).map(|v| v.trim_end_matches('%').trim_end().to_owned())
 }
 
 /// Typing "60" over "100%" keeps the text while the field has focus (it used to snap back to
@@ -71,7 +72,8 @@ fn a_typed_tint_is_kept_while_typing_and_applied_on_enter_or_leaving_the_field()
     h.run_steps(3);
     assert_eq!(fill_tint(h.state(), id), 1.0, "150 is clamped to 100 % when the field loses focus");
     // The slider still applies on release.
-    let track = h.get_by_role(Role::Slider).rect();
+    // The Tint slider is one of several: the C/M/Y/K channels have sliders of their own.
+    let track = h.get_by_role_and_label(Role::Slider, "Tint").rect();
     h.hover_at(track.right_center());
     h.drag_at(track.right_center());
     h.run_steps(1);

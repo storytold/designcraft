@@ -77,21 +77,26 @@ fn modifiers_id() -> egui::Id {
     egui::Id::unique("canvas-frame-modifiers")
 }
 
-/// A canvas context menu asked for by a right-click; `open` until the popup is open after a frame.
+/// The open canvas context menu a right-click asked for: what it is for, where the click was, the last pass that
+/// asked for it or showed it, and whether a right-click asked for it in that pass. The framework menu's open state is
+/// this request: it is there while the menu is open.
 #[derive(Clone, Copy, Debug)]
 struct MenuRequest {
     kind: crate::menus::ContextMenu,
-    open: bool,
+    at: Pos2,
+    pass: u64,
+    fresh: bool,
 }
 
-/// The popup id of the canvas context menu in split-view pane `pane`.
+/// The id of the canvas context menu in split-view pane `pane`, and of its request.
 fn context_menu_id(pane: u8) -> egui::Id {
     egui::Id::unique(("canvas_context_menu", pane))
 }
 
 /// Was a canvas context menu open (in either pane of this window) when this frame began?
 /// Pane 0 shows its menu, which a click or Escape may close, before pane 1 handles input; that
-/// click or key still belongs to the menu. Popups are per window (viewport), and so is input.
+/// click or key still belongs to the menu. Menus are per window (viewport), and so is input.
+/// A request no pass showed since the last one (the canvas is gone) is no open menu.
 pub fn context_menu_open(ctx: &egui::Context) -> bool {
     let pass = ctx.cumulative_pass_nr();
     let key = egui::Id::unique("canvas_context_menu_open").with(ctx.viewport_id());
@@ -100,29 +105,30 @@ pub fn context_menu_open(ctx: &egui::Context) -> bool {
     {
         return open;
     }
-    let open = (0..2).any(|pane| egui::Popup::is_id_open(ctx, context_menu_id(pane)));
+    let open = (0..2).any(|pane| ctx.data(|d| d.get_temp::<MenuRequest>(context_menu_id(pane))).is_some_and(|req| req.pass + 1 >= pass));
     ctx.data_mut(|d| d.insert_temp(key, (pass, open)));
     open
 }
 
-/// Shows the context menu a right-click asked for. A right-click while the menu is open closes it
-/// in that frame (it was a click outside the menu), so the request stays until a frame ends with
-/// the menu open: it reopens in the next frame where the new click was.
-pub(super) fn context_menu(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response) {
+/// Shows the framework context menu a right-click asked for, at the click, until it closes (a row ran, Escape, a press
+/// outside). A right-click while the menu is open closes it in that pass (it was a press outside the menu), so the new
+/// request stays and the menu opens again in the next pass, where the new click was.
+pub(super) fn context_menu(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::Response) {
     let id = context_menu_id(app.pane);
     let Some(req) = ui.data(|d| d.get_temp::<MenuRequest>(id)) else { return };
-    egui::Popup::menu(resp)
-        .id(id)
-        .open_memory(req.open.then_some(egui::SetOpenCommand::Bool(true)))
-        .at_pointer_fixed()
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| crate::menus::context_menu(app, ui, req.kind));
-    if req.open {
-        if egui::Popup::is_id_open(ui.ctx(), id) {
-            ui.data_mut(|d| d.insert_temp(id, MenuRequest { open: false, ..req }));
-        } else {
-            ui.ctx().request_repaint();
-        }
+    let mut open = true;
+    let place = crate::menus::ContextPlace { id, opener: resp, at: req.at };
+    // Only the drawn run of the canvas shows the menu (`canvas::show` returns early from the dock's measuring runs), so
+    // this pass says whether it stays.
+    crate::menus::context_menu(app, ui, req.kind, &place, &mut open);
+    let pass = ui.ctx().cumulative_pass_nr();
+    if open || req.fresh {
+        ui.data_mut(|d| d.insert_temp(id, MenuRequest { pass, fresh: false, ..req }));
+    } else {
+        ui.data_mut(|d| d.remove::<MenuRequest>(id));
+    }
+    if !open && req.fresh {
+        ui.ctx().request_repaint();
     }
 }
 
@@ -208,16 +214,37 @@ fn wheel_navigate(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, xf:
     }
 }
 
-/// Where the primary button went down this pass, if egui no longer holds the press origin.
+/// In a pass's events: where the primary button was released before the pass's first primary press, if it was, and
+/// whether it is released again after the last one.
+fn primary_release_before_press(events: &[egui::Event]) -> (Option<Pos2>, bool) {
+    let primary: Vec<(bool, Pos2)> = events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, .. } => Some((*pressed, *pos)),
+            _ => None,
+        })
+        .collect();
+    let Some(first_press) = primary.iter().position(|(pressed, _)| *pressed) else { return (None, false) };
+    let before = primary[..first_press].iter().rev().find(|(pressed, _)| !pressed).map(|(_, at)| *at);
+    let last_press = primary.iter().rposition(|(pressed, _)| *pressed).unwrap_or(first_press);
+    let after = primary[last_press + 1..].iter().any(|(pressed, _)| !pressed);
+    (before, after)
+}
+
+/// Where the primary button went down this pass, if egui no longer holds the press origin. A pointer that left (or whose
+/// last event was malformed, which the input hook turns into `PointerGone`) ends the gesture: an earlier press of the pass
+/// is not recovered past it, so a later release cannot complete it.
 fn recent_primary_press(ui: &egui::Ui) -> Option<Pos2> {
     ui.input(|i| {
         i.events
             .iter()
             .rev()
-            .find_map(|event| match event {
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
-                _ => None,
+            .map_while(|event| match event {
+                egui::Event::PointerGone => None,
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(Some(*pos)),
+                _ => Some(None),
             })
+            .find_map(|pos| pos)
             .filter(|pos| pos.is_finite())
     })
 }
@@ -346,6 +373,20 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     // Recover the actual primary press position, preserving the origin for held gestures.
     let origin = origin.or_else(|| recent_primary_press(ui));
     let in_view = |o: Pos2| if xf.rot == 0 { rect.contains(o) } else { resp.rect.contains(o) };
+    // The craft UI runtime gives a pass at most one press, as its last pointer event, so the pass that carries a new
+    // press can also carry the release of the press held from an earlier pass, before it. That release ends the held
+    // press first, at its own position: the tool sees one press and its release, then the next press.
+    let mut released = released;
+    if down
+        && pressed
+        && let (Some(at), after) = ui.input(|i| primary_release_before_press(&i.events))
+    {
+        let at = if at.is_finite() { at } else { latest.unwrap_or(rect.center()) };
+        note_release(ui, clicks_id, Some(at), now);
+        events.push(PointerEvent { kind: PointerKind::Up, pos: pos(at), mods: m, clicks: 1 });
+        down = false;
+        released = after;
+    }
     if pressed
         && !space
         && !menu_open
@@ -400,7 +441,8 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
         && let Some(o) = resp.interact_pointer_pos().filter(|o| in_view(*o))
     {
         let kind = context_target(app, xf.to_canvas(o), xf.zoom);
-        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, open: true }));
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.data_mut(|d| d.insert_temp(context_menu_id(app.pane), MenuRequest { kind, at: o, pass, fresh: true }));
         ui.ctx().request_repaint();
     }
     if resp.clicked() || resp.drag_started() {
@@ -417,6 +459,13 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     if menu_open || modal_open(app) || (field && !resp.has_focus()) || !keyboard_pane(app) {
         return;
     }
+    canvas_events(app, ui, wants_text, vi);
+    finish_pending_ime_delete(app, ui.ctx());
+    let _ = DVec2::ZERO;
+}
+
+/// One pass's keyboard events for the canvas: the input method, typing, the clipboard and the active tool's keys.
+fn canvas_events(app: &mut DesignApp, ui: &egui::Ui, wants_text: bool, vi: designcraft_engine::ViewInfo) {
     // Keys of a frame that began composing are the IME's too (a Backspace that empties the marked
     // text must not delete the character before it).
     let composing_at_start = app.session.tool_composing();
@@ -493,8 +542,6 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
             _ => {}
         }
     }
-    finish_pending_ime_delete(app, ui.ctx());
-    let _ = DVec2::ZERO;
 }
 
 /// A key for the active tool (caret movement, nudging, Backspace); Escape it leaves alone
@@ -515,8 +562,10 @@ fn tool_key(app: &mut DesignApp, key: egui::Key, modifiers: egui::Modifiers, vi:
         _ => return,
     };
     let m = Mods { shift: modifiers.shift, alt: modifiers.alt, cmd: modifiers.command, ctrl: modifiers.ctrl, space: false };
+    // An Escape the tool did not take deselects, as everywhere else, only with no gesture in progress.
+    let busy = app.session.tool_busy();
     let handled = app.session.tool_key(k, m, vi).unwrap_or(false);
-    if !handled && k == ToolKey::Escape {
+    if !handled && k == ToolKey::Escape && !busy {
         let _ = app.run("edit.deselectAll", json!({}));
     }
     app.after_engine();

@@ -419,7 +419,8 @@ fn reader<'a>(own: &'a mut Option<(u64, Cache)>, job: &Job) -> &'a Cache {
 }
 
 /// Starts the worker in a test, where checks otherwise run on the interface thread.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn start_worker(app: &mut DesignApp, ctx: &egui::Context) {
     app.preflight.worker.channels = spawn(ctx.clone(), &app.preflight.worker.live);
 }

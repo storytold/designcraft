@@ -1,5 +1,5 @@
 use super::invoke::{activate, pointer_zoom_params};
-use super::{DesignApp, ScreenMode, Value, json};
+use super::{DesignApp, ScreenMode, json};
 
 /// The command a paste event stands for besides plain Paste. egui-winit turns every ⌘+V chord into
 /// `Event::Paste` with the clipboard's text and drops the key press, and the keymap reads the chord
@@ -20,12 +20,15 @@ pub fn paste_chord_command(app: &DesignApp, modifiers: egui::Modifiers) -> Optio
         .native_shortcuts
         .get(id)
         .and_then(|sc| craft_keymap::Binding::parse(sc).ok())
-        .is_some_and(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+        .is_some_and(|b| !b.trigger.is_double() && b.trigger.chord.effective(platform) == pressed);
     if app.native_menu && on_bar {
         return None;
     }
-    let bound =
-        app.keymap.bindings(&craft_keymap::CommandRef::new(id)).iter().any(|b| !b.trigger.double && b.trigger.chord.effective(platform) == pressed);
+    let bound = app
+        .keymap
+        .bindings(&craft_keymap::CommandRef::new(id))
+        .iter()
+        .any(|b| !b.trigger.is_double() && b.trigger.chord.effective(platform) == pressed);
     bound.then_some(id)
 }
 
@@ -63,6 +66,26 @@ pub fn forwarded_shortcuts(app: &mut DesignApp, ctx: &egui::Context, events: Vec
     crate::canvas::forwarded_keys(app, input.events, modifiers);
 }
 
+/// The Escape the craft UI runtime kept from egui for itself and no component took this pass (read last in the UI, as the
+/// runtime asks): with nothing focused and no egui widget or popup of the app's holding focus, the key stage strips Escape
+/// and routes it to the window. It does what Escape does in the app: cancels the open dialog, closes Quick Apply, leaves
+/// Presentation, and goes back to the Selection tool.
+pub fn window_escape(app: &mut DesignApp, ctx: &egui::Context) {
+    use craft_ui::runtime::keys::{Intent, with_window_intents};
+    if !with_window_intents(ctx, false, |window| window.take(Intent::Cancel)) {
+        return;
+    }
+    if app.ui.dialog.is_some() {
+        crate::dialogs::cancel(app);
+    } else if app.ui.palette.is_some() {
+        app.ui.palette = None;
+    } else if app.ui.screen_mode == ScreenMode::Presentation {
+        let _ = app.run("view.togglePresentation", json!({}));
+    } else if !app.session.wants_text() && app.session.tool_id() != "selection" && !app.session.tool_busy() && app.ui.flyout.is_none() {
+        app.select_tool("selection");
+    }
+}
+
 /// Whether something other than the shortcuts has the keyboard: a dialog or Quick Apply, an input
 /// method composing at the text caret, an open canvas context menu (Escape closes it, as a
 /// native menu would) or the menu search.
@@ -79,7 +102,7 @@ pub(super) fn keys_taken(app: &DesignApp, ctx: &egui::Context) -> bool {
 struct Keys {
     /// Presentation keys in order: `None` leaves Presentation, `Some(step)` moves through the spreads.
     presentation: Vec<Option<isize>>,
-    hits: Vec<craft_keymap::egui::Hit>,
+    hits: Vec<craft_keymap::Hit>,
     /// An Esc press that nothing took.
     escape: bool,
 }
@@ -97,10 +120,14 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
     // in for = never reaches it, and a command's other bindings run here.
     // Copy, Cut and Paste stay too (the dispatcher's default): the canvas and text tools
     // handle them, and Paste carries the text.
-    let accept = |hit: &craft_keymap::egui::Hit| {
+    let accept = |hit: &craft_keymap::Hit| {
         let c = &hit.command;
-        let on_bar =
-            || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);
+        let on_bar = || {
+            c.params.is_null()
+                && crate::keys::panel_of(c).is_none()
+                && crate::keys::tool_of(c).is_none()
+                && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger)
+        };
         let leave = hit.exact && hit.cycle.is_empty() && (c.id == "edit.clear" || on_bar());
         !leave
     };
@@ -125,23 +152,23 @@ fn run_keys(app: &mut DesignApp, ctx: &egui::Context, keys: Keys, typing: bool) 
         if !hit.cycle.is_empty() {
             // Tools sharing a key: the press after the group's current tool selects the next one.
             let current = app.session.tool_id();
-            let tools: Vec<&str> = hit.cycle.iter().filter_map(|c| c.params.get("tool").and_then(Value::as_str)).collect();
+            let tools: Vec<&str> = hit.cycle.iter().filter_map(crate::keys::tool_of).collect();
             let next = tools.iter().position(|t| *t == current).and_then(|i| tools.get((i + 1) % tools.len())).or(tools.first());
             if let Some(tool) = next.map(|t| t.to_string()) {
                 log::debug!("tool shortcut -> {tool}");
                 app.select_tool(&tool);
             }
-        } else if hit.command.id == crate::keys::TOOL_COMMAND
-            && let Some(tool) = hit.command.params.get("tool").and_then(Value::as_str).map(str::to_string)
-        {
+        } else if let Some(tool) = crate::keys::tool_of(&hit.command).map(str::to_string) {
             log::debug!("tool shortcut -> {tool}");
             app.select_tool(&tool);
         } else {
             // Like choosing the menu item: "…" commands open their dialog.
             // Zoom In/Out by key zoom around the pointer while it is over the canvas.
-            match pointer_zoom_params(ctx, &hit.command.id) {
-                Some(p) => activate(app, &hit.command.id, &p),
-                None => activate(app, &hit.command.id, &hit.command.params),
+            // A panel's command opens the panel the way its menu row does: `window.panel` with the panel.
+            let (id, params) = crate::keys::runs(&hit.command);
+            match pointer_zoom_params(ctx, &id) {
+                Some(p) => activate(app, &id, &p),
+                None => activate(app, &id, &params),
             }
         }
     }

@@ -20,9 +20,72 @@ impl DesignApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
     }
 
+    /// The framework's root values for this frame, from the app's: the layout direction of the interface language,
+    /// and light or dark (high contrast) as the interface brightness, so framework surfaces match the native ones.
+    fn root_env(&self) -> craft_ui_widgets::runtime::env::RootEnv {
+        use craft_theme::{ContrastChoice, ModeChoice};
+        use craft_ui_widgets::runtime::env::{Direction, RootEnv};
+        let direction = if crate::i18n::is_rtl(&self.ui.language) { Direction::Rtl } else { Direction::Ltr };
+        let brightness = self.ui.brightness;
+        let dark = !matches!(brightness, crate::theme::Brightness::Light | crate::theme::Brightness::MediumLight);
+        let contrast = if brightness == crate::theme::Brightness::HighContrast { ContrastChoice::High } else { ContrastChoice::Standard };
+        let mut root = RootEnv::new().direction(direction).mode(if dark { ModeChoice::Dark } else { ModeChoice::Light });
+        root.contrast = contrast;
+        // Document tabs cut a long name short (at most 22 digits wide) and shrink before they overflow, so a very long
+        // file name never pushes the close button and the tabs after it out of the strip (#603).
+        root.values.set(craft_ui_widgets::tabs::DocumentTabLook::Shrinking);
+        // Icon groups in the dock's iconic columns part with a thin rule, not a grip strip over each, so a full column
+        // of the app's nineteen groups fits the window. Set at the root: the dock sizes iconic columns from it.
+        root.values.set(craft_ui::docking::IconGroupSeparator::Rule);
+        // Number fields as the app has always shown them: the number and its unit as one run in the interface face
+        // ("12 pt", "0°", "100%"), not a centred mono number with the unit apart, and percentages whole.
+        root.values.set(craft_ui_widgets::text::NumberLook::Inline);
+        root.values.set(craft_ui_widgets::text::NumberPrecision::Measured);
+        // New Document's preset cards in the outline look with the preset's name in the strong body type, as the framework's
+        // pattern shows them; the dialog's card grid reads the look back from these values.
+        root.values.set(craft_ui::patterns::form_dialogs::PresetCardLook::OutlineStrong);
+        root
+    }
+
+    /// What the app sets for the framework before each frame: the root values, the host with the interface language's command
+    /// labels (which the Keyboard Shortcuts dialog shows) and the command catalog. The tools are commands on the board, with
+    /// the app keymap's chords shown only, so the Tools rail resolves, fires and shows them while the app's keymap dispatches
+    /// their keys; while Quick Apply is open, its commands and the document's styles are too, so its palette resolves and
+    /// picks them.
+    pub(crate) fn frame_input(&self) -> craft_ui_widgets::runtime::frame::FrameInput {
+        use craft_ui_widgets::runtime::commands::CommandInput;
+        use craft_ui_widgets::runtime::frame::FrameInput;
+        // Quick Apply's catalog is native-only; the web build has the Tools rail's alone.
+        #[cfg(not(target_arch = "wasm32"))]
+        let quick_apply = menus::quick_apply_catalog(self);
+        #[cfg(target_arch = "wasm32")]
+        let quick_apply = None;
+        let catalog = quick_apply.or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
+        let commands = match catalog {
+            Some(catalog) => CommandInput::new().catalog(catalog),
+            // The board refused both catalogs: the frame has no app commands, and the UI's own controls still work.
+            None => CommandInput::new(),
+        };
+        FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands)
+    }
+
     /// Inject synthetic events (one pointer event per host iteration), retaining control
     /// provenance until a settled UI pass has actually taken the batch.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // The runtime's documented per-frame step (`runtime::frame::set_input`, "before the pass, from eframe's
+        // `App::raw_input_hook`"): it is what gives the framework's focus/key services their `RootEnv` and host
+        // for the coming pass. Without it `install` still takes the window's keys (docs, "Host the runtime from
+        // your own eframe `App`"), but the services have no frame to route them in.
+        //
+        // The app keeps every native authority: the framework's fired commands are taken and dropped, not
+        // re-dispatched into the engine, and neither the close path nor window fitting is taken over.
+        // Only a context the runtime is installed on has the services to route the frame in.
+        if crate::panel_docking::runtime_on(ctx) {
+            use craft_ui_widgets::runtime::frame::{set_input, take_output};
+            let _fired = take_output(ctx);
+            set_input(ctx, self.frame_input());
+        }
+
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#1295).
         if let Some(window_frame) = self.services.window_frame.as_mut() {
@@ -68,6 +131,15 @@ impl DesignApp {
                 if !path.is_empty() {
                     self.pending_drops.push(PendingDrop { path, pointer, system, batch, generation });
                 }
+            }
+        }
+        // A pointer event at a non-finite position is malformed, and egui refuses NaN positions: it ends the pointer's
+        // gesture instead, so a later release cannot complete an earlier press.
+        for event in &mut raw.events {
+            if let egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } = event
+                && !(pos.x.is_finite() && pos.y.is_finite())
+            {
+                *event = egui::Event::PointerGone;
             }
         }
         self.discard_stale_injected_batch(raw);

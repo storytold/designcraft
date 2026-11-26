@@ -10,9 +10,21 @@ description = "DesignCraft egui frontend (InDesign-style UI); swappable — noth
 workspace = true
 
 [dependencies]
-craft-ui = { workspace = true, features = ["native-windows"] }
+craft-ui = { workspace = true }
+# The craft UI framework: the whole interface, on the desktop and in the browser.
+craft-ui-widgets = { workspace = true }
+craft-color-ui = { workspace = true }
+craft-theme = { workspace = true }
+craft-host = { workspace = true }
+craft-ui-shell = { workspace = true }
+# The panel dock's model and its JSON commands, on every target.
+craft-behavior = { workspace = true }
+craft-ui-panels = { workspace = true }
 craft-window = { workspace = true }
+craft-window-sdk = { workspace = true }
 craft-keymap = { workspace = true }
+# The Keyboard Shortcuts dialog (craft_menu::shortcuts), on the desktop and in the browser.
+craft-menu = { workspace = true }
 craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
@@ -52,7 +64,8 @@ serde_json = { workspace = true }
 toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Platform services the browser build has its own paths for, or goes without: updates, and file and message dialogs that
+# never block the frame.
 craft-update = { workspace = true }
-# File and message dialogs that never block the frame; the browser build uses its own path.
 craft-dialogs = { workspace = true }
 raw-window-handle = { workspace = true }

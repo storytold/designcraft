@@ -142,11 +142,10 @@ impl DesignApp {
                 shot.reserved_bytes = bytes;
             }
             let shot = &mut self.pending_shots[index];
-            let (slot, callback) = craft_ui::capture::CaptureSlot::new(ctx, shot.viewport, SCREENSHOT_MAX_IMAGE_BYTES);
-            shot.slot = Some(slot);
-            // The callback holds only a weak slot: it never captures the app, writes a file, runs a
-            // command or wakes the context itself (the slot's live request does that).
-            ctx.send_viewport_cmd_to(shot.viewport, egui::ViewportCommand::Screenshot(callback));
+            // The framework's screenshot slot sends the viewport's screenshot command and asks for a pass
+            // even while the window is hidden. Its callback holds only a weak slot: it never captures the
+            // app, writes a file, runs a command or wakes the context itself (the slot's live request does).
+            shot.slot = Some(craft_ui::runtime::windows::WindowHost::of(ctx).screenshot(shot.viewport, SCREENSHOT_MAX_IMAGE_BYTES));
         }
         if !self.queued_shots.is_empty() || !self.pending_shots.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));

@@ -41,7 +41,7 @@ fn pixel(delta: &egui::epaint::ImageDelta, shown: crate::Shown, point: Point) ->
 #[test]
 fn switching_parent_editing_repaints_pages_and_document_objects() {
     let mut app = app_with_document_object();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let left_page = Point::new(-32.0, 32.0);
     let document_object = Point::new(32.0, 32.0);
     let before = render(&mut app, &ctx);
@@ -72,7 +72,7 @@ fn switching_parent_editing_repaints_pages_and_document_objects() {
 #[test]
 fn switching_parent_editing_with_a_new_zoom_repaints_before_the_worker() {
     let mut app = app_with_document_object();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.canvas.worker = Some(crate::render_worker::Worker::spawn(ctx.clone()).expect("render worker must start"));
     let before = render(&mut app, &ctx);
     assert_ne!(pixel(&before, app.canvas.shown.unwrap(), Point::new(32.0, 32.0)), Color32::WHITE);
@@ -91,7 +91,7 @@ fn switching_parent_editing_with_a_new_zoom_repaints_before_the_worker() {
 #[test]
 fn small_edits_in_the_same_canvas_mode_still_repaint_partially() {
     let mut app = app_with_document_object();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let before = render(&mut app, &ctx);
     let point = Point::new(32.0, 32.0);
     assert_ne!(pixel(&before, app.canvas.shown.unwrap(), point), Color32::WHITE);

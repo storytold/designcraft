@@ -282,8 +282,26 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
     if let Some(system) = &system {
         add_system_fallbacks(&mut defs, system, lang);
     }
+    note_framework_faces(ctx);
     ctx.set_fonts(defs);
     found
+}
+
+/// Tells the framework which faces the interface draws with. Its strong roles (section headings, titles, strong body
+/// text) draw in the `semibold` family only when the stack it installed has one, and its rows take the line height of
+/// the face that leads the proportional family; the app's own definitions, given to egui after this, do not tell it.
+/// So a framework stack of the app's three faces is installed first, and the app's full definitions (its CJK, Arabic
+/// and system fallbacks, under the same family names) replace it before the next pass.
+fn note_framework_faces(ctx: &egui::Context) {
+    use craft_ui_widgets::fonts::{Family, FontRef, I18nScripts, SEMIBOLD, SystemFonts, UiFonts};
+    let scripts = I18nScripts;
+    UiFonts::new(&scripts)
+        .app_face("ui", FontData::from_static(include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf")), &[FontRef::proportional()])
+        .app_face("ui-semibold", FontData::from_static(include_bytes!("../../../assets/fonts/SourceSans3-Semibold.ttf")), &[FontRef::named(SEMIBOLD)])
+        .app_face("mono", FontData::from_static(include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf")), &[FontRef::monospace()])
+        .family(Family::named(SEMIBOLD).weight(600))
+        .system_fonts(SystemFonts::Off)
+        .install(ctx);
 }
 
 /// Whether [`install_fonts`] would find the installed fonts cataloged.
@@ -582,11 +600,19 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     v.selection.stroke = Stroke::new(1.0, t.text_strong);
     v.hyperlink_color = t.accent;
     v.override_text_color = Some(t.text);
-    craft_ui::theme::WidgetPalette { noninteractive: t.panel, inactive: t.button, hovered: t.hover, active: t.tool_active, open: t.hover }.apply_to(
-        &mut v.widgets,
-        r,
-        Stroke::new(1.0, t.text),
-    );
+    // Each widget state's fills, radius and foreground; the borders follow below.
+    for (widget, fill) in [
+        (&mut v.widgets.noninteractive, t.panel),
+        (&mut v.widgets.inactive, t.button),
+        (&mut v.widgets.hovered, t.hover),
+        (&mut v.widgets.active, t.tool_active),
+        (&mut v.widgets.open, t.hover),
+    ] {
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+        widget.corner_radius = r;
+        widget.fg_stroke = Stroke::new(1.0, t.text);
+    }
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.divider);
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.field_border);
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_border);
@@ -610,6 +636,35 @@ impl Tokens {
     /// Tokens stored by [`apply`].
     pub fn get(ctx: &egui::Context) -> Tokens {
         ctx.data(|d| d.get_temp::<Tokens>(egui::Id::NULL)).unwrap_or_else(|| Tokens::for_brightness(Brightness::Dark))
+    }
+}
+
+#[cfg(test)]
+mod widget_visual_tests {
+    use super::{Brightness, Tokens, apply};
+    use egui::{Color32, CornerRadius, Stroke};
+
+    /// The theme gives each of egui's widget states its token fill, the token radius and the text foreground, then
+    /// its own borders, with the outline-only inactive button and input fill on top.
+    #[test]
+    fn each_widget_state_takes_its_token_fill_radius_and_foreground() {
+        for brightness in [Brightness::Dark, Brightness::Light] {
+            let t = Tokens::for_brightness(brightness);
+            let ctx = egui::Context::default();
+            apply(&ctx, &t);
+            let w = ctx.global_style().visuals.widgets.clone();
+            assert_eq!((w.noninteractive.bg_fill, w.noninteractive.weak_bg_fill), (t.panel, t.panel));
+            assert_eq!((w.hovered.bg_fill, w.hovered.weak_bg_fill), (t.hover, t.hover));
+            assert_eq!((w.active.bg_fill, w.active.weak_bg_fill), (t.tool_active, t.tool_active));
+            assert_eq!((w.open.bg_fill, w.open.weak_bg_fill), (t.hover, t.hover));
+            assert_eq!((w.inactive.bg_fill, w.inactive.weak_bg_fill), (t.input, Color32::TRANSPARENT));
+            for state in [&w.noninteractive, &w.inactive, &w.hovered, &w.active, &w.open] {
+                assert_eq!(state.corner_radius, CornerRadius::same(t.radius));
+                assert_eq!(state.fg_stroke, Stroke::new(1.0, t.text));
+            }
+            assert_eq!(w.noninteractive.bg_stroke, Stroke::new(1.0, t.divider));
+            assert_eq!(w.active.bg_stroke, Stroke::new(1.0, t.field_border));
+        }
     }
 }
 

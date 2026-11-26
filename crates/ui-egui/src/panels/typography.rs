@@ -158,58 +158,136 @@ impl Offered {
     }
 }
 
+/// The app owns feature/selection policy; the framework owns the control's input and focus.
+struct Controls {
+    identity: Option<(u64, u64, String)>,
+}
+
+impl Controls {
+    fn new(app: &DesignApp) -> Self {
+        Self {
+            // Text ranges, frames and table-cell selections are distinct edit targets, including
+            // two ranges in the same story. A held action must not follow a changed target.
+            identity: app.session.active().map(|st| (st.uid, st.identity_epoch, format!("{:?}", st.selection))),
+        }
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
+    use craft_ui_widgets::runtime::env::{Direction, with_env};
+
+    let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
+    with_env(ui, |scope| scope.direction = Some(direction), |ui| show_contents(app, ui));
+}
+
+/// A line of the panel's own text: a message, or the panel's title when `strong`.
+fn note(ui: &mut egui::Ui, text: &str, strong: bool) {
+    use craft_ui_widgets::contract::{Props as _, Show as _, Sizing};
+    use craft_ui_widgets::display::Text;
+    use craft_ui_widgets::style::TypeRole;
+
+    let text = Text::new(text.to_owned()).sizing(Sizing::FillWidth);
+    if strong {
+        text.role(TypeRole::BodyStrong).show(ui);
+    } else {
+        text.show(ui);
+    }
+}
+
+fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
+    let controls = Controls::new(app);
+    let lang = app.ui.language.clone();
     if super::text_attrs(app).is_none() {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select text or a text frame."));
+        note(ui, crate::i18n::tr(&lang, "Select text or a text frame."), false);
         return;
     }
     let offered = offered(app);
     if offered.features.is_empty() && offered.sets.is_empty() {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "The selected fonts have no OpenType features."));
+        note(ui, crate::i18n::tr(&lang, "The selected fonts have no OpenType features."), false);
         return;
     }
-    let lang = app.ui.language.clone();
     let mut changes = Changes::default();
-    crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&lang, "Typography")).strong());
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        section(ui, &lang, "Ligatures", |ui| switches(ui, &lang, &offered, LIGATURES, &mut changes));
-        section(ui, &lang, "Alternates", |ui| switches(ui, &lang, &offered, ALTERNATES, &mut changes));
-        section(ui, &lang, "Stylistic Sets", |ui| stylistic_sets(ui, &lang, &offered, &mut changes));
-        section(ui, &lang, "Figure Style", |ui| figures(ui, &lang, &offered, &FIGURE_STYLE, &FIGURE_WIDTH, &mut changes));
-        section(ui, &lang, "Figure Width", |ui| figures(ui, &lang, &offered, &FIGURE_WIDTH, &FIGURE_STYLE, &mut changes));
+    note(ui, crate::i18n::tr(&lang, "Typography"), true);
+    let sections = |ui: &mut egui::Ui, changes: &mut Changes| {
+        section(ui, &lang, "Ligatures", |ui| switches(&controls, ui, &lang, &offered, LIGATURES, changes));
+        section(ui, &lang, "Alternates", |ui| switches(&controls, ui, &lang, &offered, ALTERNATES, changes));
+        section(ui, &lang, "Stylistic Sets", |ui| stylistic_sets(&controls, ui, &lang, &offered, changes));
+        section(ui, &lang, "Figure Style", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_STYLE, &FIGURE_WIDTH, changes));
+        section(ui, &lang, "Figure Width", |ui| figures(&controls, ui, &lang, &offered, &FIGURE_WIDTH, &FIGURE_STYLE, changes));
         section(ui, &lang, "Figure Position", |ui| {
-            choices(ui, &lang, &offered, FIGURE_POSITION, &mut changes);
-            switches(ui, &lang, &offered, FRACTION_AND_ORDINAL, &mut changes);
+            choices(&controls, ui, &lang, &offered, FIGURE_POSITION, changes);
+            switches(&controls, ui, &lang, &offered, FRACTION_AND_ORDINAL, changes);
         });
-        section(ui, &lang, "Capitals", |ui| choices(ui, &lang, &offered, CAPITALS, &mut changes));
-        section(ui, &lang, "Other Features", |ui| switches(ui, &lang, &offered, &other_toggles(), &mut changes));
-    });
+        section(ui, &lang, "Capitals", |ui| choices(&controls, ui, &lang, &offered, CAPITALS, changes));
+        section(ui, &lang, "Other Features", |ui| switches(&controls, ui, &lang, &offered, &other_toggles(), changes));
+    };
+    use craft_ui_widgets::contract::{Props as _, Scroll, ShowContainer as _};
+    use craft_ui_widgets::layout_components::Stack;
+
+    // Less than the group's room by a margin, so the last row does not touch the window's edge.
+    let room = (ui.available_height() - 8.0).max(0.0);
+    Stack::new().id_salt("typography").fill_width().scroll(Scroll::vertical()).room_height(room).show(ui, |ui, _| sections(ui, &mut changes));
     changes.apply(app);
 }
 
 /// A collapsible section, open at first. Its body runs only when it has something to show.
-fn section(ui: &mut egui::Ui, lang: &str, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(crate::i18n::tr(lang, title)).id_salt(title).default_open(true).show(ui, body);
+fn section(ui: &mut egui::Ui, lang: &str, title: &str, mut body: impl FnMut(&mut egui::Ui)) {
+    use craft_ui_panels::sections::Section;
+    use craft_ui_widgets::contract::{Props as _, ShowContainer as _};
+
+    Section::new(crate::i18n::tr(lang, title).to_owned()).id_salt(("typography-section", title)).show(ui, |ui, _| body(ui));
 }
 
 /// A checkbox for a feature's state: checked when all of the selection has it, a dash when some of
 /// it does, italic when only some of the selection's fonts offer it. Returns the state to set when
 /// clicked.
-fn tri_checkbox(ui: &mut egui::Ui, text: &str, feature: Feature) -> Option<bool> {
-    let mut on = feature.applied == Covered::All;
-    let mut label = egui::RichText::new(text);
+fn tri_checkbox(controls: &Controls, ui: &mut egui::Ui, key: &str, text: &str, feature: Feature) -> Option<bool> {
+    use craft_behavior::Mixed;
+    use craft_ui_widgets::choice::Checkbox;
+    use craft_ui_widgets::contract::{Bind, FieldLayout, LabelKind, Props as _, Show as _, ShowContainer as _, SideLabel};
+    use craft_ui_widgets::display::Text;
+    use craft_ui_widgets::layout_components::Row;
+
+    let value = match feature.applied {
+        Covered::Some => Mixed::Mixed,
+        Covered::All => Mixed::Same(true),
+        Covered::None => Mixed::Same(false),
+    };
     if feature.available == Covered::Some {
-        label = label.italics();
+        // Public label content preserves italics without changing the complete accessible
+        // name or creating a second click/focus handler for the label.
+        return Row::new()
+            .id_salt(("typography-partial", &controls.identity, key))
+            .show(ui, |ui, cx| {
+                cx.labelled_with(
+                    ui,
+                    key,
+                    text.to_owned().into(),
+                    SideLabel::new().kind(LabelKind::Hidden).layout(FieldLayout::After),
+                    Checkbox::new(Bind::given(value)),
+                    Text::new(text.to_owned()).italic(),
+                )
+                .events
+                .committed()
+                .copied()
+            })
+            .inner
+            .flatten();
     }
-    let response = ui.add(egui::Checkbox::new(&mut on, crate::rtl::widget(ui, label)).indeterminate(feature.applied == Covered::Some));
-    response.clicked().then_some(feature.applied != Covered::All)
+    Checkbox::new(Bind::given(value))
+        .id_salt(("typography-feature", &controls.identity, key))
+        .label(text.to_owned())
+        .show(ui)
+        .events
+        .committed()
+        .copied()
 }
 
 /// On/off switches the fonts offer.
-fn switches(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Switch], changes: &mut Changes) {
+fn switches(controls: &Controls, ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Switch], changes: &mut Changes) {
     for (tag, label) in items {
         let Some(feature) = offered.get(tag) else { continue };
-        if let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) {
+        if let Some(on) = tri_checkbox(controls, ui, tag, crate::i18n::tr(lang, label), feature) {
             changes.set(tag, on);
         }
     }
@@ -217,10 +295,10 @@ fn switches(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Switch], 
 
 /// Mutually exclusive choices, as checkboxes: choosing one turns the others off. Choosing a checked
 /// one turns it off.
-fn choices(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], changes: &mut Changes) {
+fn choices(controls: &Controls, ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], changes: &mut Changes) {
     for (i, (label, tags)) in items.iter().enumerate() {
         let Some(feature) = offered.choice(tags) else { continue };
-        let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) else { continue };
+        let Some(on) = tri_checkbox(controls, ui, label, crate::i18n::tr(lang, label), feature) else { continue };
         for t in *tags {
             changes.set(t, on);
         }
@@ -238,10 +316,10 @@ fn choices(ui: &mut egui::Ui, lang: &str, offered: &Offered, items: &[Choice], c
 }
 
 /// A figure style or width, as checkboxes like `choices`.
-fn figures(ui: &mut egui::Ui, lang: &str, offered: &Offered, axis: &FigureAxis, other: &FigureAxis, changes: &mut Changes) {
+fn figures(controls: &Controls, ui: &mut egui::Ui, lang: &str, offered: &Offered, axis: &FigureAxis, other: &FigureAxis, changes: &mut Changes) {
     for (i, (label, tags)) in axis.choices.iter().enumerate() {
         let Some(feature) = offered.choice(tags) else { continue };
-        if let Some(on) = tri_checkbox(ui, crate::i18n::tr(lang, label), feature) {
+        if let Some(on) = tri_checkbox(controls, ui, label, crate::i18n::tr(lang, label), feature) {
             figure_change(offered, axis, other, i, on, changes);
         }
     }
@@ -271,13 +349,13 @@ fn figure_change(offered: &Offered, axis: &FigureAxis, other: &FigureAxis, choic
 
 /// Stylistic sets by the name their fonts give them, or the generic `Stylistic Set NN` when the
 /// selection's fonts name them differently.
-fn stylistic_sets(ui: &mut egui::Ui, lang: &str, offered: &Offered, changes: &mut Changes) {
+fn stylistic_sets(controls: &Controls, ui: &mut egui::Ui, lang: &str, offered: &Offered, changes: &mut Changes) {
     for set in &offered.sets {
         let label = match &set.name {
             Some(name) => format!("{name} ({})", set.tag),
             None => format!("{} {:02}", crate::i18n::tr(lang, "Stylistic Set"), set.number),
         };
-        if let Some(on) = tri_checkbox(ui, &label, set.feature) {
+        if let Some(on) = tri_checkbox(controls, ui, &set.tag, &label, set.feature) {
             changes.set(&set.tag, on);
         }
     }
@@ -314,31 +392,45 @@ mod tests {
 
     use super::*;
 
-    /// A Typography panel over "office" (all selected), its fonts installed before the first frame.
+    /// A Typography panel over "office" (all selected), its fonts installed before the first frame, on a context that has
+    /// the framework's runtime installed.
     fn harness() -> Harness<'static, DesignApp> {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "office 1024", "caret": true})).unwrap();
         app.run("edit.selectAll", json!({})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(
-            |ui, app: &mut DesignApp| {
-                let id = egui::Id::unique("test_fonts");
-                if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
-                    crate::theme::install_fonts(ui.ctx(), "");
-                    ui.data_mut(|d| d.insert_temp(id, true));
-                    return;
-                }
-                show(app, ui);
-            },
-            app,
-        );
-        h.run_steps(3);
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "");
+        app.install_framework(&ctx);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(320.0, 1400.0)).build_ui_state(|ui, app: &mut DesignApp| show(app, ui), app);
+        h.input_mut().max_texture_side = Some(8192);
+        steps(&mut h, 3);
         h
     }
 
+    fn steps(h: &mut Harness<'static, DesignApp>, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    fn event(h: &mut Harness<'static, DesignApp>, event: egui::Event) {
+        h.input_mut().events.push(event);
+        steps(h, 1);
+    }
+
     fn click(h: &mut Harness<'static, DesignApp>, label: &str) {
-        h.get_by_label(label).click();
-        h.run_steps(2);
+        let pos = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, label).rect().center();
+        event(h, egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            event(h, egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        steps(h, 2);
     }
 
     fn chars(h: &mut Harness<'static, DesignApp>) -> Value {
@@ -404,10 +496,494 @@ mod tests {
         let mut h = harness();
         h.state_mut().run("type.feature", json!({"features": {"liga": false}})).unwrap();
         assert_eq!(chars(&mut h)["otfFeatures"], json!(["-liga"]));
-        h.run_steps(2);
+        steps(&mut h, 2);
         click(&mut h, "Standard Ligatures");
         let c = chars(&mut h);
         assert_eq!(c["ligatures"], true, "{c}");
         assert!(!c["otfFeatures"].as_array().is_some_and(|l| l.iter().any(|t| t.as_str().is_some_and(|t| t.ends_with("liga")))), "{c}");
+    }
+}
+
+#[cfg(test)]
+mod framework_controls_tests {
+    use super::*;
+    use craft_ui_widgets::runtime::inspect::{Element, Recorded};
+    use egui::{Event, Key, Modifiers, PointerButton, vec2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use std::sync::Arc;
+
+    struct State {
+        app: DesignApp,
+        recorded: Option<Arc<Recorded>>,
+    }
+
+    fn text_app() -> (DesignApp, Value) {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let frame = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "office 1024", "caret": true})).unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        // These exact existing bundled faces need neither an OS install nor network/font fixtures.
+        app.run("type.char", json!({"attrs": {"fontFamily": "Source Serif 4", "fontStyle": "Regular"}})).unwrap();
+        (app, frame["story"].clone())
+    }
+
+    /// A real already-installed Arabic face is a native fixture precondition. Retain the app's
+    /// existing definitions and baseline alignment; never replace missing Arabic with tofu.
+    fn install_arabic_fixture(ctx: &egui::Context, app: &mut DesignApp) {
+        #[cfg(target_os = "macos")]
+        let family = "Geeza Pro";
+        #[cfg(target_os = "windows")]
+        let family = "Segoe UI";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let family = "DejaVu Sans";
+        let db = designcraft_fonts::FontDb::global();
+        assert!(db.has_family(family), "the native Arabic fixture requires already-installed {family}; do not skip Arabic or substitute tofu");
+        let face = db.face(family, "Regular");
+        assert!(face.family.eq_ignore_ascii_case(family), "the named fixture must resolve to {family}, not {}", face.family);
+        assert!(!face.is_placeholder() && face.covers('\u{062A}'), "the Arabic face must include the reported missing real U+062A glyph");
+        let language = app.ui.language.clone();
+        let mut labels: Vec<String> = [
+            "Select text or a text frame.",
+            "The selected fonts have no OpenType features.",
+            "Typography",
+            "Ligatures",
+            "Alternates",
+            "Stylistic Sets",
+            "Figure Style",
+            "Figure Width",
+            "Figure Position",
+            "Capitals",
+            "Other Features",
+            "Stylistic Set",
+        ]
+        .iter()
+        .map(|key| crate::i18n::tr(&language, key).to_owned())
+        .collect();
+        for section in SWITCH_SECTIONS {
+            labels.extend(section.iter().map(|(_, key)| crate::i18n::tr(&language, key).to_owned()));
+        }
+        labels.extend(other_toggles().iter().map(|(_, key)| crate::i18n::tr(&language, key).to_owned()));
+        for choices in [FIGURE_STYLE.choices, FIGURE_WIDTH.choices, FIGURE_POSITION, CAPITALS] {
+            labels.extend(choices.iter().map(|(key, _)| crate::i18n::tr(&language, key).to_owned()));
+        }
+        // Include actual font-supplied set names, not another panel's fixed label list.
+        for set in offered(app).sets {
+            labels.push(match set.name {
+                Some(name) => format!("{name} ({})", set.tag),
+                None => format!("{} {:02}", crate::i18n::tr(&language, "Stylistic Set"), set.number),
+            });
+        }
+        let mut checked = std::collections::BTreeSet::new();
+        for label in &labels {
+            for c in label.chars().filter(|c| designcraft_fonts::is_rtl(*c) || ('\u{0600}'..='\u{06ff}').contains(c)) {
+                assert!(face.covers(c), "{family} lacks real Typography glyph U+{:04X} from {label}", u32::from(c));
+                checked.insert(c);
+            }
+        }
+        assert!(!checked.is_empty(), "the fixture must cover actual Arabic Typography labels");
+        let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
+        let fallback = crate::theme::SystemFont::new("Arab", face.family.clone(), face.data().to_vec(), face.index());
+        crate::theme::add_system_fallbacks(&mut definitions, &[fallback], &language);
+        ctx.set_fonts(definitions);
+        eprintln!(
+            "Typography Arabic fixture: real existing {} {}, face {}, {} font bytes, {} unique Arabic Typography glyphs explicitly covered",
+            face.family,
+            face.style,
+            face.index(),
+            face.data().len(),
+            checked.len()
+        );
+    }
+
+    fn harness(mut app: DesignApp) -> Harness<'static, State> {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "");
+        app.install_framework(&ctx);
+        app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+        let mut locale_fonts_ready = false;
+        let mut h = Harness::builder().with_context(ctx).with_size(vec2(360.0, 1400.0)).build_ui_state(
+            move |ui, state: &mut State| {
+                if !locale_fonts_ready {
+                    locale_fonts_ready = true;
+                    if state.app.ui.language == "ar" {
+                        install_arabic_fixture(ui.ctx(), &mut state.app);
+                        return;
+                    }
+                }
+                let region = ui.scope_id();
+                let (_, recorded) = craft_ui_widgets::runtime::inspect::record(ui, region, |ui| show(&mut state.app, ui));
+                if recorded.is_some() {
+                    state.recorded = recorded;
+                }
+            },
+            State { app, recorded: None },
+        );
+        h.input_mut().max_texture_side = Some(8192);
+        steps(&mut h, 3);
+        h
+    }
+
+    fn steps(h: &mut Harness<'_, State>, count: usize) {
+        for _ in 0..count {
+            let mut raw = std::mem::take(h.input_mut());
+            let ctx = h.ctx.clone();
+            h.state_mut().app.raw_input_hook(&ctx, &mut raw);
+            *h.input_mut() = raw;
+            h.step();
+        }
+    }
+
+    fn event(h: &mut Harness<'_, State>, event: Event) {
+        h.input_mut().events.push(event);
+        steps(h, 1);
+    }
+
+    fn key(h: &mut Harness<'_, State>, key: Key) {
+        for pressed in [true, false] {
+            event(h, Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+        steps(h, 2);
+    }
+
+    fn pointer(h: &mut Harness<'_, State>, pos: egui::Pos2, pressed: bool) {
+        event(h, Event::PointerMoved(pos));
+        event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+    }
+
+    fn label(h: &Harness<'_, State>, english: &str) -> String {
+        crate::i18n::tr(&h.state().app.ui.language, english).to_owned()
+    }
+
+    fn named_element(h: &Harness<'_, State>, component: &str, name: &str) -> Element {
+        let found: Vec<_> = h
+            .state()
+            .recorded
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|e| e.component == component && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(name)))
+            .cloned()
+            .collect();
+        assert_eq!(found.len(), 1, "one real {component} named {name}: {found:?}");
+        found[0].clone()
+    }
+
+    fn click_name(h: &mut Harness<'_, State>, name: &str) {
+        let target = named_element(h, "Checkbox", name);
+        let pos = target.rect.center();
+        pointer(h, pos, true);
+        pointer(h, pos, false);
+        steps(h, 2);
+    }
+
+    fn click(h: &mut Harness<'_, State>, english: &str) {
+        let name = label(h, english);
+        click_name(h, &name);
+    }
+
+    fn tab_to(h: &mut Harness<'_, State>, english: &str) {
+        let name = label(h, english);
+        let native = h.state().recorded.as_ref().unwrap().elements.iter().filter(|e| e.stop.is_some()).count();
+        let headers = h.query_all_by(|n| n.role() == egui::accesskit::Role::Button).count();
+        for _ in 0..=native + headers {
+            if h.query_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some(name.as_str()))
+                .is_some_and(|n| n.is_focused())
+            {
+                return;
+            }
+            key(h, Key::Tab);
+        }
+        panic!("natural Tab did not reach {name} in the current control cycle");
+    }
+
+    fn toggled(h: &Harness<'_, State>, english: &str) -> Option<egui::accesskit::Toggled> {
+        let name = label(h, english);
+        h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some(name.as_str())).accesskit_node().toggled()
+    }
+
+    fn chars(h: &mut Harness<'_, State>) -> Value {
+        super::super::text_attrs(&mut h.state_mut().app).unwrap()["chars"].clone()
+    }
+
+    fn offers(h: &mut Harness<'_, State>) -> Value {
+        h.state_mut().app.session.execute("type.openTypeFeatures", &json!({})).unwrap()
+    }
+
+    fn coverage(h: &mut Harness<'_, State>, tag: &str) -> Value {
+        let value = offers(h);
+        value["features"].as_array().unwrap().iter().find(|f| f["tag"] == tag).unwrap().clone()
+    }
+
+    fn calls(h: &Harness<'_, State>, from: usize) -> Vec<(String, Value)> {
+        h.state().app.session.journal[from..].iter().filter(|(id, _)| matches!(id.as_str(), "type.feature" | "type.char")).cloned().collect()
+    }
+
+    fn undo_len(h: &Harness<'_, State>) -> usize {
+        h.state().app.session.active().unwrap().history.undo.len()
+    }
+
+    fn undo(h: &mut Harness<'_, State>) {
+        h.state_mut().app.run("edit.undo", json!({})).unwrap();
+        steps(h, 2);
+    }
+
+    fn select(h: &mut Harness<'_, State>, story: &Value, anchor: usize, focus: usize) {
+        h.state_mut().app.run("text.select", json!({"story": story, "anchor": anchor, "focus": focus})).unwrap();
+        steps(h, 2);
+    }
+
+    fn feature_call(features: Value) -> (String, Value) {
+        ("type.feature".to_owned(), json!({"features": features}))
+    }
+
+    #[test]
+    fn installed_switches_toggle_by_pointer_and_natural_space_with_independent_undo_and_no_replay() {
+        let (app, _) = text_app();
+        let mut h = harness(app);
+        let before = chars(&mut h);
+        let start = h.state().app.session.journal.len();
+        let history = undo_len(&h);
+        assert_eq!(toggled(&h, "Mark Positioning"), Some(egui::accesskit::Toggled::True));
+        click(&mut h, "Mark Positioning");
+        assert_eq!(calls(&h, start), [feature_call(json!({"mark": false}))]);
+        assert_eq!(coverage(&mut h, "mark")["applied"], "none");
+        assert_eq!(undo_len(&h), history + 1);
+        steps(&mut h, 3);
+        assert_eq!(calls(&h, start).len(), 1);
+        let off = chars(&mut h);
+        tab_to(&mut h, "Mark Positioning");
+        let start = h.state().app.session.journal.len();
+        key(&mut h, Key::Space);
+        assert_eq!(calls(&h, start), [feature_call(json!({"mark": true}))]);
+        assert_eq!(coverage(&mut h, "mark")["applied"], "all");
+        assert_eq!(undo_len(&h), history + 2);
+        steps(&mut h, 3);
+        assert_eq!(calls(&h, start).len(), 1);
+        undo(&mut h);
+        assert_eq!(chars(&mut h), off);
+        undo(&mut h);
+        assert_eq!(chars(&mut h), before);
+    }
+
+    #[test]
+    fn installed_standard_ligatures_preserve_two_commands_and_clear_stale_liga_with_separate_undo() {
+        for stale in [false, true] {
+            let (mut app, _) = text_app();
+            if stale {
+                app.run("type.feature", json!({"features": {"liga": false}})).unwrap();
+            }
+            let mut h = harness(app);
+            let before = chars(&mut h);
+            let history = undo_len(&h);
+            let start = h.state().app.session.journal.len();
+            click(&mut h, "Standard Ligatures");
+            let on = stale;
+            assert_eq!(calls(&h, start), [feature_call(json!({"liga": true})), ("type.char".to_owned(), json!({"attrs": {"ligatures": on}}))]);
+            assert_eq!(chars(&mut h)["ligatures"], on);
+            assert!(!chars(&mut h)["otfFeatures"].as_array().unwrap().iter().any(|v| v.as_str().is_some_and(|s| s.ends_with("liga"))));
+            assert_eq!(undo_len(&h), history + 2, "the original command grouping is not collapsed");
+            steps(&mut h, 3);
+            assert_eq!(calls(&h, start).len(), 2);
+            undo(&mut h);
+            assert_eq!(chars(&mut h)["ligatures"], before["ligatures"]);
+            undo(&mut h);
+            assert_eq!(chars(&mut h), before, "Undo restores the original -liga when one existed");
+        }
+    }
+
+    #[test]
+    fn installed_figure_axes_pair_keep_the_partner_and_deselect_to_default() {
+        let (app, _) = text_app();
+        let mut h = harness(app);
+        let actions = [
+            ("Lining", json!({"lnum": true, "onum": false, "tnum": false, "pnum": true})),
+            ("Tabular", json!({"lnum": true, "onum": false, "tnum": true, "pnum": false})),
+            ("Oldstyle", json!({"lnum": false, "onum": true, "tnum": true, "pnum": false})),
+            ("Oldstyle", json!({"lnum": false, "onum": false, "tnum": false, "pnum": false})),
+        ];
+        let mut checkpoints = Vec::new();
+        for (name, expected) in actions {
+            checkpoints.push(chars(&mut h));
+            let start = h.state().app.session.journal.len();
+            let history = undo_len(&h);
+            click(&mut h, name);
+            assert_eq!(calls(&h, start), [feature_call(expected.clone())]);
+            for (tag, on) in expected.as_object().unwrap() {
+                assert_eq!(coverage(&mut h, tag)["applied"], if on.as_bool().unwrap() { "all" } else { "none" });
+            }
+            assert_eq!(undo_len(&h), history + 1);
+            steps(&mut h, 3);
+            assert_eq!(calls(&h, start).len(), 1);
+        }
+        for before in checkpoints.into_iter().rev() {
+            undo(&mut h);
+            assert_eq!(chars(&mut h), before);
+        }
+    }
+
+    #[test]
+    fn installed_capital_and_position_choices_are_exclusive_but_can_be_deselected() {
+        let (app, _) = text_app();
+        let mut h = harness(app);
+        for (name, expected) in [
+            ("Small Caps", json!({"c2sc": false, "smcp": true})),
+            ("Caps to Small Caps", json!({"c2sc": true, "smcp": false})),
+            ("All Small Caps", json!({"c2sc": true, "smcp": true})),
+            ("All Small Caps", json!({"c2sc": false, "smcp": false})),
+            ("Superscript", json!({"numr": false, "dnom": false, "sups": true, "subs": false, "sinf": false})),
+            ("Subscript", json!({"numr": false, "dnom": false, "sups": false, "subs": true, "sinf": false})),
+            ("Subscript", json!({"subs": false})),
+        ] {
+            let before = chars(&mut h);
+            let start = h.state().app.session.journal.len();
+            let history = undo_len(&h);
+            click(&mut h, name);
+            assert_eq!(calls(&h, start), [feature_call(expected.clone())]);
+            for (tag, on) in expected.as_object().unwrap() {
+                assert_eq!(coverage(&mut h, tag)["applied"], if on.as_bool().unwrap() { "all" } else { "none" });
+            }
+            assert_eq!(undo_len(&h), history + 1);
+            // Check each transition's own Undo, then reapply through the actual control for the next one.
+            undo(&mut h);
+            assert_eq!(chars(&mut h), before);
+            click(&mut h, name);
+        }
+    }
+
+    #[test]
+    fn installed_named_stylistic_set_preserves_the_font_name_and_exact_feature_target() {
+        let (app, _) = text_app();
+        let mut h = harness(app);
+        let available = offers(&mut h);
+        let set = available["stylisticSets"].as_array().unwrap().iter().find(|s| s["tag"] == "ss01").unwrap();
+        let name = format!("{} ({})", set["name"].as_str().expect("the exact bundled Source Serif 4 names ss01"), set["tag"].as_str().unwrap());
+        assert_eq!(set["applied"], "none");
+        let before = chars(&mut h);
+        let start = h.state().app.session.journal.len();
+        let history = undo_len(&h);
+        click_name(&mut h, &name);
+        assert_eq!(calls(&h, start), [feature_call(json!({"ss01": true}))]);
+        assert!(chars(&mut h)["otfFeatures"].as_array().unwrap().contains(&json!("ss01")));
+        assert_eq!(undo_len(&h), history + 1);
+        undo(&mut h);
+        assert_eq!(chars(&mut h), before);
+    }
+
+    #[test]
+    fn installed_mixed_coverage_and_partial_font_availability_keep_real_labels_and_control_input() {
+        let (mut app, story) = text_app();
+        app.run("text.select", json!({"story": story, "anchor": 0, "focus": 6})).unwrap();
+        app.run("type.char", json!({"attrs": {"fontFamily": "Source Sans 3", "fontStyle": "Regular"}})).unwrap();
+        app.run("type.feature", json!({"features": {"mark": false}})).unwrap();
+        app.run("text.select", json!({"story": story, "anchor": 0, "focus": 11})).unwrap();
+        let mut h = harness(app);
+        assert_eq!(coverage(&mut h, "mark")["applied"], "some");
+        assert_eq!(toggled(&h, "Mark Positioning"), Some(egui::accesskit::Toggled::Mixed));
+        let before = h.state().app.session.active().unwrap().doc.clone();
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Mark Positioning");
+        assert_eq!(calls(&h, start), [feature_call(json!({"mark": true}))]);
+        assert_eq!(coverage(&mut h, "mark")["applied"], "all");
+        undo(&mut h);
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
+        assert_eq!(coverage(&mut h, "dlig")["available"], "some");
+        let name = label(&h, "Discretionary Ligatures");
+        let content = named_element(&h, "Text", &name);
+        assert!(content.stop.is_none(), "italic content adds no keyboard stop");
+        let start = h.state().app.session.journal.len();
+        // Click the real styled label, not just the mark, to exercise public label activation.
+        pointer(&mut h, content.rect.center(), true);
+        pointer(&mut h, content.rect.center(), false);
+        steps(&mut h, 2);
+        assert_eq!(calls(&h, start), [feature_call(json!({"dlig": true}))]);
+        assert_eq!(coverage(&mut h, "dlig")["applied"], "all");
+        undo(&mut h);
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
+    }
+
+    #[test]
+    fn installed_held_input_cannot_retarget_another_range_or_document() {
+        for target in ["range", "document", "absent"] {
+            let (app, story) = text_app();
+            let mut h = harness(app);
+            let original = h.state().app.session.active().unwrap().doc.clone();
+            let old_target = named_element(&h, "Checkbox", "Mark Positioning");
+            pointer(&mut h, old_target.rect.center(), true);
+            match target {
+                "range" => select(&mut h, &story, 0, 6),
+                "document" => {
+                    h.state_mut().app.run("file.new", json!({})).unwrap();
+                    h.state_mut()
+                        .app
+                        .run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "office 1024", "caret": true}))
+                        .unwrap();
+                    h.state_mut().app.run("edit.selectAll", json!({})).unwrap();
+                    steps(&mut h, 2);
+                }
+                _ => {
+                    h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
+                    steps(&mut h, 2);
+                }
+            }
+            let next = h.state().app.session.active().unwrap().doc.clone();
+            let history = undo_len(&h);
+            let start = h.state().app.session.journal.len();
+            pointer(&mut h, old_target.rect.center(), false);
+            steps(&mut h, 3);
+            assert!(calls(&h, start).is_empty(), "held press must not follow changed {target}");
+            assert_eq!(undo_len(&h), history);
+            assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &next));
+            assert!(Arc::ptr_eq(&h.state().app.session.documents()[0].doc, &original));
+            if target != "absent" {
+                let before = chars(&mut h);
+                click(&mut h, "Mark Positioning");
+                assert_eq!(calls(&h, start), [feature_call(json!({"mark": false}))]);
+                undo(&mut h);
+                assert_eq!(chars(&mut h), before);
+                assert!(Arc::ptr_eq(&h.state().app.session.documents()[0].doc, &original));
+            }
+        }
+    }
+
+    #[test]
+    fn installed_real_caret_refusal_and_absent_selection_preserve_documents_and_history() {
+        let (app, story) = text_app();
+        let mut h = harness(app);
+        select(&mut h, &story, 0, 0);
+        let before = h.state().app.session.active().unwrap().doc.clone();
+        let history = undo_len(&h);
+        let start = h.state().app.session.journal.len();
+        click(&mut h, "Mark Positioning");
+        assert!(calls(&h, start).is_empty(), "failed type.feature is not a successful journal entry");
+        assert!(h.state().app.ui.status.contains("select text"));
+        assert_eq!(undo_len(&h), history);
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
+        h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
+        steps(&mut h, 2);
+        assert!(!h.state().recorded.as_ref().unwrap().elements.iter().any(|e| e.component == "Checkbox"));
+        assert!(calls(&h, start).is_empty());
+        assert_eq!(undo_len(&h), history);
+        assert!(Arc::ptr_eq(&h.state().app.session.active().unwrap().doc, &before));
+    }
+
+    #[test]
+    fn installed_localized_complete_labels_keep_natural_keyboard_and_logical_rtl_names() {
+        for language in ["de", "ar"] {
+            let (mut app, _) = text_app();
+            app.ui.language = language.to_owned();
+            let mut h = harness(app);
+            let name = label(&h, "Superscript");
+            assert_ne!(name, "Superscript", "the fixture exercises a translation");
+            let node = named_element(&h, "Checkbox", &name);
+            assert!(node.stop.is_some());
+            assert_eq!(node.facts.as_ref().unwrap().name.as_deref(), Some(name.as_str()));
+            tab_to(&mut h, "Superscript");
+            let start = h.state().app.session.journal.len();
+            key(&mut h, Key::Space);
+            assert_eq!(calls(&h, start), [feature_call(json!({"numr": false, "dnom": false, "sups": true, "subs": false, "sinf": false}))]);
+            assert_eq!(coverage(&mut h, "sups")["applied"], "all");
+        }
     }
 }

@@ -1,5 +1,4 @@
-use super::bar::menu_button;
-use super::invoke::activate;
+use super::bar::{Pick, row_label};
 use super::state::{checked, menu_enabled, shortcut_label};
 use super::tables::{MENUS, WORKSPACES};
 use super::ui_commands::shown;
@@ -185,52 +184,62 @@ pub fn has_shown_item(app: &DesignApp, rest: &[Item]) -> bool {
     })
 }
 
-/// Draws a menu's items; returns how many were hidden.
-pub(super) fn menu_items(app: &mut DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str) -> usize {
+/// Shows a menu's items as framework rows: commands as `MenuItem`s with their shortcut text, check mark and enabled
+/// state, submenus as submenu rows, separators as dividers. The row that ran goes in `pick`; returns how many items
+/// Edit › Menus hid.
+pub(super) fn menu_items(app: &DesignApp, ui: &mut egui::Ui, items: &[Item], path: &str, pick: &mut Option<Pick>) -> usize {
+    use craft_ui::contract::Show as _;
+    use craft_ui::display::Divider;
+    use craft_ui::menu::Menu;
     let mut hidden = 0;
     for (i, it) in items.iter().enumerate() {
         match it {
             Item::Sep => {
                 if has_shown_item(app, &items[i + 1..]) {
-                    ui.separator();
+                    Divider::horizontal().show(ui);
                 }
             }
             Item::Sub(name, children) => {
                 let sub = format!("{path}/{name}");
-                let shown = crate::i18n::tr(&app.ui.language, name).to_owned();
-                menu_button(ui, crate::rtl::widget(ui, shown), |ui| {
+                let label = row_label(crate::i18n::tr(&app.ui.language, name));
+                let _ = Menu::submenu_row_enabled(ui, label, true, |ui, _| {
                     if sub == OPEN_RECENT {
-                        recent_menu_items(app, ui);
+                        recent_menu_items(app, ui, pick);
                     }
-                    hidden += menu_items(app, ui, children, &sub);
+                    hidden += menu_items(app, ui, children, &sub, pick);
                 });
             }
             Item::Cmd { id, .. } if !shown(app, id) => {}
             Item::Cmd { label, .. } if !app.ui.show_full_menus && app.ui.hidden_menu_items.contains(&menu_key(path, label)) => hidden += 1,
             Item::Cmd { label, id, params, shortcut: _ } => {
-                let lang = &app.ui.language;
-                let label = match id.as_str() {
-                    "window.workspace" => format!("[{}]", crate::i18n::workspace_name(lang, label)),
-                    "window.resetWorkspace" => format!("{} {}", crate::i18n::tr(lang, "Reset"), crate::i18n::workspace_name(lang, &app.ui.workspace)),
-                    _ => crate::i18n::tr(lang, label).to_owned(),
-                };
-                let text = match checked(app, id, params) {
-                    Some(true) => format!("✓ {label}"),
-                    Some(false) => format!("   {label}"),
-                    None => label.to_owned(),
-                };
-                let mut b = egui::Button::new(crate::rtl::widget(ui, text));
-                if let Some(sc) = shortcut_label(app, id, params) {
-                    b = b.shortcut_text(sc);
-                }
-                if ui.add_enabled(menu_enabled(app, id), b).clicked() {
-                    activate(app, id, params);
-                    ui.close();
+                if command_row(app, ui, label, id, params) {
+                    *pick = Some(Pick::Run(id.clone(), params.clone()));
                 }
             }
         }
     }
     hidden
+}
+
+/// A command's row: its label in the interface language, its shortcut in effect, its check mark, greyed when it can't
+/// run. Whether it ran this pass.
+fn command_row(app: &DesignApp, ui: &mut egui::Ui, label: &str, id: &str, params: &Value) -> bool {
+    use craft_ui::contract::{Props as _, Show as _};
+    use craft_ui::menu::MenuItem;
+    let lang = &app.ui.language;
+    let label = match id {
+        "window.workspace" => format!("[{}]", crate::i18n::workspace_name(lang, label)),
+        "window.resetWorkspace" => format!("{} {}", crate::i18n::tr(lang, "Reset"), crate::i18n::workspace_name(lang, &app.ui.workspace)),
+        _ => crate::i18n::tr(lang, label).to_owned(),
+    };
+    let mut row = MenuItem::new(row_label(&label)).enabled(menu_enabled(app, id));
+    if let Some(on) = checked(app, id, params) {
+        row = row.check(on);
+    }
+    if let Some(sc) = shortcut_label(app, id, params) {
+        row = row.shortcut(sc);
+    }
+    row.show(ui).ran
 }
 
 /// The File › Open Recent submenu, whose files come before its fixed items.
@@ -257,25 +266,27 @@ pub fn recent_items(app: &DesignApp) -> Vec<Item> {
     out
 }
 
-/// The recent files at the top of File › Open Recent: file names (not translated), the full path
-/// as tooltip, dimmed when the file is gone (choosing it then says so).
-fn recent_menu_items(app: &mut DesignApp, ui: &mut egui::Ui) {
-    let dim = crate::theme::Tokens::get(ui.ctx()).text_dim;
+/// The recent files at the top of File › Open Recent: file names (not translated), the full path as tooltip. A file that
+/// is gone says so in a muted line under its name (a framework row has no dimmed label of its own), and choosing it
+/// says so too.
+fn recent_menu_items(app: &DesignApp, ui: &mut egui::Ui, pick: &mut Option<Pick>) {
+    use craft_ui::contract::{Props as _, Show as _};
+    use craft_ui::display::Divider;
+    use craft_ui::menu::MenuItem;
     for it in recent_items(app) {
         match it {
             Item::Cmd { label, id, params, .. } => {
                 let path = params["index"].as_u64().and_then(|i| app.session.prefs.recent_files.get(i as usize)).cloned().unwrap_or_default();
-                let mut text = egui::RichText::new(label);
+                let mut row = MenuItem::new(row_label(&label));
                 if !crate::chrome::recent_file_stat(ui.ctx(), &path).exists {
-                    text = text.color(dim);
+                    row = row.detail(crate::i18n::tr(&app.ui.language, "Missing").to_owned());
                 }
-                if ui.button(crate::rtl::widget(ui, text)).on_hover_text(&path).clicked() {
-                    activate(app, &id, &params);
-                    ui.close();
+                if row.tooltip(path).show(ui).ran {
+                    *pick = Some(Pick::Run(id, params));
                 }
             }
             Item::Sep => {
-                ui.separator();
+                Divider::horizontal().show(ui);
             }
             Item::Sub(..) => {}
         }

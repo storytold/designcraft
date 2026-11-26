@@ -6,8 +6,7 @@ use super::state::{CanvasCache, ImportRequest, ImportedFile, Perf, ScreenMode, U
 use super::{
     ControlRequest, ControlResponse, DesignApp, HashMap, InputGeneration, LivePreview, QuitState, Receiver, SCREENSHOT_MAX_AGGREGATE_BYTES,
     SCREENSHOT_MAX_IMAGE_BYTES, SCREENSHOT_MAX_REQUESTS, ScreenshotGeometry, Sender, Session, ShotRequest, UiRequest, Value, ViewInfo, about, canvas,
-    chrome, cursors, dialogs, dock, json, menus, new_document, page_history, panel_docking, shortcut_import, story_editor, theme, toolbar,
-    updates_ui,
+    chrome, cursors, dialogs, json, menus, new_document, page_history, panel_docking, shortcut_import, story_editor, theme, toolbar, updates_ui,
 };
 
 mod clipboard;
@@ -30,10 +29,41 @@ pub(crate) use files::browser_import_tests;
 pub use files::opens_as_document;
 
 impl DesignApp {
+    /// Installs the craft UI framework's runtime on `ctx`, on every target: the whole UI is the framework's.
+    ///
+    /// The runtime's pass hooks are what give the framework's components an env, a pointer snapshot and
+    /// key state, and it refuses to install inside a pass, so a host calls this once after it made the
+    /// context and before the first pass: the desktop shell and the browser runner with their creation
+    /// context, a test with its own. A context that already has the runtime keeps it.
+    pub fn install_framework(&mut self, ctx: &egui::Context) {
+        // The main window's frame: the app's own title bar where decorations are off, the bar under the macOS traffic lights.
+        let chrome = if self.custom_titlebar {
+            craft_host::target::WindowChrome::Integrated
+        } else if self.integrated_titlebar {
+            craft_host::target::WindowChrome::Inset
+        } else {
+            craft_host::target::WindowChrome::Native
+        };
+        crate::framework_transform::install_with(ctx, chrome);
+        // The canvas's tool cursor images reach the window past the runtime's cursor stage.
+        crate::cursors::install(ctx);
+    }
+
     /// Start the background font scan, establish the monotonic timing origin, and initialize document, view, input, screenshot, dialog and control state.
     pub fn new(session: Session, services: Services) -> Self {
         // The font menus and the first file opened need the installed fonts: catalog them now.
         designcraft_fonts::FontDb::global().scan_in_background();
+        Self::new_state(session, services)
+    }
+
+    /// Construct the same app state for panel interactions without starting font discovery.
+    /// Services, dialog state and timing initialization are otherwise the shipping initializer.
+    #[cfg(test)]
+    pub(crate) fn new_for_panel_tests(session: Session, services: Services) -> Self {
+        Self::new_state(session, services)
+    }
+
+    fn new_state(session: Session, services: Services) -> Self {
         // The app owns the monotonic origin for recovery timing and frame pacing; `now_ms` itself
         // is process-global so screenshot deadlines stay comparable across hosts.
         let now = now_ms() / 1000.0;
@@ -72,6 +102,7 @@ impl DesignApp {
             control_synthetic: vec![],
             native_actions: Default::default(),
             native_events_pending: Default::default(),
+            host_order_frame: None,
             control_input_frame: Default::default(),
             clipboard_guard_installed: false,
             story_editor: None,
@@ -97,6 +128,9 @@ impl DesignApp {
             #[cfg(test)]
             input_ticks: 0,
             styled: false,
+            framework_fields: Vec::new(),
+            framework_opacity_fields: Vec::new(),
+            framework_opacity_component_stops: Vec::new(),
             fonts_lang: String::new(),
             fonts_system: false,
             restyle: false,
@@ -109,9 +143,10 @@ impl DesignApp {
             native_menu: false,
             native_shortcuts: Default::default(),
             keymap: crate::keys::new_keymap(craft_keymap::Overrides::new()),
-            key_dispatcher: craft_keymap::egui::Dispatcher::new(),
+            key_dispatcher: crate::key_dispatch::Dispatcher::new(),
             shortcut_dialog: None,
             shortcut_answers: Default::default(),
+            shortcut_codes: Default::default(),
             last_time: now,
             last_recovery: now,
             recovery_writing: false,
@@ -199,6 +234,11 @@ impl DesignApp {
             self.input_ticks += 1;
         }
         let ctx = ui.ctx().clone();
+        // The Transform pilot's field rects are this frame's only: a frame that draws no pilot field
+        // (bespoke units, no selection, Properties hidden) reports none rather than the last ones.
+        self.framework_fields.clear();
+        self.framework_opacity_fields.clear();
+        self.framework_opacity_component_stops.clear();
         self.canvas_ime = false;
         self.ime_canvas = None;
         self.ime_interrupt = false;
@@ -214,6 +254,7 @@ impl DesignApp {
             ctx.request_repaint();
             return;
         }
+        crate::control::object_style_witness::begin(&ctx, self.ui.dialog.as_ref().is_some_and(|dialog| dialog.id == crate::object_style_dialog::ID));
         self.settle_live_preview();
         // Input consumers run once, in the live first UI pass, before layout. Hidden logic ticks
         // must not replay shortcuts or dropped files from stale input.
@@ -267,7 +308,7 @@ impl DesignApp {
             ctx.show_viewport_immediate(
                 second_window_viewport(),
                 egui::ViewportBuilder::default().with_title(title).with_inner_size([960.0, 720.0]),
-                |ui, _class| {
+                |ui, class| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {
                         self.switch_pane(1);
                         if self.view().is_none() {
@@ -284,6 +325,12 @@ impl DesignApp {
                         }
                         canvas::show(self, ui);
                     });
+                    // The window's own pass ends here: with nothing else focused in it, its canvas takes the keyboard
+                    // (Escape, Tab and the clipboard reach it), as the main window's does at the end of its pass. An
+                    // embedded viewport draws in the main window's pass, which takes the target there.
+                    if class != egui::ViewportClass::EmbeddedWindow {
+                        canvas::take_key_focus(self, ui.ctx());
+                    }
                     if ui.input(|i| i.viewport().close_requested()) {
                         self.end_second_ime_viewport();
                         self.second_window = false;
@@ -298,15 +345,15 @@ impl DesignApp {
             // start a fresh context when the window is shown again.
             self.end_second_ime_viewport();
         }
-        // Tab, Shift+Tab and Presentation hide the floating panels with the docked ones.
-        if !presenting && self.ui.hidden_panels == 0 {
-            dock::float_only_windows(self, &ctx);
-        }
         story_editor::show(self, &ctx);
-        dialogs::show(self, &ctx);
+        dialogs::show_in(self, &ctx, ui.is_enabled());
         about::show(self, &ctx);
         updates_ui::show(self, &ctx);
         menus::palette(self, &ctx);
+        // Nothing else holds egui focus: the canvas does, so the runtime leaves Escape, Tab and the clipboard to the app.
+        canvas::take_key_focus(self, &ctx);
+        // The Escape the runtime's key stage kept from egui and nothing in this pass took.
+        menus::window_escape(self, &ctx);
         // The IME is observed once, here: after the canvas, the floating panels, the story editor,
         // dialogs and Quick Apply have all applied this pass's commands and focus changes.
         canvas::ime_observe(self, &ctx);
@@ -316,6 +363,7 @@ impl DesignApp {
         for url in std::mem::take(&mut self.ui.pending_urls) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
+        crate::control::object_style_witness::finish(&ctx, self.ui.dialog.as_ref().is_some_and(|dialog| dialog.id == crate::object_style_dialog::ID));
         if !ctx.will_discard() {
             // A settled UI pass has taken the injected step (a discarded pass has not). Keep
             // `injected_private` until the next raw-input hook, so this pass's end-pass clipboard

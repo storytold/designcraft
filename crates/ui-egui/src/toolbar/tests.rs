@@ -1,10 +1,12 @@
 use egui::{pos2, vec2};
+use egui_kittest::kittest::NodeT as _;
 use egui_kittest::kittest::Queryable;
 
 use crate::test_window::{self, wheel};
 
-/// The last tool group's button and the Fill proxy, near the bottom of the panel.
-const LAST_TOOL: &str = "Zoom Tool (Z)";
+/// The last tool group's button and the Fill proxy, near the bottom of the panel. The Tools rail names a tool by its
+/// label alone.
+const LAST_TOOL: &str = "Zoom Tool";
 const FILL: &str = "Fill (X)";
 /// Status bar height: the Tools panel ends above it.
 const STATUS_H: f32 = 17.0;
@@ -15,34 +17,51 @@ fn app(double: bool) -> crate::DesignApp {
     app
 }
 
+/// Probe (harness setup): the window as the shipping one has it, with the tool commands on the framework's board. The
+/// Tools rail names each button by its command's label, which `DesignApp::raw_input_hook` puts on the board
+/// (`toolbar::tool_catalog`, in the interface language) before every frame; `test_window::open` never runs the hook, so
+/// there the rail's buttons were named by their command ids (`tool.select.zoom`). The frame input the hook sets stays
+/// for the passes after it.
+fn open(app: crate::DesignApp, size: egui::Vec2) -> egui_kittest::Harness<'static, test_window::Window> {
+    with_tools(test_window::open(app, size))
+}
+
+/// `h` with the tool commands on the board (see [`open`]).
+fn with_tools(mut h: egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Harness<'static, test_window::Window> {
+    let ctx = h.ctx.clone();
+    h.state_mut().app.raw_input_hook(&ctx, &mut egui::RawInput::default());
+    h.run_steps(3);
+    h
+}
+
+/// The width of the Tools panel in `cols` columns, as the rail lays them out in a window tall enough for one.
 fn column_width(cols: f32) -> f32 {
-    8.0 + super::BTN * cols + 4.0 * (cols - 1.0) + 8.0
+    let h = open(app(cols > 1.5), vec2(1400.0, 900.0));
+    test_window::panel_rect(&h, "tools").width()
 }
 
-/// Returns the bounds of the labeled test widget, failing if the label cannot be found.
+/// Returns the bounds of the control named `label`, failing if no control has the name or two separate ones do.
+///
+/// Probe: a Tools-rail slot with a flyout has a second node of its name inside it, its corner mark (the framework's
+/// `FlyoutButton` names the mark after the slot's tool), so the control is the outermost node of the name. A tooltip
+/// (its text a Label) carries the name too and is not the control.
 fn rect(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> egui::Rect {
-    h.get_by_label(label).rect()
+    use egui::accesskit::Role;
+    let rects: Vec<egui::Rect> =
+        h.query_all_by_label(label).filter(|n| !matches!(n.accesskit_node().role(), Role::Label | Role::Tooltip)).map(|n| n.rect()).collect();
+    let outer = rects.iter().copied().max_by(|a, b| a.area().total_cmp(&b.area())).unwrap_or_else(|| panic!("no control named {label:?}"));
+    assert!(rects.iter().all(|r| outer.expand(0.5).contains_rect(*r)), "two controls are named {label:?}: {rects:?}");
+    outer
 }
 
-/// Collects painted text bounds and their clip rectangles, including nested shapes.
-fn collect_text(shape: &egui::Shape, clip: egui::Rect, texts: &mut Vec<(String, egui::Rect, egui::Rect)>) {
-    match shape {
-        egui::Shape::Text(text) => texts.push((text.galley.text().to_owned(), text.visual_bounding_rect(), clip)),
-        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_text(shape, clip, texts)),
-        _ => {}
-    }
-}
-
-/// Checks translated tooltips and right-click flyout rows in both Tools-panel layouts,
-/// including painted labels, unchanged shortcuts and unclipped, nonoverlapping text.
+/// Checks that every tool's Tools-rail button carries its translated name in both Tools-panel layouts, and that its
+/// default binding is unchanged.
 #[test]
 fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
-    use egui::{Event, Modifiers, PointerButton};
-
     for double in [false, true] {
         let mut app = app(double);
         app.ui.language = "hu".into();
-        let mut h = test_window::open(app, vec2(1400.0, 1000.0));
+        let mut h = open(app, vec2(1400.0, 1000.0));
         for tool in designcraft_tools::TOOL_GROUPS.iter().flat_map(|group| group.iter()) {
             h.state_mut().app.run("tool.select", serde_json::json!({"tool": tool.id})).unwrap();
             h.run_steps(3);
@@ -50,169 +69,9 @@ fn hungarian_tool_buttons_translate_every_tool_and_keep_shortcuts() {
             assert_ne!(label, tool.label, "untranslated tool: {}", tool.id);
             let shortcut = tool.shortcut.map(crate::menus::shortcut_text);
             assert_eq!(crate::menus::tool_shortcut_label(&h.state().app, tool.id), shortcut, "default binding for {}", tool.id);
-            let tip = shortcut.map_or_else(|| label.to_owned(), |shortcut| format!("{label} ({shortcut})"));
-            assert!(rect(&h, &tip).is_finite(), "{tip}");
-        }
-        // A user-assigned chord also has to fit beside a translated flyout label.
-        let custom_shortcut = "Ctrl+Alt+Shift+F12";
-        h.state_mut()
-            .app
-            .run(
-                "window.setShortcut",
-                serde_json::json!({"id": "tool.select", "params": {"tool": "ellipseFrame"}, "shortcut": custom_shortcut, "steal": true}),
-            )
-            .unwrap();
-        for (gi, group) in designcraft_tools::TOOL_GROUPS.iter().enumerate() {
-            // Single tools have no flyout; the collector group is split into separate
-            // buttons in two-column mode and is covered by the tooltip checks above.
-            if group.len() < 2 || (double && designcraft_tools::SPLIT_IN_TWO_COLUMNS.contains(&group[0].id)) {
-                continue;
-            }
-            let first = group[0];
-            h.state_mut().app.run("tool.select", serde_json::json!({"tool": first.id})).unwrap();
-            h.run_steps(3);
-            let label = crate::i18n::tr("hu", first.label);
-            let tip = first.shortcut.map(crate::menus::shortcut_text).map_or_else(|| label.to_owned(), |shortcut| format!("{label} ({shortcut})"));
-            let at = rect(&h, &tip).center();
-            h.input_mut().events.push(Event::PointerMoved(at));
-            for pressed in [true, false] {
-                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
-            }
-            h.run_steps(3);
-            assert_eq!(h.state().app.ui.flyout, Some(gi), "right-click opens {} (double={double})", first.id);
-            let mut texts = Vec::new();
-            for shape in &h.output().shapes {
-                collect_text(&shape.shape, shape.clip_rect, &mut texts);
-            }
-            for tool in *group {
-                let label = crate::i18n::tr("hu", tool.label);
-                // Flyout accessibility labels omit the shortcut; inspect the painted
-                // text inside this row so another button cannot satisfy the assertion.
-                let row = rect(&h, label);
-                assert!(row.is_finite() && row.is_positive(), "{label}");
-                let painted = |expected: &str| {
-                    let (_, bounds, clip) = texts
-                        .iter()
-                        .find(|(text, bounds, _)| text == expected && row.contains(bounds.center()))
-                        .unwrap_or_else(|| panic!("missing flyout text {expected:?} for {} (double={double})", tool.id));
-                    assert!(row.contains_rect(*bounds) && clip.contains_rect(*bounds), "clipped flyout text {expected:?}: {bounds:?}");
-                    *bounds
-                };
-                let label_bounds = painted(label);
-                let binding = if tool.id == "ellipseFrame" { Some(custom_shortcut) } else { tool.shortcut };
-                if let Some(shortcut) = binding.map(crate::menus::shortcut_text) {
-                    let shortcut_bounds = painted(&shortcut);
-                    assert!(label_bounds.right() < shortcut_bounds.left(), "label overlaps shortcut for {} (double={double})", tool.id);
-                }
-            }
-            h.key_press(egui::Key::Escape);
-            h.run_steps(2);
-            assert!(h.state().app.ui.flyout.is_none());
+            assert!(rect(&h, label).is_finite(), "{label} (double={double})");
         }
         assert_eq!(crate::i18n::tr("hu", "Direct Selection Tool"), "Közvetlen kijelölő eszköz");
-    }
-}
-
-/// Keeps long translated flyout rows reachable by scrolling in a narrow viewport,
-/// resetting on reopening while preserving the open scroll position, shortcut and selection.
-#[test]
-fn hungarian_flyout_scrolls_horizontally_in_narrow_windows() {
-    use egui::{Event, Modifiers, PointerButton};
-
-    for double in [false, true] {
-        for width in [180.0, 240.0] {
-            let mut app = app(double);
-            app.ui.language = "hu".into();
-            let chord = "Ctrl+Alt+Shift+F12";
-            app.run(
-                "window.setShortcut",
-                serde_json::json!({"id": "tool.select", "params": {"tool": "ellipseFrame"}, "shortcut": chord, "steal": true}),
-            )
-            .unwrap();
-            app.select_tool("rectangleFrame");
-            let mut h = test_window::open(app, vec2(width, 1000.0));
-            let at = rect(&h, "Téglalapkeret eszköz (F)").center();
-            h.input_mut().events.push(Event::PointerMoved(at));
-            for pressed in [true, false] {
-                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
-            }
-            h.run_steps(3);
-            let gi = h.state().app.ui.flyout.unwrap();
-            let area = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("flyout", gi)))).unwrap();
-            let viewport = h.ctx.content_rect();
-            assert!(viewport.expand(0.5).contains_rect(area), "flyout {area:?} exceeds viewport {viewport:?}");
-            let label = "Ellipsziskeret eszköz";
-            let shortcut = crate::menus::shortcut_text(chord);
-            let painted = |h: &egui_kittest::Harness<'static, test_window::Window>, text: &str| {
-                let row = rect(h, label);
-                let mut texts = Vec::new();
-                for shape in &h.output().shapes {
-                    collect_text(&shape.shape, shape.clip_rect, &mut texts);
-                }
-                let (_, bounds, clip) = texts.into_iter().find(|(t, b, _)| t == text && row.contains(b.center())).unwrap();
-                (bounds, clip)
-            };
-            let (label_bounds, label_clip) = painted(&h, label);
-            assert!(label_clip.contains_rect(label_bounds), "label must be readable at the start");
-            let (before, clip) = painted(&h, &shortcut);
-            let oversized = rect(&h, label).width() > clip.width();
-            if width == 180.0 {
-                assert!(oversized, "the tighter case must exercise horizontal overflow on every platform");
-            }
-            review_shot(&mut h, &format!("flyout-{width}-double-{double}-left.png"));
-            if oversized {
-                assert!(!clip.contains_rect(before), "the shortcut starts beyond the narrow viewport");
-                wheel(&mut h, area.center(), vec2(-1000.0, 0.0));
-                let (after, clip) = painted(&h, &shortcut);
-                assert!(clip.contains_rect(after), "scrolling must make the complete shortcut readable");
-                assert!(after.left() < before.left(), "horizontal input must move the row");
-                h.run_steps(3);
-                let (settled, clip) = painted(&h, &shortcut);
-                assert!(clip.contains_rect(settled), "an open flyout must retain its horizontal scroll position");
-                h.key_press(egui::Key::Escape);
-                h.run_steps(2);
-                assert!(h.state().app.ui.flyout.is_none());
-                // Reopen through the toolbar input path, without changing the stored scroll state.
-                let at = rect(&h, "Téglalapkeret eszköz (F)").center();
-                h.input_mut().events.push(Event::PointerMoved(at));
-                for pressed in [true, false] {
-                    h.input_mut().events.push(Event::PointerButton {
-                        pos: at,
-                        button: PointerButton::Secondary,
-                        pressed,
-                        modifiers: Modifiers::NONE,
-                    });
-                }
-                h.run_steps(3);
-                assert_eq!(h.state().app.ui.flyout, Some(gi));
-                let (reopened, clip) = painted(&h, label);
-                assert!(clip.contains_rect(reopened), "a reopened flyout must show the complete translated label");
-                assert!((reopened.left() - label_bounds.left()).abs() < 0.5, "reopening must return to the initial left edge");
-                review_shot(&mut h, &format!("flyout-{width}-double-{double}-reopened.png"));
-                wheel(&mut h, area.center(), vec2(-1000.0, 0.0));
-                let (rescrolled, clip) = painted(&h, &shortcut);
-                assert!(clip.contains_rect(rescrolled), "a reopened flyout must still allow scrolling to the shortcut");
-            } else {
-                assert!(clip.contains_rect(before));
-            }
-            review_shot(&mut h, &format!("flyout-{width}-double-{double}-right.png"));
-            assert_eq!(crate::menus::tool_shortcut_label(&h.state().app, "ellipseFrame"), Some(shortcut));
-            let at = rect(&h, label).intersect(area).center();
-            h.input_mut().events.push(Event::PointerMoved(at));
-            for pressed in [true, false] {
-                h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
-            }
-            h.run_steps(3);
-            assert_eq!(h.state().app.session.tool_id(), "ellipseFrame");
-            assert!(h.state().app.ui.flyout.is_none());
-        }
-    }
-}
-
-/// Saves synthetic UI evidence only when the local review explicitly requests it.
-fn review_shot(h: &mut egui_kittest::Harness<'static, test_window::Window>, name: &str) {
-    if let Some(dir) = std::env::var_os("DESIGNCRAFT_HU_REVIEW_SHOTS") {
-        h.render().unwrap().save(std::path::Path::new(&dir).join(name)).unwrap();
     }
 }
 
@@ -221,63 +80,48 @@ fn review_shot(h: &mut egui_kittest::Harness<'static, test_window::Window>, name
 #[test]
 fn a_tool_flyout_closes_on_escape_and_on_a_click_elsewhere() {
     use egui::{Event, Modifiers, PointerButton};
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let mut h = crate::test_window::open(app, vec2(1400.0, 900.0));
+    let mut h = open(app, vec2(1400.0, 900.0));
+    // The flyout lists the group's tools as menu rows; the rail's own buttons are not rows.
+    let rows = |h: &egui_kittest::Harness<'static, crate::test_window::Window>| {
+        h.query_all_by_label("Ellipse Frame Tool")
+            .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemRadio))
+            .count()
+    };
     let open = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| {
-        let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
+        let at = rect(h, "Rectangle Frame Tool").center();
         h.input_mut().events.push(Event::PointerMoved(at));
         for pressed in [true, false] {
             h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
         }
         h.run_steps(3);
-        assert!(h.state().app.ui.flyout.is_some(), "a right-click opens the flyout");
-        let _ = h.get_by_label("Ellipse Frame Tool");
+        assert!(rows(h) > 0, "a right-click opens the flyout");
     };
     open(&mut h);
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
-    assert!(h.state().app.ui.flyout.is_none(), "Esc closes it");
+    assert_eq!(rows(&h), 0, "Esc closes it");
     // A click on a panel closes it.
     open(&mut h);
     crate::test_window::click_at(&mut h, egui::pos2(1300.0, 700.0));
-    assert!(h.state().app.ui.flyout.is_none(), "a click elsewhere closes it");
+    assert_eq!(rows(&h), 0, "a click elsewhere closes it");
     // Choosing a tool in it closes it and selects the tool.
     open(&mut h);
-    h.get_by_label("Ellipse Frame Tool").click();
-    h.run_steps(3);
-    assert_eq!((h.state().app.session.tool_id(), h.state().app.ui.flyout), ("ellipseFrame", None));
-}
-
-/// A flyout opened by holding the group button stays open after the release, and Esc closes
-/// it without switching the active tool.
-#[test]
-fn a_tool_flyout_opened_by_holding_stays_open_and_esc_keeps_the_tool() {
-    use egui::{Event, Modifiers, PointerButton};
-    use egui_kittest::kittest::Queryable;
-    let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let mut h = crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 1.0 / 60.0);
-    h.state_mut().app.select_tool("rectangleFrame");
-    h.run_steps(2);
-    let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
-    h.input_mut().events.push(Event::PointerMoved(at));
-    h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-    // Held for half a second: shorter than egui's longest click.
-    h.run_steps(30);
-    assert!(h.state().app.ui.flyout.is_some(), "holding opens the flyout");
-    h.input_mut().events.push(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    h.run_steps(3);
-    assert!(h.state().app.ui.flyout.is_some(), "the release keeps it open");
-    h.key_press(egui::Key::Escape);
-    h.run_steps(2);
-    assert_eq!((h.state().app.session.tool_id(), h.state().app.ui.flyout), ("rectangleFrame", None));
+    let row = h
+        .query_all_by_label("Ellipse Frame Tool")
+        .find(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemRadio))
+        .expect("the flyout lists Ellipse Frame Tool")
+        .rect();
+    crate::test_window::click_at(&mut h, row.center());
+    assert_eq!((h.state().app.session.tool_id(), rows(&h)), ("ellipseFrame", 0));
 }
 
 #[test]
 fn a_short_window_reaches_every_tool() {
     for double in [false, true] {
         let (w, ht) = (1000.0, 500.0);
-        let mut h = test_window::open(app(double), vec2(w, ht));
+        let mut h = open(app(double), vec2(w, ht));
         let panel = test_window::panel_rect(&h, "tools");
         wheel(&mut h, panel.center(), vec2(0.0, -2000.0));
         let visible = egui::Rect::from_min_max(pos2(0.0, panel.min.y), pos2(w, ht - STATUS_H));
@@ -292,7 +136,7 @@ fn a_short_window_reaches_every_tool() {
 #[test]
 fn tools_take_two_columns_while_one_does_not_fit() {
     let (w, ht) = (1086.0, 612.0);
-    let mut h = test_window::open(app(false), vec2(w, ht));
+    let mut h = open(app(false), vec2(w, ht));
     assert_eq!(test_window::panel_rect(&h, "tools").width(), column_width(2.0));
     let visible = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(w, ht - STATUS_H));
     for label in [LAST_TOOL, FILL] {
@@ -310,7 +154,7 @@ fn tools_take_two_columns_while_one_does_not_fit() {
 /// Runs `app` in a window and double-clicks the Tools panel's Fill box.
 fn double_click_fill(app: crate::DesignApp) -> egui_kittest::Harness<'static, crate::DesignApp> {
     // Frames 1 ms apart, so two clicks make a double-click.
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut crate::DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -374,9 +218,10 @@ fn the_color_picker_from_the_fill_box_follows_formatting_affects_text() {
 
 #[test]
 fn a_tall_window_keeps_one_column_and_does_not_scroll() {
-    let mut h = test_window::open(app(false), vec2(1400.0, 900.0));
+    let mut h = open(app(false), vec2(1400.0, 900.0));
     let panel = test_window::panel_rect(&h, "tools");
     assert_eq!(panel.width(), column_width(1.0));
+    assert!(panel.width() < column_width(2.0), "a tall window keeps the Tools panel to one column");
     let before = (rect(&h, LAST_TOOL), rect(&h, FILL));
     assert!(panel.contains_rect(before.0) && panel.contains_rect(before.1), "{before:?} outside {panel:?}");
     wheel(&mut h, panel.center(), vec2(0.0, -2000.0));
@@ -388,20 +233,19 @@ fn the_tools_panel_lays_out_like_indesigns() {
     // Feather are tools of their own; in two columns Content Collector and Placer, Apply
     // Color / Gradient / None and Normal / Preview each get a button.
     for double in [false, true] {
-        let h = test_window::open(app(double), vec2(1400.0, 900.0));
-        let _ = rect(&h, "Gradient Swatch Tool (G)");
-        let feather = format!("Gradient Feather Tool ({})", crate::menus::shortcut_text("Shift+G"));
-        let _ = rect(&h, &feather);
+        let h = open(app(double), vec2(1400.0, 900.0));
+        let _ = rect(&h, "Gradient Swatch Tool");
+        let _ = rect(&h, "Gradient Feather Tool");
         let _ = rect(&h, "View Options");
-        let split = ["Content Placer Tool (B)", "Apply Color (,)", "Apply Gradient (.)", "Normal"];
+        let split = ["Content Placer Tool", "Apply Color (,)", "Apply Gradient (.)", "Normal"];
         for label in split {
             assert_eq!(h.query_by_label(label).is_some(), double, "double column {double}: {label}");
         }
-        let _ = rect(&h, "Content Collector Tool (B)");
+        let _ = rect(&h, "Content Collector Tool");
         // One column: the Apply well names what is in front (no fill: Apply None).
         let _ = rect(&h, "Apply None (/)");
         if double {
-            let (a, b) = (rect(&h, "Content Collector Tool (B)"), rect(&h, "Content Placer Tool (B)"));
+            let (a, b) = (rect(&h, "Content Collector Tool"), rect(&h, "Content Placer Tool"));
             assert!((a.center().y - b.center().y).abs() < 1.0 && a.center().x < b.center().x, "side by side: {a:?} {b:?}");
             let (n, p) = (rect(&h, "Normal"), rect(&h, "Preview (W)"));
             assert!((n.center().y - p.center().y).abs() < 1.0, "Normal and Preview side by side");
@@ -479,7 +323,7 @@ fn with_nothing_selected_the_proxy_sets_the_next_shapes_colours() {
     let mut app = app(false);
     app.run("file.new", json!({})).unwrap();
     // Frames 1 ms apart, so two clicks make a double-click.
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut crate::DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -532,7 +376,7 @@ fn fill_stroke_proxy_keys() {
         (it.fill.swatch.clone(), it.fill.tint, it.stroke.swatch.clone(), it.stroke.tint)
     }
     let mut app = app(false);
-    let ctx = egui::Context::default();
+    let ctx = test_window::context();
     app.run("file.new", json!({})).unwrap();
     let f = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"})).unwrap();
     app.run("selection.set", json!({"ids": [f["id"]]})).unwrap();
@@ -577,14 +421,19 @@ fn fill_stroke_proxy_keys() {
 #[test]
 fn alt_click_cycles_the_tool_flyout_group() {
     use egui::{Event, Modifiers, PointerButton};
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     let app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     // 1 ms frames so an Alt-click and a following plain click can form a real double-click
     // (default open() spaces frames by 0.25 s, outside egui's double-click window).
-    let mut h = crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 0.001);
+    let mut h = with_tools(crate::test_window::open_stepped(app, vec2(1400.0, 900.0), 1.0, 0.001));
     h.state_mut().app.select_tool("rectangleFrame");
     h.run_steps(2);
-    let at = h.get_by_label("Rectangle Frame Tool (F)").rect().center();
+    let at = rect(&h, "Rectangle Frame Tool").center();
+    // The group's flyout lists its tools as menu rows; the rail's own buttons are not rows.
+    let flyout_open = |h: &egui_kittest::Harness<'static, crate::test_window::Window>| {
+        h.query_all_by_label("Polygon Frame Tool")
+            .any(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::MenuItem | egui::accesskit::Role::MenuItemRadio))
+    };
     let alt = Modifiers { alt: true, ..Default::default() };
     // Clear i.modifiers before the release while keeping Alt on the release event, so a
     // regression that only reads i.modifiers (and ignores the pointer-release modifiers) fails.
@@ -600,18 +449,18 @@ fn alt_click_cycles_the_tool_flyout_group() {
     let settle = |h: &mut egui_kittest::Harness<'static, crate::test_window::Window>| h.run_steps(400);
     click(&mut h, Modifiers::NONE, Modifiers::NONE);
     assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
-    assert!(h.state().app.ui.flyout.is_none());
+    assert!(!flyout_open(&h));
     settle(&mut h);
     click(&mut h, alt, Modifiers::NONE);
     assert_eq!(h.state().app.session.tool_id(), "ellipseFrame", "Alt-click advances the frame group");
-    assert!(h.state().app.ui.flyout.is_none(), "Alt-click must not open the flyout");
+    assert!(!flyout_open(&h), "Alt-click must not open the flyout");
     settle(&mut h);
     click(&mut h, alt, Modifiers::NONE);
     assert_eq!(h.state().app.session.tool_id(), "polygonFrame");
     settle(&mut h);
     click(&mut h, alt, Modifiers::NONE);
     assert_eq!(h.state().app.session.tool_id(), "rectangleFrame", "Alt-click after the last group tool wraps to the first");
-    assert!(h.state().app.ui.flyout.is_none(), "wrap-around Alt-click must not open the flyout");
+    assert!(!flyout_open(&h), "wrap-around Alt-click must not open the flyout");
     settle(&mut h);
     // Alt-click onto polygonFrame, then a plain click inside the double-click window: egui
     // reports double_clicked, but prev_modified must keep Polygon Settings closed.

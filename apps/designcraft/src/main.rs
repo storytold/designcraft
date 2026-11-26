@@ -47,9 +47,6 @@ struct App {
     /// Documents and quit requests from Finder, the Dock and Open With.
     #[cfg(target_os = "macos")]
     apple_events: fmv_macos_events::Inbox,
-    /// The window's `movable` flag as last set; see `craft_window::title_bar`.
-    #[cfg(target_os = "macos")]
-    movable: Option<bool>,
     /// Frames begun so far.
     frames: u32,
     /// The device whose uncaptured errors are logged once the window is past its start-up frames
@@ -110,8 +107,6 @@ impl eframe::App for App {
         if self.app.take_ime_discard() {
             discard_marked_text();
         }
-        #[cfg(target_os = "macos")]
-        craft_window::title_bar::sync_movable(ui.ctx(), &mut self.movable);
         // After the frame, never inside it: the dialog answers on a later frame. On macOS Save and
         // message boxes are sheets on this window.
         self.app.show_file_dialogs(Some(&*frame));
@@ -606,6 +601,12 @@ fn main() -> std::process::ExitCode {
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
+                // The window's frame, which the framework's title bar follows: set once, before the runtime is installed.
+                app.integrated_titlebar = cfg!(target_os = "macos");
+                app.custom_titlebar = cfg!(target_os = "windows");
+                // The craft UI framework's runtime, before the context's first pass (it refuses to install
+                // inside one): the whole interface is the framework's.
+                app.install_framework(&cc.egui_ctx);
                 if nightly {
                     // Installed and updated by the Launcher: never check the stable feed from here.
                     app.set_updates_managed(Some("ArtCraft Launcher"));
@@ -631,8 +632,6 @@ fn main() -> std::process::ExitCode {
                 } else if session_unavailable && nightly {
                     log::warn!("another DesignCraft Nightly holds this profile's session record");
                 }
-                app.integrated_titlebar = cfg!(target_os = "macos");
-                app.custom_titlebar = cfg!(target_os = "windows");
                 // The custom title bar's undecorated window must stay borderless, or its caption
                 // and border offset the content and the pointer on some Windows systems (#1295).
                 app.services.window_frame = window_frame::service(cc, app.custom_titlebar);
@@ -657,8 +656,6 @@ fn main() -> std::process::ExitCode {
                     startup: created,
                     #[cfg(target_os = "macos")]
                     apple_events: events.connect(&cc.egui_ctx),
-                    #[cfg(target_os = "macos")]
-                    movable: None,
                     frames: 0,
                     log_errors_after_startup: device,
                     session: app_session,

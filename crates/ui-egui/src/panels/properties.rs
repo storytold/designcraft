@@ -10,14 +10,13 @@ use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
 use crate::theme::Tokens;
-use crate::widgets::{
-    self, FIELD_H, NumField, button_pair, caption, divider, dropdown, full_width, icon_toggle, link_label, measure, more_options, number,
-    outline_button, rule, section, section_row, selection_band,
-};
+use crate::widgets::{self, FIELD_H, divider, full_width, rule, section, selection_band};
 use crate::{DesignApp, icons};
 
 mod document;
 mod flex;
+#[cfg(test)]
+mod framework_test_kit;
 mod links;
 mod object;
 mod object_panels;
@@ -33,10 +32,9 @@ pub use links::{info_panel, links_panel, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
 use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
-pub(crate) use object::{corner_shape_button, corner_type_dropdown, paint_corner_shape, preview_row, ref_point_proxy, stroke_type_dropdown};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 use object_panels::{anchor_point_sections, pathfinder_row};
-pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
+pub(crate) use text::LANGUAGES;
 use text::{
     bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_frame_target,
     text_style_section,
@@ -45,6 +43,13 @@ pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_pane
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
 pub(crate) use typography::{composer_choice, para_field_min};
+/// The framework versions of the kerning field, the language select, the reference-point picker and the stroke type and
+/// corner shape pickers, for the Control
+/// bar as well as this panel.
+pub(crate) use {
+    object::framework::{corner_shape_select, reference_point, stroke_type_select},
+    text::framework::{kerning_field, language_select},
+};
 
 /// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
 /// that panel stays: `window.panel` would close it.
@@ -54,17 +59,17 @@ fn show_panel(app: &mut DesignApp, panel: &str) {
     }
 }
 
-fn units(app: &DesignApp) -> Unit {
+pub(crate) fn units(app: &DesignApp) -> Unit {
     app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(Unit::Picas)
 }
 
 /// Allocate a full-width block `h` tall.
-fn block(ui: &mut Ui, h: f32) -> Rect {
+pub(crate) fn block(ui: &mut Ui, h: f32) -> Rect {
     ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover()).0
 }
 
 /// A sub-rect of a block at (`x`, `y`) relative to its top-left.
-fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
+pub(crate) fn sub(b: Rect, x: f32, y: f32, w: f32, h: f32) -> Rect {
     Rect::from_min_size(b.min + vec2(x, y), vec2(w, h))
 }
 
@@ -204,34 +209,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     } else {
         if i.is_graphic {
             section(ui, crate::i18n::tr(&app.ui.language, "Frame Fitting"), true);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for (icon, mode, tip) in [
-                    ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
-                    ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
-                    ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
-                    ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
-                    ("fit-center", "centerContent", "Center Content"),
-                ] {
-                    if icon_toggle(ui, icon, false, crate::i18n::tr(&app.ui.language, tip)).clicked() {
-                        let _ = app.run("object.fit", json!({"mode": mode}));
-                    }
-                }
-                // Frame Fitting Options…, as InDesign's Options button beside the fitting buttons.
-                if outline_button(ui, crate::i18n::tr(&app.ui.language, "Options"), 64.0).clicked() {
-                    crate::menus::activate(app, "app.fittingOptions", &Value::Null);
-                }
-            });
-            // Auto-Fit: the graphic is refitted whenever its frame is resized.
-            let mut auto = app
-                .session
-                .active()
-                .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
-                .and_then(|it| it.graphic())
-                .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None);
-            if widgets::checkbox(ui, &mut auto, crate::i18n::tr(&app.ui.language, "Auto-Fit")).changed() {
-                let _ = app.run("object.fittingOptions", json!({"autoFit": auto}));
-            }
+            frame_fitting_section(app, ui);
             divider(ui);
         }
         section(ui, crate::i18n::tr(&app.ui.language, "Text Wrap"), true);
@@ -242,5 +220,48 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     quick_actions_object(app, ui, &i);
 }
 
+/// The fitting buttons, as InDesign's Properties panel shows them for a graphic frame.
+const FITTINGS: [(&str, &str, &str); 5] = [
+    ("fit-fill", "fillProportionally", "Fill Frame Proportionally"),
+    ("fit-prop", "fitProportionally", "Fit Content Proportionally"),
+    ("fit-content", "fitContentToFrame", "Fit Content to Frame"),
+    ("fit-frame", "fitFrameToContent", "Fit Frame to Content"),
+    ("fit-center", "centerContent", "Center Content"),
+];
+
+/// Whether the first selected frame's graphic is refitted whenever the frame is resized (Auto-Fit).
+fn auto_fit(app: &DesignApp) -> bool {
+    app.session
+        .active()
+        .and_then(|st| st.selection.items.first().and_then(|id| st.doc.item(*id)))
+        .and_then(|it| it.graphic())
+        .is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None)
+}
+
+/// Frame Fitting for a graphic frame: the fitting buttons, Frame Fitting Options… beside them, then Auto-Fit.
+fn frame_fitting_section(app: &mut DesignApp, ui: &mut Ui) {
+    use crate::framework_transform::{button, check, icon_button};
+    let lang = app.ui.language.clone();
+    let b = block(ui, FIELD_H);
+    for (k, (icon, mode, tip)) in FITTINGS.into_iter().enumerate() {
+        let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.scope_id().with(("frame-fitting", mode)));
+        if icon_button(ui, at, id, icon, crate::i18n::tr(&lang, tip), false) {
+            let _ = app.run("object.fit", json!({"mode": mode}));
+        }
+    }
+    let id = ui.scope_id().with("frame-fitting-options");
+    if button(ui, Some(sub(b, 5.0 * 31.0, 0.0, 64.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
+        crate::menus::activate(app, "app.fittingOptions", &Value::Null);
+    }
+    ui.add_space(5.0);
+    let id = ui.scope_id().with("frame-fitting-auto");
+    if let Some(on) = check(ui, None, id, crate::i18n::tr(&lang, "Auto-Fit"), auto_fit(app), true) {
+        let _ = app.run("object.fittingOptions", json!({"autoFit": on}));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod successor_tests;
 #[cfg(test)]
 mod tests;

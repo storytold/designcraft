@@ -12,7 +12,7 @@ fn a_short_place_cursor_drag_places_the_frame_it_previews() {
     app.run("file.new", json!({})).unwrap();
     let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
     app.run("place.load", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "a.png"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1400.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -75,7 +75,7 @@ fn a_press_after_a_drag_is_not_a_double_click() {
 /// The shapes the canvas paints for a new document with every spread in view, after two frames
 /// (the first lays out).
 fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut shapes = Vec::new();
     for _ in 0..2 {
         shapes = canvas_frame_shapes(app, &ctx);
@@ -211,7 +211,7 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", serde_json::json!({"bleed": 9, "slug": 18})).unwrap();
     let strokes = |app: &mut DesignApp, want: [u8; 3]| -> usize {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut shapes = Vec::new();
         for _ in 0..2 {
             let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
@@ -435,7 +435,7 @@ fn a_frame_with_pasted_in_content_shows_its_own_edge_only() {
     app.run("edit.pasteInto", json!({})).unwrap();
     app.run("edit.deselectAll", json!({})).unwrap();
     assert!(app.ui.frame_edges);
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut shapes = Vec::new();
     for _ in 0..2 {
         let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
@@ -519,7 +519,7 @@ fn harness(app: DesignApp) -> Harness<'static, DesignApp> {
 /// rate: egui ends a scroll action after 150 ms without wheel events, so quarter-second
 /// frames would split every motion into separate actions.
 fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(step_dt).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(step_dt).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -863,7 +863,7 @@ fn canvas_frame(app: &mut DesignApp, ctx: &egui::Context, m: egui::Modifiers, mu
 /// The cursor icon the canvas sets for `c` on this platform (bitmap and painted cursors
 /// report their own icon).
 fn shown(c: Cursor) -> egui::CursorIcon {
-    crate::cursors::show(&egui::Context::default(), &mut crate::cursors::Images::default(), c, Pos2::ZERO)
+    crate::cursors::show(&crate::test_window::context(), &mut crate::cursors::Images::default(), c, Pos2::ZERO)
 }
 
 fn space_key(pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
@@ -890,7 +890,7 @@ fn spring_zoom_click_is_anchored_view_only_and_release_restores_previous_tool() 
             let frame = app.run("frame.create", json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
             app.run("text.select", json!({"story":frame["story"],"anchor":5})).unwrap();
         }
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let p = pos2(300.0, 250.0);
         hover(&mut app, &ctx, p);
         let before = *app.view().unwrap();
@@ -918,7 +918,7 @@ fn spring_zoom_click_is_anchored_view_only_and_release_restores_previous_tool() 
 #[test]
 fn spring_zoom_alt_clicks_out_and_modifier_release_switches_back_to_hand() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let z = app.view().unwrap().zoom;
@@ -941,7 +941,7 @@ fn spring_zoom_alt_clicks_out_and_modifier_release_switches_back_to_hand() {
 #[test]
 fn spring_zoom_scrubs_and_owns_pointer_release_after_shortcut_release() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let z = app.view().unwrap().zoom;
@@ -971,7 +971,7 @@ fn spring_zoom_is_suppressed_while_typing_in_a_text_frame() {
     let frame = app.run("frame.create", json!({"rect":[36,36,300,200],"content":"text","text":"Hello"})).unwrap();
     app.run("text.select", json!({"story":frame["story"],"anchor":5})).unwrap();
     assert!(app.session.wants_text());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let before = *app.view().unwrap();
@@ -991,7 +991,7 @@ fn spring_zoom_is_suppressed_while_typing_in_a_text_frame() {
 #[test]
 fn spring_zoom_is_suppressed_while_a_text_field_has_focus() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut text = String::new();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
@@ -1020,7 +1020,7 @@ fn spring_zoom_is_suppressed_while_a_text_field_has_focus() {
 #[test]
 fn spring_zoom_does_not_interrupt_an_existing_tool_drag() {
     let mut app = zoom_app("rectangleFrame");
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let p = pos2(300.0, 250.0);
     hover(&mut app, &ctx, p);
     let before = *app.view().unwrap();
@@ -1038,7 +1038,7 @@ fn spring_zoom_does_not_interrupt_an_existing_tool_drag() {
 fn spring_zoom_does_not_zoom_on_the_rulers() {
     let mut app = zoom_app("rectangleFrame");
     app.ui.rulers = true;
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     hover(&mut app, &ctx, pos2(300.0, 250.0));
     let rect = app.canvas_rect.unwrap();
     let p = pos2(rect.min.x - RULER / 2.0, rect.center().y);
@@ -1081,7 +1081,7 @@ fn mouse_double_clicking_a_frame_handle_fits_with_one_undo_step() {
     app.run("selection.set", json!({"ids": [id.0]})).unwrap();
     let original = app.session.doc().unwrap().doc.item(id).unwrap().bounds();
     // 60 frames a second: the default 0.25 s step puts two clicks past egui's double-click delay.
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1414,7 +1414,7 @@ fn selected_merged_owners_paint_the_same_row_and_column_targets() {
                     ]
                 })
                 .collect();
-            let ctx = egui::Context::default();
+            let ctx = crate::test_window::context();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 draw_text_selection(&app, ui.painter(), &xf, &st.doc, &layout, ts, Some(selected));
             });
@@ -1475,7 +1475,7 @@ fn a_selected_group_paints_both_ports_of_its_text_frame() {
     let doc = app.session.doc().unwrap().doc.clone();
     let layout = CanvasLayout::new(&doc, false);
     let xf = Xf { min: pos2(0.0, 0.0), origin: Point::new(0.0, 0.0), zoom: 1.0, rot: 0, pivot: pos2(0.0, 0.0) };
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         draw_selection(&app, ui.painter(), &xf, &doc, &layout);
     });
@@ -1600,7 +1600,7 @@ fn an_idle_canvas_frame_does_the_same_work_for_a_longer_document() {
             app.run("frame.create", json!({"spread": page, "rect": [36, 300, 200, 340], "content": "text", "text": text})).unwrap();
         }
         app.run("edit.deselectAll", json!({})).unwrap();
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         canvas_frame_shapes(&mut app, &ctx);
         go_to_page(&mut app, 0);
         canvas_frame_shapes(&mut app, &ctx);
@@ -1636,7 +1636,7 @@ fn frame_edges_are_painted_for_the_frames_in_view() {
     assert!(frame.x1 < layout.slots[0].bounds.x0 - 150.0, "the frame is on the pasteboard, left of the page");
     let window = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
     let edges = |xf: Xf| {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(window), ..Default::default() }, |ui| {
             draw_frames(&app, &ui.painter_at(window), &xf, &doc, &layout);
         });
@@ -1705,7 +1705,7 @@ fn live_corner_widget_and_diamonds_draw() {
     app.run("frame.create", json!({"rect": [100, 100, 300, 250], "content": "graphic"})).unwrap();
     let id = app.session.doc().unwrap().doc.spreads[0].items[0].id;
     app.run("selection.set", json!({"ids": [id.0]})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_pixels_per_point(1.0).wgpu().build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -1749,7 +1749,7 @@ fn live_corner_widget_and_diamonds_draw() {
 
 /// A harness whose frames are 1 ms apart, so two clicks make a double-click.
 fn fast_harness(app: DesignApp) -> Harness<'static, DesignApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.001).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(0.001).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -2024,157 +2024,12 @@ fn screen_of(h: &Harness<'_, DesignApp>, x: f64, y: f64) -> Pos2 {
     xf.to_screen(CanvasLayout::new(&st.doc, st.editing_parents).xf(SpreadRef::Doc(0)) * Point::new(x, y))
 }
 
-/// A menu row: a button that isn't a toggle, named by its label, then its shortcut if it has
-/// one. Toggle buttons with the same name (the Task Bar's icons) don't match, nor do buttons
-/// right of the canvas (the Properties panel's Arrange).
-fn menu_row<'h>(h: &'h Harness<'_, DesignApp>, label: &'h str) -> Option<egui_kittest::Node<'h>> {
-    let right = f64::from(h.state().canvas_rect.map_or(f32::INFINITY, |r| r.max.x));
-    h.query_by(move |n| {
-        n.role() == egui::accesskit::Role::Button
-            && n.toggled().is_none()
-            && n.bounding_box().is_none_or(|b| b.x0 < right)
-            && n.label().is_some_and(|l| l == label || l.strip_prefix(label).and_then(|r| r.strip_prefix(' ')).is_some_and(|r| !r.contains(' ')))
-    })
-}
-
-fn enabled(h: &Harness<'_, DesignApp>, label: &str) -> bool {
-    use egui_kittest::kittest::NodeT;
-    !menu_row(h, label).unwrap_or_else(|| panic!("no menu row {label}")).accesskit_node().is_disabled()
-}
-
 fn spread_items(h: &Harness<'_, DesignApp>) -> Vec<u64> {
     h.state().session.doc().unwrap().doc.spreads[0].items.iter().map(|i| i.id.0).collect()
 }
 
 fn selected(h: &Harness<'_, DesignApp>) -> Vec<u64> {
     h.state().session.doc().unwrap().selection.items.iter().map(|i| i.0).collect()
-}
-
-#[test]
-fn right_clicking_an_object_selects_it_and_its_menu_arranges_it() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-    let b = app.run("frame.create", json!({"rect": [150, 150, 300, 300]})).unwrap()["id"].as_u64().unwrap();
-    let mut h = harness(app);
-    assert_eq!(selected(&h), [b]);
-    let on_a = screen_of(&h, 60.0, 60.0);
-    right_click(&mut h, on_a);
-    assert_eq!(selected(&h), [a], "the object under the pointer is selected first");
-    // An empty frame's menu: Content, but no Fitting (nothing to fit) and no text frame entries.
-    assert!(menu_row(&h, "Content").is_some());
-    assert!(menu_row(&h, "Fitting").is_none() && menu_row(&h, "Text Frame Options…").is_none());
-    // Paste is available with nothing copied here: the system clipboard may hold another app's text.
-    assert!(enabled(&h, "Copy") && enabled(&h, "Paste"));
-    menu_row(&h, "Arrange").unwrap().click();
-    h.run_steps(3);
-    menu_row(&h, "Bring to Front").unwrap().click();
-    h.run_steps(3);
-    assert_eq!(spread_items(&h), [b, a]);
-    assert!(menu_row(&h, "Arrange").is_none(), "choosing an entry closes the menu");
-}
-
-#[test]
-fn right_clicking_empty_canvas_offers_paste_after_a_copy() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-    app.run("edit.copy", json!({})).unwrap();
-    app.select_tool("rectangleFrame");
-    let mut h = harness(app);
-    let empty = screen_of(&h, 400.0, 500.0);
-    right_click(&mut h, empty);
-    assert_eq!(selected(&h), [a], "a right-click on nothing keeps the selection");
-    assert!(menu_row(&h, "Arrange").is_none(), "the page menu, not the object menu");
-    assert!(enabled(&h, "Paste in Place"));
-    assert!(menu_row(&h, "✓ Show/Hide Rulers").is_some(), "toggles show their state");
-    // Escape closes the menu and does nothing else: the tool would deselect, the shortcuts
-    // would switch to the Selection tool.
-    h.key_press(egui::Key::Escape);
-    h.run_steps(3);
-    assert!(menu_row(&h, "Paste in Place").is_none());
-    assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
-    right_click(&mut h, empty);
-    menu_row(&h, "Paste").unwrap().click();
-    h.run_steps(3);
-    assert_eq!(spread_items(&h).len(), 2);
-}
-
-#[test]
-fn right_clicking_another_object_while_the_menu_is_open_reopens_it_there() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    let a = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
-    let b = app.run("frame.create", json!({"rect": [36, 600, 200, 760]})).unwrap()["id"].as_u64().unwrap();
-    let mut h = harness(app);
-    // The menu opens down from A, with the pointer on its first row (no submenu open); B is below it.
-    let (on_a, on_b) = (screen_of(&h, 60.0, 60.0), screen_of(&h, 50.0, 700.0));
-    right_click(&mut h, on_a);
-    assert_eq!(selected(&h), [a]);
-    assert!(menu_row(&h, "Arrange").is_some());
-    right_click(&mut h, on_b);
-    assert_eq!(selected(&h), [b]);
-    assert!(menu_row(&h, "Arrange").is_some(), "the menu reopens at the new click");
-}
-
-#[test]
-fn a_context_menu_in_one_pane_keeps_the_keys_from_the_other() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    let a = app.run("frame.create", json!({"rect": [36, 36, 100, 100]})).unwrap()["id"].as_u64().unwrap();
-    app.select_tool("rectangleFrame");
-    app.split = true;
-    let mut h = harness(app);
-    // The focused pane is the left one; this point is near its right edge, away from the frame.
-    let left = h.state().canvas_rect.unwrap();
-    right_click(&mut h, pos2(left.max.x - 40.0, left.center().y));
-    assert!(menu_row(&h, "Paste in Place").is_some());
-    // Escape closes the left pane's menu before the right pane handles the keys.
-    h.key_press(egui::Key::Escape);
-    h.run_steps(3);
-    assert!(menu_row(&h, "Paste in Place").is_none());
-    assert_eq!((h.state().session.tool_id(), selected(&h)), ("rectangleFrame", vec![a]));
-}
-
-#[test]
-fn right_clicking_text_keeps_the_selected_text_or_places_the_caret() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    app.run("frame.create", json!({"rect": [36, 36, 400, 200], "content": "text"})).unwrap();
-    app.select_tool("type");
-    app.run("text.insert", json!({"text": "Hello world"})).unwrap();
-    let sid = *app.session.doc().unwrap().doc.stories.keys().next().unwrap();
-    app.run("text.select", json!({"story": sid.0, "anchor": 0, "focus": 5})).unwrap();
-    let mut h = harness(app);
-    let text_sel = |h: &Harness<'_, DesignApp>| h.state().session.doc().unwrap().selection.text.as_ref().map(|t| (t.anchor, t.focus));
-    // Inside "Hello": the selection stays.
-    let inside = screen_of(&h, 45.0, 44.0);
-    right_click(&mut h, inside);
-    assert_eq!(text_sel(&h), Some((0, 5)));
-    assert!(menu_row(&h, "Paste without Formatting").is_some(), "the text menu");
-    h.key_press(egui::Key::Escape);
-    h.run_steps(3);
-    // Past the end of the line: the caret goes there.
-    let past_end = screen_of(&h, 300.0, 44.0);
-    right_click(&mut h, past_end);
-    assert_eq!(text_sel(&h), Some((11, 11)));
-    assert!(menu_row(&h, "Paste without Formatting").is_some());
-}
-
-#[test]
-fn rows_hidden_in_the_menu_bar_are_hidden_in_context_menus() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({})).unwrap();
-    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
-    app.ui.hidden_menu_items.push(crate::menus::menu_key("Object/Arrange", "Bring to Front"));
-    let mut h = harness(app);
-    let on_frame = screen_of(&h, 60.0, 60.0);
-    right_click(&mut h, on_frame);
-    menu_row(&h, "Arrange").unwrap().click();
-    h.run_steps(3);
-    assert!(menu_row(&h, "Bring to Front").is_none());
-    assert!(menu_row(&h, "Send to Back").is_some());
-    assert!(h.query_by_label("Show All Menu Items").is_some());
 }
 
 #[test]
@@ -2219,7 +2074,7 @@ fn typing(text: &str) -> (Harness<'static, DesignApp>, u64) {
     let r = app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": text})).unwrap();
     let id = r["id"].as_u64().unwrap();
     app.run("tool.select", json!({"tool": "type"})).unwrap();
-    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+    let mut h = crate::test_window::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut DesignApp| {
             let ctx = ui.ctx().clone();
             app.logic(&ctx);
@@ -2327,7 +2182,7 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         let frame = app.run("frame.create", json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Text"})).unwrap();
-        let mut h = Harness::builder().with_size(vec2(width, 900.0)).build_ui_state(
+        let mut h = crate::test_window::builder().with_size(vec2(width, 900.0)).build_ui_state(
             |ui, app: &mut DesignApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -2336,17 +2191,28 @@ fn an_edit_repaints_a_canvas_texture_sampled_down_to_the_gpu_limit_whole() {
             app,
         );
         h.run_steps(6);
+        // The window's bars settle over the first frames, and a texture rendered for a taller canvas still covers the
+        // settled one, so it is kept: render once more at the settled canvas, which the edit below renders at too.
+        h.state_mut().canvas.shown = None;
+        h.run_steps(2);
         let limit = h.ctx.input(|i| i.max_texture_side);
         let size = h.state().canvas.texture.as_ref().map(|t| t.size()).unwrap();
         assert!(size[0] <= limit && size[1] <= limit, "{size:?}");
         let shown = h.state().canvas.shown.unwrap().size;
         assert_eq!(shown.0 > limit as f32, sampled_down, "view {shown:?}, limit {limit}");
         let patches = h.state().canvas.patches;
+        let rect = h.state().canvas_rect;
         // A small edit: one more character in the frame.
         h.state_mut().run("text.insert", json!({"story": frame["story"], "at": 4, "text": "s"})).unwrap();
         h.run_steps(6);
         assert_eq!(h.state().canvas.patches == patches, sampled_down, "width {width}");
-        assert_eq!(h.state().canvas.texture.as_ref().map(|t| t.size()), Some(size));
+        // The canvas keeps its rect through the edit, so the texture keeps its size.
+        assert_eq!(
+            h.state().canvas.texture.as_ref().map(|t| t.size()),
+            Some(size),
+            "width {width}: canvas {rect:?} before the edit, {:?} after",
+            h.state().canvas_rect
+        );
     }
 }
 
@@ -2530,7 +2396,7 @@ fn ime_frame(app: &mut DesignApp, ctx: &egui::Context, events: Vec<egui::Event>)
 fn edits_patch_the_canvas_only_at_full_resolution() {
     for (max_side, patches) in [(None, true), (Some(1024), false)] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let frame = |app: &mut DesignApp| {
             // Wider than the limit (egui's font atlas needs at least 1024).
             let mut raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1900.0, 900.0))), ..Default::default() };
@@ -2560,7 +2426,7 @@ fn edits_patch_the_canvas_only_at_full_resolution() {
 #[test]
 fn moving_a_frame_with_a_drop_shadow_patches_the_canvas() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut DesignApp| {
         let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 900.0))), ..Default::default() };
         let mut out = ctx.run_ui(raw, |ui| {
@@ -2634,7 +2500,7 @@ struct NativeClickFixture {
 /// Build the old and target stories, measure an interior target caret, and leave the old story selected before the click.
 fn native_gui_click_fixture() -> NativeClickFixture {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let old = typing_app(&mut app, &ctx, "Old story");
     let frame = app.run("frame.create", json!({"rect": [36, 280, 300, 400], "content": "text", "text": "Target story"})).unwrap();
     let target = frame["story"].clone();
@@ -2692,23 +2558,49 @@ fn native_gui_selected_old_click_fixture() -> NativeClickFixture {
     f
 }
 
-/// Run one raw event batch, optionally force a discarded pass, and return the pointer edges observed by each pass.
+/// Run one raw event batch as the host does, optionally force a discarded pass, and return the pointer edges observed by
+/// each pass. The craft UI runtime gives a frame at most one pointer press, as its last pointer event (its one-press
+/// rule): the events after it wait for the next frame, which the runtime asks for at once. So the batch takes one frame,
+/// and one more for each press that other events follow, as the shipping host runs them. Only the first frame's first
+/// pass is discarded.
 fn native_gui_input(f: &mut NativeClickFixture, events: Vec<egui::Event>, discard: bool) -> Vec<(bool, bool, bool)> {
-    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))), events, ..Default::default() };
+    let frames = 1 + events
+        .iter()
+        .enumerate()
+        .filter(|(at, event)| matches!(event, egui::Event::PointerButton { pressed: true, .. }) && at + 1 < events.len())
+        .count();
+    let mut events = Some(events);
     let mut edges = Vec::new();
-    let mut out = f.ctx.run_ui(raw, |ui| {
-        edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
-        f.app.logic(ui.ctx());
-        f.app.ui(ui);
-        if discard && edges.len() == 1 {
-            ui.ctx().request_discard("native same-batch click exactly-once regression");
+    for frame in 0..frames {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
+            events: events.take().unwrap_or_default(),
+            ..Default::default()
+        };
+        // The host runs the app's input hook before every frame, as eframe does.
+        f.app.raw_input_hook(&f.ctx, &mut raw);
+        let mut passes = 0;
+        let mut out = f.ctx.run_ui(raw, |ui| {
+            passes += 1;
+            edges.push(ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.press_origin().is_some())));
+            f.app.logic(ui.ctx());
+            f.app.ui(ui);
+            if discard && frame == 0 && passes == 1 {
+                ui.ctx().request_discard("native same-batch click exactly-once regression");
+            }
+        });
+        if discard && frame == 0 {
+            assert_eq!(out.platform_output.num_completed_passes, 2, "the requested discarded pass actually ran");
         }
-    });
-    if discard {
-        assert_eq!(out.platform_output.num_completed_passes, 2, "the requested discarded pass actually ran");
+        out.textures_delta.clear();
     }
-    out.textures_delta.clear();
     edges
+}
+
+/// What a batch's passes saw of the primary button, together: whether one saw it pressed, whether one saw it released,
+/// and whether a press origin was still held after the last of them.
+fn batch_edges(edges: &[(bool, bool, bool)]) -> (bool, bool, bool) {
+    (edges.iter().any(|e| e.0), edges.iter().any(|e| e.1), edges.last().is_some_and(|e| e.2))
 }
 
 /// Assert that the primary button, canvas press state and tool gesture are all released.
@@ -2743,9 +2635,16 @@ fn native_gui_second_click_target(f: &mut NativeClickFixture) -> (Value, Pos2, u
     (story, at, focus)
 }
 
-/// Two completed clicks in one batch use the last press once, emit one caret/release pair, add no history, and type at the final caret.
+/// Two completed clicks in one OS batch each count once, in order: two caret/release pairs, no history, no word
+/// selection, and typing goes to the second click's caret.
+///
+/// The craft UI runtime's one-press rule (H0) gives a frame at most one pointer press, as its last pointer event, and
+/// holds the events after it for the next frame. So the batch reaches the canvas as two clicks in successive frames,
+/// the first press, then its release with the second press, then the second release, and each click is handled on its
+/// own (before the runtime, egui coalesced the batch into one pass, and the canvas used its last press once). A
+/// discarded pass replays neither press.
 #[test]
-fn native_gui_two_completed_clicks_use_last_primary_press_once() {
+fn native_gui_two_completed_clicks_count_once_each_in_order() {
     for reverse in [false, true] {
         for discard in [false, true] {
             let mut f = native_gui_click_fixture();
@@ -2768,26 +2667,26 @@ fn native_gui_two_completed_clicks_use_last_primary_press_once() {
                 ],
                 discard,
             );
-            assert_eq!(edges[0], (true, true, false), "both completed clicks leave no held origin");
-            assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay either press");
+            assert_eq!(batch_edges(&edges), (true, true, false), "both completed clicks leave no held origin");
+            assert_eq!(edges.iter().filter(|e| e.0).count(), 2, "each press is seen once; discard replays neither");
+            assert_eq!(edges.iter().filter(|e| e.1).count(), 2, "each release is seen once");
             let sel = f.app.session.doc().unwrap().selection.text.unwrap();
             assert_eq!(
                 (sel.story.0, sel.anchor, sel.focus),
                 (final_story.as_u64().unwrap(), final_focus, final_focus),
-                "reverse={reverse}, discard={discard}"
+                "the second click's caret, reverse={reverse}, discard={discard}"
             );
-            let commands = &f.app.session.journal[journal..];
+            let pointer: Vec<&str> = f.app.session.journal[journal..]
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .filter(|id| matches!(*id, "text.placeCaret" | "text.release"))
+                .collect();
             assert_eq!(
-                commands.iter().filter(|(id, _)| id == "text.placeCaret").count(),
-                1,
-                "one aggregate canvas selection, reverse={reverse}, discard={discard}"
+                pointer,
+                ["text.placeCaret", "text.release", "text.placeCaret", "text.release"],
+                "one caret and one release for each click, in order, reverse={reverse}, discard={discard}"
             );
-            assert_eq!(
-                commands.iter().filter(|(id, _)| id == "text.release").count(),
-                1,
-                "one corresponding release, reverse={reverse}, discard={discard}"
-            );
-            let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("one recovered canvas press");
+            let clicks = f.ctx.data(|d| d.get_temp::<Clicks>(egui::Id::unique(("canvas_clicks", f.app.pane)))).expect("the canvas's clicks");
             assert_eq!(clicks.n, 1, "separated clicks and discarded passes must not select a word");
             assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo, "pointer selection adds no document history");
             native_gui_released(&f);
@@ -2808,13 +2707,19 @@ fn native_gui_two_completed_clicks_use_last_primary_press_once() {
     }
 }
 
-/// A non-finite final press rejects the click instead of reviving an earlier valid press; later motion cannot drag.
+/// A malformed (non-finite) final press cannot revive the earlier click or make one of its own, and later motion
+/// cannot drag.
+///
+/// The craft UI runtime's one-press rule (H0) gives a frame at most one pointer press, as its last pointer event, and
+/// holds the events after it for the next frame. So the valid click completes first (its release arrives in the frame
+/// that also carries the malformed press) and counts once, as a click: its caret and release. The malformed press is
+/// then rejected (the app's input hook turns it into `PointerGone`, so no pass sees it as a press): no second caret
+/// or release, no history, no drag from it. A discarded pass replays neither press.
 #[test]
 fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
     for discard in [false, true] {
         let mut f = native_gui_click_fixture();
         let at = f.at;
-        let initial = f.app.session.doc().unwrap().selection.text;
         let undo = f.app.session.doc().unwrap().history.undo.len();
         let journal = f.app.session.journal.len();
         let edges = native_gui_input(
@@ -2829,20 +2734,24 @@ fn native_gui_nonfinite_final_press_cannot_reuse_an_earlier_click() {
             ],
             discard,
         );
-        assert_eq!(edges[0], (true, true, false));
-        assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "discard must not replay malformed input");
-        assert_eq!(
-            f.app.session.doc().unwrap().selection.text,
-            initial,
-            "discard={discard}: reject the last press instead of reviving an earlier valid one"
-        );
-        assert!(f.app.session.journal[journal..].iter().all(|(id, _)| id != "text.placeCaret" && id != "text.release"));
+        assert_eq!(batch_edges(&edges), (true, true, false));
+        // The app's input hook turns the malformed press into `PointerGone`, so only the valid press reaches a pass.
+        assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "the valid press is seen once; discard must not replay malformed input");
+        let clicked = f.app.session.doc().unwrap().selection.text.map(|t| (t.story.0, t.anchor, t.focus));
+        assert_eq!(clicked, Some((f.target.as_u64().unwrap(), f.focus, f.focus)), "discard={discard}: the completed click's caret");
+        let pointer: Vec<&str> = f.app.session.journal[journal..]
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .filter(|id| matches!(*id, "text.placeCaret" | "text.release"))
+            .collect();
+        assert_eq!(pointer, ["text.placeCaret", "text.release"], "discard={discard}: the malformed press neither revives the click nor makes one");
         assert_eq!(f.app.session.doc().unwrap().history.undo.len(), undo);
         assert_eq!(story_text(&mut f.app, &f.target), "Target story");
         assert_eq!(story_text(&mut f.app, &f.old), "Old story");
         native_gui_released(&f);
+        let after = f.app.session.doc().unwrap().selection.text;
         native_gui_input(&mut f, vec![egui::Event::PointerMoved(at + vec2(90.0, 0.0))], false);
-        assert_eq!(f.app.session.doc().unwrap().selection.text, initial, "motion after the invalid released press cannot drag");
+        assert_eq!(f.app.session.doc().unwrap().selection.text, after, "motion after the invalid released press cannot drag");
         native_gui_released(&f);
     }
 }
@@ -2855,7 +2764,7 @@ fn native_gui_same_batch_click_switches_story_once_before_typing() {
         let undo = f.app.session.doc().unwrap().history.undo.len();
         let at = f.at;
         let edges = native_gui_input(&mut f, vec![egui::Event::PointerMoved(at), native_gui_button(at, true), native_gui_button(at, false)], discard);
-        assert_eq!(edges[0], (true, true, false), "the real input consumed both edges and cleared the origin");
+        assert_eq!(batch_edges(&edges), (true, true, false), "the real input consumed both edges and cleared the origin");
         assert_eq!(edges.iter().filter(|e| e.0).count(), 1, "a discarded pass must not replay the press");
         let selection = f.app.session.doc().unwrap().selection.text.unwrap();
         assert_eq!((selection.story.0, selection.anchor, selection.focus), (f.target.as_u64().unwrap(), f.focus, f.focus), "discard={discard}");
@@ -3043,69 +2952,12 @@ fn native_gui_font_inventory_keeps_exact_regular_and_missing_style_diagnostics()
     assert!(missing["source"].is_null(), "{missing}");
 }
 
-#[test]
-#[allow(deprecated)] // `ImeEvent::Enabled` / `Disabled`: egui no longer sends them, other integrations may.
-fn ime_events_compose_in_the_story_with_the_candidate_window_at_the_caret() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
-    let sid = typing_app(&mut app, &ctx, "曲:");
-    // At a text caret the IME is allowed, its window on the caret as the canvas draws it.
-    let ime = ime_frame(&mut app, &ctx, vec![]).expect("IME allowed at a text caret");
-    let (top, bottom) = {
-        let st = app.session.active().unwrap();
-        let cs = app.session.cache.get(&st.doc, designcraft_doc::StoryId(sid.as_u64().unwrap()), None);
-        let (fi, x, bl, asc, desc) = compose::caret(&cs, "曲:".len()).unwrap();
-        let fid = cs.frames[fi].frame;
-        let (a, _) = item_canvas_xf(&st.doc, &CanvasLayout::new(&st.doc, st.editing_parents), fid).unwrap();
-        let m = a * st.doc.text_xf(st.doc.item(fid).unwrap());
-        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
-        (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)))
-    };
-    assert!(ime.rect.expand(1.0).contains(top) && ime.rect.expand(1.0).contains(bottom), "{:?} vs {top:?}–{bottom:?}", ime.rect);
-    assert_eq!(ime.cursor_rect, ime.rect);
-    assert!(!ime.should_interrupt_composition);
-    assert!(app.canvas_ime(), "the web build keeps whole words typed at the caret");
-    // "ni" → に → 日, with the events winit sends.
-    ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Enabled), preedit("ni", 2)]);
-    assert_eq!(story_text(&mut app, &sid), "曲:ni", "marked text shows in place");
-    assert!(app.session.tool_composing());
-    // Keys, plain text, the clipboard and Undo (the native menu's ⌘Z) wait for the IME.
-    let steps = app.session.doc().unwrap().history.undo.len();
-    let key = |key, pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
-    ime_frame(
-        &mut app,
-        &ctx,
-        vec![key(egui::Key::Backspace, true), key(egui::Key::Backspace, false), egui::Event::Text("x".into()), egui::Event::Paste("y".into())],
-    );
-    crate::menus::activate(&mut app, "edit.undo", &Value::Null);
-    assert!(!crate::menus::enabled(&app, "edit.undo"));
-    assert_eq!(story_text(&mut app, &sid), "曲:ni");
-    let ime2 = ime_frame(&mut app, &ctx, vec![preedit("に", 1)]).expect("IME allowed while composing");
-    assert_eq!(story_text(&mut app, &sid), "曲:に");
-    assert!(ime2.rect.center().x > ime.rect.center().x, "the window follows the IME's cursor: {:?} {:?}", ime2.rect, ime.rect);
-    ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into())), egui::Event::Ime(egui::ImeEvent::Disabled)]);
-    assert_eq!(story_text(&mut app, &sid), "曲:日");
-    assert!(!app.session.tool_composing());
-    assert_eq!(app.session.doc().unwrap().history.undo.len(), steps + 1, "the commit is one undo step");
-    assert_eq!(app.session.journal.last(), Some(&("text.insert".to_string(), json!({"text": "日"}))));
-    // After the commit, typing and Undo work again.
-    ime_frame(&mut app, &ctx, vec![egui::Event::Text("!".into())]);
-    assert_eq!(story_text(&mut app, &sid), "曲:日!");
-    crate::menus::activate(&mut app, "edit.undo", &Value::Null);
-    crate::menus::activate(&mut app, "edit.undo", &Value::Null);
-    assert_eq!(story_text(&mut app, &sid), "曲:");
-    // Without a text caret the IME is off: single-key tool shortcuts keep working.
-    app.select_tool("selection");
-    assert!(ime_frame(&mut app, &ctx, vec![]).is_none());
-    assert!(!app.canvas_ime());
-}
-
 /// Both panes of a split window see the same keyboard events: only the pane last clicked
 /// types them.
 #[test]
 fn a_split_window_types_once() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     app.run("window.split", json!({"on": true})).unwrap();
     for _ in 0..3 {
@@ -3129,7 +2981,7 @@ fn a_split_window_types_once() {
 #[test]
 fn ime_reports_the_committed_story_and_excludes_the_pre_edit() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "a😀b");
     let len = "a😀b".len();
     text_selection(&mut app, &sid, 0, len);
@@ -3155,7 +3007,7 @@ fn ime_reports_the_committed_story_and_excludes_the_pre_edit() {
 #[test]
 fn ime_empty_story_is_available_and_wide_text_is_bounded() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "");
     let ime = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
     assert_eq!(ime_payload(&ime), Some(("", 0, 0)), "an empty document is available, not unavailable");
@@ -3175,7 +3027,7 @@ fn ime_empty_story_is_available_and_wide_text_is_bounded() {
 #[test]
 fn ime_owner_follows_the_story_and_the_document() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "ab");
     let first = ime_frame(&mut app, &ctx, vec![]).expect("a text caret");
     app.session.execute("text.move", &json!({"dir": "left"})).unwrap();
@@ -3201,7 +3053,7 @@ fn ime_owner_follows_the_story_and_the_document() {
 #[test]
 fn ime_cause_distinguishes_commits_from_application_edits() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "a");
     let committed = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit("日".into()))]).expect("a text caret");
     assert_eq!(committed.change_cause, egui::output::ImeChangeCause::InputMethod);
@@ -3230,7 +3082,7 @@ fn ime_cause_distinguishes_commits_from_application_edits() {
 #[test]
 fn ime_cause_and_context_survive_a_discarded_pass() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     typing_app(&mut app, &ctx, "a");
     let raw = egui::RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0))),
@@ -3257,7 +3109,7 @@ fn ime_cause_and_context_survive_a_discarded_pass() {
 #[test]
 fn ime_autocorrect_is_not_an_input_method_cause() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     app.session.prefs.autocorrect = true;
     let sid = typing_app(&mut app, &ctx, "teh");
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::Commit(" ".into()))]).expect("a text caret");
@@ -3269,7 +3121,7 @@ fn ime_autocorrect_is_not_an_input_method_cause() {
 #[test]
 fn ime_delete_surrounding_excludes_the_selection_and_rounds_bytes_inward() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "aé😀b");
     // Select é, which keeps its bytes and direction; 'a' before and 😀 after go.
     text_selection(&mut app, &sid, 1, 3);
@@ -3311,7 +3163,7 @@ fn ime_delete_surrounding_excludes_the_selection_and_rounds_bytes_inward() {
 #[test]
 fn ime_delete_surrounding_has_no_sixty_four_character_cap() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, &"x".repeat(100));
     ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars: 200, after_chars: 0 })]);
     assert_eq!(story_text(&mut app, &sid), "");
@@ -3321,7 +3173,7 @@ fn ime_delete_surrounding_has_no_sixty_four_character_cap() {
 #[test]
 fn ime_delete_and_commit_are_one_undo_step() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     text_selection(&mut app, &sid, 1, 2);
     ime_frame(&mut app, &ctx, vec![]);
@@ -3348,7 +3200,7 @@ fn ime_delete_and_commit_are_one_undo_step() {
 #[test]
 fn a_commit_after_a_click_in_the_same_batch_is_not_typed_twice() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "ab");
     ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
     assert_eq!(story_text(&mut app, &sid), "abい");
@@ -3373,7 +3225,7 @@ fn a_delete_and_commit_after_a_click_in_the_same_batch_are_dropped() {
         egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 1, after_bytes: 0 },
     ] {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let sid = typing_app(&mut app, &ctx, "ab");
         ime_frame(&mut app, &ctx, vec![preedit("い", 1)]);
         let p = on_screen(&app, Point::new(150.0, 120.0));
@@ -3397,7 +3249,7 @@ fn a_delete_and_commit_after_a_click_in_the_same_batch_are_dropped() {
 #[test]
 fn a_delete_beyond_the_surrounding_window_is_still_an_input_method_cause() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, &"x".repeat(5000));
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::Ime(egui::ImeEvent::DeleteSurroundingBytes { before_bytes: 4500, after_bytes: 0 })])
         .expect("a text caret");
@@ -3423,9 +3275,41 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     h.run_steps(2);
     assert!(h.state().app.session.tool_composing());
     let canvas_owner = h.output().platform_output.ime.as_ref().expect("the canvas owns the composition").owner;
-    let field = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field");
-    field.click();
-    h.run_steps(2);
+    let at = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().expect("the Story Editor's text field").rect().center();
+    // The click is three frames, one per event: kittest's `Node::click` queues them and `step` runs a frame for each,
+    // keeping only the last frame's output, so the press frame's IME output would never be seen or answered. Each
+    // frame runs here on its own, and the harness answers what each one publishes, as egui-winit does: a request egui
+    // dropped is retired, a published one completes (before the next IME input, below).
+    let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    let click = [("click: move", Some(egui::Event::PointerMoved(at))), ("click: press", Some(press(true))), ("click: release", Some(press(false)))];
+    let idle = (0..4).map(|_| ("after the click", None));
+    let mut reset = None;
+    // What each frame published and who had the keyboard, for a failure to show.
+    let mut trail = Vec::new();
+    for (step, (label, event)) in click.into_iter().chain(idle).enumerate() {
+        if let Some(event) = event {
+            h.event(event);
+        }
+        h.step();
+        let output = &h.output().platform_output;
+        let retired = output.retired_ime_resets.clone();
+        let request = output.ime.as_ref().and_then(|ime| ime.reset_request);
+        let ime = output.ime.as_ref().map(|ime| (ime.owner, ime.context_generation, ime.should_interrupt_composition, ime.reset_request));
+        let field_focused = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().is_some_and(|field| field.is_focused());
+        let canvas_composing = h.state().app.session.tool_composing();
+        let text_edit = h.ctx.text_edit_focused();
+        trail.push(format!(
+            "frame {step} ({label}): ime (owner, generation, interrupt, reset) {ime:?}, retired {retired:?}, field focused \
+             {field_focused}, egui text edit focused {text_edit}, canvas composing {canvas_composing}"
+        ));
+        // The answers go into the next frame's input, with its own event.
+        h.input_mut().events.extend(retired.into_iter().map(|request_id| egui::Event::ImeResetRetired { request_id }));
+        // The fence waits for the latest request.
+        reset = request.or(reset);
+    }
+    // A handover may publish no reset at all (the composition can end in the field's own pass); the commit check below
+    // reports what each step published either way.
+    let trail = format!("canvas owner {canvas_owner:?}, reset asked {reset:?}:\n{}", trail.join("\n"));
     assert!(!h.state().app.session.tool_composing(), "the composition ended where the field took the keyboard");
     assert!(h.state_mut().app.take_ime_discard());
     assert!(h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().unwrap().is_focused(), "the field has the keyboard");
@@ -3433,17 +3317,21 @@ fn a_later_field_taking_the_keyboard_ends_the_composition_in_that_pass() {
     assert_ne!(ime.owner, canvas_owner, "the field owns the IME, not the canvas");
     let typed = story_text(&mut h.state_mut().app, &sid);
     assert!(typed.contains('い'), "the marked text stays as typed: {typed:?}");
+    if let Some(request_id) = reset {
+        h.event(egui::Event::ImeResetCompleted { request_id });
+    }
     h.event(egui::Event::Ime(egui::ImeEvent::Commit("X".into())));
     h.run_steps(2);
     let edited = story_text(&mut h.state_mut().app, &sid);
-    assert_eq!(edited.matches('X').count(), 1, "the field's next commit is applied once: {edited:?}");
+    let field_value = h.get_all_by_role(egui::accesskit::Role::MultilineTextInput).next().and_then(|field| field.value());
+    assert_eq!(edited.matches('X').count(), 1, "the field's next commit is applied once: {edited:?}; the field shows {field_value:?}; {trail}");
     assert_eq!(edited.matches('い').count(), 1, "the old canvas composition is not replayed: {edited:?}");
 }
 
 #[test]
 fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let sid = typing_app(&mut app, &ctx, "");
     ime_frame(&mut app, &ctx, vec![preedit("しょうこ", 4)]);
     assert!(app.session.tool_composing());
@@ -3453,7 +3341,10 @@ fn clicking_away_mid_composition_keeps_the_text_and_interrupts_the_ime() {
     let press = |pressed| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
     let ime = ime_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(p), press(true)]).expect("still at a text caret");
     assert!(ime.should_interrupt_composition);
-    ime_frame(&mut app, &ctx, vec![press(false)]);
+    // The platform resets its composition and reports it done, as the integration does; until then the IME's events
+    // wait behind the fence.
+    let reset = ime.reset_request.expect("the interrupt asks the platform for a reset");
+    ime_frame(&mut app, &ctx, vec![egui::Event::ImeResetCompleted { request_id: reset }, press(false)]);
     assert!(!app.session.tool_composing());
     assert_eq!(story_text(&mut app, &sid), "しょうこ");
     assert!(app.take_ime_discard(), "the host tells the system IME to drop its marked text");
@@ -3479,32 +3370,6 @@ fn baseline_grid_lines_are_the_ones_on_the_page() {
     assert_eq!(lines(-30.0, 12.0, 30.0), [6.0, 18.0], "a start above the page keeps its rhythm");
     assert_eq!(lines(f64::NAN, 12.0, 792.0), [0.0; 0]);
     assert_eq!(baseline_grid_lines(0.0, 12.0, f64::INFINITY).count(), MAX_BASELINES);
-}
-
-#[test]
-fn enter_or_tab_in_a_panel_field_leave_the_selected_text_alone() {
-    for key in [egui::Key::Enter, egui::Key::Tab] {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({})).unwrap();
-        let f = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Hello"})).unwrap();
-        app.select_tool("type");
-        app.run("text.select", json!({"story": f["story"], "anchor": 1, "focus": 4})).unwrap();
-        assert!(app.session.wants_text());
-        let mut h = harness(app);
-        let size = h.get_all_by_role(egui::accesskit::Role::TextInput).find(|n| n.value().as_deref() == Some("12 pt")).unwrap();
-        size.focus();
-        h.run_steps(1);
-        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-        h.run_steps(1);
-        h.event(egui::Event::Text("18".into()));
-        h.run_steps(1);
-        h.key_press(key);
-        h.run_steps(3);
-        let text = h.state_mut().session.execute("story.get", &json!({"story": f["story"]})).unwrap()["text"].clone();
-        assert_eq!(text, "Hello", "{key:?} confirms the field and leaves the story alone");
-        let size = crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["size"].clone();
-        assert_eq!(size, 18.0, "{key:?} applies the typed size");
-    }
 }
 
 #[test]
@@ -3663,7 +3528,7 @@ fn table_cells_show_their_hidden_characters() {
 
 #[test]
 fn the_caret_blink_restarts_on_input_and_caret_changes() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
 
     let shown = |t: f64, caret: designcraft_doc::TextSel, reset: bool| {

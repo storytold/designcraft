@@ -662,6 +662,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("To Text:", "على النص:"),
     ("New GREP Style", "نمط GREP جديد"),
     ("Font Family:", "عائلة الخط:"),
+    ("Font Style", "نمط الخط"),
     ("Font Style:", "نمط الخط:"),
     ("Leading:", "المسافة بين الأسطر:"),
     ("Alignment:", "المحاذاة:"),

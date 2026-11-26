@@ -1,4 +1,6 @@
 use super::*;
+use egui::accesskit::Role;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 /// The entries (command ids) of a menu bar menu, submenus included.
 fn menu_ids(title: &str) -> Vec<&'static str> {
@@ -194,96 +196,140 @@ fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
     }
 }
 
-/// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+// The menus are the craft framework's: a test finds a title or a row by what the AccessKit tree calls it (a title is a
+// `MenuItem` in the `MenuBar`, a row a `MenuItem`, `MenuItemCheckBox` or `MenuItemRadio` in a `Menu`), on a context with
+// the framework's runtime, which the menus' layers need.
+
+/// The rect of the shown node of `role` named `name`: kittest also lists hidden nodes (a closing menu keeps its rows
+/// under a hidden root while it fades), so a node counts only when neither it nor a node above it is hidden.
+fn shown_rect<S>(h: &egui_kittest::Harness<'_, S>, role: Role, name: &str) -> Option<egui::Rect> {
+    h.query_all_by_role_and_label(role, name).find_map(|node| {
+        let rect = node.rect();
+        let mut at = Some(node);
+        while let Some(node) = at {
+            if node.accesskit_node().is_hidden() {
+                return None;
+            }
+            at = node.parent();
+        }
+        Some(rect)
+    })
+}
+
+/// The names of the shown menu rows, in tree order.
+fn shown_rows<S>(h: &egui_kittest::Harness<'_, S>) -> Vec<String> {
+    let rows = h.query_all_by(|n| matches!(n.role(), Role::MenuItem | Role::MenuItemCheckBox | Role::MenuItemRadio));
+    let names: Vec<(Role, String)> = rows.filter_map(|n| Some((n.accesskit_node().role(), n.accesskit_node().label()?))).collect();
+    names.into_iter().filter(|(role, name)| shown_rect(h, *role, name).is_some()).map(|(_, name)| name).collect()
+}
+
+/// A primary click at `pos`, then a few frames.
+fn click<S>(h: &mut egui_kittest::Harness<'_, S>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.drag_at(pos);
+    h.drop_at(pos);
+    h.run_steps(4);
+}
+
+/// The menu bar alone in a window of `size`, as the app bar shows it.
+fn bar_harness(app: DesignApp, size: egui::Vec2) -> egui_kittest::Harness<'static, DesignApp> {
+    let mut h = crate::test_window::builder::<DesignApp>().with_size(size).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            ui.horizontal(|ui| menu_bar(app, ui));
+        },
+        app,
+    );
+    h.run_steps(2);
+    h
+}
+
+/// A framework menu that stays open near the top left of a window of `size`, showing `runs` as the menu bar and the
+/// canvas context menus show them; the row that runs is applied to `app`.
+fn open_menu<'a>(app: &'a mut DesignApp, runs: Vec<(&'static str, Vec<Item>)>, size: egui::Vec2) -> egui_kittest::Harness<'a> {
+    use craft_ui::contract::overlay::Anchor;
+    use craft_ui::contract::{Bind, Props as _, ShowContainer as _, Trigger};
+    // The window's UI fonts for the interface language, as `DesignApp::ui` installs them before it draws anything: the
+    // rows of a Japanese, Chinese or Korean menu need their faces.
+    let ctx = crate::test_window::context();
+    crate::theme::install_fonts(&ctx, &app.ui.language);
+    let builder = egui_kittest::HarnessBuilder::<()>::default().with_context(ctx);
+    let mut h = builder.with_size(size).with_step_dt(1.0 / 60.0).build_ui(move |ui| {
+        let opener = ui.allocate_response(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        let mut open = true;
+        let shown: &DesignApp = app;
+        let picked = craft_ui::menu::Menu::new("Test")
+            .id(egui::Id::unique("menus-test-menu"))
+            .opened_by(&opener, Trigger::Manual)
+            .anchor(Anchor::Point(egui::pos2(20.0, 20.0)))
+            .open(Bind::bound(&mut open))
+            .show(ui, |ui, _| menu_column(shown, ui, &runs))
+            .inner
+            .flatten();
+        if let Some(pick) = picked {
+            pick.apply(app);
+        }
+    });
+    h.run_steps(3);
+    h
+}
+
 #[test]
 fn oversized_edit_menu_scrolls_to_preferences() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 260.0));
-    let mut tick = 0;
-    let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
-        tick += 1;
-        let mut output =
-            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
-                egui::MenuBar::new().ui(ui, |ui| menu_bar(app, ui));
-            });
-        output.textures_delta.clear();
-        let mut labels = Vec::new();
-        fn collect(shape: &egui::Shape, clip: egui::Rect, labels: &mut Vec<(String, egui::Rect, egui::Rect)>) {
-            match shape {
-                egui::Shape::Text(t) => labels.push((t.galley.job.text.clone(), t.visual_bounding_rect(), clip)),
-                egui::Shape::Vec(shapes) => {
-                    for shape in shapes {
-                        collect(shape, clip, labels);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for shape in output.shapes {
-            collect(&shape.shape, shape.clip_rect, &mut labels);
-        }
-        labels
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let size = egui::vec2(700.0, 260.0);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let mut h = bar_harness(app, size);
+    let edit = shown_rect(&h, Role::MenuItem, "Edit").expect("the Edit title");
+    click(&mut h, edit.center());
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "the Edit menu opened");
+    let menu = shown_rect(&h, Role::Menu, "Edit").expect("the open Edit menu");
+    // Preferences… is Edit's last row, below the window until the menu scrolls. The framework menu scrolls by the wheel
+    // (and the strips at its ends); it has no scroll bar track, which the egui menu's version of this test pressed.
+    let in_view = |h: &egui_kittest::Harness<'_, DesignApp>| {
+        let menu = shown_rect(h, Role::Menu, "Edit")?;
+        shown_rect(h, Role::MenuItem, "Preferences…").filter(|row| screen.contains_rect(*row) && menu.contains_rect(*row))
     };
-    frame(&mut app, vec![]);
-    let labels = frame(&mut app, vec![]);
-    let edit = labels.iter().find(|(text, _, _)| text == "Edit").unwrap().1.center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(edit),
-                egui::Event::PointerButton { pos: edit, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
+    assert!(in_view(&h).is_none(), "Preferences… starts out of view");
+    for _ in 0..20 {
+        if in_view(&h).is_some() {
+            break;
+        }
+        h.hover_at(menu.left_top() + egui::vec2(40.0, 60.0));
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Unknown,
+        });
+        h.run_steps(10);
     }
-    for _ in 0..3 {
-        frame(&mut app, vec![]);
-    }
-    let layer = ctx.layer_id_at(egui::pos2(edit.x + 80.0, 100.0)).expect("menu layer");
-    let bounds = ctx.memory(|m| m.area_rect(layer.id)).expect("menu bounds");
-    let track = egui::pos2(bounds.right() - 9.0, bounds.bottom() - 25.0);
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(track),
-                egui::Event::PointerButton { pos: track, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
-    assert!(egui::Popup::is_any_open(&ctx), "clicking the scroll track must not dismiss the menu");
-    frame(
-        &mut app,
-        vec![
-            egui::Event::PointerMoved(egui::pos2(edit.x + 80.0, 100.0)),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -3000.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-                source: egui::MouseWheelSource::Unknown,
-            },
-        ],
-    );
-    let mut labels = Vec::new();
-    for _ in 0..60 {
-        labels = frame(&mut app, vec![]);
-    }
-    let (_, rect, clip) = labels.iter().find(|(text, _, _)| text == "Preferences…").expect("Preferences is rendered");
-    assert!(screen.contains_rect(*rect) && clip.contains_rect(*rect), "Preferences must be visible after scrolling: {rect:?}, {clip:?}");
-    let pos = rect.center();
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
-    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
-    assert!(!egui::Popup::is_any_open(&ctx), "choosing a command dismisses the menu");
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "scrolling keeps the menu open");
+    let preferences = in_view(&h).expect("Preferences… is visible after scrolling");
+    click(&mut h, preferences.center());
+    assert_eq!(h.state().ui.dialog.as_ref().map(|d| d.id.as_str()), Some("preferences"));
+    assert!(!craft_ui::menu::bar::is_open(&h.ctx), "choosing a command dismisses the menu");
+}
+
+/// Edit › Menus hides a row; the menu then ends with Show All Menu Items, which shows it again and leaves the menu open.
+#[test]
+fn hidden_menu_rows_come_back_with_show_all_menu_items() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    run_ui(&mut app, "window.hideMenuItem", &json!({"item": menu_key("Edit", "Cut")})).unwrap().unwrap();
+    // Tall enough for the whole Edit menu, so every row is in the window.
+    let mut h = bar_harness(app, egui::vec2(900.0, 1600.0));
+    let edit = shown_rect(&h, Role::MenuItem, "Edit").expect("the Edit title");
+    click(&mut h, edit.center());
+    let rows = shown_rows(&h);
+    assert!(rows.iter().any(|r| r == "Copy") && !rows.iter().any(|r| r == "Cut"), "Cut is hidden: {rows:?}");
+    let show_all = shown_rect(&h, Role::MenuItem, "Show All Menu Items").expect("Show All Menu Items ends the menu");
+    click(&mut h, show_all.center());
+    assert!(h.state().ui.show_full_menus);
+    assert!(craft_ui::menu::bar::is_open(&h.ctx), "the menu stays open");
+    let rows = shown_rows(&h);
+    assert!(rows.iter().any(|r| r == "Cut"), "Cut is back: {rows:?}");
+    assert!(!rows.iter().any(|r| r == "Show All Menu Items"), "{rows:?}");
 }
 
 #[test]
@@ -490,6 +536,53 @@ fn panel_shortcuts_open_their_panels() {
     assert!(shown(&app, "links"), "the new key opens Links");
 }
 
+/// Panels and tools were each one command id with the panel or tool in its params; the keymap now has a command id for each.
+/// A ui.json, a stored shortcut set and an exported set that name them the old way load with the same bindings, and the keys run
+/// the same panels and tools.
+#[test]
+fn shortcuts_saved_under_the_old_panel_and_tool_keys_load_with_the_same_bindings() {
+    let pen = r#"tool.select {"tool":"pen"}"#;
+    let layers = r#"window.panel {"panel":"layers"}"#;
+    let saved = json!({
+        "shortcuts": {(pen): "Y", (layers): "Shift+F3", "app.palette": "Cmd+Alt+Shift+9"},
+        "shortcutsMore": {(pen): ["F9"]},
+        "shortcutSets": {"version": 1, "active": "Mine", "sets": [{"name": "Mine", "overrides": [
+            {"command": pen, "keys": ["Y", "F9"]},
+            {"command": layers, "keys": ["Shift+F3"]},
+            {"command": "app.palette", "keys": ["Cmd+Alt+Shift+9"]},
+        ]}]},
+    });
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.ui = crate::UiState::from_preferences_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
+    app.sync_keymap();
+    let texts = |app: &crate::DesignApp, command: &craft_keymap::CommandRef| -> Vec<String> {
+        app.keymap.bindings(command).iter().map(|b| b.trigger.to_string()).collect()
+    };
+    assert_eq!(texts(&app, &crate::keys::tool("pen")), ["Y", "F9"]);
+    assert_eq!(texts(&app, &crate::keys::panel("layers")), ["Shift+F3"]);
+    assert_eq!(shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Alt+Shift+9"));
+    assert!(app.keymap.problems().is_empty(), "no saved key is left naming a command that is not there: {:?}", app.keymap.problems());
+    assert_eq!(app.ui.shortcut_sets.active(), "Mine");
+    assert_eq!(app.ui.shortcut_sets.active_overrides(&crate::shortcuts_dialog::BUILTINS), &app.ui.shortcuts, "the stored set migrated too");
+    assert!(app.ui.shortcuts.get(pen).is_none() && app.ui.shortcuts.get(layers).is_none(), "the old keys are gone");
+    // The same keys run the same tool and panel.
+    let ctx = egui::Context::default();
+    press_keys(&mut app, &ctx, &[(egui::Key::F9, egui::Modifiers::NONE)]);
+    assert_eq!(app.session.tool_id(), "pen", "F9 selects the Pen");
+    press_keys(&mut app, &ctx, &[(egui::Key::F3, egui::Modifiers::SHIFT)]);
+    assert!(crate::panel_docking::showing(&app, "layers"), "Shift+F3 opens Layers");
+    // An exported set that names them the old way.
+    let mut exported = json!({"format": "craft-keymap", "version": 1, "name": "Old", "overrides": [{"command": pen, "keys": ["Y"]}]});
+    crate::keys::migrate_sets_value(&mut exported);
+    assert_eq!(exported["overrides"], json!([{"command": crate::keys::tool("pen").key(), "keys": ["Y"]}]));
+    // The control channel still names them with params, and by the new key.
+    for (id, params) in [("tool.select", json!({"tool": "pen"})), ("tool.select.pen", Value::Null)] {
+        let r = run_ui(&mut app, "window.setShortcut", &json!({"id": id, "params": params, "shortcut": "Shift+F4"})).unwrap().unwrap();
+        assert_eq!(r["shortcut"], "Shift+F4", "{id}");
+    }
+}
+
 #[test]
 fn a_reassigned_tool_key_selects_the_tool_and_the_old_key_does_not() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -512,7 +605,7 @@ fn a_reassigned_tool_key_selects_the_tool_and_the_old_key_does_not() {
 fn split_window_panes_have_their_own_views() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -556,7 +649,7 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
         app.run("window.split", json!({"on": true})).unwrap();
         app.focus_pane = focus_pane;
 
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let frame = |app: &mut crate::DesignApp, events| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -592,6 +685,10 @@ fn split_window_dispatches_text_once_to_the_shared_document() {
             ],
         );
         assert_eq!(app.focus_pane, 1 - focus_pane);
+        // The craft UI runtime lets a frame carry at most one pointer press as its last pointer event: what arrives after
+        // it waits and leads the next frame (`hold_back_presses`). The text is dispatched in that frame, by the pane the
+        // press focused, once.
+        frame(&mut app, vec![]);
         assert_eq!(app.run("story.get", json!({"story": story})).unwrap()["text"], "B", "a key in the pane-switch frame is dispatched once");
         assert_eq!(app.session.active().unwrap().history.undo.len(), undo_before + 1);
     }
@@ -602,7 +699,7 @@ fn split_window_click_focus_routes_menu_zoom_but_hover_scroll_stays_local() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     app.run("window.split", json!({"on": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut time = 0.0;
     let mut frame = |app: &mut crate::DesignApp, events| {
         time += 0.1;
@@ -685,7 +782,7 @@ fn split_window_contextual_bars_have_independent_widget_ids() {
     }
     app.run("edit.selectAll", json!({})).unwrap();
     app.run("window.split", json!({"on": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     ctx.options_mut(|options| options.warn_on_id_clash = true);
     let mut warnings = Vec::new();
     for _ in 0..4 {
@@ -874,7 +971,7 @@ fn every_interface_language_is_selectable_persisted_and_keeps_document_data() {
 #[test]
 fn arabic_dialog_and_language_switch_keep_finite_widget_geometry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..4 {
             let mut output = ctx.run_ui(
@@ -1018,7 +1115,10 @@ fn fitting_options_follow_the_ruler_units() {
 fn tab_and_presentation_hide_floating_panels_too() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
+    ctx.enable_accesskit();
+    // The labels of the tabs the last pass drew, as the AccessKit tree names them: the dock has no hit ids to ask.
+    let tabs = std::cell::RefCell::new(Vec::<String>::new());
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =
@@ -1027,14 +1127,15 @@ fn tab_and_presentation_hide_floating_panels_too() {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
             });
+            if let Some(update) = out.platform_output.accesskit_update.take() {
+                let labels = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Tab);
+                *tabs.borrow_mut() = labels.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+            }
             out.textures_delta.clear();
         }
     };
-    // The docked panel's tab and a floating panel group.
-    let tab = crate::panel_docking::tab_id("preflight");
-    let docked = || ctx.read_response(tab).is_some();
-    let group = crate::panel_docking::floating_layer("preflight");
-    let shown = |layer: egui::LayerId| ctx.memory(|m| m.areas().is_visible(&layer));
+    // The docked panel's tab, and the tab of a floating panel group (a floating window draws its panel's tab too).
+    let docked = || tabs.borrow().iter().any(|label| label == "Preflight");
     let toggles = [
         ("window.hidePanels", json!({}), json!({})),
         ("window.hidePanelsExceptTools", json!({}), json!({})),
@@ -1053,14 +1154,14 @@ fn tab_and_presentation_hide_floating_panels_too() {
     }
     app.run("window.floatPanel", json!({"panel": "preflight", "x": 400, "y": 200})).unwrap();
     frame(&mut app);
-    assert!(app.ui.docking.is_some() && shown(group));
+    assert!(app.ui.docking.as_ref().is_some_and(|layout| layout.floating.iter().any(|window| window.contains("preflight"))) && docked());
     for (id, hide, show) in &toggles {
         app.run(id, hide.clone()).unwrap();
         frame(&mut app);
-        assert!(!shown(group), "{id} hides the floating panel");
+        assert!(!docked(), "{id} hides the floating panel");
         app.run(id, show.clone()).unwrap();
         frame(&mut app);
-        assert!(shown(group), "{id} again brings it back");
+        assert!(docked(), "{id} again brings it back");
     }
 }
 
@@ -1088,7 +1189,7 @@ fn tab_hides_panels_and_documents_cycle() {
 fn rotate_spread_view() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 3})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -1120,7 +1221,7 @@ fn rotate_spread_view() {
 fn hand_tool_hold_starts_power_zoom() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, t: f64, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1163,7 +1264,7 @@ fn hand_tool_hold_starts_power_zoom() {
 fn middle_drag_pans_with_any_tool() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1200,7 +1301,7 @@ fn middle_drag_pans_with_any_tool() {
 fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1276,7 +1377,7 @@ fn layout_menu_goes_through_pages_and_spreads_with_their_shortcuts() {
 fn go_back_and_go_forward_retrace_the_pages_viewed() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1344,7 +1445,7 @@ fn go_back_and_go_forward_retrace_the_pages_viewed() {
 fn go_back_waits_for_the_view_to_be_fitted() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -1371,7 +1472,7 @@ fn go_back_waits_for_the_view_to_be_fitted() {
 fn next_spread_at_the_last_spread_is_no_jump() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1412,7 +1513,7 @@ fn next_spread_at_the_last_spread_is_no_jump() {
 fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1484,7 +1585,7 @@ fn go_back_returns_to_the_view_a_jump_left_and_scrolling_adds_no_entry() {
 fn go_back_after_presentation_returns_to_the_last_spread_presented() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1544,7 +1645,7 @@ fn presentation_shows_one_spread_and_goes_through_them_with_keys_and_clicks() {
     app.session.execute("file.new", &json!({"pages": 7, "facingPages": true})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [100, 100, 300, 300]})).unwrap();
     let id = app.session.active().unwrap().selection.items[0];
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1645,7 +1746,7 @@ fn tool_shortcuts_work_after_drawing_on_the_canvas() {
     // tools without pressing Esc first (#1).
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1690,13 +1791,51 @@ fn tool_shortcuts_work_after_drawing_on_the_canvas() {
     assert_eq!(app.session.tool_id(), "rectangleFrame");
 }
 
+/// The canvas is the window's default key target: with nothing else focused it takes egui focus, so the craft UI runtime
+/// leaves Escape, Tab and the clipboard events in egui's input for the app, as it does once a click focused the canvas.
+#[test]
+fn the_canvas_takes_egui_focus_when_nothing_else_has_it() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = crate::test_window::context();
+    let frame = |app: &mut crate::DesignApp| {
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    assert!(ctx.memory(|memory| memory.focused()).is_none());
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    assert!(ctx.memory(|memory| memory.focused()).is_some(), "the canvas holds egui focus");
+    // Escape reaches the app's own code and leaves Presentation.
+    app.run("view.screenMode", json!({"mode": "presentation"})).unwrap();
+    frame(&mut app);
+    let escape = |pressed| egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+        events: vec![escape(true), escape(false)],
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    assert_ne!(app.ui.screen_mode, ScreenMode::Presentation, "Escape left Presentation");
+}
+
 #[test]
 fn escape_and_shift_w_leave_presentation_for_the_previous_mode() {
     // Presentation hides every control, so the keyboard must get out of it (#493).
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "graphic"})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1750,7 +1889,7 @@ fn cmd_plus_zooms_the_canvas_not_the_window() {
     // Cmd+- does, not hand the key to egui's whole-window zoom.
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1833,7 +1972,7 @@ fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
     for sc in ["Cmd+Shift+P", "Ctrl+P", "Cmd+Alt+P", "Alt+Shift+F11", "Alt+PageDown"] {
         assert!(crate::menus::native_key_equivalent(sc), "{sc}");
     }
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text"})).unwrap();
@@ -1855,22 +1994,28 @@ fn an_option_shortcut_the_mac_menu_bar_cannot_take_runs_in_the_app() {
     assert!(!story_text(&app, &frame["story"]).is_empty(), "⌥⇧P fills the selected frame with placeholder text");
 }
 
+/// One frame of the whole window as the desktop app runs it: the raw-input hook first, which gives the framework's
+/// board the commands Quick Apply lists (its palette resolves and picks them there), then the app's logic and ui.
+fn quick_apply_frame(app: &mut crate::DesignApp, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+    let mut input =
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), events, ..Default::default() };
+    app.raw_input_hook(ctx, &mut input);
+    let mut out = ctx.run_ui(input, |ui| {
+        app.logic(&ui.ctx().clone());
+        app.ui(ui);
+    });
+    out.textures_delta.clear();
+    out
+}
+
 #[test]
 fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
+    // The shipping host runs the raw-input hook before every pass (`quick_apply_frame`).
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
-            events,
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        });
-        out.textures_delta.clear();
+        quick_apply_frame(app, &ctx, events);
     };
     let cmd_return =
         |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::COMMAND };
@@ -1879,51 +2024,121 @@ fn the_quick_apply_shortcut_opens_it_without_running_an_entry() {
     frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
     frame(&mut app, vec![]);
     assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
-    assert_eq!(app.session.documents().len(), 1, "the first entry (New Document) didn't run");
+    let dialog = |app: &crate::DesignApp| app.ui.dialog.as_ref().map(|d| d.id.clone());
+    assert_eq!(dialog(&app), None, "the first entry (Document…, the New Document dialog) didn't run");
     // Pressing the shortcut again, or holding it until it repeats, doesn't run it either.
     frame(&mut app, vec![cmd_return(true), cmd_return(false)]);
     let repeat = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };
     frame(&mut app, vec![repeat, cmd_return(false)]);
     assert_eq!(app.ui.palette.as_deref(), Some(""), "Quick Apply stays open");
-    assert_eq!(app.session.documents().len(), 1, "a second ⌘Return or a repeat doesn't run the first entry");
+    assert_eq!(dialog(&app), None, "a second ⌘Return or a repeat doesn't run the first entry");
     // A plain Return still does.
     let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
     frame(&mut app, vec![enter(true), enter(false)]);
+    // The palette's list takes the Return the field hands it in the next pass.
+    frame(&mut app, vec![]);
     assert_eq!(app.ui.palette, None, "Return runs the first entry and closes Quick Apply");
-    assert_eq!(app.session.documents().len(), 2);
+    // Document… runs what ⌘N and File › New › Document… run, the New Document dialog (`listed_command`), rather than
+    // making a bare document.
+    assert_eq!(dialog(&app).as_deref(), Some("newDocument"));
+    assert_eq!(app.session.documents().len(), 1);
+}
+
+/// The x of the last text shape that reads `label`: the palette is painted last, over anything else with the same text.
+fn label_x(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<f32> {
+    shapes.iter().rev().find_map(|s| match &s.shape {
+        egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
+        _ => None,
+    })
 }
 
 #[test]
 fn quick_apply_rows_are_left_aligned() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
+    app.session.execute("style.paragraph.create", &json!({"name": "Group Heading"})).unwrap();
     app.ui.palette = Some(String::new());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    // A style's row shows its kind at the end; a command's row here shows nothing there (the palette shows a command's
+    // chord from the framework's board, where the app's commands have none).
+    quick_apply_frame(&mut app, &ctx, vec![egui::Event::Text("group".into())]);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        let input =
-            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(input, |ui| {
-            app.logic(&ui.ctx().clone());
-            app.ui(ui);
-        });
-        out.textures_delta.clear();
-        shapes = out.shapes;
+        shapes = quick_apply_frame(&mut app, &ctx, vec![]).shapes;
     }
-    let label_x = |label: &str| {
-        // The palette is painted last, over anything else with the same text.
-        shapes.iter().rev().find_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.x),
-            _ => None,
-        })
-    };
-    // Rows that show a shortcut or a style kind, and rows that show neither, among the first visible ones.
-    let items = quick_apply_items(&app.session, "", false);
-    let first = items.iter().take(10);
-    let plain = first.clone().find(|it| it.shortcut.is_none() && it.kind.is_empty()).expect("a row without a shortcut");
-    let with_sc = first.clone().find(|it| it.shortcut.is_some()).expect("a row with a shortcut");
-    let (a, b) = (label_x(&plain.label).expect("plain row drawn"), label_x(&with_sc.label).expect("shortcut row drawn"));
-    assert!((a - b).abs() < 0.5, "{:?} at x {a}, {:?} at x {b}", plain.label, with_sc.label);
+    let group = crate::i18n::tr(&app.ui.language, "Group");
+    let (a, b) = (label_x(&shapes, "Group Heading").expect("the style's row"), label_x(&shapes, group).expect("the command's row"));
+    assert!((a - b).abs() < 0.5, "Group Heading at x {a}, {group:?} at x {b}");
+}
+
+/// Quick Apply finds a document's style by name and applies it to the selection.
+#[test]
+fn quick_apply_applies_a_style_it_finds() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.session.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap();
+    app.session.execute("style.object.create", &json!({"name": "Magenta Box"})).unwrap();
+    let b = app.session.execute("frame.create", &json!({"rect": [200, 36, 300, 136], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.ui.palette = Some(String::new());
+    let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    quick_apply_frame(&mut app, &ctx, vec![egui::Event::Text("magenta".into())]);
+    quick_apply_frame(&mut app, &ctx, vec![]);
+    let enter = |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    quick_apply_frame(&mut app, &ctx, vec![enter(true), enter(false)]);
+    quick_apply_frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.ui.palette, None, "picking closes Quick Apply");
+    let item = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(b)).unwrap().object_style.clone();
+    assert_eq!(item, "Magenta Box");
+}
+
+/// A style is a command of its own on the framework's board, whose id holds no space; picking it runs the style's apply
+/// command with its name. Other picks run as the menus run them, a searched command with `{}`.
+#[test]
+fn quick_apply_style_commands_name_their_style() {
+    for (apply, name) in [("style.paragraph.apply", "Body Copy"), ("style.character.apply", "Über_ité.2"), ("style.object.apply", "[x] y")] {
+        let command = style_command(apply, name);
+        assert!(!command.id.chars().any(char::is_whitespace), "{}", command.id);
+        assert_eq!(picked_run(&command), (apply.to_owned(), json!({ "name": name })));
+    }
+    assert_eq!(picked_run(&craft_keymap::CommandRef::new("app.preferences")), ("app.preferences".to_owned(), json!({})));
+    assert_eq!(picked_run(&crate::keys::tool("pen")), ("tool.select".to_owned(), json!({"tool": "pen"})));
+}
+
+/// Quick Apply lists File › New › Document…, Open…, Save, Save As… and Place… as the UI commands their keys and menu
+/// rows run, so each row shows its key, as Close (an engine command no UI command stands in for) does.
+#[test]
+fn quick_apply_rows_show_the_keys_of_the_file_commands() {
+    use super::quick_apply::listed_command;
+    let stand_ins = [
+        ("file.new", "app.newDocumentDialog"),
+        ("file.open", "app.openDialog"),
+        ("file.save", "app.save"),
+        ("file.saveAs", "app.saveDialog"),
+        ("file.place", "app.placeDialog"),
+        ("file.close", "file.close"),
+        ("file.revert", "file.revert"),
+        ("app.preferences", "app.preferences"),
+    ];
+    for (id, listed) in stand_ins {
+        assert_eq!(listed_command(id), listed, "{id}");
+    }
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    app.ui.palette = Some(String::new());
+    let ctx = crate::test_window::context();
+    for _ in 0..3 {
+        quick_apply_frame(&mut app, &ctx, vec![]);
+    }
+    for (_, listed) in stand_ins.iter().take(6) {
+        let command = craft_keymap::CommandRef::new(*listed);
+        assert!(craft_ui::runtime::commands::chord(&ctx, &command).is_some(), "Quick Apply's row for {listed} shows no key");
+    }
 }
 
 #[test]
@@ -1932,7 +2147,7 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
     // the system clipboard (#164, #185).
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -1960,8 +2175,9 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
         })
         .expect("copying objects puts text on the system clipboard");
     assert!(!copied.is_empty());
+    let journal = app.session.journal.len();
     frame(&mut app, vec![egui::Event::Paste(copied.clone())]);
-    assert_eq!(count(&app), n + 1, "the paste key pastes the copied rectangle");
+    assert_eq!(count(&app), n + 1, "the paste key pastes the copied rectangle; commands: {:?}", &app.session.journal[journal..]);
 
     // Pasting into text anchors the copied object; the clipboard placeholder isn't typed.
     let r = app.session.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "Hello"})).unwrap();
@@ -1982,7 +2198,8 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
 fn cutting_an_object_after_copying_text_pastes_the_object_at_a_caret_without_a_native_menu() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    // The window's context, with the craft UI runtime the whole interface needs, as the copy test above has it.
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -2036,7 +2253,7 @@ fn paste_with_no_insertion_point_makes_a_text_frame_from_other_apps_text() {
         let it = d.doc.item(*d.selection.items.first()?)?;
         Some(d.doc.story(it.text_frame()?.story)?.text.clone())
     };
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     native_frame(&mut app, &ctx, vec![], None);
@@ -2101,7 +2318,7 @@ fn sample_scripts_run() {
 fn new_window_shows_a_second_view() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp| {
         let input =
             egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
@@ -2132,7 +2349,7 @@ fn panels_float_and_dock() {
     let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "swatches", "x": 50, "y": 60})).unwrap().unwrap();
     assert_eq!(r["floating"], json!(["swatches"]));
     let window = &app.ui.docking.as_ref().unwrap().floating[0];
-    assert_eq!([window.rect[0], window.rect[1]], [50.0, 60.0]);
+    assert_eq!([window.rect.min.x, window.rect.min.y], [50.0, 60.0]);
     // Showing a floating panel leaves it where it is.
     run_ui(&mut app, "window.panel", &json!({"panel": "swatches"})).unwrap().unwrap();
     assert_eq!(app.ui.open_panel, None);
@@ -2140,12 +2357,15 @@ fn panels_float_and_dock() {
     assert_eq!(r["floating"], json!([]));
     assert!(app.ui.docking.as_ref().unwrap().floating.is_empty());
     assert!(run_ui(&mut app, "window.floatPanel", &json!({"panel": "nope"})).unwrap().is_err());
-    // Float-only panels (Type › Tabs) have their own windows outside the layout.
+    // Float-only panels (Type › Tabs) float as windows of the layout of their own, and Dock Panel closes them.
     let r = run_ui(&mut app, "window.floatPanel", &json!({"panel": "tabs", "x": 10, "y": 20})).unwrap().unwrap();
     assert_eq!(r["floating"], json!(["tabs"]));
-    assert_eq!(app.ui.floating, [("tabs".to_string(), [10.0, 20.0])]);
+    let window = app.ui.docking.as_ref().unwrap().floating.iter().find(|w| w.contains(&"tabs".to_string())).cloned().expect("Tabs floats");
+    assert_eq!([window.rect.min.x, window.rect.min.y], [10.0, 20.0]);
+    assert_eq!(window.panels().count(), 1, "alone in its window");
     run_ui(&mut app, "window.dockPanel", &json!({"panel": "tabs"})).unwrap().unwrap();
-    assert!(app.ui.floating.is_empty());
+    assert!(crate::panel_docking::floating_panels(&app).is_empty());
+    assert!(!app.ui.docking.as_ref().unwrap().contains(&"tabs".to_string()), "closed, not docked");
 }
 
 /// One frame as the desktop app runs it: queued synthetic input, then the native menu item
@@ -2167,20 +2387,32 @@ fn native_frame(app: &mut crate::DesignApp, ctx: &egui::Context, events: Vec<egu
     out
 }
 
-/// A document with two frames, nothing selected, and Quick Apply's search field focused
-/// holding `text`.
+/// A document with two frames, nothing selected, and Quick Apply's search field focused holding `text`, typed into it.
+/// The query is the framework palette's own: a test reads it from the field (`focused_text`), not from `app.ui.palette`.
 fn app_with_focused_field(ctx: &egui::Context, text: &str) -> crate::DesignApp {
+    ctx.enable_accesskit();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [236, 36, 400, 200]})).unwrap();
     app.session.execute("edit.deselectAll", &json!({})).unwrap();
-    app.ui.palette = Some(text.into());
+    app.ui.palette = Some(String::new());
     for _ in 0..3 {
         native_frame(&mut app, ctx, vec![], None);
     }
+    if !text.is_empty() {
+        native_frame(&mut app, ctx, vec![egui::Event::Text(text.into())], None);
+    }
+    let out = native_frame(&mut app, ctx, vec![], None);
     assert!(ctx.text_edit_focused());
+    assert_eq!(focused_text(&out).unwrap_or_default(), text, "the field holds the typed text");
     app
+}
+
+/// The text of the field that has the keyboard, from the frame's AccessKit tree (the context needs AccessKit on).
+fn focused_text(out: &egui::FullOutput) -> Option<String> {
+    let update = out.platform_output.accesskit_update.as_ref()?;
+    update.nodes.iter().find(|(id, _)| *id == update.focus).and_then(|(_, node)| node.value().map(str::to_owned))
 }
 
 fn field_selection(ctx: &egui::Context) -> Option<(usize, usize)> {
@@ -2197,7 +2429,7 @@ fn document_items(app: &crate::DesignApp) -> (usize, usize) {
 #[test]
 fn native_select_all_selects_the_focused_fields_text() {
     // The Mac menu bar takes ⌘A before the window sees it (#30).
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
     native_frame(&mut app, &ctx, vec![], None);
@@ -2207,7 +2439,7 @@ fn native_select_all_selects_the_focused_fields_text() {
 
 #[test]
 fn native_paste_and_copy_act_on_the_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     native_frame(&mut app, &ctx, vec![], Some("edit.selectAll"));
     native_frame(&mut app, &ctx, vec![], None);
@@ -2220,13 +2452,13 @@ fn native_paste_and_copy_act_on_the_focused_field() {
     let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
     assert!(commands.contains(&egui::ViewportCommand::RequestPaste), "{commands:?}");
     native_frame(&mut app, &ctx, vec![egui::Event::Paste("text".into())], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("text"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("text"));
     assert_eq!(document_items(&app), (2, 0), "nothing was pasted into the document");
 }
 
 #[test]
 fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     app.session.execute("frame.create", &json!({"rect": [36, 36, 200, 200], "content": "text", "text": "hello"})).unwrap();
@@ -2251,23 +2483,23 @@ fn native_copy_and_paste_use_the_system_clipboard_for_canvas_text() {
 
 #[test]
 fn native_undo_and_redo_act_on_the_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "");
     native_frame(&mut app, &ctx, vec![egui::Event::Text("abc".into())], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("abc"));
     native_frame(&mut app, &ctx, vec![], Some("edit.undo"));
     native_frame(&mut app, &ctx, vec![], None);
-    assert_eq!(app.ui.palette.as_deref(), Some(""), "the field's typing is undone");
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).unwrap_or_default(), "", "the field's typing is undone");
     assert_eq!(document_items(&app), (2, 0), "the document's last frame is still there");
     native_frame(&mut app, &ctx, vec![], Some("edit.redo"));
     native_frame(&mut app, &ctx, vec![], None);
-    assert_eq!(app.ui.palette.as_deref(), Some("abc"));
+    assert_eq!(focused_text(&native_frame(&mut app, &ctx, vec![], None)).as_deref(), Some("abc"));
     assert_eq!(document_items(&app), (2, 0));
 }
 
 #[test]
 fn native_editing_items_are_enabled_for_a_focused_field() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     // Nothing is selected in the document, so its Copy and Cut are off; the field's are on.
     assert!(!menu_enabled(&app, "edit.copy") && !menu_enabled(&app, "edit.cut"));
@@ -2283,7 +2515,7 @@ fn native_editing_items_are_enabled_for_a_focused_field() {
 
 #[test]
 fn native_select_all_without_a_focused_field_selects_the_documents_items() {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = app_with_focused_field(&ctx, "frame");
     app.ui.palette = None;
     native_frame(&mut app, &ctx, vec![], None);
@@ -2305,6 +2537,16 @@ fn command_search_matches_labels_in_the_interface_language() {
     assert!(command_search(&app, "group").iter().any(|i| i.id == "object.group"), "English labels match too");
     assert!(command_search(&app, "  ").is_empty());
     assert!(command_search(&app, "e").len() <= 14);
+}
+
+/// The app bar's search lists the file commands as the keys and the File menu run them, with those keys: Save is
+/// `app.save` with ⌘S, as in Quick Apply.
+#[test]
+fn command_search_lists_the_file_commands_with_their_keys() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let save = command_search(&app, "save").into_iter().find(|i| i.id == "app.save").expect("Save is listed as the command its key runs");
+    assert_eq!(save.shortcut.as_deref(), Some("Cmd+S"));
+    assert!(!command_search(&app, "save").iter().any(|i| i.id == "file.save"), "and not again as the engine command");
 }
 
 #[test]
@@ -2390,8 +2632,11 @@ fn searched_ui_commands_run_without_parameters_and_keep_preferences() {
     // Each command runs as Quick Apply runs an entry. One that needs a selection may fail
     // without it, but runs in one of the contexts; none changes a preference it wasn't asked to.
     // Opening a panel or collapsing the dock to icons changes where the panels are, as it should.
+    // Edit in Story Editor opens the editor as a float-only panel of the dock, as Type › Tabs does
+    // (`story_editor::follow_target`), so it changes where the panels are too.
     let opens_a_panel = [
         "app.tabsPanel",
+        "app.storyEditor",
         "app.characterStylesPanel",
         "app.paragraphStylesPanel",
         "app.characterPanel",
@@ -2488,6 +2733,47 @@ fn context_menus_hold_commands_and_menu_bar_submenus() {
             assert!(ui_label(id).is_some() || designcraft_engine::find_command(id).is_some(), "context entry {label}: unknown command {id}");
         }
     }
+}
+
+/// A right-click on the page opens the canvas menu at the click: the menu bar's rows with their shortcuts and check
+/// marks. A row runs its command and closes the menu, after which the canvas has the keys again.
+#[test]
+fn a_right_click_on_the_page_opens_the_canvas_menu_and_its_rows_run() {
+    use egui::{Event, Modifiers, PointerButton};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap();
+    app.run("frame.create", json!({"rect": [236, 36, 400, 200]})).unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
+    let at = h.state().app.canvas_rect.expect("the canvas").max - egui::vec2(30.0, 30.0);
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+    }
+    h.run_steps(4);
+    assert!(crate::canvas::context_menu_open(&h.ctx), "the canvas menu is open");
+    let menu = shown_rect(&h, Role::Menu, "View").expect("the canvas menu (nothing was hit), named for what it acts on");
+    // Near the window's corner the menu opens up and to the left of the click: a corner of it is at the click.
+    let corners = [menu.left_top(), menu.right_top(), menu.left_bottom(), menu.right_bottom()];
+    assert!(corners.iter().any(|c| (*c - at).length() < 24.0), "the menu hangs at the click: {menu:?}, {at:?}");
+    // Show/Hide Rulers is checked while the rulers show, and Select All shows the shortcut in effect.
+    let app = &h.state().app;
+    let (rulers, select_all) = (crate::i18n::tr(&app.ui.language, "Show/Hide Rulers"), crate::i18n::tr(&app.ui.language, "Select All"));
+    let shortcut = shortcut_label(app, "edit.selectAll", &Value::Null);
+    let rulers_on = app.ui.rulers;
+    let row = {
+        let checked = h.query_all_by_role_and_label(Role::MenuItemCheckBox, rulers).next().expect("the rulers' check row").accesskit_node().toggled();
+        assert_eq!(checked == Some(egui::accesskit::Toggled::True), rulers_on, "{checked:?}");
+        let row = h.query_all_by_role_and_label(Role::MenuItem, select_all).next().expect("the Select All row");
+        assert_eq!(row.accesskit_node().data().keyboard_shortcut().map(str::to_owned), shortcut);
+        row.rect()
+    };
+    click(&mut h, row.center());
+    let doc = h.state().app.session.active().unwrap();
+    assert_eq!(doc.selection.items.len(), 2, "Select All ran");
+    assert!(shown_rect(&h, Role::Menu, "View").is_none(), "running a row closed the menu");
+    assert!(!crate::canvas::context_menu_open(&h.ctx), "the canvas takes the keys again");
 }
 
 #[test]
@@ -2721,7 +3007,7 @@ fn insert_white_space_shows_the_em_and_en_space_shortcuts() {
 fn native_insert_shortcuts_leave_the_document_alone_while_a_field_has_focus() {
     // On the Mac the menu bar takes ⇧⌘M before the window: with Quick Apply's field focused it
     // must not type into the story behind it.
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
     let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
@@ -2744,7 +3030,7 @@ fn native_insert_shortcuts_leave_the_document_alone_while_a_dialog_or_quick_appl
     // The same cases stop the window's shortcuts. In the first frame nothing has keyboard focus
     // yet, so only the open dialog or Quick Apply keeps the character out of the story.
     for open in ["", "dialog", "palette"] {
-        let ctx = egui::Context::default();
+        let ctx = crate::test_window::context();
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", &json!({})).unwrap();
         let story = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab"})).unwrap()["story"].clone();
@@ -2933,25 +3219,11 @@ fn hide_and_show_menu_items() {
     assert!(items.len() > 100, "every menu's items are listed: {}", items.len());
 }
 
-/// The Type menu as drawn: every item label.
+/// The Type menu as drawn: the name of every row it shows.
 fn drawn_type_menu(app: &mut DesignApp) -> Vec<String> {
     let ty = menu_tree().into_iter().find(|(m, _)| *m == "Type").unwrap().1;
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 4000.0));
-    let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
-        menu_items(app, ui, &ty, "Type");
-    });
-    out.textures_delta.clear();
-    fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(t) => out.push(t.galley.job.text.trim().to_string()),
-            egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
-            _ => {}
-        }
-    }
-    let mut labels = Vec::new();
-    out.shapes.iter().for_each(|s| collect(&s.shape, &mut labels));
-    labels
+    let h = open_menu(app, vec![("Type", ty)], egui::vec2(400.0, 4000.0));
+    shown_rows(&h)
 }
 
 /// Tate-Chu-Yoko, Ruby, Kenten and Warichu are in the Type menu of InDesign's Japanese edition
@@ -3173,10 +3445,10 @@ fn tiny_menu_viewport_does_not_force_the_default_scroll_height() {
 
 #[test]
 fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    // `menu_button`'s submenus inside an egui menu (the panels' menus that are still egui): the menu bar's own submenus
+    // are framework rows now, so the egui submenu row is `menu_button` itself, as `menu_items` drew it.
     let ctx = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 900.0));
-    let entries = vec![Item::Sub("Hidden submenu".into(), vec![cmd_item("app.preferences", Value::Null)])];
     let mut tick = 0;
     let mut frame = |spacing: f32, events: Vec<egui::Event>| {
         tick += 1;
@@ -3189,7 +3461,9 @@ fn clipped_submenu_does_not_open_when_hovering_outside_menu() {
                         egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
                             ui.add_space(spacing);
                             let button_id = ui.next_auto_id();
-                            menu_items(&mut app, ui, &entries, "Test");
+                            menu_button(ui, "Hidden submenu", |ui| {
+                                let _ = ui.button("Preferences…");
+                            });
                             let response = ui.ctx().read_response(button_id).expect("submenu button response");
                             let open = egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item.is_some());
                             hidden_submenu = Some((response.rect, ui.clip_rect(), open));
@@ -3321,8 +3595,30 @@ fn web_save_marks_the_document_saved_only_after_the_download_starts() {
     assert!(!app.session.active().unwrap().is_dirty());
 }
 
+/// The names of the start screen's buttons (its cards among them), as its AccessKit tree names them.
+fn start_screen_buttons(app: &mut crate::DesignApp) -> Vec<String> {
+    let ctx = crate::test_window::context();
+    crate::theme::install_fonts(&ctx, "");
+    ctx.enable_accesskit();
+    let mut names = Vec::new();
+    for _ in 0..3 {
+        let input =
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        if let Some(update) = out.platform_output.accesskit_update.take() {
+            let buttons = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Button);
+            names = buttons.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+        }
+    }
+    names
+}
+
 fn start_screen_texts(app: &mut crate::DesignApp) -> Vec<String> {
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");
     let mut shapes = Vec::new();
     for _ in 0..3 {
@@ -3394,7 +3690,7 @@ fn open_recent_of_a_missing_file_alerts_and_the_start_screen_lists_recent_files(
 #[test]
 fn start_screen_scrolls_when_the_window_is_too_short() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     crate::theme::install_fonts(&ctx, "");
     let size = egui::vec2(1366.0, 300.0);
     let mut tile_y = |events: Vec<egui::Event>| {
@@ -3448,7 +3744,9 @@ fn help_links_are_enabled_without_a_document() {
 #[test]
 fn start_screen_offers_every_print_preset_including_a6() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let texts = start_screen_texts(&mut app);
+    // The cards by their accessible names: a stacked card paints a name of more than ten characters as two lines
+    // ("Letter" over "- Half"), so the painted text runs no longer hold whole names.
+    let texts = start_screen_buttons(&mut app);
     for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
         assert!(texts.iter().any(|t| t == p.name), "start screen lacks the {} card: {texts:?}", p.name);
     }
@@ -3463,37 +3761,14 @@ fn start_screen_offers_every_print_preset_including_a6() {
 #[test]
 fn menu_rows_are_selectable_across_the_full_width() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let ctx = egui::Context::default();
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
-    let entries = vec![cmd_item("app.preferences", Value::Null)];
-    let mut tick = 0;
-    let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
-        tick += 1;
-        let mut row = egui::Rect::NOTHING;
-        let mut output =
-            ctx.run_ui(egui::RawInput { screen_rect: Some(screen), time: Some(tick as f64 / 60.0), events, ..Default::default() }, |ui| {
-                egui::Area::new(egui::Id::unique("menu_rows")).fixed_pos(egui::pos2(50.0, 50.0)).show(ui.ctx(), |ui| {
-                    let before = ui.cursor().min;
-                    menu_column(app, ui, &[("Test", entries.clone())]);
-                    row = egui::Rect::from_min_max(before, ui.min_rect().max);
-                });
-            });
-        output.textures_delta.clear();
-        row
-    };
-    frame(&mut app, vec![]);
-    let row = frame(&mut app, vec![]);
-    assert!(row.width() >= 239.0, "the column is at least 240 wide: {row:?}");
-    let far = egui::pos2(row.right() - 6.0, row.top() + 8.0);
-    for pressed in [true, false] {
-        frame(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(far),
-                egui::Event::PointerButton { pos: far, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
-            ],
-        );
-    }
+    // A longer row beside Preferences… makes the menu wider than Preferences…'s own label.
+    let entries = vec![cmd_item("app.preferences", Value::Null), cmd_item("app.exportBatch", Value::Null)];
+    let mut h = open_menu(&mut app, vec![("Test", entries)], egui::vec2(600.0, 400.0));
+    let row = shown_rect(&h, Role::MenuItem, "Preferences…").expect("the Preferences… row");
+    let other = shown_rect(&h, Role::MenuItem, "Export Layouts and Versions…").expect("the longer row");
+    assert!((row.width() - other.width()).abs() < 0.5, "the rows share the menu's width: {row:?}, {other:?}");
+    click(&mut h, egui::pos2(row.right() - 6.0, row.center().y));
+    drop(h);
     assert!(app.ui.dialog.is_some(), "clicking the empty end of the Preferences… row must choose it");
 }
 
@@ -3569,7 +3844,7 @@ fn file_menu_ends_with_quit_but_the_macos_menu_bar_leaves_it_to_the_app_menu() {
 fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
     let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
@@ -3625,10 +3900,13 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
     assert!(app.view().unwrap().zoom > 1.0);
     let after = under(&app, pointer);
     assert!((after.x - before.x).abs() < 1e-3 && (after.y - before.y).abs() < 1e-3);
-    // A click in the menu bar takes the pointer out of the window: the centre stays.
-    let centre = under(&app, rect.center());
+    // A click in the menu bar takes the pointer out of the window: the centre stays. The canvas's centre as it is
+    // now: the window's layout can settle after the first two frames `rect` was read in, and the canvas then has
+    // another size (its top left, which the points under the pointer above depend on, stays).
+    let mid = app.canvas_rect.unwrap().center();
+    let centre = under(&app, mid);
     native_frame(&mut app, &ctx, vec![egui::Event::PointerGone], Some("view.zoomOut"));
-    let kept = under(&app, rect.center());
+    let kept = under(&app, mid);
     assert!((kept.x - centre.x).abs() < 1e-3 && (kept.y - centre.y).abs() < 1e-3);
 }
 
@@ -3636,7 +3914,10 @@ fn zoom_commands_zoom_around_the_pointer_when_it_is_over_the_canvas() {
 fn window_menu_commands_restore_hidden_panels() {
     let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", &json!({})).unwrap();
-    let ctx = egui::Context::default();
+    let ctx = crate::test_window::context();
+    ctx.enable_accesskit();
+    // The labels of the tabs the last pass drew, as the AccessKit tree names them.
+    let tabs = std::cell::RefCell::new(Vec::<String>::new());
     let frame = |app: &mut crate::DesignApp| {
         for _ in 0..2 {
             let input =
@@ -3645,22 +3926,26 @@ fn window_menu_commands_restore_hidden_panels() {
                 app.logic(&ui.ctx().clone());
                 app.ui(ui);
             });
+            if let Some(update) = out.platform_output.accesskit_update.take() {
+                let labels = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Tab);
+                *tabs.borrow_mut() = labels.filter_map(|(_, node)| node.label().map(str::to_owned)).collect();
+            }
             out.textures_delta.clear();
         }
     };
-    let props_tab = crate::panel_docking::tab_id("properties");
+    let props_tab = || tabs.borrow().iter().any(|label| label == "Properties");
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "properties panel starts visible");
+    assert!(props_tab(), "properties panel starts visible");
 
     // Window › Properties unhides panels hidden by Tab.
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 1);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_none());
+    assert!(!props_tab());
     run_ui(&mut app, "window.panel", &json!({"panel": "properties"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "Window > Properties restores hidden panels");
+    assert!(props_tab(), "Window > Properties restores hidden panels");
 
     // Shift+Tab + Type/Window panel commands unhide and reveal the requested panel.
     run_ui(&mut app, "window.hidePanelsExceptTools", &json!({})).unwrap().unwrap();
@@ -3679,12 +3964,12 @@ fn window_menu_commands_restore_hidden_panels() {
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
-    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"));
+    assert!(crate::panel_docking::floating_panels(&app).iter().any(|p| p == "tabs"));
 
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();
     run_ui(&mut app, "window.panel", &json!({"panel": "tabs"})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
-    assert!(app.ui.floating.iter().any(|(p, _)| p == "tabs"), "Tabs stays open when unhidden");
+    assert!(crate::panel_docking::floating_panels(&app).iter().any(|p| p == "tabs"), "Tabs stays open when unhidden");
 
     // Table toggle activates instead of closing while hidden.
     run_ui(&mut app, "window.panel", &json!({"panel": "table"})).unwrap().unwrap();
@@ -3709,7 +3994,7 @@ fn window_menu_commands_restore_hidden_panels() {
     run_ui(&mut app, "window.resetWorkspace", &json!({})).unwrap().unwrap();
     assert_eq!(app.ui.hidden_panels, 0);
     frame(&mut app);
-    assert!(ctx.read_response(props_tab).is_some(), "Reset Workspace restores hidden panels");
+    assert!(props_tab(), "Reset Workspace restores hidden panels");
 
     app.ui.control_bar = true;
     run_ui(&mut app, "window.hidePanels", &json!({})).unwrap().unwrap();

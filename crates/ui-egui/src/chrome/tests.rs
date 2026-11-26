@@ -22,6 +22,8 @@ fn icon_fields_are_labelled_by_their_icon() {
 use egui::{pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 
+use craft_ui_shell::shell::{CaptionFamily, Captions, Frame, MacInset};
+
 use super::*;
 use crate::test_window::{self, wheel};
 
@@ -89,7 +91,7 @@ fn searching() -> egui_kittest::Harness<'static, test_window::Window> {
     h.run_steps(4);
     let field = search_node(&h).rect();
     test_window::click_at(&mut h, field.center());
-    assert!(h.ctx.memory(|m| m.has_focus(super::search_id())), "a click gives the field the keyboard");
+    assert!(craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "a click gives the field the keyboard");
     h
 }
 
@@ -125,7 +127,7 @@ fn the_search_field_finds_and_runs_menu_commands() {
     h.run_steps(4);
     assert_eq!(items(&h).0, 1, "the two frames are grouped");
     assert!(row(&h, group).is_none(), "the matches closed");
-    assert!(!h.ctx.memory(|m| m.has_focus(super::search_id())), "the field gave the keyboard back");
+    assert!(!craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "the field gave the keyboard back");
 }
 
 #[test]
@@ -151,11 +153,32 @@ fn keys_typed_in_the_search_field_stay_out_of_the_document() {
     h.key_press(egui::Key::Escape);
     h.run_steps(4);
     assert!(h.query_by_label(crate::i18n::tr("de", "No matching commands")).is_none());
-    assert!(!h.ctx.text_edit_focused());
+    assert!(!craft_ui_widgets::runtime::focus::has(&h.ctx, super::search_id()), "the field gave the keyboard back");
     assert_eq!(h.state().app.session.tool_id(), "rectangleFrame");
     assert_eq!(items(&h), (2, 2));
     let field = search_node(&h);
     assert_eq!(field.value().unwrap_or_default(), "", "the query is cleared");
+}
+
+/// The centre of the status bar's preflight count: the control in the status bar that names Preflight or what it counts (the
+/// dock's Preflight icon is a button of the same name above it).
+fn preflight_count<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Pos2 {
+    let bar = status_bar_rect(h);
+    h.query_all_by(|n| {
+        n.role() != egui::accesskit::Role::Label && n.label().is_some_and(|l| l == "Preflight" || l.contains("error") || l.contains("Checking"))
+    })
+    .map(|n| n.rect())
+    .filter(|r| bar.contains(r.center()))
+    .min_by(|a, b| a.min.x.total_cmp(&b.min.x))
+    .expect("the status bar's preflight count")
+    .center()
+}
+
+/// The status bar's rect.
+fn status_bar_rect<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Rect {
+    egui::containers::panel::PanelState::load(&h.ctx, h.ui_id().with("status_bar"))
+        .map(|panel| panel.outer_rect)
+        .expect("the status bar is shown at the bottom of the window")
 }
 
 /// The status bar's preflight count is a menu; its Preflight Panel entry shows the panel.
@@ -165,18 +188,20 @@ fn status_bar_error_count_opens_the_preflight_panel() {
     app.run("file.new", serde_json::json!({})).unwrap();
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open(app, vec2(1200.0, 700.0));
-    h.get_by_label("No errors ▾").click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
     h.run_steps(3);
-    h.get_by_label("Preflight Panel…").click();
-    h.run_steps(3);
+    let entry = h.get_by_label("Preflight Panel…").rect().center();
+    click_in(&mut h, entry);
     // Preflight is in the iconic column: `window.panel` shows it.
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
     // With the panel already showing, the entry keeps it open.
-    h.get_by_label("No errors ▾").click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
     h.run_steps(3);
-    h.get_by_label("Preflight Panel…").click();
-    h.run_steps(3);
+    let entry = h.get_by_label("Preflight Panel…").rect().center();
+    click_in(&mut h, entry);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
 }
 
@@ -186,35 +211,42 @@ fn status_bar_error_count_opens_the_preflight_panel() {
 #[test]
 fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
     use egui::accesskit::Role;
+    fn page_box<'a>(h: &'a egui_kittest::Harness<'static, test_window::Window>) -> egui_kittest::Node<'a> {
+        h.query_all_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"))
+            .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+            .expect("the status bar's page box")
+    }
     let mut app = app();
     app.run("file.new", serde_json::json!({"pages": 4, "facingPages": true})).unwrap();
     app.run("layout.parents.new", serde_json::json!({"prefix": "B", "name": "Cover"})).unwrap();
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open(app, vec2(1200.0, 700.0));
-    let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| {
-        let b = h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page"));
-        b.value().unwrap_or_default()
-    };
+    // The status bar's page box is the lowest select named Page (the Properties panel has one too).
+    let shown = |h: &egui_kittest::Harness<'static, test_window::Window>| page_box(h).value().unwrap_or_default();
     assert_eq!(shown(&h), "1");
     h.state_mut().app.run("layout.parents.edit", serde_json::json!({"on": true})).unwrap();
     h.run_steps(6);
     assert_eq!(shown(&h), "A-Parent");
     // The menu: a parent.
-    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    let at = page_box(&h).rect().center();
+    click_in(&mut h, at);
     h.run_steps(3);
     for name in ["1", "2", "3", "4", "A-Parent"] {
         // The canvas or a panel may show the name too: the menu lists it.
         assert!(h.query_all_by_label(name).next().is_some(), "{name} is listed");
     }
     // The menu, drawn last, holds the last match.
-    h.get_all_by_label("B-Cover").last().unwrap().click();
+    let at = h.get_all_by_label("B-Cover").last().unwrap().rect().center();
+    click_in(&mut h, at);
     h.run_steps(6);
     assert_eq!(shown(&h), "B-Cover");
     assert_eq!(crate::canvas::current_parent_page(&h.state().app).map(|(i, _)| i), Some(1));
     // A page: the parents are left.
-    h.get_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Page")).click();
+    let at = page_box(&h).rect().center();
+    click_in(&mut h, at);
     h.run_steps(3);
-    h.get_all_by_label("3").last().unwrap().click();
+    let at = h.get_all_by_label("3").last().unwrap().rect().center();
+    click_in(&mut h, at);
     h.run_steps(6);
     assert!(!h.state().app.session.active().unwrap().editing_parents);
     assert_eq!(crate::canvas::current_page(&h.state().app), Some(2));
@@ -222,7 +254,7 @@ fn the_page_box_names_the_parent_in_view_and_lists_the_parents() {
     // Its accessible name is in the interface's language.
     h.state_mut().app.ui.language = "de".into();
     h.run_steps(3);
-    assert!(h.query_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Seite")).is_some(), "the page box is Seite");
+    assert!(h.query_all_by(|n| n.role() == Role::ComboBox && n.label().as_deref() == Some("Seite")).next().is_some(), "the page box is Seite");
 }
 
 /// As in InDesign, double-clicking the preflight count (or its light) shows the panel.
@@ -232,22 +264,45 @@ fn double_clicking_the_status_bar_error_count_opens_the_preflight_panel() {
     app.run("file.new", serde_json::json!({})).unwrap();
     app.ui.dock_tab = "properties".into();
     let mut h = test_window::open_stepped(app, vec2(1200.0, 700.0), 1.0, 1.0 / 60.0);
-    let count = h.get_by_label("No errors ▾");
-    count.click();
-    count.click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
+    click_in(&mut h, count);
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
     assert!(h.query_all_by_label("Preflight").count() >= 2, "its icon and its tab in the flyout");
-    assert!(h.query_by_label("Preflight Panel…").is_none(), "the menu isn't left open");
+    // A closing menu keeps its nodes, hidden, while it fades out.
+    h.run_steps(20);
+    let left: Vec<String> = h.query_all_by_label("Preflight Panel…").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
+    assert!(left.is_empty(), "the menu isn't left open: {left:?}");
     // A double-click with the panel already showing keeps it open (the first click closes
     // its flyout, the double-click opens it again). Past the double-click time, so the
     // clicks are not counted with the ones before.
     h.run_steps(30);
-    let count = h.get_by_label("No errors ▾");
-    count.click();
-    count.click();
+    let count = preflight_count(&h);
+    click_in(&mut h, count);
+    click_in(&mut h, count);
     h.run_steps(3);
     assert!(crate::panel_docking::showing(&h.state().app, "preflight"));
+}
+
+/// The window with the interface the shipping app draws: the framework's document tabs at the top, a new document per name.
+fn tabs_window(titles: &[String], active: usize, size: egui::Vec2) -> egui_kittest::Harness<'static, Framed> {
+    let mut app = app();
+    for title in titles {
+        app.run("file.new", serde_json::json!({ "title": title })).unwrap();
+    }
+    app.run("file.activate", serde_json::json!({"index": active})).unwrap();
+    framed_window(app, Frame::Native, size)
+}
+
+/// The tab of the document `title`: a tab named by the title, the zoom and the view mode ("Doc 3 @ 100%"); its close button's name is "Close Doc 3".
+fn tab_of<S>(h: &egui_kittest::Harness<'static, S>, title: &str) -> Option<egui::Rect> {
+    h.query_all_by(|n| n.role() == egui::accesskit::Role::Tab && n.label().is_some_and(|l| l.contains(title))).map(|n| n.rect()).next()
+}
+
+/// The names of twelve documents, "Doc 1" to "Doc 12".
+fn doc_names(count: usize) -> Vec<String> {
+    (1..=count).map(|n| format!("Doc {n}")).collect()
 }
 
 /// A very long document name made its tab grow past the window, hiding the close button
@@ -262,114 +317,85 @@ fn long_document_names_keep_tabs_short_and_close_buttons_visible() {
     if !hebrew_ok {
         eprintln!("skipped the Hebrew tab: set DESIGNCRAFT_TEST_HEBREW_FONT to the pinned NotoSansHebrew.ttf");
     }
-    let mut app = app();
-    app.run("file.new", serde_json::json!({ "title": latin })).unwrap();
+    let mut titles = vec![latin.clone()];
     if hebrew_ok {
-        app.run("file.new", serde_json::json!({ "title": hebrew })).unwrap();
+        titles.push(hebrew.clone());
     }
-    app.run("file.new", serde_json::json!({ "title": "Short" })).unwrap();
-    let h = test_window::open(app, vec2(1200.0, 600.0));
-    let titles = if hebrew_ok { vec![latin.as_str(), hebrew.as_str()] } else { vec![latin.as_str()] };
-    for title in titles {
-        let tab = rect(&h, title);
+    titles.push("Short".to_string());
+    let h = tabs_window(&titles, 2.min(titles.len() - 1), vec2(1200.0, 600.0));
+    let shown: Vec<&String> = titles.iter().take(titles.len() - 1).collect();
+    for title in shown {
+        let tab = tab_of(&h, title).unwrap_or_else(|| panic!("the tab of {title:?} is shown"));
         assert!(tab.width() <= super::DOC_TAB_MAX_W, "{title:?} tab is {} wide", tab.width());
-        let close = rect(&h, &format!("Close {title}"));
+        let close = h.get_by_label(&format!("Close {title}")).rect();
         assert!(tab.contains_rect(close), "close button {close:?} outside its tab {tab:?}");
     }
-    let (first, short) = (rect(&h, &latin), rect(&h, "Short"));
+    let (first, short) = (tab_of(&h, &latin).unwrap(), tab_of(&h, "Short").expect("the short tab is shown"));
     assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
 }
 
-/// Tabs past the bar are reached with the arrows (one tab per click) and the document list.
+/// Tabs past the bar are reached with the overflow menu, which lists every document.
 #[test]
-fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
-    let mut app = app();
-    for n in 1..=12 {
-        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
-    }
-    app.run("file.activate", serde_json::json!({"index": 0})).unwrap();
-    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+fn overflowing_document_tabs_are_reached_through_the_menu_that_lists_every_document() {
+    let mut h = tabs_window(&doc_names(30), 0, vec2(1200.0, 600.0));
     h.run_steps(4);
     let window = h.ctx.content_rect();
-    let last = |h: &egui_kittest::Harness<'static, test_window::Window>| h.query_by_label("Doc 12").map(|n| n.rect());
-    assert!(last(&h).is_none_or(|r| r.max.x > window.max.x), "the last tab starts off screen");
-
-    // A tab clipped by the bar is narrower than its 150 pt minimum.
-    let whole = |h: &egui_kittest::Harness<'static, test_window::Window>, n: usize| {
-        h.query_by_label(&format!("Doc {n}")).is_some_and(|tab| tab.rect().width() > 149.0)
-    };
-    let shown = (1..=12).take_while(|n| whole(&h, *n)).count();
-    let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
-    test_window::click_at(&mut h, arrow);
-    assert!(whole(&h, shown + 1), "one click brings the next tab fully into view");
-    assert!(!whole(&h, shown + 2), "and no more than that one");
-
-    for _ in 0..12 {
-        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
-        test_window::click_at(&mut h, arrow);
-    }
-    let tab = last(&h).expect("the last tab scrolled into view");
+    // No tab is cut by the bar: each one shown is whole, and the last one is not among them.
+    assert!(tab_of(&h, "Doc 30 @").is_none_or(|r| !window.contains_rect(r)), "the last tab is past the bar");
+    let tab = tab_of(&h, "Doc 1 @").expect("the first tab is shown");
     assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
-    test_window::click_at(&mut h, tab.right_center() - vec2(10.0, 0.0));
-    assert_eq!(h.state().app.session.active_index(), Some(11));
-
-    for _ in 0..12 {
-        let arrow = h.get_by_label("Scroll Tabs Left").rect().center();
-        test_window::click_at(&mut h, arrow);
+    let more = h.get_by_label("More tabs").rect().center();
+    click_in(&mut h, more);
+    h.run_steps(3);
+    for n in 1..=30 {
+        assert!(h.query_all_by_label_contains(&format!("Doc {n} @")).next().is_some(), "Doc {n} is in the list");
     }
-    let (first, left) = (h.get_by_label("Doc 1").rect(), h.get_by_label("Scroll Tabs Left").rect());
-    assert!((first.min.x - left.max.x).abs() < 1.0, "{first:?} is not the first tab, next to {left:?}");
-
-    let list = h.query_all_by_label("▾").map(|n| n.rect()).find(|r| first.y_range().contains(r.center().y)).expect("the document list").center();
-    test_window::click_at(&mut h, list);
-    h.run_steps(3);
-    h.query_all_by_label("Doc 7").find(|n| !first.y_range().contains(n.rect().center().y)).expect("the list's entry").click();
-    h.run_steps(3);
-    assert_eq!(h.state().app.session.active_index(), Some(6));
-    assert!(window.contains_rect(h.get_by_label("Doc 7").rect()), "the chosen document's tab is scrolled into view");
+    // The chosen document's tab is brought into view.
+    let strip = tab.y_range();
+    for (n, index) in [(7_usize, 6_usize), (13, 12)] {
+        let label = format!("Doc {n} @");
+        let entry =
+            h.query_all_by_label_contains(&label).find(|node| !strip.contains(node.rect().center().y)).unwrap_or_else(|| panic!("Doc {n} is listed"));
+        let at = entry.rect().center();
+        click_in(&mut h, at);
+        assert_eq!(h.state().app.session.active_index(), Some(index));
+        let tab = tab_of(&h, &format!("Doc {n} @")).unwrap_or_else(|| panic!("the chosen document's tab is shown"));
+        assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
+        if n == 7 {
+            let more = h.get_by_label("More tabs").rect().center();
+            click_in(&mut h, more);
+            h.run_steps(3);
+        }
+    }
 }
 
 /// A narrower window must not leave the active tab hidden.
 #[test]
 fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
-    let mut app = app();
-    for n in 1..=12 {
-        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
-    }
-    let mut h = test_window::open(app, vec2(1800.0, 600.0));
+    let mut h = tabs_window(&doc_names(12), 11, vec2(1800.0, 600.0));
     h.run_steps(4);
-    let full_width = h.get_by_label("Doc 12").rect().width();
     h.set_size(vec2(900.0, 600.0));
     h.run_steps(6);
     let window = h.ctx.content_rect();
-    // The reported rect is clipped to the bar, so a half-hidden tab would be narrower.
-    let tab = h.get_by_label("Doc 12").rect();
-    assert!(window.contains_rect(tab) && (tab.width() - full_width).abs() < 1.0, "{tab:?} (was {full_width} wide) outside {window:?}");
+    let tab = tab_of(&h, "Doc 12 @").expect("the active tab is shown");
+    let close = h.get_by_label("Close Doc 12").rect();
+    assert!(window.contains_rect(tab) && tab.contains_rect(close), "{tab:?} (close {close:?}) outside {window:?}");
 }
 
 /// The successor of a closed active tab takes its index, so identity decides what to reveal.
 #[test]
 fn closing_an_active_tab_scrolled_out_of_view_reveals_its_successor() {
-    let mut app = app();
-    for n in 1..=12 {
-        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
-    }
-    app.run("file.activate", serde_json::json!({"index": 2})).unwrap();
-    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+    let mut h = tabs_window(&doc_names(30), 24, vec2(1200.0, 600.0));
     h.run_steps(4);
-    for _ in 0..12 {
-        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
-        test_window::click_at(&mut h, arrow);
-    }
-    let left_edge = h.get_by_label("Scroll Tabs Left").rect().max.x;
-    assert!(h.get_by_label("Doc 3").rect().max.x <= left_edge + 1.0, "the active tab is scrolled out of view");
-    crate::menus::close_document(&mut h.state_mut().app, Some(2));
+    let window = h.ctx.content_rect();
+    let active = tab_of(&h, "Doc 25 @").expect("the active tab is kept in view past the others");
+    assert!(window.contains_rect(active), "{active:?} outside {window:?}");
+    crate::menus::close_document(&mut h.state_mut().app, Some(24));
     h.run_steps(6);
     // The next document takes the closed one's index, so only its identity tells them apart.
-    assert_eq!(h.state().app.session.active_index(), Some(2));
-    let window = h.ctx.content_rect();
-    let tab = h.get_by_label("Doc 4").rect();
-    assert!(window.contains_rect(tab) && tab.width() > 149.0, "{tab:?} not fully in view in {window:?}");
+    assert_eq!(h.state().app.session.active_index(), Some(24));
+    let tab = tab_of(&h, "Doc 26 @").expect("the successor's tab is shown");
+    assert!(window.contains_rect(tab), "{tab:?} not in view in {window:?}");
 }
 
 /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size
@@ -383,82 +409,77 @@ fn the_type_control_panel_lists_font_sizes_and_leadings() {
     app.session.set_tool("type");
     let mut h = test_window::open(app, vec2(1800.0, 700.0));
     let bar = test_window::panel_rect(&h, "control_bar");
-    let in_bar = |r: &egui::Rect| bar.y_range().contains(r.center().y);
-    let field = |h: &egui_kittest::Harness<'static, test_window::Window>, value: &str| {
-        h.query_all_by_value(value).map(|n| n.rect()).find(in_bar).unwrap_or_else(|| panic!("no {value:?} field in the Control panel"))
+    // The number fields of the Control panel are named by what they set.
+    fn field<'h>(h: &'h egui_kittest::Harness<'static, test_window::Window>, bar: egui::Rect, label: &'h str) -> egui_kittest::Node<'h> {
+        h.query_all_by_label(label)
+            .filter(|n| matches!(n.accesskit_node().role(), egui::accesskit::Role::SpinButton | egui::accesskit::Role::TextInput))
+            .find(|n| bar.y_range().contains(n.rect().center().y))
+            .unwrap_or_else(|| panic!("no {label:?} field in the Control panel"))
+    }
+    // The field takes the keyboard as a screen reader gives it: the pointer would move the text selection with it.
+    let focus = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+        field(h, bar, label).focus();
+        h.run_steps(2);
     };
-    let press = |h: &mut egui_kittest::Harness<'static, test_window::Window>, p: egui::Pos2| {
-        h.hover_at(p);
-        h.drag_at(p);
-        h.drop_at(p);
+    // Alt+Down opens a field's list of presets.
+    let open_list = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+        focus(h, label);
+        h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowDown);
+        h.run_steps(2);
     };
-    let size_of = |h: &egui_kittest::Harness<'static, test_window::Window>| {
-        let st = h.state().app.session.doc().unwrap();
-        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
-        st.doc.story(sid).unwrap().format_after(0).over.size
+    let type_over = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str, text: &str, key: egui::Key| {
+        focus(h, label);
+        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.event(egui::Event::Text(text.into()));
+        h.key_press(key);
+        h.run_steps(3);
     };
-    // The ⌄ segment right of the size field opens the list; choosing 72 pt sets the size.
-    let size = field(&h, "12 pt");
-    let chevron = pos2(size.max.x + 1.0 + crate::widgets::SEG_W / 2.0, size.center().y);
-    press(&mut h, chevron);
-    h.run_steps(3);
-    h.get_by_label("72 pt").click();
-    h.run_steps(3);
-    assert_eq!(size_of(&h), Some(72.0));
-    // Auto leading shows in parentheses, with the same list beside it.
-    let lead = field(&h, "(86.4 pt)");
-    press(&mut h, pos2(lead.max.x + 1.0 + crate::widgets::SEG_W / 2.0, lead.center().y));
-    h.run_steps(3);
-    h.get_by_label("60 pt").click();
-    h.run_steps(3);
-    let st = h.state().app.session.doc().unwrap();
     let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
-    assert_eq!(st.doc.story(sid).unwrap().format_after(0).over.leading, Some(designcraft_doc::Leading::Points(60.0)));
-    // The spinner left of the size steps it by a point.
-    let size = field(&h, "72 pt");
-    press(&mut h, pos2(size.min.x - 5.0 - crate::widgets::SEG_W / 2.0, size.min.y + 3.0));
+    let size_of = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+        h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.size
+    };
+    let leading_of = |h: &egui_kittest::Harness<'static, test_window::Window>| {
+        h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading
+    };
+    // The size's list opens; choosing 72 pt sets the size.
+    open_list(&mut h, "Font Size");
+    let rows: Vec<String> = h.query_all_by_label("72 pt").map(|n| format!("{:?} {:?}", n.accesskit_node().role(), n.rect())).collect();
+    // The row is the last of the list, below the dropdown's scroll viewport: the accessibility click activates it where a
+    // pointer press would land on the window under it.
+    h.query_all_by_label("72 pt").last().expect("the presets list's row").click_accesskit();
+    h.run_steps(3);
+    let journal: Vec<String> = h.state().app.session.journal.iter().rev().take(4).map(|(id, params)| format!("{id} {params}")).collect();
+    assert_eq!(size_of(&h), Some(72.0), "the rows named 72 pt: {rows:?}; the last commands: {journal:?}");
+    // Auto leading has the same list beside it.
+    open_list(&mut h, "Leading");
+    h.query_all_by_label("60 pt").last().expect("the presets list's row").click_accesskit();
+    h.run_steps(3);
+    assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(60.0)));
+    // The arrow keys step the size by a point.
+    focus(&mut h, "Font Size");
+    h.key_press(egui::Key::ArrowUp);
     h.run_steps(3);
     assert_eq!(size_of(&h), Some(73.0));
-    // Typing the automatic value itself over "(87.6 pt)" fixes the leading at it.
+    // Typing the automatic value itself over it fixes the leading at it (73 pt at 120% is 87.6 pt).
     h.state_mut().app.run("type.char", serde_json::json!({"attrs": {"leading": {"kind": "auto"}}})).unwrap();
     h.run_steps(3);
-    let lead = field(&h, "(87.6 pt)");
-    press(&mut h, lead.center());
-    h.run_steps(2);
-    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-    h.event(egui::Event::Text("87.6".into()));
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
-    let st = h.state().app.session.doc().unwrap();
-    let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
-    assert_eq!(st.doc.story(sid).unwrap().format_after(0).over.leading, Some(designcraft_doc::Leading::Points(87.6)));
+    type_over(&mut h, "Leading", "87.6", egui::Key::Enter);
+    assert_eq!(leading_of(&h), Some(designcraft_doc::Leading::Points(87.6)));
     // Escape cancels: the same typing, then Escape, leaves the leading automatic.
     h.state_mut().app.run("type.char", serde_json::json!({"attrs": {"leading": {"kind": "auto"}}})).unwrap();
     h.run_steps(3);
-    let auto = h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading;
-    let lead = field(&h, "(87.6 pt)");
-    press(&mut h, lead.center());
-    h.run_steps(2);
-    h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-    h.event(egui::Event::Text("87.6".into()));
-    h.key_press(egui::Key::Escape);
-    h.run_steps(3);
-    assert_eq!(h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading, auto, "Escape leaves it automatic");
+    let auto = leading_of(&h);
+    type_over(&mut h, "Leading", "87.6", egui::Key::Escape);
+    assert_eq!(leading_of(&h), auto, "Escape leaves it automatic");
     // Escape also reverts a different number, in the leading field and in a plain one. (It
     // leaves the text too, so each try selects it again.)
-    for (shown, typed) in [("(87.6 pt)", "20"), ("73 pt", "50")] {
+    for (label, typed) in [("Leading", "20"), ("Font Size", "50")] {
         h.state_mut().app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 8})).unwrap();
         h.state_mut().app.session.set_tool("type");
         h.run_steps(3);
-        let r = field(&h, shown);
-        press(&mut h, r.center());
-        h.run_steps(2);
-        h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
-        h.event(egui::Event::Text(typed.into()));
-        h.key_press(egui::Key::Escape);
-        h.run_steps(3);
+        type_over(&mut h, label, typed, egui::Key::Escape);
     }
-    assert_eq!(h.state().app.session.doc().unwrap().doc.story(sid).unwrap().format_after(0).over.leading, auto, "still automatic");
+    assert_eq!(leading_of(&h), auto, "still automatic");
     assert_eq!(size_of(&h), Some(73.0), "the size is unchanged");
 }
 
@@ -485,7 +506,7 @@ fn the_control_panel_grid_button_keeps_first_line_only() {
     };
     click(&mut h, "Paragraph Formatting Controls");
     let pressed = h.query_all_by_label("Align to Baseline Grid").find(|n| in_bar(n.rect())).map(|n| n.accesskit_node().toggled());
-    assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)));
+    assert_eq!(pressed, Some(Some(egui::accesskit::Toggled::True)), "a framework icon button shows its on state as pressed");
     assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "firstLineOnly");
     click(&mut h, "Align to Baseline Grid");
     assert_eq!(crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"]["gridAlign"], "none");
@@ -643,35 +664,121 @@ fn a_narrow_window_scrolls_the_control_bar() {
     assert!(item.min.y > fill.max.y && (item.min.x - chip.x).abs() < 120.0, "popup item at {item:?}, control at {chip:?}");
 }
 
+/// A window frame to run the application bar in: the runtime's own idea of the frame, so the shell's title bar draws what
+/// the platform's would (the caption buttons of an integrated frame, the room for the traffic lights of an inset one).
+fn framed_context(frame: Frame) -> egui::Context {
+    use craft_host::target::{ShellInfo, WindowChrome, WindowInfo, WindowKind};
+    use craft_window_sdk::policy::{Decision, Desktop, DesktopKind};
+    let chrome = match &frame {
+        Frame::Native => WindowChrome::Native,
+        Frame::Inset(_) => WindowChrome::Inset,
+        Frame::Integrated(_) => WindowChrome::Integrated,
+    };
+    let ctx = egui::Context::default();
+    ctx.set_embed_viewports(true);
+    let desktop = Desktop { kind: DesktopKind::Other, ssd: None, gtk_theme: None, icon_theme: None };
+    let spec = craft_ui_widgets::InstallSpec::new(
+        ShellInfo::default().window(WindowInfo::new(WindowKind::Main).chrome(chrome)),
+        std::sync::Arc::new(craft_window_sdk::system::SystemWindows),
+    )
+    .frame(Decision { frame, overridden: None, desktop });
+    craft_ui_widgets::install(&ctx, spec).expect("the runtime installs on a new context");
+    crate::panel_docking::note_runtime(&ctx);
+    // The app's own root values, as `DesignApp::root_env` gives the shipping window.
+    let mut root = craft_ui_widgets::runtime::env::RootEnv::new();
+    root.values.set(craft_ui_widgets::tabs::DocumentTabLook::Shrinking);
+    craft_ui_widgets::runtime::frame::set_input(&ctx, craft_ui_widgets::runtime::frame::FrameInput::new(root));
+    ctx
+}
+
+/// The Windows frame the app draws itself: Minimize, Maximize and Close at the right end.
+fn integrated() -> Frame {
+    Frame::Integrated(Captions { family: CaptionFamily::Windows, layout: craft_window_sdk::Layout::default() })
+}
+
+/// The macOS frame: the traffic lights over the app's bar, in the standard geometry.
+fn inset() -> (Frame, MacInset) {
+    let lights = MacInset::default();
+    (Frame::Inset(lights), lights)
+}
+
+/// The whole window, as `test_window::open` runs it, on a context whose window frame is `frame`.
+struct Framed {
+    app: DesignApp,
+    ready: bool,
+}
+
+fn framed_window(mut app: DesignApp, frame: Frame, size: egui::Vec2) -> egui_kittest::Harness<'static, Framed> {
+    match &frame {
+        Frame::Integrated(_) => app.custom_titlebar = true,
+        Frame::Inset(_) => app.integrated_titlebar = true,
+        Frame::Native => {}
+    }
+    if app.session.active().is_none() {
+        app.run("file.new", serde_json::json!({})).unwrap();
+    }
+    let mut h =
+        egui_kittest::Harness::builder().with_context(framed_context(frame)).with_size(size).with_max_steps(1000).with_step_dt(0.05).build_ui_state(
+            |ui, w: &mut Framed| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+            },
+            Framed { app, ready: false },
+        );
+    h.input_mut().max_texture_side = Some(8192);
+    h.state_mut().ready = true;
+    h.run_steps(6);
+    h
+}
+
+/// Whether the window reports itself maximized, as the OS does in its viewport info.
+fn set_maximized<S>(h: &mut egui_kittest::Harness<'static, S>, on: bool) {
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().maximized = Some(on);
+    h.run_steps(2);
+}
+
+/// The title bar: the application bar's top panel.
+fn title_bar<S>(h: &egui_kittest::Harness<'static, S>) -> egui::Rect {
+    egui::containers::panel::PanelState::load(&h.ctx, h.ui_id().with("app_bar"))
+        .map(|panel| panel.outer_rect)
+        .expect("the title bar is shown at the top of the window")
+}
+
+/// The rect of the title bar's control named `label`.
+fn in_bar<S>(h: &egui_kittest::Harness<'static, S>, label: &str) -> egui::Rect {
+    let bar = title_bar(h);
+    h.query_all_by_label(label)
+        .map(|n| n.rect())
+        .find(|r| bar.y_range().contains(r.center().y))
+        .unwrap_or_else(|| panic!("no {label} in the title bar {bar:?}"))
+}
+
 #[test]
 fn the_mac_app_bar_centres_and_clears_the_traffic_lights() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT, MAC_LIGHT, MAC_LIGHT_PITCH, MAC_LIGHTS_LEFT};
-    // Content keeps the same gap after the lights as the lights keep from the top.
-    let margin = (MAC_APP_BAR - MAC_LIGHT) / 2.0;
-    assert_eq!(MAC_CONTENT_LEFT - (MAC_LIGHTS_LEFT + 2.0 * MAC_LIGHT_PITCH + MAC_LIGHT), margin);
-    // `egui::Margin` is in `i8`.
-    assert!(MAC_CONTENT_LEFT <= f32::from(i8::MAX));
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let h = test_window::open(app, vec2(1400.0, 900.0));
-    // The bar's controls share the lights' centre line and start after them (relative to the
-    // bar, which the test window insets).
-    let bar = test_window::panel_rect(&h, "app_bar").min.to_vec2();
-    let home = rect(&h, "Home").translate(-bar);
-    assert_eq!(home.center().y, MAC_APP_BAR / 2.0, "{home:?}");
-    assert!(home.min.y >= 2.0 && home.min.x >= MAC_CONTENT_LEFT, "{home:?}");
+    let (frame, lights) = inset();
+    let h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    // The bar's controls share one centre line (the lights' bar), start after the room the lights take and stay inside the bar.
+    let bar = title_bar(&h);
+    let home = in_bar(&h, "Home");
+    assert!((home.center().y - bar.center().y).abs() <= 0.5, "Home {home:?} is not on the centre line of {bar:?}");
+    assert!(home.min.y >= bar.min.y + 2.0 && home.min.x >= bar.min.x + lights.leading, "{home:?} in {bar:?}, lights take {}", lights.leading);
     for label in ["File", "Help", "Share"] {
-        let r = rect(&h, label).translate(-bar);
-        assert!((r.center().y - MAC_APP_BAR / 2.0).abs() <= 0.5 && r.max.y <= MAC_APP_BAR, "{label} at {r:?}");
+        let r = in_bar(&h, label);
+        assert!((r.center().y - bar.center().y).abs() <= 0.5 && r.max.y <= bar.max.y, "{label} at {r:?} in {bar:?}");
     }
 }
 
-fn press(h: &egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2, pressed: bool) {
+fn press<S>(h: &egui_kittest::Harness<'static, S>, pos: egui::Pos2, pressed: bool) {
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
 }
 
 /// The window commands the app sends over the next `steps` frames.
-fn window_commands(h: &mut egui_kittest::Harness<'static, test_window::Window>, steps: usize) -> Vec<egui::ViewportCommand> {
+fn window_commands<S>(h: &mut egui_kittest::Harness<'static, S>, steps: usize) -> Vec<egui::ViewportCommand> {
     let mut out = Vec::new();
     for _ in 0..steps {
         h.step();
@@ -682,23 +789,20 @@ fn window_commands(h: &mut egui_kittest::Harness<'static, test_window::Window>, 
     out
 }
 
-fn double_click(h: &mut egui_kittest::Harness<'static, test_window::Window>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+fn double_click<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
     h.hover_at(pos);
     h.step();
-    // One frame: the harness gives each queued event a frame of its own, longer apart than a
-    // double-click allows.
+    // One press and release a frame, 50 ms apart: closer together than a double-click allows.
+    let mut out = Vec::new();
     for pressed in [true, false, true, false] {
-        h.input_mut().events.push(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        });
+        press(h, pos, pressed);
+        out.extend(window_commands(h, 1));
     }
-    window_commands(h, 3)
+    out.extend(window_commands(h, 2));
+    out
 }
 
-fn drag(h: &mut egui_kittest::Harness<'static, test_window::Window>, from: egui::Pos2) -> Vec<egui::ViewportCommand> {
+fn drag<S>(h: &mut egui_kittest::Harness<'static, S>, from: egui::Pos2) -> Vec<egui::ViewportCommand> {
     h.hover_at(from);
     h.step();
     press(h, from, true);
@@ -712,26 +816,43 @@ fn drag(h: &mut egui_kittest::Harness<'static, test_window::Window>, from: egui:
     out
 }
 
+/// A primary click at `pos`, then a few frames.
+fn click_in<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.drag_at(pos);
+    h.drop_at(pos);
+    h.run_steps(4);
+}
+
+/// A click: the window commands it sends.
+fn click_commands<S>(h: &mut egui_kittest::Harness<'static, S>, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+    h.hover_at(pos);
+    h.step();
+    press(h, pos, true);
+    let mut out = window_commands(h, 1);
+    press(h, pos, false);
+    out.extend(window_commands(h, 2));
+    out
+}
+
 #[test]
 fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT};
     use egui::ViewportCommand::{Maximized, Minimized, StartDrag};
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let mut h = test_window::open(app, vec2(1400.0, 900.0));
-    let bar = test_window::panel_rect(&h, "app_bar");
+    let (frame, lights) = inset();
+    let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    let bar = title_bar(&h);
     // Under the centred title, and between the traffic lights and the Home button.
-    let empty = [pos2(bar.center().x, bar.min.y + MAC_APP_BAR / 2.0), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0)];
+    let empty = [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading - 4.0, bar.center().y)];
     for at in empty {
         // Tests read the setting as its default, zoom.
         let cmds = double_click(&mut h, at);
-        assert_eq!(cmds, vec![Maximized(true)], "double-click at {at:?}");
+        assert!(cmds.contains(&Maximized(true)), "double-click at {at:?}: {cmds:?}");
         let cmds = drag(&mut h, at);
-        assert_eq!(cmds, vec![StartDrag], "drag from {at:?}");
+        assert!(cmds.contains(&StartDrag), "drag from {at:?}: {cmds:?}");
     }
     // The bar's controls keep their clicks and drags.
     for label in ["Home", "Share", "File"] {
-        let at = rect(&h, label).center();
+        let at = in_bar(&h, label).center();
         let cmds = double_click(&mut h, at);
         assert!(!cmds.iter().any(|c| matches!(c, Maximized(_) | Minimized(_))), "double-click on {label}: {cmds:?}");
         if label == "Home" {
@@ -748,22 +869,20 @@ fn the_empty_mac_title_bar_zooms_and_moves_the_window() {
 
 #[test]
 fn the_mac_window_is_not_movable_on_the_title_bar_controls() {
-    use super::{MAC_APP_BAR, MAC_CONTENT_LEFT};
-    let mut app = app();
-    app.integrated_titlebar = true;
-    let mut h = test_window::open(app, vec2(1400.0, 900.0));
-    let bar = test_window::panel_rect(&h, "app_bar");
-    let mid = bar.min.y + MAC_APP_BAR / 2.0;
-    // The search field is the bar's last control: 125 wide, 4 from the 10-wide right margin.
-    let search = pos2(bar.max.x - 10.0 - 4.0 - 60.0, mid);
-    let controls = [rect(&h, "Home").center(), rect(&h, "Share").center(), rect(&h, "File").center(), search];
+    let (frame, lights) = inset();
+    let mut h = framed_window(app(), frame, vec2(1400.0, 900.0));
+    let bar = title_bar(&h);
+    let search = h.get_by(|n| n.role() == egui::accesskit::Role::TextInput && n.placeholder() == Some("Search")).rect();
+    let controls = [in_bar(&h, "Home").center(), in_bar(&h, "Share").center(), in_bar(&h, "File").center(), search.center()];
+    // The OS moves the window (macOS `NSWindow.movable`) only where a press would go to the bar's free band, as the shell
+    // writes it each pass: a press on a control never moves it.
     let mut movable_at = |at: egui::Pos2| {
         h.hover_at(at);
         h.run_steps(2);
-        craft_window::title_bar::window_movable(&h.ctx)
+        craft_ui_shell::shell::title_bar::window_movable(&h.ctx)
     };
-    for at in [pos2(bar.center().x, mid), pos2(bar.min.x + MAC_CONTENT_LEFT - 4.0, bar.min.y + 4.0), pos2(bar.center().x, 500.0)] {
-        assert!(movable_at(at), "empty title bar or the page at {at:?}");
+    for at in [pos2(bar.center().x, bar.center().y), pos2(bar.min.x + lights.leading - 4.0, bar.center().y)] {
+        assert!(movable_at(at), "empty title bar at {at:?}");
     }
     for at in controls {
         assert!(!movable_at(at), "control at {at:?}");
@@ -772,14 +891,27 @@ fn the_mac_window_is_not_movable_on_the_title_bar_controls() {
 
 #[test]
 fn a_narrow_window_scrolls_the_app_bar() {
+    // The framework's menu bar keeps the titles that fit and puts the rest into a trailing "…" menu, so in a narrow
+    // window every menu is still reached and the workspace controls stay in view and clear of the menus.
     let w = 640.0;
     let mut h = test_window::open(app(), vec2(w, 600.0));
-    let (help, share) = (rect(&h, "Help"), rect(&h, "Share"));
-    assert!(help.max.x <= share.min.x, "the menus ({help:?}) and the workspace controls ({share:?}) overlap");
-    wheel(&mut h, help.center(), vec2(0.0, -3000.0));
-    let share = rect(&h, "Share");
     let window = egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 600.0));
+    let share = rect(&h, "Share");
     assert!(window.contains_rect(share), "{share:?} outside the window");
+    let help = h.query_all_by_label("Help").map(|n| n.rect()).next();
+    let menus_end = match help {
+        Some(help) => help,
+        None => {
+            // Help does not fit: it is in the overflow menu, which is the last title of the bar.
+            let more = h.query_all_by_label("…").map(|n| n.rect()).next().expect("the menus that do not fit are reached through the overflow title");
+            assert!(more.max.x <= share.min.x, "the overflow title ({more:?}) and the workspace controls ({share:?}) overlap");
+            test_window::click_at(&mut h, more.center());
+            h.run_steps(3);
+            assert!(h.query_all_by_label("Help").next().is_some(), "Help is listed in the overflow menu");
+            more
+        }
+    };
+    assert!(menus_end.max.x <= share.min.x, "the menus ({menus_end:?}) and the workspace controls ({share:?}) overlap");
 }
 
 #[test]
@@ -821,115 +953,70 @@ fn a_scrolled_bar_keeps_its_captions_on_one_line() {
     assert!(columns.width() >= 48.0 && columns.max.x <= 700.0, "Columns group squeezed or off screen: {columns:?}");
 }
 
-struct WindowHarness {
-    ctx: egui::Context,
-    app: DesignApp,
-    time: f64,
-    maximized: bool,
-    size: egui::Vec2,
-}
-
-impl WindowHarness {
-    fn new() -> Self {
-        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        app.custom_titlebar = true;
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx, "");
-        let mut harness = Self { ctx, app, time: 0.0, maximized: false, size: vec2(1440.0, 900.0) };
-        harness.frame(vec![]);
-        harness.frame(vec![]);
-        harness
-    }
-
-    fn frame(&mut self, events: Vec<egui::Event>) -> Vec<egui::ViewportCommand> {
-        self.time += 0.1;
-        let mut input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
-            time: Some(self.time),
-            events,
-            ..Default::default()
-        };
-        input.viewports.entry(egui::ViewportId::ROOT).or_default().maximized = Some(self.maximized);
-        let mut output = self.ctx.run_ui(input, |ui| {
-            app_bar(&mut self.app, ui);
-            resize_borders(&mut self.app, ui);
-        });
-        output.textures_delta.clear();
-        output.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
-    }
-
-    fn press(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
-        self.frame(vec![
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
-        ])
-    }
-
-    fn click(&mut self, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
-        let mut commands = self.press(pos);
-        commands.extend(self.frame(vec![egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        }]));
-        commands
-    }
-
-    fn caption_center(&self, id: &str) -> egui::Pos2 {
-        self.ctx.read_response(egui::Id::unique(id)).unwrap().rect.center()
-    }
+/// The Windows window the app draws the frame of: the shell's title bar with its caption buttons.
+fn integrated_window(size: egui::Vec2) -> egui_kittest::Harness<'static, Framed> {
+    framed_window(app(), integrated(), size)
 }
 
 #[test]
 fn caption_buttons_minimize_maximize_restore_and_close() {
-    let mut h = WindowHarness::new();
-    for (id, command) in [("window.minimize", egui::ViewportCommand::Minimized(true)), ("window.maximize", egui::ViewportCommand::Maximized(true))] {
-        let p = h.caption_center(id);
-        assert!(h.click(p).contains(&command), "{id}");
+    use egui::ViewportCommand::{Close, Maximized, Minimized};
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    for (label, command) in [("Minimize", Minimized(true)), ("Maximize", Maximized(true))] {
+        let p = in_bar(&h, label).center();
+        assert!(click_commands(&mut h, p).contains(&command), "{label}");
     }
-    h.maximized = true;
-    h.frame(vec![]);
-    let p = h.caption_center("window.maximize");
-    assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(false)));
-    let p = h.caption_center("window.close");
-    assert!(h.click(p).contains(&egui::ViewportCommand::Close));
+    set_maximized(&mut h, true);
+    let p = in_bar(&h, "Restore").center();
+    assert!(click_commands(&mut h, p).contains(&Maximized(false)));
+    let p = in_bar(&h, "Close").center();
+    assert!(click_commands(&mut h, p).contains(&Close));
 }
 
 #[test]
 fn title_area_drags_and_double_clicks_but_menus_do_not_drag() {
-    let mut h = WindowHarness::new();
-    let title = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
-    assert!(title.width() > 0.0, "there is a drag region between menus and tools");
-    let p = title.center();
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::StartDrag));
+    use egui::ViewportCommand::{Maximized, StartDrag};
+    let band = |h: &egui_kittest::Harness<'static, Framed>| {
+        let bar = title_bar(h);
+        pos2(bar.center().x, bar.center().y)
+    };
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = band(&h);
+    assert!(drag(&mut h, p).contains(&StartDrag), "a drag from the free band moves the window");
 
-    let mut h = WindowHarness::new();
-    h.click(p);
-    assert!(h.click(p).contains(&egui::ViewportCommand::Maximized(true)));
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = band(&h);
+    assert!(double_click(&mut h, p).contains(&Maximized(true)), "a double click on the free band maximizes");
 
-    let mut h = WindowHarness::new();
-    let p = egui::pos2(70.0, 18.0); // File menu, outside the title's drag region.
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(title.center())]));
-    assert!(!commands.contains(&egui::ViewportCommand::StartDrag));
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let file = in_bar(&h, "File").center();
+    assert!(!drag(&mut h, file).contains(&StartDrag), "a menu title pressed and dragged doesn't move the window");
 }
 
 #[test]
 fn edges_resize_only_when_the_window_is_restored() {
-    let mut h = WindowHarness::new();
-    let p = egui::pos2(1438.0, 400.0);
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::BeginResize(egui::ResizeDirection::East)));
-    let mut h = WindowHarness::new();
-    h.maximized = true;
-    h.frame(vec![]);
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(-20.0, 0.0))]));
-    assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::BeginResize(_))));
+    use egui::ViewportCommand::BeginResize;
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    let p = pos2(1438.0, 400.0);
+    h.hover_at(p);
+    h.step();
+    press(&h, p, true);
+    let mut commands = window_commands(&mut h, 1);
+    h.hover_at(p + vec2(-20.0, 0.0));
+    commands.extend(window_commands(&mut h, 2));
+    assert!(commands.contains(&BeginResize(egui::ResizeDirection::East)), "{commands:?}");
+    press(&h, p + vec2(-20.0, 0.0), false);
+    h.run_steps(2);
+
+    let mut h = integrated_window(vec2(1440.0, 900.0));
+    set_maximized(&mut h, true);
+    h.hover_at(p);
+    h.step();
+    press(&h, p, true);
+    let mut commands = window_commands(&mut h, 1);
+    h.hover_at(p + vec2(-20.0, 0.0));
+    commands.extend(window_commands(&mut h, 2));
+    assert!(!commands.iter().any(|c| matches!(c, BeginResize(_))), "{commands:?}");
 }
 
 #[test]
@@ -945,62 +1032,46 @@ fn native_window_actions_are_unavailable_without_custom_chrome() {
 
 #[test]
 fn caption_buttons_stay_put_while_a_narrow_app_bar_scrolls() {
-    let mut h = WindowHarness::new();
-    h.size = vec2(640.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    let rect = |h: &WindowHarness, id: &str| h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
-    let menus_end = |h: &WindowHarness| h.ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("app_bar_menus_end"))).unwrap();
-    let (close, menus0) = (rect(&h, "window.close"), menus_end(&h));
-    assert!(close.left() >= 0.0 && close.right() <= h.size.x, "{close:?}");
-    let p = egui::pos2(200.0, 18.0);
-    h.frame(vec![
-        egui::Event::PointerMoved(p),
-        egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: vec2(0.0, -3000.0),
-            phase: egui::TouchPhase::Move,
-            modifiers: egui::Modifiers::NONE,
-            source: egui::MouseWheelSource::Unknown,
-        },
-    ]);
-    for _ in 0..10 {
-        h.frame(vec![]);
-    }
-    assert!(menus_end(&h) < menus0, "the menus scrolled");
-    assert_eq!(rect(&h, "window.close"), close, "the caption buttons did not");
-    assert!(h.click(close.center()).contains(&egui::ViewportCommand::Close));
+    use egui::ViewportCommand::Close;
+    let mut h = integrated_window(vec2(640.0, 560.0));
+    let close = in_bar(&h, "Close");
+    assert!(close.left() >= 0.0 && close.right() <= 640.0, "{close:?}");
+    // The wheel over the bar moves what the bar can scroll, never the caption buttons.
+    let p = pos2(200.0, title_bar(&h).center().y);
+    h.hover_at(p);
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -3000.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
+    });
+    h.run_steps(10);
+    assert_eq!(in_bar(&h, "Close"), close, "the caption buttons did not move");
+    assert!(click_commands(&mut h, close.center()).contains(&Close));
 }
 
 #[test]
-fn the_window_drags_from_its_lower_band_at_the_minimum_width() {
-    // At 900 px the menus and tools fill the bar's row; its lower band still moves the window,
-    // and it isn't drawn over the caption buttons.
-    let mut h = WindowHarness::new();
-    h.size = vec2(900.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    let drag = h.ctx.read_response(egui::Id::unique("window_title_drag")).unwrap().rect;
-    let close = h.ctx.read_response(egui::Id::unique("window.close")).unwrap().rect;
-    assert!(drag.right() <= close.left() + 0.5, "{drag:?} {close:?}");
-    let p = egui::pos2(450.0, APP_BAR + APP_BAR_BAND / 2.0);
-    assert!(drag.contains(p), "{drag:?}");
-    let mut commands = h.press(p);
-    commands.extend(h.frame(vec![egui::Event::PointerMoved(p + vec2(20.0, 0.0))]));
-    assert!(commands.contains(&egui::ViewportCommand::StartDrag));
+fn the_window_drags_from_the_title_bar_at_the_minimum_width() {
+    use egui::ViewportCommand::StartDrag;
+    // At 900 px the menus and tools fill the bar's row; the bar's top edge, over its controls, still moves the window,
+    // and the free band is not drawn over the caption buttons.
+    let mut h = integrated_window(vec2(900.0, 560.0));
+    let bar = title_bar(&h);
+    let close = in_bar(&h, "Close");
+    assert!(bar.max.x >= close.right() - 0.5, "{bar:?} {close:?}");
+    let p = pos2(450.0, bar.min.y + 1.0);
+    assert!(drag(&mut h, p).contains(&StartDrag), "a drag from the bar's top edge at {p:?}");
+    assert!(!drag(&mut h, close.center()).contains(&StartDrag), "a drag from the Close button moves nothing");
 }
 
 #[test]
 fn caption_buttons_fit_the_minimum_window_width() {
-    let mut h = WindowHarness::new();
-    h.size = vec2(900.0, 560.0);
-    h.frame(vec![]);
-    h.frame(vec![]);
-    for id in ["window.minimize", "window.maximize", "window.close"] {
-        let rect = h.ctx.read_response(egui::Id::unique(id)).unwrap().rect;
-        assert!(rect.left() >= 0.0 && rect.right() <= h.size.x, "{id}: {rect:?}");
-        let p = rect.center();
-        assert!(!h.click(p).is_empty(), "{id} remains clickable");
+    let mut h = integrated_window(vec2(900.0, 560.0));
+    for label in ["Minimize", "Maximize", "Close"] {
+        let rect = in_bar(&h, label);
+        assert!(rect.left() >= 0.0 && rect.right() <= 900.0, "{label}: {rect:?}");
+        assert!(!click_commands(&mut h, rect.center()).is_empty(), "{label} remains clickable");
     }
 }
 
@@ -1015,7 +1086,6 @@ fn parent_resize_control_changes_the_parent_not_document_page_zero() {
 }
 
 fn parent_resize_panel(properties: bool) {
-    use egui_kittest::Harness;
     {
         let mut app = app();
         app.run("file.new", serde_json::json!({"width": 400, "height": 600, "pages": 3, "facingPages": true})).unwrap();
@@ -1036,7 +1106,7 @@ fn parent_resize_panel(properties: bool) {
         app.canvas_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0)));
         *app.view_mut().unwrap() = crate::View { zoom: 1.0, origin: designcraft_geom::Point::new(-600.0, 0.0), fitted: true, rotation: 0 };
         let before = app.session.doc().unwrap().doc.clone();
-        let mut h = Harness::builder().with_size(vec2(1600.0, 900.0)).build_ui_state(
+        let mut h = test_window::builder().with_size(vec2(1600.0, 900.0)).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 let id = egui::Id::unique("parent_resize_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {

@@ -419,70 +419,9 @@ pub fn dropdown_h(ui: &mut Ui, text: &str, width: f32, h: f32) -> Response {
     resp
 }
 
-/// A dropdown that lists `items` and returns the picked index.
-pub fn dropdown_list(ui: &mut Ui, text: &str, width: f32, items: &[String], current: Option<usize>) -> Option<usize> {
-    let resp = dropdown(ui, text, width);
-    let mut out = None;
-    egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(width);
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for (i, it) in items.iter().enumerate() {
-                if ui.selectable_label(current == Some(i), it).clicked() {
-                    out = Some(i);
-                    ui.close();
-                }
-            }
-        });
-    });
-    out
-}
-
-/// A 20 pt outline button (1 pt `#747474`, transparent fill, centred label).
-pub fn outline_button(ui: &mut Ui, label: &str, width: f32) -> Response {
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(width, BUTTON_H), Sense::click());
-    let p = ui.painter();
-    if resp.is_pointer_button_down_on() {
-        p.rect_filled(r, 2.0, t.well);
-    } else if resp.hovered() {
-        p.rect_filled(r, 2.0, t.hover);
-    }
-    p.rect_stroke(r, 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    crate::rtl::paint(p, r.center(), egui::Align2::CENTER_CENTER, label, label_font(), t.text);
-    // Screen readers (and tests) find it by its label.
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-    resp
-}
-
-/// Two half-width buttons side by side (10 pt gutter); returns which was clicked.
-pub fn button_pair(ui: &mut Ui, a: &str, b: &str) -> (bool, bool) {
-    let w = (full_width(ui) - 10.0) / 2.0;
-    let mut out = (false, false);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        out.0 = outline_button(ui, a, w).clicked();
-        out.1 = outline_button(ui, b, w).clicked();
-    });
-    out
-}
-
 /// Width of a full-width row in the Properties panel (214 pt in a 253 pt panel).
 pub fn full_width(ui: &Ui) -> f32 {
     (ui.available_width() - 8.0).max(60.0)
-}
-
-/// An underlined link label (`Stroke`, `Corner`, `Opacity`) that opens the full panel.
-pub fn link_label(ui: &mut Ui, text: &str, width: f32) -> Response {
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::click());
-    let g = crate::rtl::plain(ui.ctx(), text, label_font(), t.text);
-    let pos = pos2(r.min.x, r.center().y - g.size().y / 2.0);
-    let w = g.size().x;
-    ui.painter().galley(pos, g, t.text);
-    let y = r.center().y + 6.5;
-    ui.painter().line_segment([pos2(r.min.x, y), pos2(r.min.x + w, y)], Stroke::new(1.0, if resp.hovered() { t.text_strong } else { t.text_dim }));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, text));
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// `•••` more-options, right-aligned on its own row at the bottom of a section.
@@ -536,23 +475,6 @@ pub fn section(ui: &mut Ui, title: &str, _default_open: bool) -> bool {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
     ui.add_space(3.0);
     true
-}
-
-/// A section header whose controls sit on the same row (Rulers & Grids, Guides, Flex Layout):
-/// returns the remaining rect to the right of the title.
-pub fn section_row(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
-    let t = Tokens::get(ui.ctx());
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.set_min_height(23.0);
-        let (r, _) = ui.allocate_exact_size(vec2(100.0, 23.0), Sense::hover());
-        crate::rtl::paint(ui.painter(), r.left_center(), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.5), t.text_strong);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(4.0);
-            add(ui)
-        });
-    });
-    ui.add_space(6.0);
 }
 
 /// The 1.5 pt section rule, full panel width.
@@ -632,11 +554,6 @@ pub fn swatch_colors(doc: &designcraft_doc::Document, name: &str, tint: f32) -> 
         return (None, Some((conv(a.color), conv(b.color))));
     }
     (doc.resolve_color(name, tint).map(conv), None)
-}
-
-/// A 21 pt icon toggle (active = `#303030` well with a 1 pt rim).
-pub fn icon_toggle(ui: &mut Ui, icon: &str, on: bool, tip: &str) -> Response {
-    icon_toggle_sized(ui, icon, on, tip, vec2(23.0, 21.0))
 }
 
 /// Paint an icon toggle at the requested size and expose it as a selected button named by its tooltip.

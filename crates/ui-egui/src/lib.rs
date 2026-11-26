@@ -32,7 +32,6 @@ pub mod keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod links_worker;
 pub mod menus;
-mod modal_drag;
 mod new_document;
 mod object_control;
 pub mod object_style_dialog;
@@ -68,6 +67,20 @@ pub use prefs::ReadPreferences;
 
 mod app;
 mod clock;
+mod framework_host;
+#[cfg(test)]
+mod framework_keys_tests;
+mod framework_opacity;
+#[cfg(test)]
+mod framework_opacity_tests;
+#[cfg(test)]
+mod framework_tab_diagnostic_tests;
+#[cfg(test)]
+mod framework_tab_sdk_tests;
+mod framework_transform;
+#[cfg(test)]
+mod framework_transform_tests;
+mod key_dispatch;
 mod key_names;
 mod services;
 mod state;
@@ -141,7 +154,7 @@ struct ShotRequest {
     epoch: u64,
     geometry: ScreenshotGeometry,
     reserved_bytes: usize,
-    slot: Option<craft_ui::capture::CaptureSlot>,
+    slot: Option<craft_ui::runtime::windows::ScreenshotSlot>,
 }
 
 /// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
@@ -202,6 +215,9 @@ pub struct DesignApp {
     /// Resolved native menu choices, kept stable across menu rebuilds until input settles.
     native_actions: std::collections::VecDeque<(String, Value)>,
     native_events_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The last frame (`Context::cumulative_frame_nr`) a logic call saw host-ordered work pending in: deliveries wait
+    /// for the next one ([`DesignApp::logic`]).
+    host_order_frame: Option<u64>,
     control_input_frame: std::sync::Arc<std::sync::atomic::AtomicBool>,
     clipboard_guard_installed: bool,
     /// Story open in the Story Editor.
@@ -263,11 +279,13 @@ pub struct DesignApp {
     pub native_shortcuts: std::collections::HashMap<String, String>,
     /// Every command's shortcuts, with the user's changes (`ui.shortcuts`) applied.
     pub keymap: craft_keymap::Keymap,
-    pub(crate) key_dispatcher: craft_keymap::egui::Dispatcher,
+    pub(crate) key_dispatcher: key_dispatch::Dispatcher,
     /// The open Keyboard Shortcuts dialog.
     pub(crate) shortcut_dialog: Option<Box<shortcuts_dialog::Host>>,
-    /// Answers the user gave in an import review (item → command), for later imports.
-    pub(crate) shortcut_answers: std::collections::BTreeMap<String, craft_keymap::CommandRef>,
+    /// Answers the user gave in an import review (item → command, or none for "No equivalent"), for later imports.
+    pub(crate) shortcut_answers: std::collections::BTreeMap<String, Option<craft_keymap::CommandRef>>,
+    /// The key codes the user answered in an import review (`key:N` / `mods:N` → chord text, or none), for later imports.
+    pub(crate) shortcut_codes: std::collections::BTreeMap<String, Option<String>>,
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
@@ -328,6 +346,14 @@ pub struct DesignApp {
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
     live_preview: LivePreview,
+    /// The pilot's field rects from the last pass, as the framework laid them out (tests and `ui.inspect`).
+    pub(crate) framework_fields: Vec<(String, egui::Rect)>,
+    /// The Opacity pilot's row rects from the last pass (`opacity`, `more`, `slider`), for the tests and
+    /// `ui.inspect`.
+    pub(crate) framework_opacity_fields: Vec<(String, egui::Rect)>,
+    /// The Opacity pilot field's Tab stops from the last pass, as the framework recorded them (index, rect):
+    /// the geometry a test needs to say whether the keyboard landed on the component or beside it.
+    pub(crate) framework_opacity_component_stops: Vec<(usize, egui::Rect)>,
     pub(crate) updates_rt: updates_ui::Runtime,
 }
 
@@ -374,6 +400,57 @@ pub(crate) mod test_window {
         ready: bool,
     }
 
+    /// A context with the craft UI runtime installed, as the shipping window's is: the whole UI is the framework's.
+    pub fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        // Floating panels stay in the test window, where the accessibility tree and the pointer reach them, as they do
+        // where egui embeds viewports.
+        ctx.set_embed_viewports(true);
+        crate::framework_transform::install(&ctx);
+        crate::cursors::install(&ctx);
+        // The framework's services get a frame to route keys and focus in, as `DesignApp::raw_input_hook` gives them
+        // each frame in the shipping window; a test that calls the hook replaces it each frame.
+        craft_ui_widgets::runtime::frame::set_input(
+            &ctx,
+            craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()),
+        );
+        // From then on each frame is set from the app's own state, as `DesignApp::raw_input_hook` does in the shipping window
+        // (its command catalog, host and root values): the window's frame leaves them in the slot for the next frame's input hook.
+        let slot = FrameSlot::default();
+        ctx.data_mut(|data| data.insert_temp(frame_slot_id(), slot.clone()));
+        ctx.add_plugin(FrameInputPlugin(slot));
+        ctx
+    }
+
+    /// What the window's last frame left for the next frame's input hook.
+    type FrameSlot = std::sync::Arc<std::sync::Mutex<Option<craft_ui_widgets::runtime::frame::FrameInput>>>;
+
+    fn frame_slot_id() -> egui::Id {
+        egui::Id::unique("test_window_frame_input")
+    }
+
+    /// Before each frame, the framework's per-frame input (before the pass, as its docs have it) from the app's state.
+    struct FrameInputPlugin(FrameSlot);
+
+    impl egui::Plugin for FrameInputPlugin {
+        fn debug_name(&self) -> &'static str {
+            "test_window_frame_input"
+        }
+
+        fn input_hook(&mut self, ctx: &egui::Context, _: &mut egui::RawInput) {
+            let input = self.0.lock().ok().and_then(|slot| slot.clone());
+            if let Some(input) = input {
+                let _fired = craft_ui_widgets::runtime::frame::take_output(ctx);
+                craft_ui_widgets::runtime::frame::set_input(ctx, input);
+            }
+        }
+    }
+
+    /// `Harness::builder()` on a [`context`] with the runtime installed.
+    pub fn builder<State>() -> egui_kittest::HarnessBuilder<State> {
+        egui_kittest::HarnessBuilder::<State>::default().with_context(context())
+    }
+
     /// The window at `size` with a new document open.
     pub fn open(app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
         open_scaled(app, size, 1.0)
@@ -386,23 +463,38 @@ pub(crate) mod test_window {
 
     /// As `open_scaled`, with `step_dt` seconds between frames (a double-click needs its two
     /// clicks closer together than the default quarter second).
-    pub fn open_stepped(mut app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
+    pub fn open_stepped(app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
+        open_on(builder(), app, size, pixels_per_point, step_dt)
+    }
+
+    fn open_on(
+        builder: egui_kittest::HarnessBuilder<Window>,
+        mut app: crate::DesignApp,
+        size: egui::Vec2,
+        pixels_per_point: f32,
+        step_dt: f32,
+    ) -> Harness<'static, Window> {
         if app.session.active().is_none() {
             app.run("file.new", serde_json::json!({})).unwrap();
         }
-        let mut h =
-            Harness::builder().with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
-                |ui, w: &mut Window| {
-                    // The builder runs a frame before the texture size can be raised: skip it.
-                    if !w.ready {
-                        return;
-                    }
-                    let ctx = ui.ctx().clone();
-                    w.app.logic(&ctx);
-                    w.app.ui(ui);
-                },
-                Window { app, ready: false },
-            );
+        let mut h = builder.with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
+            |ui, w: &mut Window| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+                // The next frame's input, for a context with the runtime (the plugin of `context`).
+                if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id()))
+                    && let Ok(mut slot) = slot.lock()
+                {
+                    *slot = Some(w.app.frame_input());
+                }
+            },
+            Window { app, ready: false },
+        );
         h.input_mut().max_texture_side = Some(8192);
         h.state_mut().ready = true;
         h.run_steps(6);

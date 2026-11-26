@@ -31,7 +31,10 @@ mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
 #[cfg(test)]
-use frames::{LinkBadge, frame_x, item_canvas_xf, overset_frames, overset_marks, ported_frames, text_frames_in};
+pub(crate) use frames::item_canvas_xf;
+#[cfg(test)]
+#[cfg(test)]
+use frames::{LinkBadge, frame_x, overset_frames, overset_marks, ported_frames, text_frames_in};
 use frames::{draw_frames, draw_link_badge, draw_selection, link_badges, link_statuses};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};
 #[cfg(test)]
@@ -220,6 +223,45 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
     }
 }
 
+/// Where the canvas of the pane that has the keyboard was drawn in this pass: its response id, for [`take_key_focus`].
+/// One per viewport (`key_target`): the second window's canvas is that window's key target, which the root pass must
+/// not take.
+const KEY_TARGET: &str = "canvas_key_target";
+
+/// The key-target slot of `viewport`.
+fn key_target(viewport: egui::ViewportId) -> egui::Id {
+    egui::Id::unique(KEY_TARGET).with(viewport)
+}
+
+/// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
+const CANVAS_LAST: &str = "canvas_last_response";
+
+/// The canvas is the window's default key target, as the page is in InDesign: with nothing else holding egui focus at the
+/// end of the pass, the canvas takes it. The craft UI runtime's key stage leaves Escape, Tab and the clipboard events in
+/// egui's input while egui focus is on an app widget (`FocusedRecord::foreign`), but strips them for the framework when
+/// nothing has focus, which is what the app's own canvas code (tool keys, text editing, Presentation, the shortcut
+/// dispatcher) cannot read. The end of the pass, not the canvas's own place in it: a framework focus move (Tab to the next
+/// stop) gives its focus when that stop registers, which can be after the canvas is drawn, and it must not lose it to the
+/// canvas. Not while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys; the
+/// focus a click gave stays where it is. Each viewport's pass takes its own canvas: the root window's at the end of its
+/// pass, New Window's at the end of its own.
+pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
+    use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
+    // `egui::Id` has no `Default`, so `remove_temp` cannot take it: read it, then remove it.
+    let key = key_target(ctx.viewport_id());
+    let Some(canvas) = ctx.data(|data| data.get_temp::<egui::Id>(key)) else { return };
+    ctx.data_mut(|data| data.remove::<egui::Id>(key));
+    if ctx.memory(|memory| memory.focused().is_some())
+        || app.ui.dialog.is_some()
+        || app.ui.palette.is_some()
+        || app.ui.about
+        || any_open(ctx, OpenFilter::Keys)
+    {
+        return;
+    }
+    ctx.memory_mut(|memory| memory.request_focus(canvas));
+}
+
 /// View ▸ Show Link Badges: each placed graphic's link status in its corner.
 fn draw_link_badges(app: &mut DesignApp, ctx: &egui::Context, painter: &egui::Painter, doc: &Document, layout: &CanvasLayout, xf: &Xf) {
     if !app.ui.link_badge {
@@ -235,6 +277,15 @@ fn draw_link_badges(app: &mut DesignApp, ctx: &egui::Context, painter: &egui::Pa
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let outer = ui.available_rect_before_wrap();
+    // A sizing or measuring run of the dock's body shows the canvas too: the framework runs a body more than once to find
+    // its size, in a scope of its own and not always over the rect it then draws in. The canvas fills what it is given, so
+    // such a run only takes that space. The view rect, the render, the pane's focus record, the cursor, the menus and the
+    // task bar belong to the run that is drawn: from a measuring run they rendered the texture at the measured size,
+    // recorded a view rect and a focus target the drawn canvas does not have, and took the pass's input twice.
+    if ui.is_sizing_pass() || craft_ui_widgets::runtime::measure::active(ui.ctx()) {
+        ui.allocate_rect(outer, Sense::hover());
+        return;
+    }
     let rot = app.view().map_or(0, |v| v.rotation % 4);
     let presenting = app.ui.screen_mode == ScreenMode::Presentation;
     // Scrollbars sit outside the view (right and bottom); rulers and the view share the rest.
@@ -245,7 +296,18 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let screen = if rulers { Rect::from_min_max(full.min + vec2(RULER, RULER), full.max) } else { full };
     let rect = view_rect(screen, rot);
     app.canvas_rect = Some(rect);
-    let resp = ui.allocate_rect(full, Sense::click_and_drag());
+    // Not a Tab stop: egui's Tab traversal never lands on the canvas (the framework's panels cycle among themselves and Tab on
+    // the page hides them). A widget that is not `FOCUSABLE` cannot hold focus either (egui drops it where the widget is
+    // made), so the canvas is focusable exactly while it has focus: it takes focus by request (`take_key_focus`, a click) and
+    // then keeps it, and Tab from another widget cannot reach it.
+    let last = egui::Id::unique(CANVAS_LAST).with(app.pane);
+    let held = ui.data(|data| data.get_temp::<egui::Id>(last)).is_some_and(|id| ui.memory(|memory| memory.has_focus(id)));
+    let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
+    ui.data_mut(|data| data.insert_temp(last, resp.id));
+    if input::keyboard_pane(app) {
+        let key = key_target(ui.ctx().viewport_id());
+        ui.data_mut(|data| data.insert_temp(key, resp.id));
+    }
     if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,
         // Shift-click the previous one. Tools and selection don't see the input.
@@ -346,6 +408,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         ruler_units_menus(app, &resp, full, rect, &doc);
     }
     context_menu(app, ui, &resp);
+    // The task bar hangs in an area of its own, shown from the drawn run only (a measuring run returned above): from a
+    // measuring run too, its components would open their stages twice in one pass, under the ids the real run gives them.
     if let Some(r) = sel_rect
         && !preview
         && r.intersects(screen)
@@ -510,5 +574,8 @@ mod parent_canvas_tests;
 #[path = "guide_selection_tests.rs"]
 mod guide_selection_tests;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
+mod successor_tests;
 #[cfg(test)]
 mod tests;
