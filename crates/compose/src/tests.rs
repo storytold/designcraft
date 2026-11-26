@@ -10589,4 +10589,10 @@ fn page_numbers_follow_arabic_text_with_default_digits() {
     let p = story::PAGE_NUMBER;
     assert_eq!(digits(&format!("صفحة 1 {p} {p}")), "١١١");
     assert_eq!(digits(&format!("Page 1 {p}")), "11");
+    // The next and previous page numbers too: each is drawn like the digit typed before it.
+    let (next, prev) = (story::NEXT_PAGE_NUMBER, story::PREV_PAGE_NUMBER);
+    let arabic = digits(&format!("صفحة 1 {next} {prev}"));
+    assert!(arabic.chars().count() == 3 && arabic.chars().all(|c| ('\u{660}'..='\u{669}').contains(&c)), "{arabic:?}");
+    let latin = digits(&format!("Page 1 {next} {prev}"));
+    assert!(latin.chars().count() == 3 && latin.chars().all(|c| c.is_ascii_digit()), "{latin:?}");
 }
