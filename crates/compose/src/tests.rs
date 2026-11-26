@@ -10489,3 +10489,52 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// The brackets of a footnote's number before its text are mirrored in a right-to-left footnote.
+/// The number is generated glyphs, which mirroring skipped, so `(١)` read `)١(` (#2964).
+#[test]
+fn a_right_to_left_footnote_mirrors_the_brackets_of_its_number() {
+    // The glyphs the number's opening and closing brackets are drawn with.
+    let brackets = |direction| {
+        let (mut d, sid, fid) = doc_with("Body text.", Rect::new(36.0, 36.0, 400.0, 400.0), ParaAttrs::default());
+        d.footnote_options.prefix = "(".into();
+        d.footnote_options.suffix = ")".into();
+        d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+        let para = ParaFormat { para: ParaAttrs { direction: Some(direction), ..Default::default() }, ..Default::default() };
+        d.story_mut(sid).unwrap().insert_note(5, "Note text.", para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let note = &cs.frame(fid).unwrap().notes[0].text;
+        let gid = |s: &str| note.frames[0].lines[0].glyphs.iter().find(|g| g.generated_text.as_deref() == Some(s)).map(|g| g.gid).unwrap();
+        (gid("("), gid(")"))
+    };
+    let (open, close) = brackets(designcraft_doc::TextDirection::LeftToRight);
+    assert_ne!(open, close);
+    assert_eq!(brackets(designcraft_doc::TextDirection::RightToLeft), (close, open), "mirrored right to left");
+}
+
+/// In a right-to-left paragraph, a footnote reference with brackets reads like the same text typed
+/// there: `(1)`, opening bracket on the left. It always did; only the number before the footnote's
+/// text was reversed (#2964). The reference is laid out as one left-to-right unit, so its
+/// brackets keep their own glyphs.
+#[test]
+fn a_footnote_reference_in_right_to_left_text_reads_like_typed_brackets() {
+    let rtl = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    let (mut d, sid, fid) = doc_with("نص (1) نص كلمة", Rect::new(36.0, 36.0, 400.0, 400.0), rtl);
+    d.footnote_options.prefix = "(".into();
+    d.footnote_options.suffix = ")".into();
+    d.footnote_options.affix_in = designcraft_doc::notes::AffixIn::Both;
+    let at = d.story(sid).unwrap().text.find(" كلمة").unwrap();
+    d.story_mut(sid).unwrap().insert_note(at, "Note.", ParaFormat::default());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let glyphs = &cs.frame(fid).unwrap().lines[0].glyphs;
+    // The bracket glyphs of a span, from left to right on the page.
+    let left_to_right = |span: std::ops::Range<usize>| {
+        let mut b: Vec<_> = glyphs.iter().filter(|g| span.contains(&g.byte) && matches!(g.rendered_char, '(' | ')')).map(|g| (g.x, g.gid)).collect();
+        b.sort_by(|a, b| a.0.total_cmp(&b.0));
+        b.into_iter().map(|(_, gid)| gid).collect::<Vec<_>>()
+    };
+    let typed = left_to_right(5..8);
+    assert_eq!(typed.len(), 2);
+    assert_ne!(typed[0], typed[1]);
+    assert_eq!(left_to_right(at..at + 3), typed, "the reference's brackets face like typed ones");
+}

@@ -49,7 +49,12 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
 pub fn resolve_mirroring(glyphs: &mut [Glyph], info: &unicode_bidi::BidiInfo<'_>) {
     for i in 0..glyphs.len() {
         let g = &glyphs[i];
-        if g.len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte) {
+        let single = g.len == g.display_char.len_utf8() && glyphs.get(i + 1).is_none_or(|next| next.byte != g.byte);
+        // A generated glyph of its own character, such as a bracket of a footnote's number: the
+        // label's glyphs share one source offset, so they were skipped and `(1)` read `)1(` in a
+        // right-to-left footnote (#2964).
+        let generated = g.len == 0 && g.generated_text.as_deref().is_some_and(|t| t.chars().eq(std::iter::once(g.display_char)));
+        if !single && !generated {
             continue;
         }
         let rtl = info.levels.get(g.bidi_offset).is_some_and(|l| l.is_rtl());
