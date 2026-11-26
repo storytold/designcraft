@@ -138,9 +138,11 @@ impl Story {
 impl crate::Document {
     /// Stories with endnotes in numbering order (page of their first frame, then id).
     fn endnote_order(&self) -> Vec<&Story> {
-        let key = |st: &Story| -> (usize, u64) { (st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX), st.id.0) };
         let mut v: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|s| !s.endnotes.is_empty()).collect();
-        v.sort_by_key(|s| key(s));
+        if v.len() > 1 {
+            let key = self.story_order();
+            v.sort_by_key(|s| key(s));
+        }
         v
     }
 
