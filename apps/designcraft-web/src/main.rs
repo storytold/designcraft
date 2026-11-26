@@ -12,7 +12,10 @@
 //!   chooses);
 //! - the Preferences dialog's settings live in the browser's local storage (`prefs_store`), as
 //!   the desktop app keeps them in `prefs.json`;
-//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
+//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox;
+//! - linked graphics can't be read from their paths (an IDML's Links folder): they show as
+//!   missing, and relink from files handed over instead (Links › Relink… and Relink to Folder…
+//!   pick the files, `links.relinkFiles`).
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
 //! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values
