@@ -46,7 +46,9 @@ pub(crate) use images::SRGB_ICC;
 use images::{CmykImage, GreyImage, ImageContentCache, RasterMode, SrgbImage, embedded_icc, is_grey, is_grey_icc};
 pub(crate) use metadata::civil;
 pub(crate) use pipeline::{MARK_LEN, Sheet, exported_items, mark_start};
-pub use pipeline::{export_pdf, export_pdf_with_report, print_color, sheet_spreads};
+pub use pipeline::{
+    drawn_children, export_pdf, export_pdf_with_report, item_exported, layer_exported, print_color, sheet_spreads, shown_parent_items,
+};
 #[cfg(test)]
 impl std::hash::Hasher for ConstantImageHasher {
     fn finish(&self) -> u64 {
@@ -54,6 +56,10 @@ impl std::hash::Hasher for ConstantImageHasher {
     }
     fn write(&mut self, _: &[u8]) {}
 }
+
+/// An asset's bytes for this export, its name, and whether they are its preview standing in
+/// for an unavailable linked file.
+pub(crate) type Output = (Arc<Vec<u8>>, String, bool);
 
 pub(crate) struct Exporter<'a> {
     pub doc: &'a Document,
@@ -69,13 +75,15 @@ pub(crate) struct Exporter<'a> {
     pub warnings: Vec<String>,
     drawing_items: Vec<designcraft_doc::ItemId>,
     images: HashMap<AssetId, Option<Image>>,
+    /// Each asset's output bytes, read once per export (`None`: nothing to export, warned once).
+    outputs: HashMap<AssetId, Option<Output>>,
     // Immutable export options (including rgb_only) make bytes the complete conversion key.
     // PDF-page/SVG/media routing precedes this path. Failures remain per AssetId.
     images_by_content: ImageContentCache,
     #[cfg(test)]
     image_conversions: usize,
     /// Placed PDFs (embedded as vector pages) and their page counts.
-    pdfs: HashMap<(AssetId, Vec<hayro_syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
+    pdfs: HashMap<(AssetId, Vec<craft_pdf::syntax::object::ObjectIdentifier>), Option<(krilla::pdf::PdfDocument, usize)>>,
     variants: HashMap<(AssetId, Option<Vec<String>>), crate::optional_content::Variant>,
     has_optional_content: bool,
     #[cfg(test)]
@@ -86,7 +94,7 @@ pub(crate) struct Exporter<'a> {
     /// Placed PDFs too new to embed in this version ("name is PDF 2.0"): the export fails.
     too_new: Vec<String>,
     /// Parsed placed SVGs.
-    svgs: HashMap<AssetId, Option<Arc<designcraft_images::usvg::Tree>>>,
+    svgs: HashMap<AssetId, Option<Arc<craft_pdf::write::svg::Document>>>,
     pub fonts: HashMap<u32, Option<krilla::text::Font>>,
     pub reverse_cmaps: HashMap<u32, Arc<HashMap<u32, char>>>,
     /// Convert CMYK to RGB (PDF/A: krilla needs a CMYK output profile we don't ship yet).
@@ -190,16 +198,20 @@ impl GreyImage {
         if !is_grey(data) {
             return None;
         }
-        let img = image::load_from_memory(data).ok()?.to_luma_alpha8();
-        let size = img.dimensions();
+        let img = craft_image_codecs::decode(data).ok()?;
+        if !img.layout().is_gray() {
+            return None;
+        }
+        let img = img.convert(craft_image_codecs::ChannelLayout::GrayA, craft_image_codecs::SampleType::U8);
+        let size = (img.width(), img.height());
         let pixels = usize::try_from(size.0).ok()?.checked_mul(usize::try_from(size.1).ok()?)?;
         if pixels == 0 {
             return None;
         }
         let (mut grey, mut alpha) = (Vec::with_capacity(pixels), Vec::with_capacity(pixels));
-        for p in img.pixels() {
-            grey.push(p.0[0]);
-            alpha.push(p.0[1]);
+        for p in img.data().as_chunks::<2>().0 {
+            grey.push(p[0]);
+            alpha.push(p[1]);
         }
         let alpha = alpha.iter().any(|a| *a < 255).then(|| Arc::new(alpha));
         let icc = embedded_icc(data).filter(|p| is_grey_icc(p)).map(Arc::new);
@@ -294,7 +306,7 @@ mod unwind_tests {
             FAIL_NEXT_SURFACE.set(true);
             assert!(matches!(export(), Err(PdfError::Write(message)) if message.contains("synthetic export drawing failure")), "{entry}");
             let fresh = export().unwrap();
-            assert!(!hayro_syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
+            assert!(!craft_pdf::syntax::Pdf::new(Arc::new(fresh)).unwrap().pages().is_empty(), "fresh {entry} export must still work");
         }
         println!("all three export entry points recovered");
     }

@@ -525,7 +525,8 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
         return None;
     }
     let mover = interval_on(req.rect, axis)?;
-    let boxes = spacing_intervals(cx, req, axis, &mover);
+    // Every box is compared with every other (quadratic on each pointer move): none past the cap.
+    let boxes = spacing_intervals(cx, req, axis, &mover)?;
     let stationary = stationary_gaps(&boxes);
     let low = nearest_side(&mover, &boxes, None, true);
     let high = nearest_side(&mover, &boxes, None, false);
@@ -561,19 +562,26 @@ fn pass_spacing(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, tol: f64) -
 
 /// Top-level visible boxes that overlap `mover` on the other axis.
 ///
-/// The moving rect is not one of them. Parents are not walked.
-fn spacing_intervals(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, mover: &Interval) -> Vec<Interval> {
+/// The moving rect is not one of them. Parents are not walked. `None` as soon as there would be
+/// more than [`MAX_SPACING_BOXES`], before any more are collected.
+fn spacing_intervals(cx: &ToolContext, req: &SnapRequest<'_>, axis: Axis, mover: &Interval) -> Option<Vec<Interval>> {
     let mut out = Vec::new();
-    let Some(sp) = cx.doc.spread(req.spread) else { return out };
+    let Some(sp) = cx.doc.spread(req.spread) else { return Some(out) };
     for item in &sp.items {
         let Some(rect) = item_target_rect(cx.selection, req, item) else { continue };
         let Some(span) = interval_on(rect, axis) else { continue };
         if ranges_overlap(mover.perp_lo, mover.perp_hi, span.perp_lo, span.perp_hi) {
+            if out.len() == MAX_SPACING_BOXES {
+                return None;
+            }
             out.push(span);
         }
     }
-    out
+    Some(out)
 }
+
+/// Most boxes on the mover's band that smart spacing compares; a spread with more has no spacing guides.
+const MAX_SPACING_BOXES: usize = 2048;
 
 struct Interval {
     lo: f64,
@@ -1213,10 +1221,13 @@ fn offer_parent_items(best: &mut Option<Best>, cx: &ToolContext, req: &SnapReque
 fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
     let Some(sp) = doc.spread(spread) else { return Vec::new() };
     let mut out = Vec::new();
+    // Pages times parent items can be many times what the file stores: no more than this are listed.
+    let room = MAX_PARENT_OCCURRENCES;
     for (pi, page) in sp.pages.iter().enumerate() {
         if !page.show_parent_items {
             continue;
         }
+        let overridden = doc.overridden_parent_items(spread, pi);
         for (ppi, ppage) in doc.shown_parent_pages(spread, pi) {
             let Some(parent) = doc.parents.get(ppi) else { continue };
             let Some(parent_page) = parent.pages.get(ppage) else { continue };
@@ -1225,12 +1236,15 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
                 continue;
             }
             for item in &parent.items {
-                if page.overridden.contains(&item.id) {
+                if overridden.contains(&item.id) {
                     continue;
                 }
                 // A facing parent only shows items whose center sits on the parent page this page uses.
                 if parent.pages.len() > 1 && parent.page_at_x(item.bounds().center().x) != Some(ppage) {
                     continue;
+                }
+                if out.len() >= room {
+                    return out;
                 }
                 out.push((item.as_ref(), dx));
             }
@@ -1238,6 +1252,9 @@ fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
     }
     out
 }
+
+/// Parent item occurrences snapping considers on one spread.
+const MAX_PARENT_OCCURRENCES: usize = 100_000;
 
 fn shift_x(r: Rect, dx: f64) -> Rect {
     Rect::new(r.x0 + dx, r.y0, r.x1 + dx, r.y1)

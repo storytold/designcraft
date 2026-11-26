@@ -47,7 +47,7 @@ fn pdf_objects(objects: &[String]) -> Vec<u8> {
 #[test]
 fn nested_form_fanout_is_memoized_and_reports_bottom_font() {
     let bytes = fanout_pdf(16);
-    let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.clone()).unwrap();
     let page = pdf.pages().first().unwrap();
     let mut scan = FontScan::default();
     let start = Instant::now();

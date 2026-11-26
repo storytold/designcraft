@@ -244,6 +244,53 @@ fn serialized_layout_actions_cover_geometry_reorder_accordion_and_atomic_rejecti
     assert_eq!(entries[0].height, Some(150.0));
 }
 
+/// Dragging a flyout's side or top edge sends its new width and top; both are kept for a
+/// registered panel and refused for an unknown one.
+#[test]
+fn flyout_width_and_top_actions_are_kept_for_registered_panels() {
+    let mut app = app();
+    assert!(in_iconic_column(&layout_of(&app), "stroke"));
+    app.run("window.panel.layout", json!({"action":{"ResizeFlyoutWidth":{"panel":"stroke","width":320}}})).unwrap();
+    app.run("window.panel.layout", json!({"action":{"MoveFlyoutTop":{"panel":"stroke","offset":-40}}})).unwrap();
+    let layout = layout_of(&app);
+    let group = dock_columns(&layout).into_iter().flat_map(|c| &c.groups).find(|g| g.panels.iter().any(|p| p == "stroke")).unwrap();
+    assert_eq!(group.flyout_width, Some(320.0));
+    assert_eq!(group.flyout_offset, Some(-40.0));
+    let before = app.ui.docking.clone();
+    for action in [json!({"ResizeFlyoutWidth":{"panel":"unknown","width":320}}), json!({"MoveFlyoutTop":{"panel":"unknown","offset":-40}})] {
+        assert!(app.run("window.panel.layout", json!({"action":action})).is_err());
+        assert_eq!(app.ui.docking, before);
+    }
+}
+
+/// A group of an iconic column that floats as a whole and docks back keeps its flyout's width
+/// and top.
+#[test]
+fn a_group_docked_back_keeps_its_flyout_width_and_top() {
+    let mut app = app();
+    let layout = layout_of(&app);
+    let members = dock_columns(&layout)
+        .into_iter()
+        .filter(|c| c.iconic)
+        .flat_map(|c| &c.groups)
+        .find(|g| g.panels.len() > 1)
+        .expect("an iconic column with a group of several panels")
+        .panels
+        .clone();
+    let panel = members[0].clone();
+    app.run("window.panel.layout", json!({"action":{"ResizeFlyoutWidth":{"panel":panel,"width":320}}})).unwrap();
+    app.run("window.panel.layout", json!({"action":{"MoveFlyoutTop":{"panel":panel,"offset":-40}}})).unwrap();
+    app.run("window.panel.float", json!({"panel": panel, "group": true, "x": 80, "y": 80, "width": 300, "height": 400})).unwrap();
+    assert_eq!(app.ui.docking.as_ref().unwrap().floating.len(), 1);
+    app.run("window.panel.dock", json!({"panel": panel})).unwrap();
+    let layout = layout_of(&app);
+    assert!(layout.floating.is_empty());
+    let group = dock_columns(&layout).into_iter().flat_map(|c| &c.groups).find(|g| g.panels.contains(&panel)).unwrap();
+    assert_eq!(group.panels, members);
+    assert_eq!(group.flyout_width, Some(320.0));
+    assert_eq!(group.flyout_offset, Some(-40.0));
+}
+
 fn group_members_for_test(layout: &Layout<String>, panel: &str) -> Vec<String> {
     tab_group(layout, panel)
 }

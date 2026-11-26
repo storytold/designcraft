@@ -120,9 +120,15 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let mut lead = lead;
         let mut list: Option<&str> = None;
         let mut pre: Option<(String, bool)> = None;
+        let runs: Vec<(std::ops::Range<usize>, &story::CharFormat)> = st.runs().collect();
         for (pi, (r, pf)) in st.para_ranges().into_iter().zip(&st.paras).enumerate() {
             let Some(text) = st.text.get(r.clone()) else { continue };
-            let table = pf.table.and_then(|id| st.tables.get(&id)).filter(|_| text.contains(story::TABLE_ANCHOR));
+            let base = doc.styles.resolve_para(pf).1;
+            // A table whose anchor is hidden or deleted is off the page, so it stays out.
+            let table = pf
+                .table
+                .and_then(|id| st.tables.get(&id))
+                .filter(|_| text.find(story::TABLE_ANCHOR).is_some_and(|at| !doc.hides_run(&base, st.char_format_of(r.start + at))));
             let only_table = table.is_some() && text.chars().all(|c| c == story::TABLE_ANCHOR || c.is_whitespace());
             if !only_table || !lead.is_empty() {
                 // Export Tagging: the style's element and class.
@@ -167,7 +173,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 lead = "";
                 let mut after = String::new();
                 if !only_table {
-                    self.runs(st, r, depth, out, &mut after);
+                    self.runs(st, &runs, r, &base, depth, out, &mut after);
                 }
                 if tag == "pre" {
                     // Closed when the next paragraph isn't a line of the same block.
@@ -224,17 +230,29 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         t
     }
 
-    /// The runs of paragraph `para` of `st`; footnotes go to `after`.
-    fn runs(&mut self, st: &Story, para: std::ops::Range<usize>, depth: usize, out: &mut String, after: &mut String) {
+    /// The runs of paragraph `para` of `st` (`runs`: the story's, collected once; `base`: the
+    /// paragraph's base character attributes); footnotes go to `after`.
+    #[allow(clippy::too_many_arguments)]
+    fn runs(
+        &mut self,
+        st: &Story,
+        runs: &[(std::ops::Range<usize>, &story::CharFormat)],
+        para: std::ops::Range<usize>,
+        base: &designcraft_doc::CharProps,
+        depth: usize,
+        out: &mut String,
+        after: &mut String,
+    ) {
         let doc = self.doc;
-        for (rr, f) in st.runs() {
+        let first = runs.partition_point(|(rr, _)| rr.end <= para.start);
+        for (rr, f) in runs.iter().skip(first).take_while(|(rr, _)| rr.start < para.end).map(|(rr, f)| (rr.clone(), *f)) {
             let a = rr.start.max(para.start);
             let b = rr.end.min(para.end);
             if a >= b {
                 continue;
             }
-            // Hidden conditional text isn't exported.
-            if f.over.conditions.as_deref().is_some_and(|c| doc.conditions_hide(c)) || f.over.change == Some(designcraft_doc::ChangeMark::Deleted) {
+            // Hidden conditional text (the styles' conditions included) and deletions aren't exported.
+            if doc.hides_run(base, f) {
                 continue;
             }
             let Some(raw) = st.text.get(a..b) else { continue };
@@ -285,14 +303,16 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         let doc = self.doc;
         let Content::Graphic(g) = &it.content else { return None };
         let a = doc.assets.get(&g.asset)?;
-        if a.data.is_empty() {
+        // Linked bytes aren't read here: the graphic is left out like one without data.
+        let data = a.data.embedded_bytes()?.as_slice();
+        if data.is_empty() {
             return None;
         }
         let mime = safe_mime(&a.mime);
         // Video and sound: an HTML5 player (with the poster, when there is one).
         if let Some(kind) = designcraft_doc::media_kind(mime) {
             let name = asset_path("media", a, mime);
-            self.images.insert(name.clone(), (mime, a.data.as_slice()));
+            self.images.insert(name.clone(), (mime, data));
             let m = it.media.clone().unwrap_or_default();
             let mut attrs = String::new();
             for (on, attr) in [(m.controls, " controls=\"controls\""), (m.play_on_page_load, " autoplay=\"autoplay\""), (m.looping, " loop=\"loop\"")]
@@ -301,25 +321,27 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                     attrs.push_str(attr);
                 }
             }
-            if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p)) {
+            if let Some(pa) = m.poster.and_then(|p| doc.assets.get(&p))
+                && let Some(poster) = pa.data.embedded_bytes()
+            {
                 let poster_mime = safe_mime(&pa.mime);
                 let pn = asset_path("images", pa, poster_mime);
-                self.images.insert(pn.clone(), (poster_mime, pa.data.as_slice()));
+                self.images.insert(pn.clone(), (poster_mime, poster.as_slice()));
                 if kind == "video" {
-                    attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, &pa.data))));
+                    attrs.push_str(&format!(" poster=\"{}\"", xml_attr(&img_src(&pn, poster_mime, poster))));
                 }
             }
-            let markup = format!("<{kind} src=\"{}\"{attrs}>{}</{kind}>", xml_attr(&img_src(&name, mime, &a.data)), xml_text(&a.name));
+            let markup = format!("<{kind} src=\"{}\"{attrs}>{}</{kind}>", xml_attr(&img_src(&name, mime, data)), xml_text(&a.name));
             return Some((markup, true));
         }
         let name = asset_path("images", a, mime);
-        self.images.insert(name.clone(), (mime, a.data.as_slice()));
+        self.images.insert(name.clone(), (mime, data));
         // Alt text from Object Export Options; without one the image counts as decorative
         // (`alt=""`): a file name read aloud helps nobody.
         if it.alt_text.trim().is_empty() {
             self.no_alt.push(a.name.clone());
         }
-        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&img_src(&name, mime, &a.data)), xml_attr(&it.alt_text)), false))
+        Some((format!("<img src=\"{}\" alt=\"{}\"/>", xml_attr(&img_src(&name, mime, data)), xml_attr(&it.alt_text)), false))
     }
 
     /// The footnote whose reference is at byte `pos` of `st`: a note reference in `out`, the note

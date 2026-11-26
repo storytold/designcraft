@@ -173,21 +173,8 @@ fn draw_content_ghost(painter: &egui::Painter, xf: &Xf, doc: &Document, layout: 
 /// A screen-resolution proxy of a placed graphic for the ghost, cached per asset.
 fn ghost_texture(ctx: &egui::Context, doc: &Document, g: &designcraft_doc::Graphic) -> Option<egui::TextureHandle> {
     let asset = doc.assets.get(&g.asset)?;
-    let key = egui::Id::unique(("content_ghost", std::sync::Arc::as_ptr(&asset.data) as usize, asset.data.len(), asset.page));
-    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
-        return Some(t);
-    }
     // A 72 ppi proxy is enough for a faint preview.
-    let pm = designcraft_render::images::mip(&asset.data, asset.page, g.size.0, 1.0)?;
-    let (pw, ph) = (pm.width() as usize, pm.height() as usize);
-    if pw == 0 || ph == 0 {
-        return None;
-    }
-    let ci = egui::ColorImage::from_rgba_premultiplied([pw, ph], pm.data_as_u8_slice());
-    let max = ctx.input(|i| i.max_texture_side).min(4096);
-    let t = ctx.load_texture("content_ghost", crate::widgets::fit_texture(ci, max), egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(key, t.clone()));
-    Some(t)
+    super::proxy_texture(ctx, "content_ghost", &asset.data, asset.page, g.size.0, 1.0, 4096)
 }
 
 /// An object's liquid controls on an object-based page, as InDesign draws them in orange: a
