@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Print…",
             ["File"],
             Some("Cmd+P"),
-            "{printer?, copies?: 1, pages?: \"1-3,5\", dryRun?: bool (export and preview submission without printing), …the PDF settings of file.exportPdf (the PDF it writes is what prints)} → {printer, copies, pages, command, bytes, warnings}",
+            "{printer?, copies?: 1, pages?: \"1-3,5\", layouts?: [layout names] (their pages; instead of `pages`), separateJobs?: bool (a print job per layout, titled after it), dryRun?: bool (export and preview submission without printing), …the PDF settings of file.exportPdf (the PDF it writes is what prints)} → {printer, copies, pages, command, bytes, warnings, jobs}",
             has_doc,
             print
         ),
@@ -43,28 +43,65 @@ fn print(s: &mut Session, p: &Value) -> Result<Value> {
 fn print_with(
     s: &mut Session,
     p: &Value,
-    submit: impl FnOnce(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
+    mut submit: impl FnMut(&[u8], &craft_print::Job) -> std::result::Result<String, craft_print::Error>,
 ) -> Result<Value> {
     let d = &s.doc()?.doc;
     let opts = super::export::options(p, d.page_count())?;
-    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
-    let job = craft_print::Job {
-        printer: str_param(p, "printer").map(str::to_string),
-        copies,
-        scaling: craft_print::Scaling::ShrinkToFit,
-        title: d.title.clone(),
-        ..craft_print::Job::default()
+    // Layouts: their pages, in one job or a job each (`None`: the pages `p` names).
+    let jobs: Vec<(String, Option<Vec<usize>>)> = match p.get("layouts") {
+        None | Some(Value::Null) => vec![(d.title.clone(), None)],
+        Some(v) => {
+            let names: Vec<String> = serde_json::from_value(v.clone()).map_err(|_| bad("file.print", "`layouts` is a list of layout names"))?;
+            let groups = super::export_batch::layout_pages("file.print", d, &names)?;
+            if p.get("separateJobs").and_then(Value::as_bool).unwrap_or(false) {
+                groups.into_iter().map(|(name, pages)| (format!("{} - {name}", d.title), Some(pages))).collect()
+            } else {
+                vec![(d.title.clone(), Some(groups.into_iter().flat_map(|(_, p)| p).collect()))]
+            }
+        }
     };
+    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999) as u32;
     let dry = p.get("dryRun").and_then(Value::as_bool).unwrap_or(false);
-    let pages = opts.pages.as_ref().map_or(d.page_count(), |v| v.len());
-    // The PDF that Export PDF writes with these settings.
-    let pdf = super::export::pdf_export(s, p)?;
-    let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
-    let out =
-        json!({"printer": job.printer, "copies": copies, "pages": pages, "command": command, "bytes": pdf.bytes.len(), "warnings": pdf.warnings});
-    if !dry {
-        submit(&pdf.bytes, &job).map_err(|e| bad("file.print", e.to_string()))?;
+    let mut out = Value::Null;
+    let (mut total_pages, mut total_bytes) = (0usize, 0usize);
+    let (mut titles, mut warnings) = (Vec::new(), Vec::<String>::new());
+    // Every job's PDF first, so a failing one sends nothing.
+    let mut ready = Vec::new();
+    for (title, pages) in jobs {
+        let job = craft_print::Job {
+            printer: str_param(p, "printer").map(str::to_string),
+            copies,
+            scaling: craft_print::Scaling::ShrinkToFit,
+            title: title.clone(),
+            ..craft_print::Job::default()
+        };
+        // The PDF that Export PDF writes with these settings, on the job's pages.
+        let mut params = p.clone();
+        if let (Some(pages), Some(o)) = (&pages, params.as_object_mut()) {
+            o.insert("pages".into(), json!(pages.iter().map(|p| p.saturating_add(1)).collect::<Vec<_>>()));
+        }
+        let pdf = super::export::pdf_export(s, &params)?;
+        let command = craft_print::command_preview(&job).map_err(|e| bad("file.print", e.to_string()))?;
+        total_pages += pages.as_ref().or(opts.pages.as_ref()).map_or(d.page_count(), Vec::len);
+        total_bytes += pdf.bytes.len();
+        for w in pdf.warnings {
+            if !warnings.contains(&w) {
+                warnings.push(w);
+            }
+        }
+        out = json!({"printer": job.printer, "copies": copies, "command": command});
+        titles.push(title);
+        ready.push((pdf.bytes, job));
     }
+    if !dry {
+        for (pdf, job) in &ready {
+            submit(pdf, job).map_err(|e| bad("file.print", e.to_string()))?;
+        }
+    }
+    out["pages"] = json!(total_pages);
+    out["bytes"] = json!(total_bytes);
+    out["warnings"] = json!(warnings);
+    out["jobs"] = json!(titles);
     Ok(out)
 }
 
@@ -158,5 +195,30 @@ mod tests {
             }
         }
         assert!(matched, "File › Print spools Export PDF's bytes");
+    }
+
+    #[test]
+    fn print_layouts_together_or_as_a_job_each() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false, "title": "Mag"})).unwrap();
+        s.execute("layout.createAlternate", &json!({"name": "Wide", "width": 900, "height": 600})).unwrap();
+        let mut sent = Vec::new();
+        let r = print_with(&mut s, &json!({"layouts": ["Wide"]}), |pdf, job| {
+            sent.push((designcraft_render::pdf_page_count(pdf), job.title.clone()));
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(r["pages"], 2);
+        assert_eq!(sent, [(Some(2), "Mag".to_string())]);
+        sent.clear();
+        let r = print_with(&mut s, &json!({"layouts": [], "separateJobs": true}), |pdf, job| {
+            sent.push((designcraft_render::pdf_page_count(pdf), job.title.clone()));
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(r["jobs"], json!(["Mag - Layout 1", "Mag - Wide"]));
+        assert_eq!(sent, [(Some(2), "Mag - Layout 1".to_string()), (Some(2), "Mag - Wide".to_string())]);
+        assert!(print_with(&mut s, &json!({"layouts": ["Nope"]}), |_, _| panic!("unknown layouts must not spool")).is_err());
+        assert!(print_with(&mut s, &json!({"layouts": "Wide"}), |_, _| panic!("bad layouts must not spool")).is_err());
     }
 }

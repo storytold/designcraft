@@ -5,6 +5,9 @@ use super::grid::CellRange;
 use super::story::append_story;
 use super::{Story, Table};
 
+/// Most merged-cell owners one `split_cells` call splits.
+const MAX_SPLIT_OWNERS: usize = 1024;
+
 impl Table {
     /// The smallest range containing `r` that doesn't cut through a merged region.
     pub fn expand_range(&self, mut r: CellRange) -> CellRange {
@@ -77,6 +80,11 @@ impl Table {
                 let owner = owners.get(r * self.ncols() + c).ok_or("missing cell owner")?;
                 selected.insert(*owner);
             }
+        }
+        // Each owner is split by a transformation that rebuilds the grid's ownership: quadratic in the
+        // owners, so a very large selection is refused (a table this size is split in parts).
+        if selected.len() > MAX_SPLIT_OWNERS {
+            return Err(format!("too many cells to split at once (at most {MAX_SPLIT_OWNERS})"));
         }
         let mut targets = Vec::new();
         for (r, c) in selected {
@@ -231,6 +239,18 @@ impl Table {
 #[cfg(test)]
 mod split_tests {
     use super::*;
+
+    #[test]
+    fn splitting_a_huge_selection_is_refused() {
+        let mut t = Table::new(1, 40, 40, 0, 0, 400.0);
+        let all = CellRange { r0: 0, c0: 0, r1: 39, c1: 39 };
+        let before = (t.nrows(), t.ncols());
+        assert!(t.split_cells(all, true).unwrap_err().contains("too many cells"));
+        assert_eq!((t.nrows(), t.ncols()), before, "nothing was split");
+        // A selection within the limit still splits.
+        let some = CellRange { r0: 0, c0: 0, r1: 1, c1: 1 };
+        assert!(t.split_cells(some, true).is_ok());
+    }
 
     #[test]
     fn split_single_and_merged_cells() {

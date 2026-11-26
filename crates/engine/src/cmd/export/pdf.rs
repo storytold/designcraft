@@ -712,4 +712,37 @@ mod overset_tests {
         let r = s.execute("file.exportPdf", &json!({"pages": [1], "spreads": true})).unwrap();
         assert!(about(&r).is_empty(), "the cover's spread holds no overset frame: {r}");
     }
+
+    /// Plain print exports attach `/DefaultCMYK` without `/OutputIntents`, PDF/X-4 keeps both
+    /// cleanly, and PDF/X-1a omits `/DefaultCMYK`.
+    #[test]
+    fn export_pdf_command_attaches_default_cmyk_according_to_standard() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"intent": "print"})).unwrap();
+        s.execute("frame.create", &json!({"rect": [36, 36, 200, 200]})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Slate", "color": {"c": 42.5, "m": 17.5, "y": 16.0, "k": 7.1}})).unwrap();
+        s.execute("object.fill", &json!({"swatch": "Slate"})).unwrap();
+
+        let export = |s: &mut Session, extra: serde_json::Value| {
+            let res = s.execute("file.exportPdf", &extra).unwrap();
+            let raw = crate::cmd::base64_decode(res["base64"].as_str().unwrap());
+            (raw, res["warnings"].clone())
+        };
+
+        let (plain, plain_w) = export(&mut s, json!({"tagged": true}));
+        assert_eq!(plain_w, json!([]), "plain export warnings: {plain_w}");
+        let plain_text = String::from_utf8_lossy(&plain);
+        assert!(plain_text.contains("/DefaultCMYK ["), "plain export must carry /DefaultCMYK");
+        assert!(!plain_text.contains("/OutputIntents"), "plain export must not carry /OutputIntents");
+
+        let (x4, x4_w) = export(&mut s, json!({"standard": "x4"}));
+        assert_eq!(x4_w, json!([]), "PDF/X-4 warnings: {x4_w}");
+        let x4_text = String::from_utf8_lossy(&x4);
+        assert!(x4_text.contains("/DefaultCMYK ["), "PDF/X-4 export must carry /DefaultCMYK");
+        assert!(x4_text.contains("/OutputIntents"), "PDF/X-4 export must keep /OutputIntents");
+
+        let (x1a, _) = export(&mut s, json!({"standard": "x1a"}));
+        let x1a_text = String::from_utf8_lossy(&x1a);
+        assert!(!x1a_text.contains("/DefaultCMYK"), "PDF/X-1a must not carry ICCBased DefaultCMYK");
+    }
 }

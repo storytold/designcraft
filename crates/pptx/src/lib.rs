@@ -20,11 +20,10 @@
 #![forbid(unsafe_code)]
 
 mod fonts;
-mod package;
+mod model;
 mod slide;
 mod table;
 mod text;
-mod xml;
 
 #[cfg(test)]
 mod tests;
@@ -80,6 +79,28 @@ pub enum PptxError {
 
 pub type Result<T> = std::result::Result<T, PptxError>;
 
+fn set_picture_media(
+    shapes: &mut [craft_pptx::Shape],
+    names: &[(u32, String, Option<String>)],
+    ids: &std::collections::HashMap<String, craft_pptx::MediaId>,
+) -> Result<()> {
+    for shape in shapes {
+        if let craft_pptx::ShapeKind::Picture { fill } = &mut shape.kind {
+            let (name, svg) = names
+                .iter()
+                .find(|(id, _, _)| *id == shape.id.0)
+                .map(|(_, name, svg)| (name, svg))
+                .ok_or_else(|| PptxError::Write(format!("picture {} has no media mapping", shape.id.0)))?;
+            fill.media = *ids.get(name).ok_or_else(|| PptxError::Write(format!("picture media `{name}` is missing")))?;
+            fill.svg = svg.as_ref().and_then(|name| ids.get(name).copied());
+        }
+        if let craft_pptx::ShapeKind::Group { children, .. } = &mut shape.kind {
+            set_picture_media(children, names, ids)?;
+        }
+    }
+    Ok(())
+}
+
 /// Export `doc` as a PowerPoint presentation.
 pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<ExportReport> {
     let count = doc.page_count();
@@ -117,14 +138,53 @@ pub fn export_pptx(doc: &Document, cache: &Cache, opts: &PptxOptions) -> Result<
         Vec::new()
     };
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let bytes = package::write(&package::Package {
-        size,
-        slides: &slides,
-        media: &ex.media,
-        fonts: &fonts,
-        title: &title,
-        author: opts.author.as_deref().unwrap_or(""),
-        created: opts.created,
-    })?;
+    let mut presentation = craft_pptx::Presentation { slide_size: craft_pptx::Size::new(size.0, size.1), ..Default::default() };
+    presentation.props.title = title;
+    presentation.props.author = opts.author.clone().unwrap_or_default();
+    presentation.props.created = opts
+        .created
+        .and_then(|created| chrono::DateTime::<chrono::Utc>::from_timestamp(created, 0))
+        .map(|created| created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default();
+    for (index, source) in slides.iter().enumerate() {
+        presentation.slides.push(std::sync::Arc::new(craft_pptx::Slide {
+            id: craft_pptx::SlideId(u32::try_from(index + 1).unwrap_or(u32::MAX)),
+            name: source.name.clone(),
+            shapes: source.shapes.clone(),
+            ..Default::default()
+        }));
+    }
+    let mut max_id = u32::try_from(slides.len()).unwrap_or(u32::MAX);
+    for slide in &presentation.slides {
+        craft_pptx::walk(&slide.shapes, &mut |shape, _| max_id = max_id.max(shape.id.0));
+    }
+    presentation.next_id = max_id;
+    let mut media_ids = std::collections::HashMap::new();
+    for media in &ex.media {
+        let content_type = designcraft_images::mime(&media.bytes);
+        let id = presentation
+            .add_media(&media.name, content_type, media.bytes.clone())
+            .ok_or_else(|| PptxError::Write("the presentation has no more media ids".into()))?;
+        media_ids.insert(media.name.clone(), id);
+    }
+    for (source, slide) in slides.iter().zip(&mut presentation.slides) {
+        let slide = std::sync::Arc::make_mut(slide);
+        set_picture_media(&mut slide.shapes, &source.media, &media_ids)?;
+    }
+    for font in fonts {
+        let mut embedded = craft_pptx::EmbeddedFont { typeface: font.family, ..Default::default() };
+        let slots = [&mut embedded.regular, &mut embedded.bold, &mut embedded.italic, &mut embedded.bold_italic];
+        for (slot, data) in slots.into_iter().zip(font.faces) {
+            if let Some(data) = data {
+                let name = format!("font{}.fntdata", presentation.embedded_fonts.len() + 1);
+                *slot = presentation.add_media(&name, "application/x-fontdata", data);
+                if slot.is_none() {
+                    return Err(PptxError::Write("the presentation has no more media ids".into()));
+                }
+            }
+        }
+        presentation.embedded_fonts.push(embedded);
+    }
+    let bytes = craft_pptx::export(&presentation, &craft_pptx::Plain).map_err(|e| PptxError::Write(e.to_string()))?;
     Ok(ExportReport { bytes, slides: slides.len(), warnings: ex.warnings })
 }

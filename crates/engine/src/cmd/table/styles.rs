@@ -133,6 +133,11 @@ fn reapply_cell_styles(d: &mut Document, names: &[String]) {
 /// Include descendants when editing an inherited style, with the resolver's depth limit.
 fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Vec<String> {
     let styles: Vec<_> = styles.collect();
+    // The first style of a name is the one, as the resolver's lookup finds it.
+    let mut based_on: std::collections::HashMap<&str, Option<&str>> = std::collections::HashMap::new();
+    for (n, base) in &styles {
+        based_on.entry(n).or_insert(*base);
+    }
     styles
         .iter()
         .filter(|(candidate, _)| {
@@ -142,7 +147,7 @@ fn dependent_styles<'a>(name: &str, styles: impl Iterator<Item = (&'a str, Optio
                 if current_name == name {
                     return true;
                 }
-                current = styles.iter().find(|(n, _)| *n == current_name).and_then(|(_, base)| *base);
+                current = based_on.get(current_name).copied().flatten();
             }
             false
         })
@@ -293,6 +298,54 @@ mod style_tests {
         let t = d.story(designcraft_doc::StoryId(sid)).unwrap().tables.values().next().unwrap();
         assert_eq!(t.cell(1, 1).unwrap().first_baseline, designcraft_doc::FirstBaseline::Leading);
         assert_eq!(t.cell(1, 0).unwrap().first_baseline, designcraft_doc::FirstBaseline::Ascent);
+    }
+
+    #[test]
+    fn diagonal_lines_are_a_cell_option_of_the_target_cells() {
+        use designcraft_doc::DiagonalLines;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let r = s.execute("frame.create", &json!({"rect": [72, 72, 500, 400], "content": "text", "text": ""})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 2, "cols": 2})).unwrap();
+        let fresh = s.execute("table.getCellDiagonal", &json!({})).unwrap();
+        assert_eq!((&fresh["lines"], &fresh["weight"], &fresh["inFront"]), (&json!("none"), &json!(1.0), &json!(true)));
+        let p = json!({"rows": [0, 0], "cols": [0, 1], "diagonal": {"lines": "crossed", "weight": 2, "color": "[Paper]", "type": "dotted", "inFront": false}});
+        s.execute("table.setCell", &p).unwrap();
+        let cell = |s: &Session, r: usize, c: usize| {
+            s.doc().unwrap().doc.story(sid).unwrap().tables.values().next().unwrap().cell(r, c).unwrap().diagonal.clone()
+        };
+        let d = cell(&s, 0, 1);
+        assert_eq!(
+            (d.lines, d.stroke.weight, d.stroke.color.as_str(), &d.stroke.kind, d.in_front),
+            (DiagonalLines::Crossed, 2.0, "[Paper]", &designcraft_doc::StrokeType::Dotted, false)
+        );
+        assert!(cell(&s, 1, 0).is_default(), "other cells keep none");
+        // Only the attributes given change.
+        s.execute("table.setCell", &json!({"row": 0, "col": 0, "diagonal": {"lines": "topRight"}})).unwrap();
+        let d = cell(&s, 0, 0);
+        assert_eq!((d.lines, d.stroke.weight, d.in_front), (DiagonalLines::TopRight, 2.0, false));
+        let got = s.execute("table.getCellDiagonal", &json!({"rows": [0, 0], "cols": [0, 1]})).unwrap();
+        assert_eq!(
+            (&got["lines"], &got["weight"], &got["color"], &got["inFront"]),
+            (&serde_json::Value::Null, &json!(2.0), &json!("[Paper]"), &json!(false)),
+            "{got}"
+        );
+        let tid = s.doc().unwrap().doc.story(sid).unwrap().tables.keys().next().copied().unwrap();
+        assert_eq!(
+            (&got["story"], &got["table"], &got["rows"], &got["cols"]),
+            (&json!(sid.0), &json!(tid), &json!([0, 0]), &json!([0, 1])),
+            "the result names the target cells"
+        );
+        let shown = s.execute("table.get", &json!({})).unwrap()["cells"][1]["diagonal"].clone();
+        assert_eq!((&shown["lines"], &shown["inFront"]), (&json!("crossed"), &json!(false)));
+        for bad in [json!({"lines": "x"}), json!({"lines": 1}), json!({"inFront": "yes"}), json!({"weight": -1}), json!("crossed")] {
+            assert!(s.execute("table.setCell", &json!({"row": 0, "col": 0, "diagonal": bad})).is_err(), "{bad}");
+        }
+        assert_eq!(cell(&s, 0, 0).lines, DiagonalLines::TopRight, "a refused edit changes nothing");
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(cell(&s, 0, 0).lines, DiagonalLines::Crossed, "one undo step per edit");
     }
 
     #[test]

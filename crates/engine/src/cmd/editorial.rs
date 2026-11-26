@@ -20,16 +20,19 @@ pub fn specs() -> Vec<CommandSpec> {
             let author = str_param(p, "author").unwrap_or("").to_string();
             let at = ts.anchor.max(ts.focus);
             s.edit(|d, sel| {
-                let story = d.story_mut(ts.story).ok_or_else(|| bad("note.new", "no such story"))?;
-                let fmt = story.char_format_at(at).clone();
-                story.insert_with(at, &NOTE_MARK.to_string(), fmt);
-                // A file may hold fewer notes than anchors; give every anchor one.
-                story.fix_marks();
-                let k = story.text[..at].matches(NOTE_MARK).count();
-                let n = story.editorial.get_mut(k).ok_or_else(|| bad("note.new", "the story's notes don't match their anchors"))?;
-                let n = Arc::make_mut(n);
-                (n.text, n.author) = (text, author);
-                let id = n.id;
+                let id = {
+                    let story = d.story_mut(ts.story).ok_or_else(|| bad("note.new", "no such story"))?;
+                    let fmt = story.char_format_at(at).clone();
+                    story.insert_with(at, &NOTE_MARK.to_string(), fmt);
+                    // A file may hold fewer notes than anchors; give every anchor one.
+                    story.fix_marks();
+                    let k = story.text[..at].matches(NOTE_MARK).count();
+                    let n = story.editorial.get_mut(k).ok_or_else(|| bad("note.new", "the story's notes don't match their anchors"))?;
+                    let n = Arc::make_mut(n);
+                    (n.text, n.author) = (text, author);
+                    n.id
+                };
+                d.adjust_text_ranges(ts.story, at..at, NOTE_MARK.len_utf8());
                 if let Some(t) = &mut sel.text {
                     let c = at + NOTE_MARK.len_utf8();
                     (t.anchor, t.focus) = (c, c);
@@ -68,8 +71,10 @@ pub fn specs() -> Vec<CommandSpec> {
             s.edit(|d, sel| {
                 let st = d.story_mut(sid).ok_or_else(|| bad("note.delete", "no such story"))?;
                 let at = anchor(st, id).ok_or_else(|| bad("note.delete", format!("no note {id}")))?;
-                follow_replace(sel, sid, at..at + NOTE_MARK.len_utf8(), 0);
-                st.delete(at..at + NOTE_MARK.len_utf8());
+                let len = NOTE_MARK.len_utf8();
+                follow_replace(sel, sid, at..at + len, 0);
+                st.delete(at..at + len);
+                d.adjust_text_ranges(sid, at..at + len, 0);
                 ok()
             })
         }),
@@ -86,8 +91,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     let st = d.story_mut(sid).ok_or_else(|| bad("note.convertToText", "no such story"))?;
                     let at = anchor(st, id).ok_or_else(|| bad("note.convertToText", format!("no note {id}")))?;
                     let text = st.editorial.iter().find(|n| n.id == id).map(|n| n.text.clone()).unwrap_or_default();
-                    follow_replace(sel, sid, at..at + NOTE_MARK.len_utf8(), text.len());
-                    st.replace(at..at + NOTE_MARK.len_utf8(), &text);
+                    let len = NOTE_MARK.len_utf8();
+                    follow_replace(sel, sid, at..at + len, text.len());
+                    st.replace(at..at + len, &text);
+                    d.adjust_text_ranges(sid, at..at + len, text.len());
                     ok()
                 })
             }
@@ -161,20 +168,23 @@ fn convert_from_text(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let author = str_param(p, "author").unwrap_or("").to_string();
     s.edit(|d, sel| {
-        let story = d.story_mut(ts.story).ok_or_else(|| bad(ID, "no such story"))?;
-        let text = story.text.get(r.clone()).ok_or_else(|| bad(ID, "the selection is outside the story"))?.to_string();
-        if text.contains(MARKS) {
-            return Err(bad(ID, "the selection holds a table, an anchored object, a note, a footnote, an endnote or a marker"));
-        }
-        let fmt = story.format_after(r.start).clone();
-        story.delete(r.clone());
-        story.insert_with(r.start, &NOTE_MARK.to_string(), fmt);
-        story.fix_marks();
-        let k = story.text[..r.start].matches(NOTE_MARK).count();
-        let n = story.editorial.get_mut(k).ok_or_else(|| bad(ID, "the story's notes don't match their anchors"))?;
-        let n = Arc::make_mut(n);
-        (n.text, n.author) = (text, author);
-        let id = n.id;
+        let id = {
+            let story = d.story_mut(ts.story).ok_or_else(|| bad(ID, "no such story"))?;
+            let text = story.text.get(r.clone()).ok_or_else(|| bad(ID, "the selection is outside the story"))?.to_string();
+            if text.contains(MARKS) {
+                return Err(bad(ID, "the selection holds a table, an anchored object, a note, a footnote, an endnote or a marker"));
+            }
+            let fmt = story.format_after(r.start).clone();
+            story.delete(r.clone());
+            story.insert_with(r.start, &NOTE_MARK.to_string(), fmt);
+            story.fix_marks();
+            let k = story.text[..r.start].matches(NOTE_MARK).count();
+            let n = story.editorial.get_mut(k).ok_or_else(|| bad(ID, "the story's notes don't match their anchors"))?;
+            let n = Arc::make_mut(n);
+            (n.text, n.author) = (text, author);
+            n.id
+        };
+        d.adjust_text_ranges(ts.story, r.clone(), NOTE_MARK.len_utf8());
         if let Some(t) = &mut sel.text {
             let c = r.start + NOTE_MARK.len_utf8();
             (t.anchor, t.focus) = (c, c);
