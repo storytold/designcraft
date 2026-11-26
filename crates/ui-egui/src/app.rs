@@ -19,6 +19,8 @@ mod frame;
 mod ime;
 mod input;
 mod keys;
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "windows", target_os = "linux")))]
+mod legacy_pinch;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod opening;
 mod quit;

@@ -60,6 +60,8 @@ impl DesignApp {
         {
             self.logic_frame_ticks += 1;
         }
+        // Ctrl/Cmd + wheel pans sideways; only Alt and a pinch zoom (`input::configure_wheel`).
+        super::input::configure_wheel(ctx);
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
         }
