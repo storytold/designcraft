@@ -59,7 +59,7 @@ fn load(path: &str) -> Result<designcraft_doc::Document> {
         let _ = path;
         vec![]
     };
-    if path.to_lowercase().ends_with(".idml") {
+    if craft_file_formats::detect(path, &bytes) == Some(craft_file_formats::Format::Idml) {
         return super::interchange::import_idml_confined(&bytes, Some(std::path::Path::new(path)))
             .map_err(|e| EngineError::Other(format!("{path}: {e}")));
     }
@@ -132,7 +132,11 @@ impl ChapterBatch {
 fn writable_chapter(s: &Session, path: &str, command: &'static str) -> Result<()> {
     use std::path::Path;
 
-    if Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|ext| ext.eq_ignore_ascii_case("idml")) {
+    if Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| craft_file_formats::from_extension(ext) == Some(craft_file_formats::Format::Idml))
+    {
         return Err(bad(command, format!("cannot change imported IDML chapter {path}; convert it to a native DesignCraft document first")));
     }
     let target = crate::io::canonicalize(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -307,7 +311,12 @@ pub fn specs() -> Vec<CommandSpec> {
             load(&path)?;
             let mut b = s.book.as_ref().ok_or_else(no_book)?.clone();
             let at = p.get("at").and_then(Value::as_u64).map_or(b.documents.len(), |i| (i as usize).min(b.documents.len()));
+            // Keep a valid existing source attached to its chapter when inserting before it.
+            let shift_source = b.style_source < b.documents.len() && at <= b.style_source;
             b.documents.insert(at, path);
+            if shift_source {
+                b.style_source += 1;
+            }
             save(&b)?;
             s.book = Some(b);
             ok()
@@ -319,6 +328,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 return Err(bad("book.remove", format!("no document {i}")));
             }
             b.documents.remove(i);
+            if i < b.style_source {
+                b.style_source -= 1;
+            }
             if b.style_source >= b.documents.len() {
                 b.style_source = 0;
             }
@@ -461,5 +473,76 @@ mod tests {
         let kept: Vec<_> = super::keep_last(&list, |x| x.0).into_iter().copied().collect();
         // As the one-style-at-a-time loop left them: each name once, at its last position.
         assert_eq!(kept, [("b", 2), ("a", 3), ("c", 4)]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_book_fixture(path: &std::path::Path, documents: &[&str], style_source: usize) -> Session {
+        let book = super::Book {
+            path: path.to_str().unwrap().to_string(),
+            documents: documents.iter().map(|path| path.to_string()).collect(),
+            style_source,
+        };
+        super::save(&book).unwrap();
+        let mut s = Session::new();
+        s.execute("book.open", &json!({"path": book.path})).unwrap();
+        s
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn assert_book_style_source(s: &Session, path: &std::path::Path, index: usize, source: Option<&str>) {
+        let mut reopened = Session::new();
+        reopened.execute("book.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+        for book in [s.book.as_ref().unwrap(), reopened.book.as_ref().unwrap()] {
+            assert_eq!(book.style_source, index, "{book:?}");
+            assert_eq!(book.documents.get(index).map(String::as_str), source, "{book:?}");
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn adding_a_chapter_keeps_the_existing_style_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("book.dcbook");
+        let inserted = dir.path().join("inserted.designcraft");
+        let inserted = inserted.to_str().unwrap();
+        let doc = designcraft_doc::Document::new(&Default::default());
+        std::fs::write(inserted, designcraft_format::save(&doc).unwrap()).unwrap();
+        let chapters = ["a.designcraft", "b.designcraft", "c.designcraft"];
+        for (documents, source, at, expected_index, expected_source) in [
+            (&chapters[..], 1, 0, 2, Some("b.designcraft")),
+            (&chapters[..], 1, 1, 2, Some("b.designcraft")),
+            (&chapters[..], 1, 2, 1, Some("b.designcraft")),
+            (&chapters[..], 1, 3, 1, Some("b.designcraft")),
+            (&[][..], 0, 0, 0, Some(inserted)),
+            (&chapters[..], 3, 0, 3, Some("c.designcraft")),
+            (&chapters[..], usize::MAX, 0, usize::MAX, None),
+        ] {
+            let mut s = open_book_fixture(&path, documents, source);
+            s.execute("book.add", &json!({"path": inserted, "at": at})).unwrap();
+            assert_book_style_source(&s, &path, expected_index, expected_source);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn removing_a_chapter_keeps_a_surviving_style_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("book.dcbook");
+        let chapters = ["a.designcraft", "b.designcraft", "c.designcraft"];
+        for (documents, source, removed, expected_index, expected_source) in [
+            (&chapters[..], 1, 0, 0, Some("b.designcraft")),
+            (&chapters[..], 2, 0, 1, Some("c.designcraft")),
+            (&chapters[..], 1, 2, 1, Some("b.designcraft")),
+            (&chapters[..], 0, 2, 0, Some("a.designcraft")),
+            (&chapters[..], 1, 1, 1, Some("c.designcraft")),
+            (&chapters[..], 2, 2, 0, Some("a.designcraft")),
+            (&chapters[..1], 0, 0, 0, None),
+            (&chapters[..], 3, 0, 0, Some("b.designcraft")),
+            (&chapters[..], usize::MAX, 0, 0, Some("b.designcraft")),
+        ] {
+            let mut s = open_book_fixture(&path, documents, source);
+            s.execute("book.remove", &json!({"index": removed})).unwrap();
+            assert_book_style_source(&s, &path, expected_index, expected_source);
+        }
     }
 }

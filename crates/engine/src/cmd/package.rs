@@ -11,7 +11,7 @@ use std::io::Write;
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{EngineError, Result, Session};
 use designcraft_compose::ComposedStory;
-use designcraft_doc::{AssetId, Document};
+use designcraft_doc::{AssetId, Document, Fingerprint, LinkedSource, Storage};
 use designcraft_fonts::{FaceRef, FontFace, FontSource};
 use serde_json::{Value, json};
 
@@ -230,7 +230,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Package…",
             ["File"],
             None,
-            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report, warnings: PDF export warnings}",
+            "{dir: folder to create, idml?: true, pdf?: false|true|{…options of file.exportPdf}, instructions?: text} — the document (its placed files relinked to Links/), Links/, the font files that draw its text in Document Fonts/ (fallback fonts included; unless their licence restricts it), an IDML copy (linking the files in Links/, nothing embedded), an optional PDF and a report → {dir, files, report, warnings: link and PDF export warnings}",
             has_doc,
             package
         ),
@@ -325,11 +325,18 @@ fn unique_name(base: String, taken: &mut Taken) -> String {
 /// `relative_to` names the folder `dir` is, beside the saved document: the links then read
 /// `Links/logo.png`, so a package holds no path from the machine that made it (#340). `None` links
 /// the copies by their full paths (Links › Copy Link(s) To, which relinks the open document).
-fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[AssetId]>, relative_to: Option<&str>) -> Result<(Document, Vec<PathBuf>)> {
+fn write_links(
+    d: &Document,
+    root: &OutputRoot,
+    dir: &Path,
+    only: Option<&[AssetId]>,
+    relative_to: Option<&str>,
+) -> Result<(Document, Vec<PathBuf>, Vec<String>)> {
     root.validate_directory(dir)?;
     let mut out = d.clone();
     let mut taken = Taken::default();
     let mut written = Vec::new();
+    let mut warnings = Vec::new();
     // Only files something places; the saved document leaves the others out.
     let ids = d.used_assets();
     for id in ids {
@@ -339,12 +346,17 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         let Some(a) = d.assets.get(&id) else { continue };
         // A missing link has no bytes: an empty file under its name would read as present, so it
         // keeps its old (missing) path instead.
-        if a.data.is_empty() {
+        // Bytes that can't be had are left like a missing link.
+        // A changed file is copied as it is on disk now, with a warning.
+        let Some((bytes, modified)) = a.data.load_for_output().ok().filter(|(b, _)| !b.is_empty()) else {
             continue;
+        };
+        if modified {
+            warnings.push(format!("the linked file `{}` has changed; the file on disk is copied", a.name));
         }
         let name = link_name(a.link.as_deref().unwrap_or(&a.name), id, &mut taken);
         let path = dir.join(&name);
-        root.write(&path, a.data.as_slice())?;
+        root.write(&path, bytes.as_slice())?;
         let mut na = (**a).clone();
         let link = match relative_to {
             Some(folder) => format!("{folder}/{name}"),
@@ -353,11 +365,30 @@ fn write_links(d: &Document, root: &OutputRoot, dir: &Path, only: Option<&[Asset
         // The copy is the linked file now, and the original's size and time say nothing of it.
         // Its own are too recent to vouch for it yet: the first check compares the bytes and
         // keeps them (`remember_link_files`).
-        na.set_link(Some(link), None);
+        if na.storage == Storage::Linked {
+            // A linked original stays a link, to its copy, told by its hash until then. Its
+            // bytes are read from the copy (by its full path: the package's document reads its
+            // copies once opened beside them).
+            let hash = crate::asset_io::content_hash(&bytes);
+            let fingerprint = Fingerprint { size: bytes.len() as u64, mtime: super::links::UNVERIFIED_MTIME };
+            na.link_relative = relative_to.map(|_| link.clone());
+            na.link_hash = Some(hash.clone());
+            na.set_link(Some(link), Some(fingerprint));
+            na.data = na.data.with_source(LinkedSource {
+                path: path.to_string_lossy().into_owned(),
+                relative: None,
+                document: None,
+                len: fingerprint.size,
+                fingerprint: Some(fingerprint),
+                hash: Some(hash),
+            });
+        } else {
+            na.set_link(Some(link), None);
+        }
         out.assets.insert(id, Arc::new(na));
         written.push(path);
     }
-    Ok((out, written))
+    Ok((out, written, warnings))
 }
 
 /// Copy the font file of `face` into `dir` (created when first needed) unless its licence
@@ -456,7 +487,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
     let pre = s.execute("preflight.run", &json!({})).unwrap_or(Value::Null);
     let d = s.doc()?.doc.clone();
     let links_dir = root.child(LINKS_FOLDER)?;
-    let (packed, mut files) = write_links(&d, &root, &links_dir, None, Some(LINKS_FOLDER))?;
+    let (packed, mut files, mut warnings) = write_links(&d, &root, &links_dir, None, Some(LINKS_FOLDER))?;
     let doc_path = package_output_path(&dir, &title, "designcraft")?;
     root.write(&doc_path, &super::to_bytes(&packed)?)?;
     files.insert(0, doc_path);
@@ -499,12 +530,11 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
             idml_layer_note = "\nPlaced PDF layers\nThe IDML copy links the placed PDFs, so it shows their file defaults. The DesignCraft document keeps each placement's Object Layer Options choice.\n";
         }
     }
-    let mut warnings = Vec::new();
     if let Some(params) = pdf {
         let path = package_output_path(&dir, &title, "pdf")?;
         let pdf = super::export::pdf_report(&packed, &s.cache, &params)?;
         root.write(&path, &pdf.bytes)?;
-        warnings = pdf.warnings;
+        warnings.extend(pdf.warnings);
         files.push(path);
     }
     // The printing instructions first, as the form gave them; then the report: fonts (missing
@@ -532,7 +562,7 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     if !warnings.is_empty() {
-        r += "\nPDF export warnings\n";
+        r += "\nWarnings\n";
         for warning in &warnings {
             r += &format!("  {warning}\n");
         }
@@ -550,12 +580,12 @@ fn copy_links(s: &mut Session, p: &Value) -> Result<Value> {
     let only: Option<Vec<AssetId>> = p.get("assets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(AssetId).collect());
     let d = s.doc()?.doc.clone();
     let root = OutputRoot::new(dir.clone())?;
-    let (relinked, written) = write_links(&d, &root, &dir, only.as_deref(), None)?;
+    let (relinked, written, warnings) = write_links(&d, &root, &dir, only.as_deref(), None)?;
     s.edit(|doc, _| {
         doc.assets = relinked.assets;
         Ok(())
     })?;
-    Ok(json!({"copied": written.len()}))
+    Ok(json!({"copied": written.len(), "warnings": warnings}))
 }
 
 #[cfg(test)]

@@ -142,15 +142,18 @@ fn paste_text(s: &mut Session, text: Option<String>, formatted: bool) -> Result<
                 let mut stories = std::collections::HashMap::new();
                 let fresh: Vec<designcraft_doc::Item> = list
                     .iter()
-                    .map(|i| {
-                        let mut i = i.clone();
-                        super::object::renumber(d, &items, &mut i, &mut stories);
+                    .map(|orig| {
+                        let mut i = orig.clone();
+                        if !super::object::renumber(d, &items, &mut i, &mut stories) {
+                            return Err(designcraft_doc::DocError::Invalid(format!("{} nests groups or tables too deeply to copy", orig.id)));
+                        }
                         if d.layer(i.layer).is_none() {
                             i.layer = d.default_layer();
                         }
-                        i
+                        Ok(i)
                     })
-                    .collect();
+                    .collect::<std::result::Result<_, _>>()?;
+                super::object::retarget_copied_xrefs(d, &items, &stories);
                 let end = super::anchored::anchor_items(d, t.story, r.start, fresh, &Default::default())?;
                 sel.text = Some(designcraft_doc::TextSel { anchor: end, focus: end, ..t });
                 Ok(json!({"pos": end, "anchored": list.len()}))
@@ -448,11 +451,15 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             copy_items(s)?;
             // The whole objects are on the clipboard, so the whole objects go, not just selected points.
-            if p.get("ids").is_none() {
+            let result = if p.get("ids").is_none() {
                 let ids: Vec<u64> = s.doc()?.selection.items.iter().map(|i| i.0).collect();
-                return s.execute("edit.clear", &json!({"ids": ids}));
-            }
-            s.execute("edit.clear", p)
+                s.execute("edit.clear", &json!({"ids": ids}))
+            } else {
+                s.execute("edit.clear", p)
+            }?;
+            // Only a successful object Cut replaces the earlier formatted text copy.
+            s.text_clipboard = None;
+            Ok(result)
         }),
         cmd!(
             "edit.pasteWithoutFormatting",
@@ -666,6 +673,8 @@ fn graphic_alone(frame: &designcraft_doc::Item, g: &designcraft_doc::Graphic, pa
     it
 }
 
+#[cfg(test)]
+mod object_cut_clipboard_tests;
 #[cfg(test)]
 mod text_clipboard_tests;
 

@@ -406,7 +406,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "ui_set",
             "Set UI state",
             &app_only(
-                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads, \
+                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads/linkBadge, \
                  Control bar, dock expanded, screenMode, zoom, page (1-based), fit (page|spread).",
             ),
             obj(
@@ -415,6 +415,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "brightness": {"type": "string", "enum": ["dark", "mediumDark", "mediumLight", "light"]},
                     "rulers": {"type": "boolean"}, "guides": {"type": "boolean"}, "frameEdges": {"type": "boolean"},
                     "baselineGrid": {"type": "boolean"}, "documentGrid": {"type": "boolean"}, "textThreads": {"type": "boolean"},
+                    "linkBadge": boolean("Show the badge on linked graphics' frames (View › Extras › Show/Hide Link Badge)"),
                     "status": string("Status bar text"),
                     "controlBar": boolean("Show the Control bar"),
                     "closePanel": boolean("Close the panel that is showing"),
@@ -565,7 +566,10 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
 fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
     let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

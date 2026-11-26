@@ -1,6 +1,7 @@
 use designcraft_geom::Unit;
 use egui_kittest::{Harness, kittest::Queryable};
 
+use super::text_overlay::inverse_under;
 use super::*;
 
 /// A place-cursor drag past its 3-point threshold but short of egui's drag distance previews
@@ -71,17 +72,26 @@ fn a_press_after_a_drag_is_not_a_double_click() {
     assert_eq!(press(Some(up), 0.0, 1.0), 1);
 }
 
-/// The shapes the canvas paints for a new document, after two frames (the first lays out).
+/// The shapes the canvas paints for a new document with every spread in view, after two frames
+/// (the first lays out).
 fn canvas_shapes(app: &mut DesignApp) -> Vec<egui::epaint::ClippedShape> {
     let ctx = egui::Context::default();
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
+        shapes = canvas_frame_shapes(app, &ctx);
+        if let Some(rect) = app.canvas_rect {
+            fit(app, rect, "all");
+        }
     }
     shapes
+}
+
+/// One frame of the canvas alone in a 1440 by 900 window: the shapes it paints.
+fn canvas_frame_shapes(app: &mut DesignApp, ctx: &egui::Context) -> Vec<egui::epaint::ClippedShape> {
+    let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+    out.textures_delta.clear();
+    out.shapes
 }
 
 /// The spine-coloured vertical hairlines at screen x `x` that run the full height of `page`
@@ -172,14 +182,7 @@ fn the_spine_line_hides_with_the_other_guides() {
 fn pages_show_paper_under_their_render() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", serde_json::json!({"pages": 3, "facingPages": true})).unwrap();
-    let ctx = egui::Context::default();
-    let mut shapes = Vec::new();
-    for _ in 0..2 {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
-        let mut out = ctx.run_ui(raw, |ui| show(&mut app, ui));
-        out.textures_delta.clear();
-        shapes = out.shapes;
-    }
+    let shapes = canvas_shapes(&mut app);
     let st = app.session.active().unwrap();
     let layout = CanvasLayout::new(&st.doc, false);
     let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
@@ -230,6 +233,126 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
         app.ui.screen_mode = mode;
         assert_eq!(strokes(&mut app, s.margin_color), 0, "{mode:?} hides the margin guide");
         assert_eq!(strokes(&mut app, s.slug_color), 0, "{mode:?} hides the slug guide");
+    }
+}
+
+/// A picture placed from a file carries the link badge on its frame's top edge, near the left
+/// corner, as in the tutorial's chapter 10; an embedded picture has none, a missing file shows
+/// the stop instead, and View › Extras hides the badges.
+#[test]
+fn linked_pictures_carry_the_link_badge() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("snowflake.png");
+    std::fs::write(&path, &png).unwrap();
+    let linked = app.run("frame.create", json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"path": path.to_string_lossy(), "frame": linked})).unwrap();
+    let embedded = app.run("frame.create", json!({"rect": [72, 300, 272, 400]})).unwrap()["id"].as_u64().unwrap();
+    app.run("file.place", json!({"base64": designcraft_engine::cmd::base64_encode(&png), "name": "e.png", "frame": embedded})).unwrap();
+    let ctx = egui::Context::default();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    // The check runs off the UI thread: ask until the result for this document state is in.
+    let badges = |app: &mut DesignApp, expected: &str| {
+        let doc = app.session.active().unwrap().doc.clone();
+        for _ in 0..1000 {
+            let status = link_statuses(app, &ctx, &doc);
+            if !status.is_empty() && status.values().all(|s| s == expected) {
+                return link_badges(&doc, &CanvasLayout::new(&doc, false), &xf, &status);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the link check didn't finish");
+    };
+    let b = badges(&mut app, "ok");
+    assert_eq!(b.len(), 1, "only the linked picture: {b:?}");
+    assert_eq!(b[0].1, LinkBadge::Linked);
+    let doc = app.session.active().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let (a, _) = item_canvas_xf(&doc, &layout, designcraft_doc::ItemId(linked)).unwrap();
+    let r = doc.item(designcraft_doc::ItemId(linked)).unwrap().bounds();
+    let corner = xf.to_screen(a * Point::new(r.x0, r.y0));
+    let d = b[0].0 - corner;
+    assert!(d.y.abs() < 0.5 && d.x > 0.0 && d.x <= 16.5, "on the top edge near the left corner: {d:?}");
+    // Rotated, the badge stays on the frame's own top edge, 16 px from its corner along it.
+    app.run("transform.set", json!({"ids": [linked], "rotation": 30})).unwrap();
+    let doc = app.session.active().unwrap().doc.clone();
+    let it = doc.item(designcraft_doc::ItemId(linked)).unwrap().clone();
+    let (a, _) = item_canvas_xf(&doc, &CanvasLayout::new(&doc, false), designcraft_doc::ItemId(linked)).unwrap();
+    let ib = it.inner_bounds();
+    let (tl, tr) = (xf.to_screen(a * it.xf * Point::new(ib.x0, ib.y0)), xf.to_screen(a * it.xf * Point::new(ib.x1, ib.y0)));
+    let c = badges(&mut app, "ok")[0].0;
+    let along = (tr - tl).normalized();
+    let off = c - tl;
+    assert!((off.dot(along) - 16.0).abs() < 0.5 && (off.x * along.y - off.y * along.x).abs() < 0.5, "on the rotated top edge: {off:?}");
+    app.run("edit.undo", json!({})).unwrap();
+    // A linked picture on the parent page shows its badge on the document page that shows it
+    // (the first page is a right-hand one: the parent's right page).
+    let px = app.session.active().unwrap().doc.parents[0].pages[1].x;
+    let pf = app.run("frame.create", json!({"rect": [px + 300.0, 500, px + 400.0, 600], "spread": {"kind": "parent", "index": 0}})).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("file.place", json!({"path": path.to_string_lossy(), "frame": pf})).unwrap();
+    assert_eq!(badges(&mut app, "ok").len(), 2, "the parent page's picture too");
+    // The file gone: the badge says so (the check runs again once the document changes).
+    std::fs::remove_file(&path).unwrap();
+    app.run("frame.create", json!({"rect": [400, 400, 420, 420]})).unwrap();
+    assert_eq!(badges(&mut app, "missing")[0].1, LinkBadge::Missing);
+    // View › Extras › Hide Link Badge.
+    assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(true));
+    app.run("view.linkBadge", json!({})).unwrap();
+    assert!(!app.ui.link_badge);
+    assert_eq!(crate::menus::checked(&app, "view.linkBadge", &json!({})), Some(false));
+    // Check the drawing entry point, not just the toggle's stored value.
+    let doc = app.session.active().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let paint = |app: &mut DesignApp| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_link_badges(app, ui.ctx(), ui.painter(), &doc, &layout, &xf);
+        });
+        output.textures_delta.clear();
+        output.shapes.iter().filter(|shape| matches!(shape.shape, egui::Shape::Circle(_))).count()
+    };
+    assert_eq!(paint(&mut app), 0, "hidden badges draw no missing-file circles");
+    app.run("view.linkBadge", json!({})).unwrap();
+    assert!(paint(&mut app) > 0, "shown badges draw the missing-file circles");
+}
+
+/// The badge is editing chrome for visible artwork, so inactive object states do not show it.
+#[test]
+fn link_badges_follow_the_active_object_state() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("state.png");
+    std::fs::write(&file, designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png()).unwrap();
+    let mut ids = Vec::new();
+    for x in [72, 300] {
+        let id = app.run("frame.create", json!({"rect": [x, 72, x + 100, 172]})).unwrap()["id"].as_u64().unwrap();
+        app.run("file.place", json!({"path": file, "frame": id})).unwrap();
+        ids.push(id);
+    }
+    let group = app.run("object.group", json!({"ids": ids})).unwrap()["id"].as_u64().unwrap();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    let badges = |app: &DesignApp| {
+        let doc = &app.session.active().unwrap().doc;
+        link_badges(doc, &CanvasLayout::new(doc, false), &xf, &std::collections::HashMap::new())
+    };
+    let all = badges(&app);
+    assert_eq!(all.len(), 2, "ordinary groups show all linked children");
+    for (active, expected) in all.iter().enumerate() {
+        app.session
+            .edit(|d, _| {
+                let group = d.item_mut(designcraft_doc::ItemId(group)).unwrap();
+                group.states = vec!["First".into(), "Second".into()];
+                group.active_state = active;
+                Ok(())
+            })
+            .unwrap();
+        let shown = badges(&app);
+        assert_eq!(shown.len(), 1, "only the active state has a badge");
+        assert_eq!(shown[0], *expected);
     }
 }
 
@@ -408,10 +531,24 @@ fn harness_with_step(app: DesignApp, step_dt: f32) -> Harness<'static, DesignApp
     h
 }
 
+/// Background decodes finishing one after another are taken up in batches, and not while a
+/// render is in flight (a newer request would drop it before it is shown).
+#[test]
+fn finished_image_decodes_rerender_the_canvas_in_batches() {
+    use render::{IMAGE_BATCH_MS, image_generation};
+    let mut seen = (0, f64::NEG_INFINITY);
+    assert_eq!(image_generation(&mut seen, 1, 1000.0, false), (1, None), "the first is taken at once");
+    assert_eq!(image_generation(&mut seen, 2, 1010.0, false), (1, Some(IMAGE_BATCH_MS - 10.0)));
+    assert_eq!(image_generation(&mut seen, 9, 1100.0, false).0, 1, "more finish meanwhile");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, true), (1, None), "a render is in flight");
+    assert_eq!(image_generation(&mut seen, 9, 1000.0 + IMAGE_BATCH_MS, false), (9, None), "all taken by one render");
+}
+
 #[test]
 fn display_option_change_drops_the_render_in_flight() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-    let shown = crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false };
+    let shown =
+        crate::Shown { doc: (1, 2, 3, false), origin: Point::new(0.0, 0.0), zoom: 1.0, size: (10.0, 10.0), editing_parents: false, images: 0 };
     invalidate_on_display_change(&mut app);
     app.canvas.shown = Some(shown);
     app.canvas.pending = Some((7, shown));
@@ -1051,6 +1188,183 @@ fn edit_paste_from_the_menu_pastes_svg_on_the_system_clipboard_as_paths() {
     assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items, "no paths added");
 }
 
+/// A fake system clipboard: its text, a bitmap of a given size and the change count that every
+/// copy raises.
+#[derive(Default)]
+struct FakeClip {
+    text: Option<String>,
+    image: Option<(u32, u32)>,
+    change: i64,
+}
+
+type FakeClipboard = std::rc::Rc<std::cell::RefCell<FakeClip>>;
+
+/// Another application copies `text` and an image of `image` pixels.
+fn copy_elsewhere(clip: &FakeClipboard, text: Option<&str>, image: Option<(u32, u32)>) {
+    let mut c = clip.borrow_mut();
+    (c.text, c.image, c.change) = (text.map(str::to_string), image, c.change + 1);
+}
+
+fn fake_clipboard(text: Option<&str>, image: Option<(u32, u32)>) -> (FakeClipboard, crate::Services) {
+    let clip = FakeClipboard::default();
+    copy_elsewhere(&clip, text, image);
+    let (t, i, c) = (clip.clone(), clip.clone(), clip.clone());
+    let services = crate::Services {
+        clipboard_text: Some(Box::new(move || t.borrow().text.clone())),
+        clipboard_image: Some(Box::new(move || {
+            let (width, height) = i.borrow().image?;
+            // Sizes past the paste limit are refused before their pixels are read.
+            let len = if u64::from(width) * u64::from(height) > designcraft_engine::cmd::MAX_PASTED_PIXELS { 0 } else { width * height * 4 };
+            Some(crate::ClipboardImage::Pixels { width, height, rgba: vec![90; len as usize] })
+        })),
+        clipboard_change: Some(Box::new(move || Some(c.borrow().change))),
+        ..Default::default()
+    };
+    (clip, services)
+}
+
+/// The embedded image the selected frame shows: its pixel size and the asset's name.
+fn pasted_image(app: &DesignApp) -> Option<((u32, u32), String)> {
+    let st = app.session.doc().unwrap();
+    let id = *st.selection.items.first()?;
+    let designcraft_doc::Content::Graphic(g) = &st.doc.item(id)?.content else { return None };
+    let asset = &st.doc.assets[&g.asset];
+    assert_eq!(asset.link, None, "embedded");
+    Some((asset.pixels?, asset.name.clone()))
+}
+
+#[test]
+fn edit_paste_from_the_menu_places_the_clipboard_image() {
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), Some(((40, 30), designcraft_engine::cmd::PASTED_IMAGE_NAME.to_string())));
+    // A browser puts the image's address beside it: the image wins.
+    copy_elsewhere(&clip, Some("https://example.com/cat.png"), Some((8, 6)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((8, 6)));
+    // Empty text beside the image counts as no text.
+    copy_elsewhere(&clip, Some(""), Some((12, 9)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((12, 9)));
+    // Other text wins over a picture of it.
+    copy_elsewhere(&clip, Some("Some words"), Some((8, 6)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None);
+    assert!(app.session.doc().unwrap().selection.text.is_none(), "a text frame, selected as an object");
+    // Too many pixels: refused with a message, and nothing is added.
+    copy_elsewhere(&clip, None, Some((9000, 8000)));
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(app.ui.status.contains("64 million"), "{}", app.ui.status);
+}
+
+#[test]
+fn objects_copied_here_still_paste_as_objects_until_another_image_is_copied() {
+    // A native menu: Copy leaves the system clipboard (here an older image) alone.
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200], "content": "text"})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None, "the copied text frame");
+    assert_ne!(app.session.doc().unwrap().selection.items.first().map(|i| i.0), id.as_u64());
+    // The same image copied again in another application is a new copy.
+    copy_elsewhere(&clip, None, Some((40, 30)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((40, 30)), "an image copied since then");
+    // The same goes for an image whose address was on the clipboard at the copy.
+    let url = "https://example.com/cat.png";
+    copy_elsewhere(&clip, Some(url), Some((5, 5)));
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app), None, "the copied text frame again");
+    copy_elsewhere(&clip, Some(url), Some((5, 5)));
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(pasted_image(&app).map(|(px, _)| px), Some((5, 5)), "the image copied again with the same address");
+    // Empty text beside the older image counts as no text at the copy too.
+    copy_elsewhere(&clip, Some(""), Some((7, 7)));
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    crate::menus::activate(&mut app, "edit.paste", &Value::Null);
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items + 1, "the copied text frame is pasted");
+    assert_eq!(pasted_image(&app), None);
+}
+
+#[test]
+fn a_paste_image_event_after_an_object_copy_does_not_paste_the_older_image() {
+    // A native menu: Copy leaves the older image on the system clipboard.
+    let (clip, services) = fake_clipboard(None, Some((40, 30)));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), services);
+    app.native_menu = true;
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [100, 100, 200, 200], "content": "text"})).unwrap()["id"].clone();
+    app.run("selection.set", json!({"ids": [id]})).unwrap();
+    crate::menus::activate(&mut app, "edit.copy", &Value::Null);
+    app.run("selection.set", json!({"ids": []})).unwrap();
+    let mut h = harness(app);
+    let image = |w, h| egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([w, h], egui::Color32::RED)));
+    let items = h.state().session.doc().unwrap().doc.spreads[0].items.len();
+    h.input_mut().events.push(image(40, 30));
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().doc.spreads[0].items.len(), items, "the older image is not pasted");
+    // An image copied since then pastes.
+    copy_elsewhere(&clip, None, Some((20, 10)));
+    h.input_mut().events.push(image(20, 10));
+    h.run_steps(2);
+    assert_eq!(pasted_image(h.state()).map(|(px, _)| px), Some((20, 10)));
+}
+
+#[test]
+fn the_paste_keys_place_an_image_in_the_selected_empty_frame_but_not_in_text() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [100, 100, 300, 250]})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": [frame]})).unwrap();
+    let mut h = harness(app);
+    let image = || egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled([20, 10], egui::Color32::RED)));
+    h.input_mut().events.push(image());
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().selection.items.first().map(|i| i.0), Some(frame), "the frame took it");
+    assert_eq!(pasted_image(h.state()).map(|(px, _)| px), Some((20, 10)));
+    // While text is edited, the image is not pasted and the status bar says why.
+    let story = h.state_mut().run("frame.create", json!({"rect": [10, 400, 300, 600], "content": "text"})).unwrap()["story"].clone();
+    h.state_mut().run("text.select", json!({"story": story, "anchor": 0, "focus": 0})).unwrap();
+    let items = h.state().session.doc().unwrap().doc.spreads[0].items.len();
+    h.input_mut().events.push(image());
+    h.run_steps(2);
+    assert_eq!(h.state().session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(h.state().ui.status.contains("stop editing the text"), "{}", h.state().ui.status);
+}
+
+#[test]
+fn a_paste_keys_image_past_the_size_limit_is_refused_without_copying_its_pixels() {
+    // The size says 72 million pixels; the four pixels it holds are not copied.
+    let big = egui::ColorImage { size: [9000, 8000], source_size: egui::vec2(9000.0, 8000.0), pixels: vec![egui::Color32::RED; 4] };
+    let image = crate::ClipboardImage::from_color_image(&big);
+    let crate::ClipboardImage::Pixels { width, height, rgba } = &image else { panic!("a bitmap") };
+    assert_eq!((*width, *height, rgba.len()), (9000, 8000, 0));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let items = app.session.doc().unwrap().doc.spreads[0].items.len();
+    assert!(app.paste_clipboard_image(image).is_err());
+    assert_eq!(app.session.doc().unwrap().doc.spreads[0].items.len(), items);
+    assert!(app.ui.status.contains("64 million"), "{}", app.ui.status);
+    // An image within the limit keeps its pixels.
+    let small = crate::ClipboardImage::from_color_image(&egui::ColorImage::filled([3, 2], egui::Color32::RED));
+    let crate::ClipboardImage::Pixels { width, height, rgba } = small else { panic!("a bitmap") };
+    assert_eq!((width, height), (3, 2));
+    assert_eq!(rgba, [255, 0, 0, 255].repeat(6));
+}
+
 #[test]
 fn selected_merged_owners_paint_the_same_row_and_column_targets() {
     for column in [true, false] {
@@ -1270,6 +1584,71 @@ fn overset_mark_sits_on_the_out_port_once() {
     app.session.execute("selection.set", &json!({"ids": [id]})).unwrap();
     let marks = overset_marks(&app, &doc, &layout, &doc.spreads[0].items, zoom, &ported_frames(&app, &doc));
     assert!(marks.is_empty());
+}
+
+/// An idle frame of the canvas paints the spreads in view and looks up their stories: a document
+/// ten times as long adds no shape and no story lookup, and the view shows the same shapes.
+#[test]
+fn an_idle_canvas_frame_does_the_same_work_for_a_longer_document() {
+    // Every page holds an empty frame and an overset text frame with a story of its own.
+    let work = |pages: usize| {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"pages": pages, "facingPages": false})).unwrap();
+        let text = "far too much text for a frame this small, over and over again ".repeat(8);
+        for page in 0..pages {
+            app.run("frame.create", json!({"spread": page, "rect": [36, 36, 300, 200]})).unwrap();
+            app.run("frame.create", json!({"spread": page, "rect": [36, 300, 200, 340], "content": "text", "text": text})).unwrap();
+        }
+        app.run("edit.deselectAll", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        canvas_frame_shapes(&mut app, &ctx);
+        go_to_page(&mut app, 0);
+        canvas_frame_shapes(&mut app, &ctx);
+        assert_eq!(current_page(&app), Some(0));
+        // With nothing composed, the stories composed after one more frame are the ones it looked up.
+        app.session.cache.clear();
+        let shapes = canvas_frame_shapes(&mut app, &ctx);
+        let showing = shapes.iter().filter(|s| s.clip_rect.intersects(s.shape.visual_bounding_rect())).count();
+        let doc = &app.session.active().unwrap().doc;
+        let composed = doc.stories.keys().filter(|id| app.session.cache.composed_for(doc, **id).is_some()).count();
+        (shapes.len(), showing, composed)
+    };
+    let (short, long) = (work(4), work(40));
+    assert_eq!(long.1, short.1, "shapes in view");
+    assert_eq!(long.0, short.0, "shapes painted");
+    assert_eq!(long.2, short.2, "stories looked up");
+    assert!((1..4).contains(&long.2), "the stories in view, not all 40: {}", long.2);
+}
+
+/// A frame on the pasteboard keeps its edges while its page is out of view, in a rotated view
+/// too, and a view that shows none of it paints none of them.
+#[test]
+fn frame_edges_are_painted_for_the_frames_in_view() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let id = app.run("frame.create", json!({"rect": [-300, 100, -200, 200], "content": "text", "text": "a"})).unwrap()["id"].as_u64().unwrap();
+    app.run("edit.deselectAll", json!({})).unwrap();
+    let doc = app.session.doc().unwrap().doc.clone();
+    let layout = CanvasLayout::new(&doc, false);
+    let it = out_frame(&doc, id);
+    let (a, _) = item_canvas_xf(&doc, &layout, it.id).unwrap();
+    let frame = a.transform_rect_bbox(it.bounds());
+    assert!(frame.x1 < layout.slots[0].bounds.x0 - 150.0, "the frame is on the pasteboard, left of the page");
+    let window = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0));
+    let edges = |xf: Xf| {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(window), ..Default::default() }, |ui| {
+            draw_frames(&app, &ui.painter_at(window), &xf, &doc, &layout);
+        });
+        out.textures_delta.clear();
+        out.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::Path(_))).count()
+    };
+    // The frame 20 points inside a window too small to reach the page.
+    let near = Xf { min: Pos2::ZERO, origin: Point::new(frame.x0 - 20.0, frame.y0 - 20.0), zoom: 1.0, rot: 0, pivot: window.center() };
+    assert_eq!(edges(near), 1);
+    assert_eq!(edges(Xf { rot: 1, ..near }), 1);
+    // The same window over the page: the frame is out of view.
+    assert_eq!(edges(Xf { origin: Point::new(layout.slots[0].bounds.x0, frame.y0 - 20.0), ..near }), 0);
 }
 
 #[test]
@@ -2173,6 +2552,34 @@ fn edits_patch_the_canvas_only_at_full_resolution() {
         let size = app.canvas.texture.as_ref().unwrap().size();
         assert!(max_side.is_none_or(|m| size[0] <= m && size[1] <= m), "{size:?}");
         assert_eq!(app.canvas.patches > 0, patches, "limit {max_side:?}");
+    }
+}
+
+/// Moving a frame with a drop shadow repaints the regions the frame and its shadow cover, as
+/// moving one without a shadow does, instead of rendering the whole canvas again on every step.
+#[test]
+fn moving_a_frame_with_a_drop_shadow_patches_the_canvas() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    let frame = |app: &mut DesignApp| {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+    };
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 200, 180], "content": "unassigned"})).unwrap();
+    app.run("object.fill", json!({"swatch": "[Black]"})).unwrap();
+    app.run("object.dropShadow", json!({"on": true})).unwrap();
+    for _ in 0..3 {
+        frame(&mut app);
+    }
+    for step in 1..=3 {
+        app.run("transform.move", json!({"dx": 4, "dy": 2})).unwrap();
+        frame(&mut app);
+        assert_eq!(app.canvas.patches, step, "drag step {step} repaints only what changed");
     }
 }
 
@@ -3123,6 +3530,105 @@ fn trailing_spaces_show_dots_before_the_paragraph_mark() {
     }
 }
 
+/// Capture the text shapes emitted by the hidden-character painter for the supplied canvas.
+fn painted_hidden_character_marks(app: &DesignApp, doc: &Document, layout: &CanvasLayout) -> Vec<String> {
+    let ctx = egui::Context::default();
+    let xf = Xf::new(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0)), &View::default());
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        draw_hidden_characters(app, ui.painter(), &xf, doc, layout);
+    });
+    out.textures_delta.clear();
+    out.shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #1994: hiding a frame or its layer must also hide the separately painted marks.
+#[test]
+fn hidden_characters_follow_frame_layer_and_group_visibility() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 336, 136], "content": "text", "text": "a b\tc\nd"})).unwrap();
+    let id = designcraft_doc::ItemId(frame["id"].as_u64().unwrap());
+    let mut doc = (*app.session.active().unwrap().doc).clone();
+    let layer = doc.item(id).unwrap().layer;
+    let marks = |app: &DesignApp, doc: &Document| painted_hidden_character_marks(app, doc, &CanvasLayout::new(doc, false));
+    let expected = marks(&app, &doc);
+    for mark in ["·", "»", "¶", "#"] {
+        assert!(expected.iter().any(|m| m == mark), "visible text draws {mark}: {expected:?}");
+    }
+    doc.layer_mut(layer).unwrap().visible = false;
+    assert!(marks(&app, &doc).is_empty(), "hidden layers draw no marks");
+    doc.layer_mut(layer).unwrap().visible = true;
+    assert_eq!(marks(&app, &doc), expected, "showing the layer restores its marks");
+    doc.item_mut(id).unwrap().hidden = true;
+    assert!(marks(&app, &doc).is_empty(), "hidden frames draw no marks");
+    doc.item_mut(id).unwrap().hidden = false;
+    doc.layer_mut(layer).unwrap().locked = true;
+    assert_eq!(marks(&app, &doc), expected, "locked but visible layers still show marks");
+
+    // A child stays individually visible when its containing group is hidden.
+    let sibling = app.run("frame.create", json!({"rect": [400, 36, 450, 86]})).unwrap();
+    app.run("selection.set", json!({"ids": [id.0, sibling["id"]]})).unwrap();
+    let group = app.run("object.group", json!({})).unwrap();
+    let group_id = designcraft_doc::ItemId(group["id"].as_u64().unwrap());
+    let mut grouped = (*app.session.active().unwrap().doc).clone();
+    assert_eq!(marks(&app, &grouped), expected);
+    grouped.item_mut(group_id).unwrap().hidden = true;
+    assert!(marks(&app, &grouped).is_empty(), "hidden groups draw no child marks");
+}
+
+/// Parent editing and viewport culling must not paint marks for a spread absent from the layout.
+#[test]
+fn hidden_characters_only_paint_laid_out_spreads() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+    let layer = doc.default_layer();
+    let rect = DRect::new(36.0, 36.0, 336.0, 136.0);
+    doc.add_text_frame(SpreadRef::Doc(0), rect, layer, "a b", Default::default()).unwrap();
+    let document_layout = CanvasLayout::new(&doc, false);
+    let parent_layout = CanvasLayout::new(&doc, true);
+    assert!(!painted_hidden_character_marks(&app, &doc, &document_layout).is_empty());
+    assert!(painted_hidden_character_marks(&app, &doc, &parent_layout).is_empty(), "document marks stay off the parent canvas");
+    doc.add_text_frame(SpreadRef::Parent(0), rect, layer, "a\tb", Default::default()).unwrap();
+    let document_marks = painted_hidden_character_marks(&app, &doc, &document_layout);
+    let parent_marks = painted_hidden_character_marks(&app, &doc, &parent_layout);
+    assert_eq!(document_marks, ["·", "#"], "parent marks stay off the document canvas");
+    assert_eq!(parent_marks, ["»", "#"], "only the parent frame is painted while editing parents");
+    let mut culled = document_layout;
+    culled.slots.clear();
+    assert!(painted_hidden_character_marks(&app, &doc, &culled).is_empty(), "culled spreads have no marks");
+}
+
+/// Table-cell marks use the same frame and layer visibility checks as ordinary story marks.
+#[test]
+fn hidden_characters_in_table_cells_follow_frame_visibility() {
+    let app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let mut doc = Document::new(&designcraft_doc::build::NewDocument::default());
+    let layer = doc.default_layer();
+    let (frame, story) = doc.add_text_frame(SpreadRef::Doc(0), DRect::new(36.0, 36.0, 336.0, 336.0), layer, "", Default::default()).unwrap();
+    let data = vec![vec!["a b\tc\nd".to_owned(), String::new()]];
+    let table = designcraft_doc::Table::from_strings(doc.alloc(), &data, 200.0, &Default::default(), &Default::default());
+    doc.story_mut(story).unwrap().insert_table(0, table);
+    let layout = CanvasLayout::new(&doc, false);
+    let expected = painted_hidden_character_marks(&app, &doc, &layout);
+    for mark in ["·", "»", "¶", "#"] {
+        assert!(expected.iter().any(|m| m == mark), "visible table cells draw {mark}: {expected:?}");
+    }
+    assert!(expected.iter().filter(|m| *m == "#").count() >= 2, "including the empty cell's end mark");
+    doc.item_mut(frame).unwrap().hidden = true;
+    assert!(painted_hidden_character_marks(&app, &doc, &layout).is_empty(), "hidden frames hide cell marks too");
+    doc.item_mut(frame).unwrap().hidden = false;
+    doc.layer_mut(layer).unwrap().visible = false;
+    assert!(painted_hidden_character_marks(&app, &doc, &layout).is_empty(), "hidden layers hide cell marks too");
+    doc.layer_mut(layer).unwrap().visible = true;
+    assert_eq!(painted_hidden_character_marks(&app, &doc, &layout), expected, "showing the layer restores every cell mark");
+}
+
 /// As InDesign: an end-of-story # in every cell (after its text), a ¶ where a cell paragraph
 /// ends, and the table paragraph's ¶ just after the table's bottom right corner.
 #[test]
@@ -3156,6 +3662,37 @@ fn table_cells_show_their_hidden_characters() {
 }
 
 #[test]
+fn the_caret_blink_restarts_on_input_and_caret_changes() {
+    let ctx = egui::Context::default();
+    let caret = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 7);
+
+    let shown = |t: f64, caret: designcraft_doc::TextSel, reset: bool| {
+        let mut visible = false;
+
+        let mut out = ctx.run_ui(egui::RawInput { time: Some(t), ..Default::default() }, |ui| {
+            if reset {
+                caret::reset(ui.ctx());
+            }
+            visible = caret::visible(ui.ctx(), caret);
+        });
+        out.textures_delta.clear();
+        visible
+    };
+    assert!(shown(10.0, caret, true), "a reset shows the caret");
+    assert!(shown(10.5, caret, false), "the first half is on");
+    assert!(!shown(10.7, caret, false), "the second half is off");
+    assert!(shown(11.3, caret, false), "the next cycle is on");
+    assert!(shown(10.7, caret, true), "typing shows it again");
+    assert!(!shown(11.4, caret, false), "and its phase follows the reset");
+
+    let moved = designcraft_doc::TextSel::caret(designcraft_doc::StoryId(1), 8);
+    assert!(shown(11.4, moved, false), "a caret that moved shows at once");
+    assert!((caret::until_flip(0.0) - 0.625).abs() < 1e-9);
+    assert!((caret::until_flip(0.96) - 0.025).abs() < 1e-9);
+    assert!((caret::until_flip(1.0) - 0.625).abs() < 1e-9);
+}
+
+#[test]
 fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected() {
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"pages": 4, "facingPages": true})).unwrap();
@@ -3167,4 +3704,152 @@ fn leaving_parent_editing_for_the_left_page_of_a_spread_keeps_that_page_selected
     page_box_go(h.state_mut(), &b, 1);
     h.run_steps(3);
     assert_eq!(current_page(h.state()), Some(1));
+}
+
+/// Selected text shows what lies under it inverted: paper turns black, black turns white,
+/// and a half-covered pixel is half inverted.
+#[test]
+fn the_text_highlight_inverts_what_lies_under_it() {
+    let mask = [0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 128, 128, 128, 128, 255, 255, 255, 255];
+    let under = [9, 9, 9, 255, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0];
+    let out = inverse_under(&mask, &under, [80, 80, 80]);
+    assert_eq!(&out[0..4], &[0, 0, 0, 0], "outside the highlight: untouched");
+    assert_eq!(&out[4..8], &[0, 0, 0, 255], "white paper turns black");
+    assert_eq!(&out[8..12], &[255, 255, 255, 255], "black turns white");
+    assert_eq!(&out[12..16], &[128, 128, 128, 128], "half covered: half the inverse");
+    assert_eq!(&out[16..20], &[175, 175, 175, 255], "transparent: the inverse of the pasteboard");
+}
+
+/// White text on a black frame used to turn black on a black highlight. Now the highlight is
+/// light there and the selected letters dark.
+#[test]
+fn selected_white_text_on_a_dark_fill_stays_readable() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let id = app
+        .run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "White text", "caret": true}))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    app.run("type.char", serde_json::json!({"attrs": {"size": 28, "fill": "[Paper]"}})).unwrap();
+    app.run("object.fill", serde_json::json!({"ids": [id], "swatch": "[Black]"})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    let app = &h.state().app;
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let canvas = app.session.layout().xf(designcraft_doc::SpreadRef::Doc(0));
+    let (a, b) = (xf.to_screen(canvas * Point::new(76.0, 78.0)), xf.to_screen(canvas * Point::new(180.0, 98.0)));
+    let image = match h.render() {
+        Ok(image) => image,
+        // CI has a renderer: there a missing one is a failure, not a silent pass.
+        Err(e) if std::env::var_os("CI").is_some() => panic!("no offscreen renderer in CI: {e}"),
+        Err(e) => {
+            eprintln!("skipped: no offscreen renderer ({e})");
+            return;
+        }
+    };
+    let (mut light, mut dark) = (0, 0);
+    for y in a.y as u32..b.y as u32 {
+        for x in a.x as u32..b.x as u32 {
+            let p = image.get_pixel(x, y);
+            let l = (u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])) / 3;
+            if l > 200 {
+                light += 1;
+            } else if l < 60 {
+                dark += 1;
+            }
+        }
+    }
+    assert!(light > dark, "a light highlight under the selected white text: {light} light, {dark} dark");
+    assert!(dark > 0, "with the letters dark on it");
+}
+
+/// The highlight is drawn from a render of what lies under it: a display option that changes
+/// that render (Overprint Preview here) draws it again instead of keeping the old pixels.
+#[test]
+fn the_text_highlight_follows_the_display_options() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 200], "content": "text", "text": "Some text", "caret": true})).unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    let cached = |h: &Harness<'_, crate::test_window::Window>| {
+        h.ctx.data(|d| d.get_temp::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex"))).map(|(k, _)| k)
+    };
+    let before = cached(&h).expect("the highlight is drawn");
+    h.run_steps(2);
+    assert_eq!(cached(&h), Some(before), "unchanged: the cached highlight is kept");
+    h.state_mut().app.ui.overprint_preview = !h.state().app.ui.overprint_preview;
+    h.run_steps(2);
+    let after = cached(&h).expect("the highlight is drawn");
+    assert_ne!(after, before, "a new display option: the highlight is drawn again");
+}
+
+/// The highlight's plain fill (painted at `h`'s last frame) and the rects it is clipped to.
+fn plain_highlights(h: &Harness<'_, crate::test_window::Window>) -> Vec<Rect> {
+    h.output()
+        .shapes
+        .iter()
+        .filter(|c| matches!(&c.shape, egui::Shape::Path(p) if p.fill == super::text_overlay::PLAIN_HIGHLIGHT))
+        .map(|c| c.clip_rect)
+        .collect()
+}
+
+/// A selected text frame that runs past the page's left edge, in a new document.
+fn text_past_the_page_edge() -> DesignApp {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let text = "Some text past the edge";
+    app.run("frame.create", serde_json::json!({"rect": [-150, 72, 300, 200], "content": "text", "text": text, "caret": true})).unwrap();
+    app.run("edit.selectAll", serde_json::json!({})).unwrap();
+    app.run("type.char", serde_json::json!({"attrs": {"size": 28}})).unwrap();
+    app
+}
+
+/// In Preview the plain highlight (here with Separations Preview on) shows only on the page, as
+/// the inverted one does: not on the pasteboard where the selection runs past the trim.
+#[test]
+fn the_plain_text_highlight_is_clipped_to_the_shown_area() {
+    let mut app = text_past_the_page_edge();
+    app.ui.separations = Some(crate::separations::Separations::default());
+    let mut h = crate::test_window::open(app, vec2(900.0, 600.0));
+    h.run_steps(6);
+    assert!(plain_highlights(&h).iter().any(|c| c.left() < page_left(&h) - 1.0), "Normal: on the pasteboard too");
+    h.state_mut().app.ui.screen_mode = ScreenMode::Preview;
+    h.run_steps(4);
+    let clips = plain_highlights(&h);
+    assert!(!clips.is_empty(), "the highlight is drawn");
+    let left = page_left(&h);
+    assert!(clips.iter().all(|c| c.left() >= left - 0.5), "only on the page: {clips:?}, page from {left}");
+}
+
+/// The page's left edge on screen.
+fn page_left(h: &Harness<'_, crate::test_window::Window>) -> f32 {
+    let app = &h.state().app;
+    let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+    let canvas = app.session.layout().xf(designcraft_doc::SpreadRef::Doc(0));
+    xf.to_screen(canvas * Point::new(0.0, 100.0)).x
+}
+
+/// In a turned view the canvas's pixels never match, so the highlight is not rendered on the UI
+/// thread: neither when text is selected nor on each zoom step, which get the plain highlight.
+#[test]
+fn a_turned_view_draws_the_plain_highlight_while_zooming() {
+    let mut h = crate::test_window::open(text_past_the_page_edge(), vec2(900.0, 600.0));
+    let rendered = |h: &Harness<'_, crate::test_window::Window>| {
+        h.ctx.data(|d| d.get_temp::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex"))).is_some()
+    };
+    h.state_mut().app.view_mut().unwrap().rotation = 1;
+    // What the unturned view drew when the window opened goes; a turned view adds nothing.
+    h.ctx.data_mut(|d| d.remove::<(egui::Id, egui::TextureHandle)>(egui::Id::unique("inverse_sel_tex")));
+    h.run_steps(6);
+    assert!(!rendered(&h), "selected in a turned view: nothing rendered");
+    for zoom in [1.0, 1.5, 2.0] {
+        h.state_mut().app.view_mut().unwrap().zoom *= zoom;
+        h.run_steps(2);
+        assert!(!plain_highlights(&h).is_empty(), "zoom ×{zoom}: the plain highlight");
+        assert!(!rendered(&h), "zoom ×{zoom}: nothing rendered for it");
+    }
 }

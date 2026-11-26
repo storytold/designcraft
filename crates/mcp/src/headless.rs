@@ -259,8 +259,8 @@ impl Headless {
             .renderer
             .render_page(&st.doc, &self.session.cache, page, scale, false, &RenderOptions { printing_only: true, ..Default::default() })
             .ok_or_else(|| format!("no page {page}"))?;
-        let lower = path.to_ascii_lowercase();
-        let bytes = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { img.to_jpeg(90) } else { img.to_png() };
+        let jpeg = craft_file_formats::detect(path, &[]) == Some(craft_file_formats::Format::Jpeg);
+        let bytes = if jpeg { img.to_jpeg(90) } else { img.to_png() };
         designcraft_engine::io::write_file(path, &bytes)?;
         Ok(json!({"path": path, "width": img.width, "height": img.height}))
     }

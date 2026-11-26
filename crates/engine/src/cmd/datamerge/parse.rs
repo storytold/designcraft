@@ -297,15 +297,18 @@ fn next_slot(col: i32, row: i32, rows_first: bool, fits_col: &impl Fn(i32) -> bo
 /// Files to try for an image cell: an absolute path as it is, a relative one beside the data
 /// file, then beside the document. Relative paths are not resolved against the process working
 /// directory, and paths that may not be followed ([`crate::io::document_path`]: URLs, other
-/// computers, devices) are not candidates.
+/// computers, devices) are not candidates. A path that starts with one separator (`\Photos\x.jpg`)
+/// is tried as it is first, then beside the data file and the document with that separator dropped.
 pub fn image_candidates(cell: &str, data_dir: Option<&Path>, doc_dir: Option<&Path>) -> Vec<PathBuf> {
     let cell = cell.trim();
     if cell.is_empty() {
         return Vec::new();
     }
+    let below = cell.strip_prefix(['\\', '/']).filter(|rest| !rest.is_empty() && !rest.starts_with(['\\', '/']));
     let found = std::iter::once(crate::io::document_path(cell, None))
         .chain(data_dir.map(|dir| crate::io::folder_path(cell, dir)))
-        .chain(doc_dir.map(|dir| crate::io::folder_path(cell, dir)));
+        .chain(doc_dir.map(|dir| crate::io::folder_path(cell, dir)))
+        .chain(below.into_iter().flat_map(|rest| [data_dir, doc_dir].into_iter().flatten().map(move |dir| crate::io::folder_path(rest, dir))));
     let mut out: Vec<PathBuf> = Vec::new();
     for p in found.flatten() {
         if !out.contains(&p) {
@@ -363,102 +366,20 @@ pub fn status_of(path: &Path, previous: Option<Fingerprint>) -> SourceStatus {
 }
 
 fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
-    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-    let mut text = String::from_utf8(bytes.to_vec()).map_err(|_| format!("{name} is not UTF-8"))?;
-    if text.starts_with('\u{FEFF}') {
-        text.replace_range(..'\u{FEFF}'.len_utf8(), "");
-    }
-    Ok(text)
+    craft_csv::decode_utf8(bytes).map_err(|_| format!("{name} is not UTF-8"))
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    let ext = extension(name);
-    if ext == "tsv" || ext == "tab" {
-        return Delimiter::Tab;
+    match craft_file_formats::detect(name, &[]) {
+        Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
+        Some(craft_file_formats::Format::Csv) => return Delimiter::Comma,
+        _ => {}
     }
-    if ext == "csv" {
-        return Delimiter::Comma;
+    match craft_csv::sniff_delimiter(text, '"') {
+        b'\t' => Delimiter::Tab,
+        b';' => Delimiter::Semicolon,
+        _ => Delimiter::Comma,
     }
-    let tab = header_delimiter_candidate(text, '\t');
-    let semicolon = header_delimiter_candidate(text, ';');
-    let comma = header_delimiter_candidate(text, ',');
-    // Prefer formats with coherent quoted-field boundaries. If none separates fields,
-    // retain the legacy permissive choice; this is detection, not record validation.
-    let prefer_coherent = [&tab, &semicolon, &comma].iter().any(|c| c.found && c.coherent);
-    let eligible = |c: &HeaderDelimiterCandidate| c.found && (!prefer_coherent || c.coherent);
-    if eligible(&tab) {
-        Delimiter::Tab
-    } else if eligible(&semicolon) && !eligible(&comma) {
-        Delimiter::Semicolon
-    } else {
-        Delimiter::Comma
-    }
-}
-
-pub fn extension(name: &str) -> String {
-    Path::new(name).extension().and_then(std::ffi::OsStr::to_str).unwrap_or("").to_ascii_lowercase()
-}
-
-struct HeaderDelimiterCandidate {
-    found: bool,
-    coherent: bool,
-}
-
-/// A candidate separator outside quotes in its first nonempty logical record.
-/// Only that candidate starts a new field. Quotes in an unquoted field stay literal;
-/// Non-whitespace text after a quoted field closes lowers coherence, not validity.
-fn header_delimiter_candidate(text: &str, delimiter: char) -> HeaderDelimiterCandidate {
-    let mut found = false;
-    let mut coherent = true;
-    let mut quoted = false;
-    let mut after_quote = false;
-    let mut field_start = true;
-    let mut nonempty = false;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if quoted {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    nonempty = true;
-                } else {
-                    quoted = false;
-                    after_quote = true;
-                }
-            } else if !c.is_whitespace() {
-                nonempty = true;
-            }
-            continue;
-        }
-        match c {
-            '"' if field_start => {
-                quoted = true;
-                field_start = false;
-            }
-            separator if separator == delimiter => {
-                found = true;
-                field_start = true;
-                after_quote = false;
-            }
-            '\r' | '\n' => {
-                if nonempty {
-                    break;
-                }
-                found = false;
-                coherent = true;
-                field_start = true;
-                after_quote = false;
-            }
-            _ => {
-                // Whitespace may follow a closing quote, but does not start a new field
-                // or allow a later non-whitespace suffix to regain coherence.
-                coherent &= !after_quote || c.is_whitespace();
-                nonempty |= !c.is_whitespace();
-                field_start = false;
-            }
-        }
-    }
-    HeaderDelimiterCandidate { found, coherent: coherent && !quoted }
 }
 
 /// Header cell: trim, drop one leading apostrophe, then `@` is image and `#` is qr.
@@ -520,121 +441,59 @@ fn table_from_raw(raw: &[RawRow]) -> Result<Table, String> {
     Ok(Table { fields, rows, warnings, delimiter: Delimiter::Comma })
 }
 
-/// Split `s` on `delim`. Quoted fields keep commas, doubled quotes, and newlines.
-/// More than 200 header columns, or the 100,001st non-empty data row, is an error and
-/// the oversized row is not kept.
+/// Parse delimited text with the shared CSV grammar, then apply DesignCraft's table limits and row policy.
 fn parse_delimited(s: &str, delim: char) -> Result<Vec<RawRow>, String> {
-    let mut rows: Vec<RawRow> = Vec::new();
-    let mut row: Vec<String> = Vec::new();
-    let mut field = String::new();
-    let mut quoted = false;
-    let mut field_start = true;
+    let mut rows = Vec::new();
     let mut line = 1usize;
-    let mut row_line = 1usize;
-    let mut data_rows = 0usize;
-    let mut header_width: Option<usize> = None;
-    let mut discarding = false;
-    let mut chars = s.chars().peekable();
-
-    let finish = |row: &mut Vec<String>,
-                  field: &mut String,
-                  rows: &mut Vec<RawRow>,
-                  data_rows: &mut usize,
-                  header_width: &mut Option<usize>,
-                  row_line: usize,
-                  discarding: &mut bool|
-     -> Result<(), String> {
-        if !*discarding {
-            row.push(std::mem::take(field));
-        } else {
-            field.clear();
-        }
-        *discarding = false;
-        let empty = row.iter().all(|c| c.trim().is_empty());
-        if empty {
-            row.clear();
-            return Ok(());
-        }
-        match *header_width {
-            None => {
-                if row.len() > DATA_MERGE_MAX_COLS {
-                    return Err(format!("the file has {} columns; the limit is {DATA_MERGE_MAX_COLS}", row.len()));
-                }
-                *header_width = Some(row.len());
-                rows.push(RawRow { line: row_line, cells: std::mem::take(row) });
-            }
-            Some(width) => {
-                *data_rows = data_rows.saturating_add(1);
-                if *data_rows > DATA_MERGE_MAX_ROWS {
-                    return Err(format!("the file has more than {DATA_MERGE_MAX_ROWS} data rows"));
-                }
-                if row.len() > width.saturating_add(1) {
-                    row.truncate(width.saturating_add(1));
-                }
-                rows.push(RawRow { line: row_line, cells: std::mem::take(row) });
-            }
-        }
-        Ok(())
-    };
-
-    while let Some(c) = chars.next() {
-        if c == '\n' || (c == '\r' && chars.peek() != Some(&'\n')) {
-            line = line.saturating_add(1);
-        }
-        if quoted {
-            match c {
-                '"' if chars.peek() == Some(&'"') => {
-                    if !discarding {
-                        field.push('"');
+    let mut error = None;
+    craft_csv::parse_records(s, delim, '"', DATA_MERGE_MAX_COLS.saturating_add(1), |cells| {
+        let row_line = line;
+        let inside_newlines = cells
+            .iter()
+            .map(|cell| {
+                let mut count = 0usize;
+                let mut previous_cr = false;
+                for c in cell.chars() {
+                    if c == '\r' {
+                        count = count.saturating_add(1);
+                        previous_cr = true;
+                    } else if c == '\n' {
+                        if !previous_cr {
+                            count = count.saturating_add(1);
+                        }
+                        previous_cr = false;
+                    } else {
+                        previous_cr = false;
                     }
-                    chars.next();
                 }
-                '"' => quoted = false,
-                _ if !discarding => field.push(c),
-                _ => {}
-            }
-            continue;
+                count
+            })
+            .sum::<usize>();
+        line = line.saturating_add(inside_newlines).saturating_add(1);
+        if cells.iter().all(|cell| cell.trim().is_empty()) {
+            return true;
         }
-        if c == delim {
-            field_start = true;
-            if discarding {
-                field.clear();
-                continue;
-            }
-            row.push(std::mem::take(&mut field));
-            if header_width.is_none() && row.len() > DATA_MERGE_MAX_COLS {
-                return Err(format!("the file has {} columns; the limit is {DATA_MERGE_MAX_COLS}", row.len()));
-            }
-            if header_width.is_some_and(|w| row.len() > w.saturating_add(1)) {
-                row.pop();
-                discarding = true;
-            }
-            continue;
+        if rows.is_empty() && cells.len() > DATA_MERGE_MAX_COLS {
+            error = Some(format!("the file has {} columns; the limit is {DATA_MERGE_MAX_COLS}", cells.len()));
+            return false;
         }
-        match c {
-            '"' if field_start => {
-                quoted = true;
-                field_start = false;
-            }
-            '\r' | '\n' => {
-                if c == '\r' && chars.peek() == Some(&'\n') {
-                    chars.next();
-                    line = line.saturating_add(1);
-                }
-                finish(&mut row, &mut field, &mut rows, &mut data_rows, &mut header_width, row_line, &mut discarding)?;
-                row_line = line;
-                field_start = true;
-            }
-            _ => {
-                field_start = false;
-                if !discarding {
-                    field.push(c);
-                }
-            }
+        if !rows.is_empty() && rows.len() > DATA_MERGE_MAX_ROWS {
+            error = Some(format!("the file has more than {DATA_MERGE_MAX_ROWS} data rows"));
+            return false;
         }
+        rows.push(RawRow { line: row_line, cells });
+        true
+    });
+    if let Some(error) = error {
+        return Err(error);
     }
-    if !field.is_empty() || !row.is_empty() || discarding {
-        finish(&mut row, &mut field, &mut rows, &mut data_rows, &mut header_width, row_line, &mut discarding)?;
+    let Some(width) = rows.first().map(|row| row.cells.len()) else {
+        return Ok(rows);
+    };
+    for row in rows.iter_mut().skip(1) {
+        if row.cells.len() > width.saturating_add(1) {
+            row.cells.truncate(width.saturating_add(1));
+        }
     }
     Ok(rows)
 }

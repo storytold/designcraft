@@ -5,10 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hayro_syntax::content::UntypedIter;
-use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
-use hayro_syntax::page::Resources;
-use hayro_syntax::reader::ReaderExt;
+use craft_pdf::syntax::content::UntypedIter;
+use craft_pdf::syntax::object::{Array, Dict, Name, Object, ObjectIdentifier, Stream};
+use craft_pdf::syntax::page::Resources;
+use craft_pdf::syntax::reader::ReaderExt;
 
 use craft_pdf::write::WriteError;
 use craft_pdf::write::backend as krilla;
@@ -18,19 +18,36 @@ use crate::transitions::{find, int_after, object, rfind};
 
 mod fonts;
 
-/// The serialization settings for CMYK print output: DeviceCMYK and CMYK blending groups in the
-/// document's CMYK working space (Coated FOGRA39 when it has none or its profile can't be
-/// written). With `intent` (PDF/X), the working space is also the `GTS_PDFX` output intent, with
-/// `/Trapped /False`. The second value is a warning when the working space's profile was replaced.
-pub(crate) fn print_settings(intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
-    print_settings_with(&designcraft_color::cms::active(), intent)
+/// [`print_settings_and_profile`] without the ICC bytes, kept for tests.
+#[cfg(test)]
+pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+    let (settings, _, warning) = print_settings_and_profile_with(cms, intent)?;
+    Ok((settings, warning))
 }
 
-/// [`print_settings`] for the working spaces of `cms`.
-pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: bool) -> crate::Result<(krilla::SerializeSettings, Option<String>)> {
+/// The serialization settings for CMYK print output: DeviceCMYK and CMYK blending groups in the
+/// document's CMYK working space (Coated FOGRA39 when it has none or its profile can't be
+/// written), together with the validated ICC profile bytes actually used. With `intent` (PDF/X),
+/// the working space is also the `GTS_PDFX` output intent, with `/Trapped /False`. The third
+/// value is a warning when the working space's profile was replaced.
+pub(crate) fn print_settings_and_profile(intent: bool) -> crate::Result<(krilla::SerializeSettings, Vec<u8>, Option<String>)> {
+    print_settings_and_profile_with(&designcraft_color::cms::active(), intent)
+}
+
+/// [`print_settings_and_profile`] for the working spaces of `cms`.
+pub(crate) fn print_settings_and_profile_with(
+    cms: &designcraft_color::cms::Cms,
+    intent: bool,
+) -> crate::Result<(krilla::SerializeSettings, Vec<u8>, Option<String>)> {
     let write = |color: PrintColor<'_>| if intent { print::settings(color) } else { print::cmyk_blending(color.profile) };
-    let fogra39 = || write(PrintColor::fogra39(craft_cms::builtin::COATED_FOGRA39_ICC));
-    let Ok(space) = cms.output_intent() else { return Ok((fogra39()?, None)) };
+    let fogra39 = || {
+        let profile = craft_cms::builtin::COATED_FOGRA39_ICC;
+        Ok::<_, crate::PdfError>((write(PrintColor::fogra39(profile))?, profile.to_vec()))
+    };
+    let Ok(space) = cms.output_intent() else {
+        let (settings, icc) = fogra39()?;
+        return Ok((settings, icc, None));
+    };
     let registered = space.identifier != "Custom";
     let color = PrintColor {
         profile: &space.icc,
@@ -40,9 +57,10 @@ pub(crate) fn print_settings_with(cms: &designcraft_color::cms::Cms, intent: boo
         info: Some(&space.condition),
     };
     match write(color) {
-        Ok(settings) => Ok((settings, None)),
+        Ok(settings) => Ok((settings, space.icc.into_owned(), None)),
         Err(WriteError::InvalidProfile) => {
-            Ok((fogra39()?, Some(format!("the CMYK working space `{}` couldn't be written to the PDF; Coated FOGRA39 was used", space.condition))))
+            let (settings, icc) = fogra39()?;
+            Ok((settings, icc, Some(format!("the CMYK working space `{}` couldn't be written to the PDF; Coated FOGRA39 was used", space.condition))))
         }
         Err(e) => Err(e.into()),
     }
@@ -116,7 +134,7 @@ pub fn has_rgb_groups(pdf: &[u8]) -> bool {
 pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     let mut issues = Vec::new();
     let text = String::from_utf8_lossy(pdf);
-    let file = hayro_syntax::Pdf::new(pdf.to_vec()).ok();
+    let file = craft_pdf::syntax::Pdf::new(pdf.to_vec()).ok();
     if !pdf.starts_with(b"%PDF-1.") || pdf.get(7).is_none_or(|v| *v > b'6') {
         issues.push("the PDF version must be 1.6 or lower".into());
     }
@@ -161,12 +179,12 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
 /// The document information's `GTS_PDFXVersion` (`PDF/X-4`, `PDF/X-1:2003`, …), read as an
 /// object; `None` when the file can't be read or doesn't name one.
 pub fn pdfx_version(pdf: &[u8]) -> Option<String> {
-    info_text(pdf, &hayro_syntax::Pdf::new(pdf.to_vec()).ok()?, b"GTS_PDFXVersion")
+    info_text(pdf, &craft_pdf::syntax::Pdf::new(pdf.to_vec()).ok()?, b"GTS_PDFXVersion")
 }
 
 /// The catalog's `GTS_PDFX` output intents, read as objects (whitespace and object streams
 /// don't matter).
-pub(crate) fn pdfx_intents<'a>(file: &'a hayro_syntax::Pdf) -> Vec<Dict<'a>> {
+pub(crate) fn pdfx_intents<'a>(file: &'a craft_pdf::syntax::Pdf) -> Vec<Dict<'a>> {
     let xref = file.xref();
     let Some(catalog) = xref.get::<Dict<'_>>(xref.root_id()) else { return Vec::new() };
     let Some(intents) = catalog.get::<Array<'_>>(b"OutputIntents") else { return Vec::new() };
@@ -176,13 +194,13 @@ pub(crate) fn pdfx_intents<'a>(file: &'a hayro_syntax::Pdf) -> Vec<Dict<'a>> {
 /// The text entry `key` of the document information dictionary, trimmed: the `/Info` of the
 /// newest trailer that has one (classic or cross-reference stream, following `/Prev` a bounded
 /// number of times), else of the last `trailer` keyword in the file.
-pub(crate) fn info_text(pdf: &[u8], file: &hayro_syntax::Pdf, key: &[u8]) -> Option<String> {
+pub(crate) fn info_text(pdf: &[u8], file: &craft_pdf::syntax::Pdf, key: &[u8]) -> Option<String> {
     let lookup = |trailer: &Dict<'_>| -> Option<String> {
         let info = match trailer.get_ref(b"Info") {
             Some(r) => file.xref().get::<Dict<'_>>(r.into())?,
             None => trailer.get::<Dict<'_>>(b"Info")?,
         };
-        let value = info.get::<hayro_syntax::object::String<'_>>(key)?;
+        let value = info.get::<craft_pdf::syntax::object::String<'_>>(key)?;
         Some(String::from_utf8_lossy(value.as_bytes()).trim().to_string())
     };
     let tail = pdf.get(rfind(pdf, b"startxref")?..).unwrap_or_default();
@@ -198,7 +216,7 @@ pub(crate) fn info_text(pdf: &[u8], file: &hayro_syntax::Pdf, key: &[u8]) -> Opt
     }
     // A damaged cross-reference offset: the dictionary after the last `trailer` keyword.
     let at = rfind(pdf, b"trailer")? + b"trailer".len();
-    let mut reader = hayro_syntax::reader::Reader::new(pdf.get(at..)?);
+    let mut reader = craft_pdf::syntax::reader::Reader::new(pdf.get(at..)?);
     reader.skip_white_spaces_and_comments();
     lookup(&reader.read_without_context::<Dict<'_>>()?)
 }
@@ -209,7 +227,7 @@ pub(crate) fn info_text(pdf: &[u8], file: &hayro_syntax::Pdf, key: &[u8]) -> Opt
 /// This walks every page's content, the images, forms, patterns, shadings and soft masks it uses,
 /// and the transparency groups, and reports each kind of device RGB it finds with the pages it is
 /// on. Nothing is reported when the file has no CMYK PDF/X output intent.
-fn device_rgb(file: Option<&hayro_syntax::Pdf>) -> Vec<String> {
+fn device_rgb(file: Option<&craft_pdf::syntax::Pdf>) -> Vec<String> {
     let Some(file) = file else {
         return vec!["the file couldn't be read to check its colour spaces".into()];
     };
@@ -249,7 +267,7 @@ fn device_rgb(file: Option<&hayro_syntax::Pdf>) -> Vec<String> {
 }
 
 /// Whether the file's PDF/X output intent has a four-channel (CMYK) destination profile.
-pub(crate) fn cmyk_output_intent(file: &hayro_syntax::Pdf) -> bool {
+pub(crate) fn cmyk_output_intent(file: &craft_pdf::syntax::Pdf) -> bool {
     pdfx_intents(file).iter().any(|oi| oi.get::<Stream<'_>>(b"DestOutputProfile").and_then(|p| p.dict().get::<i32>(b"N")) == Some(4))
 }
 

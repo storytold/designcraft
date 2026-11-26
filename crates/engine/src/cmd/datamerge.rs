@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, id_param, ok, str_param};
 use crate::{DocState, Result, Session};
 use fill::{FillReport, ImageCache, Maps, MissingImage, Sources, copy_item, fill_row, identity_map};
-use parse::{Table, TileInput, extension, relative_between, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
+pub(crate) use parse::relative_between;
+use parse::{Table, TileInput, select_records, status_of, table_from_bytes, table_from_grid, table_from_objects, tile};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use parse::fingerprint_from;
@@ -58,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Insert Field",
             [],
             None,
-            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder)",
+            "{field, role?: text|image|qr|hyperlink, story?, at?, end?, item?} → {id}; an image field at a text insertion point merges as an inline image; with the insertion point in a table cell or a note → {cell: true, marker} (a typed marker, not an anchored placeholder; an image field there is an error unless role is text)",
             has_doc,
             placeholder_add
         ),
@@ -146,8 +147,27 @@ fn fields_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let Some(src) = st.doc.data_merge.sources.first() else {
         return Ok(json!([]));
     };
-    let placeholders = st.doc.data_merge.placeholders.clone();
-    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count()))
+    let doc = st.preview_stash.as_deref().unwrap_or(st.doc.as_ref());
+    let placeholders = &doc.data_merge.placeholders;
+    let mut marker_counts = std::collections::HashMap::<String, usize>::new();
+    for (story_id, story) in &doc.stories {
+        // The generated endnote frame repeats note text already counted in its owning story.
+        if Some(*story_id) == doc.endnote_story {
+            continue;
+        }
+        for (start, end, name) in fill::find_markers(&story.text) {
+            // A bound placeholder already accounts for its marker in the usage count.
+            let covered = placeholders.iter().any(|ph| {
+                matches!((&ph.role, &ph.anchor), (PlaceholderRole::Text | PlaceholderRole::Image, PlaceholderAnchor::Text { story, start: a, end: b })
+                    if story == story_id && start < *b && end > *a)
+            });
+            if !covered {
+                *marker_counts.entry(name).or_default() += 1;
+            }
+        }
+        fill::count_nested_markers(story, &mut marker_counts, 0);
+    }
+    Ok(fields_json(&src.fields, |name| placeholders.iter().filter(|ph| ph.field == name).count() + marker_counts.get(name).copied().unwrap_or(0)))
 }
 
 fn placeholder_add(s: &mut Session, p: &Value) -> Result<Value> {
@@ -210,6 +230,8 @@ fn preview_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let images = ImageCache::default();
     let sources = Sources { options: &options, data_dir: data_dir.as_deref(), doc_dir: doc_dir.as_deref(), images: &images };
     fill_row(&mut doc, &source.fields, &row, record as u32, &maps, &sources);
+    // An image the record placed gets its Alpha Channel outline, as an edit's would.
+    crate::cmd::alpha_wrap::sync(&mut doc);
     st.doc = Arc::new(doc);
     st.preview_record = Some(record as u32);
     st.bump_revision();
@@ -261,6 +283,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
+    // The merged images' Alpha Channel outlines first: the overset count composes with them.
+    crate::cmd::alpha_wrap::sync(&mut merged);
     let overset = overset_count(&merged);
     let records = selected.len();
     let missing_json: Vec<Value> = missing.iter().map(|m| json!({"record": m.record, "field": m.field, "path": m.path})).collect();
@@ -484,8 +508,13 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
         true
     } else if explicit_story || role_param == Some("text") {
         false
-    } else if matches!(role_param, Some("image" | "qr")) {
-        true
+    } else if role_param == Some("qr") {
+        // A QR role with the insertion point in text is refused below rather than bound to a
+        // selected frame the caret is not in.
+        sel.text.is_none()
+    } else if role_param == Some("image") {
+        // An image role with the insertion point in text places an inline image there.
+        sel.text.is_none()
     } else {
         sel.text.is_none() && !sel.items.is_empty()
     };
@@ -497,6 +526,12 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
             DataFieldKind::Qr => PlaceholderRole::Qr,
             DataFieldKind::Text => return Err(bad("data.placeholder.add", "say which role to use on this frame")),
         }
+    } else if field.kind == DataFieldKind::Image {
+        // An image field at the insertion point places the image inline in the text.
+        PlaceholderRole::Image
+    } else if field.kind == DataFieldKind::Qr {
+        // A QR field at the insertion point is refused below: QR codes bind to a frame.
+        PlaceholderRole::Qr
     } else {
         PlaceholderRole::Text
     };
@@ -515,8 +550,8 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
         }
         PlaceholderAnchor::Item { id: item }
     } else {
-        if matches!(role, PlaceholderRole::Image | PlaceholderRole::Qr) {
-            return Err(bad("data.placeholder.add", "image and qr placeholders bind to a frame"));
+        if role == PlaceholderRole::Qr {
+            return Err(bad("data.placeholder.add", "qr placeholders bind to a frame"));
         }
         // The insertion point is in a table cell or a footnote: the field goes into that text as
         // its marker, which the merge fills as it fills a typed one. Such a text is a story of its
@@ -526,6 +561,14 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
             && let Some(t) = sel.text
             && let Some(pressed) = t.cell
         {
+            // The merge fills such a text with the record's value as text, so an image there
+            // would merge as its path.
+            if role == PlaceholderRole::Image {
+                return Err(bad(
+                    "data.placeholder.add",
+                    "an image field can't go in a table cell or a note; bind it to a frame, or insert it with role text to merge its path",
+                ));
+            }
             if role != PlaceholderRole::Text {
                 return Err(bad("data.placeholder.add", "a hyperlink field can't go in a table cell or a note; insert it as text"));
             }
@@ -558,7 +601,7 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
         if d.story(story).is_none() {
             return Err(bad("data.placeholder.add", "no story"));
         }
-        if role == PlaceholderRole::Text {
+        if matches!(role, PlaceholderRole::Text | PlaceholderRole::Image) {
             let marker = format!("<<{name}>>");
             let at = {
                 let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -568,6 +611,11 @@ fn add_placeholder(d: &mut Document, sel: &mut Selection, p: &Value, name: &str)
                 st.replace(at..at, &marker);
             }
             d.adjust_text_ranges(story, at..at, marker.len());
+            // The caret moves past the field, as after typing, so the next field goes after it.
+            if let Some(t) = sel.text.as_mut().filter(|t| t.story == story && t.cell.is_none()) {
+                let shift = |pos: usize| if pos >= at { pos + marker.len() } else { pos };
+                (t.anchor, t.focus) = (shift(t.anchor), shift(t.focus));
+            }
             PlaceholderAnchor::Text { story, start: at, end: at.saturating_add(marker.len()) }
         } else {
             let text = d.story(story).map(|st| st.text.clone()).unwrap_or_default();
@@ -610,7 +658,7 @@ pub(crate) fn sync_placeholders(doc: &mut Document) {
             }
             PlaceholderAnchor::Text { story, start, end } => {
                 let text = doc.story(story).map(|st| st.text.clone()).unwrap_or_default();
-                if ph.role != PlaceholderRole::Text {
+                if !matches!(ph.role, PlaceholderRole::Text | PlaceholderRole::Image) {
                     if start <= end && end <= text.len() {
                         keep.push(ph);
                     }
@@ -799,11 +847,10 @@ fn take_file(p: &Value) -> std::result::Result<(Vec<u8>, String, Option<String>)
 }
 
 fn parse_file(bytes: &[u8], name: &str, delimiter: Option<Delimiter>, sheet: Option<&str>) -> std::result::Result<Table, String> {
-    let ext = extension(name);
-    if ext == "xls" || ext == "xlsm" {
-        return Err(format!("{ext} workbooks are not supported"));
+    if craft_file_formats::detect(name, &[]) == Some(craft_file_formats::Format::LegacyExcel) {
+        return Err("legacy Excel .xls/.xlsm workbooks are not supported".into());
     }
-    if ext == "xlsx" {
+    if craft_file_formats::detect(name, bytes) == Some(craft_file_formats::Format::Xlsx) {
         let grid = designcraft_textimport::xlsx_records(bytes, sheet).map_err(|e| e.to_string())?;
         return table_from_grid(grid, Delimiter::Comma);
     }

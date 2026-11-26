@@ -544,7 +544,7 @@ mod text_frame_tests {
         let d = &s.doc().unwrap().doc;
         d.check().unwrap();
         let mut files: Vec<_> =
-            d.anchored_items().iter().filter_map(|(_, i)| i.graphic()).map(|g| d.assets.get(&g.asset).map(|a| a.data.clone())).collect();
+            d.anchored_items().iter().filter_map(|(_, i)| i.graphic()).map(|g| d.assets.get(&g.asset).map(|a| a.data.load().unwrap())).collect();
         files.sort();
         files
     }

@@ -2,8 +2,10 @@
 //! file with some layers off (an appended catalog whose default configuration turns them off,
 //! which the PDF renderer honours).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
+
+use designcraft_doc::{AssetData, SourceKey, WeakAssetData};
 
 use craft_pdf::syntax::Pdf;
 use craft_pdf::syntax::object::{Array, Dict, MaybeRef, Name, ObjRef, Object, ObjectIdentifier};
@@ -237,28 +239,288 @@ pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Shared copies of layer variants (by source address and hidden set).
-pub(crate) fn layered(data: &Arc<Vec<u8>>, hidden: &[String]) -> Option<Arc<Vec<u8>>> {
-    type Key = (usize, Vec<String>);
-    static CACHE: Mutex<Option<HashMap<Key, (Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)>>> = Mutex::new(None);
-    let key = (Arc::as_ptr(data) as usize, hidden.to_vec());
-    let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let map = c.get_or_insert_with(HashMap::new);
-    if let Some(v) = map.get(&key) {
-        return v.1.clone();
+/// What [`layered`] has for a placed PDF with some layers hidden.
+pub(crate) enum Layered {
+    /// The variant.
+    Ready(AssetData),
+    /// Being made in the background, or not needed: what is cached of an earlier copy of it
+    /// (decodes under this key) is drawn meanwhile.
+    Making(Option<SourceKey>),
+    /// The file can't be rewritten with these layers off, or can't be had.
+    Failed,
+}
+
+/// A source's bytes and the layers hidden in them.
+type Key = (SourceKey, Vec<String>);
+
+enum Variant {
+    /// The file couldn't be rewritten with these layers off.
+    Failed,
+    Made(WeakAssetData),
+}
+
+/// Shared copies of layer variants (by source and hidden set). A variant keeps its identity
+/// (the same [`SourceKey`]) across rebuilds: the image cache keys decodes by it, so a variant
+/// rebuilt under a new key would miss decodes it already has and be decoded again. The bytes of
+/// a variant are a function of its source's and the hidden set, so the same key always names the
+/// same bytes. Recent variants are held here; older ones are made again when asked for.
+#[derive(Default)]
+struct Variants {
+    known: HashMap<Key, Variant>,
+    /// Variants kept alive, oldest first.
+    keep: VecDeque<AssetData>,
+    /// Their bytes.
+    kept_bytes: u64,
+}
+
+/// How many recent variants are kept alive here.
+const KEEP: usize = 64;
+/// The bytes of the variants kept alive (each is a copy of its file); the newest is kept
+/// whatever its size, so the one just made is there to draw.
+const KEEP_BYTES: u64 = 256 << 20;
+
+static VARIANTS: Mutex<Option<Variants>> = Mutex::new(None);
+
+fn with<R>(f: impl FnOnce(&mut Variants) -> R) -> R {
+    f(VARIANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Default::default))
+}
+
+impl Variants {
+    fn keep(&mut self, v: AssetData) {
+        self.kept_bytes = self.kept_bytes.saturating_add(v.len());
+        self.keep.push_back(v);
+        while self.keep.len() > KEEP || (self.kept_bytes > KEEP_BYTES && self.keep.len() > 1) {
+            let Some(old) = self.keep.pop_front() else { break };
+            self.kept_bytes = self.kept_bytes.saturating_sub(old.len());
+        }
     }
-    if map.len() > 64 {
-        map.clear();
+
+    /// Forget variants nothing holds and nothing decoded is cached of.
+    fn forget(&mut self) {
+        if self.known.len() <= 4 * KEEP {
+            return;
+        }
+        self.known.retain(|_, variant| match variant {
+            Variant::Failed => true,
+            Variant::Made(weak) => weak.upgrade().is_some() || crate::images::has_decodes(weak.key()),
+        });
+        // Failures are cheap to find again; a hostile run of hidden sets doesn't grow this.
+        if self.known.len() > 4 * KEEP {
+            self.known.retain(|_, variant| matches!(variant, Variant::Made(_)));
+        }
+        if self.known.len() > 4 * KEEP {
+            self.known.retain(|_, variant| matches!(variant, Variant::Made(weak) if weak.upgrade().is_some()));
+        }
     }
-    let v = pdf_hide_layers(data, hidden).map(Arc::new);
-    map.insert(key, (data.clone(), v.clone()));
-    v
+}
+
+/// What is known of the variant `key` names.
+enum Found {
+    Ready(AssetData),
+    Failed,
+    /// Made before and let go since, under this key.
+    Gone(SourceKey),
+    Unknown,
+}
+
+fn find(key: &Key) -> Found {
+    with(|v| match v.known.get(key) {
+        Some(Variant::Failed) => Found::Failed,
+        Some(Variant::Made(weak)) => weak.upgrade().map_or_else(|| Found::Gone(weak.key()), Found::Ready),
+        None => Found::Unknown,
+    })
+}
+
+/// Make the variant `key` names from its source's `bytes` (outside the lock) and remember it.
+/// A variant another thread made meanwhile is the one returned.
+fn make(key: Key, bytes: &[u8]) -> Option<AssetData> {
+    let made = pdf_hide_layers(bytes, &key.1);
+    with(|v| {
+        let id = match v.known.get(&key) {
+            Some(Variant::Made(weak)) => match weak.upgrade() {
+                Some(live) => return Some(live),
+                None => weak.key(),
+            },
+            _ => SourceKey::fresh(),
+        };
+        let made = made.map(|b| AssetData::embedded_under(id, b));
+        v.known.insert(key, made.as_ref().map_or(Variant::Failed, |m| Variant::Made(m.downgrade())));
+        if let Some(m) = &made {
+            v.keep(m.clone());
+        }
+        v.forget();
+        made
+    })
+}
+
+/// The variant of `data` (a placed PDF) with the layers named in `hidden` off. With `wait`, it is
+/// made here if need be (reading a linked file). Without, nothing is read or rewritten on this
+/// thread: the variant is made in the background ([`crate::prepare`]), unless one made before
+/// is gone and what is cached of it (decodes under its key) is `covered` enough to draw. A
+/// linked file that can't be had isn't asked for again until the links change
+/// ([`crate::images::unavailable`]).
+pub(crate) fn layered(data: &AssetData, hidden: &[String], wait: bool, covered: impl Fn(SourceKey) -> bool) -> Layered {
+    let key = (data.key(), hidden.to_vec());
+    let gone = match find(&key) {
+        Found::Ready(v) => return Layered::Ready(v),
+        Found::Failed => return Layered::Failed,
+        Found::Gone(id) => Some(id),
+        Found::Unknown => None,
+    };
+    if crate::images::unavailable(data).is_some() {
+        return Layered::Failed;
+    }
+    if wait {
+        return crate::images::load_bytes(data, false).and_then(|bytes| make(key, &bytes)).map_or(Layered::Failed, Layered::Ready);
+    }
+    if gone.is_some_and(&covered) {
+        return Layered::Making(gone);
+    }
+    let (source, job) = (data.clone(), key.clone());
+    let queued = crate::prepare::later(crate::prepare::job_key(("pdf layers", &key)), move || {
+        if let Some(bytes) = crate::images::load_bytes(&source, true) {
+            make(job, &bytes);
+        }
+    });
+    match queued {
+        crate::prepare::Queued::Yes => Layered::Making(gone),
+        crate::prepare::Queued::Ran => match find(&key) {
+            Found::Ready(v) => Layered::Ready(v),
+            _ => Layered::Failed,
+        },
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use craft_pdf::syntax::reader::{Reader, ReaderExt};
+    use std::sync::Arc;
+
+    /// A one-page PDF with two layers, Blue and Red.
+    pub(crate) fn two_layer_pdf() -> Vec<u8> {
+        let content = "/OC /a BDC 0 0 1 rg 0 0 50 100 re f EMC /OC /b BDC 1 0 0 rg 50 0 50 100 re f EMC";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R/OCProperties<</OCGs[5 0 R 6 0 R]/D<</Order[5 0 R 6 0 R]/Name(Default)>>>>>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 5 0 R/b 6 0 R>>>>/Contents 4 0 R>>".to_string(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/OCG/Name(Blue)>>".to_string(),
+            "<</Type/OCG/Name(Red)>>".to_string(),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, o).as_bytes());
+        }
+        let x = out.len();
+        let mut t = format!("xref\n0 {}\n0000000000 65535 f\r\n", objs.len() + 1);
+        for o in offs {
+            t.push_str(&format!("{o:010} 00000 n\r\n"));
+        }
+        t.push_str(&format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1));
+        out.extend_from_slice(t.as_bytes());
+        out
+    }
+
+    /// [`layered`], waiting.
+    fn made(data: &AssetData, hidden: &[String]) -> Option<AssetData> {
+        match layered(data, hidden, true, |_| false) {
+            Layered::Ready(v) => Some(v),
+            Layered::Making(_) | Layered::Failed => None,
+        }
+    }
+
+    /// A variant something still holds comes back under the same key however many others were
+    /// made since, so decodes keyed by it keep matching; one nothing holds is made again.
+    #[test]
+    fn a_held_layer_variant_keeps_its_identity_past_the_cache() {
+        let data = AssetData::embedded(two_layer_pdf());
+        let blue = vec!["Blue".to_string()];
+        let first = made(&data, &blue).expect("Blue can be hidden");
+        assert_eq!(first.key(), made(&data, &blue).unwrap().key());
+        // More variants than are kept, each with a set of its own.
+        for i in 0..200 {
+            let _ = made(&data, &["Red".to_string(), format!("unknown {i}")]);
+        }
+        assert_eq!(first.key(), made(&data, &blue).unwrap().key(), "still the same variant");
+        let red = vec!["Red".to_string()];
+        let variant = made(&data, &red).unwrap();
+        assert!(crate::images::mip(&variant, 0, 100.0, 1.0).is_some(), "the variant draws");
+        let weak = variant.downgrade();
+        drop(variant);
+        for i in 0..300 {
+            let _ = made(&data, &["Blue".to_string(), format!("other {i}")]);
+        }
+        assert!(weak.upgrade().is_none(), "a variant nothing holds is let go");
+        let again = made(&data, &red).expect("made again when asked for");
+        assert_eq!(again.key(), weak.key(), "under the key its decodes are cached by");
+        assert!(crate::images::has_decodes(again.key()));
+        assert_eq!(again.load().unwrap(), pdf_hide_layers(&data.load().unwrap(), &red).map(Arc::new).unwrap());
+    }
+
+    /// The variants kept alive have a byte budget: a big one is let go once others are made,
+    /// though the newest is always kept.
+    #[test]
+    fn kept_variants_are_bounded_by_bytes() {
+        let mut v = Variants::default();
+        let big = || AssetData::embedded(vec![0u8; (KEEP_BYTES / 2 + 1) as usize]);
+        let first = big();
+        v.keep(first.clone());
+        assert_eq!(v.keep.len(), 1, "the newest is kept");
+        v.keep(big());
+        assert_eq!(v.keep.len(), 1, "two don't fit");
+        assert!(v.keep.iter().all(|k| k.key() != first.key()), "the older is let go");
+        assert!(v.kept_bytes <= KEEP_BYTES);
+        let huge = AssetData::embedded(vec![0u8; (KEEP_BYTES + 1) as usize]);
+        v.keep(huge.clone());
+        assert_eq!(v.keep.iter().map(AssetData::key).collect::<Vec<_>>(), [huge.key()], "kept whatever its size while newest");
+    }
+
+    /// A frame that doesn't wait reads no linked file: the variant is made in the background. A
+    /// linked file that can't be had is read once, not on every frame after.
+    #[test]
+    fn a_linked_variant_is_made_off_the_drawing_thread_and_a_missing_file_is_not_read_each_frame() {
+        use crate::images::tests::linked;
+        let bytes = two_layer_pdf();
+        let blue = vec!["Blue".to_string()];
+        let data = linked::file("mem:/layers.pdf", Some(bytes.clone()), bytes.len() as u64);
+        let mut ready = None;
+        for _ in 0..500 {
+            match layered(&data, &blue, false, |_| false) {
+                Layered::Ready(v) => {
+                    ready = Some(v);
+                    break;
+                }
+                Layered::Making(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Layered::Failed => break,
+            }
+        }
+        let ready = ready.expect("made in the background");
+        assert_eq!(ready.load().unwrap(), pdf_hide_layers(&bytes, &blue).map(Arc::new).unwrap());
+        assert_eq!(linked::reads("mem:/layers.pdf"), 1);
+
+        let missing = linked::file("mem:/missing-layers.pdf", None, bytes.len() as u64);
+        // Other tests say the links changed, which asks for missing files again.
+        let generation = designcraft_doc::asset_data::link_generation();
+        let mut failed = false;
+        for _ in 0..500 {
+            if matches!(layered(&missing, &blue, false, |_| false), Layered::Failed) {
+                failed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(failed, "a missing file fails");
+        for _ in 0..10 {
+            assert!(matches!(layered(&missing, &blue, false, |_| false), Layered::Failed));
+            assert!(matches!(layered(&missing, &blue, true, |_| false), Layered::Failed));
+        }
+        if designcraft_doc::asset_data::link_generation() == generation {
+            assert_eq!(linked::reads("mem:/missing-layers.pdf"), 1, "not read again before the links change");
+        }
+    }
 
     #[test]
     fn trailer_lookup_does_not_take_guard_values_from_xref_comments() {
