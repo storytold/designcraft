@@ -2434,6 +2434,95 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// InDesign measures a table's space before from the last baseline above it, not from the bottom
+/// of that line's descent: the table starts the space before (and the paragraph's space after)
+/// below the baseline whatever the size of the text above.
+#[test]
+fn a_table_starts_its_space_before_below_the_baseline_above_it() {
+    let gap = |size: f64, space_after: f64| {
+        let mut t = filled(2, 1, 0, 100.0);
+        t.options.space_before = 4.0;
+        // No border: a border moves a table half its weight inside the frame (see
+        // `a_table_starts_half_its_outer_strokes_inside_the_frame`), which is not what this measures.
+        t.options.border.weight = 0.0;
+        let (mut d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), t);
+        d.story_mut(sid).unwrap().format_chars(0.."Intro".len(), |f| f.over.size = Some(size));
+        d.story_mut(sid).unwrap().format_paras(0.."Intro".len(), |p| p.para.space_after = Some(space_after));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        ft.tables[0].rect.y0 - ft.lines[0].baseline
+    };
+    for size in [8.0, 12.0, 24.0] {
+        assert!((gap(size, 0.0) - 4.0).abs() < 1e-6, "{size}: {}", gap(size, 0.0));
+    }
+    assert!((gap(12.0, 6.0) - 10.0).abs() < 1e-6, "the paragraph's space after adds");
+}
+
+/// A table's space after does not carry into a table directly below it: InDesign puts the next
+/// table its own space before under it (measured with space after of -4, 0 and 6 pt).
+#[test]
+fn a_table_directly_above_another_leaves_only_the_lower_ones_space_before() {
+    let gap = |after_first: f64, before_second: f64| {
+        let mut first = filled(2, 1, 0, 100.0);
+        first.options.space_before = 0.0;
+        first.options.space_after = after_first;
+        first.options.border.weight = 0.0;
+        let mut second = filled(2, 1, 0, 100.0);
+        second.id = 78;
+        second.options.space_before = before_second;
+        second.options.space_after = 0.0;
+        second.options.border.weight = 0.0;
+        let (mut d, sid, _) = doc_with("", Rect::new(0.0, 0.0, 300.0, 1000.0), ParaAttrs::default());
+        let st = d.story_mut(sid).unwrap();
+        st.insert_table(0, first);
+        let end = st.len();
+        st.insert_table(end, second);
+        d.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let tables = &cs.frames[0].tables;
+        assert_eq!(tables.len(), 2);
+        tables[1].rect.y0 - tables[0].rect.y1
+    };
+    for after in [-4.0, 0.0, 6.0] {
+        assert!((gap(after, 4.0) - 4.0).abs() < 1e-6, "{after}: {}", gap(after, 4.0));
+    }
+    assert!((gap(6.0, 0.0)).abs() < 1e-6);
+}
+
+/// A table that starts a new column (here by its start option) below a paragraph spanning the
+/// columns follows that paragraph's baseline, its space after and its own space before. A table
+/// that ended the column before does not take the space after away.
+#[test]
+fn a_table_in_the_next_column_keeps_the_space_after_of_the_paragraph_above() {
+    let mut first = filled(3, 1, 0, 100.0);
+    first.options.space_before = 0.0;
+    first.options.space_after = 0.0;
+    first.options.border.weight = 0.0;
+    let mut second = filled(3, 1, 0, 100.0);
+    second.id = 78;
+    second.options.space_before = 4.0;
+    second.options.border.weight = 0.0;
+    let (mut d, sid, fid) = doc_with("Heading", Rect::new(0.0, 0.0, 300.0, 1000.0), ParaAttrs::default());
+    d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+    d.story_mut(sid).unwrap().paras[0].para.span_columns = Some(SpanColumns::Span(0));
+    d.story_mut(sid).unwrap().format_paras(0..1, |p| p.para.space_after = Some(6.0));
+    let st = d.story_mut(sid).unwrap();
+    let end = st.len();
+    st.insert_table(end, first);
+    let end = st.len();
+    st.insert_table(end, second);
+    // Paragraphs: the heading, the two tables, and the empty one after them.
+    st.paras[2].para.start_paragraph = Some(StartParagraph::NextColumn);
+    d.check().unwrap();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = &cs.frames[0];
+    assert_eq!(ft.tables.len(), 2, "overset at {:?}", cs.overset_at);
+    let (a, b) = (&ft.tables[0], &ft.tables[1]);
+    assert!(b.rect.x0 > a.rect.x1 - 1e-6, "the second table is in the next column: {:?} / {:?}", a.rect, b.rect);
+    let heading = ft.lines.iter().find(|l| l.para == 0).unwrap();
+    assert!((b.rect.y0 - (heading.baseline + 6.0 + 4.0)).abs() < 1e-6, "{} vs baseline {}", b.rect.y0, heading.baseline);
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));

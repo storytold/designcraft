@@ -305,7 +305,11 @@ pub(crate) fn place_table(
     let footer_h = sum(body_end, nr);
     let o = &table.options;
     let mut y = match cur.last_baseline {
-        Some(b) => b + cur.last_descent + cur.pending + o.space_before,
+        // InDesign measures the space before a table from the last baseline above it, not from the
+        // bottom of that line's descent.
+        // A table's space after does not carry into a table directly below it (only the next table's
+        // space before counts).
+        Some(b) => b + if cur.after_table { 0.0 } else { cur.pending } + o.space_before,
         None => col.y0,
     };
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
@@ -375,6 +379,7 @@ pub(crate) fn place_table(
     emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
     cur.last_baseline = Some(y);
     cur.last_descent = 0.0;
+    cur.after_table = true;
     cur.pending = o.space_after;
     true
 }
