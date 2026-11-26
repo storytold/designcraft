@@ -2434,6 +2434,36 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// A cell with Vertical Justification Justify keeps its first line where Top would put it, sets the
+/// last baseline at the bottom of the text area and spreads the lines between evenly (measured in
+/// InDesign 2026: three lines of 10 pt Arial in a 60 pt cell, insets 2 pt above and 6 pt below).
+#[test]
+fn a_justified_cell_spreads_its_lines_between_the_insets() {
+    let baselines = |vj: VerticalJustification, lines: &str| {
+        let mut t = filled(1, 1, 0, 100.0);
+        t.options.border.weight = 0.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        t.rows[0].height = 60.0;
+        let c = t.cell_mut(0, 0).unwrap();
+        c.insets = [2.0, 0.0, 6.0, 0.0];
+        c.vj = vj;
+        c.text.insert(0, lines);
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let cell = cs.frames[0].tables[0].cell(0, 0).unwrap();
+        cell.text.frames[0].lines.iter().map(|l| cell.origin.y + l.baseline - cell.rect.y0).collect::<Vec<_>>()
+    };
+    let top = baselines(VerticalJustification::Top, "a\nb\nc");
+    let just = baselines(VerticalJustification::Justify, "a\nb\nc");
+    assert_eq!(just.len(), 3);
+    assert!((just[0] - top[0]).abs() < 1e-6, "the first line stays at the top: {just:?} vs {top:?}");
+    assert!((just[2] - 54.0).abs() < 1e-6, "the last baseline is at the bottom of the text area: {just:?}");
+    assert!(((just[1] - just[0]) - (just[2] - just[1])).abs() < 1e-6, "the gaps are even: {just:?}");
+    // One line, or text filling the area, stays where it is.
+    let one = baselines(VerticalJustification::Justify, "a");
+    assert!((one[0] - baselines(VerticalJustification::Top, "a")[0]).abs() < 1e-6);
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
