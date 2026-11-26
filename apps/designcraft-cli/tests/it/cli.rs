@@ -149,6 +149,31 @@ fn script_export_prints_the_export_warnings_as_run_does() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `run --in` printed nothing of what the open reported: a document set in fonts this machine
+/// lacks came out in substitutes with nothing on stderr.
+#[test]
+fn run_in_prints_the_fonts_a_document_is_missing() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-missing-fonts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("missing.designcraft");
+    let steps = [
+        r#"frame.create={"rect": [72, 72, 300, 200], "content": "text", "text": "Hello"}"#,
+        r#"text.select={"story": "$0.story", "anchor": 0, "focus": 5}"#,
+        r#"type.char={"fontFamily": "Missing CLI Test Family", "fontStyle": "Regular"}"#,
+    ];
+    let mut make = vec!["run"];
+    for step in steps {
+        make.extend(["--cmd", step]);
+    }
+    make.extend(["--export", doc.to_str().unwrap()]);
+    assert!(cli().args(&make).output().unwrap().status.success());
+    let out = cli().args(["run", "--in", doc.to_str().unwrap(), "--export", dir.join("out.png").to_str().unwrap()]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("warning: 1 font is missing: Missing CLI Test Family Regular."), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// With `--connect` the exports happen in the running app. `--export copy.designcraft` saves a
 /// copy there: Save As would make the copy the file the open document saves to from then on.
 #[test]

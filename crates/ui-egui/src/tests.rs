@@ -734,6 +734,27 @@ fn opening_missing_fonts_offers_repeated_replacement_and_keeps_errors_visible() 
     std::fs::remove_file(path).unwrap();
 }
 
+/// File › Open Recent offers Find/Replace Font for the missing fonts as File › Open does.
+#[test]
+fn opening_a_recent_file_with_missing_fonts_offers_find_font() {
+    let mut app = DesignApp::new(Session::new(), Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect":[0,0,200,200], "content":"text", "text":"Sample"})).unwrap();
+    let d = std::sync::Arc::make_mut(&mut app.session.doc_mut().unwrap().doc);
+    let sid = *d.stories.keys().next().unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..6, |f| {
+        f.over.font_family = Some("Unavailable Recent Test Family".into());
+        f.over.font_style = Some("Regular".into());
+    });
+    let path = std::env::temp_dir().join(format!("designcraft-font-recent-{}.designcraft", std::process::id()));
+    app.run("file.save", json!({"path":path})).unwrap();
+    app.run("file.open", json!({"path":path})).unwrap();
+    app.ui.dialog = None;
+    app.run("file.openRecent", json!({"index": 0})).unwrap();
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("findFont"));
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn snap_view_uses_the_saved_switches() {
     let mut ui = UiState::default();
