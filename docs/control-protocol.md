@@ -53,6 +53,12 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `app.open` / `app.save` / `app.export` | | Files |
 | `app.quit` | | Quit without asking about unsaved changes (the `app.quit` command, like ⌘Q, asks) |
 
+For `story.setDirection`, `story.get`, `type.fillWithPlaceholder` and `file.exportText`, a `story` or `frame`
+target must be an unsigned integer ID the document has: one it doesn't have is an error naming which, never a
+quiet fall back to the selection. Both are checked when both are given, and `story` wins. A frame that holds no
+text is refused, except by Fill with Placeholder Text, which converts it; a null or absent target uses the
+selection.
+
 Data merge runs through `engine.execute` like any command: `data.source.select`, `data.fields`, `data.placeholder.add` /
 `.remove`, `data.options`, `data.preview` / `data.preview.stop`, `data.merge`. `data.merge` creates and activates a new
 merged document; the template stays as it was ([agents.md](agents.md#data-merge)).
