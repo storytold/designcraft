@@ -17,6 +17,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod about;
 pub mod canvas;
+pub mod channel;
 pub mod chrome;
 pub mod control;
 pub mod credits;
@@ -315,6 +316,9 @@ pub struct DesignApp {
     /// A save asked for while the open-time checks of the document's linked files run: it runs
     /// once they are done, so the first save already writes the links they confirm.
     pub(crate) waiting_save: Option<WaitingSave>,
+    /// Document files being read on worker threads, in the order they were asked for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) opening: Vec<app::opening::Opening>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
