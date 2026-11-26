@@ -1169,13 +1169,13 @@ mod tests {
             w.click(Role::CheckBox, "Drop Shadow");
             assert!(crate::effects_dialog::is_on(&w.app.ui.dialog.as_ref().unwrap().fields["fx"], "dropShadow"));
             w.click(Role::ListItem, "General");
-            assert_eq!(effects(&w.app), before, "name/includes/navigation are strictly draft-only");
+            assert_eq!(&effects(&w.app), before, "name/includes/navigation are strictly draft-only");
             w.click(Role::CheckBox, "Apply Style to Selection");
             assert!(!w.app.ui.dialog.as_ref().unwrap().b("apply"));
             w.tab_to(Role::CheckBox, "Apply Style to Selection");
             w.key(Key::Space);
             assert!(w.app.ui.dialog.as_ref().unwrap().b("apply"));
-            assert_eq!(effects(&w.app), before);
+            assert_eq!(&effects(&w.app), before);
         }
 
         /// OK makes the style and applies it to its captured selection: two real engine commands, one journal entry
@@ -1423,7 +1423,7 @@ mod tests {
                 w.pointer(rect.center(), false); // Release is delivered during the actual public guard.
                 assert!(w.guarded > callbacks, "the guarded body really ran");
                 assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields);
-                assert_eq!(effects(&w.app), before);
+                assert_eq!(&effects(&w.app), before);
                 w.pass = Pass::Body;
                 w.quiet(&before);
                 assert_eq!(w.app.ui.dialog.as_ref().unwrap().fields, fields, "guarded release cannot replay on an ordinary idle frame");
@@ -1469,7 +1469,7 @@ mod tests {
             w.key(Key::Escape);
             assert!(w.app.ui.dialog.is_some(), "the popup owns Escape, not its host");
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
-            assert_eq!(effects(&w.app), before);
+            assert_eq!(&effects(&w.app), before);
             let combo_id = w.ax_control(Role::ComboBox, "Paragraph Style:").0;
             assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(false));
             // No idle, recovery Tab, synthetic focus, or second opening click before Enter.
@@ -1481,7 +1481,7 @@ mod tests {
             );
             assert!(w.app.ui.dialog.is_some());
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
-            assert_eq!(effects(&w.app), before);
+            assert_eq!(&effects(&w.app), before);
             w.key(Key::Escape);
             w.idle();
             assert!(!w.ax.as_ref().unwrap().nodes.iter().any(|(_, n)| n.role() == Role::ListBox));
@@ -1522,7 +1522,7 @@ mod tests {
             w.key(Key::Escape);
             assert!(w.app.ui.dialog.is_some(), "the popup owns Escape before the host");
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
-            assert_eq!(effects(&w.app), before);
+            assert_eq!(&effects(&w.app), before);
             let combo_id = w.ax_control(Role::ComboBox, "Paragraph Style:").0;
             assert_eq!(
                 w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(),
@@ -1541,7 +1541,7 @@ mod tests {
             w.tab_to(Role::CheckBox, "Apply Next Style");
             w.key(Key::Space);
             assert!(w.app.ui.dialog.as_ref().unwrap().b("applyNext"));
-            assert_eq!(effects(&w.app), before);
+            assert_eq!(&effects(&w.app), before);
             w.footer("OK");
             let created = object_style(&w.app, "Paragraph workflow");
             assert_eq!(created.paragraph_style.as_deref(), Some("Workflow Body"));

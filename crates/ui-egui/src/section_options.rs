@@ -370,6 +370,226 @@ fn framework_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
 mod tests {
     use super::*;
 
+    use craft_ui_widgets::runtime::inspect::{Recorded, record};
+    use egui::{Event, Key, Modifiers, PointerButton, vec2};
+    use egui_kittest::Harness;
+    use std::sync::Arc;
+
+    type Window = (DesignApp, Option<Arc<Recorded>>, bool, bool, bool);
+    type HistoryState = Vec<(String, Arc<designcraft_doc::Document>, designcraft_doc::Selection)>;
+    #[derive(Clone)]
+    struct Effects {
+        revision: u64,
+        undo: usize,
+        redo: usize,
+        document: Arc<designcraft_doc::Document>,
+        saved: Arc<designcraft_doc::Document>,
+        journal: Vec<(String, Value)>,
+        undo_entries: HistoryState,
+        redo_entries: HistoryState,
+        history_limit: usize,
+        selection: designcraft_doc::Selection,
+        uid: u64,
+        epoch: u64,
+        saved_revision: u64,
+        dirty: bool,
+    }
+    fn app_effects(app: &DesignApp) -> Effects {
+        let st = app.session.active().unwrap();
+        let history = |entries: &[designcraft_engine::HistoryEntry]| -> HistoryState {
+            entries.iter().map(|entry| (entry.label.clone(), entry.doc.clone(), entry.selection.clone())).collect()
+        };
+        Effects {
+            revision: st.revision,
+            undo: st.history.undo.len(),
+            redo: st.history.redo.len(),
+            document: st.doc.clone(),
+            saved: st.saved_doc.clone(),
+            journal: app.session.journal.clone(),
+            undo_entries: history(&st.history.undo),
+            redo_entries: history(&st.history.redo),
+            history_limit: st.history.limit,
+            selection: st.selection.clone(),
+            uid: st.uid,
+            epoch: st.identity_epoch,
+            saved_revision: st.saved_revision,
+            dirty: st.is_dirty(),
+        }
+    }
+    fn effects(h: &Harness<'_, Window>) -> Effects {
+        app_effects(&h.state().0)
+    }
+    fn assert_app_quiet(app: &DesignApp, before: &Effects) {
+        let now = app_effects(app);
+        assert_eq!((now.revision, now.undo, now.redo), (before.revision, before.undo, before.redo));
+        assert_eq!(now.document.as_ref(), before.document.as_ref());
+        assert_eq!(now.saved.as_ref(), before.saved.as_ref());
+        assert_eq!(now.journal, before.journal);
+        assert_eq!(now.undo_entries, before.undo_entries);
+        assert_eq!(now.redo_entries, before.redo_entries);
+        assert_eq!(now.history_limit, before.history_limit);
+        assert_eq!(now.selection, before.selection);
+        assert_eq!((now.uid, now.epoch, now.saved_revision, now.dirty), (before.uid, before.epoch, before.saved_revision, before.dirty));
+        assert!(Arc::ptr_eq(&now.document, &before.document), "quiet frames do not even replace the live allocation");
+        assert!(Arc::ptr_eq(&now.saved, &before.saved), "quiet frames preserve saved allocation identity");
+    }
+    fn assert_quiet(h: &Harness<'_, Window>, before: &Effects) {
+        assert_app_quiet(&h.state().0, before);
+    }
+    fn native_from_same_state(app: &DesignApp, draft: &Dialog) -> DesignApp {
+        // Public accepted seams only: preserve the COMPLETE DocState, its local next_id,
+        // saved/live allocations, identity, selection and history. Do not rebuild a document
+        // from page numbers or normalize IDs. This empty fixture has no external book/story.
+        assert_eq!(app.session.documents().len(), 1);
+        assert!(app.session.book.is_none());
+        assert!(app.session.active().unwrap().doc.settings.primary_story.is_none());
+        let mut session = designcraft_engine::Session::new();
+        session.prefs = app.session.prefs.clone();
+        session.cache = app.session.cache.clone();
+        session.add_document(app.session.active().unwrap().clone());
+        session.journal = app.session.journal.clone();
+        let mut native = DesignApp::new_for_panel_tests(session, crate::Services::default());
+        native.ui.language = app.ui.language.clone();
+        native.ui.dialog = Some(draft.clone());
+        assert_app_quiet(&native, &app_effects(app));
+        native
+    }
+    fn expected_confirm(app: &DesignApp, draft: &Dialog) -> DesignApp {
+        let mut native = native_from_same_state(app, draft);
+        // The SAME existing public app/controller used by SDK settlement, invoked without
+        // synthesizing its engine payload or implementing a repagination solver in this test.
+        crate::dialogs::confirm(&mut native).unwrap();
+        assert!(native.ui.dialog.is_none());
+        native
+    }
+    fn assert_native_outcome(h: &Harness<'_, Window>, native: &DesignApp, before: &Effects) -> Effects {
+        let expected = app_effects(native);
+        let actual = effects(h);
+        // IDs, next_id, geometry, settings, styles and all other Document fields stay in this
+        // equality. This helper is for genuine edits/Undo/Redo, not no-op confirmation.
+        assert_eq!(
+            actual.document.as_ref(),
+            expected.document.as_ref(),
+            "the entire SDK outcome must equal the explicit native/public-confirm outcome"
+        );
+        assert_eq!(actual.saved.as_ref(), expected.saved.as_ref());
+        assert_eq!((actual.undo, actual.redo), (expected.undo, expected.redo));
+        assert_eq!(actual.undo_entries, expected.undo_entries);
+        assert_eq!(actual.redo_entries, expected.redo_entries);
+        assert_eq!(actual.history_limit, expected.history_limit);
+        assert_eq!(actual.selection, expected.selection);
+        assert_eq!(
+            (actual.uid, actual.epoch, actual.saved_revision, actual.dirty),
+            (expected.uid, expected.epoch, expected.saved_revision, expected.dirty)
+        );
+        assert_eq!(actual.journal, expected.journal);
+        assert_eq!(actual.saved.as_ref(), before.saved.as_ref());
+        assert!(Arc::ptr_eq(&expected.saved, &before.saved), "native numbering/Undo/Redo never saves the document");
+        assert!(Arc::ptr_eq(&actual.saved, &before.saved));
+        assert_eq!(
+            (actual.uid, actual.epoch, actual.saved_revision, actual.history_limit),
+            (before.uid, before.epoch, before.saved_revision, before.history_limit)
+        );
+        // Revisions are globally unique tokens, NOT a per-document command count. The native
+        // expectation itself consumes a token. Both real paths must allocate fresh tokens in
+        // execution order; one command/Undo/journal entry is asserted independently below.
+        assert!(expected.revision > before.revision, "the native command allocates a fresh revision");
+        assert!(actual.revision > expected.revision, "the subsequent SDK/app command allocates its own fresh revision");
+        actual
+    }
+    fn assert_noop_confirm(h: &Harness<'_, Window>, native: &DesignApp, before: &Effects) -> Effects {
+        let expected = app_effects(native);
+        assert_eq!(expected.journal.len(), before.journal.len() + 1, "a successful no-op still journals the command attempt");
+        assert_eq!(expected.journal.last().unwrap().0, "layout.numberingOptions");
+        let mut unchanged = before.clone();
+        unchanged.journal = expected.journal.clone();
+        // Owner revision, complete Doc/IDs, live+saved Arc identity, dirty/saved markers,
+        // full selection and every Undo/Redo entry remain EXACT, not just their lengths.
+        assert_app_quiet(native, &unchanged);
+        assert_quiet(h, &unchanged);
+        effects(h)
+    }
+    fn assert_one_confirm(after: &Effects, before: &Effects) {
+        assert_eq!(after.undo, before.undo + 1, "one accepted command records one complete undo entry");
+        assert_eq!(after.redo, 0, "a new edit clears redo");
+        assert_eq!(after.journal.len(), before.journal.len() + 1);
+        assert_eq!(after.journal.last().unwrap().0, "layout.numberingOptions");
+        assert!(!Arc::ptr_eq(&after.document, &before.document), "native confirmation replaces the live allocation");
+        assert!(after.dirty, "the confirmed allocation differs from the untouched saved document");
+    }
+    fn draft_with(draft: &Dialog, values: Value) -> Dialog {
+        let mut expected = draft.clone();
+        expected.fields.extend(values.as_object().unwrap().clone());
+        expected
+    }
+    fn step(h: &mut Harness<'_, Window>) {
+        let mut raw = std::mem::take(h.input_mut());
+        let ctx = h.ctx.clone();
+        h.state_mut().0.raw_input_hook(&ctx, &mut raw);
+        *h.input_mut() = raw;
+        h.step();
+    }
+    fn event(h: &mut Harness<'_, Window>, event: Event) {
+        h.input_mut().events.push(event);
+        step(h);
+    }
+    fn click_control(h: &mut Harness<'_, Window>, role: egui::accesskit::Role, name: &str) {
+        let role = format!("{role:?}");
+        let controls: Vec<_> = h
+            .state()
+            .1
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == role && f.name.as_deref() == Some(name)))
+            .collect();
+        assert_eq!(controls.len(), 1, "one accessible {role} named {name}, not a generic component-name suffix");
+        let pos = controls[0].rect.center();
+        event(h, Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+    }
+    fn style_popup(h: &Harness<'_, Window>) -> bool {
+        h.state()
+            .1
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .any(|e| e.facts.as_ref().is_some_and(|f| f.role == "ListBox" && f.name.as_deref() == Some("Page Numbering")))
+    }
+    fn tab_to_button(h: &mut Harness<'_, Window>, name: &str) {
+        let controls: Vec<_> = h
+            .state()
+            .1
+            .as_ref()
+            .unwrap()
+            .elements
+            .iter()
+            .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == "Button" && f.name.as_deref() == Some(name)))
+            .collect();
+        assert_eq!(controls.len(), 1, "one actual installed footer button named {name}");
+        let id = controls[0].id;
+        let mut visited = std::collections::HashSet::new();
+        while h.ctx.memory(|memory| memory.focused()) != Some(id) {
+            assert!(visited.insert(h.ctx.memory(|memory| memory.focused())), "natural Tab must reach the real {name} button");
+            for pressed in [true, false] {
+                event(h, Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            }
+        }
+    }
+    fn type_draft(h: &mut Harness<'_, Window>, name: &str, text: &str) {
+        click_control(h, egui::accesskit::Role::TextInput, name);
+        for pressed in [true, false] {
+            event(h, Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND });
+        }
+        event(h, Event::Text(text.into()));
+        step(h);
+    }
+
+
     /// A four-page document with Numbering & Section Options open (on page 1).
     fn open_app() -> DesignApp {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
@@ -447,225 +667,6 @@ mod tests {
 
     #[test]
     fn framework_number_drafts_choose_explicit_modes_before_blur_and_apply_atomically() {
-        use craft_ui_widgets::runtime::inspect::{Recorded, record};
-        use egui::{Event, Key, Modifiers, PointerButton, vec2};
-        use egui_kittest::Harness;
-        use std::sync::Arc;
-
-        type Window = (DesignApp, Option<Arc<Recorded>>, bool, bool, bool);
-        type HistoryState = Vec<(String, Arc<designcraft_doc::Document>, designcraft_doc::Selection)>;
-        #[derive(Clone)]
-        struct Effects {
-            revision: u64,
-            undo: usize,
-            redo: usize,
-            document: Arc<designcraft_doc::Document>,
-            saved: Arc<designcraft_doc::Document>,
-            journal: Vec<(String, Value)>,
-            undo_entries: HistoryState,
-            redo_entries: HistoryState,
-            history_limit: usize,
-            selection: designcraft_doc::Selection,
-            uid: u64,
-            epoch: u64,
-            saved_revision: u64,
-            dirty: bool,
-        }
-        fn app_effects(app: &DesignApp) -> Effects {
-            let st = app.session.active().unwrap();
-            let history = |entries: &[designcraft_engine::HistoryEntry]| -> HistoryState {
-                entries.iter().map(|entry| (entry.label.clone(), entry.doc.clone(), entry.selection.clone())).collect()
-            };
-            Effects {
-                revision: st.revision,
-                undo: st.history.undo.len(),
-                redo: st.history.redo.len(),
-                document: st.doc.clone(),
-                saved: st.saved_doc.clone(),
-                journal: app.session.journal.clone(),
-                undo_entries: history(&st.history.undo),
-                redo_entries: history(&st.history.redo),
-                history_limit: st.history.limit,
-                selection: st.selection.clone(),
-                uid: st.uid,
-                epoch: st.identity_epoch,
-                saved_revision: st.saved_revision,
-                dirty: st.is_dirty(),
-            }
-        }
-        fn effects(h: &Harness<'_, Window>) -> Effects {
-            app_effects(&h.state().0)
-        }
-        fn assert_app_quiet(app: &DesignApp, before: &Effects) {
-            let now = app_effects(app);
-            assert_eq!((now.revision, now.undo, now.redo), (before.revision, before.undo, before.redo));
-            assert_eq!(now.document.as_ref(), before.document.as_ref());
-            assert_eq!(now.saved.as_ref(), before.saved.as_ref());
-            assert_eq!(now.journal, before.journal);
-            assert_eq!(now.undo_entries, before.undo_entries);
-            assert_eq!(now.redo_entries, before.redo_entries);
-            assert_eq!(now.history_limit, before.history_limit);
-            assert_eq!(now.selection, before.selection);
-            assert_eq!((now.uid, now.epoch, now.saved_revision, now.dirty), (before.uid, before.epoch, before.saved_revision, before.dirty));
-            assert!(Arc::ptr_eq(&now.document, &before.document), "quiet frames do not even replace the live allocation");
-            assert!(Arc::ptr_eq(&now.saved, &before.saved), "quiet frames preserve saved allocation identity");
-        }
-        fn assert_quiet(h: &Harness<'_, Window>, before: &Effects) {
-            assert_app_quiet(&h.state().0, before);
-        }
-        fn native_from_same_state(app: &DesignApp, draft: &Dialog) -> DesignApp {
-            // Public accepted seams only: preserve the COMPLETE DocState, its local next_id,
-            // saved/live allocations, identity, selection and history. Do not rebuild a document
-            // from page numbers or normalize IDs. This empty fixture has no external book/story.
-            assert_eq!(app.session.documents().len(), 1);
-            assert!(app.session.book.is_none());
-            assert!(app.session.active().unwrap().doc.settings.primary_story.is_none());
-            let mut session = designcraft_engine::Session::new();
-            session.prefs = app.session.prefs.clone();
-            session.cache = app.session.cache.clone();
-            session.add_document(app.session.active().unwrap().clone());
-            session.journal = app.session.journal.clone();
-            let mut native = DesignApp::new_for_panel_tests(session, crate::Services::default());
-            native.ui.language = app.ui.language.clone();
-            native.ui.dialog = Some(draft.clone());
-            assert_app_quiet(&native, &app_effects(app));
-            native
-        }
-        fn expected_confirm(app: &DesignApp, draft: &Dialog) -> DesignApp {
-            let mut native = native_from_same_state(app, draft);
-            // The SAME existing public app/controller used by SDK settlement, invoked without
-            // synthesizing its engine payload or implementing a repagination solver in this test.
-            crate::dialogs::confirm(&mut native).unwrap();
-            assert!(native.ui.dialog.is_none());
-            native
-        }
-        fn assert_native_outcome(h: &Harness<'_, Window>, native: &DesignApp, before: &Effects) -> Effects {
-            let expected = app_effects(native);
-            let actual = effects(h);
-            // IDs, next_id, geometry, settings, styles and all other Document fields stay in this
-            // equality. This helper is for genuine edits/Undo/Redo, not no-op confirmation.
-            assert_eq!(
-                actual.document.as_ref(),
-                expected.document.as_ref(),
-                "the entire SDK outcome must equal the explicit native/public-confirm outcome"
-            );
-            assert_eq!(actual.saved.as_ref(), expected.saved.as_ref());
-            assert_eq!((actual.undo, actual.redo), (expected.undo, expected.redo));
-            assert_eq!(actual.undo_entries, expected.undo_entries);
-            assert_eq!(actual.redo_entries, expected.redo_entries);
-            assert_eq!(actual.history_limit, expected.history_limit);
-            assert_eq!(actual.selection, expected.selection);
-            assert_eq!(
-                (actual.uid, actual.epoch, actual.saved_revision, actual.dirty),
-                (expected.uid, expected.epoch, expected.saved_revision, expected.dirty)
-            );
-            assert_eq!(actual.journal, expected.journal);
-            assert_eq!(actual.saved.as_ref(), before.saved.as_ref());
-            assert!(Arc::ptr_eq(&expected.saved, &before.saved), "native numbering/Undo/Redo never saves the document");
-            assert!(Arc::ptr_eq(&actual.saved, &before.saved));
-            assert_eq!(
-                (actual.uid, actual.epoch, actual.saved_revision, actual.history_limit),
-                (before.uid, before.epoch, before.saved_revision, before.history_limit)
-            );
-            // Revisions are globally unique tokens, NOT a per-document command count. The native
-            // expectation itself consumes a token. Both real paths must allocate fresh tokens in
-            // execution order; one command/Undo/journal entry is asserted independently below.
-            assert!(expected.revision > before.revision, "the native command allocates a fresh revision");
-            assert!(actual.revision > expected.revision, "the subsequent SDK/app command allocates its own fresh revision");
-            actual
-        }
-        fn assert_noop_confirm(h: &Harness<'_, Window>, native: &DesignApp, before: &Effects) -> Effects {
-            let expected = app_effects(native);
-            assert_eq!(expected.journal.len(), before.journal.len() + 1, "a successful no-op still journals the command attempt");
-            assert_eq!(expected.journal.last().unwrap().0, "layout.numberingOptions");
-            let mut unchanged = before.clone();
-            unchanged.journal = expected.journal.clone();
-            // Owner revision, complete Doc/IDs, live+saved Arc identity, dirty/saved markers,
-            // full selection and every Undo/Redo entry remain EXACT, not just their lengths.
-            assert_app_quiet(native, &unchanged);
-            assert_quiet(h, &unchanged);
-            effects(h)
-        }
-        fn assert_one_confirm(after: &Effects, before: &Effects) {
-            assert_eq!(after.undo, before.undo + 1, "one accepted command records one complete undo entry");
-            assert_eq!(after.redo, 0, "a new edit clears redo");
-            assert_eq!(after.journal.len(), before.journal.len() + 1);
-            assert_eq!(after.journal.last().unwrap().0, "layout.numberingOptions");
-            assert!(!Arc::ptr_eq(&after.document, &before.document), "native confirmation replaces the live allocation");
-            assert!(after.dirty, "the confirmed allocation differs from the untouched saved document");
-        }
-        fn draft_with(draft: &Dialog, values: Value) -> Dialog {
-            let mut expected = draft.clone();
-            expected.fields.extend(values.as_object().unwrap().clone());
-            expected
-        }
-        fn step(h: &mut Harness<'_, Window>) {
-            let mut raw = std::mem::take(h.input_mut());
-            let ctx = h.ctx.clone();
-            h.state_mut().0.raw_input_hook(&ctx, &mut raw);
-            *h.input_mut() = raw;
-            h.step();
-        }
-        fn event(h: &mut Harness<'_, Window>, event: Event) {
-            h.input_mut().events.push(event);
-            step(h);
-        }
-        fn click_control(h: &mut Harness<'_, Window>, role: egui::accesskit::Role, name: &str) {
-            let role = format!("{role:?}");
-            let controls: Vec<_> = h
-                .state()
-                .1
-                .as_ref()
-                .unwrap()
-                .elements
-                .iter()
-                .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == role && f.name.as_deref() == Some(name)))
-                .collect();
-            assert_eq!(controls.len(), 1, "one accessible {role} named {name}, not a generic component-name suffix");
-            let pos = controls[0].rect.center();
-            event(h, Event::PointerMoved(pos));
-            for pressed in [true, false] {
-                event(h, Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
-            }
-        }
-        fn style_popup(h: &Harness<'_, Window>) -> bool {
-            h.state()
-                .1
-                .as_ref()
-                .unwrap()
-                .elements
-                .iter()
-                .any(|e| e.facts.as_ref().is_some_and(|f| f.role == "ListBox" && f.name.as_deref() == Some("Page Numbering")))
-        }
-        fn tab_to_button(h: &mut Harness<'_, Window>, name: &str) {
-            let controls: Vec<_> = h
-                .state()
-                .1
-                .as_ref()
-                .unwrap()
-                .elements
-                .iter()
-                .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == "Button" && f.name.as_deref() == Some(name)))
-                .collect();
-            assert_eq!(controls.len(), 1, "one actual installed footer button named {name}");
-            let id = controls[0].id;
-            let mut visited = std::collections::HashSet::new();
-            while h.ctx.memory(|memory| memory.focused()) != Some(id) {
-                assert!(visited.insert(h.ctx.memory(|memory| memory.focused())), "natural Tab must reach the real {name} button");
-                for pressed in [true, false] {
-                    event(h, Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-                }
-            }
-        }
-        fn type_draft(h: &mut Harness<'_, Window>, name: &str, text: &str) {
-            click_control(h, egui::accesskit::Role::TextInput, name);
-            for pressed in [true, false] {
-                event(h, Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND });
-            }
-            event(h, Event::Text(text.into()));
-            step(h);
-        }
-
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.ui.language = "en".to_owned();
         app.run("file.new", json!({"pages": 4})).unwrap();

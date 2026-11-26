@@ -636,8 +636,8 @@ mod auto_fit_workflow_tests {
 
         // The real Selection-tool handle reaches transform.resize, which owns downstream refitting.
         // The unchanged W/H numeric path is transform.set and is deliberately not substituted for it.
-        let (resized, graphic_xf) = resize_by_handle(&mut h, ids[0]);
-        documents.push(resized);
+        let (_resized, graphic_xf) = resize_by_handle(&mut h, ids[0]);
+        documents.push(mark(&h).0);
 
         // A real content-move command establishes the moved picture that turning Auto-Fit off must preserve.
         h.state_mut().app.run("transform.move", json!({"dx":7.0,"dy":9.0,"content":true})).unwrap();
