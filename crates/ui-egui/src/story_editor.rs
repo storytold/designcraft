@@ -33,6 +33,10 @@ const LABEL_SIZE: f32 = 11.0;
 const LABEL_HEIGHT: f32 = 14.0;
 /// Size of the depth ruler's labels, in screen points.
 const RULER_LABEL_SIZE: f32 = 9.0;
+/// The mark after each paragraph that a paragraph break ends, while View › Story Editor › Show Paragraph Break Marks
+/// is on, as Type › Show Hidden Characters marks paragraph ends on the canvas.
+const PARAGRAPH_MARK: &str = "¶";
+
 /// Rows the text shows at least.
 const TEXT_ROWS: usize = 20;
 
@@ -73,6 +77,9 @@ struct Snapshot {
     style_width: Option<f32>,
     /// The text size, in points.
     size: f32,
+    /// View › Story Editor › Show Paragraph Break Marks: a ¶ after each paragraph's last row, as Type › Show Hidden
+    /// Characters marks paragraph ends on the canvas.
+    marks: bool,
 }
 
 impl Snapshot {
@@ -93,6 +100,7 @@ impl Snapshot {
             unit: st.doc.settings.vertical_units,
             style_width: app.ui.story_editor_style_column.then(|| style_column_width(app.ui.story_editor_style_width)),
             size: app.ui.story_editor_size.clamp(8.0, 36.0),
+            marks: app.ui.story_editor_paragraph_marks,
         })
     }
 
@@ -263,19 +271,23 @@ pub(crate) fn style_column_width(width: f32) -> f32 {
     if width.is_finite() { width.clamp(STYLE_COLUMN_RANGE.0, STYLE_COLUMN_RANGE.1) } else { STYLE_COLUMN_WIDTH }
 }
 
-/// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)`
-/// in layout order. A paragraph that wraps spans several rows, so counting characters per line
-/// drifts from what the editor draws; the rows themselves are the truth.
-fn paragraph_start_offsets(rows: impl Iterator<Item = (f32, bool)>) -> Vec<f32> {
-    let mut starts = Vec::new();
-    let mut at_start = true;
-    for (y, ends_with_newline) in rows {
-        if at_start {
-            starts.push(y);
-        }
-        at_start = ends_with_newline;
-    }
-    starts
+/// Where the paragraph break marks go, in galley coordinates, with the corner of the mark at that
+/// point: just after the last row of every paragraph that a paragraph break ends, past any spaces at
+/// its end. A right-to-left paragraph ends on the left, so its mark goes left of the row.
+fn paragraph_mark_spots(galley: &egui::Galley) -> Vec<(egui::Pos2, egui::Align2)> {
+    galley
+        .rows
+        .iter()
+        .filter(|row| row.ends_with_newline)
+        .map(|row| {
+            let rect = row.rect();
+            if row.rtl_paragraph {
+                (pos2(rect.min.x - 1.0, rect.min.y), egui::Align2::RIGHT_TOP)
+            } else {
+                (pos2(rect.max.x + 1.0, rect.min.y), egui::Align2::LEFT_TOP)
+            }
+        })
+        .collect()
 }
 
 /// The depth ruler's values: for each composed line that fits, its first byte and how deep the
@@ -403,6 +415,21 @@ fn char_offsets(text: &str, bytes: impl Iterator<Item = usize>) -> Vec<usize> {
 /// The editor's body on the craft UI framework, while it is installed: one app-defined component holds the story's
 /// text part and paints the style name column, its bar, the depth ruler and the overset line beside the rows the text
 /// part laid out; the OVERSET line under it is framework text.
+/// Vertical offset of the first laid-out row of each paragraph, from `(row y, row ends with a newline)` in layout
+/// order. A paragraph that wraps spans several rows, so counting characters per line drifts from what the editor
+/// draws; the rows themselves are the truth.
+fn paragraph_start_offsets(rows: impl Iterator<Item = (f32, bool)>) -> Vec<f32> {
+    let mut starts = Vec::new();
+    let mut at_start = true;
+    for (y, ends_with_newline) in rows {
+        if at_start {
+            starts.push(y);
+        }
+        at_start = ends_with_newline;
+    }
+    starts
+}
+
 mod framework {
     use super::{
         Changes, LABEL_HEIGHT, LABEL_SIZE, OVERSET_RED, RULER_WIDTH, STYLE_BAR_WIDTH, Snapshot, TEXT_ROWS, char_offsets, minimal_edit, paint_ruler,
@@ -545,12 +572,21 @@ mod framework {
             let mut options = TextOptions::new();
             options.lines = Some(TEXT_ROWS);
             options.size = Some(self.s.size);
+            // A paragraph that just fills the editor wraps while its mark shows, so the mark is drawn inside the field's
+            // width rather than in its margin or cut off.
+
             // The text starts at the top of the editor, beside the style names and the ruler that follow its rows.
             options.top = true;
             // The editor has no edit menu of its own, as the native editor has none.
             options.own_menu = true;
             if let Some(value) = cx.value() {
-                cx.text(text_key(), g.text, &PlainText, value, &options);
+                // A paragraph that just fills the editor wraps while its mark shows, so the mark is drawn inside the
+                // field's width rather than in its margin or cut off.
+                let mut text_rect = g.text;
+                if self.s.marks {
+                    text_rect.max.x = (text_rect.max.x - self.s.size.round()).max(text_rect.min.x);
+                }
+                cx.text(text_key(), text_rect, &PlainText, value, &options);
             }
         }
 
@@ -609,6 +645,13 @@ mod framework {
                 let bottom = overset_y.unwrap_or(origin.y + layout.galley.size().y);
                 let bar = Rect::from_min_max(pos2(ruler.min.x, origin.y), pos2(ruler.max.x, bottom));
                 paint_ruler(painter, self.s, depths, bar, &layout.galley, origin.y);
+            }
+            // A ¶ past each paragraph's last row, in the faint text, while the View menu shows them.
+            if self.s.marks {
+                let font = egui::FontId::proportional(self.s.size);
+                for (at, align) in super::paragraph_mark_spots(&layout.galley) {
+                    painter.text(origin + at.to_vec2(), align, super::PARAGRAPH_MARK, font.clone(), t.text_dim);
+                }
             }
             // The overset line: across the text, and the ruler when it shows, above the first character that doesn't fit.
             if let Some(y) = overset_y {
