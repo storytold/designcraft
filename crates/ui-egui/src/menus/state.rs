@@ -116,10 +116,12 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.baselineGrid" => app.ui.baseline_grid,
         "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
+        "view.linkBadge" => app.ui.link_badge,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
         "view.storyEditorStyleColumn" => app.ui.story_editor_style_column,
         "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
+        "view.storyEditorParagraphMarks" => app.ui.story_editor_paragraph_marks,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
         // to (selected text, cells or text frames) has it.
