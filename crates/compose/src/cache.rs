@@ -63,6 +63,44 @@ struct Entry {
 /// The story an entry was composed from, its composition and that composition's trace.
 type Before = (Arc<Story>, Arc<ComposedStory>, Arc<Trace>);
 
+thread_local! {
+    /// Index builds running on this thread, by cache and which index (`true`: cross-reference
+    /// anchor pages). A composition that asks for an index that is still being built gets an empty
+    /// one instead of building it again: the running-header index composes every heading source,
+    /// and a source can be wrapped by a story anchored in a story that holds a running header, so
+    /// asking again would recurse until the stack ran out.
+    static BUILDING: std::cell::RefCell<Vec<(*const Cache, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Marks one of [`BUILDING`]'s entries for as long as the build it belongs to runs.
+struct Building((*const Cache, bool));
+
+impl Building {
+    /// `None` when that index is already being built for that cache on this thread.
+    fn start(cache: &Cache, xrefs: bool) -> Option<Building> {
+        let key = (cache as *const Cache, xrefs);
+        BUILDING.with(|b| {
+            let mut b = b.borrow_mut();
+            if b.contains(&key) {
+                return None;
+            }
+            b.push(key);
+            Some(Building(key))
+        })
+    }
+
+    /// Is an index being built for `cache` on this thread?
+    fn any(cache: &Cache) -> bool {
+        BUILDING.with(|b| b.borrow().iter().any(|k| std::ptr::eq(k.0, cache)))
+    }
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        BUILDING.with(|b| b.borrow_mut().retain(|k| *k != self.0));
+    }
+}
+
 /// How many leading values of a [`signature`] identify the story's own allocation and revision;
 /// the rest is everything else the composition was made from.
 const STORY_SIG: usize = 2;
@@ -340,6 +378,12 @@ impl Cache {
             before.as_ref().map(|(story, composed, trace)| Reuse { story, composed, trace }),
         );
         let (out, trace) = (Arc::new(out), trace.map(Arc::new));
+        // A composition made while an index is being built can hold an empty running value or
+        // unresolved cross-references (the index is not finished): keep it out of the cache, so the
+        // composition made with the finished index replaces it.
+        if Building::any(self) {
+            return out;
+        }
         let mut g = self.map.lock().unwrap_or_else(PoisonError::into_inner);
         let stamp = g.1;
         if g.0.len() > 4096 {
@@ -436,7 +480,8 @@ impl Cache {
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// Anchor pages for cross-references (rebuilt when the document changes).
+    /// Anchor pages for cross-references (rebuilt when the document changes). An empty index while
+    /// this one is being built: a composition it needs asked for it again.
     pub fn xref_index(&self, doc: &Document) -> Arc<crate::xref::XrefIndex> {
         let sig = doc_signature(doc);
         if let Some((s, r)) = &*self.xrefs.lock().unwrap_or_else(PoisonError::into_inner)
@@ -450,12 +495,14 @@ impl Cache {
         {
             return r.clone();
         }
+        let Some(_building) = Building::start(self, true) else { return Arc::new(crate::xref::XrefIndex::default()) };
         let r = Arc::new(crate::xref::XrefIndex::build(doc, &|sid| self.get(doc, sid, None)));
         *self.xrefs.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
     }
 
-    /// The running-header index for `doc` (rebuilt when the document changes).
+    /// The running-header index for `doc` (rebuilt when the document changes). An empty index while
+    /// this one is being built: a composition it needs asked for it again.
     pub fn running_index(&self, doc: &Document) -> Arc<RunningIndex> {
         let sig = doc_signature(doc);
         if let Some((s, r)) = &*self.running.lock().unwrap_or_else(PoisonError::into_inner)
@@ -469,6 +516,7 @@ impl Cache {
         {
             return r.clone();
         }
+        let Some(_building) = Building::start(self, false) else { return Arc::new(RunningIndex::default()) };
         let r = Arc::new(RunningIndex::build(doc, &|sid| self.get(doc, sid, None)));
         *self.running.lock().unwrap_or_else(PoisonError::into_inner) = Some((sig, r.clone()));
         r
