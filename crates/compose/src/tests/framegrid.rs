@@ -185,6 +185,46 @@ fn a_paragraph_aligned_higher_in_its_row_takes_the_next_row() {
 }
 
 #[test]
+fn an_empty_paragraph_takes_the_rows_its_marks_em_box_needs() {
+    // InDesign: an empty paragraph whose mark is 36 pt takes three 12 pt rows (18 pt apart), so
+    // the next line starts below them.
+    let first_row_after = |mark: f64| {
+        let (lines, rows) = grid_lines("AB\n\nCD", aligned(R::EmCenter), |d, sid| {
+            // Leading below a cell, so only the em box can make the mark take more rows.
+            d.story_mut(sid).unwrap().format_chars(3..4, |f| {
+                f.over.size = Some(mark);
+                f.over.leading = Some(designcraft_doc::Leading::Points(6.0));
+            });
+        });
+        let last = lines.last().unwrap();
+        ((em_box(last).0 - rows.top) / rows.pitch).round()
+    };
+    assert_eq!(first_row_after(12.0), 2.0, "a 12 pt mark takes one row");
+    assert!(first_row_after(36.0) >= 4.0, "a 36 pt mark takes rows 1 to 3: {}", first_row_after(36.0));
+}
+
+#[test]
+fn vertical_justification_moves_frame_grid_lines_by_whole_rows() {
+    // InDesign: Bottom puts the last line on the last row and Center moves the lines by whole rows.
+    for vj in [designcraft_doc::VerticalJustification::Bottom, designcraft_doc::VerticalJustification::Center] {
+        let (lines, rows) = grid_lines("AB\nCD\nEF", aligned(R::EmCenter), |d, sid| {
+            let fid = d.story(sid).unwrap().frames[0];
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.vertical_justification = vj;
+        });
+        for l in &lines {
+            let at = (em_box(l).0 - rows.top) / rows.pitch;
+            assert!((at - at.round()).abs() < 1e-6, "{vj:?}: a line between rows ({at})");
+        }
+        let last = (em_box(lines.last().unwrap()).0 - rows.top) / rows.pitch;
+        assert!(last.round() > 2.0, "{vj:?}: the lines moved ({last})");
+        if vj == designcraft_doc::VerticalJustification::Bottom {
+            let next = rows.top + (last.round() + 1.0) * rows.pitch + rows.cell;
+            assert!(next > 400.0 + 1e-6, "{vj:?}: a row is left below the last line ({last})");
+        }
+    }
+}
+
+#[test]
 fn space_before_moves_a_line_to_the_next_row_it_reaches() {
     // Space before 20 takes the next line past row 1 to row 2; 5 keeps it on row 1.
     for (space, row) in [(5.0, 1.0), (20.0, 2.0)] {

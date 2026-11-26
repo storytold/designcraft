@@ -1944,11 +1944,34 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         // A frame grid's first line, under an Ascent or Em Box Height first baseline, starts with
         // its own em box at the column top, so it goes on the first row whatever the face's
         // ascender (InDesign, observed black-box: Ascent sets as Em Box Height there).
+        // An empty line has no glyph to measure: in a frame grid its em box is its paragraph mark's,
+        // split as the face's ascent and descent split it (InDesign gives an empty 36 pt paragraph
+        // the rows a 36 pt em box needs).
+        let mark_em = (f.frame_grid.is_some() && line_glyphs.iter().all(|g| g.adv <= 0.0))
+            .then(|| {
+                let top = -mark_chars.size * asc / (asc + desc).max(1e-9);
+                (top, top + mark_chars.size)
+            })
+            .filter(|(top, bottom)| top.is_finite() && bottom.is_finite());
+        let reference_offset = |r: designcraft_doc::cjk::CharacterAlignment| {
+            use designcraft_doc::cjk::CharacterAlignment as R;
+            match mark_em {
+                Some((top, bottom)) => match r {
+                    R::Baseline => 0.0,
+                    R::EmTop => top,
+                    R::EmCenter => (top + bottom) / 2.0,
+                    R::EmBottom => bottom,
+                    R::IcfTop => top + 0.05 * (bottom - top),
+                    R::IcfBottom => bottom - 0.05 * (bottom - top),
+                },
+                None => grid::reference_offset(line_glyphs, r),
+            }
+        };
         let em_start = (f.frame_grid.is_some()
             && cur.last_baseline.is_none()
             && matches!(f.opts.first_baseline, FirstBaseline::Ascent | FirstBaseline::EmboxHeight))
         .then(|| {
-            let above = -grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmTop);
+            let above = -reference_offset(designcraft_doc::cjk::CharacterAlignment::EmTop);
             col.y0 + above.max(f.opts.first_baseline_min)
         })
         .filter(|b| b.is_finite());
@@ -1968,7 +1991,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
             match para_block.filter(|(at, _)| line_no > 0 && *at == (cur.fi, cur.col)) {
                 Some((_, end)) => grid_end = Some(end),
                 None => {
-                    let r = grid::reference_offset(line_glyphs, line_ref);
+                    let r = reference_offset(line_ref);
                     let block = n > 0 && pp.paragraph_gyoudori && line_no == 0;
                     let span = if block {
                         let aki_below = |line_model, line_lead| (line_model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(line_lead);
@@ -1995,8 +2018,8 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                         _ if block => grid::lines_for(span, inc, n),
                         // Auto gyoudori in a frame grid: the rows the line's em box needs.
                         Some(rows) if n == 0 => {
-                            let em = grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmBottom)
-                                - grid::reference_offset(line_glyphs, designcraft_doc::cjk::CharacterAlignment::EmTop);
+                            let em = reference_offset(designcraft_doc::cjk::CharacterAlignment::EmBottom)
+                                - reference_offset(designcraft_doc::cjk::CharacterAlignment::EmTop);
                             rows.rows_for(em)
                         }
                         _ => n.max(1),
@@ -6367,7 +6390,9 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
+        // A frame grid's lines move by whole rows, as a baseline grid's move by whole steps.
+        let rows_step = f.frame_grid.map(|rows| rows.pitch).filter(|p| *p > 0.0 && p.is_finite());
+        let step = f.countable_grid().map(|(_, inc)| inc).or(rows_step).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
