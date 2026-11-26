@@ -160,13 +160,9 @@ mod framework {
                                 ui.painter().rect_filled(page, 0.0, blank);
                             }
                             let _ = border;
-                            ui.painter().text(
-                                egui::pos2(cr.center().x, cr.max.y - 12.0),
-                                egui::Align2::CENTER_CENTER,
-                                name,
-                                crate::theme::semibold(11.0),
-                                t.text_strong,
-                            );
+                            // The name is cut to the tile's width: a long file name must not run into its neighbour.
+                            let galley = crate::rtl::truncated(ui.ctx(), &name, crate::theme::semibold(11.0), t.text_strong, cr.width() - 12.0);
+                            ui.painter().galley(egui::pos2(cr.center().x - galley.size().x / 2.0, cr.max.y - 18.0), galley, t.text_strong);
                             if resp.clicked() {
                                 asks.push(Ask::Recent(*i));
                             }
