@@ -305,12 +305,13 @@ pub(super) fn link_badges(
         let Some(sp) = doc.spread(slot.spread) else { continue };
         // Parent items shown on the pages (not those a page overrides), as draw_frames finds them.
         for (pi, page) in sp.pages.iter().enumerate() {
+            let overridden = doc.overridden_parent_items(slot.spread, pi);
             for (ppi, ppg) in doc.shown_parent_pages(slot.spread, pi) {
                 let Some(parent) = doc.parents.get(ppi) else { continue };
                 let Some(ppage) = parent.pages.get(ppg) else { continue };
                 let dx = page.x - ppage.x;
                 for it in &parent.items {
-                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || page.overridden.contains(&it.id) {
+                    if (parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppg)) || overridden.contains(&it.id) {
                         continue;
                     }
                     walk(doc, xf, it, slot.xf * Affine::translate((dx, 0.0)), status, &mut out);
