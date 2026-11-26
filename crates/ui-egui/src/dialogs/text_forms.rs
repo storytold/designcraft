@@ -1106,6 +1106,27 @@ mod tests {
         assert_eq!(kit::undo_steps(&h), undo + 1, "one undo step");
     }
 
+    /// A destination of the other kind than Link To shows (a stale key after the user switched, or an anchor key with no
+    /// anchors listed) is refused: nothing is inserted and the dialog says what to choose.
+    #[test]
+    fn insert_xref_form_refuses_a_destination_of_the_other_link_to_kind() {
+        let (mut app, story) = kit::two_paragraphs();
+        app.run("app.insertXrefDialog", json!({})).unwrap();
+        let mut h = kit::harness(app);
+        let undo = kit::undo_steps(&h);
+        for (link_to, target) in [("paragraph", "a:7".to_owned()), ("anchor", format!("{story}:1"))] {
+            let d = h.state_mut().ui.dialog.as_mut().unwrap();
+            d.fields.insert("linkTo".into(), json!(link_to));
+            d.fields.insert("target".into(), json!(target));
+            kit::steps(&mut h, 2);
+            kit::click(&mut h, &[Role::Button], "OK", 0);
+            assert!(h.state().ui.dialog.is_some(), "{link_to}: a target of the other kind keeps the dialog open");
+            assert!(!kit::draft(&h).s("status").is_empty(), "{link_to}: the dialog says what to choose");
+            assert!(kit::journal(&h, "xref.insert").is_empty(), "{link_to}: nothing was inserted");
+            assert_eq!(kit::undo_steps(&h), undo);
+        }
+    }
+
     /// Guards New Cross-Reference: the destination is picked from the framework lists, OK runs `xref.insert` with it, and
     /// OK without one keeps the dialog open with the reason.
     #[test]

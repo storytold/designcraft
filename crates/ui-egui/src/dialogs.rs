@@ -2680,12 +2680,18 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         "insertXref" => {
             let format = d.s("format");
             let target = d.s("target");
+            // The destination has to be the kind Link To shows: a target kept from the other kind (the user switched Link To
+            // after picking, or the list it was picked from is empty) is no destination.
+            let anchors = d.s("linkTo") == "anchor";
             let params = match target.split_once(':') {
-                Some(("a", id)) => json!({"anchor": id.parse::<u64>().unwrap_or(0), "format": format}),
-                Some((sid, pi)) => json!({"story": sid.parse::<u64>().unwrap_or(0), "para": pi.parse::<u64>().unwrap_or(0), "format": format}),
-                None => {
+                Some(("a", id)) if anchors => json!({"anchor": id.parse::<u64>().unwrap_or(0), "format": format}),
+                Some((sid, pi)) if sid != "a" && !anchors => {
+                    json!({"story": sid.parse::<u64>().unwrap_or(0), "para": pi.parse::<u64>().unwrap_or(0), "format": format})
+                }
+                _ => {
                     let mut d = d.clone();
-                    d.fields.insert("status".into(), json!("Choose a destination paragraph or text anchor."));
+                    let wanted = if anchors { "Choose a text anchor." } else { "Choose a destination paragraph." };
+                    d.fields.insert("status".into(), json!(wanted));
                     app.ui.dialog = Some(d);
                     return Err("no destination chosen".into());
                 }
