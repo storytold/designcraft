@@ -153,14 +153,18 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
 /// The Document, Page and Margins sections on the craft UI framework: every control a framework component over the layout
 /// and view commands.
 mod framework {
-    use super::*;
+    use super::{
+        DesignApp, FIELD_H, MARGIN_FIELDS, PAGE_PRESETS, Rect, Ui, block, divider, edited_margins, full_width, json, leave_page, margin_target,
+        margin_values, margins_and_columns, page_names, pick_page, pos2, preset_name, resize_document, rule, section, set_margins, set_page_size,
+        set_temp_bool, sub, temp_bool, units, vec2, widgets,
+    };
     use crate::framework_transform::{Number, Quantity, button, caption, check, choice, icon_button, icon_number, icon_toggle, number_field};
     use craft_ui_widgets::contract::{Bind, Props as _, Show as _};
     use craft_ui_widgets::text::link_toggle;
 
     /// The id of the control `key` of the section the `ui` shows.
     fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-        ui.id().with(("properties-document", key))
+        ui.scope_id().with(("properties-document", key))
     }
 
     /// The page-size preset select at `at` over `w` × `h` (Custom when it is none of them), and the orientation
@@ -253,11 +257,11 @@ mod framework {
         let (names, selected) = page_names(app, &d, spread, page);
         let choices: Vec<(usize, String)> = names.iter().cloned().enumerate().collect();
         let id = cid(ui, "page");
-        if let Some(p) = choice(ui, Some(sub(b, 0.0, 0.0, 93.0, FIELD_H)), id, crate::i18n::tr(&lang, "Page"), Some(selected), &choices, None) {
-            if p != selected {
-                pick_page(app, &d, spread, p);
-                return;
-            }
+        if let Some(p) = choice(ui, Some(sub(b, 0.0, 0.0, 93.0, FIELD_H)), id, crate::i18n::tr(&lang, "Page"), Some(selected), &choices, None)
+            && p != selected
+        {
+            pick_page(app, &d, spread, p);
+            return;
         }
         ui.add_space(3.0);
         // Preset and orientation, then W and H: this page alone.

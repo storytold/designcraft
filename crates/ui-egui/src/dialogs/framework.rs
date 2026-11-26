@@ -136,7 +136,7 @@ struct Opening {
 }
 
 fn opening_key() -> egui::Id {
-    egui::Id::new("designcraft-framework-dialog-opening")
+    egui::Id::unique("designcraft-framework-dialog-opening")
 }
 
 /// The opening of dialog `id` the host shows in this pass. It counts one more when the dialog was not shown in the

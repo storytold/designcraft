@@ -320,7 +320,7 @@ struct Shown {
 }
 
 fn shown_id() -> egui::Id {
-    egui::Id::new("designcraft-tool-cursor-shown")
+    egui::Id::unique("designcraft-tool-cursor-shown")
 }
 
 /// Hands the window the canvas's tool cursor image ([`Mode::Os`]) once the frame's passes are done. The craft UI

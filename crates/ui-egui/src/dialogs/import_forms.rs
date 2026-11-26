@@ -41,7 +41,7 @@ fn menus(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
     let lang = app.ui.language.clone();
     let mut toggled: Vec<(String, bool)> = Vec::new();
     Stack::new().id_salt("menus").fill_width().show(ui, |ui, _| {
-        text(ui, d, "query", &crate::i18n::tr(&lang, "Search"), true);
+        text(ui, d, "query", crate::i18n::tr(&lang, "Search"), true);
         let query = d.s("query").to_lowercase();
         Stack::new().id_salt("menus_items").fill_width().scroll(Scroll::vertical()).room_height(320.0).show(ui, |ui, _| {
             for (menu, label) in crate::menus::all_menu_items()

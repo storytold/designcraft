@@ -422,7 +422,7 @@ pub(crate) mod test_window {
     type FrameSlot = std::sync::Arc<std::sync::Mutex<Option<craft_ui_widgets::runtime::frame::FrameInput>>>;
 
     fn frame_slot_id() -> egui::Id {
-        egui::Id::new("test_window_frame_input")
+        egui::Id::unique("test_window_frame_input")
     }
 
     /// Before each frame, the framework's per-frame input (before the pass, as its docs have it) from the app's state.

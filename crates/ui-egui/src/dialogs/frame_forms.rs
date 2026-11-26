@@ -192,9 +192,9 @@ fn text_frame_body(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
     let sections: Vec<(&str, String)> =
         [("general", "General"), ("rules", "Column Rules"), ("baseline", "Baseline Options"), ("autosize", "Auto-Size")]
             .iter()
-            .map(|(id, caption)| (*id, tr(*caption)))
+            .map(|(id, caption)| (*id, tr(caption)))
             .collect();
-    let tallest = egui::Id::new(("text_frame_options_page_height", d.b("_shaped")));
+    let tallest = egui::Id::unique(("text_frame_options_page_height", d.b("_shaped")));
     let held: f32 = ui.data(|data| data.get_temp(tallest)).unwrap_or(0.0);
     let least = if d.b("_shaped") { TEXT_FRAME_PAGE_HEIGHT + 30.0 } else { TEXT_FRAME_PAGE_HEIGHT };
     Row::new().id_salt("frame_options_layout").fill_width().gap(Gap::Section).least_height(held.max(least)).show(ui, |ui, _| {

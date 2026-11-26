@@ -3,12 +3,11 @@
 //! numbering. OK applies `layout.section` and `layout.chapterNumbering`.
 
 use designcraft_doc::{ChapterSource, NumberStyle};
-use egui::{Ui, vec2};
+use egui::Ui;
 use serde_json::{Value, json};
 
 use crate::DesignApp;
 use crate::dialogs::Dialog;
-use crate::theme::Tokens;
 
 /// How wide, in characters, the page and chapter number fields and the prefix are (about 80 points, as the old window drew
 /// them); the section marker takes [`MARKER_CHARS`] (about 125).

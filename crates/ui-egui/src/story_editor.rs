@@ -159,7 +159,7 @@ struct Parked {
 }
 
 fn parked_id() -> egui::Id {
-    egui::Id::new("story_editor_parked")
+    egui::Id::unique("story_editor_parked")
 }
 
 /// Keeps the editor with its story: it closes with its document or story, and hides while another document is active.

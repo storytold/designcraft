@@ -731,7 +731,11 @@ pub fn font_menu_list(ui: &mut Ui, m: FontMenu<'_>) -> Option<FontPick> {
 /// The Font menu on the framework: a popover that hangs from a field, holding the search field, the filters and the
 /// rows. The rows, the filters and what a pick does are those of [`font_menu_header`] and [`font_menu_list`].
 pub(crate) mod framework {
-    use super::*;
+    use super::{
+        Align2, Color32, DesignApp, FONT_MENU_HEIGHT, FamilyInfo, FontClass, FontId, FontPick, MenuState, Rect, Row, SAMPLES, SIZES, STATE_ID,
+        Tokens, Ui, build_rows, clock, format_name, json, meta, paint_format, paint_star, pos2, preview, regular, remember_recent, toggle_favorite,
+        vec2,
+    };
     use craft_ui_widgets::buttons::{Button, IconButton};
     use craft_ui_widgets::contract::{Bind, Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Divider, Picture, Shade, Text};

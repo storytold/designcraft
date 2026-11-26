@@ -237,7 +237,7 @@ fn color_picker(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     }
     if Button::new(tr(app, "Add CMYK Swatch")).id_salt("color_picker_add_swatch").show(ui).clicked() {
         // The inks the fields show: as typed or given, else the colour converted.
-        let inks = nums::<4>(d, "cmyk").map_or_else(|| working_cmyk(picked_of(d).rgb).map(f64::from), |c| c);
+        let inks = nums::<4>(d, "cmyk").unwrap_or_else(|| working_cmyk(picked_of(d).rgb).map(f64::from));
         let [c, m, y, k] = inks.map(f64::round);
         let added = tr(app, "Added swatch");
         match app.run("swatch.create", json!({"color": {"c": c, "m": m, "y": y, "k": k}})) {

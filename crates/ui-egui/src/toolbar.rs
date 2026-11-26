@@ -223,7 +223,7 @@ mod framework {
             app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
         // A held activation also belongs to one layout of the rail: a reflow to another column count is a new rail, so a
         // press held across it is retired rather than activating at its slot's new place.
-        let rail_id = |cols: usize| egui::Id::new(("tools-rail", &target, cols));
+        let rail_id = |cols: usize| egui::Id::unique(("tools-rail", &target, cols));
         let toggle_h = 24.0;
         SLOTS.with(|slots| {
             LAST_USED.with(|last| {
@@ -255,7 +255,7 @@ mod framework {
                         let icon = if cols == 1 { "double-chevron-right" } else { "double-chevron-left" };
                         let label = tr("Toggle double column");
                         let toggled = IconButton::new(IconSpec::glyph(&Artwork(icon)))
-                            .id(egui::Id::new("tools-double-column"))
+                            .id(egui::Id::unique("tools-double-column"))
                             .label(label.clone())
                             .tooltip(label)
                             .size(ControlSize::Sm)
@@ -331,7 +331,7 @@ mod framework {
     /// An icon button of the panel's artwork `icon`, named and tipped `label`, on while `on`.
     fn button(ui: &mut Ui, key: &str, icon: &'static str, label: &str, on: bool) -> ButtonOutput {
         IconButton::new(IconSpec::glyph(&Artwork(icon)))
-            .id(egui::Id::new(("tools-footer", key)))
+            .id(egui::Id::unique(("tools-footer", key)))
             .label(label.to_owned())
             .tooltip(label.to_owned())
             .selected(on)
@@ -380,7 +380,7 @@ mod framework {
                     PairWell::paint(tr("Stroke (X)"), Mixed::Same(paint_of(doc.as_deref(), &stroke_sw))).ring(true),
                 ];
                 let pair = SwatchPair::new(tr("Fill and Stroke"), wells, Bind::given(active))
-                    .id(egui::Id::new("tools-fill-stroke"))
+                    .id(egui::Id::unique("tools-fill-stroke"))
                     .default_button(tr("Default Fill and Stroke (D)"))
                     .swap_button(tr("Swap Fill and Stroke (Shift+X)"))
                     .popover(false)
@@ -442,7 +442,7 @@ mod framework {
                         let face = glyph(k as u8);
                         let label = tr(tip);
                         let out = IconButton::new(IconSpec::glyph(&face))
-                            .id(egui::Id::new(("tools-apply", k)))
+                            .id(egui::Id::unique(("tools-apply", k)))
                             .label(label.clone())
                             .tooltip(label)
                             .selected(k == front_kind)
@@ -459,7 +459,7 @@ mod framework {
                 let label = tr(tip);
                 Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                     let out = IconButton::new(IconSpec::glyph(&face))
-                        .id(egui::Id::new("tools-apply"))
+                        .id(egui::Id::unique("tools-apply"))
                         .label(label.clone())
                         .tooltip(label.clone())
                         .size(ControlSize::Sm)
@@ -468,7 +468,7 @@ mod framework {
                         run = Some(id);
                     }
                     let rows: Vec<(String, &str)> = applies.iter().map(|(tip, id)| (tr(tip), *id)).collect();
-                    run = context_menu(ui, egui::Id::new("tools-apply-menu"), &label, &out, &rows).or(run);
+                    run = context_menu(ui, egui::Id::unique("tools-apply-menu"), &label, &out, &rows).or(run);
                 });
             }
             if let Some(id) = run {
@@ -494,7 +494,7 @@ mod framework {
             }
             Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                 let opener = button(ui, "view-options", "view-options", &label, false);
-                if let Some(id) = kit::menu(ui, egui::Id::new("tools-view-options"), &label, &opener, &groups) {
+                if let Some(id) = kit::menu(ui, egui::Id::unique("tools-view-options"), &label, &opener, &groups) {
                     let _ = app.run(id, json!({}));
                 }
             });
@@ -516,7 +516,7 @@ mod framework {
                         screen = Some("preview");
                     }
                     let rows: Vec<(String, &str)> = modes.iter().map(|(l, m)| (tr(l), *m)).collect();
-                    screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &other, &out, &rows).or(screen);
+                    screen = context_menu(ui, egui::Id::unique("tools-screen-menu"), &other, &out, &rows).or(screen);
                 });
             } else {
                 let preview = mode == crate::ScreenMode::Preview;
@@ -527,7 +527,7 @@ mod framework {
                         let _ = app.run("view.togglePreview", json!({}));
                     }
                     let rows: Vec<(String, &str)> = std::iter::once(("Normal", "normal")).chain(modes).map(|(l, m)| (tr(l), m)).collect();
-                    screen = context_menu(ui, egui::Id::new("tools-screen-menu"), &label, &out, &rows);
+                    screen = context_menu(ui, egui::Id::unique("tools-screen-menu"), &label, &out, &rows);
                 });
             }
             if let Some(mode) = screen {

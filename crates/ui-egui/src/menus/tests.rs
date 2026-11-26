@@ -258,7 +258,7 @@ fn open_menu<'a>(app: &'a mut DesignApp, runs: Vec<(&'static str, Vec<Item>)>, s
         let mut open = true;
         let shown: &DesignApp = app;
         let picked = craft_ui::menu::Menu::new("Test")
-            .id(egui::Id::new("menus-test-menu"))
+            .id(egui::Id::unique("menus-test-menu"))
             .opened_by(&opener, Trigger::Manual)
             .anchor(Anchor::Point(egui::pos2(20.0, 20.0)))
             .open(Bind::bound(&mut open))

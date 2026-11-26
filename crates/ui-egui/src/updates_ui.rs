@@ -182,7 +182,7 @@ fn message_dialog(ctx: &egui::Context, salt: &'static str, title: String, messag
     use craft_ui_widgets::display::Text;
     use craft_ui_widgets::runtime::overlay::Backdrop;
     let mut opened = true;
-    let shown = egui::Area::new(egui::Id::new((salt, "host"))).order(egui::Order::Foreground).show(ctx, |ui| {
+    let shown = egui::Area::new(egui::Id::unique((salt, "host"))).order(egui::Order::Foreground).show(ctx, |ui| {
         FrameworkDialog::new(title)
             .id_salt(salt)
             .opened(Bind::bound(&mut opened))

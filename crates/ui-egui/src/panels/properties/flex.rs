@@ -175,7 +175,11 @@ pub fn flex_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// The Flex Layout section on the craft UI framework: every control a framework component over the `flex` commands. Create Flex Layout and the direction and wrap buttons were already the
 /// framework's (`flex_create_choice`, `flex_icon_choice`) and keep their ids and geometry.
 mod framework {
-    use super::*;
+    use super::{
+        DesignApp, FIELD_H, FLEX_DIRECTIONS, FLEX_GAPS, FLEX_JUSTIFY, FLEX_PADDING, Rect, Stroke, StrokeKind, Tokens, Ui, Value, block, flex_arrow,
+        flex_cell, flex_create_choice, flex_icon_choice, flex_padding_set, flex_size_set, icons, json, place, section, selected_container,
+        set_temp_bool, sub, temp_bool, units, vec2,
+    };
     use crate::framework_transform::{Number, Quantity, choice, icon_number, number_field};
     use craft_behavior::Mixed;
     use craft_ui_widgets::buttons::IconButton;

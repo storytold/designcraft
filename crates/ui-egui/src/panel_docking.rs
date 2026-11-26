@@ -32,7 +32,7 @@ const HEADLESS_AREA: Rect = Rect::from_min_max(egui::Pos2::ZERO, pos2(1400.0, 90
 
 /// Where the context records that the craft UI runtime is installed on it.
 fn runtime_key() -> egui::Id {
-    egui::Id::new("designcraft-craft-ui-runtime")
+    egui::Id::unique("designcraft-craft-ui-runtime")
 }
 
 /// Records that the craft UI runtime is installed on `ctx`, which the dock needs to draw.
@@ -47,7 +47,7 @@ pub(crate) fn runtime_on(ctx: &egui::Context) -> bool {
 
 /// Where the last pass recorded what the area drew: its float space and the OS windows of its floating windows.
 fn drawn_key() -> egui::Id {
-    egui::Id::new("designcraft-dock-drawn")
+    egui::Id::unique("designcraft-dock-drawn")
 }
 
 /// What the dock drew in the last pass.
@@ -73,7 +73,7 @@ pub(crate) fn cancel_gesture(ctx: &egui::Context) {
 
 /// Where the context records the workspace generation the dock last showed.
 fn shown_generation_key() -> egui::Id {
-    egui::Id::new("designcraft-dock-workspace-generation")
+    egui::Id::unique("designcraft-dock-workspace-generation")
 }
 
 /// Ends a docking drag that started on the workspace before the one in use: another workspace replaced the arrangement,
@@ -1483,7 +1483,7 @@ impl DockPanels<String> for PanelContent<'_> {
         craft_ui::layout_components::Row::new().show(ui, |ui, cx| {
             let state = cx.memory::<Open>();
             let opener = craft_ui::buttons::IconButton::new(craft_ui::primitives::IconSpec::glyph(&MENU))
-                .id(egui::Id::new("designcraft-pages-panel-menu"))
+                .id(egui::Id::unique("designcraft-pages-panel-menu"))
                 .size(craft_theme::ControlSize::Sm)
                 .label(label.clone())
                 .tooltip(label.clone())

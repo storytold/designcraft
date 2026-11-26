@@ -65,7 +65,7 @@ pub(crate) fn row(app: &mut DesignApp, ui: &mut egui::Ui, block: Rect, label: &s
 /// The framework's percent field over `opacity` (0..=1) at `at`, named `label`: the percentage it committed this
 /// pass, when one did.
 fn field(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacity: f64) -> Option<f64> {
-    let region = ui.id().with("framework-opacity");
+    let region = ui.scope_id().with("framework-opacity");
     let mut rect = at;
     // The value goes in and its edits come out as events (`Bind::given`); `percent_of` is the row's single
     // ratio-to-percent boundary, so the field is given the whole percent it shows.
@@ -108,7 +108,7 @@ fn field(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacity:
 /// The framework's slider field over `opacity` (0..=1), named `label`: what the pass reported, the rect of its track as
 /// the framework laid it out, and whether the slider is still held.
 fn slider(ui: &mut egui::Ui, label: &str, opacity: f64) -> (Option<Gesture>, Option<Rect>, bool) {
-    let region = ui.id().with("framework-opacity-slider");
+    let region = ui.scope_id().with("framework-opacity-slider");
     let percent = percent_of(opacity);
     let (out, recorded) = craft_ui_widgets::runtime::inspect::record(ui, region, |ui| {
         SliderField::new(label.to_owned(), Bind::given(percent), 0.0..=100.0)
@@ -148,7 +148,7 @@ fn slider(ui: &mut egui::Ui, label: &str, opacity: f64) -> (Option<Gesture>, Opt
 /// opens and closes. The popover's slider runs the panel's live preview, so a drag shows on the page and its release
 /// is one undo step.
 fn chevron(app: &mut DesignApp, ui: &mut egui::Ui, at: Rect, label: &str, opacity: f64) {
-    let id = ui.id().with("framework-opacity-more");
+    let id = ui.scope_id().with("framework-opacity-more");
     let opener = IconButton::new(IconSpec::glyph(&Artwork("chevron-right"))).id(id).label(label.to_owned()).popup(PopupKind::Dialog).show_at(ui, at);
     app.framework_opacity_fields.push(("more".to_string(), opener.response.rect));
     // The open state is the popover's own, kept in its opener's slot: a click on the chevron opens and closes it, and

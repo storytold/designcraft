@@ -51,7 +51,7 @@ fn margins_and_columns(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Opti
                     Row::new().id_salt("margins_sides").fill_width().show(ui, |ui, _| {
                         FieldGroup::new(tr("Margins")).id_salt("margins_vertical").show(ui, |ui, _| {
                             for (key, facing_label, single_label) in &MARGIN_FIELDS[..2] {
-                                let label = tr(if facing { *facing_label } else { *single_label });
+                                let label = tr(if facing { facing_label } else { single_label });
                                 Field::new(label.clone()).id_salt(("margin_field", *key)).show(ui, |ui, _| measure_field(ui, d, key, &label));
                             }
                         });
@@ -66,7 +66,7 @@ fn margins_and_columns(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Opti
                         }
                         FieldGroup::new(tr("Margins")).id_salt("margins_horizontal").show(ui, |ui, _| {
                             for (key, facing_label, single_label) in &MARGIN_FIELDS[2..] {
-                                let label = tr(if facing { *facing_label } else { *single_label });
+                                let label = tr(if facing { facing_label } else { single_label });
                                 Field::new(label.clone()).id_salt(("margin_field", *key)).show(ui, |ui, _| measure_field(ui, d, key, &label));
                             }
                         });

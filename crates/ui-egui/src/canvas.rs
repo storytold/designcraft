@@ -30,7 +30,6 @@ mod tool_overlays;
 mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
-pub(crate) use frames::item_canvas_xf;
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]
 use frames::{frame_x, overset_frames, overset_marks, ported_frames, text_frames_in};
@@ -228,7 +227,7 @@ const KEY_TARGET: &str = "canvas_key_target";
 
 /// The key-target slot of `viewport`.
 fn key_target(viewport: egui::ViewportId) -> egui::Id {
-    egui::Id::new(KEY_TARGET).with(viewport)
+    egui::Id::unique(KEY_TARGET).with(viewport)
 }
 
 /// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
@@ -287,7 +286,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     // the page hides them). A widget that is not `FOCUSABLE` cannot hold focus either (egui drops it where the widget is
     // made), so the canvas is focusable exactly while it has focus: it takes focus by request (`take_key_focus`, a click) and
     // then keeps it, and Tab from another widget cannot reach it.
-    let last = egui::Id::new(CANVAS_LAST).with(app.pane);
+    let last = egui::Id::unique(CANVAS_LAST).with(app.pane);
     let held = ui.data(|data| data.get_temp::<egui::Id>(last)).is_some_and(|id| ui.memory(|memory| memory.has_focus(id)));
     let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
     ui.data_mut(|data| data.insert_temp(last, resp.id));

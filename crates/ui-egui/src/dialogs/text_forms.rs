@@ -648,7 +648,7 @@ pub(crate) fn rules_form(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, prefix: &
     let swatches = Swatches::new(doc.map(|d| &**d), None);
     let gaps = !matches!(kind, StrokeType::Solid);
     let gap_color = a.get(d, "gapColor").as_str().unwrap_or(designcraft_color::swatch::NONE).to_owned();
-    let widths = vec![(json!(true), tr("Column")), (json!(false), tr("Text"))];
+    let widths = [(json!(true), tr("Column")), (json!(false), tr("Text"))];
     let tint = |value: Value| value.as_f64().map(|t| (t * 100.0).round() / 100.0);
     Stack::new().id_salt(("paragraph_rules", prefix.to_owned())).fill_width().show(ui, |ui, _| {
         Row::new().id_salt("paragraph_rules_which").show(ui, |ui, _| {
@@ -819,7 +819,7 @@ fn hyphenation(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
     Stack::new().id_salt("hyphenation").fill_width().show(ui, |ui, _| {
         Row::new().id_salt("hyphenation_body").fill_width().show(ui, |ui, _| {
             Stack::new().id_salt("hyphenation_options").show(ui, |ui, _| hyphenation_form(&lang, ui, d, "", &current, units));
-            check(ui, d, &preview, "preview", &crate::i18n::tr(&lang, "Preview"), true);
+            check(ui, d, &preview, "preview", crate::i18n::tr(&lang, "Preview"), true);
         });
         super::hyphenation_preview(app, d);
         if let Some(status) = d.fields.get("status").and_then(Value::as_str).map(str::to_owned) {

@@ -300,7 +300,7 @@ fn an_emptied_picas_field_unsets_a_value_that_may_be_unset() {
                 );
                 let n = if ignorable { n.ignore("Ignore") } else { n };
                 let at = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), vec2(120.0, 22.0));
-                if let Some(v) = crate::framework_transform::number_field(ui, Some(at), egui::Id::new("space"), n) {
+                if let Some(v) = crate::framework_transform::number_field(ui, Some(at), egui::Id::unique("space"), n) {
                     *got = Some(v);
                 }
             },

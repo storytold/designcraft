@@ -145,7 +145,7 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let direction = if crate::i18n::is_rtl(&lang) { Direction::Rtl } else { Direction::Ltr };
     let asked_ok = host.pending.iter().any(|p| matches!(p, Pending::Ok));
     // This area only supplies a parent: the dialog mounts its own modal layer.
-    let shown = egui::Area::new(egui::Id::new("keyboard_shortcuts_host")).order(egui::Order::Foreground).show(ctx, |ui| {
+    let shown = egui::Area::new(egui::Id::unique("keyboard_shortcuts_host")).order(egui::Order::Foreground).show(ctx, |ui| {
         with_env(
             ui,
             |env| {

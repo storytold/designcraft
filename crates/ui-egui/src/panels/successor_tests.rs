@@ -78,7 +78,7 @@ fn swatch_select_lists_long_names_inside_their_rows() {
                 return;
             }
             let doc = app.session.active().unwrap().doc.clone();
-            let _ = crate::framework_transform::swatch_select(ui, None, egui::Id::new("swatch_list_test"), "Swatch", &doc, Some("[Black]"), None);
+            let _ = crate::framework_transform::swatch_select(ui, None, egui::Id::unique("swatch_list_test"), "Swatch", &doc, Some("[Black]"), None);
         },
         app,
     );
@@ -295,7 +295,7 @@ fn style_select_window<'a>(db: &'a designcraft_fonts::FontDb, family: &'a str) -
                     app,
                     ui,
                     None,
-                    egui::Id::new("style_select_db"),
+                    egui::Id::unique("style_select_db"),
                     &fonts,
                     *scope,
                     family,

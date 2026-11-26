@@ -1,7 +1,7 @@
 use super::typography::{para_field_min, show_typography_panel};
 use super::{
-    Align, DesignApp, FIELD_H, NumField, Rect, Ui, Value, block, full_width, json, more_options, section, set_temp_bool, show_panel, sub, temp_bool,
-    text_attrs, units, vec2, widgets,
+    Align, DesignApp, FIELD_H, NumField, Rect, Ui, Value, block, full_width, json, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs,
+    units, vec2, widgets,
 };
 
 // ---------------------------------------------------------------- Text
@@ -233,7 +233,11 @@ pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, 
 
 /// The text sections on the craft UI framework: every control a framework component over the engine commands.
 pub(crate) mod framework {
-    use super::*;
+    use super::{
+        Align, CHANGE_CASE, DesignApp, FIELD_H, INSET_FIELDS, LANGUAGES, PARA_ALIGN_BUTTONS, PARA_SPACING_ROWS, Rect, SCALES, TEXT_STROKE_WEIGHTS,
+        TRACKING, TYPE_SIZES, Ui, VERTICAL_JUSTIFICATIONS, Value, block, full_width, inset_link, inset_set, json, para_field_min, section,
+        set_temp_bool, shaped_inset, show_panel, show_typography_panel, sub, temp_bool, text_attrs, text_frame_target, units, vec2, widgets,
+    };
     use crate::framework_transform::{
         Letters, MenuRow, Number, Quantity, button, button_width, check, choice, font_style_select, icon_button, icon_number, icon_tip, icon_toggle,
         letters_button, menu, more_options, number_field,
@@ -248,7 +252,7 @@ pub(crate) mod framework {
 
     /// The id of the control `key` of the text sections the panel's `ui` shows.
     fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-        ui.id().with(("properties-text", key))
+        ui.scope_id().with(("properties-text", key))
     }
 
     /// The `•••` toggle under a section: whether it was clicked this pass.

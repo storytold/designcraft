@@ -762,7 +762,7 @@ pub(crate) fn rows(app: &mut DesignApp, ui: &mut egui::Ui, block: Rect, i: &SelI
             let value = values.iter().find(|(k, _)| *k == key).map_or(0.0, |(_, v)| *v);
             let at = Rect::from_min_size(block.min + vec2(x, yy), vec2(54.0, crate::widgets::FIELD_H));
             let label = crate::i18n::tr(&app.ui.language, caption.trim_end_matches(':')).to_owned();
-            let id = ui.id().with(("framework-transform", key));
+            let id = ui.scope_id().with(("framework-transform", key));
             let (committed, rect) = length_field(ui, at, id, &label, Length { value: Some(value), unit, range: None }, !i.locked);
             app.framework_fields.push((key.to_string(), rect));
             let Some(committed) = committed else { continue };

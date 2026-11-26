@@ -1,4 +1,4 @@
-use super::{Align, DesignApp, FIELD_H, Tokens, Ui, Value, block, caption, full_width, json, sub, text_attrs, units};
+use super::{Align, DesignApp, FIELD_H, Tokens, Ui, Value, block, full_width, json, sub, text_attrs, units};
 
 pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::character_panel(app, ui)
@@ -227,7 +227,11 @@ pub(crate) fn para_field_min(key: &str) -> f64 {
 
 /// The Character and Paragraph panels on the craft UI framework: every control a framework component over the engine commands.
 mod framework {
-    use super::*;
+    use super::{
+        Align, DIGIT_OPTIONS, DesignApp, FIELD_H, GRID_BUTTONS, PANEL_FIELD_W, PARA_ALIGNS, PARA_DECORATIONS, PARA_ROWS, ParagraphAction,
+        SAME_STYLE_SPACING, Ui, Value, axis_step, block, caption_width, digit_label, full_width, json, para_field_min, paragraph_menu_rows,
+        run_paragraph_action, show_typography_panel, sub, text_attrs, units, usable_axes, variable_font_style,
+    };
     use crate::framework_transform::{
         Artwork, Letters, MenuRow, Number, Quantity, caption, check, choice, font_style_select, icon_button, icon_number, icon_toggle,
         letters_button, menu, number_field, swatch_select,
@@ -245,7 +249,7 @@ mod framework {
 
     /// The id of the control `key` of the panel the `ui` shows.
     fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-        ui.id().with(("typography-panels", key))
+        ui.scope_id().with(("typography-panels", key))
     }
 
     /// A caption in its cell: one line, centred on the field beside it, cut with an ellipsis where the cell is too narrow
@@ -668,7 +672,7 @@ mod framework {
             })
             .collect();
         let id = cid(ui, "paragraph-menu-rows");
-        if let Some(action) = menu(ui, id, &crate::i18n::tr(&lang, "Paragraph"), opener, &rows) {
+        if let Some(action) = menu(ui, id, crate::i18n::tr(&lang, "Paragraph"), opener, &rows) {
             run_paragraph_action(app, action);
         }
     }

@@ -10,7 +10,6 @@ use designcraft_doc::cjk_settings::KentenKind;
 use serde_json::{Value, json};
 
 use super::{CharFields, Dialog};
-use crate::DesignApp;
 
 struct Section {
     id: &'static str,

@@ -903,7 +903,7 @@ mod framework {
             picked.as_deref().or(fill_cur.as_deref()).and_then(|name| rows.of_swatch(name)).map_or_else(Selection::default, Selection::single);
         let before = selection.clone();
         let renamable = |key: &RowKey| key.swatch().and_then(|name| doc.swatch(name)).is_some_and(|sw| !sw.locked);
-        let list_id = ui.id().with(("swatches-list", identity));
+        let list_id = ui.scope_id().with(("swatches-list", identity));
         let out = List::<RowKey>::new(tr(&lang, "Swatches").to_owned())
             .id(list_id)
             .select(SelectMode::Single)
@@ -3157,7 +3157,7 @@ mod ui223_swatches_rename_apply_tests {
                                     .auto_shrink([false, true])
                                     .show(ui, |ui| crate::dock::panel_body(&mut state.app, ui, "swatches"));
                                 state.viewport = output.inner_rect;
-                                state.offset = output.state.offset();
+                                state.offset = output.state.clamped_offset();
                             });
                         })
                         .1;

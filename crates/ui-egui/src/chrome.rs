@@ -1,13 +1,13 @@
 //! Window chrome: application bar (with menus), Control panel, document tabs, status bar, start screen.
 
-use designcraft_doc::{Align, Content};
+use designcraft_doc::Align;
 use designcraft_geom::Unit;
-use egui::{Color32, Sense, Stroke, vec2};
+use egui::{Sense, Stroke, vec2};
 use serde_json::json;
 
 use crate::panels;
-use crate::theme::{Tokens, semibold};
-use crate::widgets::{NumField, caption, measure};
+use crate::theme::Tokens;
+use crate::widgets::NumField;
 use crate::{DesignApp, icons};
 
 mod app_bar;
@@ -20,7 +20,6 @@ pub(crate) use app_bar::resize_borders;
 use app_bar::search_id;
 pub use app_bar::{app_bar, search_had_focus};
 pub use control_bar::control_bar;
-pub(crate) use control_bar::icon_field;
 pub(crate) use start_screen::recent_file_stat;
 pub use start_screen::start_screen;
 #[cfg(test)]

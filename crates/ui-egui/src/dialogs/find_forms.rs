@@ -110,7 +110,7 @@ fn object_page(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog, lang: &str) {
     let (find_fills, change_fills) = (fills("(any)"), fills("(unchanged)"));
     let kinds: Vec<(String, String)> = ["", "text", "graphic", "shape", "line", "group"]
         .iter()
-        .map(|kind| ((*kind).to_owned(), tr(if kind.is_empty() { "(any)" } else { *kind })))
+        .map(|kind| ((*kind).to_owned(), tr(if kind.is_empty() { "(any)" } else { kind })))
         .collect();
     FieldGroup::new(tr("Object")).id_salt("find_objects").show(ui, |ui, _| {
         field(ui, &tr("Find fill:"), "find_fill", |ui| {
@@ -329,7 +329,7 @@ fn format_settings(app: &DesignApp, ui: &mut Ui, d: &mut Dialog) {
         .buttons([FooterButton::new(tr("OK"), DialogRole::Accept).stays_open(true), FooterButton::new(tr("Cancel"), DialogRole::Cancel)])
         .show(ui, |ui, _| {
             Row::new().id_salt("find_format_layout").fill_width().gap(Gap::Section).show(ui, |ui, _| {
-                let captioned: Vec<(&str, String)> = FORMAT_SECTIONS.iter().map(|(id, caption)| (*id, tr(*caption))).collect();
+                let captioned: Vec<(&str, String)> = FORMAT_SECTIONS.iter().map(|(id, caption)| (*id, tr(caption))).collect();
                 if let Some(next) = super::framework::section_list(ui, "find_format_sections", tr("Format Settings"), &captioned, &fd.s("section")) {
                     fd.fields.insert("section".into(), json!(next));
                 }

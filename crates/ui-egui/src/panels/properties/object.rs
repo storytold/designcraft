@@ -446,7 +446,13 @@ fn group_or_lock(i: &SelInfo) -> (&'static str, &'static str) {
 
 /// The object sections on the craft UI framework: every control a framework component.
 pub(super) mod framework {
-    use super::*;
+    use super::{
+        ALIGN_EDGES, ALIGN_TO, ANGLE_ROWS, ARRANGE, CONVERT_SHAPES, CornerShape, DesignApp, FIELD_H, Rect, STROKE_TYPES, STROKE_WEIGHTS, SelInfo,
+        Stroke, StrokeKind, Tokens, Ui, Value, WRAP_MODES, WRAP_OFFSETS, align_target, align_to_icon, all_text_frames, anchor_size, apply_swatch,
+        apply_to_text_key, block, convert_shape, corner_shape_params, corner_size_params, full_width, group_or_lock, json, open_color_picker,
+        paint_corner_shape, paint_stroke_type, pick_align_to, reference_position, rotate_flip, set_temp_bool, show_panel, stroke_type_params, sub,
+        swatch_target, temp_bool, transform_anchors, units, vec2, widgets, wrap_link_key, wrap_offsets_set,
+    };
     use crate::framework_transform::{Artwork, Length, icon, icon_button, length_field, swatch_icon};
     use craft_behavior::{Anchor9, Mixed, Selection};
     use craft_theme::variant::Tone;
@@ -503,7 +509,7 @@ pub(super) mod framework {
 
     /// The id of the control `key` of the section the panel's `ui` shows.
     fn control_id(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-        ui.id().with(("properties-object", key))
+        ui.scope_id().with(("properties-object", key))
     }
 
     /// A link to another panel at `at`: whether it was clicked this pass.

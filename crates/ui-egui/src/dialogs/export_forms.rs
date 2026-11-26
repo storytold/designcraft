@@ -213,11 +213,11 @@ fn print(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
                     for (value, caption) in &ranges {
                         if *value == "range" {
                             Row::new().id_salt("print_range_row").show(ui, |ui, _| {
-                                Radio::new((*value).to_owned()).label(tr(*caption)).id_salt(("print_range_radio", *value)).show(ui);
+                                Radio::new((*value).to_owned()).label(tr(caption)).id_salt(("print_range_radio", *value)).show(ui);
                                 text_chars(ui, d, "pages", &tr("Pages:"), true, 12);
                             });
                         } else {
-                            Radio::new((*value).to_owned()).label(tr(*caption)).id_salt(("print_range_radio", *value)).show(ui);
+                            Radio::new((*value).to_owned()).label(tr(caption)).id_salt(("print_range_radio", *value)).show(ui);
                         }
                     }
                 });

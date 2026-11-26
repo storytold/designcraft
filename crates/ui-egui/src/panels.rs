@@ -470,7 +470,7 @@ pub fn apply_font(app: &mut DesignApp, pick: &FontPick) {
 
 /// The text's font family field: the Font menu's field, applied to the text.
 pub fn font_family_picker(app: &mut DesignApp, ui: &mut egui::Ui, current: &str, width: f32) {
-    let id = ui.id().with("font_family");
+    let id = ui.scope_id().with("font_family");
     let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
     font_family_field(app, ui, id, current, at);
 }
@@ -495,7 +495,7 @@ pub fn style_shown(current: &str) -> String {
 }
 
 pub fn font_style_picker(app: &mut DesignApp, ui: &mut egui::Ui, family: &str, current: &str, width: f32) {
-    let id = ui.id().with("font_style");
+    let id = ui.scope_id().with("font_style");
     let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
     if let Some(s) = crate::framework_transform::font_style_select(app, ui, Some(at), id, family, current) {
         let _ = app.run("type.char", json!({"attrs": {"fontStyle": s}}));
@@ -527,7 +527,7 @@ fn para_style_select(app: &DesignApp, ui: &mut egui::Ui, names: &[String], curre
         .collect();
     let held = names.iter().find(|n| *n == current && *n != designcraft_doc::NO_PARA_STYLE).cloned();
     let held = held.map_or(craft_behavior::Mixed::Mixed, craft_behavior::Mixed::Same);
-    let id = ui.id().with("para_style");
+    let id = ui.scope_id().with("para_style");
     let (at, _) = ui.allocate_exact_size(egui::vec2(width, crate::widgets::FIELD_H), egui::Sense::hover());
     Select::new(crate::i18n::tr(lang, "Paragraph Style").to_owned(), Bind::given(held), &entries)
         .id(id)

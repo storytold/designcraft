@@ -176,7 +176,7 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
 
 /// A small dim note ("Choose a link."), in the framework's faint text.
 fn note(ui: &mut egui::Ui, text: &str) {
-    use craft_ui_widgets::contract::{Props as _, Show as _};
+    use craft_ui_widgets::contract::Show as _;
     craft_ui_widgets::display::Text::new(text.to_owned()).shade(craft_ui_widgets::display::Shade::Faint).show(ui);
 }
 
@@ -473,7 +473,10 @@ fn preflight_go_to(app: &mut DesignApp, issue: &designcraft_engine::cmd::preflig
 /// every control and label a framework component. The action buttons and issue rows were already the framework's
 /// (`link_button`, `preflight_issue_button`).
 mod framework {
-    use super::*;
+    use super::{
+        DesignApp, FIELD_H, StatusTone, THUMB, Tokens, Value, block, divider, info_lines, json, link_actions, link_button, link_rows, paint_storage,
+        preflight_dot, preflight_go_to, preflight_issue_button, preflight_status, proxy_thumb, render_line, status_look, sub, use_info, vec2,
+    };
     use craft_behavior::Proposal;
     use craft_theme::variant::Tone;
     use craft_theme::{ControlSize, Emphasis};

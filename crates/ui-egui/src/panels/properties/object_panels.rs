@@ -365,7 +365,12 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// The object panels on the craft UI framework: every control a framework component. The Text Wrap mode buttons and
 /// Invert, and the Attributes check boxes, are drawn by `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`.
 mod framework {
-    use super::*;
+    use super::{
+        ALIGN_EDGES, Arrowhead, BLEND_MODES, BUILT_IN_STROKES, CAPS, CONTOUR_SHOWN_ONLY, CONTOUR_TYPES, CONVERT_POINT, CONVERT_SHAPE, DISTRIBUTE,
+        DesignApp, JOINS, PATHFINDER, PATHS, STROKE_ALIGNS, SelInfo, StrokeType, Tokens, Ui, Value, WRAP_SIDES, anchor_transform_section,
+        appearance_section, built_in_stroke, divider, full_width, json, paint_arrow, rule, section, sel_info, text_attrs, units, widgets,
+        wrap_link_id, wrap_linked, wrap_offsets_set,
+    };
     use crate::framework_transform::{Letters, MenuRow, Number, Quantity, button, caption as text, check, choice, menu, number_field, swatch_select};
     use crate::panels::properties::{block, sub};
     use crate::widgets::FIELD_H;
@@ -381,7 +386,7 @@ mod framework {
 
     /// The id of the control `key` of the panel the `ui` shows.
     fn cid(ui: &Ui, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-        ui.id().with(("object-panels", key))
+        ui.scope_id().with(("object-panels", key))
     }
 
     /// The width of the widest of `labels` in the interface language, for a column of captions: each measured as the
@@ -1647,7 +1652,7 @@ mod ui223_text_wrap_mode_invert_tests {
                                     .auto_shrink([false, true])
                                     .show(ui, |ui| crate::dock::panel_body(&mut state.app, ui, "textWrap"));
                                 state.viewport = Some(output.inner_rect);
-                                state.offset = output.state.offset();
+                                state.offset = output.state.clamped_offset();
                                 state.content = output.content_size;
                             });
                         })

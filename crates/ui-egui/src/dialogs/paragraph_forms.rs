@@ -52,7 +52,7 @@ fn paragraph_local(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<b
         other => {
             let tab_list: Vec<(&str, String)> = SHADING_TABS.iter().map(|(id, caption)| (*id, crate::i18n::tr(lang, caption).to_string())).collect();
             let current = if other == "shading" { "shading" } else { "border" };
-            if let Some(next) = tabs(ui, "paragraph_local", &crate::i18n::tr(lang, "Paragraph Borders and Shading"), current, &tab_list) {
+            if let Some(next) = tabs(ui, "paragraph_local", crate::i18n::tr(lang, "Paragraph Borders and Shading"), current, &tab_list) {
                 d.fields.insert("section".into(), json!(next));
             }
             border_shading(lang, ui, d, &a, &doc, current == "border");

@@ -254,7 +254,7 @@ pub(crate) fn framework_grid(
     query: &str,
     max_height: f32,
 ) -> (Option<char>, usize) {
-    use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _};
     use craft_ui_widgets::layout_components::Stack;
 
     let GridModel { chars, cols, tex } = grid_model(ui, db, scope, family, style, query);

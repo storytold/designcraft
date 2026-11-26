@@ -32,10 +32,9 @@ pub use links::{info_panel, links_panel, preflight_panel, update_links};
 #[cfg(test)]
 use object::align_to_icon;
 use object::{align_row, appearance_section, guide_section, quick_actions_object, transform_section, wrap_section};
-pub(crate) use object::{corner_shape_button, paint_corner_shape, preview_row};
 pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder_panel, stroke_panel, wrap_panel};
 use object_panels::{anchor_point_sections, pathfinder_row};
-pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
+pub(crate) use text::LANGUAGES;
 use text::{
     bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_frame_target,
     text_style_section,
@@ -245,17 +244,17 @@ fn frame_fitting_section(app: &mut DesignApp, ui: &mut Ui) {
     let lang = app.ui.language.clone();
     let b = block(ui, FIELD_H);
     for (k, (icon, mode, tip)) in FITTINGS.into_iter().enumerate() {
-        let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.id().with(("frame-fitting", mode)));
+        let (at, id) = (sub(b, k as f32 * 31.0, 0.0, 23.0, FIELD_H), ui.scope_id().with(("frame-fitting", mode)));
         if icon_button(ui, at, id, icon, crate::i18n::tr(&lang, tip), false) {
             let _ = app.run("object.fit", json!({"mode": mode}));
         }
     }
-    let id = ui.id().with("frame-fitting-options");
+    let id = ui.scope_id().with("frame-fitting-options");
     if button(ui, Some(sub(b, 5.0 * 31.0, 0.0, 64.0, FIELD_H)), id, crate::i18n::tr(&lang, "Options"), true).clicked() {
         crate::menus::activate(app, "app.fittingOptions", &Value::Null);
     }
     ui.add_space(5.0);
-    let id = ui.id().with("frame-fitting-auto");
+    let id = ui.scope_id().with("frame-fitting-auto");
     if let Some(on) = check(ui, None, id, crate::i18n::tr(&lang, "Auto-Fit"), auto_fit(app), true) {
         let _ = app.run("object.fittingOptions", json!({"autoFit": on}));
     }

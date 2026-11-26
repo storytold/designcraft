@@ -205,7 +205,7 @@ fn toc(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
             });
             Stack::new().id_salt("toc_buttons").show(ui, |ui, _| {
                 let others: Vec<String> = styles.iter().filter(|n| !rows.iter().any(|r| &r.style == *n)).cloned().collect();
-                if push(ui, "toc_add", &tr("« Add"), true) && others.iter().any(|n| *n == other) {
+                if push(ui, "toc_add", &tr("« Add"), true) && others.contains(&other) {
                     let level = u8::try_from(rows.len() + 1).unwrap_or(9).min(9);
                     rows.push(super::TocRow {
                         style: other.clone(),
