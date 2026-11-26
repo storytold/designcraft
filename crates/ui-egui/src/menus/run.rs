@@ -79,7 +79,8 @@ pub(super) fn guard_idml_loss(
             app.ui.dialog = Some(crate::dialogs::Dialog::new("idmlLoss", lost));
             app.lossy_save = Some(Box::new(move |app, answer| {
                 if !matches!(&answer, LossyAnswer::Cancel) {
-                    let index = app.session.documents().iter().position(|document| Some(document.uid) == uid).ok_or("The document to save is closed")?;
+                    let index =
+                        app.session.documents().iter().position(|document| Some(document.uid) == uid).ok_or("The document to save is closed")?;
                     app.run("file.activate", json!({"index": index}))?;
                 }
                 then(app, answer)
