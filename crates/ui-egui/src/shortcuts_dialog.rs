@@ -14,20 +14,16 @@
 //! The InDesign importer stays here (`shortcut_import`): the dialog's Import offers its format
 //! next to craft-keymap's JSON, and the dialog reviews the set before it becomes a new set.
 //!
-//! The browser build has no framework dialog (craft-menu is native only): the command says so in the status bar.
+//! The browser build has the same dialog. Its file operations take the browser's paths: Import waits for the file the page
+//! delivers ([`deliver`], from `Services::open_async`), and Export and Summarize go through `Services::download`.
 
 use craft_keymap::Overrides;
-#[cfg(not(target_arch = "wasm32"))]
 use craft_keymap::{ForeignSet, ImportOptions, Keymap, Profiles};
-#[cfg(not(target_arch = "wasm32"))]
 use craft_menu::shortcuts::{DialogState, Format, Options, Outcome, ShortcutsDialog};
-#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Value, json};
 
 use crate::DesignApp;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::app::file_dialogs::Bound;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::i18n::tr;
 
 /// The `app.ui.dialog` id while the dialog is open.
@@ -43,11 +39,9 @@ pub const CUSTOM_SET: &str = "Custom";
 pub const PURPOSE: &str = "shortcuts";
 
 /// A set saved by InDesign's Show Set, read by `shortcut_import`.
-#[cfg(not(target_arch = "wasm32"))]
 pub const INDESIGN_FORMAT: Format = Format::new("indesign", "InDesign Shortcut Set (Show Set text)", &["txt"]);
 
 /// What the app asked of the dialog from outside a frame.
-#[cfg(not(target_arch = "wasm32"))]
 enum Pending {
     Ok,
     Cancel,
@@ -58,7 +52,6 @@ enum Pending {
 }
 
 /// The open dialog: its state and options.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct Host {
     state: DialogState,
     options: Options,
@@ -69,7 +62,6 @@ pub struct Host {
     closing: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Host {
     fn new() -> Host {
         Host { state: DialogState::new(), options: options(), pending: Vec::new(), shown: false, closing: false }
@@ -82,20 +74,16 @@ impl Host {
 
 /// The width in points the dialog opens at: wide enough for the keyboard pane's keys to stay readable beside the key
 /// list.
-#[cfg(not(target_arch = "wasm32"))]
 const OPEN_WIDTH: f32 = 1130.0;
 
 /// The share of the window's height the dialog opens at.
-#[cfg(not(target_arch = "wasm32"))]
 const OPEN_HEIGHT_SHARE: f32 = 0.9;
 
 /// The least height in points the dialog opens at in a short window.
-#[cfg(not(target_arch = "wasm32"))]
 const OPEN_MIN_HEIGHT: f32 = 480.0;
 
 /// The size the dialog opens at in a window whose content is `content` high: [`OPEN_WIDTH`] wide and most of the
 /// window high. The size the user gives it is remembered over this.
-#[cfg(not(target_arch = "wasm32"))]
 fn open_size(content: f32) -> egui::Vec2 {
     egui::vec2(OPEN_WIDTH, (content * OPEN_HEIGHT_SHARE).max(OPEN_MIN_HEIGHT))
 }
@@ -103,7 +91,6 @@ fn open_size(content: f32) -> egui::Vec2 {
 /// The owner-approved behavior: live editing with Cancel restoring, conflicts asked about, no
 /// double presses, the US keyboard pane, InDesign sets to import, and no rows for the engine
 /// commands only scripts run. The size it opens at follows the window ([`open_size`], set in [`show`]).
-#[cfg(not(target_arch = "wasm32"))]
 fn options() -> Options {
     Options::default().with(|o| {
         o.keyboard = true;
@@ -113,13 +100,11 @@ fn options() -> Options {
 }
 
 /// The dialog for one call: the app's keymap and sets, with the dialog's options.
-#[cfg(not(target_arch = "wasm32"))]
 fn dialog<'a>(keymap: &'a mut Keymap, sets: &'a mut Profiles, options: &'a Options) -> ShortcutsDialog<'a> {
     ShortcutsDialog::new(keymap).options(options).sets(sets, &BUILTINS)
 }
 
 /// Edit › Keyboard Shortcuts…; with `select`, the dialog opens on that command.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn open(app: &mut DesignApp, select: Option<&craft_keymap::CommandRef>) {
     crate::dialogs::cancel(app);
     app.sync_keymap();
@@ -133,7 +118,6 @@ pub fn open(app: &mut DesignApp, select: Option<&craft_keymap::CommandRef>) {
 
 /// One frame of the open dialog: what was asked from outside runs first, then the dialog is drawn in the framework's modal
 /// layer, in the interface's language and direction.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::env::{Direction, WordsOverride, with_env};
 
@@ -220,7 +204,6 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
 
 /// OK (`ok`) or Cancel from outside the dialog: `ui.dialog.confirm` and `ui.dialog.cancel`, or
 /// another dialog taking its place. The dialog answers in the next frame; one no frame ever drew has nothing to answer.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn close(app: &mut DesignApp, ok: bool) -> Result<(), String> {
     let Some(host) = app.shortcut_dialog.as_mut() else { return Ok(()) };
     if !host.shown {
@@ -235,7 +218,6 @@ pub(crate) fn close(app: &mut DesignApp, ok: bool) -> Result<(), String> {
 
 /// Import: the chosen file is read when the open dialog answers, or arrives later through
 /// [`deliver`] in a browser.
-#[cfg(not(target_arch = "wasm32"))]
 fn request_import(app: &mut DesignApp, host: &mut Host) {
     let request = app.import_request(PURPOSE);
     if let Some(open) = app.services.open_async.as_mut() {
@@ -258,7 +240,6 @@ fn request_import(app: &mut DesignApp, host: &mut Host) {
 }
 
 /// A set file chosen in the browser, for the open dialog. False when the dialog is closed.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn deliver(app: &mut DesignApp, bytes: &[u8]) -> bool {
     let Some(mut host) = app.shortcut_dialog.take() else { return false };
     match crate::shortcut_import::decode(bytes) {
@@ -271,7 +252,6 @@ pub(crate) fn deliver(app: &mut DesignApp, bytes: &[u8]) -> bool {
 
 /// A set file's text for the dialog: craft-keymap JSON becomes a new set at once (the dialog
 /// shows why it cannot); an InDesign set opens the import review. Both happen in the next frame.
-#[cfg(not(target_arch = "wasm32"))]
 fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
     if text.trim_start().starts_with('{') {
         // A set exported before panels and tools had commands of their own names them by the old keys.
@@ -294,7 +274,6 @@ fn review(app: &mut DesignApp, host: &mut Host, text: &str) {
 }
 
 /// Writes a file the dialog made where the user chooses (a download on the web).
-#[cfg(not(target_arch = "wasm32"))]
 fn save_file(app: &mut DesignApp, name: &str, bytes: &[u8]) {
     let name: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
     let bytes = bytes.to_vec();
@@ -312,36 +291,6 @@ fn save_file(app: &mut DesignApp, name: &str, bytes: &[u8]) {
     if let Err(e) = asked {
         app.status(e);
     }
-}
-
-/// The browser build has no dialog: the keymap still applies, and `window.setShortcut` edits it.
-#[cfg(target_arch = "wasm32")]
-pub struct Host;
-
-#[cfg(target_arch = "wasm32")]
-impl Host {
-    pub(crate) fn recording(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn open(app: &mut DesignApp, _select: Option<&craft_keymap::CommandRef>) {
-    let message = crate::i18n::tr(&app.ui.language, "The Keyboard Shortcuts dialog is not available in the browser yet.").to_owned();
-    app.status(message);
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn show(_app: &mut DesignApp, _ctx: &egui::Context) {}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn close(_app: &mut DesignApp, _ok: bool) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn deliver(_app: &mut DesignApp, _bytes: &[u8]) -> bool {
-    false
 }
 
 /// Loads the active set into the keymap and `ui.shortcuts` (after an import made a new set).

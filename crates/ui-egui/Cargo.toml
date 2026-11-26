@@ -23,6 +23,8 @@ craft-ui-panels = { workspace = true }
 craft-window = { workspace = true }
 craft-window-sdk = { workspace = true }
 craft-keymap = { workspace = true }
+# The Keyboard Shortcuts dialog (craft_menu::shortcuts), on the desktop and in the browser.
+craft-menu = { workspace = true }
 craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
 designcraft-color = { workspace = true }
@@ -62,9 +64,8 @@ serde_json = { workspace = true }
 toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Platform services the browser build has its own paths for, or goes without: updates, the native menus and the
-# Keyboard Shortcuts dialog over them, and file and message dialogs that never block the frame.
+# Platform services the browser build has its own paths for, or goes without: updates, and file and message dialogs that
+# never block the frame.
 craft-update = { workspace = true }
-craft-menu = { workspace = true }
 craft-dialogs = { workspace = true }
 raw-window-handle = { workspace = true }
