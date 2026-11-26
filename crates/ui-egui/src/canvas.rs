@@ -560,7 +560,8 @@ mod parent_canvas_tests;
 #[path = "guide_selection_tests.rs"]
 mod guide_selection_tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod successor_tests;
 #[cfg(test)]
 mod tests;

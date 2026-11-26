@@ -1108,7 +1108,8 @@ mod tests {
 
 /// The editor's body on the framework, alone on a context with the framework's runtime, driven by real pointer and
 /// key events.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod framework_tests {
     use egui::{Event, Key, Modifiers, PointerButton, vec2};
     use egui_kittest::Harness;
@@ -1271,5 +1272,6 @@ mod framework_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod successor_tests;

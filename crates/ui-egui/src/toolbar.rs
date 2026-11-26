@@ -537,7 +537,8 @@ mod framework {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod successor_tests;
 #[cfg(test)]
 mod tests;

@@ -66,7 +66,8 @@ fn cmd_item(id: &str, params: Value) -> Item {
     Item::Cmd { label, id: id.to_string(), params, shortcut }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod successor_tests;
 #[cfg(test)]
 mod tests;

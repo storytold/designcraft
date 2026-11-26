@@ -453,11 +453,13 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "datamerge_preview_nav_port_tests.rs"]
 mod datamerge_preview_nav_port_tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod ui223_datamerge_workflow_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
@@ -1091,5 +1093,6 @@ mod ui223_datamerge_workflow_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod successor_tests;

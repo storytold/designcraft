@@ -450,7 +450,8 @@ fn scripts_body(app: &mut DesignApp, ui: &mut egui::Ui) {
     }
     ui.data_mut(|d| d.insert_temp(sel_id, sel));
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod framework_action_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
@@ -704,7 +705,8 @@ mod framework_action_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod book_workflow_tests {
     use super::*;
     use crate::app::file_dialogs::testing::answer_with;
@@ -1159,7 +1161,8 @@ mod book_workflow_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod scripts_shelf_workflow_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
