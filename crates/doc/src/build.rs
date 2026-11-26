@@ -60,6 +60,9 @@ pub struct NewDocument {
     pub pages: usize,
     pub start_page: u32,
     pub facing_pages: bool,
+    /// Binding: Right to Left (page 1 a left page, spreads laid out right to left), as Document
+    /// Setup sets it later.
+    pub right_to_left_binding: bool,
     pub primary_text_frame: bool,
     pub columns: u32,
     pub gutter: f64,
@@ -79,6 +82,7 @@ impl Default for NewDocument {
             pages: 1,
             start_page: 1,
             facing_pages: true,
+            right_to_left_binding: false,
             primary_text_frame: false,
             columns: 1,
             gutter: 12.0,
@@ -114,6 +118,7 @@ impl Document {
             page_width: nd.width,
             page_height: nd.height,
             facing_pages: nd.facing_pages,
+            right_to_left_binding: nd.right_to_left_binding,
             primary_text_frame: nd.primary_text_frame,
             bleed: nd.bleed,
             slug: nd.slug,
