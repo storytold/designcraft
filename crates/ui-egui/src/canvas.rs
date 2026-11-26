@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{DesignApp, ScreenMode, View, theme::Tokens};
 
+mod caret;
 mod column_guides;
 mod frames;
 mod guides;

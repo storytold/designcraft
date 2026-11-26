@@ -158,16 +158,24 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
             let (r, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());
             paint_mark(ui, r, BRAND);
             ui.add_space(6.0);
-            ui.label(crate::rtl::widget(
-                ui,
-                egui::RichText::new(crate::i18n::tr(&app.ui.language, "DesignCraft")).font(semibold(26.0)).color(t.text_strong),
-            ));
+            // The channel's own name and version: DesignCraft (stable) or DesignCraft Nightly.
+            let channel = crate::channel::current();
+            let app_name = match channel {
+                crate::channel::Channel::Stable => crate::i18n::tr(&app.ui.language, "DesignCraft").to_string(),
+                crate::channel::Channel::NightlyV1 => channel.name().to_string(),
+            };
+            ui.label(crate::rtl::widget(ui, egui::RichText::new(app_name).font(semibold(26.0)).color(t.text_strong)));
             crate::rtl::label(
                 ui,
-                egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Version"), env!("CARGO_PKG_VERSION")))
+                egui::RichText::new(format!("{} {}", crate::i18n::tr(&app.ui.language, "Version"), crate::channel::version()))
                     .size(12.0)
                     .color(t.text_dim),
             );
+            // A nightly build says which commit it was made from; the links below include Report an issue.
+            if let Some(commit) = crate::channel::commit() {
+                let short = commit.get(..12).unwrap_or(commit);
+                crate::rtl::label(ui, egui::RichText::new(format!("nightly-v1 · {short}")).size(11.0).color(t.text_dim));
+            }
             ui.add_space(4.0);
             ui.label(crate::rtl::widget(
                 ui,

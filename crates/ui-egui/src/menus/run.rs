@@ -150,12 +150,16 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         },
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
-            let name = index
-                .as_u64()
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| app.session.prefs.recent_files.get(i))
-                .map(|path| recent_label(path))
-                .unwrap_or_default();
+            let path = index.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| app.session.prefs.recent_files.get(i)).cloned();
+            // Read in the background, a file still there opens as File › Open opens it;
+            // `file.openRecent` explains a missing one.
+            #[cfg(not(target_arch = "wasm32"))]
+            if app.opens_in_background()
+                && let Some(path) = path.as_ref().filter(|p| designcraft_engine::io::is_file(p))
+            {
+                return Some(app.open_document(path.clone()));
+            }
+            let name = path.as_deref().map(recent_label).unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
         "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {

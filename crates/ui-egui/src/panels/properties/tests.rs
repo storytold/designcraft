@@ -1630,3 +1630,38 @@ fn text_frame_section_shows_the_frame_that_shows_the_caret() {
     let shown = super::text::text_frame_target(&app).map(|(id, o, _)| (id, o.columns));
     assert_eq!(shown, Some((ItemId(b), 3)));
 }
+
+/// #2543: Relink to Folder opens a folder picker (not a file picker) and relinks the missing
+/// graphic from the chosen folder.
+#[test]
+fn relink_to_folder_asks_for_a_folder_and_relinks() {
+    use std::{cell::RefCell, rc::Rc};
+    let dir = tempfile::tempdir().unwrap();
+    let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+    std::fs::create_dir_all(&from).unwrap();
+    std::fs::create_dir_all(&to).unwrap();
+    let png = designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png();
+    let old = from.join("photo.png");
+    std::fs::write(&old, &png).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.place", json!({"path": old.to_string_lossy()})).unwrap();
+    let moved = to.join("photo.png");
+    std::fs::rename(&old, &moved).unwrap();
+    let rows = app.session.execute("links.list", &json!({})).unwrap();
+    assert_eq!(rows[0]["status"], "missing");
+    let seen: Rc<RefCell<Option<craft_dialogs::Kind>>> = Rc::default();
+    let seen2 = seen.clone();
+    let dest = to.to_string_lossy().to_string();
+    app.answer_dialogs(move |request| {
+        let craft_dialogs::Request::File(dialog) = request else { return craft_dialogs::Answer::Cancelled };
+        *seen2.borrow_mut() = Some(dialog.kind);
+        craft_dialogs::Answer::Paths(vec![dest.clone().into()])
+    });
+    super::links::relink_to_folder(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(seen.borrow().clone(), Some(craft_dialogs::Kind::Folder), "Relink to Folder opens a folder picker");
+    let rows = app.session.execute("links.list", &json!({})).unwrap();
+    assert_eq!(rows[0]["status"], "ok", "{rows:?}");
+    assert!(app.ui.status.contains("Relinked 1"), "status line says what happened: {:?}", app.ui.status);
+}
