@@ -10,6 +10,10 @@
 //! Flipo, Bernard Gaulle, Arthur Reutenauer), MIT; Italian is `hyph-it.tex` 4.9 from hyph-utf8
 //! (Claudio Beccari), LPPL or MIT, taken under MIT. A word with an elision (`l'imprimerie`)
 //! hyphenates after its apostrophe.
+//! Hindi, Marathi, Bengali, Assamese, Gujarati, Punjabi, Odia, Tamil, Telugu, Kannada and
+//! Malayalam are Santhosh Thottingal's `hyph-{hi,mr,bn,as,gu,pa,or,ta,te,kn,ml}.tex` 0.9.0 from
+//! hyph-utf8, MIT. Viramas, nuktas and the zero-width (non-)joiner count as word characters
+//! ([`is_indic_joiner`]), so a word is not split at its conjuncts.
 //! German uses `hyph-de-1996.tex` (2024-02-28, Deutschsprachige Trennmustermannschaft, MIT):
 //! despite the filename, these are the reformed 2006 spelling patterns. Only the two 2006 reform
 //! names and German locale codes without a reform year or with 2006 use this set. Traditional,
@@ -131,7 +135,21 @@ fn is_apostrophe(c: char) -> bool {
 }
 
 fn is_word_char(c: char) -> bool {
-    c.is_alphabetic() || is_apostrophe(c)
+    c.is_alphabetic() || is_apostrophe(c) || is_indic_joiner(c)
+}
+
+/// Signs inside Indic words that Unicode doesn't class as alphabetic: each script's virama (which
+/// joins consonants into conjuncts), its nukta, Malayalam's vertical and circular viramas, and the
+/// zero-width joiner and non-joiner that select conjunct and chillu forms. Without them a word
+/// such as विद्यार्थी splits at every conjunct into fragments too short to hyphenate.
+fn is_indic_joiner(c: char) -> bool {
+    matches!(
+        c,
+        '\u{094D}' | '\u{09CD}' | '\u{0A4D}' | '\u{0ACD}' | '\u{0B4D}' | '\u{0BCD}' | '\u{0C4D}' | '\u{0CCD}' | '\u{0D4D}' // viramas
+            | '\u{0D3B}' | '\u{0D3C}' // Malayalam vertical and circular viramas
+            | '\u{093C}' | '\u{09BC}' | '\u{0A3C}' | '\u{0ABC}' | '\u{0B3C}' | '\u{0C3C}' | '\u{0CBC}' // nuktas
+            | '\u{200C}' | '\u{200D}' // ZWNJ, ZWJ
+    )
 }
 
 /// Unrestricted break points of one lowercase core (letters and `'` only, no leading/trailing `'`).
@@ -740,6 +758,64 @@ mod tests {
         for w in ["bacheloruddannelser", "industrialiseringens", "samarbejdspartnere"] {
             assert!(!hyphen_points_in(w, &Limits::default(), da).is_empty(), "{w} gets break points");
         }
+    }
+
+    #[test]
+    fn indic_languages_use_the_hyph_utf8_patterns() {
+        for (name, code, lang) in [
+            ("Hindi", "hi", hypher::Lang::Hindi),
+            ("Marathi", "mr", hypher::Lang::Marathi),
+            ("Bengali", "bn", hypher::Lang::Bengali),
+            ("Assamese", "as", hypher::Lang::Assamese),
+            ("Gujarati", "gu", hypher::Lang::Gujarati),
+            ("Punjabi", "pa", hypher::Lang::Panjabi),
+            ("Odia", "or", hypher::Lang::Oriya),
+            ("Oriya", "or_IN", hypher::Lang::Oriya),
+            ("Tamil", "ta", hypher::Lang::Tamil),
+            ("Telugu", "te", hypher::Lang::Telugu),
+            ("Kannada", "kn", hypher::Lang::Kannada),
+            ("Malayalam", "ml_IN", hypher::Lang::Malayalam),
+        ] {
+            assert_eq!(Lang::for_language(name), Some(Lang::Patterns(lang)), "{name}");
+            assert_eq!(Lang::for_language(code), Some(Lang::Patterns(lang)), "{code}");
+        }
+        assert_eq!(Lang::for_language("Sanskrit"), None, "no Sanskrit patterns are built in");
+    }
+
+    /// A virama joins consonants inside a word: the word is hyphenated whole, between syllables,
+    /// never inside a conjunct. Before viramas counted as word characters, विद्यार्थी was
+    /// hyphenated as the fragments वि, द, यार and थी, which gave it no break at all.
+    #[test]
+    fn indic_words_hyphenate_between_syllables_across_their_conjuncts() {
+        let lang = |name: &str| Lang::for_language(name).unwrap();
+        assert_eq!(marked("विद्यार्थी", lang("Hindi")), "वि-द्या-र्थी");
+        assert_eq!(marked("प्रधानमंत्री", lang("Hindi")), "प्र-धा-न-मं-त्री");
+        assert_eq!(marked("महाराष्ट्र", lang("Marathi")), "महा-रा-ष्ट्र");
+        assert_eq!(marked("വിദ്യാർത്ഥി", lang("Malayalam")), "വി-ദ്യാർ-ത്ഥി");
+        assert_eq!(marked("തിരുവനന്തപുരം", lang("Malayalam")), "തി-രു-വ-ന-ന്ത-പു-രം");
+        assert_eq!(marked("தொழில்நுட்பம்", lang("Tamil")), "தொ-ழில்-நுட்-பம்");
+        // The default Before Last limit keeps the final য় with the ল before it.
+        assert_eq!(marked("বিশ্ববিদ্যালয়", lang("Bengali")), "বি-শ্ব-বি-দ্যা-লয়");
+        assert_eq!(marked("విశ్వవిద్యాలయం", lang("Telugu")), "వి-శ్వ-వి-ద్యా-ల-యం");
+        assert_eq!(marked("ವಿಶ್ವವಿದ್ಯಾಲಯ", lang("Kannada")), "ವಿ-ಶ್ವ-ವಿ-ದ್ಯಾ-ಲಯ");
+        assert_eq!(marked("વિશ્વવિદ્યાલય", lang("Gujarati")), "વિ-શ્વ-વિ-દ્યા-લય");
+    }
+
+    /// A zero-width joiner or non-joiner (old-style Malayalam chillus, explicit half forms) and a
+    /// nukta stay inside the word they're in, so no break lands next to them.
+    #[test]
+    fn indic_joiners_and_nuktas_do_not_split_words() {
+        for c in ['\u{094D}', '\u{0D4D}', '\u{0BCD}', '\u{093C}', '\u{200C}', '\u{200D}'] {
+            assert!(is_word_char(c), "U+{:04X}", c as u32);
+        }
+        let hi = Lang::for_language("Hindi").unwrap();
+        let (pts, _) = word_breaks_in("पढ़ना", hi);
+        assert!(!pts.contains(&2), "no break between ढ and its nukta: {pts:?}");
+        assert!(pts.contains(&3), "पढ़-ना: {pts:?}");
+        // Old chillu encoding (ന + virama + ZWJ): the word stays one word.
+        let ml = Lang::for_language("Malayalam").unwrap();
+        let (pts, _) = word_breaks_in("അവന്\u{200D}റെ", ml);
+        assert!(pts.iter().all(|&p| !matches!("അവന്\u{200D}റെ".chars().nth(p), Some('\u{200D}' | '\u{0D4D}'))), "{pts:?}");
     }
 
     #[test]

@@ -89,6 +89,17 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "hebrew" => "he",
         "georgian" => "ka",
         "esperanto" => "eo",
+        "hindi" => "hi",
+        "marathi" => "mr",
+        "bengali" | "bangla" => "bn",
+        "assamese" => "as",
+        "gujarati" => "gu",
+        "punjabi" | "panjabi" => "pa",
+        "odia" | "oriya" => "or",
+        "tamil" => "ta",
+        "telugu" => "te",
+        "kannada" => "kn",
+        "malayalam" => "ml",
         _ => return None,
     })
 }
