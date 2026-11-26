@@ -9,6 +9,18 @@ three ways — pick whichever fits the agent:
 | **MCP** | Claude and other MCP clients; images of pages and the window come back as content | `designcraft-cli mcp` ([mcp.md](mcp.md)) |
 | **Control channel** | Your own client driving the running app (JSON lines over TCP) | `designcraft --control 7979` ([control-protocol.md](control-protocol.md)) |
 
+## Command line
+
+`designcraft-cli` follows [RFC-0018](https://github.com/storytold/craft-contrib/blob/main/rfcs/0018-cli-conventions.md)
+(command-line conventions), and `designcraft-cli --help` and `<subcommand> --help` are the reference for every flag; this page
+shows what they are for. Exit status: 0 success, 1 a command failed, 2 a usage error (an unknown or repeated flag, a bad
+value, flags a subcommand doesn't take, all checked before any file is touched), and 128 plus the signal number when a
+signal ends the process. Errors are `error: <message>` on stderr; results are on stdout. `--version`/`-V` work on every
+subcommand, and there is no `version` subcommand. The only text a program is meant to read is already JSON, so there is
+no `--json` flag. The Linux packages (deb, rpm and tar.gz) and the FreeBSD package install `designcraft-cli`'s man pages
+and its bash, zsh and fish completions; the macOS and Windows downloads do not carry them (RFC-0018 leaves those platforms
+out of scope).
+
 ## Discover commands
 
 ```sh

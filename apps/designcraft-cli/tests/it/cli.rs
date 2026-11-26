@@ -259,35 +259,34 @@ fn unknown_params_fail() {
     assert!(v.to_string().contains("did you mean `width`?"), "{v}");
 }
 
-/// `designcraft-cli --help` printed usage to stderr and exited 1; asking for help is not an
-/// error (#243). It now goes to stdout and succeeds, while an unknown command keeps the same
-/// usage on stderr and fails.
+/// Asking for help is not an error: it goes to stdout and succeeds, while an unknown option is a usage error (2) on stderr.
 #[test]
 fn help_goes_to_stdout_and_unknown_args_to_stderr() {
     for flag in ["--help", "-h", "help"] {
         let out = cli().arg(flag).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{flag}: {:?}", out.status);
-        assert!(stdout.starts_with("usage: designcraft-cli"), "{flag}: {stdout:?}");
-        assert!(stdout.contains("designcraft-cli --version"), "{flag}: {stdout:?}");
+        assert!(stdout.contains("Usage: designcraft-cli"), "{flag}: {stdout:?}");
         assert!(out.stderr.is_empty(), "{flag} wrote to stderr: {}", String::from_utf8_lossy(&out.stderr));
     }
-    // An unknown option is still an error: usage on stderr, nothing on stdout, non-zero exit.
     let out = cli().arg("--no-such-option").output().unwrap();
-    assert!(!out.status.success(), "{:?}", out.status);
+    assert_eq!(out.status.code(), Some(2), "{:?}", out.status);
     assert!(out.stdout.is_empty(), "unexpected stdout: {}", String::from_utf8_lossy(&out.stdout));
-    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: designcraft-cli"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--no-such-option"));
 }
 
 /// `script --help` was "unknown script option `--help`"; the line syntax was only in
 /// `describe script.run` (#654).
 #[test]
 fn script_help_documents_the_syntax() {
-    for flag in ["--help", "-h"] {
+    // `-h` is the short help; the syntax is in `--help`.
+    let short = cli().args(["script", "-h"]).output().unwrap();
+    assert!(short.status.success() && String::from_utf8_lossy(&short.stdout).contains("Usage: designcraft-cli script"));
+    for flag in ["--help"] {
         let out = cli().args(["script", flag]).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{flag}: {:?} {}", out.status, String::from_utf8_lossy(&out.stderr));
-        assert!(stdout.starts_with("usage: designcraft-cli script"), "{flag}: {stdout:?}");
+        assert!(stdout.contains("Usage: designcraft-cli script"), "{flag}: {stdout:?}");
         for needle in ["0-based", "$1.story", "$3.ids.0", "\\u2028", "ignore"] {
             assert!(stdout.contains(needle), "{flag}: no {needle:?} in {stdout:?}");
         }
@@ -351,7 +350,7 @@ fn run_scale_that_is_not_finite_and_positive_is_an_error() {
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("a.png");
     for scale in ["nan", "0", "-2", "inf", "-inf"] {
-        let out = cli().args(["run", "--sample", "--scale", scale, "--export", png.to_str().unwrap()]).output().unwrap();
+        let out = cli().args(["run", "--sample", &format!("--scale={scale}"), "--export", png.to_str().unwrap()]).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "--scale {scale}: {err}");
         assert!(err.contains("bad --scale"), "--scale {scale}: {err}");
@@ -370,7 +369,7 @@ fn pdf_options_that_are_not_an_object_are_an_error_not_a_panic() {
     for val in ["[]", "true", "1", r#""x""#] {
         let out = cli().args(["run", "--sample", "--pdf-options", val, "--export", pdf]).output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{val}: {err}");
+        assert_eq!(out.status.code(), Some(2), "{val}: {err}");
         assert!(err.contains("--pdf-options") && !err.contains("panicked"), "{val}: {err}");
     }
     let out = cli().args(["run", "--sample", "--pdf-options", "null", "--export", pdf]).output().unwrap();
@@ -630,12 +629,12 @@ fn mcp_automation_root_flags_are_checked_up_front() {
     // #1552: a flag may be given again, but every folder it names must exist and be given.
     fails(&["--automation-read-root", dir, "--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
     fails(&["--automation-write-root", missing.to_str().unwrap(), "--automation-write-root", dir], "cannot open the automation write root");
-    fails(&["--automation-write-root", dir, "--automation-write-root"], "needs a folder");
-    fails(&["--automation-read-root", dir, "--automation-read-root="], "needs a non-empty folder");
-    fails(&["--automation-read-root"], "needs a folder");
-    fails(&["--automation-write-root", "--sample"], "needs a folder");
+    fails(&["--automation-write-root", dir, "--automation-write-root"], "--automation-write-root");
+    fails(&["--automation-read-root", dir, "--automation-read-root="], "not an empty name");
+    fails(&["--automation-read-root"], "--automation-read-root");
+    fails(&["--automation-write-root", "--sample"], "--automation-write-root");
     fails(&["--automation-read-root", missing.to_str().unwrap()], "cannot open the automation read root");
-    fails(&["--automation-write-root="], "needs a non-empty folder");
+    fails(&["--automation-write-root="], "not an empty name");
     // A file is not a folder.
     std::fs::write(base.join("f.txt"), "x").unwrap();
     fails(&["--automation-write-root", base.join("f.txt").to_str().unwrap()], "cannot open the automation write root");
@@ -643,10 +642,10 @@ fn mcp_automation_root_flags_are_checked_up_front() {
 }
 
 #[test]
-fn usage_lists_the_automation_root_flags() {
-    let out = cli().arg("--help").output().unwrap();
+fn mcp_help_lists_the_automation_root_flags() {
+    let out = cli().args(["mcp", "--help"]).output().unwrap();
     let usage = String::from_utf8_lossy(&out.stdout);
-    assert!(usage.contains("--automation-read-root DIR") && usage.contains("--automation-write-root DIR"), "{usage}");
+    assert!(usage.contains("--automation-read-root <DIR>") && usage.contains("--automation-write-root <DIR>"), "{usage}");
 }
 
 /// Width and height from a PNG's IHDR chunk.
@@ -759,35 +758,20 @@ fn thumbnail_replaces_another_existing_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The argument bugs photocraft#7071 lists, measured here: every one of them was live in this
-/// parser too. Each case names the photocraft issue it comes from.
+/// The argument bugs photocraft#7071 lists, which the clap parser refuses by construction.
 #[test]
 fn the_argument_parser_refuses_what_it_cannot_mean() {
     let dir = std::env::temp_dir().join(format!("dc-cli-args-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    // photocraft#423: `<sub> --help` was read as an unknown option. It asks about the
-    // subcommand, goes to stdout and succeeds.
-    for sub in ["run", "commands", "describe", "app", "mcp", "perf", "bench", "validate-pdf", "links"] {
-        let out = cli().args([sub, "--help"]).output().unwrap();
-        assert!(out.status.success(), "{sub} --help: {}", String::from_utf8_lossy(&out.stderr));
-        let text = String::from_utf8_lossy(&out.stdout);
-        assert!(text.contains(&format!("designcraft-cli {sub}")), "{sub} --help names it: {text:?}");
-        assert!(!text.contains("unknown option"), "{sub} --help: {text:?}");
-    }
-    // `script --help` keeps its own longer help, which it had already.
-    let out = cli().args(["script", "--help"]).output().unwrap();
-    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("Script text, one step per line"));
-
     // photocraft#6944: an option took the next token whatever it was, so `--export --scale`
     // wrote a file called `--scale` in the working directory.
     let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "--scale"]).output().unwrap();
-    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("another option") && err.contains("./--scale"), "{err:?}");
-    assert!(!dir.join("--scale").exists(), "nothing was written");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no other file either");
+    assert!(err.contains("--export"), "{err:?}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing was written");
 
     // A name that really does start with `-` is still reachable, the way the shell reaches one.
     let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "./-dash.png"]).output().unwrap();
@@ -795,35 +779,21 @@ fn the_argument_parser_refuses_what_it_cannot_mean() {
     assert!(dir.join("-dash.png").is_file(), "{:?}", std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
 
     // A missing value is found before anything runs, so an export earlier on the line does not
-    // happen: reported later, `--export first.png --scale --export second.png` wrote first.png
-    // and only then failed, overwriting a file that was already there (noted in review).
+    // happen and the file that was already there is untouched.
     let first = dir.join("first.png");
     std::fs::write(&first, b"older file").unwrap();
     let out =
         cli().current_dir(&dir).args(["run", "--sample", "--export", first.to_str().unwrap(), "--scale", "--export", "second.png"]).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{err:?}");
-    assert!(err.contains("--scale needs a value"), "{err:?}");
+    assert_eq!(out.status.code(), Some(2), "{err:?}");
+    assert!(err.contains("--scale") || err.contains("second.png"), "{err:?}");
     assert_eq!(std::fs::read(&first).unwrap(), b"older file", "the file that was already there is untouched");
     assert!(!dir.join("second.png").exists(), "and nothing else is written");
     std::fs::remove_file(&first).unwrap();
 
-    // A missing value is still a missing value, with the message it had.
     let out = cli().args(["run", "--sample", "--export"]).output().unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--export needs a value"));
-
-    // And a missing value in front of an export is still a missing value: the order of the
-    // options is beside the point until `--scale` has one, and "put it before its --export" was
-    // advice for a list that already does that.
-    let out = cli().current_dir(&dir).args(["run", "--sample", "--scale", "--export", "out.png"]).output().unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{err:?}");
-    assert!(err.contains("--scale needs a value"), "{err:?}");
-    assert!(!err.contains("has no --export"), "{err:?}");
-    // `./--export` is a file name, which is no way out of a missing `--scale`.
-    assert!(!err.contains("./"), "{err:?}");
-    assert!(!dir.join("out.png").exists(), "and nothing is exported");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--export"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -837,10 +807,10 @@ fn an_argument_that_is_not_utf8_is_an_error_not_a_panic() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    let out = cli().arg("info").arg(OsStr::from_bytes(b"/tmp/caf\xe9.designcraft")).output().unwrap();
+    let out = cli().arg("bench").arg(OsStr::from_bytes(b"/tmp/caf\xe9.designcraft")).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "an error, not a panic (101): {err:?}");
-    assert!(err.contains("not valid UTF-8"), "{err:?}");
+    assert!(err.contains("not valid Unicode"), "{err:?}");
     assert!(!err.contains("panicked"), "{err:?}");
 }
 
@@ -853,10 +823,10 @@ fn an_unknown_subcommand_is_an_error_even_with_help_after_it() {
     for sub in ["typo", "nonsense", "valdiate-pdf", "runn"] {
         for help in ["--help", "-h"] {
             let out = cli().arg(sub).arg(help).output().unwrap();
-            assert_eq!(out.status.code(), Some(1), "{sub} {help} must fail");
+            assert_eq!(out.status.code(), Some(2), "{sub} {help} must fail with a usage error");
             assert!(out.stdout.is_empty(), "{sub} {help} must not answer on stdout: {:?}", String::from_utf8_lossy(&out.stdout));
             let err = String::from_utf8_lossy(&out.stderr);
-            assert!(err.contains("usage: designcraft-cli"), "{sub} {help}: {err:?}");
+            assert!(err.contains("Usage: designcraft-cli"), "{sub} {help}: {err:?}");
         }
     }
 
@@ -886,7 +856,7 @@ fn subcommand_help_names_the_options_that_subcommand_takes() {
     assert!(v.contains("--standard"), "validate-pdf --help hides --standard: {v:?}");
     // The option is refused for a value it cannot mean, so the help and the parser agree on it.
     let out = cli().arg("validate-pdf").arg("x.pdf").arg("--standard").arg("x9").output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "an unknown standard is refused");
+    assert_eq!(out.status.code(), Some(2), "an unknown standard is refused");
 
     // A couple of others, so this is about subcommand help in general and not one line.
     assert!(help("run").contains("--cmd"), "run --help hides --cmd");

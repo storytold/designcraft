@@ -15,7 +15,10 @@ use designcraft_doc::{Document, SpreadRef, StoryId};
 use designcraft_geom::{Affine, Rect, Vec2};
 use designcraft_render::{Placed, RenderOptions, Renderer};
 
-use designcraft_cli::stress::{Spec, synthetic};
+use crate::args::{BenchArgs, PerfArgs};
+use crate::error::{CliError, unicode};
+use crate::stress::{Spec, synthetic};
+use crate::{Io, outln};
 
 /// Device pixels per point at 100% (HiDPI canvas).
 const HIDPI: f64 = 2.0;
@@ -96,9 +99,9 @@ fn row(rows: &mut Vec<Row>, name: impl Into<String>, ms: f64, budget: Option<f64
 }
 
 /// Measure `doc`. `runs` = repetitions per row (median).
-fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
+fn measure(doc: &Document, runs: usize, dump: Option<&std::path::Path>) -> Result<Vec<Row>, CliError> {
     if doc.spreads.is_empty() {
-        return Err("cannot benchmark a document with no spreads".into());
+        return Err(CliError::Usage("cannot benchmark a document with no spreads"));
     }
     let mut rows = vec![];
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
@@ -131,11 +134,10 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
         let s = ((W as f64 - 80.0) / b.width()).min((H as f64 - 80.0) / b.height());
         (s, view_at(centre, s))
     };
-    let dump = std::env::var("DESIGNCRAFT_PERF_DUMP").ok();
     let save = |name: &str, img: designcraft_render::Rendered| {
         if let Some(d) = &dump {
             let _ = std::fs::create_dir_all(d);
-            let _ = std::fs::write(format!("{d}/{name}.png"), img.to_png());
+            let _ = std::fs::write(d.join(format!("{name}.png")), img.to_png());
         }
     };
     save("fit", r.render(doc, &cache, &all, (W, H), fit.1, &greek(fit.0)));
@@ -264,15 +266,15 @@ fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
         Some(2000.0 * n as f64 / 100.0),
     );
     match failed {
-        Some(e) => Err(e),
+        Some(e) => Err(CliError::Engine(e)),
         None => Ok(rows),
     }
 }
 
-fn print(title: &str, rows: &[Row], noisy: bool) -> Result<(), String> {
-    outln!("{title}");
+fn print(io: &mut Io, title: &str, rows: &[Row], noisy: bool) -> Result<(), CliError> {
+    outln!(io, "{title}");
     let mut over = 0;
-    outln!("  {:<60} {:>11} {:>10}", "", "measured", "budget");
+    outln!(io, "  {:<60} {:>11} {:>10}", "", "measured", "budget");
     for r in rows {
         let (b, flag) = match r.budget {
             Some(b) if r.ms > b => {
@@ -282,59 +284,56 @@ fn print(title: &str, rows: &[Row], noisy: bool) -> Result<(), String> {
             Some(b) => (format!("{b:>7.0} ms"), "ok"),
             None => ("      —   ".into(), ""),
         };
-        outln!("  {:<60} {:>8.2} ms {b}  {flag}", r.name, r.ms);
+        outln!(io, "  {:<60} {:>8.2} ms {b}  {flag}", r.name, r.ms);
     }
     match (over, noisy) {
-        (0, _) => Ok(()),
-        (_, true) => {
-            outln!("{over} over budget, but the machine is busy: re-run when idle.");
-            Ok(())
-        }
-        _ => {
-            outln!("{over} budget(s) exceeded");
-            Ok(())
-        }
+        (0, _) => {}
+        (_, true) => outln!(io, "{over} over budget, but the machine is busy: re-run when idle."),
+        _ => outln!(io, "{over} budget(s) exceeded"),
     }
+    Ok(())
 }
 
-fn header() -> (usize, bool) {
+fn header(io: &mut Io) -> Result<bool, CliError> {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let load = load_average();
     let noisy = load.is_some_and(|l| l > cores as f64 * 0.75);
     outln!(
+        io,
         "{cores} cores, load average {}, render threads {}",
         load.map_or("?".into(), |l| format!("{l:.1}")),
         designcraft_render::default_threads()
     );
     if noisy {
-        outln!("WARNING: the machine is busy (load average above ¾ of the cores); wall-clock timings below are not trustworthy.");
+        outln!(io, "WARNING: the machine is busy (load average above ¾ of the cores); wall-clock timings below are not trustworthy.");
     }
-    (cores, noisy)
+    Ok(noisy)
 }
 
-/// `designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]`.
-pub fn perf(args: &[String]) -> Result<(), String> {
+/// `designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict] [--dump DIR]`.
+pub(crate) fn perf(args: &PerfArgs, io: &mut Io) -> Result<(), CliError> {
     let mut spec = Spec::default();
-    let mut runs = 7usize;
-    let mut strict = false;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        let mut num = || it.next().and_then(|v| v.parse::<usize>().ok()).ok_or(format!("{a} needs a number"));
-        match a.as_str() {
-            "--pages" => spec.pages = num()?.max(1),
-            "--frames" => spec.frames_per_page = num()?.max(1),
-            "--chars" => spec.chars = num()?,
-            "--images" => spec.images = num()?,
-            "--runs" => runs = num()?.max(1),
-            "--strict" => strict = true,
-            other => return Err(format!("unknown perf option `{other}`")),
-        }
+    if let Some(n) = args.pages {
+        spec.pages = n.max(1);
     }
-    let (_, noisy) = header();
+    if let Some(n) = args.frames {
+        spec.frames_per_page = n.max(1);
+    }
+    if let Some(n) = args.chars {
+        spec.chars = n;
+    }
+    if let Some(n) = args.images {
+        spec.images = n;
+    }
+    let runs = args.runs.unwrap_or(7).max(1);
+    // A blank variable counts as unset.
+    let dump = args.dump.as_deref().filter(|d| !d.as_os_str().is_empty());
+    let noisy = header(io)?;
     let t = Instant::now();
-    let doc = synthetic(&spec)?;
+    let doc = synthetic(&spec).map_err(CliError::Engine)?;
     let frames = spec.pages * spec.frames_per_page;
     outln!(
+        io,
         "DesignCraft performance budgets — synthetic: {} pages, {frames} text frames in {} threaded stories, {}k chars, {} images ({} assets), {} gradients (built in {:.0} ms)",
         spec.pages,
         doc.stories.len(),
@@ -344,32 +343,23 @@ pub fn perf(args: &[String]) -> Result<(), String> {
         spec.pages,
         t.elapsed().as_secs_f64() * 1000.0
     );
-    let rows = measure(&doc, runs)?;
-    print("", &rows, noisy)?;
+    let rows = measure(&doc, runs, dump)?;
+    print(io, "", &rows, noisy)?;
     let over = rows.iter().filter(|r| r.budget.is_some_and(|b| r.ms > b)).count();
-    if strict && over > 0 && !noisy { Err(format!("{over} budget(s) exceeded")) } else { Ok(()) }
+    if args.strict && over > 0 && !noisy { Err(CliError::BudgetsExceeded(over)) } else { Ok(()) }
 }
 
 /// `designcraft-cli bench FILE [--runs N]`: the same measurements on one document.
-pub fn bench(args: &[String]) -> Result<(), String> {
-    let mut file = None;
-    let mut runs = 5usize;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--runs" => runs = it.next().and_then(|v| v.parse().ok()).ok_or("--runs needs a number")?,
-            f if file.is_none() && !f.starts_with("--") => file = Some(f.to_string()),
-            other => return Err(format!("unknown bench option `{other}`")),
-        }
-    }
-    let file = file.ok_or("usage: designcraft-cli bench FILE [--runs N]")?;
-    let (_, noisy) = header();
+pub(crate) fn bench(args: &BenchArgs, io: &mut Io) -> Result<(), CliError> {
+    let file = unicode(&args.file)?;
+    let runs = args.runs.unwrap_or(5);
+    let noisy = header(io)?;
     let mut s = designcraft_engine::Session::new();
     let t = Instant::now();
-    s.execute("file.open", &serde_json::json!({"path": file})).map_err(|e| e.to_string())?;
+    s.execute("file.open", &serde_json::json!({"path": file})).map_err(CliError::engine)?;
     let open = t.elapsed().as_secs_f64() * 1000.0;
-    let doc = s.doc().map_err(|e| e.to_string())?.doc.clone();
-    outln!("{file}: {} pages, {} stories, {} assets (opened in {open:.0} ms)", doc.page_count(), doc.stories.len(), doc.assets.len());
-    let rows = measure(&doc, runs)?;
-    print("", &rows, noisy)
+    let doc = s.doc().map_err(CliError::engine)?.doc.clone();
+    outln!(io, "{file}: {} pages, {} stories, {} assets (opened in {open:.0} ms)", doc.page_count(), doc.stories.len(), doc.assets.len());
+    let rows = measure(&doc, runs, None)?;
+    print(io, "", &rows, noisy)
 }
