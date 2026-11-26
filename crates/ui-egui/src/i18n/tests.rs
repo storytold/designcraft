@@ -611,6 +611,12 @@ fn interface_strings() -> HashSet<&'static str> {
         "Text Anchor",
         "Transparency Flattener",
         "Use Document Style Definition",
+        // Adjust Layout dialog labels (translations live in storytold/craft-i18n).
+        "Adjust font size",
+        "Adjust locked content",
+        "Auto-adjust margins to page size changes",
+        "Max:",
+        "Set font size limits",
         // Status-bar messages.
         "Alternate layout",
         "Couldn't write recovery data: {error}",

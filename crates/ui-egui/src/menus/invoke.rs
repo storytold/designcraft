@@ -50,6 +50,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
         crate::dialogs::open_document_setup(app);
         return;
     }
+    if params.is_null() && id == "layout.adjust" {
+        crate::dialogs::open_adjust_layout(app);
+        return;
+    }
     if params.is_null() && id == "file.info" {
         crate::dialogs::open_file_info(app);
         return;

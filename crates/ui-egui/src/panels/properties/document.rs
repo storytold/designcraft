@@ -317,7 +317,7 @@ pub(super) fn document_sections(app: &mut DesignApp, ui: &mut Ui) {
     ui.add_space(6.0);
     let fw = full_width(ui);
     if outline_button(ui, crate::i18n::tr(&app.ui.language, "Adjust Layout"), fw).clicked() {
-        crate::dialogs::open_document_setup(app);
+        crate::dialogs::open_adjust_layout(app);
     }
     divider(ui);
     // Page.
