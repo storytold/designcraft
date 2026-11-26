@@ -577,8 +577,14 @@ mod framework {
             Text::new(tr("No placed graphics.")).shade(Shade::Muted).show(ui);
             return;
         }
-        let sel_key = egui::Id::unique("links_panel_sel");
-        let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key));
+        // The chosen row belongs to the document it was chosen in, and holds only while that document still lists it: a
+        // row of another document, or one gone from this list, is no choice.
+        let row_id = |r: &Value| r["asset"].as_u64().or_else(|| r["story"].as_u64());
+        let sel_key = egui::Id::unique("links_panel_sel").with(app.session.active().map(|st| st.uid));
+        let mut chosen: Option<u64> = ui.data(|d| d.get_temp(sel_key)).filter(|aid| rows.iter().any(|r| row_id(r) == Some(*aid)));
+        if chosen.is_none() {
+            ui.data_mut(|d| d.remove::<u64>(sel_key));
+        }
         // Status and Page · PPI are as wide as their widest entry (a chip sized to its words, a short readout) and Name
         // takes the rest, so a file name stays readable and every column fits the panel; long source paths are cut.
         let width = ui.available_width();
@@ -787,19 +793,31 @@ mod ui223_links_tests {
         egui::Id::NULL.with("ui223_links_test_region")
     }
 
-    /// A real installed Arabic face is an explicit native fixture precondition, not an OS
-    /// package install or a synthetic glyph map. The app's current SYSTEM_UI_FONTS list lacks
-    /// Arab without optional CRAFT_FONTS; retain all its current definitions and add this face
-    /// using the app's existing FontDb and baseline-aware fallback API.
+    /// A real Arabic face is an explicit fixture precondition, not a synthetic glyph map. The licensed face comes first:
+    /// the craft-fonts Arabic face the build pins (the face the app itself draws Arabic interface text with), so the
+    /// test reads the same glyphs on every runner whatever fonts its OS has. A build without craft-fonts falls back to
+    /// the OS's own Arabic face. Either way it keeps the app's current definitions and adds the face with the app's
+    /// FontDb and baseline-aware fallback API.
     fn install_arabic_fixture(ctx: &egui::Context, language: &str) {
         #[cfg(target_os = "macos")]
-        let family = "Geeza Pro";
+        let system = "Geeza Pro";
         #[cfg(target_os = "windows")]
-        let family = "Segoe UI";
+        let system = "Segoe UI";
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let family = "DejaVu Sans";
+        let system = "DejaVu Sans";
         let db = designcraft_fonts::FontDb::global();
-        assert!(db.has_family(family), "the native Arabic fixture requires the already-installed {family}; do not skip Arabic or substitute tofu");
+        let craft = designcraft_fonts::CRAFT_FONTS.iter().find(|f| f.scripts.contains(&"Arab") && f.style == "Regular");
+        let family = match craft {
+            Some(font) => {
+                db.add_font(font.bytes.to_vec());
+                font.family
+            }
+            None => system,
+        };
+        assert!(
+            db.has_family(family),
+            "the Arabic fixture needs the craft-fonts Arabic face (CRAFT_FONTS_DIR) or the installed {system}; do not skip Arabic or substitute tofu"
+        );
         let face = db.face(family, "Regular");
         assert!(face.family.eq_ignore_ascii_case(family), "the named fixture must resolve to {family}, not {}", face.family);
         assert!(!face.is_placeholder() && face.covers('\u{0627}'), "the Arabic face must contain a real alef glyph");
