@@ -26,18 +26,21 @@ const OUTLINE_CACHE_MAX: usize = 50_000;
 impl FontDb {
     /// A database holding the bundled fonts, then the craft-fonts Japanese faces (Mincho first),
     /// followed by Noto Sans Hebrew Regular and Noto Sans Devanagari Regular for document text.
+    /// Remaining supplied faces follow in manifest order.
     /// The optional craft-fonts faces are absent without `CRAFT_FONTS_DIR`; system font scans
     /// read `font_dirs`. Japanese fallback and UI ordering remain independent of these additions.
     pub fn with_font_dirs(font_dirs: Vec<std::path::PathBuf>) -> Self {
+        Self::with_document_fonts(font_dirs, crate::document_fonts().into_iter().map(|font| font.bytes))
+    }
+
+    /// Model a build without optional craft-fonts in tests of installed-font discovery.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_font_dirs_without_craft_fonts(font_dirs: Vec<std::path::PathBuf>) -> Self {
+        Self::with_document_fonts(font_dirs, std::iter::empty())
+    }
+
+    fn with_document_fonts(font_dirs: Vec<std::path::PathBuf>, craft: impl Iterator<Item = &'static [u8]>) -> Self {
         let mut faces = Vec::new();
-        let craft = crate::japanese_document_fonts()
-            .into_iter()
-            .chain(
-                ["Noto Sans Hebrew", "Noto Sans Devanagari"]
-                    .into_iter()
-                    .filter_map(|family| crate::CRAFT_FONTS.iter().find(|f| f.family == family && f.style == "Regular")),
-            )
-            .map(|f| f.bytes);
         for data in BUNDLED.iter().copied().chain(craft) {
             for (i, family, style, coords) in enumerate_faces(data) {
                 if let Some(f) = make_face(FontBytes::Static(data), FontSource::Bundled, i, family, style, coords) {

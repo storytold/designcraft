@@ -778,7 +778,7 @@ mod japanese_font_tests {
         for (i, (family, chars)) in fonts.iter().enumerate() {
             std::fs::write(dir.join(format!("font{i}.ttf")), designcraft_fonts::testing::font_with(family, chars).unwrap()).unwrap();
         }
-        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let db = designcraft_fonts::FontDb::with_font_dirs_without_craft_fonts(vec![dir.clone()]);
         let system = super::installed_ui_fonts(&db, &[]);
         let _ = std::fs::remove_dir_all(&dir);
         let picked: Vec<(&str, &str)> = system.iter().map(|f| (f.script, f.family.as_str())).collect();
@@ -814,7 +814,7 @@ mod japanese_font_tests {
         for (i, (family, glyphs)) in [("Geeza Pro", &['a'][..]), ("Noto Sans Arabic", &chars[..])].iter().enumerate() {
             std::fs::write(dir.join(format!("font{i}.ttf")), designcraft_fonts::testing::font_with(family, glyphs).unwrap()).unwrap();
         }
-        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let db = designcraft_fonts::FontDb::with_font_dirs_without_craft_fonts(vec![dir.clone()]);
         let system = super::installed_ui_fonts(&db, &[]);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(system.len(), 1);
@@ -854,7 +854,7 @@ mod japanese_font_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let bytes = designcraft_fonts::testing::font_with("Tahoma", &[' ', '\u{0e01}', '\u{0645}']).unwrap();
         std::fs::write(dir.join("shared.ttf"), bytes).unwrap();
-        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let db = designcraft_fonts::FontDb::with_font_dirs_without_craft_fonts(vec![dir.clone()]);
         let system = super::installed_ui_fonts(&db, &[]);
         let craft = Box::leak(
             vec![designcraft_fonts::CraftFont {
