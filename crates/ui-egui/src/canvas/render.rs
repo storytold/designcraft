@@ -164,6 +164,10 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         app.canvas.shown_doc = app.canvas.pending_doc.take();
         app.canvas.pending = None;
         app.perf.render_ms = done.ms;
+        // A full render this fast lets edits render on the UI thread again; their regions too,
+        // after a slow repaint once enough renders have passed (see `patch_measured`).
+        app.canvas.sync_ms = done.ms;
+        worker_rendered(&mut app.canvas, done.ms);
     }
     let images = {
         let live = designcraft_render::images::generation();
@@ -221,12 +225,19 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
     #[cfg(target_arch = "wasm32")]
     let has_worker = false;
     // An edit with the view unchanged: repaint just the regions it changed.
-    if doc_changed && zoom_same && patch_texture(app, layout, ppp, doc_key, preview) {
+    // While rendering is quick, edits render here so the canvas never lags behind them. Past the
+    // budget the UI thread would stall: clicks and drags pile up and arrive at once, and panels
+    // stop answering. Edits then render on the worker, as zooms do, and the canvas keeps showing
+    // the previous image until the new one is ready.
+    let sync_ok = !has_worker || app.canvas.sync_ms <= super::SYNC_BUDGET_MS;
+    let patch_ok = !has_worker || app.canvas.patch_ms <= super::SYNC_BUDGET_MS;
+    if doc_changed && zoom_same && patch_ok && patch_texture(app, layout, ppp, doc_key, preview) {
         return;
     }
     // A mode switch changes every spread's meaning, even if the document has no damage.
     // Show the new canvas immediately, including when fitting it changes the zoom.
-    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same) {
+    // A slow repaint of an edit's regions means a full render would stall too: to the worker.
+    if !has_worker || app.canvas.shown.is_none() || mode_changed || (doc_changed && zoom_same && sync_ok && patch_ok) {
         let t0 = crate::now_ms();
         let Some((doc, placed, w, h, view, opts)) = job(app) else { return };
         let img = app.canvas.renderer.render(&doc, &app.session.cache, &placed, (w, h), view, &opts);
@@ -236,6 +247,7 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
         app.canvas.pending = None;
         app.canvas.pending_doc = None;
         app.perf.render_ms = crate::now_ms() - t0;
+        app.canvas.sync_ms = app.perf.render_ms;
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -276,8 +288,16 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         return false;
     }
     let new = st.doc.clone();
-    let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return false };
+    // Timed from the damage check on, whichever way it ends: a slow comparison of a large
+    // document counts against the budget as a slow repaint does (`patch_ms`).
     let t0 = crate::now_ms();
+    let timed = |app: &mut DesignApp, patched: bool| {
+        patch_measured(&mut app.canvas, crate::now_ms() - t0);
+        patched
+    };
+    let Some(regions) = designcraft_render::damage::damage_with(&old, &new, Some(&app.session.cache)) else { return timed(app, false) };
+    // The render time shown (`perf.render_ms`) is the repaint's own, without the comparison.
+    let t_render = crate::now_ms();
     let k = sh.zoom * ppp;
     let mut px: Option<(i64, i64, i64, i64)> = None;
     for (r, rect) in &regions {
@@ -297,15 +317,15 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     };
     let Some((x0, y0, x1, y1)) = px.map(|p| (p.0.max(0), p.1.max(0), p.2.min(tw), p.3.min(th))) else {
         done(app);
-        return true;
+        return timed(app, true);
     };
     if x1 <= x0 || y1 <= y0 {
         done(app);
-        return true;
+        return timed(app, true);
     }
     // Big changes: a full render costs about the same.
     if ((x1 - x0) * (y1 - y0)) as f64 > 0.5 * (tw * th) as f64 {
-        return false;
+        return timed(app, false);
     }
     let placed: Vec<designcraft_render::Placed> = layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
     let view = Affine::translate((-(x0 as f64), -(y0 as f64)))
@@ -320,8 +340,32 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
     }
     done(app);
     app.canvas.patches += 1;
-    app.perf.render_ms = crate::now_ms() - t0;
-    true
+    app.perf.render_ms = crate::now_ms() - t_render;
+    timed(app, true)
+}
+
+/// A repaint of an edit's regions took `ms`. Slow, the next edits render on the worker, and
+/// the UI thread retries a repaint only after `patch_backoff` worker renders, twice as many each
+/// time the retry is slow again: a slow damage comparison stalls once in a while, not every
+/// other edit.
+pub(super) fn patch_measured(c: &mut crate::CanvasCache, ms: f64) {
+    c.patch_ms = ms;
+    if ms > super::SYNC_BUDGET_MS {
+        c.patch_backoff = c.patch_backoff.saturating_mul(2).clamp(1, 64);
+        c.patch_wait = c.patch_backoff;
+    } else {
+        c.patch_backoff = 0;
+        c.patch_wait = 0;
+    }
+}
+
+/// A worker render took `ms`: one render less to wait before repainting regions is tried again.
+pub(super) fn worker_rendered(c: &mut crate::CanvasCache, ms: f64) {
+    if c.patch_wait > 0 {
+        c.patch_wait -= 1;
+    } else {
+        c.patch_ms = c.patch_ms.min(ms);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
