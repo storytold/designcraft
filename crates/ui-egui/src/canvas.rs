@@ -222,7 +222,14 @@ fn present_click(app: &mut DesignApp, ui: &egui::Ui, resp: &egui::Response, rect
 }
 
 /// Where the canvas of the pane that has the keyboard was drawn in this pass: its response id, for [`take_key_focus`].
+/// One per viewport (`key_target`): the second window's canvas is that window's key target, which the root pass must
+/// not take.
 const KEY_TARGET: &str = "canvas_key_target";
+
+/// The key-target slot of `viewport`.
+fn key_target(viewport: egui::ViewportId) -> egui::Id {
+    egui::Id::new(KEY_TARGET).with(viewport)
+}
 
 /// Where the canvas of a pane was drawn the pass before: its response id, to tell whether it holds egui focus.
 const CANVAS_LAST: &str = "canvas_last_response";
@@ -234,11 +241,12 @@ const CANVAS_LAST: &str = "canvas_last_response";
 /// dispatcher) cannot read. The end of the pass, not the canvas's own place in it: a framework focus move (Tab to the next
 /// stop) gives its focus when that stop registers, which can be after the canvas is drawn, and it must not lose it to the
 /// canvas. Not while a dialog, Quick Apply, the About window or an open framework popup or menu takes the keys; the
-/// focus a click gave stays where it is.
+/// focus a click gave stays where it is. Each viewport's pass takes its own canvas: the root window's at the end of its
+/// pass, New Window's at the end of its own.
 pub(crate) fn take_key_focus(app: &DesignApp, ctx: &egui::Context) {
     use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
     // `egui::Id` has no `Default`, so `remove_temp` cannot take it: read it, then remove it.
-    let key = egui::Id::new(KEY_TARGET);
+    let key = key_target(ctx.viewport_id());
     let Some(canvas) = ctx.data(|data| data.get_temp::<egui::Id>(key)) else { return };
     ctx.data_mut(|data| data.remove::<egui::Id>(key));
     if ctx.memory(|memory| memory.focused().is_some())
@@ -284,7 +292,8 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let resp = ui.allocate_rect(full, if held { Sense::click_and_drag() } else { Sense::CLICK | Sense::DRAG });
     ui.data_mut(|data| data.insert_temp(last, resp.id));
     if input::keyboard_pane(app) {
-        ui.data_mut(|data| data.insert_temp(egui::Id::new(KEY_TARGET), resp.id));
+        let key = key_target(ui.ctx().viewport_id());
+        ui.data_mut(|data| data.insert_temp(key, resp.id));
     }
     if presenting {
         // One spread at a time, as large as the screen allows; a click shows the next one,

@@ -306,7 +306,7 @@ impl DesignApp {
             ctx.show_viewport_immediate(
                 second_window_viewport(),
                 egui::ViewportBuilder::default().with_title(title).with_inner_size([960.0, 720.0]),
-                |ui, _class| {
+                |ui, class| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {
                         self.switch_pane(1);
                         if self.view().is_none() {
@@ -323,6 +323,12 @@ impl DesignApp {
                         }
                         canvas::show(self, ui);
                     });
+                    // The window's own pass ends here: with nothing else focused in it, its canvas takes the keyboard
+                    // (Escape, Tab and the clipboard reach it), as the main window's does at the end of its pass. An
+                    // embedded viewport draws in the main window's pass, which takes the target there.
+                    if class != egui::ViewportClass::Embedded {
+                        canvas::take_key_focus(self, ui.ctx());
+                    }
                     if ui.input(|i| i.viewport().close_requested()) {
                         self.end_second_ime_viewport();
                         self.second_window = false;
