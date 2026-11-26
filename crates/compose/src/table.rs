@@ -321,7 +321,7 @@ pub(crate) fn place_table(
     place_rows(0..header, &mut y, false, &mut frag_rows);
     // Table rows do not add story footnotes; cell-local notes are composed separately.
     let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
-        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
+        let note_w = notes.area(&cols[cur.fi], cur.fi, cur.col).map_or(col.width(), |a| a.width());
         let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
         notes.reserve(doc, column, &[], opts)
     };

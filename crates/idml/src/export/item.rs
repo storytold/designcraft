@@ -412,6 +412,17 @@ fn text_wrap_pref(w: &designcraft_doc::TextWrap) -> El {
 }
 
 pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
+    let mut el = text_frame_pref_base(o, rule_color);
+    if let Some(n) = &o.footnotes {
+        el.set("FootnotesEnableOverrides", "true");
+        el.set("FootnotesSpanAcrossColumns", bool_s(n.span_columns));
+        el.set("FootnotesMinimumSpacing", num(n.min_spacing));
+        el.set("FootnotesSpaceBetween", num(n.space_between));
+    }
+    el
+}
+
+fn text_frame_pref_base(o: &TextFrameOptions, rule_color: &str) -> El {
     crate::xml::from_craft(
         craft_idml::model::TextFramePreferences {
             column_count: Some(f64::from(o.columns.max(1))),

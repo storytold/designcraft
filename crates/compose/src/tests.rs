@@ -2839,6 +2839,39 @@ fn footnotes_sit_at_the_column_bottom_and_push_text() {
     assert!(note_caret(&cs, n.id, 0).is_some());
 }
 
+/// A frame that overrides the footnote options (Text Frame Options > Footnotes) uses its own Space
+/// Between Footnotes and Minimum Space Before First Footnote instead of the document's (measured in
+/// InDesign 2026 with 8/10 pt notes: a minimum of 14 pt takes the 7th body line at a frame height
+/// 14 pt higher than with none, and two notes 8 pt apart take 8 pt more).
+#[test]
+fn a_frame_with_footnote_overrides_uses_its_own_spacing() {
+    let text = format!("{LOREM} {LOREM} {LOREM} {LOREM}");
+    let compose = |own: Option<designcraft_doc::FrameFootnotes>, doc_between: f64, doc_before: f64| {
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(36.0, 36.0, 300.0, 236.0), ParaAttrs::default());
+        d.footnote_options.space_between = doc_between;
+        d.footnote_options.space_before = doc_before;
+        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.footnotes = own;
+        let st = d.story_mut(sid).unwrap();
+        st.insert_note(20, "First.", ParaFormat::default());
+        st.insert_note(10, "Second.", ParaFormat::default());
+        st.check().unwrap();
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = cs.frame(fid).unwrap();
+        (ft.notes[0].rect.y0, ft.lines.len())
+    };
+    let (plain_top, plain_lines) = compose(None, 0.0, 0.0);
+    let own = designcraft_doc::FrameFootnotes { span_columns: false, min_spacing: 14.0, space_between: 8.0 };
+    let (top, lines) = compose(Some(own), 0.0, 0.0);
+    // The two notes are 8 pt further apart, so the stack starts 8 pt higher; the 14 pt minimum
+    // takes room from the body text above it.
+    assert!((plain_top - top - 8.0).abs() < 1e-6, "first note top {plain_top} without, {top} with");
+    assert!(lines < plain_lines, "{lines} body lines with the overrides, {plain_lines} without");
+    // The document's own spacing does not change a frame that sets its own...
+    assert_eq!(compose(Some(own), 5.0, 9.0), (top, lines));
+    // ...and applies to a frame that does not.
+    assert!(compose(None, 5.0, 0.0).0 < plain_top - 4.9);
+}
+
 fn justified_content_clears_footnotes(mode: designcraft_doc::VerticalJustification, table: bool) {
     for span in [false, true] {
         let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 240.0), ParaAttrs::default());

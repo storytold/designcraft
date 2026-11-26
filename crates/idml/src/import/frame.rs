@@ -103,6 +103,18 @@ pub(super) fn text_frame_options(prefs: &[&El]) -> TextFrameOptions {
         o.first_baseline_min = v;
     }
     o.ignore_wrap = e.ignore_wrap;
+    // Footnotes: the frame's own options apply while Enable Overrides is on.
+    let found = Prefs(prefs);
+    let attr = |name: &str| found.prop(name).map(|v| v.trim().to_string());
+    if attr("FootnotesEnableOverrides").as_deref() == Some("true") {
+        let defaults = designcraft_doc::FrameFootnotes::default();
+        let num = |name: &str, d: f64| attr(name).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).map_or(d, |v| v.clamp(0.0, 10_000.0));
+        o.footnotes = Some(designcraft_doc::FrameFootnotes {
+            span_columns: attr("FootnotesSpanAcrossColumns").as_deref() == Some("true"),
+            min_spacing: num("FootnotesMinimumSpacing", defaults.min_spacing),
+            space_between: num("FootnotesSpaceBetween", defaults.space_between),
+        });
+    }
     if let Some(v) = e.auto_sizing_type.as_deref() {
         o.auto_size = names::auto_size_in(v.trim());
     }
@@ -424,5 +436,38 @@ mod frame_preference_scalar_tests {
         // Object identities use the raw property lookup, not scalar whitespace normalization.
         let exact = El::new("TextFramePreference").child(El::new("Properties").child(El::new("ColumnRuleStrokeColor").text(" Color/Named ")));
         assert_eq!(Prefs(&[&exact]).prop("ColumnRuleStrokeColor").as_deref(), Some(" Color/Named "));
+    }
+}
+
+#[cfg(test)]
+mod footnote_override_tests {
+    use super::*;
+
+    fn pref(attrs: &[(&str, &str)]) -> El {
+        let mut e = El::new("TextFramePreference");
+        for (key, value) in attrs {
+            e.set(key, *value);
+        }
+        e
+    }
+
+    #[test]
+    fn a_frame_keeps_its_own_footnote_options_while_overrides_are_on() {
+        let on = pref(&[
+            ("FootnotesEnableOverrides", "true"),
+            ("FootnotesSpanAcrossColumns", "true"),
+            ("FootnotesMinimumSpacing", " 14 "),
+            ("FootnotesSpaceBetween", "8"),
+        ]);
+        let o = text_frame_options(&[&on]);
+        assert_eq!(o.footnotes, Some(designcraft_doc::FrameFootnotes { span_columns: true, min_spacing: 14.0, space_between: 8.0 }));
+        // InDesign's defaults for a frame that turns them on without giving values.
+        let bare = pref(&[("FootnotesEnableOverrides", "true")]);
+        assert_eq!(text_frame_options(&[&bare]).footnotes, Some(designcraft_doc::FrameFootnotes::default()));
+        // The values are kept in the file while overrides are off, and have no effect.
+        let off = pref(&[("FootnotesEnableOverrides", "false"), ("FootnotesMinimumSpacing", "14"), ("FootnotesSpaceBetween", "8")]);
+        assert_eq!(text_frame_options(&[&off]).footnotes, None);
+        // The nearest level decides.
+        assert_eq!(text_frame_options(&[&off, &on]).footnotes, None);
     }
 }
