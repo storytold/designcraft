@@ -405,6 +405,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-23** · A table cell's text is kept at least half its edge stroke off each side (#3182), as in InDesign: each side's inset is the larger of the cell inset and half the weight of the stroke on that edge, for the text origin, the wrap width and the row height. A 0 pt inset under an 8 pt left stroke wraps 4 pt narrower, as InDesign's does; insets at or above half the stroke (the default 4 pt inset under any stroke up to 8 pt) are unchanged. A table that breaks across columns or frames keeps the row heights it has whole (InDesign does not raise the rows at the cut for the table border).
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

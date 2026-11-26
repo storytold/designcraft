@@ -2434,6 +2434,87 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// InDesign keeps cell text at least half the stroke weight off each edge: a side's inset is the
+/// larger of the inset and half the weight of that edge's stroke (measured with single cells: the
+/// text origin, the wrap width and the row height all follow it).
+#[test]
+fn a_cell_inset_is_at_least_half_its_edge_stroke() {
+    let sides = |inset: f64, weight: f64| {
+        let mut t = filled(1, 1, 0, 100.0);
+        t.cell_mut(0, 0).unwrap().insets = [inset; 4];
+        t.options.border.weight = weight;
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let cell = cs.frames[0].tables[0].cell(0, 0).unwrap();
+        [cell.clip.y0 - cell.rect.y0, cell.clip.x0 - cell.rect.x0, cell.rect.y1 - cell.clip.y1, cell.rect.x1 - cell.clip.x1]
+    };
+    for side in sides(0.0, 8.0) {
+        assert!((side - 4.0).abs() < 1e-6, "a 0 pt inset under an 8 pt stroke is 4 pt, not {side}");
+    }
+    for side in sides(6.0, 8.0) {
+        assert!((side - 6.0).abs() < 1e-6, "a larger inset wins: {side}");
+    }
+    for side in sides(0.0, 0.0) {
+        assert!(side.abs() < 1e-6, "no stroke, no inset: {side}");
+    }
+    // The wrap width follows: a narrower column of the same text breaks sooner under the stroke.
+    let lines = |weight: f64| {
+        let mut t = filled(1, 1, 0, 30.0);
+        t.cell_mut(0, 0).unwrap().insets = [0.0; 4];
+        t.cell_mut(0, 0).unwrap().text.insert(0, "aaaa bbbb ");
+        t.options.border.weight = weight;
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        cs.frames[0].tables[0].cell(0, 0).unwrap().text.frames[0].lines.len()
+    };
+    assert!(lines(8.0) > lines(0.0), "{} vs {}", lines(8.0), lines(0.0));
+}
+
+/// A table that breaks across frames keeps its row heights: InDesign does not raise the rows at the
+/// cut for the table border (measured with a 12 pt border and 0 pt insets, the same rows fitting
+/// whole and broken after the fifth row, with and without 4 pt insets).
+#[test]
+fn a_table_that_breaks_keeps_the_row_heights_it_has_whole() {
+    let table = || {
+        let mut t = filled(8, 1, 0, 100.0);
+        t.options.border.weight = 12.0;
+        for r in 0..8 {
+            t.cell_mut(r, 0).unwrap().insets = [0.0; 4];
+        }
+        t
+    };
+    let heights = |cs: &ComposedStory| -> Vec<f64> {
+        cs.frames.iter().flat_map(|f| f.tables.iter()).flat_map(|t| t.cells.iter().map(|c| c.rect.height())).collect()
+    };
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), table());
+    let whole = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(whole.frames[0].tables.len(), 1);
+    // The same table broken between two frames.
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 60.0), lid, "", ParaFormat::default()).unwrap();
+    let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 600.0), lid, "", ParaFormat::default()).unwrap();
+    d.thread(f1, f2).unwrap();
+    d.story_mut(sid).unwrap().insert_table(0, table());
+    let broken = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!broken.is_overset());
+    assert_eq!((broken.frames[0].tables.len(), broken.frames[1].tables.len()), (1, 1));
+    let (w, b) = (heights(&whole), heights(&broken));
+    assert_eq!(w.len(), b.len());
+    for (r, (w, b)) in w.iter().zip(&b).enumerate() {
+        assert!((w - b).abs() < 1e-6, "row {r}: {w} whole, {b} broken");
+    }
+    // An interior row is the height it has without any table border: only its own 1 pt strokes count.
+    let mut plain = table();
+    plain.options.border.weight = 0.0;
+    let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 300.0, 1000.0), plain);
+    let no_border = compose_story(&d, sid, &ComposeOptions::default());
+    let plain_heights = heights(&no_border);
+    for (r, (p, w)) in plain_heights.iter().zip(&w).enumerate().take(7).skip(1) {
+        assert!((p - w).abs() < 1e-6, "row {r}: {p} without a border, {w} with");
+    }
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));

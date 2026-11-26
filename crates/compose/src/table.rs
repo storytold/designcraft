@@ -120,6 +120,8 @@ struct CellLayout {
     text: Arc<ComposedStory>,
     content_h: f64,
     line_heights: Vec<f64>,
+    /// The cell's insets as applied (see [`effective_insets`]).
+    ins: [f64; 4],
 }
 
 /// Cell text fits by its baseline, while its typographic/inline-object bounds must still
@@ -137,7 +139,7 @@ impl CellLineExtent {
 }
 
 /// Compose a cell story at width `w` (content space, top-left at the origin).
-fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
+fn compose_cell(doc: &Document, cell: &Cell, w: f64, bottom_inset: f64, opts: &ComposeOptions, (left_page, right_page): (bool, bool)) -> CellLayout {
     let mut spec = FrameSpec {
         id: ItemId(0),
         area: Rect::new(0.0, 0.0, w.max(1.0), 1.0e6),
@@ -177,14 +179,14 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
                     extent.bottom = extent.bottom.max(object.origin.y + object.size.1);
                 }
             }
-            extents.iter().map(|e| e.fit_height(cell.insets[2])).collect()
+            extents.iter().map(|e| e.fit_height(bottom_inset)).collect()
         })
         .unwrap_or_default();
     // Check all lines: a large descender or lowered inline object on an earlier line can
     // extend below the final baseline when leading is fixed.
     let note_bottom = cs.frames.first().map_or(0.0, |f| f.notes.iter().map(|n| n.rect.y1).fold(0.0, f64::max));
     let content_h = line_heights.iter().copied().fold(note_bottom, f64::max);
-    CellLayout { text: Arc::new(cs), content_h, line_heights }
+    CellLayout { text: Arc::new(cs), content_h, line_heights, ins: [0.0; 4] }
 }
 
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
@@ -229,54 +231,59 @@ pub(crate) fn place_table(
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
-    // Compose every owner cell.
-    let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
-    for r in 0..nr {
-        for c in 0..nc {
-            if !is_owner(r, c) {
-                layouts.push(None);
-                continue;
+    // Compose every owner cell and size the rows.
+    let rows_for = || -> (Vec<Option<CellLayout>>, Vec<f64>) {
+        let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
+        for r in 0..nr {
+            for c in 0..nc {
+                if !is_owner(r, c) {
+                    layouts.push(None);
+                    continue;
+                }
+                let cell = &table.cells[r * nc + c];
+                let cs = (cell.col_span.max(1) as usize).min(nc - c);
+                let ins = effective_insets(table, &owners, (r, c));
+                let w = colx[c + cs] - colx[c] - ins[1] - ins[3];
+                let mut layout = compose_cell(doc, cell, w, ins[2], opts, side);
+                layout.ins = ins;
+                layouts.push(Some(layout));
             }
-            let cell = &table.cells[r * nc + c];
-            let cs = (cell.col_span.max(1) as usize).min(nc - c);
-            let w = colx[c + cs] - colx[c] - cell.insets[1] - cell.insets[3];
-            layouts.push(Some(compose_cell(doc, cell, w, opts, side)));
         }
-    }
-    // Row heights.
-    let need = |r: usize, c: usize| -> f64 {
-        let cell = &table.cells[r * nc + c];
-        layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h) + cell.insets[0] + cell.insets[2]
+        // Row heights.
+        let need = |r: usize, c: usize| -> f64 { layouts[r * nc + c].as_ref().map_or(0.0, |l| l.content_h + l.ins[0] + l.ins[2]) };
+        let mut heights: Vec<f64> = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, row)| match row.mode {
+                RowHeightMode::Exactly => row.height.max(0.0),
+                RowHeightMode::AtLeast => {
+                    let content =
+                        (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
+                    content.max(row.height)
+                }
+            })
+            .collect();
+        // Row-spanning cells grow the last row they span (unless it is fixed).
+        for r in 0..nr {
+            for c in 0..nc {
+                let cell = &table.cells[r * nc + c];
+                if !is_owner(r, c) || cell.row_span <= 1 {
+                    continue;
+                }
+                let end = (r + cell.row_span as usize).min(nr);
+                let have: f64 = heights[r..end].iter().sum();
+                let n = need(r, c);
+                if n > have
+                    && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
+                {
+                    heights[i] += n - have;
+                }
+            }
+        }
+        (layouts, heights)
     };
-    let mut heights: Vec<f64> = table
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(r, row)| match row.mode {
-            RowHeightMode::Exactly => row.height.max(0.0),
-            RowHeightMode::AtLeast => {
-                let content = (0..nc).filter(|&c| is_owner(r, c) && table.cells[r * nc + c].row_span <= 1).map(|c| need(r, c)).fold(0.0, f64::max);
-                content.max(row.height)
-            }
-        })
-        .collect();
-    // Row-spanning cells grow the last row they span (unless it is fixed).
-    for r in 0..nr {
-        for c in 0..nc {
-            let cell = &table.cells[r * nc + c];
-            if !is_owner(r, c) || cell.row_span <= 1 {
-                continue;
-            }
-            let end = (r + cell.row_span as usize).min(nr);
-            let have: f64 = heights[r..end].iter().sum();
-            let n = need(r, c);
-            if n > have
-                && let Some(i) = (r..end).rev().find(|&i| table.rows[i].mode == RowHeightMode::AtLeast)
-            {
-                heights[i] += n - have;
-            }
-        }
-    }
+    let (layouts, heights) = rows_for();
     // Row groups that must stay together: end (exclusive) of the group starting at each row.
     let mut group_end: Vec<usize> = (0..nr).map(|r| r + 1).collect();
     {
@@ -301,13 +308,20 @@ pub(crate) fn place_table(
     let header = table.header_rows();
     let footer = table.footer_rows();
     let body_end = nr - footer;
-    let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
-    let footer_h = sum(body_end, nr);
     let o = &table.options;
     let mut y = match cur.last_baseline {
         Some(b) => b + cur.last_descent + cur.pending + o.space_before,
         None => col.y0,
     };
+    // Table rows do not add story footnotes; cell-local notes are composed separately.
+    let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
+        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
+        let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
+        notes.reserve(doc, column, &[], opts)
+    };
+    let mut reserve = column_reserve(notes, cur, col);
+    let sum = |a: usize, b: usize| heights[a..b].iter().sum::<f64>();
+    let footer_h = sum(body_end, nr);
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
     let mut first_frag = true;
     let mut body_placed = 0usize;
@@ -319,13 +333,6 @@ pub(crate) fn place_table(
         }
     };
     place_rows(0..header, &mut y, false, &mut frag_rows);
-    // Table rows do not add story footnotes; cell-local notes are composed separately.
-    let column_reserve = |notes: &mut crate::notes::Notes, cur: &Cursor, col: Rect| {
-        let note_w = notes.area(&cols[cur.fi], cur.col).map_or(col.width(), |a| a.width());
-        let column = crate::notes::NoteColumn { frame_index: cur.fi, column_index: cur.col, width: note_w, frame: &frames[cur.fi] };
-        notes.reserve(doc, column, &[], opts)
-    };
-    let mut reserve = column_reserve(notes, cur, col);
     let mut r = header;
     loop {
         if r >= body_end {
@@ -461,7 +468,8 @@ fn emit(
                 None
             };
             let Some(lay) = layouts.get(r * nc + c).and_then(Option::as_ref) else { continue };
-            let clip = Rect::new(rect.x0 + cell.insets[1], rect.y0 + cell.insets[0], rect.x1 - cell.insets[3], rect.y1 - cell.insets[2]);
+            let ins = lay.ins;
+            let clip = Rect::new(rect.x0 + ins[1], rect.y0 + ins[0], rect.x1 - ins[3], rect.y1 - ins[2]);
             let space = clip.height() - lay.content_h;
             let dy = match cell.vj {
                 VerticalJustification::Center if space > 0.0 => space / 2.0,
@@ -651,6 +659,24 @@ pub fn cell_side_strokes<'a>(table: &'a Table, owners: &[(usize, usize)], (r, c)
         _ => {}
     }
     out
+}
+
+/// The insets of the cell at `(r, c)` (top, left, bottom, right) as InDesign applies them: each
+/// side is the larger of its inset and half the weight of the stroke on that edge, so a 0 pt inset
+/// under a 1 pt stroke still keeps the text half a point off the line (observed with single cells:
+/// the text origin, the wrap width and the row height all follow `max(inset, stroke / 2)`). A table
+/// that breaks across columns or frames keeps its row heights: InDesign does not raise the rows at
+/// the cut for the table border.
+fn effective_insets(table: &Table, owners: &[(usize, usize)], (r, c): (usize, usize)) -> [f64; 4] {
+    let Some(cell) = table.cell(r, c) else { return [0.0; 4] };
+    std::array::from_fn(|side| {
+        let half = cell_side_strokes(table, owners, (r, c), side)
+            .iter()
+            .filter(|s| s.stroke.is_visible() && s.stroke.weight.is_finite())
+            .map(|s| s.stroke.weight / 2.0)
+            .fold(0.0, f64::max);
+        cell.insets[side].max(half)
+    })
 }
 
 /// Keep an unchanged winning cell edge continuous across different losing neighbors. In
@@ -868,7 +894,7 @@ mod height_tests {
     }
 
     fn measure(cell: &Cell, width: f64) -> CellLayout {
-        compose_cell(&Document::new(&NewDocument::default()), cell, width, &ComposeOptions::default(), (false, false))
+        compose_cell(&Document::new(&NewDocument::default()), cell, width, cell.insets[2], &ComposeOptions::default(), (false, false))
     }
 
     fn compose_table(table: Table, height: f64) -> ComposedStory {
