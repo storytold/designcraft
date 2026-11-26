@@ -66,11 +66,11 @@ fn cmd_item(id: &str, params: Value) -> Item {
     Item::Cmd { label, id: id.to_string(), params, shortcut }
 }
 
+#[cfg(test)]
+mod save_format_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod successor_tests;
-#[cfg(test)]
-mod save_format_tests;
 #[cfg(test)]
 mod tests;
 
