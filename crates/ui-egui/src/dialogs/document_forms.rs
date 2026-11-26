@@ -321,7 +321,7 @@ mod tests {
         let opened = kit::journal(&h, "color.settings").len();
         let _ = h.get_by_role_and_label(Role::Dialog, "Color Settings");
         let intent = designcraft_color::cms::Intent::ALL[1];
-        kit::pick(&mut h, "Intent:", &crate::i18n::tr("en", intent.label()));
+        kit::pick(&mut h, "Intent:", crate::i18n::tr("en", intent.label()));
         assert_eq!(kit::draft(&h).s("intent"), intent.id());
         let bpc = kit::draft(&h).b("bpc");
         kit::click(&mut h, CHECK, "Use Black Point Compensation", 0);

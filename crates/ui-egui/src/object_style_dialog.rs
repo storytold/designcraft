@@ -1140,6 +1140,18 @@ mod tests {
             let undo = w.app.session.active().unwrap().history.undo.len();
             let journal = w.app.session.journal.len();
             w.name("Workflow");
+            draft_navigation_and_toggles_keep_the_document(&mut w, &before);
+            // A new selection while the dialog is open is deliberately not an apply target.
+            w.app.run("selection.set", json!({"ids": [b]})).unwrap();
+            let applying = effects(&w.app);
+            w.quiet(&applying);
+            let made = ok_settles_two_commands(&mut w, (a, b), (undo, journal), &old_saved, &applying);
+            two_undos_and_redos_restore(&mut w, a, &base, &made);
+            rename_undo_and_redo(&mut w, a, &made, &old_saved);
+        }
+
+        /// The page list's own Tab stops, its include box, the page rows and the Apply check box change only the draft.
+        fn draft_navigation_and_toggles_keep_the_document(w: &mut Workflow, before: &Effects) {
             // The page list is one Tab stop on its lead row (the page shown); Down moves to Fill's row, and Forward
             // enters the row's own stops, its include box.
             w.tab_to(Role::ListItem, "General");
@@ -1164,10 +1176,18 @@ mod tests {
             w.key(Key::Space);
             assert!(w.app.ui.dialog.as_ref().unwrap().b("apply"));
             assert_eq!(effects(&w.app), before);
-            // A new selection while the dialog is open is deliberately not an apply target.
-            w.app.run("selection.set", json!({"ids": [b]})).unwrap();
-            let applying = effects(&w.app);
-            w.quiet(&applying);
+        }
+
+        /// OK makes the style and applies it to its captured selection: two real engine commands, one journal entry
+        /// each, and the new document. `(a, b)` are the applied and the unapplied object, `(undo, journal)` the counts
+        /// the dialog opened with.
+        fn ok_settles_two_commands(
+            w: &mut Workflow,
+            (a, b): (u64, u64),
+            (undo, journal): (usize, usize),
+            old_saved: &std::sync::Arc<designcraft_doc::Document>,
+            applying: &Effects,
+        ) -> std::sync::Arc<designcraft_doc::Document> {
             w.footer("OK");
             assert!(w.app.ui.dialog.is_none());
             let os = object_style(&w.app, "Workflow");
@@ -1185,6 +1205,16 @@ mod tests {
             let made = w.app.session.active().unwrap().doc.clone();
             let settled = effects(&w.app);
             w.quiet(&settled);
+            made
+        }
+
+        /// Two Undos take the apply and the style back, and two redos make them again.
+        fn two_undos_and_redos_restore(
+            w: &mut Workflow,
+            a: u64,
+            base: &std::sync::Arc<designcraft_doc::Document>,
+            made: &std::sync::Arc<designcraft_doc::Document>,
+        ) {
             w.app.run("edit.undo", json!({})).unwrap();
             assert!(w.app.session.active().unwrap().doc.styles.object_style("Workflow").is_some());
             assert_eq!(item_style(&w.app, a), base.item(designcraft_doc::ItemId(a)).unwrap().object_style);
@@ -1196,6 +1226,16 @@ mod tests {
                 w.app.run("edit.redo", json!({})).unwrap();
             }
             assert_eq!(w.app.session.active().unwrap().doc.as_ref(), made.as_ref());
+        }
+
+        /// The reopened style is renamed through its name field's Enter: one engine command, one Undo and one Redo
+        /// taking `made` back and forward, and the saved document untouched.
+        fn rename_undo_and_redo(
+            w: &mut Workflow,
+            a: u64,
+            made: &std::sync::Arc<designcraft_doc::Document>,
+            old_saved: &std::sync::Arc<designcraft_doc::Document>,
+        ) {
             w.open(Some("Workflow"));
             let edit_before = effects(&w.app);
             w.name("Renamed Workflow");

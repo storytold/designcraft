@@ -402,10 +402,6 @@ fn more_options_expand_character_and_paragraph_in_place() {
     assert!(h.query_by_label("Small Caps").is_none());
 }
 
-fn kerning(app: &mut DesignApp) -> Value {
-    text_attrs(app).unwrap()["chars"]["kerning"].clone()
-}
-
 /// A harness drawing `panel` for `app` (fonts installed before the first frame).
 fn panel_harness(app: DesignApp, panel: fn(&mut DesignApp, &mut egui::Ui)) -> Harness<'static, DesignApp> {
     crate::test_window::builder().with_size(vec2(320.0, 1400.0)).build_ui_state(

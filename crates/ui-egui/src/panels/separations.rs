@@ -603,7 +603,7 @@ mod plate_action_tests {
                 assert!(app.ui.separations.is_none());
                 return;
             }
-            _ => unreachable!(),
+            _ => panic!("unknown case {change:?}"),
         }
         let result = app.run("view.separations", json!({"plate": "all", "inkLimit": null})).unwrap();
         assert!(result.get("error").is_none(), "the replacement target must use a genuine computed sheet: {result}");

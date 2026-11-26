@@ -29,7 +29,7 @@ fn bar_item(h: &egui_kittest::Harness<'static, test_window::Window>, title: &str
 
 /// The row named `label` (a part of its name) of the open menu.
 fn row(h: &egui_kittest::Harness<'static, test_window::Window>, label: &str) -> Option<egui::Rect> {
-    h.query_all_by_label_contains(label).filter(|node| ROWS.contains(&node.accesskit_node().role())).map(|node| node.rect()).last()
+    h.query_all_by_label_contains(label).filter(|node| ROWS.contains(&node.accesskit_node().role())).map(|node| node.rect()).next_back()
 }
 
 fn open_menu(h: &mut egui_kittest::Harness<'static, test_window::Window>, title: &str) {

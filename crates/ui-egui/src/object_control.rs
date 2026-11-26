@@ -636,57 +636,14 @@ mod auto_fit_workflow_tests {
 
         // The real Selection-tool handle reaches transform.resize, which owns downstream refitting.
         // The unchanged W/H numeric path is transform.set and is deliberately not substituted for it.
-        h.state_mut().canvas = true;
-        idle(&mut h, 3);
-        let frame_before = item(&h, ids[0]).bounds();
-        let content_before_resize = item(&h, ids[0]).graphic().unwrap().xf;
-        let st = h.state().app.session.active().unwrap();
-        let layout = h.state().app.session.layout();
-        let (spread_to_canvas, _) = crate::canvas::item_canvas_xf(&st.doc, &layout, ItemId(ids[0])).unwrap();
-        let xf = crate::canvas::Xf::new(h.state().app.canvas_rect.unwrap(), h.state().app.view().unwrap());
-        let from = xf.to_screen(spread_to_canvas * designcraft_geom::Point::new(frame_before.x1, frame_before.center().y));
-        let to = from + vec2(80.0 * xf.zoom as f32, 0.0);
-        assert!(h.state().app.canvas_rect.unwrap().contains(from) && h.state().app.canvas_rect.unwrap().contains(to));
-        let start = h.state().app.session.journal.len();
-        pointer(&mut h, from, true);
-        for fraction in [0.25, 0.5, 0.75, 1.0] {
-            event(&mut h, Event::PointerMoved(from + (to - from) * fraction));
-        }
-        pointer(&mut h, to, false);
-        idle(&mut h, 3);
-        let frame_after = item(&h, ids[0]).bounds();
-        assert!(
-            (frame_after.width() - frame_before.width() - 80.0).abs() < 1e-3,
-            "the actual frame handle resizes, rather than moving or scaling its content: {frame_before:?} -> {frame_after:?}"
-        );
-        assert!((frame_after.height() - frame_before.height()).abs() < 1e-6);
-        let commands = &h.state().app.session.journal[start..];
-        assert_eq!(commands.len(), 1, "one committed command from the genuine multi-pass handle gesture");
-        assert_eq!(
-            commands[0],
-            (
-                "transform.resize".to_owned(),
-                json!({
-                    "from":[frame_before.x0,frame_before.y0,frame_before.x1,frame_before.y1],
-                    "to":[frame_after.x0,frame_after.y0,frame_after.x1,frame_after.y1], "content":false,"distribute":false
-                })
-            )
-        );
-        let resized = item(&h, ids[0]);
-        let graphic = resized.graphic().unwrap();
-        assert_eq!(
-            graphic.xf,
-            graphic.fitted(resized.inner_bounds(), graphic.auto_fit).unwrap(),
-            "the real frame resize refits the graphic downstream"
-        );
-        assert_ne!(graphic.xf, content_before_resize, "proves a changed graphic transform, not just the Auto-Fit flag");
-        documents.push(mark(&h).0);
+        let (resized, graphic_xf) = resize_by_handle(&mut h, ids[0]);
+        documents.push(resized);
 
         // A real content-move command establishes the moved picture that turning Auto-Fit off must preserve.
         h.state_mut().app.run("transform.move", json!({"dx":7.0,"dy":9.0,"content":true})).unwrap();
         idle(&mut h, 2);
         let moved = item(&h, ids[0]).graphic().unwrap().xf;
-        assert_ne!(moved, graphic.xf);
+        assert_ne!(moved, graphic_xf);
         documents.push(mark(&h).0);
         // The resize focused the real Canvas, whose native Tab lock intentionally keeps Tab.
         // Re-enter a different real toolbar editor by pointer before testing toolbar traversal.
@@ -736,13 +693,63 @@ mod auto_fit_workflow_tests {
             assert_eq!(mark(&h).0, documents[i], "one real Undo restores precisely operation {i}'s preimage");
             assert_eq!(mark(&h).2, (before.2.0 + i, 4 - i));
         }
-        for i in 1..=4 {
+        for (i, document) in documents.iter().enumerate().skip(1).take(4) {
             h.state_mut().app.run("edit.redo", json!({})).unwrap();
             idle(&mut h, 2);
-            assert_eq!(mark(&h).0, documents[i]);
+            assert_eq!(mark(&h).0, *document);
             assert_eq!(mark(&h).2, (before.2.0 + i, 4 - i));
         }
         assert_eq!([item(&h, ids[1]), item(&h, ids[2])], untouched);
+    }
+
+    /// The real Selection-tool handle resizes the frame at `id` by 80 points: one committed `transform.resize`,
+    /// which refits the graphic downstream. The document mark after it, and the graphic's transform.
+    fn resize_by_handle(h: &mut Harness<'_, Rig>, id: u64) -> (u64, designcraft_geom::Affine) {
+        h.state_mut().canvas = true;
+        idle(h, 3);
+        let frame_before = item(h, id).bounds();
+        let content_before_resize = item(h, id).graphic().unwrap().xf;
+        let st = h.state().app.session.active().unwrap();
+        let layout = h.state().app.session.layout();
+        let (spread_to_canvas, _) = crate::canvas::item_canvas_xf(&st.doc, &layout, ItemId(id)).unwrap();
+        let xf = crate::canvas::Xf::new(h.state().app.canvas_rect.unwrap(), h.state().app.view().unwrap());
+        let from = xf.to_screen(spread_to_canvas * designcraft_geom::Point::new(frame_before.x1, frame_before.center().y));
+        let to = from + vec2(80.0 * xf.zoom as f32, 0.0);
+        assert!(h.state().app.canvas_rect.unwrap().contains(from) && h.state().app.canvas_rect.unwrap().contains(to));
+        let start = h.state().app.session.journal.len();
+        pointer(h, from, true);
+        for fraction in [0.25, 0.5, 0.75, 1.0] {
+            event(h, Event::PointerMoved(from + (to - from) * fraction));
+        }
+        pointer(h, to, false);
+        idle(h, 3);
+        let frame_after = item(h, id).bounds();
+        assert!(
+            (frame_after.width() - frame_before.width() - 80.0).abs() < 1e-3,
+            "the actual frame handle resizes, rather than moving or scaling its content: {frame_before:?} -> {frame_after:?}"
+        );
+        assert!((frame_after.height() - frame_before.height()).abs() < 1e-6);
+        let commands = &h.state().app.session.journal[start..];
+        assert_eq!(commands.len(), 1, "one committed command from the genuine multi-pass handle gesture");
+        assert_eq!(
+            commands[0],
+            (
+                "transform.resize".to_owned(),
+                json!({
+                    "from":[frame_before.x0,frame_before.y0,frame_before.x1,frame_before.y1],
+                    "to":[frame_after.x0,frame_after.y0,frame_after.x1,frame_after.y1], "content":false,"distribute":false
+                })
+            )
+        );
+        let resized = item(h, id);
+        let graphic = resized.graphic().unwrap();
+        assert_eq!(
+            graphic.xf,
+            graphic.fitted(resized.inner_bounds(), graphic.auto_fit).unwrap(),
+            "the real frame resize refits the graphic downstream"
+        );
+        assert_ne!(graphic.xf, content_before_resize, "proves a changed graphic transform, not just the Auto-Fit flag");
+        (mark(h).0, graphic.xf)
     }
 
     #[test]

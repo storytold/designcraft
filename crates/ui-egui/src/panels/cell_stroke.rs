@@ -1385,7 +1385,7 @@ mod type_style_sdk_tests {
                 "no-selection" => {
                     h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             let retired = quiet(&h.state().app);
             idle(&mut h, 2);
@@ -1579,7 +1579,7 @@ mod type_style_sdk_tests {
                         h.state_mut().app.session.close_document(0);
                     }
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             let before = quiet(&h.state().app);
             idle(&mut h, 2);

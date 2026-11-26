@@ -1615,7 +1615,7 @@ mod ui223_object_states_forms_tests {
                     return;
                 }
                 let root = h.queryable_node();
-                let focused: Vec<_> = std::iter::once(root.clone())
+                let focused: Vec<_> = std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|node| {
                         let access = node.accesskit_node();
@@ -1683,7 +1683,7 @@ mod ui223_object_states_forms_tests {
             let native_focus = h.ctx.memory(|memory| memory.focused());
             let observed: Vec<_> = {
                 let root = h.queryable_node();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|node| {
                         let access = node.accesskit_node();
@@ -2635,7 +2635,7 @@ mod ui223_liquid_workflow_tests {
                 assert!(!access.is_disabled());
                 assert_eq!(access.data().is_expanded(), Some(true));
                 let popup = h.get_by_role_and_label(egui::accesskit::Role::ListBox, "Liquid Page Rule");
-                let mut ancestor = Some(popup.clone());
+                let mut ancestor = Some(popup);
                 let mut owned = false;
                 while let Some(node) = ancestor {
                     if access.controls().any(|root| root.id() == node.accesskit_node().id()) {
@@ -3383,7 +3383,7 @@ mod ui223_tags_xml_workflow_tests {
             }
             let focused: Vec<_> = {
                 let root = h.queryable_node();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|node| {
                         let access = node.accesskit_node();

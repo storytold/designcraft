@@ -1199,7 +1199,7 @@ mod pages_footer_workflow_tests {
             // Native focus can belong to an arena root; cycle identities must be actual AX members.
             let focused_members: Vec<_> = {
                 let root = h.queryable_node();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|node| {
                         let access = node.accesskit_node();

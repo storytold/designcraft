@@ -476,7 +476,7 @@ fn click_in_dialog(h: &mut egui_kittest::Harness<'_, DesignApp>, title: &str, la
             h.query_all_by_role_and_label(Role::Button, label)
                 .map(|node| node.rect())
                 .filter(|rect| bounds.contains_rect(*rect))
-                .last()
+                .next_back()
                 .unwrap_or_else(|| panic!("no button {label:?} in the dialog {title:?}"))
                 .center()
         })
@@ -691,7 +691,7 @@ fn framework_dialogs_keep_their_title_and_actions_in_scaled_viewports() {
                     assert!(
                         kit::in_view(&h, shown),
                         "{language} {size:?} {command}: {shown} is in the window; {}",
-                        fit_report(&h, &crate::i18n::tr(language, title))
+                        fit_report(&h, crate::i18n::tr(language, title))
                     );
                 }
             }

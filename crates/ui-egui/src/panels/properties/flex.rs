@@ -975,7 +975,7 @@ mod application_flex_create_direction_wrap {
                 "disabled" => h.state_mut().disabled = true,
                 "hidden" => h.state_mut().visible = false,
                 "no-selection" => select(&mut h.state_mut().app, &[]),
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             let retired = quiet(&h.state().app);
             idle(&mut h, 2);

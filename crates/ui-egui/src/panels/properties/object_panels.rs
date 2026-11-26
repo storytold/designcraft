@@ -1208,7 +1208,7 @@ mod attributes_workflow_tests {
             // Native focus can belong to an arena root; cycle identities must be actual AX members.
             let focused_members: Vec<_> = {
                 let root = h.queryable_node();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|node| {
                         let access = node.accesskit_node();
@@ -1831,9 +1831,10 @@ mod ui223_text_wrap_mode_invert_tests {
             }
             let focused: Vec<_> = {
                 let root = h.queryable_node();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
-                    .filter_map(|n| n.accesskit_node().is_focused().then(|| format!("{:?}", n.accesskit_node().id())))
+                    .filter(|n| n.accesskit_node().is_focused())
+                    .map(|n| format!("{:?}", n.accesskit_node().id()))
                     .collect()
             };
             assert!(seen.insert(focused.clone()), "natural Tab must reach {name} before repeating actual AX focus {focused:?}");
@@ -1986,7 +1987,7 @@ mod ui223_text_wrap_mode_invert_tests {
                     "no-selection" => {
                         h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
                     }
-                    _ => unreachable!(),
+                    _ => panic!("unknown case {change:?}"),
                 }
                 let retired = snapshot(&h);
                 idle(&mut h, 2);

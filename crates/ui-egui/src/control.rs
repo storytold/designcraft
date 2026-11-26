@@ -1292,6 +1292,7 @@ mod object_style_witness_tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_types)] // the node under witness is the real `egui::ComboBox`: the ban is about app UI, not this probe
     fn enabled_reads_the_real_existing_combo_node_without_input_focus_popup_or_node_changes() {
         let ctx = Context::default();
         ctx.enable_accesskit();

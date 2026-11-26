@@ -11,20 +11,6 @@ fn story_text(app: &DesignApp, doc: usize) -> String {
     st.doc.stories.values().next().unwrap().text.clone()
 }
 
-fn story_editor_harness(text: &str) -> egui_kittest::Harness<'static, crate::test_window::Window> {
-    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
-    app.run("file.new", json!({})).unwrap();
-    let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": text, "caret": false})).unwrap();
-    app.run("app.storyEditor", json!({"story": r["story"].as_u64().unwrap()})).unwrap();
-    let mut h = crate::test_window::open(app, egui::vec2(1440.0, 900.0));
-    h.run_steps(2);
-    h
-}
-
-fn text_left(h: &egui_kittest::Harness<'_, crate::test_window::Window>, text: &str) -> f32 {
-    h.get_by(|n| n.role() == egui::accesskit::Role::TextRun && !n.is_hidden() && n.value().as_deref() == Some(text)).rect().min.x
-}
-
 /// Successor of `depth_marks_wait_for_composition_after_editing` on the installed framework: the same steps and checks, in a window whose context has the craft UI runtime.
 #[test]
 fn depth_marks_wait_for_composition_after_editing() {

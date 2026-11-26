@@ -520,11 +520,6 @@ fn preferences_ok_sets_only_the_ruler_units_it_is_given() {
     }
 }
 
-fn fill(app: &DesignApp, id: u64) -> designcraft_color::Color {
-    let d = &app.session.active().unwrap().doc;
-    d.resolve_color(&d.item(designcraft_doc::ItemId(id)).unwrap().fill.swatch, 1.0).unwrap()
-}
-
 fn draw(app: &mut DesignApp, ctx: &egui::Context) {
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
     let mut out = ctx.run_ui(input, |ui| {

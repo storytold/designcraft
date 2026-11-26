@@ -66,7 +66,7 @@ fn steps(h: &mut Harness<'_, DesignApp>, n: usize) {
 fn keyboard_rect(h: &Harness<'_, DesignApp>) -> Option<egui::Rect> {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
     let root = h.queryable_node();
-    std::iter::once(root.clone())
+    std::iter::once(root)
         .chain(root.children_recursive())
         .filter(|node| node.accesskit_node().is_focused())
         .map(|node| node.rect())

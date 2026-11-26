@@ -462,17 +462,6 @@ pub(crate) mod test_window {
         open_on(builder(), app, size, pixels_per_point, step_dt)
     }
 
-    /// The window at `size` on a context without the craft UI runtime: the native surfaces' own input, with the
-    /// canvas alone in place of the dock (`panel_docking::show` needs the runtime for the panels).
-    pub fn open_without_runtime(app: crate::DesignApp, size: egui::Vec2) -> Harness<'static, Window> {
-        open_stepped_without_runtime(app, size, 1.0, 0.25)
-    }
-
-    /// [`open_without_runtime`] with the scale and frame step of [`open_stepped`].
-    pub fn open_stepped_without_runtime(app: crate::DesignApp, size: egui::Vec2, pixels_per_point: f32, step_dt: f32) -> Harness<'static, Window> {
-        open_on(Harness::builder(), app, size, pixels_per_point, step_dt)
-    }
-
     fn open_on(
         builder: egui_kittest::HarnessBuilder<Window>,
         mut app: crate::DesignApp,
@@ -493,10 +482,10 @@ pub(crate) mod test_window {
                 w.app.logic(&ctx);
                 w.app.ui(ui);
                 // The next frame's input, for a context with the runtime (the plugin of `context`).
-                if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id())) {
-                    if let Ok(mut slot) = slot.lock() {
-                        *slot = Some(w.app.frame_input());
-                    }
+                if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id()))
+                    && let Ok(mut slot) = slot.lock()
+                {
+                    *slot = Some(w.app.frame_input());
                 }
             },
             Window { app, ready: false },

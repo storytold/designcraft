@@ -875,7 +875,7 @@ mod tests {
         click(&mut h, Role::CheckBox, "Background");
         assert_eq!(dialog(&h).fields["layers"][0]["visible"], false);
         assert_eq!(dialog(&h).fields["layers"][1]["visible"], true);
-        assert_eq!(dialog(&h).b("useDefaults"), false);
+        assert!(!dialog(&h).b("useDefaults"));
         click(&mut h, Role::Button, "Use File Defaults");
         assert_eq!(dialog(&h).fields["layers"][0]["visible"], true);
         assert_eq!(dialog(&h).fields["layers"][1]["visible"], false, "the file's own default for Notes");

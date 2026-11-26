@@ -737,14 +737,26 @@ mod tests {
         assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         let initial = effects(&h);
         let initial_fields = h.state().0.ui.dialog.as_ref().unwrap().fields.clone();
-        for _ in 0..5 {
-            step(&mut h);
+        idle_and_inert_passes_keep_the_draft(&mut h, &initial, initial_fields);
+        for source in [ChapterSource::Automatic, ChapterSource::SameAsPrevious] {
+            let (quiet, unchanged, history, opening) = focus_and_page_cancel_keep_the_draft(&mut h, source);
+            chapter_cancel_and_noop_confirm(&mut h, source, &quiet, &unchanged, history, &opening);
         }
-        assert_quiet(&h, &initial);
+        let (prior, mut native, redone, history) = atomic_edits_accept_undo_and_redo(&mut h, &before);
+        cancels_keep_the_checkpoint(&mut h, &before, &prior, &mut native, &redone, history);
+    }
+
+    /// Five idle passes, then the same dialog drawn disabled and in a sizing pass: real pointer and key input leaves
+    /// every draft and the document exactly as the opening left them.
+    fn idle_and_inert_passes_keep_the_draft(h: &mut Harness<'_, Window>, initial: &Effects, initial_fields: serde_json::Map<String, Value>) {
+        for _ in 0..5 {
+            step(h);
+        }
+        assert_quiet(h, initial);
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, initial_fields, "ordinary idle preserves every draft");
         // Observe the same actual Dialog at its own geometry before disabling or measuring it.
         h.state_mut().4 = true;
-        step(&mut h);
+        step(h);
         let page_target = h
             .state()
             .1
@@ -759,119 +771,154 @@ mod tests {
         for (enabled, sizing) in [(false, false), (true, true)] {
             h.state_mut().2 = enabled;
             h.state_mut().3 = sizing;
-            step(&mut h);
+            step(h);
             // Real pointer/key input goes through the ordinary hook; no manual focus or getter-only proof.
-            event(&mut h, Event::PointerMoved(page_target));
+            event(h, Event::PointerMoved(page_target));
             for pressed in [true, false] {
-                event(&mut h, Event::PointerButton { pos: page_target, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+                event(h, Event::PointerButton { pos: page_target, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
             }
-            event(&mut h, Event::Text("9".into()));
+            event(h, Event::Text("9".into()));
             for _ in 0..3 {
-                step(&mut h);
+                step(h);
             }
             assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, initial_fields, "disabled/sizing leaves drafts unchanged");
-            assert_quiet(&h, &initial);
+            assert_quiet(h, initial);
         }
         h.state_mut().2 = true;
         h.state_mut().3 = false;
         h.state_mut().4 = false;
-        step(&mut h);
-        for source in [ChapterSource::Automatic, ChapterSource::SameAsPrevious] {
-            let app = &mut h.state_mut().0;
-            app.run("layout.chapterNumbering", json!({"source": source})).unwrap();
-            open(app);
-            let d = app.ui.dialog.as_ref().unwrap();
-            assert!(d.b("automatic"), "Automatic is a precondition before any focus input: {:?}", d.fields);
-            assert_eq!(d.fields["chapterSource"], json!(source), "the requested chapter source is established before focus input");
-            let opening = d.clone();
-            let unchanged = app.session.active().unwrap().doc.clone();
-            let history = app.session.active().unwrap().history.undo.len();
-            let quiet = effects(&h);
-            let app = &h.state().0;
-            let page_draft = app.ui.dialog.as_ref().unwrap().s("startNumber");
-            let chapter_draft = app.ui.dialog.as_ref().unwrap().s("chapterStart");
-            step(&mut h);
-            click_control(&mut h, egui::accesskit::Role::TextInput, "Start Page Numbering at:");
-            click_control(&mut h, egui::accesskit::Role::TextInput, "Start Chapter Numbering at:");
-            click_control(&mut h, egui::accesskit::Role::TextInput, "Start Page Numbering at:");
-            let d = h.state().0.ui.dialog.as_ref().unwrap();
-            assert!(d.b("automatic"), "focusing and leaving the page field without typing keeps automatic numbering: {:?}", d.fields);
-            assert_eq!(d.fields["chapterSource"], json!(source), "focus-only chapter blur keeps its existing numbering source");
-            assert_eq!(d.s("startNumber"), page_draft);
-            assert_eq!(d.s("chapterStart"), chapter_draft);
-            assert_eq!(d.fields, opening.fields, "focus/blur preserves the complete opening draft");
-            assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "focus alone never edits the document");
-            assert_eq!(h.state().0.session.active().unwrap().history.undo.len(), history, "focus alone adds no undo step");
-            assert_quiet(&h, &quiet);
-            type_draft(&mut h, "Start Page Numbering at:", "9");
-            assert!(!h.state().0.ui.dialog.as_ref().unwrap().b("automatic"), "Update selects explicit page numbering");
-            // craft's dialogs, like InDesign's, cancel on one Escape: the typed draft and the mode it chose go with it.
-            for pressed in [true, false] {
-                event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-            }
-            assert!(h.state().0.ui.dialog.is_none(), "page Escape cancels the dialog with its draft");
-            assert_quiet(&h, &quiet);
-            open(&mut h.state_mut().0);
-            let d = h.state().0.ui.dialog.as_ref().unwrap();
-            assert!(d.b("automatic"), "reopened, the page mode is the one from before Update");
-            assert_eq!(d.s("startNumber"), page_draft);
-            assert_eq!(d.fields, opening.fields, "reopening after the page Escape shows the complete unchanged settings");
-            step(&mut h);
-            type_draft(&mut h, "Start Chapter Numbering at:", "8");
-            assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields["chapterSource"], json!(ChapterSource::UserDefined));
-            for pressed in [true, false] {
-                event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-            }
-            assert!(h.state().0.ui.dialog.is_none(), "chapter Escape cancels the dialog with its draft");
-            let app = &h.state().0;
-            assert_eq!(app.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "canceled drafts never edit the document");
-            assert_eq!(app.session.active().unwrap().history.undo.len(), history, "no undo step before dialog confirmation");
-            assert_quiet(&h, &quiet);
-            open(&mut h.state_mut().0);
-            let d = h.state().0.ui.dialog.as_ref().unwrap();
-            assert_eq!(d.fields["chapterSource"], json!(source), "reopened, the source is automatic or SameAsPrevious, not UserDefined");
-            assert_eq!(d.s("chapterStart"), chapter_draft);
-            assert_eq!(d.fields, opening.fields, "reopening after the chapter Escape shows the complete unchanged settings");
-            step(&mut h);
-            // The independent existing controller receives the PRE-INPUT opening DTO.
-            // The shared guard must make accepting these unchanged settings a true model no-op.
-            let native = expected_confirm(&h.state().0, &opening);
-            assert_quiet(&h, &quiet);
-            click_control(&mut h, egui::accesskit::Role::Button, "OK");
-            assert!(h.state().0.ui.dialog.is_none(), "the real Accept closes the successfully confirmed dialog");
-            assert_eq!(
-                h.state().0.session.active().unwrap().doc.as_ref(),
-                unchanged.as_ref(),
-                "confirming canceled drafts preserves both numbering modes"
-            );
-            let confirmed = assert_noop_confirm(&h, &native, &quiet);
-            assert_eq!(confirmed.document.sections, unchanged.sections);
-            assert_eq!(confirmed.document.settings.chapter_source, source);
-            for _ in 0..5 {
-                step(&mut h);
-            }
-            assert_quiet(&h, &confirmed);
+        step(h);
+    }
+
+    /// The dialog opens on `source`; ordinary focus/blur and a canceled page edit keep its complete draft, and the page
+    /// Escape closes it. The settled state, the document that must not change, the Undo length and the opening draft.
+    fn focus_and_page_cancel_keep_the_draft(
+        h: &mut Harness<'_, Window>,
+        source: ChapterSource,
+    ) -> (Effects, Arc<designcraft_doc::Document>, usize, Dialog) {
+        let app = &mut h.state_mut().0;
+        app.run("layout.chapterNumbering", json!({"source": source})).unwrap();
+        open(app);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert!(d.b("automatic"), "Automatic is a precondition before any focus input: {:?}", d.fields);
+        assert_eq!(d.fields["chapterSource"], json!(source), "the requested chapter source is established before focus input");
+        let opening = d.clone();
+        let unchanged = app.session.active().unwrap().doc.clone();
+        let history = app.session.active().unwrap().history.undo.len();
+        let quiet = effects(h);
+        let app = &h.state().0;
+        let page_draft = app.ui.dialog.as_ref().unwrap().s("startNumber");
+        let chapter_draft = app.ui.dialog.as_ref().unwrap().s("chapterStart");
+        step(h);
+        click_control(h, egui::accesskit::Role::TextInput, "Start Page Numbering at:");
+        click_control(h, egui::accesskit::Role::TextInput, "Start Chapter Numbering at:");
+        click_control(h, egui::accesskit::Role::TextInput, "Start Page Numbering at:");
+        let d = h.state().0.ui.dialog.as_ref().unwrap();
+        assert!(d.b("automatic"), "focusing and leaving the page field without typing keeps automatic numbering: {:?}", d.fields);
+        assert_eq!(d.fields["chapterSource"], json!(source), "focus-only chapter blur keeps its existing numbering source");
+        assert_eq!(d.s("startNumber"), page_draft);
+        assert_eq!(d.s("chapterStart"), chapter_draft);
+        assert_eq!(d.fields, opening.fields, "focus/blur preserves the complete opening draft");
+        assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "focus alone never edits the document");
+        assert_eq!(h.state().0.session.active().unwrap().history.undo.len(), history, "focus alone adds no undo step");
+        assert_quiet(h, &quiet);
+        type_draft(h, "Start Page Numbering at:", "9");
+        assert!(!h.state().0.ui.dialog.as_ref().unwrap().b("automatic"), "Update selects explicit page numbering");
+        // craft's dialogs, like InDesign's, cancel on one Escape: the typed draft and the mode it chose go with it.
+        for pressed in [true, false] {
+            event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
+        assert!(h.state().0.ui.dialog.is_none(), "page Escape cancels the dialog with its draft");
+        assert_quiet(h, &quiet);
+        open(h.state_mut().0);
+        let d = h.state().0.ui.dialog.as_ref().unwrap();
+        assert!(d.b("automatic"), "reopened, the page mode is the one from before Update");
+        assert_eq!(d.s("startNumber"), page_draft);
+        assert_eq!(d.fields, opening.fields, "reopening after the page Escape shows the complete unchanged settings");
+        step(h);
+        (quiet, unchanged, history, opening)
+    }
+
+    /// A typed chapter number and its Escape keep the draft, and OK with the opening DTO is a true model no-op.
+    fn chapter_cancel_and_noop_confirm(
+        h: &mut Harness<'_, Window>,
+        source: ChapterSource,
+        quiet: &Effects,
+        unchanged: &Arc<designcraft_doc::Document>,
+        history: usize,
+        opening: &Dialog,
+    ) {
+        type_draft(h, "Start Chapter Numbering at:", "8");
+        assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields["chapterSource"], json!(ChapterSource::UserDefined));
+        for pressed in [true, false] {
+            event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        }
+        assert!(h.state().0.ui.dialog.is_none(), "chapter Escape cancels the dialog with its draft");
+        let app = &h.state().0;
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), unchanged.as_ref(), "canceled drafts never edit the document");
+        assert_eq!(app.session.active().unwrap().history.undo.len(), history, "no undo step before dialog confirmation");
+        assert_quiet(h, quiet);
+        open(h.state_mut().0);
+        let d = h.state().0.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.fields["chapterSource"], json!(source), "reopened, the source is automatic or SameAsPrevious, not UserDefined");
+        assert_eq!(d.s("chapterStart"), opening.s("chapterStart"));
+        assert_eq!(d.fields, opening.fields, "reopening after the chapter Escape shows the complete unchanged settings");
+        step(h);
+        // The independent existing controller receives the PRE-INPUT opening DTO.
+        // The shared guard must make accepting these unchanged settings a true model no-op.
+        let native = expected_confirm(&h.state().0, &opening);
+        assert_quiet(h, quiet);
+        click_control(h, egui::accesskit::Role::Button, "OK");
+        assert!(h.state().0.ui.dialog.is_none(), "the real Accept closes the successfully confirmed dialog");
+        assert_eq!(
+            h.state().0.session.active().unwrap().doc.as_ref(),
+            unchanged.as_ref(),
+            "confirming canceled drafts preserves both numbering modes"
+        );
+        let confirmed = assert_noop_confirm(h, &native, quiet);
+        assert_eq!(confirmed.document.sections, unchanged.sections);
+        assert_eq!(confirmed.document.settings.chapter_source, source);
+        for _ in 0..5 {
+            step(h);
+        }
+        assert_quiet(h, &confirmed);
+    }
+
+    /// The atomic page and chapter number drafts: a refused OK keeps the modal, Enter accepts, and one Undo and
+    /// Redo take both numbering choices back and forward. The state after the redo, and the Undo length.
+    fn atomic_edits_accept_undo_and_redo(
+        h: &mut Harness<'_, Window>,
+        before: &Arc<designcraft_doc::Document>,
+    ) -> (Effects, DesignApp, Effects, usize) {
         let app = &mut h.state_mut().0;
         app.run("layout.chapterNumbering", json!({"source": ChapterSource::Automatic})).unwrap();
         open(app);
         set(app, json!({"page": 3, "automatic": true, "chapterSource": "automatic"}));
         let history = app.session.active().unwrap().history.undo.len();
         let atomic_opening = app.ui.dialog.as_ref().unwrap().clone();
-        let prior = effects(&h);
-        step(&mut h);
-        click_control(&mut h, egui::accesskit::Role::ComboBox, "Page Numbering");
+        let prior = effects(h);
+        step(h);
+        let invalid_page = popup_recovery_and_drafts(h, &prior, &atomic_opening);
+        let intended = refused_drafts_keep_the_modal(h, before, &prior, &atomic_opening, &invalid_page, history);
+        let (native, redone) = accept_undo_and_redo(h, before, &prior, history, &intended);
+        (prior, native, redone, history)
+    }
+
+    /// The style list opens and Escape closes it with the modal still up; the two drafts typed after it change only the
+    /// draft. The invalid page draft both fields then describe.
+    fn popup_recovery_and_drafts(h: &mut Harness<'_, Window>, prior: &Effects, atomic_opening: &Dialog) -> Dialog {
         use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
-        assert!(style_popup(&h), "the actual accessible SDK style listbox opened inside the modal");
+        click_control(h, egui::accesskit::Role::ComboBox, "Page Numbering");
+        assert!(style_popup(h), "the actual accessible SDK style listbox opened inside the modal");
         let style_before = h.state().0.ui.dialog.as_ref().unwrap().fields["style"].clone();
         for pressed in [true, false] {
-            event(&mut h, Event::Key { key: Key::ArrowDown, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            event(h, Event::Key { key: Key::ArrowDown, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
-        assert_quiet(&h, &prior);
+        assert_quiet(h, prior);
         for pressed in [true, false] {
-            event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
-        assert!(!style_popup(&h), "Escape closes the style listbox while the SDK modal stays open");
+        assert!(!style_popup(h), "Escape closes the style listbox while the SDK modal stays open");
         assert!(h.state().0.ui.dialog.is_some(), "the popup owns Escape before the host can cancel");
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields["style"], style_before, "popup Cancel restores the original draft style");
         assert_eq!(
@@ -879,33 +926,47 @@ mod tests {
             atomic_opening.fields,
             "popup navigation/Escape restores the complete pre-popup draft"
         );
-        assert_quiet(&h, &prior);
+        assert_quiet(h, prior);
         for _ in 0..3 {
-            step(&mut h);
+            step(h);
         }
-        assert!(!style_popup(&h));
+        assert!(!style_popup(h));
         assert!(any_open(&h.ctx, OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, atomic_opening.fields);
-        assert_quiet(&h, &prior);
-        type_draft(&mut h, "Start Page Numbering at:", "0");
+        assert_quiet(h, prior);
+        type_draft(h, "Start Page Numbering at:", "0");
         let d = h.state().0.ui.dialog.as_ref().unwrap();
         assert!(!d.b("automatic"), "typing selects explicit page numbering without waiting for blur");
         assert_eq!(d.s("startNumber"), "0", "the raw draft is not normalized before validation");
-        type_draft(&mut h, "Start Chapter Numbering at:", "4");
+        type_draft(h, "Start Chapter Numbering at:", "4");
         let d = h.state().0.ui.dialog.as_ref().unwrap();
         assert_eq!(d.s("chapterSource"), "userDefined", "typing selects explicit chapter numbering");
         assert_eq!(d.s("chapterStart"), "4");
         let invalid_page =
-            draft_with(&atomic_opening, json!({"automatic": false, "startNumber": "0", "chapterSource": "userDefined", "chapterStart": "4"}));
+            draft_with(atomic_opening, json!({"automatic": false, "startNumber": "0", "chapterSource": "userDefined", "chapterStart": "4"}));
         assert_eq!(d.fields, invalid_page.fields, "only the two intended mode/draft edits follow popup recovery");
-        let mut refused_native = native_from_same_state(&h.state().0, &invalid_page);
+        invalid_page
+    }
+
+    /// Both atomic refusals keep the modal and the document exact, and ordinary recovery leaves only the intended
+    /// drafts. The draft an accepted OK would send.
+    fn refused_drafts_keep_the_modal(
+        h: &mut Harness<'_, Window>,
+        before: &Arc<designcraft_doc::Document>,
+        prior: &Effects,
+        atomic_opening: &Dialog,
+        invalid_page: &Dialog,
+        history: usize,
+    ) -> Dialog {
+        use craft_ui_widgets::runtime::overlay::{OpenFilter, any_open};
+        let mut refused_native = native_from_same_state(&h.state().0, invalid_page);
         let page_error = crate::dialogs::confirm(&mut refused_native).unwrap_err();
-        assert_app_quiet(&refused_native, &prior);
+        assert_app_quiet(&refused_native, prior);
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
-        click_control(&mut h, egui::accesskit::Role::Button, "OK");
+        click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some(), "the real SDK Accept must retain the modal after validation refusal");
         assert!(any_open(&h.ctx, OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
-        assert_quiet(&h, &prior);
+        assert_quiet(h, prior);
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().s("startNumber"), "0", "a refused draft remains editable");
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
         assert_eq!(h.state().0.ui.status, page_error);
@@ -915,55 +976,67 @@ mod tests {
             prior.document.as_ref(),
             "refusal changes neither numbering part at this checkpoint"
         );
-        type_draft(&mut h, "Start Page Numbering at:", "7");
+        type_draft(h, "Start Page Numbering at:", "7");
         assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), before.as_ref(), "drafts do not edit the document");
         assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), prior.document.as_ref(), "drafts do not edit the current complete document");
         assert_eq!(h.state().0.session.active().unwrap().history.undo.len(), history);
-        assert_quiet(&h, &prior);
+        assert_quiet(h, prior);
         // The opposite atomic refusal reaches the real engine parser: the page edit is valid,
         // while chapter 100000 exceeds the existing chapter limit. Neither part may leak out.
-        type_draft(&mut h, "Start Chapter Numbering at:", "100000");
+        type_draft(h, "Start Chapter Numbering at:", "100000");
         let invalid_chapter =
-            draft_with(&atomic_opening, json!({"automatic": false, "startNumber": "7", "chapterSource": "userDefined", "chapterStart": "100000"}));
+            draft_with(atomic_opening, json!({"automatic": false, "startNumber": "7", "chapterSource": "userDefined", "chapterStart": "100000"}));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         let mut refused_native = native_from_same_state(&h.state().0, &invalid_chapter);
         let chapter_error = crate::dialogs::confirm(&mut refused_native).unwrap_err();
-        assert_app_quiet(&refused_native, &prior);
+        assert_app_quiet(&refused_native, prior);
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
-        click_control(&mut h, egui::accesskit::Role::Button, "OK");
+        click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some());
         assert!(any_open(&h.ctx, OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         assert_eq!(h.state().0.ui.status, chapter_error);
-        assert_quiet(&h, &prior);
-        type_draft(&mut h, "Start Chapter Numbering at:", "4");
+        assert_quiet(h, prior);
+        type_draft(h, "Start Chapter Numbering at:", "4");
         let intended =
-            draft_with(&atomic_opening, json!({"automatic": false, "startNumber": "7", "chapterSource": "userDefined", "chapterStart": "4"}));
+            draft_with(atomic_opening, json!({"automatic": false, "startNumber": "7", "chapterSource": "userDefined", "chapterStart": "4"}));
         assert_eq!(
             h.state().0.ui.dialog.as_ref().unwrap().fields,
             intended.fields,
             "ordinary recovery retains both explicit modes and only the intended drafts"
         );
-        assert_quiet(&h, &prior);
-        let mut native = expected_confirm(&h.state().0, &intended);
-        assert_quiet(&h, &prior);
+        assert_quiet(h, prior);
+        intended
+    }
+
+    /// Enter accepts through the real host, and one Undo and one Redo take both numbering choices back and forward.
+    /// The native expectation app and the state after the redo.
+    fn accept_undo_and_redo(
+        h: &mut Harness<'_, Window>,
+        before: &Arc<designcraft_doc::Document>,
+        prior: &Effects,
+        history: usize,
+        intended: &Dialog,
+    ) -> (DesignApp, Effects) {
+        let mut native = expected_confirm(&h.state().0, intended);
+        assert_quiet(h, prior);
         for pressed in [true, false] {
-            event(&mut h, Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            event(h, Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
         assert!(h.state().0.ui.dialog.is_none(), "Enter reaches the real SDK dialog Accept");
-        let accepted = assert_native_outcome(&h, &native, &prior);
-        assert_one_confirm(&accepted, &prior);
+        let accepted = assert_native_outcome(h, &native, prior);
+        assert_one_confirm(&accepted, prior);
         for _ in 0..5 {
-            step(&mut h);
+            step(h);
         }
-        assert_quiet(&h, &accepted);
+        assert_quiet(h, &accepted);
         let app = &mut h.state_mut().0;
         assert_eq!(app.session.active().unwrap().doc.page_name(2), "7");
         assert_eq!(app.session.active().unwrap().doc.chapter_label(), "4");
         assert_eq!(app.session.active().unwrap().history.undo.len(), history + 1, "one OK is one transaction");
         native.run("edit.undo", json!({})).unwrap();
         app.run("edit.undo", json!({})).unwrap();
-        let undone = assert_native_outcome(&h, &native, &accepted);
+        let undone = assert_native_outcome(h, &native, &accepted);
         assert_eq!(undone.document.as_ref(), before.as_ref(), "one undo restores both numbering choices");
         assert_eq!(
             undone.document.as_ref(),
@@ -972,12 +1045,12 @@ mod tests {
         );
         assert_eq!((undone.undo, undone.redo), (history, 1));
         for _ in 0..5 {
-            step(&mut h);
+            step(h);
         }
-        assert_quiet(&h, &undone);
+        assert_quiet(h, &undone);
         native.run("edit.redo", json!({})).unwrap();
         h.state_mut().0.run("edit.redo", json!({})).unwrap();
-        let redone = assert_native_outcome(&h, &native, &undone);
+        let redone = assert_native_outcome(h, &native, &undone);
         assert_eq!(
             redone.document.as_ref(),
             accepted.document.as_ref(),
@@ -987,52 +1060,65 @@ mod tests {
         assert_eq!(redone.document.page_name(2), "7");
         assert_eq!(redone.document.chapter_label(), "4");
         for _ in 0..5 {
-            step(&mut h);
+            step(h);
         }
-        assert_quiet(&h, &redone);
+        assert_quiet(h, &redone);
+        (native, redone)
+    }
+
+    /// Back from the redone state to the pre-apply checkpoint, the Cancel journeys keep the document and the
+    /// populated redo entry exactly, through the real footer button and one Escape.
+    fn cancels_keep_the_checkpoint(
+        h: &mut Harness<'_, Window>,
+        before: &Arc<designcraft_doc::Document>,
+        prior: &Effects,
+        native: &mut DesignApp,
+        redone: &Effects,
+        history: usize,
+    ) {
         // Return to the real pre-apply checkpoint for the original Cancel journeys, retaining
         // the populated redo entry so canceled drafts must preserve it in full as well.
         native.run("edit.undo", json!({})).unwrap();
         h.state_mut().0.run("edit.undo", json!({})).unwrap();
-        let restored = assert_native_outcome(&h, &native, &redone);
+        let restored = assert_native_outcome(h, native, redone);
         assert_eq!(restored.document.as_ref(), prior.document.as_ref());
         assert_eq!((restored.undo, restored.redo), (history, 1));
-        open(&mut h.state_mut().0);
-        step(&mut h);
-        let canceled = effects(&h);
+        open(h.state_mut().0);
+        step(h);
+        let canceled = effects(h);
         let cancel_opening = h.state().0.ui.dialog.as_ref().unwrap().clone();
-        type_draft(&mut h, "Start Chapter Numbering at:", "9");
+        type_draft(h, "Start Chapter Numbering at:", "9");
         assert_eq!(
             h.state().0.ui.dialog.as_ref().unwrap().fields,
             draft_with(&cancel_opening, json!({"chapterSource": "userDefined", "chapterStart": "9"})).fields
         );
-        assert_quiet(&h, &canceled);
-        tab_to_button(&mut h, "Cancel");
+        assert_quiet(h, &canceled);
+        tab_to_button(h, "Cancel");
         for pressed in [true, false] {
-            event(&mut h, Event::Key { key: Key::Space, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            event(h, Event::Key { key: Key::Space, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
         assert!(h.state().0.ui.dialog.is_none(), "natural Tab and Space activate the actual SDK Cancel");
         for _ in 0..5 {
-            step(&mut h);
+            step(h);
         }
-        assert_quiet(&h, &canceled);
-        open(&mut h.state_mut().0);
-        step(&mut h);
+        assert_quiet(h, &canceled);
+        open(h.state_mut().0);
+        step(h);
         assert_eq!(
             h.state().0.ui.dialog.as_ref().unwrap().fields,
             cancel_opening.fields,
             "reopening after host Cancel discards every previous draft/mode edit"
         );
-        assert_quiet(&h, &canceled);
-        type_draft(&mut h, "Start Chapter Numbering at:", "9");
+        assert_quiet(h, &canceled);
+        type_draft(h, "Start Chapter Numbering at:", "9");
         assert_eq!(
             h.state().0.ui.dialog.as_ref().unwrap().fields,
             draft_with(&cancel_opening, json!({"chapterSource": "userDefined", "chapterStart": "9"})).fields
         );
-        assert_quiet(&h, &canceled);
+        assert_quiet(h, &canceled);
         // One Escape cancels the field's draft and the dialog with it (craft's dialog rule, as in InDesign).
         for pressed in [true, false] {
-            event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
         assert!(h.state().0.ui.dialog.is_none(), "one Escape cancels the draft and the actual SDK dialog host");
         assert!(!any_open(&h.ctx, OpenFilter::Modal));
@@ -1043,9 +1129,9 @@ mod tests {
             "Cancel never edits either numbering part or any complete-document field at the actual restored checkpoint"
         );
         for _ in 0..5 {
-            step(&mut h);
+            step(h);
         }
-        assert_quiet(&h, &canceled);
+        assert_quiet(h, &canceled);
     }
 
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};

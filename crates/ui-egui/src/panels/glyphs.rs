@@ -1036,7 +1036,7 @@ mod framework_actions_tests {
                 "absent" => {
                     h.state_mut().app.run("selection.set", json!({"ids":[]})).unwrap();
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {transition:?}"),
             }
             steps(&mut h, 2);
             let before = h.state().app.session.active().unwrap().doc.clone();

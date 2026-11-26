@@ -1253,7 +1253,7 @@ mod scripts_shelf_workflow_tests {
             }
             let focused: Vec<_> = {
                 let root = h.root();
-                std::iter::once(root.clone())
+                std::iter::once(root)
                     .chain(root.children_recursive())
                     .filter_map(|n| {
                         let access = n.accesskit_node();
@@ -1277,7 +1277,7 @@ mod scripts_shelf_workflow_tests {
             .collect();
         let root = h.root();
         let mut nodes = Vec::new();
-        for node in std::iter::once(root.clone()).chain(root.children_recursive()) {
+        for node in std::iter::once(root).chain(root.children_recursive()) {
             let access = node.accesskit_node();
             let matches_field = access.role() == role && access.label().as_deref() == Some(full);
             let bounds = access.bounding_box();

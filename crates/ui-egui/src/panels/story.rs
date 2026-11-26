@@ -516,7 +516,7 @@ mod optical_margin_sdk_tests {
                     app.run("table.select", json!({"story": table["story"], "table": table["table"], "rows": [0, 1], "cols": [0, 1]})).unwrap();
                 }
                 "text" => {}
-                _ => unreachable!(),
+                _ => panic!("unknown case {mode:?}"),
             }
             let mut h = harness(app, 460.0);
             assert!(!control(&h).facts.unwrap().disabled);
@@ -605,7 +605,7 @@ mod optical_margin_sdk_tests {
                 }
                 "parent-disabled" => h.state_mut().disabled = true,
                 "hidden" => h.state_mut().visible = false,
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             let retired = quiet(&h.state().app);
             idle(&mut h, 2);
@@ -658,7 +658,7 @@ mod optical_margin_sdk_tests {
                     *h.state_mut().app.session.active_mut().unwrap() = replacement;
                 }
                 "hidden" => h.state_mut().visible = false,
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             let retired = quiet(&h.state().app);
             idle(&mut h, 2);

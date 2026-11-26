@@ -1228,7 +1228,7 @@ mod style_control_tests {
                     *h.state_mut().session.active_mut().unwrap() = replacement;
                     select(h.state_mut(), &made, [1, 2], [1, 2]);
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {change:?}"),
             }
             // The external change is deliberate. From this point every render and focus gesture must be nonediting.
             let before = quiet(h.state());

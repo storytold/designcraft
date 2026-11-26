@@ -702,14 +702,7 @@ mod tests {
         assert_eq!(h.state().session.doc().unwrap().selection, source_selection, "creation must not apply or retarget the selection");
         assert_eq!(h.state().session.doc().unwrap().doc.story(source).unwrap(), &source_before);
         assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), &target_before);
-        if para {
-            let style = h.state().session.doc().unwrap().doc.styles.para(name).unwrap();
-            assert_eq!((style.chars.size, style.chars.tracking, style.chars.underline), (Some(23.0), Some(42.0), Some(true)));
-            assert_eq!(style.para.space_after, Some(9.0));
-        } else {
-            let style = h.state().session.doc().unwrap().doc.styles.char_style(name).unwrap();
-            assert_eq!(style.chars, designcraft_doc::CharAttrs { tracking: Some(37.0), underline: Some(true), ..Default::default() });
-        }
+        created_style_is_the_selections(&h, para, name);
         let commands = text_style_commands(&h);
         text_style_steps(&mut h, 3);
         assert_eq!(text_style_commands(&h), commands, "an idle pass must not replay creation");
@@ -722,6 +715,33 @@ mod tests {
         assert_eq!(text_style_commands(&h).last().unwrap(), &(apply.into(), json!({"name": name, "clearOverrides": false})));
         assert_eq!(text_style_undo_len(&h), before + 2, "create and apply are independent Undo steps");
         assert_eq!(h.state().session.doc().unwrap().selection, selection);
+        applied_style_reaches_only_the_selection(&mut h, para, name, target, &target_before, &target_attrs);
+        assert_eq!(h.state().session.doc().unwrap().doc.story(source).unwrap(), &source_before);
+        two_undos_restore_target_and_styles(&mut h, para, name, target, &target_before, before);
+        assert_eq!(h.state().session.doc().unwrap().selection, source_selection);
+    }
+
+    /// The style made from the selection captured the selection's own attributes, as its kind's style holds them.
+    fn created_style_is_the_selections(h: &Harness<'_, DesignApp>, para: bool, name: &str) {
+        if para {
+            let style = h.state().session.doc().unwrap().doc.styles.para(name).unwrap();
+            assert_eq!((style.chars.size, style.chars.tracking, style.chars.underline), (Some(23.0), Some(42.0), Some(true)));
+            assert_eq!(style.para.space_after, Some(9.0));
+        } else {
+            let style = h.state().session.doc().unwrap().doc.styles.char_style(name).unwrap();
+            assert_eq!(style.chars, designcraft_doc::CharAttrs { tracking: Some(37.0), underline: Some(true), ..Default::default() });
+        }
+    }
+
+    /// The applied style reached `target` and only its own text run: the source paragraph formatting is left alone.
+    fn applied_style_reaches_only_the_selection(
+        h: &mut Harness<'_, DesignApp>,
+        para: bool,
+        name: &str,
+        target: designcraft_doc::StoryId,
+        target_before: &designcraft_doc::Story,
+        target_attrs: &serde_json::Value,
+    ) {
         let attrs = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
         let story = h.state().session.doc().unwrap().doc.story(target).unwrap();
         assert_eq!(story.text, target_before.text);
@@ -743,19 +763,28 @@ mod tests {
                 assert_eq!(story.char_format_of(pos).style == name, (5.."zero béta".len()).contains(&pos), "exact byte {pos}");
             }
         }
-        assert_eq!(h.state().session.doc().unwrap().doc.story(source).unwrap(), &source_before);
+    }
+
+    /// The two Undo steps an apply and a creation made: the target's text formatting first, then the style itself.
+    fn two_undos_restore_target_and_styles(
+        h: &mut Harness<'_, DesignApp>,
+        para: bool,
+        name: &str,
+        target: designcraft_doc::StoryId,
+        target_before: &designcraft_doc::Story,
+        before: usize,
+    ) {
         h.state_mut().run("edit.undo", json!({})).unwrap();
-        text_style_steps(&mut h, 3);
-        assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), &target_before);
-        assert_eq!(text_style_undo_len(&h), before + 1);
+        text_style_steps(h, 3);
+        assert_eq!(h.state().session.doc().unwrap().doc.story(target).unwrap(), target_before);
+        assert_eq!(text_style_undo_len(h), before + 1);
         let styles = &h.state().session.doc().unwrap().doc.styles;
         assert!(if para { styles.para(name).is_some() } else { styles.char_style(name).is_some() });
         h.state_mut().run("edit.undo", json!({})).unwrap();
-        text_style_steps(&mut h, 3);
+        text_style_steps(h, 3);
         let styles = &h.state().session.doc().unwrap().doc.styles;
         assert!(if para { styles.para(name).is_none() } else { styles.char_style(name).is_none() });
-        assert_eq!(text_style_undo_len(&h), before);
-        assert_eq!(h.state().session.doc().unwrap().selection, source_selection);
+        assert_eq!(text_style_undo_len(h), before);
     }
 
     #[test]
