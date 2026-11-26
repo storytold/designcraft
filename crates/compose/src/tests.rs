@@ -2434,6 +2434,170 @@ fn table_rows_fit_their_content() {
     assert!(tf.strokes.len() >= 4 * 3 + 4);
 }
 
+/// InDesign sets a table inside its frame with the outer edge of the border on the frame edge: the
+/// grid starts half the top and left strokes in, and the paragraph after the table follows half
+/// the bottom stroke below it. Inner and right edges do not move anything. Measured with 1 to 8 pt
+/// borders against InDesign 2026: text and the following paragraph agreed to 0.01 pt.
+#[test]
+fn a_table_starts_half_its_outer_strokes_inside_the_frame() {
+    let compose_with = |top: f64, left: f64, bottom: f64, right: f64| {
+        let mut t = filled(2, 2, 0, 100.0);
+        let stroke = |weight: f64| Some(designcraft_doc::CellStroke { weight, ..Default::default() });
+        t.options.borders = [stroke(top), stroke(left), stroke(bottom), stroke(right)];
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 400.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let ft = &cs.frames[0];
+        let cell = ft.tables[0].cell(0, 0).unwrap().rect;
+        let len = d.story(sid).unwrap().len();
+        let after = ft.lines.iter().find(|l| l.range.start == len - 5).unwrap().baseline;
+        (cell.x0, cell.y0, after)
+    };
+    // Weights up to 7 pt: half of them stays within the default 4 pt cell inset, so the rows do not
+    // grow with the border and only the placement changes.
+    let (x, y, after) = compose_with(1.0, 1.0, 1.0, 1.0);
+    let (xt, yt, at) = compose_with(7.0, 1.0, 1.0, 1.0);
+    assert!((yt - y - 3.0).abs() < 1e-6 && (xt - x).abs() < 1e-6, "a heavier top border moves the table down, not across");
+    assert!((at - after - 3.0).abs() < 1e-6, "and the text after it with it");
+    let (xl, yl, al) = compose_with(1.0, 7.0, 1.0, 1.0);
+    assert!((xl - x - 3.0).abs() < 1e-6 && (yl - y).abs() < 1e-6 && (al - after).abs() < 1e-6, "a heavier left border moves it across only");
+    let (xb, yb, ab) = compose_with(1.0, 1.0, 7.0, 1.0);
+    assert!((xb - x).abs() < 1e-6 && (yb - y).abs() < 1e-6 && (ab - after - 3.0).abs() < 1e-6, "a heavier bottom border moves only the text after");
+    let (xr, yr, ar) = compose_with(1.0, 1.0, 1.0, 7.0);
+    assert!((xr - x).abs() < 1e-6 && (yr - y).abs() < 1e-6 && (ar - after).abs() < 1e-6, "the right border moves nothing");
+}
+
+/// The border placement is for tables that fit their column and run left to right. A table that
+/// continues in a later frame keeps its left border's offset in every fragment, but only its first
+/// fragment starts half the top border down (a continuation starts half the stroke at the cut down,
+/// see `a_table_continuation_starts_half_the_stroke_at_the_cut_down`).
+#[test]
+fn border_placement_leaves_squeezed_rtl_and_continued_tables_alone() {
+    let border = |weight: f64, tweak: &dyn Fn(&mut designcraft_doc::Table)| {
+        let mut t = filled(2, 2, 0, 600.0);
+        t.options.border.weight = weight;
+        tweak(&mut t);
+        let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let len = d.story(sid).unwrap().len();
+        let after = cs.frames[0].lines.iter().find(|l| l.range.start == len - 5).unwrap().baseline;
+        (cs.frames[0].tables[0].rect, after)
+    };
+    // Squeezed to the column (600 pt of columns in 200 pt), and right to left: a heavier border
+    // moves neither the table nor the text after it.
+    for tweak in [&(|_: &mut designcraft_doc::Table| {}) as &dyn Fn(&mut designcraft_doc::Table), &|t: &mut designcraft_doc::Table| {
+        t.options.direction = designcraft_doc::TextDirection::RightToLeft;
+        t.columns.iter_mut().for_each(|c| c.width = 50.0);
+    }] {
+        let (thin, after_thin) = border(1.0, tweak);
+        let (thick, after_thick) = border(7.0, tweak);
+        assert!((thick.y0 - thin.y0).abs() < 1e-6 && (thick.x0 - thin.x0).abs() < 1e-6, "{thin:?} vs {thick:?}");
+        assert!((after_thick - after_thin).abs() < 1e-6);
+    }
+
+    // A table that continues in a second frame: both fragments start inside by half the left border
+    // (measured in InDesign), and the top border moves the first one only.
+    let split = |weight: f64| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 150.0), lid, "", ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 350.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(f1, f2).unwrap();
+        let mut t = filled(9, 2, 0, 200.0);
+        t.options.border.weight = weight;
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        (cs.frames[0].tables[0].rect, cs.frames[1].tables[0].rect)
+    };
+    let ((a1, b1), (a7, b7)) = (split(1.0), split(7.0));
+    assert!((a7.x0 - a1.x0 - 3.0).abs() < 1e-6, "the first fragment moves by half the extra weight");
+    assert!((b7.x0 - b1.x0 - 3.0).abs() < 1e-6 && (b7.y0 - b1.y0).abs() < 1e-6, "the continuation moves across too, not down: {b1:?} vs {b7:?}");
+
+    // Three fragments: the middle one moves across with the left border too, not only the last.
+    let three = |weight: f64| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 60.0), lid, "", ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 100.0, 300.0, 160.0), lid, "", ParaFormat::default()).unwrap();
+        let (f3, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(f1, f2).unwrap();
+        d.thread(f2, f3).unwrap();
+        let mut t = filled(9, 2, 0, 200.0);
+        t.options.border.weight = weight;
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(cs.frames.iter().all(|f| f.tables.len() == 1), "the table has a fragment in each of the three frames");
+        cs.frames.iter().map(|f| f.tables[0].rect.x0).collect::<Vec<_>>()
+    };
+    let (t1, t7) = (three(1.0), three(7.0));
+    assert!(t1.iter().zip(&t7).all(|(a, b)| (b - a - 3.0).abs() < 1e-6), "{t1:?} vs {t7:?}");
+
+    // A table with text above it whose first row does not fit moves to the next frame whole, and
+    // starts there half its top border down, as it would have in the first frame.
+    let moved = |weight: f64| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 22.0), lid, "Intro", ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 350.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(f1, f2).unwrap();
+        let mut t = filled(2, 2, 0, 200.0);
+        t.options.border.weight = weight;
+        let st = d.story_mut(sid).unwrap();
+        let end = st.len();
+        st.insert_table(end, t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(cs.frames[0].tables.is_empty() && cs.frames[1].tables.len() == 1, "the table moves to the second frame");
+        cs.frames[1].tables[0].rect
+    };
+    let (m1, m7) = (moved(1.0), moved(7.0));
+    assert!((m7.y0 - m1.y0 - 3.0).abs() < 1e-6, "{m1:?} vs {m7:?}");
+}
+
+/// A table that continues in the next frame starts its first row there like the table's own first
+/// row: half the stroke on its top edge down. The edge is the stroke between the cells at the cut
+/// (measured in InDesign: with a 7 pt border and 1 pt strokes inside, the first row sits 3.5 pt down
+/// and a continuation 0.5 pt; 3 pt and 6 pt cell strokes everywhere put both at 1.5 and 3 pt), not
+/// the table border.
+#[test]
+fn a_table_continuation_starts_half_the_stroke_at_the_cut_down() {
+    let tops = |border: f64, cell_stroke: Option<f64>, header: usize| {
+        let mut t = filled(8, 1, header, 100.0);
+        t.options.border.weight = border;
+        if let Some(w) = cell_stroke {
+            for r in 0..8 {
+                let c = t.cell_mut(r, 0).unwrap();
+                c.strokes = std::array::from_fn(|_| designcraft_doc::CellStroke { weight: w, ..Default::default() });
+                c.border_overrides = [true; 4];
+                c.stroke_defined = [true; 4];
+            }
+        }
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (f1, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 300.0, 90.0), lid, "", ParaFormat::default()).unwrap();
+        let (f2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 200.0, 300.0, 700.0), lid, "", ParaFormat::default()).unwrap();
+        d.thread(f1, f2).unwrap();
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset());
+        assert_eq!((cs.frames[0].tables.len(), cs.frames[1].tables.len()), (1, 1), "the table breaks between the frames");
+        (cs.frames[0].tables[0].rect.y0, cs.frames[1].tables[0].rect.y0 - 200.0)
+    };
+    // A 7 pt border over 1 pt strokes inside: the first row 3.5 down, the continuation 0.5.
+    let (first, cont) = tops(7.0, None, 0);
+    assert!((first - 3.5).abs() < 1e-6 && (cont - 0.5).abs() < 1e-6, "{first} {cont}");
+    // The border does not matter for the continuation.
+    assert!((tops(1.0, None, 0).1 - cont).abs() < 1e-6 && (tops(12.0, None, 0).1 - cont).abs() < 1e-6);
+    // Heavier strokes between the cells move it: half of them.
+    for w in [3.0, 6.0] {
+        let (_, cont) = tops(7.0, Some(w), 0);
+        assert!((cont - w / 2.0).abs() < 1e-6, "{w}: {cont}");
+    }
+    // A repeated header is the continuation's first row, with the table's own top border over it
+    // (measured: 7 pt border 3.5 pt, 12 pt border 6 pt, 1 pt border 0.5 pt).
+    for (border, half) in [(7.0, 3.5), (12.0, 6.0), (1.0, 0.5)] {
+        assert!((tops(border, None, 1).1 - half).abs() < 1e-6, "{border}: {}", tops(border, None, 1).1);
+    }
+}
+
 #[test]
 fn table_columns_scale_to_the_text_column() {
     let (d, sid, _) = table_doc(Rect::new(0.0, 0.0, 200.0, 1000.0), filled(2, 4, 0, 600.0));
@@ -2465,7 +2629,8 @@ fn table_rows_break_across_frames_with_header_repeat() {
     assert_eq!(body, (1..10).collect::<Vec<_>>());
     assert!(!a[0].cell(0, 0).unwrap().repeated);
     assert!(b[0].cell(0, 0).unwrap().repeated);
-    assert!((b[0].rect.y0 - 200.0).abs() < 1e-6, "{}", b[0].rect.y0);
+    // The repeated header starts half the 1 pt table border below the frame top.
+    assert!((b[0].rect.y0 - 200.5).abs() < 1e-6, "{}", b[0].rect.y0);
     assert!(a[0].rect.y1 <= 150.0 + 1e-6);
     assert!(a[0].first && !a[0].last && b[0].last);
     // Without header repeat the second fragment starts with a body row.

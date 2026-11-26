@@ -187,6 +187,61 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
     CellLayout { text: Arc::new(cs), content_h, line_heights }
 }
 
+/// Half the weight of the heaviest visible stroke on the table's outer `side` (top, left or
+/// bottom): InDesign sets the table inside its frame, with the outer edge of the border on the
+/// frame edge, so the grid line lies this far in and the table block grows by it (observed: the
+/// first row's top edge and the first column's left edge move the text, the inner edges and the
+/// right edge do not; the paragraph after the table moves by half the top and half the bottom).
+fn outer_half_weight(table: &Table, owners: &[(usize, usize)], side: usize) -> f64 {
+    let (nr, nc) = (table.nrows(), table.ncols());
+    let mut half = 0.0f64;
+    for r in 0..nr {
+        for c in 0..nc {
+            if owners[r * nc + c] != (r, c) {
+                continue;
+            }
+            let Some(cell) = table.cell(r, c) else { continue };
+            let on_side = match side {
+                0 => r == 0,
+                1 => c == 0,
+                _ => r + cell.row_span.max(1) as usize >= nr,
+            };
+            if !on_side {
+                continue;
+            }
+            for s in cell_side_strokes(table, owners, (r, c), side) {
+                if s.neighbor.is_none() && s.stroke.is_visible() && s.stroke.weight.is_finite() {
+                    half = half.max(s.stroke.weight / 2.0);
+                }
+            }
+        }
+    }
+    half
+}
+
+/// Half the weight of the heaviest visible stroke on the top edge of row `from`, where a table
+/// fragment continues the table in the next column or frame. Its first row is placed like the
+/// table's own first row, the grid shifted half that stroke in, but the edge is the cell grid's
+/// (the stroke between the row and the one before the cut), not the table border: measured in
+/// InDesign, a 7 pt border moves the first row 3.5 pt down and a continuation 0.5 pt (the 1 pt
+/// strokes between the rows). The left edge is the table's border in every fragment, and a repeated
+/// header keeps the table's top border.
+fn continuation_top_half(table: &Table, owners: &[(usize, usize)], from: usize) -> f64 {
+    let nc = table.ncols();
+    let mut half = 0.0f64;
+    for c in 0..nc {
+        if owners[from * nc + c] != (from, c) {
+            continue;
+        }
+        for s in cell_side_strokes(table, owners, (from, c), 0) {
+            if s.stroke.is_visible() && s.stroke.weight.is_finite() {
+                half = half.max(s.stroke.weight / 2.0);
+            }
+        }
+    }
+    half
+}
+
 /// Lay out `table` (anchored at byte `anchor` of paragraph `pi`) from the cursor. Returns false
 /// when it doesn't fit the remaining frames (overset).
 #[allow(clippy::too_many_arguments)]
@@ -228,6 +283,14 @@ pub(crate) fn place_table(
     let (nr, nc) = (table.nrows(), table.ncols());
     let owners = table.owners();
     let is_owner = |r: usize, c: usize| owners[r * nc + c] == (r, c);
+    // The outer border sits inside the frame: the table starts half its top and left strokes in,
+    // and the next paragraph follows half its bottom stroke below the last row. Right-to-left
+    // tables are not measured and keep the grid line on the frame edge.
+    let ltr = table.options.direction != designcraft_doc::TextDirection::RightToLeft;
+    // A table squeezed to the column keeps its grid on the column's edges.
+    let placed_inside = ltr && k >= 1.0 - 1e-9;
+    let half = |side: usize| if placed_inside { outer_half_weight(table, &owners, side) } else { 0.0 };
+    let (top_half, left_half, bottom_half) = (half(0), half(1), half(2));
     let side = (frames[cur.fi].left_page, frames[cur.fi].right_page);
     // Compose every owner cell.
     let mut layouts: Vec<Option<CellLayout>> = Vec::with_capacity(nr * nc);
@@ -307,9 +370,12 @@ pub(crate) fn place_table(
     let mut y = match cur.last_baseline {
         Some(b) => b + cur.last_descent + cur.pending + o.space_before,
         None => col.y0,
-    };
+    } + top_half;
     let mut frag_rows: Vec<(usize, f64, bool)> = Vec::new(); // (row, y, repeated)
     let mut first_frag = true;
+    // How far the fragment's grid lies below its column's top: half the table's top stroke for the
+    // first fragment, half the stroke at the cut for the ones that continue it.
+    let mut frag_top = top_half;
     let mut body_placed = 0usize;
     let mut top = y;
     let place_rows = |rows: std::ops::Range<usize>, y: &mut f64, repeated: bool, frag_rows: &mut Vec<(usize, f64, bool)>| {
@@ -334,7 +400,7 @@ pub(crate) fn place_table(
         let ge = group_end[r].min(body_end).max(r + 1);
         let gh = sum(r, ge);
         let bottom = col.y1 - reserve;
-        let at_col_top = cur.last_baseline.is_none() && (top - col.y0).abs() < 1e-6;
+        let at_col_top = cur.last_baseline.is_none() && (top - col.y0 - frag_top).abs() < 1e-6;
         if y + gh + footer_h <= bottom + 0.01 || (body_placed == 0 && at_col_top && reserve == 0.0) {
             if y + gh + footer_h > bottom + 0.01 && body_placed == 0 && at_col_top && y + gh > bottom + 0.01 {
                 // A row group taller than an empty column can never fit.
@@ -350,7 +416,24 @@ pub(crate) fn place_table(
             if o.repeat_footer {
                 place_rows(body_end..nr, &mut y, true, &mut frag_rows);
             }
-            emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, false, &layouts, &owners, cur, col, out);
+            emit(
+                table,
+                anchor,
+                pi,
+                &frag_rows,
+                &heights,
+                &colx,
+                col.x0 + x_off + left_half,
+                top,
+                y,
+                first_frag,
+                false,
+                &layouts,
+                &owners,
+                cur,
+                col,
+                out,
+            );
             first_frag = false;
         }
         let was_first = first_frag;
@@ -360,7 +443,17 @@ pub(crate) fn place_table(
         }
         col = col_rect(cur);
         reserve = column_reserve(notes, cur, col);
-        y = col.y0;
+        // A table that has not started yet begins in the new column as it would have in the old
+        // one: half its top stroke down. One that continues starts half the stroke at the cut down,
+        // unless it repeats its header, whose top edge is the table's own.
+        if !first_frag {
+            frag_top = match placed_inside {
+                false => 0.0,
+                true if o.repeat_header && header > 0 => top_half,
+                true => continuation_top_half(table, &owners, r),
+            };
+        }
+        y = col.y0 + frag_top;
         top = y;
         frag_rows.clear();
         body_placed = 0;
@@ -372,8 +465,8 @@ pub(crate) fn place_table(
         }
     }
     place_rows(body_end..nr, &mut y, false, &mut frag_rows);
-    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off, top, y, first_frag, true, &layouts, &owners, cur, col, out);
-    cur.last_baseline = Some(y);
+    emit(table, anchor, pi, &frag_rows, &heights, &colx, col.x0 + x_off + left_half, top, y, first_frag, true, &layouts, &owners, cur, col, out);
+    cur.last_baseline = Some(y + bottom_half);
     cur.last_descent = 0.0;
     cur.pending = o.space_after;
     true

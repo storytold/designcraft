@@ -405,6 +405,8 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-23** · A table starts half its outer strokes inside its frame (#3176), as in InDesign: the grid begins half the first row's top stroke and the first column's left stroke in, and the paragraph after the table follows half its bottom stroke below the last row, so text in a table with the default 1 pt border moves 0.5 pt right and down, and an 8 pt border 4 pt. Inner and right edges move nothing; right-to-left tables and tables squeezed to the column keep their placement.
+- **2026-11-24** · A table that continues in a later column or frame starts its first row there like the table's own (#3204), as in InDesign: every fragment starts half the table's left border in, and a continuation starts half the stroke at the cut down (the stroke between the cells, not the table border: 0.5 pt for 1 pt strokes under any border; a repeated header keeps the table's top border), where it sat on the column's edge before.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.
