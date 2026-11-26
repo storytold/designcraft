@@ -573,6 +573,8 @@ impl CanvasCache {
             patches: 0,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
+            pixels: None,
+            pixels_generation: 0,
         }
     }
 }
@@ -609,6 +611,10 @@ pub struct CanvasCache {
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
     /// it (ms): finished background decodes are taken up in batches, one render for many.
     pub images: (u64, f64),
+    /// The pixels the canvas texture shows (full resolution, as uploaded), and a counter that
+    /// changes with them: a text highlight inverts what it covers from these, without rendering.
+    pub pixels: Option<std::sync::Arc<designcraft_render::Rendered>>,
+    pub pixels_generation: u64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

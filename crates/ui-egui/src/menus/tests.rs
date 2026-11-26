@@ -1975,6 +1975,56 @@ fn copy_and_paste_keys_work_for_objects_without_a_native_menu() {
     assert!(text.contains(designcraft_doc::OBJECT_MARK), "{text:?}");
 }
 
+/// Cutting an object after copying text must leave the object's placeholder on the system
+/// clipboard, as copying one does, so Paste at a caret anchors the object, not the older text.
+#[test]
+fn cutting_an_object_after_copying_text_pastes_the_object_at_a_caret_without_a_native_menu() {
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", &json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let frame = |app: &mut crate::DesignApp, events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            app.logic(&ui.ctx().clone());
+            app.ui(ui);
+        });
+        out.textures_delta.clear();
+        out.platform_output.commands
+    };
+    let copied_text = |commands: Vec<egui::OutputCommand>| {
+        commands.into_iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t),
+            _ => None,
+        })
+    };
+    frame(&mut app, vec![]);
+    frame(&mut app, vec![]);
+    let source = app.session.execute("frame.create", &json!({"rect": [72, 72, 300, 160], "content": "text", "text": "old text"})).unwrap();
+    let source = source["story"].as_u64().unwrap();
+    let target = app.session.execute("frame.create", &json!({"rect": [72, 300, 400, 400], "content": "text", "text": "target"})).unwrap();
+    let target = designcraft_doc::StoryId(target["story"].as_u64().unwrap());
+    app.session.execute("text.select", &json!({"story": source, "anchor": 0, "focus": 8})).unwrap();
+    frame(&mut app, vec![egui::Event::Copy]);
+    let rect = app.session.execute("frame.create", &json!({"rect": [72, 420, 122, 470]})).unwrap()["id"].as_u64().unwrap();
+    app.session.execute("selection.set", &json!({"ids": [rect]})).unwrap();
+    let cut = copied_text(frame(&mut app, vec![egui::Event::Cut])).expect("cutting objects puts their placeholder on the system clipboard");
+    assert_ne!(cut, "old text", "the system clipboard no longer holds the earlier text copy");
+    assert!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(rect)).is_none(), "the rectangle was cut");
+    app.session.execute("tool.select", &json!({"tool": "type"})).unwrap();
+    app.session.execute("text.select", &json!({"story": target.0, "anchor": 0, "focus": 0})).unwrap();
+    frame(&mut app, vec![egui::Event::Paste(cut)]);
+    let d = app.session.active().unwrap();
+    let story = d.doc.story(target).unwrap();
+    assert_eq!(story.objects.len(), 1, "the cut rectangle is anchored: {:?}", story.text);
+    assert!(story.text.contains(designcraft_doc::OBJECT_MARK) && story.text.ends_with("target"), "{:?}", story.text);
+    assert!(!story.text.contains("old text"), "{:?}", story.text);
+    d.doc.check().unwrap();
+}
+
 #[test]
 fn paste_with_no_insertion_point_makes_a_text_frame_from_other_apps_text() {
     // #518: text copied in another app pastes as a new, selected text frame; the text an

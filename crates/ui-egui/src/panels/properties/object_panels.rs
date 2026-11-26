@@ -548,9 +548,11 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
         // same in both.
         let u = units(app);
+        // Room for a measurement with its unit (`35.278 mm`).
+        const MEASURE_W: f32 = 66.0;
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, MEASURE_W) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -577,7 +579,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, MEASURE_W) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
