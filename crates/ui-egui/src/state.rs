@@ -1,12 +1,15 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::render_worker;
-use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, theme};
+use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page_history, panels, prefs, separations, story_editor, theme};
 
 /// Context captured before any host file-picker or read await.
 #[derive(Clone, Debug)]
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// File names wanted, lower case (Relink to Folder: the missing graphics' names), so the host
+    /// reads only those from a chosen folder. Empty: any.
+    pub wanted: Vec<String>,
 }
 
 pub struct ImportedFile {
@@ -212,6 +215,8 @@ pub struct UiState {
     pub baseline_grid: bool,
     pub document_grid: bool,
     pub text_threads: bool,
+    /// View › Extras › Show Link Badge: the chain on frames showing a linked file.
+    pub link_badge: bool,
     pub hidden_characters: bool,
     /// View › Structure › Show Tagged Frames.
     pub tagged_frames: bool,
@@ -255,6 +260,13 @@ pub struct UiState {
     pub story_editor_size: f32,
     /// View › Story Editor › Show/Hide Depth Ruler.
     pub story_editor_depth_ruler: bool,
+    /// View › Story Editor › Show/Hide Style Name Column.
+    pub story_editor_style_column: bool,
+    /// Width of the Story Editor's style name column, in screen points (set by dragging its bar or by
+    /// `view.storyEditorStyleColumn` `width`).
+    pub story_editor_style_width: f32,
+    /// View › Story Editor › Show/Hide Paragraph Break Marks.
+    pub story_editor_paragraph_marks: bool,
     /// The Color Picker's component (its radio button, as `PickComp::key`: `h`, `s`, `b`, `l`,
     /// `la`, `lb`, `r`, `g`, `bl`), kept between openings and sessions, as Photoshop's picker is.
     pub color_picker_component: String,
@@ -427,12 +439,16 @@ impl Default for UiState {
             baseline_grid: false,
             document_grid: false,
             text_threads: false,
+            link_badge: true,
             hidden_characters: false,
             tagged_frames: false,
             hidden_menu_items: Vec::new(),
             show_full_menus: false,
             story_editor_size: 14.0,
             story_editor_depth_ruler: true,
+            story_editor_style_column: true,
+            story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_paragraph_marks: false,
             color_picker_component: "r".into(),
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
@@ -588,6 +604,8 @@ impl CanvasCache {
             patches: 0,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
+            pixels: None,
+            pixels_generation: 0,
         }
     }
 }
@@ -624,6 +642,10 @@ pub struct CanvasCache {
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
     /// it (ms): finished background decodes are taken up in batches, one render for many.
     pub images: (u64, f64),
+    /// The pixels the canvas texture shows (full resolution, as uploaded), and a counter that
+    /// changes with them: a text highlight inverts what it covers from these, without rendering.
+    pub pixels: Option<std::sync::Arc<designcraft_render::Rendered>>,
+    pub pixels_generation: u64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]
