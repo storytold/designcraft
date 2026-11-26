@@ -2790,9 +2790,16 @@ fn confirm_part6(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
         id if id.starts_with("cmd:") => {
             let cid = &id[4..];
             let doc = designcraft_engine::find_command(cid).map_or("", |c| c.params);
+            // The document's layout names: a `layout` that is one of them is that layout's name, whatever it parses as
+            // (a layout named "0" is not layout 0). The form picks the layout from these names.
+            let layout_names: Vec<String> =
+                app.session.active().map(|st| st.doc.layouts().iter().map(|l| l.name.clone()).collect()).unwrap_or_default();
             let mut p = Map::new();
             for f in command_fields(doc) {
                 match d.fields.get(&f.key) {
+                    Some(Value::String(v)) if f.key == "layout" && layout_names.iter().any(|name| name == v) => {
+                        p.insert(f.key, json!(v));
+                    }
                     Some(Value::String(v)) if !v.trim().is_empty() => {
                         let v = v.trim();
                         // Numbers, booleans, arrays and objects as JSON; anything else is a string.

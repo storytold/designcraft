@@ -2856,6 +2856,25 @@ fn frame_size_dialog_keeps_its_units_while_open() {
     assert!((b.width() - 144.0).abs() < 0.01 && (b.height() - 216.0).abs() < 0.01, "{b:?}");
 }
 
+/// A layout the generic layout form picks reaches the command by its name, even a name that reads as a number: a layout
+/// named "0" is that layout, not the document's first.
+#[test]
+fn generic_layout_form_sends_a_numeric_layout_name_as_the_name() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":400,"height":600,"pages":1})).unwrap();
+    app.run("layout.createAlternate", json!({"name":"0","width":300,"height":500})).unwrap();
+    let names = |app: &DesignApp| app.session.doc().unwrap().doc.layouts().iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    let before = names(&app);
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[1], "0");
+    // The picker stores the name as the draft's text, as the form does.
+    app.ui.dialog = Some(Dialog::new("cmd:layout.alternate.options", json!({"layout":"0","name":"Zero"})));
+    confirm(&mut app).unwrap();
+    let after = names(&app);
+    assert_eq!(after[0], before[0], "the first layout is not the one named \"0\"");
+    assert_eq!(after[1], "Zero", "the layout named \"0\" is renamed");
+}
+
 #[test]
 fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     use designcraft_tools::{PointerEvent, PointerKind};
