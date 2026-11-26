@@ -138,25 +138,9 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
         if let Some(who) = app.updates_rt.managed
             && app.updates_rt.managed_window_open
         {
-            let mut open = true;
-            let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
-            let ok_label = crate::i18n::tr(&app.ui.language, "OK");
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .pivot(egui::Align2::CENTER_CENTER)
-                .default_pos(ctx.content_rect().center())
-                .show(ctx, |ui| {
-                    ui.label(format!("Updates are managed by {who}."));
-                    ui.add_space(8.0);
-                    if ui.button(ok_label).clicked() {
-                        app.updates_rt.managed_window_open = false;
-                    }
-                });
-            if !open {
-                app.updates_rt.managed_window_open = false;
-            }
+            let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
+            let message = tr("Updates are managed by {who}.").replace("{who}", who);
+            app.updates_rt.managed_window_open = message_dialog(ctx, "updates_managed_dialog", tr("DesignCraft Updates"), message, tr("OK"));
         }
         if app.updates_rt.managed.is_some() {
             return;
@@ -183,26 +167,36 @@ pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
 
     #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
-        let mut open = true;
-        let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
-        let ok_label = crate::i18n::tr(&app.ui.language, "OK");
-        egui::Window::new(title)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
-            .show(ctx, |ui| {
-                ui.label(crate::i18n::tr(&app.ui.language, "Update check is not supported in the web browser."));
-                ui.add_space(8.0);
-                if ui.button(ok_label).clicked() {
-                    app.updates_rt.manual_window_open = false;
-                }
-            });
-        if !open {
-            app.updates_rt.manual_window_open = false;
-        }
+        let tr = |s: &str| crate::i18n::tr(&app.ui.language, s).to_string();
+        let message = tr("Update check is not supported in the web browser.");
+        app.updates_rt.manual_window_open = message_dialog(ctx, "updates_web_dialog", tr("DesignCraft Updates"), message, tr("OK"));
     }
+}
+
+/// A message window of the updater: `title` over `message`, with one OK button, as a framework dialog in its own layer.
+/// Enter, Escape and OK close it. Returns whether it is still open.
+fn message_dialog(ctx: &egui::Context, salt: &'static str, title: String, message: String, ok_label: String) -> bool {
+    use craft_ui_panels::dialog::Dialog as FrameworkDialog;
+    use craft_ui_panels::sections::{DialogRole, FooterButton};
+    use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _, Sizing};
+    use craft_ui_widgets::display::Text;
+    use craft_ui_widgets::runtime::overlay::Backdrop;
+    let mut opened = true;
+    let shown = egui::Area::new(egui::Id::new((salt, "host"))).order(egui::Order::Foreground).show(ctx, |ui| {
+        FrameworkDialog::new(title)
+            .id_salt(salt)
+            .opened(Bind::bound(&mut opened))
+            .backdrop(Backdrop::None)
+            .closable(false)
+            .outer_gesture(false)
+            .close_on_enter(true)
+            .buttons(vec![FooterButton::new(ok_label, DialogRole::Accept)])
+            .show(ui, |ui, _| {
+                Text::new(message).sizing(Sizing::FillWidth).show(ui);
+            })
+            .output
+    });
+    opened && shown.inner.closed.is_none() && shown.inner.picked.is_none()
 }
 
 #[cfg(test)]
@@ -224,6 +218,45 @@ mod tests {
         assert!(!app.updates_rt.startup_check, "a managed copy never checks at start");
         app.set_updates_managed(None);
         assert!(!app.updates_managed());
+    }
+
+    /// Successor of the managed-copy window's egui `Window`: the framework dialog shows who updates this copy, stays open
+    /// while nothing answers it, and Enter (its OK) closes it.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn the_managed_copy_dialog_shows_who_updates_it_and_enter_closes_it() {
+        let mut app = DesignApp::new(Session::new(), Default::default());
+        app.set_updates_managed(Some("ArtCraft Launcher"));
+        check(&mut app).unwrap();
+        let ctx = crate::test_window::context();
+        ctx.enable_accesskit();
+        let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| show(app, ui.ctx()));
+            out.textures_delta.clear();
+            out.platform_output
+                .accesskit_update
+                .map(|update| update.nodes.iter().filter_map(|(_, node)| node.label().map(str::to_owned)).collect::<Vec<_>>())
+        };
+        let mut labels = Vec::new();
+        for _ in 0..3 {
+            labels = frame(&mut app, Vec::new()).unwrap_or_default();
+        }
+        assert!(app.updates_rt.managed_window_open, "the dialog stays open while nothing answers it");
+        assert!(labels.iter().any(|l| l == "Updates are managed by ArtCraft Launcher."), "the dialog says who updates this copy: {labels:?}");
+        assert!(labels.iter().any(|l| l == "DesignCraft Updates"), "the dialog has its title: {labels:?}");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }],
+            );
+        }
+        frame(&mut app, Vec::new());
+        assert!(!app.updates_rt.managed_window_open, "Enter, the dialog's OK, closes it");
     }
 
     #[test]
