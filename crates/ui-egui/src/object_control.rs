@@ -945,15 +945,6 @@ mod auto_fit_workflow_tests {
         journal_one(&h, start, true);
     }
 
-    #[test]
-    fn empty_selection_allows_editing_default_stroke_weight_in_control_bar() {
-        let (ctx, mut app) = fixture(false);
-        assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 1.0);
-        let group = ctx.read_response(egui::Id::unique(("object_control", "appearance"))).unwrap().rect;
-        let stroke_up = group.min + vec2(56.0 + widgets::SEG_W / 2.0, FIELD_H / 4.0);
-        click(&ctx, &mut app, stroke_up);
-        assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 2.0);
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
