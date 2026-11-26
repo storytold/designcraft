@@ -10,6 +10,6 @@ DesignCraft runs on Windows, macOS and Linux, and in a modern web browser. The r
 - **Windows 11**: x64, arm64 and 32-bit x86 installers, plus portable zips.
 - **macOS**: one universal build for Apple silicon and Intel.
 - **Linux**: x86_64 and aarch64 as AppImage, Flatpak, `.deb`, `.rpm` or tarball, and RISC-V as `.deb`, `.rpm` or tarball.
-- **Web**: a static site you host yourself (`designcraft-web-<version>.zip`). It runs on WebGPU and falls back to WebGL2. The web build has no control channel, and Save and Export download the file.
+- **Web**: a static site you host yourself (`designcraft-web-<version>.zip`). It runs on WebGPU and falls back to WebGL2. Save and Export download the file, and the page can drive the app through `window.designcraft` in place of a control port.
 
 All files are on the [latest release](https://github.com/storytold/designcraft/releases/latest). See [Install DesignCraft](../getting-started/install.md) for steps.

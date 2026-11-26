@@ -48,7 +48,7 @@ so only enable it while you use it. Transport: `apps/designcraft/src/control_ser
 | `ui.dialog.open` | `{id, fields?}` | Open a dialog by id (e.g. `paragraphStyleOptions` or `characterStyleOptions` with `{name, section}`, or `{new: true}` for a new style) |
 | `ui.dialog.set` / `ui.dialog.confirm` / `ui.dialog.cancel` | `{field, value}` | Fill and confirm the open dialog |
 | `ui.resize`, `ui.focus` | | Window control |
-| `ui.screenshot` | `{path?}` | PNG of the whole window |
+| `ui.screenshot` | `{path?}` | PNG of the whole window. In the web build there is no file system: without `path` the PNG comes back inline as `pngBase64`. |
 | `ui.render` | `{path?, page?, scale?, bleed?}` | Render a document page headlessly (PNG; base64 if no path); without a canvas, document mode defaults to page 0; parent editing mode requires an explicit 0-based `page` |
 | `app.open` / `app.save` / `app.export` | | Files |
 | `app.quit` | | Quit without asking about unsaved changes (the `app.quit` command, like ⌘Q, asks) |
