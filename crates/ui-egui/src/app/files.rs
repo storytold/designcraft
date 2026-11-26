@@ -16,15 +16,16 @@ impl DesignApp {
             open(request);
             return Ok(Value::Null);
         }
+        let directory = self.open_dialog_document_folder();
         // File › Place takes several files: they load the place cursor in the order chosen.
         if purpose == "place" {
-            return self.ask_open_many(purpose, file_dialogs::Bound::Document, |app, paths| match paths.as_slice() {
+            return self.ask_open_many(purpose, file_dialogs::Bound::Document, directory, |app, paths| match paths.as_slice() {
                 [path] => app.open_picked("place", path.clone()),
                 _ => app.place_paths(paths).map(|()| Value::Null),
             });
         }
         let purpose_owned = purpose.to_string();
-        self.ask_open(purpose, file_dialogs::Bound::App, move |app, path| app.open_picked(&purpose_owned, path))
+        self.ask_open_at(purpose, file_dialogs::Bound::App, directory, move |app, path| app.open_picked(&purpose_owned, path))
     }
 
     /// Open (`open`) or place (`place`) the file at `path`, chosen in a dialog or passed by a script.

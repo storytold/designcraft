@@ -119,6 +119,41 @@ fn save_dialogs_start_beside_the_document_or_in_the_last_folder() {
     assert_eq!(last(&asked), elsewhere.path().join(untitled).to_string_lossy(), "a new document starts in the last folder used");
 }
 
+#[test]
+fn file_open_and_place_start_beside_the_active_document() {
+    use std::{cell::RefCell, path::PathBuf, rc::Rc};
+
+    let project = tempfile::tempdir().unwrap();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), Services::default());
+    let seen = asked.clone();
+    app.answer_dialogs(move |request| {
+        if let craft_dialogs::Request::File(dialog) = request {
+            seen.borrow_mut().push(dialog.directory.clone());
+        }
+        craft_dialogs::Answer::Cancelled
+    });
+    let check = |app: &mut DesignApp, command: &str, folder: Option<PathBuf>| {
+        app.run(command, json!({})).unwrap();
+        app.settle_dialogs();
+        assert_eq!(asked.borrow_mut().pop(), Some(folder), "{command}");
+    };
+
+    check(&mut app, "app.openDialog", None);
+    app.run("file.new", json!({})).unwrap();
+    for command in ["app.openDialog", "app.placeDialog"] {
+        check(&mut app, command, None);
+    }
+    app.session.active_mut().unwrap().path = Some(project.path().join("Layout.designcraft").to_str().unwrap().into());
+    for command in ["app.openDialog", "app.placeDialog"] {
+        check(&mut app, command, Some(project.path().to_path_buf()));
+    }
+    project.close().unwrap();
+    for command in ["app.openDialog", "app.placeDialog"] {
+        check(&mut app, command, None);
+    }
+}
+
 /// No name (Save with no document) suggested the remembered folder itself as the file, and a
 /// title with a slash moved the suggestion out of the document's folder.
 #[test]

@@ -10,6 +10,8 @@
 //! The browser build has no native dialogs: Open goes through `Services::open_async` and the
 //! inbox, and Save hands the suggested name to `Services::download`.
 
+use std::path::PathBuf;
+
 use super::{DesignApp, Value, json};
 
 /// What runs with the chosen path, on the frame the answer arrives.
@@ -108,9 +110,24 @@ impl DesignApp {
         bound: Bound,
         then: impl FnOnce(&mut DesignApp, String) -> Result<Value, String> + 'static,
     ) -> Result<Value, String> {
+        self.ask_open_at(purpose, bound, None, then)
+    }
+
+    /// Ask to open a file, suggesting `directory` as the starting location when given.
+    #[track_caller]
+    pub(crate) fn ask_open_at(
+        &mut self,
+        purpose: &str,
+        bound: Bound,
+        directory: Option<PathBuf>,
+        then: impl FnOnce(&mut DesignApp, String) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut dialog = craft_dialogs::FileDialog::open();
+            if let Some(directory) = directory {
+                dialog = dialog.directory(directory);
+            }
             for filter in open_filters(purpose) {
                 dialog = dialog.filter(filter.name, filter.extensions);
             }
@@ -119,23 +136,27 @@ impl DesignApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (purpose, bound, then);
+            let _ = (purpose, bound, directory, then);
             Err(NO_PICKER.into())
         }
     }
 
-    /// [`Self::ask_open`] for a dialog that takes several files: `then` runs with their paths,
+    /// [`Self::ask_open_at`] for a dialog that takes several files: `then` runs with their paths,
     /// in the order chosen.
     #[track_caller]
     pub(crate) fn ask_open_many(
         &mut self,
         purpose: &str,
         bound: Bound,
+        directory: Option<PathBuf>,
         then: impl FnOnce(&mut DesignApp, Vec<String>) -> Result<Value, String> + 'static,
     ) -> Result<Value, String> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut dialog = craft_dialogs::FileDialog::open_many();
+            if let Some(directory) = directory {
+                dialog = dialog.directory(directory);
+            }
             for filter in open_filters(purpose) {
                 dialog = dialog.filter(filter.name, filter.extensions);
             }
@@ -144,9 +165,17 @@ impl DesignApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (purpose, bound, then);
+            let _ = (purpose, bound, directory, then);
             Err(NO_PICKER.into())
         }
+    }
+
+    /// A missing document directory leaves the starting location up to the system picker.
+    pub(crate) fn open_dialog_document_folder(&self) -> Option<PathBuf> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.session.active().and_then(|d| d.path.as_deref()).and_then(folder_of).filter(|folder| folder.is_dir());
+        #[cfg(target_arch = "wasm32")]
+        None
     }
 
     /// Ask for a folder, the dialog titled `title` (File › Export Layouts and Versions). `then`
