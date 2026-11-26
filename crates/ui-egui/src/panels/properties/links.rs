@@ -192,7 +192,11 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         let browser = app.services.open_async.is_some();
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
             if browser {
-                if !is_text {
+                // A linked text story is read from its path, which a browser doesn't give: say so
+                // rather than ignore the click.
+                if is_text {
+                    app.status(crate::i18n::tr(&app.ui.language, "A linked text file can't be relinked in the browser"));
+                } else {
                     app.request_files(&format!("relink:{aid}"));
                 }
             } else {
