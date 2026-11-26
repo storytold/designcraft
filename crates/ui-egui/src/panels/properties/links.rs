@@ -153,21 +153,12 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
         }
     });
     ui.horizontal(|ui| {
-        // Choose any file in the folder: missing links are looked up there by name.
-        let tip = crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics");
-        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked {
-            let asked = app.ask_open("relink", Bound::Document, |app, path| {
-                let Some(dir) = std::path::Path::new(&path).parent() else {
-                    return Ok(Value::Null);
-                };
-                if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()})) {
-                    app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
-                }
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
-            }
+        // The folder holding the moved graphics: missing links are looked up there by name.
+        let tip = crate::i18n::tr(&app.ui.language, "Choose the folder holding the moved graphics");
+        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked
+            && let Err(e) = relink_to_folder(app)
+        {
+            app.status_error("Relink", e);
         }
     });
 }
