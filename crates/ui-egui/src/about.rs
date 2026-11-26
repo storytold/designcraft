@@ -176,8 +176,19 @@ mod framework {
             .id_salt("about_mark")
             .extent(PictureSize::Thumb(ThumbSize::Large))
             .show(ui);
-        Text::new(tr("DesignCraft")).role(TypeRole::Title).sizing(Sizing::FillWidth).show(ui);
-        Text::new(format!("{} {}", tr("Version"), env!("CARGO_PKG_VERSION"))).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        // The channel's own name and version: DesignCraft (stable) or DesignCraft Nightly.
+        let channel = crate::channel::current();
+        let app_name = match channel {
+            crate::channel::Channel::Stable => tr("DesignCraft"),
+            crate::channel::Channel::NightlyV1 => channel.name().to_string(),
+        };
+        Text::new(app_name).role(TypeRole::Title).sizing(Sizing::FillWidth).show(ui);
+        Text::new(format!("{} {}", tr("Version"), crate::channel::version())).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        // A nightly build says which commit it was made from; the links below include Report an issue.
+        if let Some(commit) = crate::channel::commit() {
+            let short = commit.get(..12).unwrap_or(commit);
+            Text::new(format!("nightly-v1 · {short}")).role(TypeRole::Caption).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
+        }
         Text::new(tr("Page layout for print and screen — fast, open and scriptable.")).sizing(Sizing::FillWidth).show(ui);
         Text::new(tr("Part of the ArtCraft suite of open creative tools.")).shade(Shade::Muted).sizing(Sizing::FillWidth).show(ui);
         if discord_button(ui, tr("Join the ArtCraft Discord"), "about_discord") {
