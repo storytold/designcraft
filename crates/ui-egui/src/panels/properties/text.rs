@@ -1,7 +1,7 @@
 use super::typography::{para_field_min, show_typography_panel};
 use super::{
-    Align, DesignApp, FIELD_H, Rect, Ui, Value, block, full_width, json, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs,
-    units, vec2, widgets,
+    Align, DesignApp, FIELD_H, Rect, Ui, Value, block, full_width, json, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs, units, vec2,
+    widgets,
 };
 
 // ---------------------------------------------------------------- Text

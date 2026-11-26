@@ -30,8 +30,8 @@ mod tool_overlays;
 mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
-use frames::{draw_frames, draw_selection};
 pub(crate) use frames::item_canvas_xf;
+use frames::{draw_frames, draw_selection};
 #[cfg(test)]
 use frames::{frame_x, overset_frames, overset_marks, ported_frames, text_frames_in};
 use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guide_spot, moving_guides, readout_at};

@@ -24,20 +24,21 @@ pub fn palette(app: &mut DesignApp, ctx: &egui::Context) {
     // This area only supplies a parent: the palette mounts its own modal layer. The area spans the window from its
     // corner, so the palette's box centres in the window (an auto-placed area put it wherever egui found room).
     let screen = ctx.content_rect();
-    let shown = egui::Area::new(egui::Id::unique("designcraft-quick-apply-host")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-        ui.set_max_size(screen.size());
-        in_app_env(ui, &lang, |ui| {
-            // The palette ranks through a word index of its entries, built here in the interface language's words; the
-            // entries are this pass's (the document's styles change them).
-            let env = craft_ui::runtime::env::Env::of(ui);
-            let synonyms = Synonyms::of(&env.words::<SearchWords>());
-            let index = SearchIndex::new(&env.view(), &entries, &synonyms);
-            CommandPalette::new(crate::i18n::tr(&lang, "Quick Apply").to_owned(), &entries, &index, Bind::bound(&mut open))
-                .placeholder(crate::i18n::tr(&lang, "Search styles and commands…").to_owned())
-                .suggested((Label::from(crate::i18n::tr(&lang, "Commands").to_owned()), suggested))
-                .show(ui)
-        })
-    });
+    let shown =
+        egui::Area::new(egui::Id::unique("designcraft-quick-apply-host")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            ui.set_max_size(screen.size());
+            in_app_env(ui, &lang, |ui| {
+                // The palette ranks through a word index of its entries, built here in the interface language's words; the
+                // entries are this pass's (the document's styles change them).
+                let env = craft_ui::runtime::env::Env::of(ui);
+                let synonyms = Synonyms::of(&env.words::<SearchWords>());
+                let index = SearchIndex::new(&env.view(), &entries, &synonyms);
+                CommandPalette::new(crate::i18n::tr(&lang, "Quick Apply").to_owned(), &entries, &index, Bind::bound(&mut open))
+                    .placeholder(crate::i18n::tr(&lang, "Search styles and commands…").to_owned())
+                    .suggested((Label::from(crate::i18n::tr(&lang, "Commands").to_owned()), suggested))
+                    .show(ui)
+            })
+        });
     // The palette fired its pick on the framework's board too; the app drops what the board fires
     // (`DesignApp::raw_input_hook`), so the command runs once, here.
     if let Some(command) = shown.inner.picked {
