@@ -252,23 +252,6 @@ impl crate::Document {
         n
     }
 
-    /// Number of the first footnote of story `sid` when numbering runs through the document:
-    /// the start number plus the footnotes of stories that start on earlier pages.
-    pub fn footnote_start(&self, sid: StoryId) -> u32 {
-        let o = &self.footnote_options;
-        if o.restart != NoteRestart::Never {
-            return o.start_at;
-        }
-        let key = |st: &Story| -> (usize, u64) {
-            let page = st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX);
-            (page, st.id.0)
-        };
-        let Some(me) = self.story(sid) else { return o.start_at };
-        let mine = key(me);
-        let before: usize = self.stories.values().filter(|st| st.id != sid && !st.notes.is_empty() && key(st) < mine).map(|st| st.notes.len()).sum();
-        o.start_at.saturating_add(before as u32)
-    }
-
     /// Absolute page an item sits on (its center), None on parent pages / pasteboard-only spreads.
     pub fn page_of_item(&self, id: crate::ItemId) -> Option<usize> {
         let loc = self.find(id)?;

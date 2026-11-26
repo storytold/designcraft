@@ -2839,6 +2839,37 @@ fn footnotes_sit_at_the_column_bottom_and_push_text() {
     assert!(note_caret(&cs, n.id, 0).is_some());
 }
 
+/// InDesign numbers footnotes from the Start At value in every story, whatever page it is on and
+/// whichever story was made first (measured with six stories on one page and with three on separate
+/// pages): the second story's notes do not carry on from the first one's.
+#[test]
+fn footnote_numbers_start_over_in_each_story() {
+    let (mut d, a, _) = doc_with("alpha beta gamma delta epsilon zeta", Rect::new(36.0, 36.0, 300.0, 236.0), ParaAttrs::default());
+    let (_, b) = d
+        .add_text_frame(
+            SpreadRef::Doc(0),
+            Rect::new(36.0, 300.0, 300.0, 500.0),
+            d.default_layer(),
+            "eta theta iota kappa lambda mu",
+            ParaFormat::default(),
+        )
+        .unwrap();
+    for sid in [a, b] {
+        let st = d.story_mut(sid).unwrap();
+        st.insert_note(11, "First note.", ParaFormat::default());
+        st.insert_note(5, "Second note.", ParaFormat::default());
+        st.check().unwrap();
+    }
+    for start in [1, 5] {
+        d.footnote_options.start_at = start;
+        for sid in [a, b] {
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let labels: Vec<&str> = cs.frames.iter().flat_map(|f| &f.notes).map(|n| n.label.as_str()).collect();
+            assert_eq!(labels, [start.to_string(), (start + 1).to_string()], "story {sid:?} starts at {start}");
+        }
+    }
+}
+
 fn justified_content_clears_footnotes(mode: designcraft_doc::VerticalJustification, table: bool) {
     for span in [false, true] {
         let (mut d, sid, fid) = doc_with("First paragraph.\nSecond paragraph.", Rect::new(0.0, 0.0, 420.0, 240.0), ParaAttrs::default());

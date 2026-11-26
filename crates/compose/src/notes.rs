@@ -92,7 +92,7 @@ pub(crate) struct Notes {
 impl Notes {
     pub fn new(doc: &Document, story: &Story) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let start = if refs.is_empty() { 1 } else { doc.footnote_options.start_at };
         Notes {
             numbers: vec![start; refs.len()],
             refs,

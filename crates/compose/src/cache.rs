@@ -273,11 +273,11 @@ impl Cache {
             sig.extend([doc_signature(doc) as usize, h.finish() as usize]);
         }
         if !story.notes.is_empty() {
-            // Footnote numbers continue from earlier stories; layout follows the options.
+            // Footnote numbers and layout follow the options (numbering starts over in each story).
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             format!("{:?}", doc.footnote_options).hash(&mut h);
-            sig.extend([doc.footnote_start(sid) as usize, h.finish() as usize]);
+            sig.push(h.finish() as usize);
         }
         // Endnote numbers continue from stories on earlier pages.
         if !story.endnotes.is_empty() {

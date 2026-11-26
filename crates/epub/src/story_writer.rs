@@ -103,7 +103,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
     pub(crate) fn story(&mut self, sid: StoryId, heading_ids: Option<&str>) -> String {
         let Some(st) = self.doc.story(sid) else { return String::new() };
         self.heading_ids = heading_ids.map(str::to_string);
-        self.next_footnote = self.doc.footnote_start(sid);
+        self.next_footnote = self.doc.footnote_options.start_at;
         self.next_endnote = self.doc.endnote_start(sid);
         let mut out = String::new();
         self.paragraphs(st, 0, "", &mut out);
