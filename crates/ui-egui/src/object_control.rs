@@ -944,7 +944,6 @@ mod auto_fit_workflow_tests {
         click_auto_fit(&mut h);
         journal_one(&h, start, true);
     }
-
 }
 
 #[cfg(not(target_arch = "wasm32"))]
