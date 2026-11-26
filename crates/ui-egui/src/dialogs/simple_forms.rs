@@ -27,6 +27,9 @@ pub(crate) const ALERT: Form = Form::new(alert).width(440.0);
 pub(crate) const CLOSE_DOCUMENT: Form = Form::new(close_document).width(380.0).extra(&[("Don't Save", "discard")]);
 /// Delete Pages: the warning for pages that hold objects.
 pub(crate) const DELETE_PAGES: Form = Form::new(delete_pages).width(380.0);
+/// Save as IDML: what IDML would lose, with Save Anyway (accepting), Save as DesignCraft (the extra
+/// button sets `asDesigncraft`) and Don't ask again for this document.
+pub(crate) const IDML_LOSS: Form = Form::new(idml_loss).width(380.0).extra(&[("Save as DesignCraft…", "asDesigncraft")]);
 /// Update Link: the warning for a link edited in the layout.
 pub(crate) const UPDATE_LINK: Form = Form::new(update_link).width(380.0);
 /// New Workspace: a name and what the workspace captures.
@@ -155,6 +158,30 @@ fn delete_pages(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     Stack::new().id_salt("simple_delete_pages").fill_width().show(ui, |ui, _| {
         Text::new(message.clone()).show(ui);
         check(ui, d, "dontShowAgain", again.clone(), true);
+    });
+    None
+}
+
+fn idml_loss(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool> {
+    let count = |k: &str| d.fields.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let (lead, keeps, again) = (
+        tr(app, "IDML can't keep all of this document. Saving it as IDML loses:"),
+        tr(app, "Saved as DesignCraft, the document keeps everything."),
+        tr(app, "Don't ask again for this document"),
+    );
+    let (notes, endnotes) = (count("editorialNotes"), count("endnotes"));
+    let note_line = tr(app, "{} editorial note(s)").replace("{}", &notes.to_string());
+    let endnote_line = tr(app, "{} endnote(s): their text stays as plain text in the endnote frame").replace("{}", &endnotes.to_string());
+    Stack::new().id_salt("simple_idml_loss").fill_width().show(ui, |ui, _| {
+        Text::new(lead.clone()).show(ui);
+        if notes > 0 {
+            Text::new(format!("•  {note_line}")).shade(Shade::Muted).show(ui);
+        }
+        if endnotes > 0 {
+            Text::new(format!("•  {endnote_line}")).shade(Shade::Muted).show(ui);
+        }
+        Text::new(keeps.clone()).show(ui);
+        check(ui, d, "dontAskAgain", again.clone(), true);
     });
     None
 }

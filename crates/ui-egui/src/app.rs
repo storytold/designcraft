@@ -166,6 +166,8 @@ impl DesignApp {
             close_requested_pending: false,
             quit_without_asking: false,
             quitting: None,
+            lossy_save: None,
+            idml_loss_accepted: Default::default(),
             waiting_save: None,
             #[cfg(not(target_arch = "wasm32"))]
             opening: Vec::new(),

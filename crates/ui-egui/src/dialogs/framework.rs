@@ -159,6 +159,7 @@ pub(crate) fn form(id: &str) -> Option<Form> {
         "alert" => Some(simple_forms::ALERT),
         "closeDocument" => Some(simple_forms::CLOSE_DOCUMENT),
         "deletePages" => Some(simple_forms::DELETE_PAGES),
+        "idmlLoss" => Some(simple_forms::IDML_LOSS),
         "updateLink" => Some(simple_forms::UPDATE_LINK),
         "newWorkspace" => Some(simple_forms::NEW_WORKSPACE),
         "frameSize" => Some(simple_forms::FRAME_SIZE),

@@ -1500,6 +1500,7 @@ pub(crate) fn dialog_title(app: &DesignApp, d: &Dialog) -> String {
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
+        "idmlLoss" => crate::i18n::tr(&app.ui.language, "Save as IDML"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
         "parentOptions" => crate::i18n::tr(&app.ui.language, "Parent Options"),
@@ -1791,6 +1792,11 @@ pub fn cancel(app: &mut DesignApp) {
         }
     }
     app.cancel_pdf_import();
+    if d.as_ref().is_some_and(|d| d.id == "idmlLoss")
+        && let Err(e) = crate::menus::answer_idml_loss(app, crate::menus::LossyAnswer::Cancel)
+    {
+        app.status(e);
+    }
     if let Some(d) = d
         && d.id == "preferences"
     {
@@ -2441,6 +2447,10 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
                 prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
             }
+            // Save documents as (File Handling): only a format the dialog shows.
+            if let Some(format) = Some(d.s("saveFormat")).filter(|f| f == "designcraft" || f == "idml") {
+                prefs["saveFormat"] = json!(format);
+            }
             // No document open: the Units & Increments new documents start with, saved with the
             // rest in one `prefs.set` (which checks everything before it changes anything). A value
             // that doesn't read, or that it refuses, keeps the dialog open to be fixed, with no
@@ -2603,6 +2613,16 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
+        "idmlLoss" => {
+            let answer = if d.b("asDesigncraft") { crate::menus::LossyAnswer::SaveAsDesigncraft } else { crate::menus::LossyAnswer::SaveAnyway };
+            if matches!(answer, crate::menus::LossyAnswer::SaveAnyway)
+                && d.b("dontAskAgain")
+                && let Some(uid) = d.fields.get("uid").and_then(Value::as_u64)
+            {
+                app.idml_loss_accepted.insert(uid);
+            }
+            crate::menus::answer_idml_loss(app, answer)
+        }
         "closeDocument" => {
             // The document may have moved in the tab row (or gone) while the dialog was open.
             let uid = d.fields.get("uid").and_then(Value::as_u64);

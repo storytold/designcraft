@@ -394,6 +394,20 @@ fn files(ui: &mut Ui, d: &mut Dialog, lang: &str) {
         number(ui, d, "recentFilesMax", &tr("Number of Recent Items to Display:"), recent, 0, None);
     });
     group(ui, &tr("Links"), |ui| check(ui, d, "linkTextFiles", &tr("Create Links When Placing Text Files")));
+    group(ui, &tr("Saving"), |ui| {
+        choose_text(
+            ui,
+            d,
+            "saveFormat",
+            &tr("Save documents as:"),
+            "designcraft",
+            &[("designcraft", "DesignCraft (.designcraft)"), ("idml", "InDesign Markup (.idml)")],
+            lang,
+        );
+        Text::new(tr("InDesign Markup: new documents are saved as .idml, and an opened .idml file is saved back to itself."))
+            .shade(Shade::Muted)
+            .show(ui);
+    });
 }
 
 fn type_options(ui: &mut Ui, d: &mut Dialog, lang: &str) {
