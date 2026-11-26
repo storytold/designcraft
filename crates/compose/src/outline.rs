@@ -5,6 +5,15 @@ use designcraft_geom::{Affine, BezPath, PathEl, Point};
 
 /// Flattening tolerance (points) for curved frame outlines.
 const TOLERANCE: f64 = 0.1;
+/// How far (points) an outline's edges may be from its bounding box and still be a rectangle.
+const RECT_TOLERANCE: f64 = TOLERANCE;
+/// The same as a fraction of the outline's larger side: a tall frame is a little further off square
+/// before anyone could see it (a chart's axis-label frame 239 pt tall is 0.54 pt off).
+const RECT_RELATIVE_TOLERANCE: f64 = 0.003;
+/// The most a side may be off, as a fraction of the length of its run of edges, however large the
+/// frame: the frame-wide fraction above would let a 600 pt tall frame 17 pt wide take a 1.8 pt
+/// slant (6 degrees) on its bottom side. The one measured frame has 0.54 pt over 16.74 pt (3.2%).
+const RECT_EDGE_SLOPE: f64 = 0.04;
 /// Most edges a flattened outline may have; a larger one is flattened coarser.
 const MAX_EDGES: usize = 4096;
 /// Scanlines sampled across each inset cap above and below a band.
@@ -49,9 +58,33 @@ impl FrameOutline {
             x1 = x1.max(a.x);
             y1 = y1.max(a.y);
         }
-        let eps = 1e-6 * (x1 - x0).abs().max((y1 - y0).abs()).max(1.0);
-        let on_box = |p: Point| (p.x - x0).abs() < eps || (p.x - x1).abs() < eps || (p.y - y0).abs() < eps || (p.y - y1).abs() < eps;
-        let rect = edges.iter().all(|&(a, b)| ((a.x - b.x).abs() < eps || (a.y - b.y).abs() < eps) && on_box(a) && on_box(b));
+        // A rectangle is a path whose every edge lies on the bounding box, to within the flattening
+        // tolerance (or 0.3% of its size): frames made by scripts and plug-ins are often a hundredth of a point off
+        // square, and InDesign composes into such a frame as into its rectangle. Treating it as a
+        // shape instead set every line's band against the slanted edge, and a one-line frame as
+        // tall as its line lost the part of its width the slant cut off. The limits come from two
+        // frames measured against InDesign (0.022 pt off on a 44 pt frame, 0.54 pt off on a 239 pt
+        // one), not from a measured changeover: the 4% of an edge's own length only admits the
+        // second and keeps a steeper slant on a narrow, tall frame a shape.
+        let eps = RECT_TOLERANCE.max(RECT_RELATIVE_TOLERANCE * (x1 - x0).abs().max((y1 - y0).abs()));
+        // Both ends of an edge must lie on the same side of the box: an edge with one end on the
+        // left side and one on the right is not on the box when it runs through the middle, as the
+        // edges of a compound path's inner sub-rectangles do.
+        let on_side = |a: Point, b: Point| {
+            let near = |v: f64, side: f64| (v - side).abs() < eps;
+            (near(a.x, x0) && near(b.x, x0))
+                || (near(a.x, x1) && near(b.x, x1))
+                || (near(a.y, y0) && near(b.y, y0))
+                || (near(a.y, y1) && near(b.y, y1))
+        };
+        // How far a side's ends may differ along its short direction: the frame-wide slack, and no
+        // more than a fraction of the side's own length. Only this slant is held to the length: how
+        // far an edge lies from the box stays at the frame-wide slack, because a straight side with
+        // an extra anchor is stored as shorter edges, which must classify as the side does. The
+        // slant is therefore measured over the whole run of edges that lean the same way, so
+        // anchors on a side cannot each take the absolute allowance on their own.
+        let slant_limit = |length: f64| eps.min(RECT_TOLERANCE.max(RECT_EDGE_SLOPE * length));
+        let rect = edges.iter().all(|&(a, b)| on_side(a, b)) && runs_are_straight(&edges, slant_limit);
         if rect {
             return None;
         }
@@ -177,6 +210,66 @@ fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
     out
 }
 
+/// Whether every run of consecutive edges that lean the same way (each nearer horizontal, or each
+/// nearer vertical) is straight: the run's spread across its direction is under `limit` of the
+/// spread along it. A run is counted whole, including across the start of its closed subpath, and
+/// never crosses into another subpath, whose edges may start where this one ends.
+fn runs_are_straight(edges: &[(Point, Point)], limit: impl Fn(f64) -> f64) -> bool {
+    // An edge with no length leans no way (it closes a path that already ends at its start).
+    let edges: Vec<(Point, Point)> = edges.iter().copied().filter(|(a, b)| a != b).collect();
+    // A subpath ends with the edge that returns to its first point.
+    let mut start = 0;
+    for i in 0..edges.len() {
+        if edges[i].1 == edges[start].0 {
+            if !subpath_runs_are_straight(&edges[start..=i], &limit) {
+                return false;
+            }
+            start = i + 1;
+        }
+    }
+    start == edges.len() || subpath_runs_are_straight(&edges[start..], &limit)
+}
+
+/// [`runs_are_straight`] for the edges of one closed subpath, in order.
+fn subpath_runs_are_straight(edges: &[(Point, Point)], limit: &impl Fn(f64) -> f64) -> bool {
+    let n = edges.len();
+    if n == 0 {
+        return true;
+    }
+    let horizontal = |&(a, b): &(Point, Point)| (a.x - b.x).abs() >= (a.y - b.y).abs();
+    let joins = |i: usize, j: usize| edges[i].1 == edges[j].0 && horizontal(&edges[i]) == horizontal(&edges[j]);
+    // Begin at an edge that does not continue its predecessor, so no run wraps past the start.
+    let Some(first) = (0..n).find(|&i| !joins((i + n - 1) % n, i)) else {
+        return runs_ok(edges.iter(), limit);
+    };
+    let mut start = 0;
+    let ordered: Vec<(Point, Point)> = (0..n).map(|k| edges[(first + k) % n]).collect();
+    for k in 1..=n {
+        if k == n || !joins((first + k - 1) % n, (first + k) % n) {
+            if !runs_ok(ordered[start..k].iter(), limit) {
+                return false;
+            }
+            start = k;
+        }
+    }
+    true
+}
+
+/// Whether one run of edges, taken as a whole, is within its slant limit.
+fn runs_ok<'a>(run: impl Iterator<Item = &'a (Point, Point)>, limit: &impl Fn(f64) -> f64) -> bool {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(a, b) in run {
+        for p in [a, b] {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+    }
+    let (along, across) = ((x1 - x0).max(y1 - y0), (x1 - x0).min(y1 - y0));
+    across < limit(along)
+}
+
 /// The closed subpaths of `bp` as straight edges (each subpath closed back to its start), and
 /// whether flattening stopped at the edge limit.
 fn flatten_closed(bp: &BezPath, tol: f64) -> (Vec<(Point, Point)>, bool) {
@@ -215,4 +308,204 @@ fn flatten_closed(bp: &BezPath, tol: f64) -> (Vec<(Point, Point)>, bool) {
     });
     finish(&mut sub, closed, &mut edges);
     (edges, over)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A quadrilateral 44 wide and about 10 tall whose bottom edge runs from `left` to `right`.
+    fn quad(left: f64, right: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, left));
+        bp.line_to((44.0, right));
+        bp.line_to((44.0, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// Frames made by scripts and plug-ins are often a hundredth of a point off square (a chart's
+    /// label frame has a bottom edge 0.022 pt slanted). InDesign composes into such a frame as
+    /// into its rectangle; as a shape it cut a one-line frame's slot from 44 pt to 28.
+    #[test]
+    fn a_frame_a_hundredth_of_a_point_off_square_is_its_rectangle() {
+        assert!(FrameOutline::new(&quad(9.766, 9.766), 0.0).is_none(), "an exact rectangle");
+        assert!(FrameOutline::new(&quad(9.766, 9.788), 0.0).is_none(), "0.022 pt off square");
+        assert!(FrameOutline::new(&quad(9.766, 9.856), 0.0).is_none(), "0.09 pt off square, within the flattening tolerance");
+    }
+
+    /// The same slack in a tall frame: a chart's axis-label frame, 239 pt tall and 17 pt wide, has a
+    /// bottom edge 0.54 pt slanted. A fraction of the frame's size counts as square too, so the
+    /// seven labels it holds are set as in InDesign instead of being left out of the export.
+    #[test]
+    fn a_tall_frame_a_few_tenths_of_a_point_off_square_is_its_rectangle() {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 238.76));
+        bp.line_to((16.74, 239.3));
+        bp.line_to((16.74, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_none());
+        // Three points off over the same height is a visible slant.
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 238.76));
+        bp.line_to((16.74, 241.76));
+        bp.line_to((16.74, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_some());
+    }
+
+    /// Two stacked rectangles in one path (a compound path) are not one rectangle, whatever the
+    /// slack: the edges between them run through the middle of the bounding box, with each end on
+    /// a different side of it.
+    #[test]
+    fn two_stacked_rectangles_in_one_path_are_a_shape() {
+        let stack = |gap_top: f64| {
+            let mut bp = BezPath::new();
+            for (y0, y1) in [(0.0, 20.0), (gap_top, 238.0)] {
+                bp.move_to((0.0, y0));
+                bp.line_to((0.0, y1));
+                bp.line_to((100.0, y1));
+                bp.line_to((100.0, y0));
+                bp.close_path();
+            }
+            bp
+        };
+        assert!(FrameOutline::new(&stack(218.0), 0.0).is_some(), "198 pt apart");
+        // The edge the review named: from (100, 20.54) to (0, 20), within the slack of the box's height.
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 20.0));
+        bp.line_to((0.0, 238.0));
+        bp.line_to((100.0, 238.0));
+        bp.line_to((100.0, 20.54));
+        bp.close_path();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, 20.0));
+        bp.line_to((100.0, 20.54));
+        bp.line_to((100.0, 0.0));
+        bp.close_path();
+        assert!(FrameOutline::new(&bp, 0.0).is_some(), "an edge through the middle of the box");
+    }
+
+    /// A slant a person can see still makes a shape.
+    #[test]
+    fn a_slanted_frame_is_a_shape() {
+        assert!(FrameOutline::new(&quad(9.0, 10.0), 0.0).is_some(), "1 pt over 44 pt");
+        assert!(FrameOutline::new(&quad(9.0, 9.5), 0.0).is_some(), "0.5 pt over 44 pt");
+    }
+
+    /// A frame `width` wide and `height` tall whose bottom edge runs `slant` lower on its right.
+    fn tall(width: f64, height: f64, slant: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        bp.line_to((width, height + slant));
+        bp.line_to((width, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// The frame-wide slack is 0.3% of the larger side: a slant just under it on a wide, tall frame
+    /// is square, one just over it is a shape.
+    #[test]
+    fn the_frame_wide_slack_is_a_third_of_a_percent_of_the_larger_side() {
+        assert!(FrameOutline::new(&tall(100.0, 239.0, 0.70), 0.0).is_none(), "0.70 pt, under 0.3% of 239 pt");
+        assert!(FrameOutline::new(&tall(100.0, 239.0, 0.75), 0.0).is_some(), "0.75 pt, over 0.3% of 239 pt");
+    }
+
+    /// An edge is also held to a fraction of its own length, so a tall frame does not take a visible
+    /// slant on its short edge: 1.8 pt over 17 pt is 6 degrees, and 0.70 pt over 16.74 pt is within
+    /// the frame-wide slack of a 239 pt frame but steeper than the measured frame's 0.54 pt.
+    #[test]
+    fn a_tall_narrow_frame_does_not_take_a_visible_slant_on_its_short_edge() {
+        assert!(FrameOutline::new(&tall(17.0, 600.0, 1.8), 0.0).is_some(), "1.8 pt over 17 pt on a 600 pt frame");
+        assert!(FrameOutline::new(&tall(16.74, 239.0, 0.70), 0.0).is_some(), "0.70 pt over 16.74 pt on a 239 pt frame");
+        assert!(FrameOutline::new(&tall(16.74, 239.0, 0.54), 0.0).is_none(), "the measured frame: 0.54 pt over 16.74 pt");
+    }
+
+    /// The same frame as [`tall`] with the bottom edge split at `fraction` of its width by an extra
+    /// anchor on the line (stored paths keep such anchors).
+    fn tall_with_anchor(width: f64, height: f64, slant: f64, fraction: f64) -> BezPath {
+        let mut bp = BezPath::new();
+        bp.move_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        bp.line_to((width * fraction, height + slant * fraction));
+        bp.line_to((width, height + slant));
+        bp.line_to((width, 0.0));
+        bp.close_path();
+        bp
+    }
+
+    /// A straight side with an extra anchor on it is the same side: its halves are shorter edges,
+    /// and an edge's length bounds only its slant, not how far it lies from the box. The measured
+    /// frame split at its middle (or anywhere else) is still a rectangle, a steeper slant is still a
+    /// shape however it is split.
+    #[test]
+    fn an_extra_anchor_on_a_side_does_not_change_whether_the_frame_is_a_rectangle() {
+        for fraction in [0.5, 0.25, 0.9] {
+            assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.54, fraction), 0.0).is_none(), "measured frame split at {fraction}");
+            assert!(FrameOutline::new(&tall_with_anchor(16.74, 239.0, 0.70, fraction), 0.0).is_some(), "0.70 pt slant split at {fraction}");
+            assert!(FrameOutline::new(&tall_with_anchor(17.0, 600.0, 1.8, fraction), 0.0).is_some(), "1.8 pt slant on 600 pt split at {fraction}");
+        }
+    }
+
+    /// The same frame as [`tall`] with the bottom edge split into `parts` equal collinear edges, the
+    /// outline starting `skip` anchors along it (a path may begin anywhere on a side).
+    fn tall_split(width: f64, height: f64, slant: f64, parts: usize, skip: usize) -> BezPath {
+        let bottom = |k: usize| {
+            let t = k as f64 / parts as f64;
+            (width * t, height + slant * t)
+        };
+        let mut bp = BezPath::new();
+        bp.move_to(bottom(skip));
+        for k in skip + 1..=parts {
+            bp.line_to(bottom(k));
+        }
+        bp.line_to((width, 0.0));
+        bp.line_to((0.0, 0.0));
+        bp.line_to((0.0, height));
+        for k in 1..=skip {
+            bp.line_to(bottom(k));
+        }
+        bp.close_path();
+        bp
+    }
+
+    /// The allowance for a short edge is not granted again to every piece of a side: a bottom edge
+    /// of the 600 pt frame split into 32 collinear edges has 0.056 pt of slant on each, under the
+    /// 0.1 pt floor, yet 1.8 pt over the whole side. It is the same shape as the unsplit frame,
+    /// wherever the path starts on the side, and the measured frame stays a rectangle split as finely.
+    #[test]
+    fn an_edge_split_into_many_pieces_is_judged_whole() {
+        for skip in [0, 7, 31] {
+            assert!(FrameOutline::new(&tall_split(17.0, 600.0, 1.8, 32, skip), 0.0).is_some(), "1.8 pt over 17 pt in 32 pieces, starting at {skip}");
+            assert!(
+                FrameOutline::new(&tall_split(16.74, 239.0, 0.70, 32, skip), 0.0).is_some(),
+                "0.70 pt over 16.74 pt in 32 pieces, starting at {skip}"
+            );
+            assert!(
+                FrameOutline::new(&tall_split(16.74, 239.0, 0.54, 32, skip), 0.0).is_none(),
+                "the measured frame in 32 pieces, starting at {skip}"
+            );
+        }
+    }
+
+    /// Two subpaths whose edges meet at a point are not one run: A's last edge ends where B's first
+    /// begins, and joined they would spread 0.69 pt, over the 0.64 pt limit, though each subpath is
+    /// 0.34 pt off square on its own and B lies inside A.
+    #[test]
+    fn two_touching_subpaths_are_judged_apart() {
+        let mut bp = BezPath::new();
+        for y in [256.34375, 255.65625] {
+            bp.move_to((8.0, 256.0));
+            bp.line_to((16.0, y));
+            bp.line_to((16.0, 0.0));
+            bp.line_to((0.0, 0.0));
+            bp.line_to((0.0, y));
+            bp.close_path();
+        }
+        assert!(FrameOutline::new(&bp, 0.0).is_none());
+    }
 }
