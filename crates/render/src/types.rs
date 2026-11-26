@@ -38,6 +38,9 @@ pub struct RenderOptions {
     pub page_shadow: bool,
     /// Pink highlight behind text set in fonts that aren't installed (screen view).
     pub highlight_missing_fonts: bool,
+    /// A grey box with a cross where a placed graphic can't be drawn (no data, missing, not
+    /// decodable), covering what's behind it as the graphic would (screen view).
+    pub missing_graphics: bool,
     /// Preferences › Composition: yellow behind lines whose word spacing breaks the paragraph's
     /// limits (darker = worse), green behind text with custom tracking or kerning (screen view).
     pub highlight_hj: bool,
