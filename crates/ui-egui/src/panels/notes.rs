@@ -900,6 +900,6 @@ mod draft_composition_tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_tests;

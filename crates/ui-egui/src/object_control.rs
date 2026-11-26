@@ -939,6 +939,6 @@ mod auto_fit_workflow_tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_tests;

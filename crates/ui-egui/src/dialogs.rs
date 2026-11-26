@@ -25,17 +25,17 @@ pub(crate) mod paragraph_forms;
 mod preferences;
 mod special_forms;
 mod style_cjk;
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_dialog_tests;
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_find_tests;
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_pending_tests;
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_tests;
 mod table_forms;
 #[cfg(test)]

@@ -377,8 +377,8 @@ mod framework {
     }
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod installed_action_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
@@ -794,8 +794,8 @@ mod installed_action_tests {
 }
 
 // TABLE_STYLE_TESTS_BEGIN
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod style_control_tests {
     use super::*;
     use crate::theme::Tokens;

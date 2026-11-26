@@ -301,16 +301,16 @@ pub(crate) fn load_active_set(app: &mut DesignApp) {
 }
 
 /// The English strings the dialog looks up: every word of its word table and both forms of its counts.
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 pub(crate) fn strings() -> impl Iterator<Item = &'static str> {
     use craft_menu::shortcuts::ShortcutWords;
     use craft_ui_widgets::runtime::env::WordSet as _;
     ShortcutWords::WORDS.iter().map(|word| word.english).chain(ShortcutWords::COUNTS.iter().flat_map(|count| [count.one, count.word.english]))
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use craft_keymap::CommandRef;

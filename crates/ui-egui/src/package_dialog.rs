@@ -583,8 +583,8 @@ mod tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod framework_tests {
     use super::*;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
@@ -1284,6 +1284,6 @@ mod framework_tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 mod successor_tests;
