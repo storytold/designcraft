@@ -2757,9 +2757,12 @@ fn right_indent_tab_leaders_use_the_tab_format_and_regular_tab_drawing() {
         assert_eq!(cs.styles[tab.style as usize].fill_tint, 0.4);
         let leaders: Vec<_> = line.glyphs.iter().filter(|g| g.visible && g.len == 0).collect();
         assert!(leaders.len() > 10);
-        assert_eq!(leaders.len() % 2, 0, "only complete patterns are drawn");
+        // The pattern may start or end part way (a glyph is set wherever it fits), so the first
+        // glyph is either of the two.
+        let dot = tab.face.get().glyph_for('.');
+        let first_is_dot = leaders[0].gid == dot;
         for (i, g) in leaders.iter().enumerate() {
-            assert_eq!(g.gid, tab.face.get().glyph_for(if i % 2 == 0 { '.' } else { '-' }));
+            assert_eq!(g.gid, tab.face.get().glyph_for(if (i % 2 == 0) == first_is_dot { '.' } else { '-' }));
             assert_eq!(g.face.id(), tab.face.id());
             assert_eq!((g.sx, g.sy, g.y, g.style, g.byte), (tab.sx, tab.sy, -4.0, tab.style, tab.byte));
             let width = g.face.get().advance(g.gid) * g.sx;
@@ -2768,6 +2771,88 @@ fn right_indent_tab_leaders_use_the_tab_format_and_regular_tab_drawing() {
         rendered.push(leaders.iter().map(|g| (g.gid, g.x, g.y, g.sx, g.sy, g.style)).collect::<Vec<_>>());
     }
     assert_eq!(rendered[0], rendered[1], "right-indent and equivalent regular right tabs use the same leader drawing");
+}
+
+/// The leader glyphs `(index in the leader, x, advance)` of the line "A⇥12" with a right tab at
+/// `position`, the advances of the leader's characters and the tab's gap (start, end).
+fn leader_run(leader: &str, position: f64) -> (Vec<(usize, f64)>, Vec<f64>, f64, f64) {
+    let para = ParaAttrs {
+        tabs: Some(vec![designcraft_doc::TabStop { position, align: TabAlign::Right, leader: leader.into(), align_on: String::new() }]),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("A\t12", Rect::new(0.0, 0.0, 300.0, 100.0), para);
+    let cs = compose_story(&d, sid, &Default::default());
+    let line = &cs.frames[0].lines[0];
+    let tab = line.glyphs.iter().find(|g| g.byte == 1 && g.len > 0).unwrap();
+    let chars: Vec<char> = leader.chars().collect();
+    let face = tab.face.get();
+    let advances = chars.iter().map(|&c| face.advance(face.glyph_for(c)) * tab.sx).collect();
+    let set = line
+        .glyphs
+        .iter()
+        .filter(|g| g.visible && g.len == 0)
+        .map(|g| (chars.iter().position(|&c| face.glyph_for(c) == g.gid).unwrap(), g.x))
+        .collect();
+    (set, advances, tab.x, tab.x + tab.adv)
+}
+
+#[test]
+fn a_leader_pattern_cut_by_the_gap_keeps_the_glyphs_that_fit() {
+    // As measured in InDesign 2026 (Georgia 10 pt, leaders ". ", ".-", "* ", gap end moved in
+    // quarter-point steps): leader glyphs sit on the grid of whole repeats and each is set when it
+    // fits the gap, to within a tenth of a point, so a repeat cut by either end of the gap keeps
+    // the glyphs inside it.
+    for leader in [".-", ". ", "* "] {
+        for step in 0..32 {
+            let (set, adv, start, end) = leader_run(leader, 150.0 + f64::from(step) * 0.25);
+            let n = adv.len();
+            assert!(!set.is_empty(), "{leader:?} at step {step}");
+            for &(k, x) in &set {
+                assert!(
+                    x >= start - 0.01 && x + adv[k] <= end + LEADER_FIT_TOLERANCE + 1e-6,
+                    "{leader:?} step {step}: glyph {k} at {x} outside {start}..{end}"
+                );
+            }
+            for w in set.windows(2) {
+                assert_eq!(w[1].0, (w[0].0 + 1) % n, "{leader:?} step {step}: pattern order");
+                assert!((w[1].1 - (w[0].1 + adv[w[0].0])).abs() < 1e-6, "{leader:?} step {step}: pattern spacing");
+            }
+            // Order and spacing hold when every glyph shifts by the same amount, so also pin the
+            // grid itself: glyph k sits a whole number of repeats from the tab origin (the frame's
+            // left edge here) plus the advances of the glyphs before it in the repeat, which is what
+            // lines each leader up with the one above and below.
+            let repeat: f64 = adv.iter().sum();
+            for &(k, x) in &set {
+                let repeats = (x - adv[..k].iter().sum::<f64>()) / repeat;
+                assert!((repeats - repeats.round()).abs() * repeat < 1e-6, "{leader:?} step {step}: glyph {k} at {x} is off the grid of repeats");
+            }
+            // Nothing more fits at either end.
+            let &(k, x) = set.last().unwrap();
+            let next = (k + 1) % n;
+            assert!(x + adv[k] + adv[next] > end + LEADER_FIT_TOLERANCE - 1e-6, "{leader:?} step {step}: a glyph still fits at the end");
+            let &(k, x) = set.first().unwrap();
+            let before = (k + n - 1) % n;
+            assert!(x - adv[before] < start - 0.01 + 1e-6, "{leader:?} step {step}: a glyph still fits at the start");
+        }
+    }
+}
+
+#[test]
+fn a_one_glyph_leader_is_set_when_it_overshoots_the_gap_end_by_up_to_the_tolerance() {
+    // InDesign sets a single dot, dash or underscore that reaches 0.1 pt past the gap end as well
+    // (its leader frames matched with that tolerance, not with a hundredth of a point). The glyph
+    // that exactly fits stays; one a few hundredths over stays; one well over goes.
+    for leader in [".", "-", "_"] {
+        let (set, adv, _, end) = leader_run(leader, 200.0);
+        let &(k, x) = set.last().unwrap();
+        // Move the gap end to just touch the last glyph's end: the glyph that fits exactly.
+        let over = x + adv[k] - end;
+        let at = |overshoot: f64| leader_run(leader, 200.0 + over - overshoot).0.len();
+        let exact = at(0.0);
+        assert_eq!(exact, set.len(), "{leader:?}: a glyph that fits exactly is set");
+        assert_eq!(at(0.05), exact, "{leader:?}: a glyph 0.05 pt past the end is set");
+        assert_eq!(at(0.15), exact - 1, "{leader:?}: a glyph 0.15 pt past the end is not");
+    }
 }
 
 #[test]
