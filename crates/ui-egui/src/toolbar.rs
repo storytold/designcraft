@@ -149,6 +149,7 @@ mod framework {
     use super::{VIEW_OPTIONS, transform_dialog_of};
     use crate::DesignApp;
     use crate::framework_transform::{self as kit, Artwork, MenuRow};
+    use crate::theme::Tokens;
     use craft_behavior::Mixed;
     use craft_color_ui::ui::{Paint, PairWell, SwatchPair, Well};
     use craft_theme::{ControlSize, Srgba};
@@ -254,7 +255,11 @@ mod framework {
                 // laid out one.
                 let separator = ui.style().visuals.widgets.noninteractive.bg_stroke.width.round();
                 let width = grid(cols).width(cols as u16) + separator;
-                egui::Panel::left("tools").exact_size(width).resizable(false).frame(egui::Frame::NONE).show(ui, |ui| {
+                // The panel is filled and edged as main's were: without a frame the window's background showed through the
+                // rail as a black strip, with the tools touching the window's edge.
+                let t = Tokens::get(ui.ctx());
+                let frame = egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.divider));
+                egui::Panel::left("tools").exact_size(width).resizable(false).frame(frame).show(ui, |ui| {
                     Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                         let icon = if cols == 1 { "double-chevron-right" } else { "double-chevron-left" };
                         let label = tr("Toggle double column");

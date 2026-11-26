@@ -58,6 +58,12 @@ mod framework {
             })
             .collect();
         let selected = active.and_then(|i| docs.get(i)).map(|d| d.0);
+        // The strip's bar: main filled it with the tab-strip colour and ruled its bottom edge; without it the tabs float
+        // over the window's background.
+        let tokens = crate::theme::Tokens::get(ui.ctx());
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 0.0, tokens.tab_strip);
+        ui.painter().line_segment([bar.left_bottom(), bar.right_bottom()], egui::Stroke::new(1.0, tokens.border));
         let mut strip = DocumentTabs::new(tr("Documents"), &tabs);
         if let Some(uid) = selected {
             strip = strip.selected(uid);

@@ -182,26 +182,36 @@ mod framework {
                 }
                 Text::new(tr("Start a new document")).role(TypeRole::BodyStrong).sizing(Sizing::FillWidth).show(ui);
                 Row::new().id_salt("start_presets").wrap(true).show(ui, |ui, _| {
+                    // A page tile: the panel colour behind a white page, the preset's name and size under it, and no
+                    // control chrome (as main draws them).
+                    let panel = Tokens::get(ui.ctx());
                     for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
-                        let aspect = ThumbAspect::new(p.width.round().clamp(1.0, 60000.0) as u16, p.height.round().clamp(1.0, 60000.0) as u16);
+                        let (cr, resp) = ui.allocate_exact_size(egui::vec2(120.0, 150.0), egui::Sense::click());
+                        ui.painter().rect_filled(cr, 6.0, if resp.hovered() { panel.hover } else { panel.panel });
+                        let k = (80.0 / p.width.max(p.height)) as f32;
+                        let page =
+                            egui::Rect::from_center_size(cr.center() - egui::vec2(0.0, 14.0), egui::vec2(p.width as f32 * k, p.height as f32 * k));
+                        ui.painter().rect_filled(page, 0.0, egui::Color32::from_gray(245));
+                        ui.painter().text(
+                            egui::pos2(cr.center().x, cr.max.y - 26.0),
+                            egui::Align2::CENTER_CENTER,
+                            p.name,
+                            crate::theme::semibold(12.0),
+                            panel.text_strong,
+                        );
                         let size = format!(
                             "{} × {}",
                             designcraft_geom::format_measure(p.width, p.units),
                             designcraft_geom::format_measure(p.height, p.units)
                         );
-                        let card = Button::new(p.name.to_owned())
-                            .id_salt(("start_preset", p.name))
-                            .tooltip(size)
-                            .arrangement(Arrangement::Stacked)
-                            .picture(
-                                aspect,
-                                Picture::painter("", aspect, move |cx, rect| {
-                                    cx.painter.rect_filled(rect, 0.0, egui::Color32::from_gray(245));
-                                })
-                                .extent(PictureSize::Thumb(ThumbSize::Large)),
-                            )
-                            .show(ui);
-                        if card.clicked() {
+                        ui.painter().text(
+                            egui::pos2(cr.center().x, cr.max.y - 11.0),
+                            egui::Align2::CENTER_CENTER,
+                            size,
+                            egui::FontId::proportional(10.0),
+                            panel.text_dim,
+                        );
+                        if resp.clicked() {
                             asks.push(Ask::Preset(p.name));
                         }
                     }
