@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-04 · **Change:** minor (the overset rule matches InDesign: the last line's baseline must fit (#180); German 2006 hyphenation; Optical Margin Alignment per story with a size in the Story panel, and Ignore Optical Margin in the Paragraph panel menu and paragraph styles, kept through IDML (#947); Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -45,7 +45,7 @@ Fidelity: **unmeasured** unless stated.
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
-| Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
+| Frame fit / overset | baseline of the last line must fit | baseline of the last line must fit | ✓ | same (#180) for rectangular horizontal frames; shaped and vertical frames, frames with footnotes and lines with inline or above-line anchored objects still need the descenders to fit |
 | Baseline grid | document grid relative to the top of the page or each page's top margin; frame grids relative to the top of the page, top margin, top of frame or top inset | ✓ | ✓ | |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | with Center and Bottom, lines aligned to the baseline grid move by whole grid steps; with Justify only the first and last lines stay on the grid |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |
@@ -70,7 +70,7 @@ Fidelity: **unmeasured** unless stated.
 | Installed fonts | every activated font, picked up as installed or changed | system font folders; on macOS also fonts that font managers and Adobe Fonts activate; user folders not always found; fonts installed, edited or removed while running found by Type › Reload Fonts, not automatically | ~ | #161, #110, #107, #327, #261, #328 |
 | Composition highlights | H&J, keeps, custom tracking/kerning, substituted fonts | ✓ | ✓ | |
 
-Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scoring ✓ = 1 and ~ = 0.5:
+Measured from the table above (2026-10-29): 37 rows, 19 ✓, 18 ~, 0 ✗, scoring ✓ = 1 and ~ = 0.5:
 **76%**. Every row exists in some form; the ~ rows are where InDesign users will see a difference.
 
 ## Remaining effort
@@ -79,7 +79,7 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 |---|---|
 | Oracle harness (synthetic stories, IDML exchange, comparison metric) | 20–30 |
 | Optical kerning tuning against InDesign (measured pairs per class, once the oracle harness exists) | 5–10 |
-| Overset rule (baseline fits) and frame-fit parity | 5–10 |
+| Frame-fit parity beyond the overset rule (which matches InDesign since #180) | 2–5 |
 | Fixing composer differences the harness finds (weights, penalties, glyph-scaling order) | 40–70 |
 | Hyphenation patterns for the top 15 InDesign languages (permissive sources) | 20–35 |
 | Spelling dictionaries beyond English (licence review per language) | 10–20 (+ owner review) |
@@ -92,3 +92,4 @@ Measured from the table above (2026-10-10): 34 rows, 18 ✓, 16 ~, 0 ✗, scorin
 |---|---|---|
 | 2026-10-10 | major | Created: typography checklist (34 rows), fidelity gap and oracle plan |
 | 2026-10-10 | minor | Text wrap: wrap sides and contour types |
+| 2026-11-04 | minor | Frame fit: the last line's baseline must fit, as in InDesign (#180); checklist recount |
