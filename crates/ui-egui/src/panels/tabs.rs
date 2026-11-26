@@ -3,6 +3,8 @@
 
 use designcraft_doc::{TabAlign, TabStop};
 use designcraft_geom::{Point, Unit};
+#[cfg(test)]
+use egui::vec2;
 use egui::{Color32, Pos2, Rect, Ui, pos2};
 use serde_json::{Value, json};
 

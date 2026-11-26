@@ -2,13 +2,18 @@
 
 use designcraft_doc::Align;
 use designcraft_geom::Unit;
-use egui::{Sense, Stroke, vec2};
+#[cfg(test)]
+use egui::vec2;
+use egui::{Sense, Stroke};
 use serde_json::json;
 
+use crate::DesignApp;
+#[cfg(test)]
+use crate::icons;
 use crate::panels;
 use crate::theme::Tokens;
+#[cfg(test)]
 use crate::widgets::NumField;
-use crate::{DesignApp, icons};
 
 mod app_bar;
 mod control_bar;
