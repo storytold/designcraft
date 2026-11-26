@@ -29,7 +29,7 @@ fn units_reformat_the_measures_and_linked_edges_follow() {
     link_edges(&mut d, "margin", "marginInside");
     assert!(EDGES.iter().all(|e| d.s(&format!("margin{e}")) == "20 mm"));
     let p = params(&d);
-    assert!((p["margins"]["outside"].as_f64().unwrap() - 20.0 * PT_PER_MM).abs() < 1e-9);
+    assert!((p["margins"]["outside"].as_f64().unwrap() - 20.0 * designcraft_geom::units::PT_PER_MM).abs() < 1e-9);
     // Typed nonsense falls back to the defaults instead of reaching the document.
     d.fields.insert("gutter".into(), json!("wide"));
     d.fields.insert("pages".into(), json!("-4"));
@@ -54,7 +54,7 @@ fn window_with_preset_popup() -> egui_kittest::Harness<'static, DesignApp> {
 /// (`{name}, {details}`), not the details' text of the same words.
 fn card_at(h: &egui_kittest::Harness<'_, DesignApp>, name: &str) -> egui::Pos2 {
     use egui::accesskit::Role;
-    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    use egui_kittest::kittest::Queryable as _;
     let joined = format!("{name}, ");
     h.query_all_by(|node| {
         !matches!(node.role(), Role::Label | Role::Tab) && node.label().is_some_and(|label| label == name || label.starts_with(&joined))

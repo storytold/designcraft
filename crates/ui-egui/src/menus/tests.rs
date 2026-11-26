@@ -195,7 +195,7 @@ fn walk(items: &[Item], out: &mut Vec<(String, String, Value)>) {
     }
 }
 
-/// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
+// Exercise the real dropdown, including clipping and wheel input, on a short viewport.
 // The menus are the craft framework's: a test finds a title or a row by what the AccessKit tree calls it (a title is a
 // `MenuItem` in the `MenuBar`, a row a `MenuItem`, `MenuItemCheckBox` or `MenuItemRadio` in a `Menu`), on a context with
 // the framework's runtime, which the menus' layers need.

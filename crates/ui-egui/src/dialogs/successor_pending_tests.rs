@@ -74,7 +74,7 @@ fn justification_form_sets_auto_leading_and_single_word_justification() {
     assert!(h.state().ui.dialog.is_none());
     assert_eq!(kit::undo_steps(&h), before + 1, "one undo step");
     let story_value = json!(story);
-    let mut both = |h: &mut egui_kittest::Harness<'static, DesignApp>, story: &Value, at: usize| {
+    let both = |h: &mut egui_kittest::Harness<'static, DesignApp>, story: &Value, at: usize| {
         let story = story.as_u64().unwrap();
         (kit::para_attr(h, story, at, "autoLeading"), kit::para_attr(h, story, at, "singleWordJustify"))
     };

@@ -1113,7 +1113,7 @@ mod tests {
 mod framework_tests {
     use egui::{Event, Key, Modifiers, PointerButton, vec2};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::{NodeT as _, Queryable};
+    use egui_kittest::kittest::Queryable;
     use serde_json::{Value, json};
 
     use crate::DesignApp;

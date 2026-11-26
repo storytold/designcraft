@@ -2,7 +2,6 @@
 //! window whose context has the craft UI runtime installed and the app's framework flag on, so the panel draws its framework
 //! body. The old tests stay until each one is deleted with its native body.
 
-use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
 use super::*;

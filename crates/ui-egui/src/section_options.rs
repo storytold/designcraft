@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn framework_number_drafts_choose_explicit_modes_before_blur_and_apply_atomically() {
         use craft_ui_widgets::runtime::inspect::{Recorded, record};
-        use egui::{Event, Key, Modifiers, PointerButton};
+        use egui::{Event, Key, Modifiers, PointerButton, vec2};
         use egui_kittest::Harness;
         use std::sync::Arc;
 
@@ -1048,7 +1048,7 @@ mod tests {
         assert_quiet(&h, &canceled);
     }
 
-    use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
+    use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
     use egui_kittest::{
         Harness,
         kittest::{NodeT, Queryable},
@@ -1075,7 +1075,7 @@ mod tests {
             move |ui, app: &mut DesignApp| {
                 if !ready {
                     crate::theme::install_fonts(ui.ctx(), &app.ui.language);
-                    crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                    crate::theme::apply(ui.ctx(), &crate::theme::Tokens::for_brightness(Default::default()));
                     ready = true;
                     return;
                 }

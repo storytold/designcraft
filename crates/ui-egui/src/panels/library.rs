@@ -712,10 +712,7 @@ mod book_workflow_tests {
     use crate::app::file_dialogs::testing::answer_with;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use egui::{Event, Key, Modifiers, PointerButton, UiBuilder, vec2};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
     use std::{collections::HashSet, sync::Arc};
 
     struct Rig {

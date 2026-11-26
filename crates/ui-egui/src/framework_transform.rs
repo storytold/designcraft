@@ -11,7 +11,7 @@
 //! updates are not applied, so the document does not move while a value is being typed.
 //!
 //! The framework's runtime must be installed on the context once, outside a pass, before its first one
-//! ([`install`], called from the shell's creation context).
+//! ([`install_with`], called from the shell's creation context).
 
 use crate::DesignApp;
 use crate::panels::SelInfo;
@@ -26,7 +26,7 @@ use craft_ui_widgets::pickers::Select;
 use craft_ui_widgets::primitives::{Glyph, IconSpec};
 use craft_ui_widgets::runtime::env::{LengthUnits, UnitKind};
 use craft_ui_widgets::style::UiTokens;
-use craft_ui_widgets::style::{TypeRole, Variant};
+use craft_ui_widgets::style::Variant;
 use craft_ui_widgets::text::{NumberField, NumberPick, StepArrows, TextField};
 use designcraft_geom::Unit;
 use designcraft_geom::units::{format_measure, parse_measure};
@@ -39,6 +39,7 @@ use std::ops::RangeInclusive;
 /// It refuses to install inside a pass ([`craft_ui_widgets::InstallError::DuringPass`]), so a host calls this
 /// where it made the context: the desktop shell's eframe creation context, or a test's own context. A
 /// second call on the same context is not an error.
+#[cfg(test)]
 pub(crate) fn install(ctx: &egui::Context) {
     install_with(ctx, craft_host::target::WindowChrome::Native);
 }
@@ -605,11 +606,6 @@ pub(crate) fn caption(ui: &mut egui::Ui, at: Option<Rect>, text: &str) {
         Some(at) => text.show_at(ui, at),
         None => text.show(ui),
     };
-}
-
-/// A section heading in a strong caption, as the panels and dialogs title a group of rows.
-pub(crate) fn heading(ui: &mut egui::Ui, text: &str) {
-    Text::new(text.to_owned()).role(TypeRole::BodyStrong).show(ui);
 }
 
 /// A menu row: its label, whether it shows checked (`None` for a command row), and whether it can run.

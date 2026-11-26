@@ -1,26 +1,17 @@
-//! Tabs panel (Type › Tabs) and the tab ruler it shares with Paragraph Style Options › Tabs.
-//!
-//! The ruler measures from the left edge of the text column, like composition. Click the strip
-//! above the scale to add a stop, drag a stop to move it, drag it off the ruler to delete it; the
-//! triangles on the scale are the first-line (top), left and right (bottom) indents.
+//! Tabs panel (Type › Tabs), and the stop, alignment and glyph pieces its ruler page in Paragraph Style Options › Tabs
+//! shares (`dialogs::tab_forms` draws that page's ruler, from the left edge of the text column as composition does).
 
 use designcraft_doc::{TabAlign, TabStop};
-use designcraft_engine::cmd::tabs::MAX_POSITION;
 use designcraft_geom::{Point, Unit};
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Ui, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
-use crate::theme::Tokens;
 
-/// Ruler height, the tab strip at its top and the inset of position 0 from its left edge.
-const H: f32 = 40.0;
-const STRIP: f32 = 15.0;
+/// The inset of position 0 from the ruler's left edge.
 pub(crate) const PAD: f32 = 10.0;
 /// The narrowest the panel gets when it moves over a frame (its controls fit on one row).
 const MIN_WIDTH: f32 = 560.0;
-/// How far off the ruler a dragged stop has to go to be deleted.
-const OFF: f32 = 24.0;
 
 /// The Tabs panel's own state (the stops themselves live in the document).
 #[derive(Clone, Debug, Default)]
@@ -36,20 +27,6 @@ pub struct PanelState {
     pub place: Option<(Pos2, f32)>,
 }
 
-/// What a ruler shows.
-pub(crate) struct Ruler<'a> {
-    pub tabs: &'a [TabStop],
-    pub left: f64,
-    pub first: f64,
-    pub right: f64,
-    /// Column width in points.
-    pub width: f64,
-    pub unit: Unit,
-    pub selected: Option<usize>,
-    /// Points to pixels; `None` fits the column into the available width.
-    pub scale: Option<f32>,
-}
-
 /// An edit made on the ruler.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RulerEdit {
@@ -59,21 +36,6 @@ pub(crate) enum RulerEdit {
     Remove(usize),
     /// `leftIndent`, `firstLineIndent` or `rightIndent` and its new value.
     Indent(&'static str, f64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Grab {
-    Tab(usize),
-    New,
-    Indent(&'static str),
-}
-
-/// A drag in progress: what, where (points) and whether it is off the ruler.
-#[derive(Clone, Copy, Debug)]
-struct Drag {
-    grab: Grab,
-    pos: f64,
-    off: bool,
 }
 
 pub(crate) fn tab_icon(a: TabAlign) -> &'static str {
@@ -92,191 +54,6 @@ pub(crate) const ALIGNS: [(TabAlign, &str); 4] = [
     (TabAlign::Right, "Right-aligned tab"),
     (TabAlign::Char, "Tab aligned on a character"),
 ];
-
-/// Draw the ruler and report the edit the pointer made.
-pub(crate) fn ruler(ui: &mut Ui, salt: &str, r: &Ruler) -> Option<RulerEdit> {
-    let t = Tokens::get(ui.ctx());
-    let width_pt = if r.width.is_finite() && r.width > 1.0 { r.width.min(MAX_POSITION) } else { 468.0 };
-    let w = ui.available_width().max(120.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, H), Sense::click_and_drag());
-    let scale = r.scale.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(((w - 2.0 * PAD) / width_pt as f32).max(0.01));
-    let x0 = rect.min.x + PAD;
-    let to_x = |pt: f64| x0 + pt as f32 * scale;
-    let to_pt = |x: f32| (((x - x0) / scale) as f64 * 2.0).round() / 2.0;
-    let strip = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + STRIP));
-    let bar = Rect::from_min_max(pos2(rect.min.x, strip.max.y), rect.max);
-
-    let hit = |p: Pos2| -> Option<Grab> {
-        if bar.contains(p) {
-            let near = |pt: f64| (p.x - to_x(pt)).abs() <= 6.0;
-            if p.y <= bar.min.y + 10.0 && near(r.left + r.first) {
-                return Some(Grab::Indent("firstLineIndent"));
-            }
-            if p.y >= bar.max.y - 10.0 {
-                if near(r.left) {
-                    return Some(Grab::Indent("leftIndent"));
-                }
-                if near(width_pt - r.right) {
-                    return Some(Grab::Indent("rightIndent"));
-                }
-            }
-            return None;
-        }
-        if !strip.expand2(vec2(0.0, 2.0)).contains(p) {
-            return None;
-        }
-        let nearest =
-            r.tabs.iter().enumerate().map(|(i, s)| (i, (to_x(s.position) - p.x).abs())).filter(|(_, d)| *d <= 6.0).min_by(|a, b| a.1.total_cmp(&b.1));
-        Some(nearest.map_or(Grab::New, |(i, _)| Grab::Tab(i)))
-    };
-
-    let key = ui.scope_id().with(("tab_ruler", salt));
-    let mut drag: Option<Drag> = ui.data(|d| d.get_temp(key));
-    let mut edit = None;
-    if resp.drag_started()
-        && let Some(p) = ui.input(|i| i.pointer.press_origin())
-        && let Some(grab) = hit(p)
-    {
-        drag = Some(Drag { grab, pos: to_pt(p.x).clamp(0.0, MAX_POSITION), off: false });
-        if let Grab::Tab(i) = grab {
-            edit = Some(RulerEdit::Select(i));
-        }
-    }
-    if resp.dragged()
-        && let (Some(d), Some(p)) = (drag.as_mut(), resp.interact_pointer_pos())
-    {
-        d.pos = to_pt(p.x).clamp(0.0, width_pt.max(0.0));
-        d.off = matches!(d.grab, Grab::Tab(_)) && (p.y < rect.min.y - OFF || p.y > rect.max.y + OFF);
-    }
-    if resp.drag_stopped()
-        && let Some(d) = drag.take()
-    {
-        edit = Some(match d.grab {
-            Grab::Tab(i) if d.off => RulerEdit::Remove(i),
-            Grab::Tab(i) => RulerEdit::Move(i, d.pos),
-            Grab::New => RulerEdit::Add(d.pos),
-            Grab::Indent("firstLineIndent") => RulerEdit::Indent("firstLineIndent", d.pos - r.left),
-            Grab::Indent("rightIndent") => RulerEdit::Indent("rightIndent", (width_pt - d.pos).max(0.0)),
-            Grab::Indent(k) => RulerEdit::Indent(k, d.pos),
-        });
-    }
-    if resp.clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        match hit(p) {
-            Some(Grab::Tab(i)) => edit = Some(RulerEdit::Select(i)),
-            Some(Grab::New) => edit = Some(RulerEdit::Add(to_pt(p.x).clamp(0.0, width_pt.max(0.0)))),
-            _ => {}
-        }
-    }
-    ui.data_mut(|d| match drag {
-        Some(v) => {
-            d.insert_temp(key, v);
-        }
-        None => d.remove::<Drag>(key),
-    });
-
-    // Paint: the strip, the scale with ticks in document units, the area past the column.
-    let p = ui.painter_at(rect.expand(1.0));
-    p.rect_filled(strip, 0.0, t.panel_darker);
-    p.rect_filled(bar, 0.0, t.ruler);
-    let end = to_x(width_pt);
-    if end < rect.max.x {
-        p.rect_filled(Rect::from_min_max(pos2(end, rect.min.y), rect.max), 0.0, t.input.gamma_multiply(0.7));
-    }
-    p.line_segment([pos2(x0, strip.min.y), pos2(x0, rect.max.y)], Stroke::new(1.0, t.ruler_tick));
-    p.line_segment([pos2(end, strip.min.y), pos2(end, rect.max.y)], Stroke::new(1.0, t.ruler_tick));
-    let (major, sub) = r.unit.ruler_ticks(scale as f64);
-    let font = egui::FontId::proportional(9.0);
-    let tick = Stroke::new(1.0, t.ruler_tick);
-    let mut k = 0u32;
-    while major > 0.0 && k < 2000 {
-        let m = k as f64 * major;
-        if to_x(m) > rect.max.x {
-            break;
-        }
-        for s in 0..sub.max(1) {
-            let x = to_x(m + major * s as f64 / sub.max(1) as f64);
-            if x > rect.max.x {
-                break;
-            }
-            let len = if s == 0 {
-                bar.height() - 4.0
-            } else if sub % 2 == 0 && s == sub / 2 {
-                7.0
-            } else {
-                4.0
-            };
-            p.line_segment([pos2(x, bar.max.y - len), pos2(x, bar.max.y)], tick);
-        }
-        p.text(pos2(to_x(m) + 2.0, bar.min.y + 1.0), egui::Align2::LEFT_TOP, crate::canvas::fmt_tick(r.unit.from_pt(m)), font.clone(), t.ruler_text);
-        k += 1;
-    }
-    // Indent markers (a dragged one follows the pointer; the first line follows the left indent).
-    let (mut left, mut first_abs, mut right_x) = (r.left, r.left + r.first, width_pt - r.right);
-    if let Some(Drag { grab: Grab::Indent(which), pos, .. }) = drag {
-        match which {
-            "leftIndent" => {
-                first_abs = pos + r.first;
-                left = pos;
-            }
-            "firstLineIndent" => first_abs = pos,
-            _ => right_x = pos,
-        }
-    }
-    let ink = t.text_strong;
-    let tri = |x: f32, down: bool, c: Color32| {
-        let (y0, y1) = if down { (bar.min.y, bar.min.y + 7.0) } else { (bar.max.y, bar.max.y - 7.0) };
-        p.add(egui::Shape::convex_polygon(vec![pos2(x - 5.0, y0), pos2(x + 5.0, y0), pos2(x, y1)], c, Stroke::new(1.0, t.panel_darker)));
-    };
-    tri(to_x(first_abs), true, ink);
-    tri(to_x(left), false, ink);
-    tri(to_x(right_x), false, ink);
-    // Tab stops.
-    for (i, s) in r.tabs.iter().enumerate() {
-        let dragging = drag.filter(|d| d.grab == Grab::Tab(i));
-        if dragging.is_some_and(|d| d.off) {
-            continue;
-        }
-        let x = to_x(dragging.map_or(s.position, |d| d.pos));
-        let mark = Rect::from_center_size(pos2(x, strip.max.y - 6.0), vec2(14.0, 14.0));
-        if r.selected == Some(i) {
-            p.rect_filled(mark.expand(1.0), 2.0, t.accent);
-        }
-        crate::icons::paint(&p, mark, tab_icon(s.align), ink);
-    }
-    if let Some(d) = drag.filter(|d| matches!(d.grab, Grab::New)) {
-        crate::icons::paint(&p, Rect::from_center_size(pos2(to_x(d.pos), strip.max.y - 6.0), vec2(16.0, 16.0)), "tab-left", t.accent_strong);
-    }
-    if let Some(d) = drag.filter(|d| !d.off) {
-        p.line_segment([pos2(to_x(d.pos), strip.min.y), pos2(to_x(d.pos), rect.max.y)], Stroke::new(1.0, t.accent));
-    }
-    edit
-}
-
-/// The four alignment buttons; returns the one clicked.
-pub(crate) fn align_buttons(ui: &mut Ui, lang: &str, current: TabAlign) -> Option<TabAlign> {
-    let mut out = None;
-    for (a, tip) in ALIGNS {
-        if crate::icons::button(ui, tab_icon(a), 22.0, a == current, crate::i18n::tr(lang, tip)).clicked() {
-            out = Some(a);
-        }
-    }
-    out
-}
-
-/// A one-line text field that commits on Enter or when it loses focus.
-///
-/// `name` is the visible caption's text (`Leader:`, `Align On:`): the field has no label widget of
-/// its own, so screen readers and tests need it named here.
-pub(crate) fn text_commit(ui: &mut Ui, id: &str, current: &str, width: f32, enabled: bool, name: &str) -> Option<String> {
-    let tid = ui.scope_id().with(("tabs_text", id));
-    let focused = ui.memory(|m| m.has_focus(tid));
-    let mut buf: String = if focused { ui.data(|d| d.get_temp(tid)).unwrap_or_else(|| current.to_string()) } else { current.to_string() };
-    let r = ui.add_enabled(enabled, egui::TextEdit::singleline(&mut buf).id(tid).desired_width(width)).accessible_name(name.to_owned());
-    ui.data_mut(|d| d.insert_temp(tid, buf.clone()));
-    (r.lost_focus() && buf != current).then_some(buf)
-}
 
 /// The text column of the selection on screen: (top-left, top-right, top), when the
 /// frame's text runs left to right unrotated in the view.

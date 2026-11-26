@@ -402,7 +402,6 @@ fn closing_an_active_tab_scrolled_out_of_view_reveals_its_successor() {
 /// has a list of sizes; the instructor picks 72 pt from it. Leading has the same list.
 #[test]
 fn the_type_control_panel_lists_font_sizes_and_leadings() {
-    use egui::accesskit::Role;
     let mut app = app();
     app.run("file.new", serde_json::json!({})).unwrap();
     let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Headline"})).unwrap();

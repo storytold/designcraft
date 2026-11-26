@@ -23,17 +23,20 @@ fn table_control_identity(app: &DesignApp, ui: &egui::Ui, info: &Value, key: &st
     (ui.make_persistent_id(("table-style-control", owner, story, table, range, key, choices, current)), valid)
 }
 
-fn table_committed_choice(
-    app: &DesignApp,
-    ui: &mut egui::Ui,
-    info: &Value,
-    key: &str,
-    label: &str,
-    choices: &[(String, String)],
-    current: &str,
+/// A table style choice's control: what it is called and how wide it is, and the key, choices and current value its
+/// identity is made of.
+#[derive(Clone, Copy)]
+struct TableChoice<'a> {
+    key: &'a str,
+    label: &'a str,
+    choices: &'a [(String, String)],
+    current: &'a str,
     width: f32,
-) -> Option<String> {
+}
+
+fn table_committed_choice(app: &DesignApp, ui: &mut egui::Ui, info: &Value, control: &TableChoice<'_>) -> Option<String> {
     use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
+    let TableChoice { key, label, choices, current, width } = *control;
     let (id, valid) = table_control_identity(app, ui, info, key, choices, current);
     let entries: Vec<_> = choices.iter().map(|(value, label)| Entry::new(value.clone(), label.clone())).collect();
     // An orphaned current name is only a placeholder, not an invented enabled catalog entry.
@@ -82,7 +85,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// the table's identity (document uid and epoch, story and table), so a press held
 /// over one table's control never acts on another's.
 mod framework {
-    use super::{table_committed_choice, table_new_style};
+    use super::{TableChoice, table_committed_choice, table_new_style};
     use crate::DesignApp;
     use craft_behavior::EditEvent;
     use craft_ui_widgets::buttons::Button;
@@ -210,7 +213,8 @@ mod framework {
                     Row::new().id_salt(("style", kind)).show(ui, |ui, _| {
                         let label = tr(label);
                         caption(ui, label.clone());
-                        if let Some(name) = table_committed_choice(app, ui, &info, kind, &label, &choices, &cur, 130.0) {
+                        let choice = TableChoice { key: kind, label: &label, choices: &choices, current: &cur, width: 130.0 };
+                        if let Some(name) = table_committed_choice(app, ui, &info, &choice) {
                             run(
                                 &format!("style.{kind}.apply"),
                                 json!({"name": name, "story": sid, "table": tid, "rows": [range["r0"], range["r1"]], "cols": [range["c0"], range["c1"]]}),
@@ -265,9 +269,14 @@ mod framework {
                 let row_label = tr("Row Height");
                 caption(ui, row_label.clone());
                 let modes: Vec<_> = [("At Least", "atLeast"), ("Exactly", "exactly")].into_iter().map(|(label, mode)| (mode.to_owned(), tr(label))).collect();
-                if let Some(mode) =
-                    table_committed_choice(app, ui, &info, "row-height-mode", &row_label, &modes, if exactly { "exactly" } else { "atLeast" }, 92.0)
-                {
+                let choice = TableChoice {
+                    key: "row-height-mode",
+                    label: &row_label,
+                    choices: &modes,
+                    current: if exactly { "exactly" } else { "atLeast" },
+                    width: 92.0,
+                };
+                if let Some(mode) = table_committed_choice(app, ui, &info, &choice) {
                     run("table.setRowHeight", json!({"mode": mode}), false);
                 }
                 if let Some(h) = measure(ui, identity, "row-height", row_label, row["height"].as_f64(), unit) {
@@ -375,7 +384,7 @@ mod installed_action_tests {
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::{NodeT, Queryable};
+    use egui_kittest::kittest::Queryable;
     use serde_json::json;
     use std::sync::Arc;
 

@@ -230,7 +230,7 @@ mod tests {
         check(&mut app).unwrap();
         let ctx = crate::test_window::context();
         ctx.enable_accesskit();
-        let mut frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
+        let frame = |app: &mut DesignApp, events: Vec<egui::Event>| {
             let raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
                 events,

@@ -32,7 +32,6 @@ pub mod keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod links_worker;
 pub mod menus;
-mod modal_drag;
 mod new_document;
 mod object_control;
 pub mod object_style_dialog;

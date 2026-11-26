@@ -565,10 +565,7 @@ mod tests {
     use crate::DesignApp;
     use crate::theme::Tokens;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
     use serde_json::{Value, json};
 
     /// New Document open over an installed framework, in English, shown by the app's dialog router every frame.

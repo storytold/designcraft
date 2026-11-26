@@ -408,6 +408,7 @@ impl<P> DockCommand<P> {
 
     /// Named workspaces, Reset and Lock belong to the application (its `WorkspaceSet`), which handles these commands
     /// before [`Self::to_actions`]; it returns [`DockError::NotAllowed`] for them.
+    #[cfg(test)]
     pub(crate) fn is_app_owned(&self) -> bool {
         matches!(
             self,
@@ -428,7 +429,7 @@ impl<P: Clone + Eq + Hash + Debug> DockCommand<P> {
     /// The layout actions this command makes on `workspace`, to apply all or none with `Workspace::apply_all`.
     ///
     /// Showing a hidden panel (`activate`, `ui.dock` `open`, and `dock` without an anchor or side, which then moves
-    /// it to the edge a zone names) and the app-owned commands ([`Self::is_app_owned`]) are not layout actions: the
+    /// it to the edge a zone names) and the app-owned commands (`Self::is_app_owned`) are not layout actions: the
     /// app handles them first, and here a hidden panel or anchor returns [`DockError::MissingPanel`] or
     /// [`DockError::MissingTarget`] and an app-owned command [`DockError::NotAllowed`].
     ///

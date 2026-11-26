@@ -3121,23 +3121,12 @@ const NUMBER_STYLES: [(&str, &str); 9] = [
 ];
 
 /// What the Bullets and Numbering section offers besides the paragraph's attributes: the
-/// document's character styles, the font families for the bullet, the fonts, and the paragraph's
-/// font (the bullet's when it has none of its own).
-struct ListUi<'a> {
-    char_styles: &'a [String],
-    families: &'a [String],
-    fonts: &'a designcraft_fonts::ScopedFonts<'static>,
-    scope: u32,
-    family: &'a str,
-    style: &'a str,
-}
-
-impl ListUi<'_> {
-    fn new_parts(app: &DesignApp) -> (Vec<String>, Vec<String>, designcraft_fonts::ScopedFonts<'static>, u32) {
-        let styles = app.session.active().map(|s| s.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
-        let families = crate::panels::font_menu(app).into_iter().map(|f| f.family).collect();
-        (styles, families, crate::panels::fonts(app), crate::panels::font_scope(app))
-    }
+/// document's character styles, the font families for the bullet, the fonts, and the scope those
+/// families were read in.
+pub(crate) fn list_parts(app: &DesignApp) -> (Vec<String>, Vec<String>, designcraft_fonts::ScopedFonts<'static>, u32) {
+    let styles = app.session.active().map(|s| s.doc.styles.character.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+    let families = crate::panels::font_menu(app).into_iter().map(|f| f.family).collect();
+    (styles, families, crate::panels::fonts(app), crate::panels::font_scope(app))
 }
 
 /// Preferences with no document open: the Units & Increments new documents start with, as
@@ -3248,7 +3237,7 @@ fn setting_text(v: &Value) -> String {
 /// holds them by attribute name (resolved values for a paragraph style; for a character style the
 /// attributes it sets, the others absent). `sparse` (a character style) lets a field be blank:
 /// emptying it, or picking the blank entry, unsets the attribute.
-struct CharFields<'a> {
+pub(crate) struct CharFields<'a> {
     base: &'a Value,
     sparse: bool,
 }
@@ -3903,10 +3892,6 @@ impl PickComp {
     fn from_key(k: &str) -> PickComp {
         PickComp::ALL.into_iter().find(|c| c.key() == k).unwrap_or(PickComp::R)
     }
-
-    fn lab(self) -> bool {
-        matches!(self, PickComp::L | PickComp::A | PickComp::Lb)
-    }
 }
 
 /// The colour the picker shows, in each of its spaces (HSB keeps its hue through greys).
@@ -3941,42 +3926,6 @@ impl Picked {
         let mut p = Picked::from_rgb(designcraft_color::cms::lab::lab_to_srgb(designcraft_color::cms::Lab::new(lab[0], lab[1], lab[2])), hue);
         p.lab = lab;
         p
-    }
-
-    /// (slider, across, up), each 0..1, for component `c`.
-    pub fn coords(&self, c: PickComp) -> (f32, f32, f32) {
-        let [r, g, b] = self.rgb;
-        let [h, s, v] = self.hsb;
-        let [l, la, lb] = self.lab;
-        let (a, bb) = ((la + 128.0) / 255.0, (lb + 128.0) / 255.0);
-        match c {
-            PickComp::R => (r, b, g),
-            PickComp::G => (g, b, r),
-            PickComp::Bl => (b, r, g),
-            PickComp::H => (h / 360.0, s, v),
-            PickComp::S => (s, h / 360.0, v),
-            PickComp::Br => (v, h / 360.0, s),
-            PickComp::L => (l / 100.0, a, bb),
-            PickComp::A => (a, bb, l / 100.0),
-            PickComp::Lb => (bb, a, l / 100.0),
-        }
-    }
-
-    /// The colour at (slider `t`, across `u`, up `v`) for component `c`.
-    pub fn at(&self, c: PickComp, t: f32, u: f32, v: f32) -> Picked {
-        let hue = self.hsb[0];
-        let ab = |x: f32| x * 255.0 - 128.0;
-        match c {
-            PickComp::R => Picked::from_rgb([t, v, u], hue),
-            PickComp::G => Picked::from_rgb([v, t, u], hue),
-            PickComp::Bl => Picked::from_rgb([u, v, t], hue),
-            PickComp::H => Picked::from_hsb([t * 360.0, u, v]),
-            PickComp::S => Picked::from_hsb([u * 360.0, t, v]),
-            PickComp::Br => Picked::from_hsb([u * 360.0, v, t]),
-            PickComp::L => Picked::from_lab([t * 100.0, ab(u), ab(v)], hue),
-            PickComp::A => Picked::from_lab([v * 100.0, ab(t), ab(u)], hue),
-            PickComp::Lb => Picked::from_lab([v * 100.0, ab(u), ab(t)], hue),
-        }
     }
 
     pub fn hex(&self) -> String {

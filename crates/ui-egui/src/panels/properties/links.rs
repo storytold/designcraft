@@ -1,9 +1,8 @@
 use super::{DesignApp, FIELD_H, Tokens, Value, block, divider, json, sel_info, sub, units, vec2};
 use crate::app::file_dialogs::Bound;
 
-/// A Links action button's response and whether it was activated.
+/// Whether a Links action button was activated.
 struct LinkButton {
-    response: egui::Response,
     clicked: bool,
 }
 
@@ -24,8 +23,7 @@ fn link_button(app: &DesignApp, ui: &mut egui::Ui, key: LinkAction<'_>, label: &
     }
     let out = button.show(ui);
     // SDK activation is authoritative: egui's extra click rule need not match it.
-    let clicked = out.clicked();
-    LinkButton { response: out.response, clicked }
+    LinkButton { clicked: out.clicked() }
 }
 
 /// Links: status (missing / modified / embedded), page and effective resolution of every placed
@@ -220,16 +218,6 @@ fn use_info(language: &str, r: &Value) -> (String, bool) {
 
 /// Thumbnail edge in the Links panel, in points.
 const THUMB: f32 = 28.0;
-
-/// A small rounded label in the status colour.
-fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
-    egui::Frame::NONE
-        .fill(color.gamma_multiply(0.18))
-        .corner_radius(3.0)
-        .inner_margin(egui::Margin::symmetric(5, 1))
-        .show(ui, |ui| crate::rtl::label(ui, egui::RichText::new(text).color(color).size(11.0)))
-        .response
-}
 
 /// Paints in `rect` chain links for a linked graphic, a page with a folded corner for an embedded one.
 fn paint_storage(p: &egui::Painter, rect: egui::Rect, linked: bool, color: egui::Color32) {

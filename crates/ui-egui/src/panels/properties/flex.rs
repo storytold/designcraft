@@ -223,13 +223,13 @@ mod framework {
         let cell = r.width() / 3.0;
         let arrow = flex_arrow(f.map(|f| f.direction));
         let mut picked = None;
-        for row in 0..3usize {
-            for col in 0..3usize {
+        for (row, cells) in CELLS.iter().enumerate() {
+            for (col, name) in cells.iter().enumerate() {
                 let Some(on) = flex_cell(f, col, row) else { continue };
                 let on = on && f.is_some();
                 let at = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
                 let glyph = Cell(on.then_some(arrow));
-                let label = crate::i18n::tr(&app.ui.language, CELLS[row][col]).to_owned();
+                let label = crate::i18n::tr(&app.ui.language, *name).to_owned();
                 let id = cid(app, ui, ("cell", row, col));
                 if IconButton::new(IconSpec::glyph(&glyph)).id(id).label(label.clone()).tooltip(label).selected(on).show_at(ui, at).clicked() {
                     picked = Some((row * 3 + col) as u8);

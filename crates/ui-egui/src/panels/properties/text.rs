@@ -1,6 +1,6 @@
 use super::typography::{para_field_min, show_typography_panel};
 use super::{
-    Align, DesignApp, FIELD_H, NumField, Rect, Ui, Value, block, full_width, json, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs,
+    Align, DesignApp, FIELD_H, Rect, Ui, Value, block, full_width, json, section, set_temp_bool, show_panel, sub, temp_bool, text_attrs,
     units, vec2, widgets,
 };
 
@@ -181,55 +181,6 @@ pub(crate) const LANGUAGES: &[&str] = &[
     "Hebrew",
     "Esperanto",
 ];
-
-/// The Language list (Character panel, Properties ▸ Character): picking one sets the language of
-/// the selected text.
-pub(crate) fn language_menu(app: &mut DesignApp, ui: &mut Ui, cur: &str) {
-    for l in LANGUAGES {
-        if ui.selectable_label(*l == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
-            let _ = app.run("type.char", json!({"attrs": {"language": l}}));
-            ui.close();
-        }
-    }
-}
-
-/// Kerning for the text selection, or at a caret for the pair at the caret: the label shows
-/// Metrics, Optical, 0 or the manual value; its menu sets one of the first three or a manual value
-/// in 1/1000 em (typed or stepped).
-pub(crate) fn kerning_control(app: &mut DesignApp, ui: &mut egui::Ui, id: &str, k: &Value, width: f32) {
-    let kind = k["kind"].as_str().unwrap_or("metrics");
-    let manual = k["value"].as_f64().filter(|v| kind == "manual" && v.is_finite());
-    let label = match (kind, manual) {
-        ("optical", _) => "Optical".to_string(),
-        ("none", _) => "0".to_string(),
-        ("manual", Some(v)) => format!("{v}"),
-        _ => "Metrics".to_string(),
-    };
-    let resp = widgets::dropdown(ui, crate::i18n::tr(&app.ui.language, &label), width);
-    let name = crate::i18n::tr(&app.ui.language, "Kerning");
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, name));
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        for (text, v) in [("Metrics", json!({"kind": "metrics"})), ("Optical", json!({"kind": "optical"})), ("0", json!({"kind": "none"}))] {
-            if ui.selectable_label(label == text, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, text))).clicked() {
-                let _ = app.run("type.kernPair", json!({"kerning": v}));
-                ui.close();
-            }
-        }
-        ui.separator();
-        // A manual value in 1/1000 em: after each selected character, or between the two at a caret.
-        let field = format!("{id}_manual");
-        if let Some(v) = NumField::number(&field, Some(manual.unwrap_or(0.0)), "", 0)
-            .name("Manual Kerning")
-            .width(90.0)
-            .spinner()
-            .step(5.0)
-            .range(-1000.0, 10000.0)
-            .show(ui)
-        {
-            let _ = app.run("type.kernPair", json!({"kerning": {"kind": "manual", "value": v}}));
-        }
-    });
-}
 
 /// The text sections on the craft UI framework: every control a framework component over the engine commands.
 pub(crate) mod framework {
@@ -913,7 +864,7 @@ mod framework_tests {
         click(&mut h, Role::CheckBox, "Auto-Fit");
         assert_eq!(journal(&h, "object.fittingOptions").last(), Some(&json!({"autoFit": true})));
         assert!(item(&h, id).graphic().is_some_and(|g| g.auto_fit != designcraft_doc::Fitting::None));
-        assert!(undo_steps(&h) >= steps + 1, "the edits are undoable");
+        assert!(undo_steps(&h) > steps, "the edits are undoable");
         assert!(has(&h, Role::Button, "Options"), "Frame Fitting Options… is beside the buttons");
     }
 }

@@ -39,10 +39,10 @@ fn paragraph_local(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<b
     let a = Attrs::new("p.", &pv);
     let char_styles: Vec<String> = doc.styles.character.iter().map(|c| c.name.clone()).collect();
     // What the Bullets and Numbering section offers besides the attributes: the families, the fonts and the paragraph's font.
-    let (list_styles, families, fonts, scope) =
-        if section == "bullets" { super::ListUi::new_parts(app) } else { (Vec::new(), Vec::new(), crate::panels::fonts(app), 0) };
+    let (list_styles, families, fonts, _) =
+        if section == "bullets" { super::list_parts(app) } else { (Vec::new(), Vec::new(), crate::panels::fonts(app), 0) };
     let (family, style) = (d.s("family"), d.s("style"));
-    let bullets = Bullets { char_styles: &list_styles, families: &families, fonts: &fonts, scope, family: &family, style: &style };
+    let bullets = Bullets { char_styles: &list_styles, families: &families, fonts: &fonts, family: &family, style: &style };
     Stack::new().id_salt("paragraph_local").fill_width().show(ui, |ui, _| match section.as_str() {
         "span" => span_columns(lang, ui, d, &a, &doc),
         "keep" => keep_options(lang, ui, d, &a),
@@ -392,7 +392,6 @@ pub(super) struct Bullets<'a> {
     pub(super) char_styles: &'a [String],
     pub(super) families: &'a [String],
     pub(super) fonts: &'a designcraft_fonts::ScopedFonts<'static>,
-    pub(super) scope: u32,
     pub(super) family: &'a str,
     pub(super) style: &'a str,
 }

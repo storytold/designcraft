@@ -90,8 +90,8 @@ pub(crate) fn apply_none(app: &mut DesignApp) -> Result<Value, String> {
 /// overrides) gives it. Each def says the app runs its keys itself (`Dispatch::App`): the Tools rail's tooltips and
 /// flyout rows show the chords while the app's keymap stays the one dispatcher of every key, and the board matches none
 /// of them. One catalog per language, built again with a new generation when the keymap's platform or the user's
-/// overrides change, so a rebound tool shows its new chord.
-pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_ui_widgets::runtime::commands::AppCatalog {
+/// overrides change, so a rebound tool shows its new chord. `None` when the board refuses the rows (a repeated id).
+pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> Option<craft_ui_widgets::runtime::commands::AppCatalog> {
     use craft_ui::runtime::commands::Dispatch;
     use craft_ui_widgets::runtime::commands::AppCatalog;
     use std::hash::{Hash as _, Hasher as _};
@@ -109,7 +109,7 @@ pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_u
     let mut catalogs = CATALOGS.lock().unwrap_or_else(PoisonError::into_inner);
     let held = catalogs.iter().position(|(code, _, _)| code == lang);
     if let Some((_, _, catalog)) = held.and_then(|at| catalogs.get(at)).filter(|(_, hash, _)| *hash == overrides) {
-        return catalog.clone();
+        return Some(catalog.clone());
     }
     let defs: Vec<craft_keymap::CommandDef> = crate::keys::catalog()
         .iter()
@@ -126,16 +126,20 @@ pub(crate) fn tool_catalog(lang: &str, keymap: &craft_keymap::Keymap) -> craft_u
         })
         .collect();
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
-        log::warn!("the tool commands are not on the framework's board: {error}");
-        AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
-    });
+    let catalog = match AppCatalog::new(defs, generation) {
+        Ok(catalog) => catalog,
+        // The board refuses a repeated id; with none, the frame has no app catalog and the rail resolves no tool.
+        Err(error) => {
+            log::warn!("the tool commands are not on the framework's board: {error}");
+            return None;
+        }
+    };
     let entry = (lang.to_owned(), overrides, catalog.clone());
     match held.and_then(|at| catalogs.get_mut(at)) {
         Some(slot) => *slot = entry,
         None => catalogs.push(entry),
     }
-    catalog
+    Some(catalog)
 }
 
 /// The Tools panel on the framework: the tool rail with its slots and flyouts, and under it, in the rail's footer, the

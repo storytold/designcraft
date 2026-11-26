@@ -1,9 +1,6 @@
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT, Queryable},
-};
+use egui_kittest::{Harness, kittest::Queryable};
 
-use super::object::transform_anchors;
+use super::object::{preview_row, transform_anchors};
 use super::*;
 
 // The native-body tests that failed on the framework once the native bodies were deleted moved to their successors of

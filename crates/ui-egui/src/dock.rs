@@ -218,7 +218,7 @@ mod visual_regressions {
                     // The interface brightness the window shows, which the framework's dock follows through the frame's
                     // root values (`DesignApp::raw_input_hook`), as the shipping window gives them each frame.
                     app.ui.brightness = brightness;
-                    let mut frame = |app: &mut DesignApp| {
+                    let frame = |app: &mut DesignApp| {
                         let mut input = scaled_input(vec2(width, 640.0), scale);
                         app.raw_input_hook(&ctx, &mut input);
                         let mut output = ctx.run_ui(input, |ui| crate::panel_docking::show(app, ui));

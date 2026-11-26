@@ -159,15 +159,6 @@ enum Level {
     Bad,
 }
 
-impl Level {
-    fn color(self, ui: &egui::Ui) -> egui::Color32 {
-        match self {
-            Level::Warn => ui.visuals().warn_fg_color,
-            Level::Bad => ui.visuals().error_fg_color,
-        }
-    }
-}
-
 fn status_text(lang: &str, status: &str) -> (String, Option<Level>) {
     let tr = |s: &str| crate::i18n::tr(lang, s).to_string();
     match status {
@@ -516,8 +507,6 @@ mod framework_form {
 
 #[cfg(test)]
 mod tests {
-    use egui_kittest::{Harness, kittest::Queryable};
-
     use super::*;
 
     /// A document with a text frame and an image whose file has gone, in a temporary folder.
@@ -1166,14 +1155,16 @@ mod framework_tests {
         let mut h = normal_harness(app);
         click(&mut h, Role::TextInput, "Company:");
         assert!(h.get_by_role_and_label(Role::TextInput, "Company:").is_focused());
-        event(&mut h, Event::Ime(egui::ImeEvent::Enabled));
+        // A composition is the marked text: a non-empty preedit opens it (egui's deprecated `ImeEvent::Enabled` and
+        // `Disabled` carry nothing).
         event(&mut h, Event::Ime(egui::ImeEvent::Preedit { text: "Composing company".into(), active_range_chars: None }));
         key(&mut h, Key::Enter, Modifiers::NONE);
         assert_eq!(draft(&h).id, INSTRUCTIONS);
         assert_eq!(requests.load(Ordering::SeqCst), 0, "composition owns Enter, not the default footer");
         assert_quiet(&h, &before);
         event(&mut h, Event::Ime(egui::ImeEvent::Commit("Composed company".into())));
-        event(&mut h, Event::Ime(egui::ImeEvent::Disabled));
+        // An empty preedit dismisses the composition, as `ImeEvent::Disabled` used to say.
+        event(&mut h, Event::Ime(egui::ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
         idle(&mut h, 3);
         assert_eq!(draft(&h).s("company"), "Composed company");
         assert_eq!(h.get_by_role_and_label(Role::TextInput, "Company:").value().as_deref(), Some("Composed company"));

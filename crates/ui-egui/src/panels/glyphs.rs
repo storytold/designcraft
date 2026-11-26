@@ -110,7 +110,8 @@ fn show_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
                 }
             });
         }
-        let (picked, shown) = framework_grid(ui, &lang, &db, scope, &st.family, &st.style, &q, 320.0);
+        let face = FaceQuery { family: &st.family, style: &st.style, query: &q };
+        let (picked, shown) = framework_grid(ui, &lang, &db, scope, face, 320.0);
         insert = insert.or(picked);
         count = shown;
         Text::new(crate::i18n::tr(&lang, "{count} glyphs — click to insert at the text cursor").replace("{count}", &shown.to_string()))
@@ -242,6 +243,14 @@ pub fn grid(
     (picked, chars.len())
 }
 
+/// The face a glyph grid shows and the characters it keeps: the family and style, and the query the search holds.
+#[derive(Clone, Copy)]
+pub(crate) struct FaceQuery<'a> {
+    family: &'a str,
+    style: &'a str,
+    query: &'a str,
+}
+
 /// The same grid as a framework component in a framework scroll area, for the panels that show the framework: the
 /// character clicked, and how many are shown. The Bullets page of the paragraph style dialog uses it too.
 pub(crate) fn framework_grid(
@@ -249,14 +258,13 @@ pub(crate) fn framework_grid(
     language: &str,
     db: &designcraft_fonts::ScopedFonts<'_>,
     scope: u32,
-    family: &str,
-    style: &str,
-    query: &str,
+    face: FaceQuery<'_>,
     max_height: f32,
 ) -> (Option<char>, usize) {
     use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _};
     use craft_ui_widgets::layout_components::Stack;
 
+    let FaceQuery { family, style, query } = face;
     let GridModel { chars, cols, tex } = grid_model(ui, db, scope, family, style, query);
     let count = chars.len();
     let height = ((count as u32).div_ceil(cols) as f32 * CELL).min(max_height);

@@ -2095,7 +2095,7 @@ fn the_eyedropper_samples_what_proof_colors_and_the_ink_limit_show() {
 /// page and let go there, takes the colour the page shows.
 #[test]
 fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::kittest::Queryable;
     let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({})).unwrap();
     let id = app.run("frame.create", json!({"rect": [36, 36, 560, 700], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();

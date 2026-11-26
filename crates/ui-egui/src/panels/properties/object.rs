@@ -211,6 +211,7 @@ fn paint_stroke_type(p: &egui::Painter, r: Rect, kind: &str, c: egui::Color32) {
 
 /// A row of a preview dropdown's list, as InDesign's: a small preview of the choice (`preview_w`
 /// wide), then its name. Selected rows are highlighted.
+#[cfg(test)]
 pub(crate) fn preview_row(
     ui: &mut Ui,
     selected: bool,
@@ -239,21 +240,6 @@ pub(crate) fn preview_row(
         ink,
     );
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
-    resp
-}
-
-/// A dropdown whose face is a light preview box (stroke type, corner shape), named `label`.
-pub(super) fn preview_dropdown(ui: &mut Ui, w: f32, label: &str, paint: impl FnOnce(&egui::Painter, Rect)) -> egui::Response {
-    let t = Tokens::get(ui.ctx());
-    let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, label));
-    let face = Rect::from_min_max(r.min, pos2(r.max.x - widgets::SEG_W, r.max.y));
-    ui.painter().rect_filled(face, 0.0, egui::Color32::from_gray(0xdf));
-    paint(ui.painter(), face);
-    let seg = Rect::from_min_max(pos2(face.max.x, r.min.y), r.max);
-    ui.painter().rect_filled(seg, 0.0, if resp.hovered() { t.hover } else { t.input });
-    widgets::chevron_down(ui.painter(), seg.center(), t.icon);
-    ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     resp
 }
 
@@ -298,12 +284,6 @@ pub(crate) fn paint_corner_shape(p: &egui::Painter, r: Rect, shape: CornerShape,
             line(vec![at(0.76, 0.3), at(0.76, 0.48), at(1.0, 0.48), at(1.0, 1.0)]);
         }
     }
-}
-
-/// A corner shape picker's face: the shape's glyph and the dropdown arrow (the menu is the caller's).
-pub(crate) fn corner_shape_button(ui: &mut Ui, shape: CornerShape, width: f32) -> egui::Response {
-    // The caller names the control (widget_info) once it knows the corner.
-    preview_dropdown(ui, width, "", |p, r| paint_corner_shape(p, r, shape, egui::Color32::BLACK))
 }
 
 pub(super) fn appearance_section(app: &mut DesignApp, ui: &mut Ui, i: &SelInfo) {

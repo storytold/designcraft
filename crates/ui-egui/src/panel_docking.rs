@@ -1292,10 +1292,9 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         )
     });
     for event in output.events {
-        match event {
-            DockEvent::ToggleAutoCollapse => app.ui.dock_auto_collapse = !app.ui.dock_auto_collapse,
-            // The bound flyout above already took the change the event reports.
-            _ => {}
+        // The bound flyout above already took the changes the other events report.
+        if event == DockEvent::ToggleAutoCollapse {
+            app.ui.dock_auto_collapse = !app.ui.dock_auto_collapse;
         }
     }
     // The panel last opened is the one a command opened or the person picked in the dock; a focus that moves into a

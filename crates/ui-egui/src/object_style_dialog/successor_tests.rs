@@ -7,7 +7,7 @@ use crate::dialogs::table_layout_kit as kit;
 use egui::accesskit::Role;
 use egui::vec2;
 use egui_kittest::kittest::Queryable as _;
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn app_with_frame() -> (DesignApp, u64) {
     let mut app = kit::app(1, false);

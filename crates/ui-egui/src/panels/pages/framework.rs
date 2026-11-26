@@ -1016,7 +1016,8 @@ fn size_rows(ui: &mut Ui, lang: &str, doc: &designcraft_doc::Document, cur: usiz
     picked
 }
 
-/// The footer: the page count and the buttons, always at the panel's bottom.
+/// The footer in the interface language's direction, as the panel shows it: the entry the Pages footer workflow tests draw.
+#[cfg(test)]
 pub(super) fn footer(app: &mut DesignApp, ui: &mut Ui, doc: &designcraft_doc::Document, cur: usize) {
     let direction = if crate::i18n::is_rtl(&app.ui.language) { Direction::Rtl } else { Direction::Ltr };
     with_env(ui, |scope| scope.direction = Some(direction), |ui| footer_contents(app, ui, doc, cur));

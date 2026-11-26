@@ -722,7 +722,7 @@ mod plate_action_tests {
     }
     #[test]
     fn ui_separations_plate_off_and_no_document_remain_real_and_nonediting() {
-        let mut empty = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
+        let empty = harness(DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()));
         assert!(empty.state().session.active().is_none());
         assert_eq!(empty.query_all_by(|node| node.role() == egui::accesskit::Role::Button && node.label().as_deref() == Some("All Inks")).count(), 0);
         let mut app = fixture();

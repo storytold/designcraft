@@ -60,8 +60,12 @@ impl DesignApp {
         let quick_apply = menus::quick_apply_catalog(self);
         #[cfg(target_arch = "wasm32")]
         let quick_apply = None;
-        let catalog = quick_apply.unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
-        let commands = CommandInput::new().catalog(catalog);
+        let catalog = quick_apply.or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
+        let commands = match catalog {
+            Some(catalog) => CommandInput::new().catalog(catalog),
+            // The board refused both catalogs: the frame has no app commands, and the UI's own controls still work.
+            None => CommandInput::new(),
+        };
         FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands)
     }
 

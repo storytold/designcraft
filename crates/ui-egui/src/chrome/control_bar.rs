@@ -45,6 +45,7 @@ const TRACKING: &[f64] = &[-100.0, -75.0, -50.0, -25.0, -10.0, -5.0, 0.0, 5.0, 1
 const PARA_MODE: &str = "ctl_text_para_mode";
 
 /// An icon and a field after it, as the Control panel lays its fields out.
+#[cfg(test)]
 pub(crate) fn icon_field(ui: &mut egui::Ui, icon: &str, tip: &str, field: NumField) -> Option<f64> {
     let t = Tokens::get(ui.ctx());
     let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());

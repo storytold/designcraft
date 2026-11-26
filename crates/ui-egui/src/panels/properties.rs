@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::{SelInfo, sel_info, text_attrs};
 use crate::theme::Tokens;
-use crate::widgets::{self, FIELD_H, NumField, caption, divider, full_width, more_options, rule, section, selection_band};
+use crate::widgets::{self, FIELD_H, NumField, divider, full_width, rule, section, selection_band};
 use crate::{DesignApp, icons};
 
 mod document;

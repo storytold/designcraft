@@ -64,18 +64,6 @@ impl Form {
         self.opens_at_width = true;
         self
     }
-
-    /// Where the dialog's buttons stand ([`Form::button_place`]).
-    pub(crate) const fn button_place(mut self, place: ButtonPlace) -> Self {
-        self.button_place = place;
-        self
-    }
-
-    /// Buttons that act and keep the dialog open ([`Form::actions`]).
-    pub(crate) const fn actions(mut self, actions: &'static [(&'static str, &'static str)]) -> Self {
-        self.actions = actions;
-        self
-    }
 }
 
 /// The captions of a section list, one row each, keyed by position.

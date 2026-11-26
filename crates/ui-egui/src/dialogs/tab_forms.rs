@@ -1,9 +1,9 @@
 //! The tabs page of Paragraph Style Options on the craft framework: the alignment buttons, the stop's position, leader
 //! and align-on character, Clear All, and the tab ruler as an app-defined framework component.
 //!
-//! The ruler keeps the painting and the pointer rules of the native ruler (`panels::tabs::ruler`): a click on the strip
-//! adds a stop or selects one, a drag moves a stop (off the ruler it deletes it), and the triangles are the first-line,
-//! left and right indents. It has no keyboard handling, as the native ruler has none.
+//! The ruler keeps the painting and the pointer rules of the native ruler it replaced: a click on the strip adds a stop
+//! or selects one, a drag moves a stop (off the ruler it deletes it), and the triangles are the first-line, left and
+//! right indents. It has no keyboard handling, as the native ruler had none.
 
 use crate::DesignApp;
 use crate::dialogs::Dialog;

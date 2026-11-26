@@ -595,10 +595,7 @@ mod tests {
     use super::*;
     use crate::theme::Tokens;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
 
     fn app_with_document() -> DesignApp {
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());

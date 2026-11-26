@@ -4,7 +4,7 @@
 
 use egui::accesskit::Role;
 use egui::vec2;
-use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use egui_kittest::kittest::Queryable as _;
 
 use crate::dialogs::table_layout_kit as kit;
 

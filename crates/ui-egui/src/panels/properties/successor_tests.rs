@@ -12,7 +12,6 @@ use egui_kittest::{
 
 use super::framework_test_kit as ln;
 use super::framework_test_kit::Window;
-use super::object::transform_anchors;
 use super::*;
 
 fn language(app: &mut DesignApp) -> Value {

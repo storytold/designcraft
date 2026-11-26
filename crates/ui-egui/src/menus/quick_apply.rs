@@ -143,7 +143,8 @@ pub(super) fn picked_run(command: &CommandRef) -> (String, Value) {
 /// them, for the Tools rail), every command Quick Apply searches and the document's styles, so the palette resolves
 /// and picks each of them. The keymap's commands say the app runs their keys itself (`Dispatch::App`), so the rail and
 /// the palette's rows show their chords while the app's keymap stays the one dispatcher of every key; the styles have
-/// none. `None` while Quick Apply is closed; the board then has the tools alone.
+/// none. `None` while Quick Apply is closed, and when the board refuses the rows (a repeated id): the board then has
+/// the tools alone.
 ///
 /// One catalog per interface language and set of style names; the generation changes whenever the rows do.
 #[cfg(not(target_arch = "wasm32"))]
@@ -174,10 +175,15 @@ pub fn quick_apply_catalog(app: &DesignApp) -> Option<craft_ui::runtime::command
     }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
     let defs = board_defs(lang, styles.as_ref(), &app.keymap);
-    let catalog = AppCatalog::new(defs, generation).unwrap_or_else(|error| {
-        log::warn!("Quick Apply's commands are not on the framework's board: {error}");
-        AppCatalog::new(Vec::new(), generation).expect("an empty catalog is valid")
-    });
+    let catalog = match AppCatalog::new(defs, generation) {
+        Ok(catalog) => catalog,
+        // The board refuses a repeated id; with none, the frame keeps the tools' catalog alone, as it does while Quick
+        // Apply is closed.
+        Err(error) => {
+            log::warn!("Quick Apply's commands are not on the framework's board: {error}");
+            return None;
+        }
+    };
     *last = Some((lang.to_owned(), key, catalog.clone()));
     Some(catalog)
 }

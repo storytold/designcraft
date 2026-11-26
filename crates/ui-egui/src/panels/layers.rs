@@ -1517,7 +1517,7 @@ mod framework_tests {
         let mut app = app();
         let id = frame(&mut app);
         app.run("selection.set", json!({"ids": []})).unwrap();
-        let mut h = open(app);
+        let h = open(app);
         // The layer is the active one and open; the object is the only row under it.
         assert!(shows(&h, "<rectangle>"));
         (h, id)

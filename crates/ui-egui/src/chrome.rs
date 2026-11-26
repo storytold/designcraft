@@ -19,6 +19,8 @@ pub(crate) use app_bar::resize_borders;
 #[cfg(test)]
 use app_bar::search_id;
 pub use app_bar::{app_bar, search_had_focus};
+#[cfg(test)]
+use control_bar::icon_field;
 pub use control_bar::control_bar;
 pub(crate) use start_screen::recent_file_stat;
 pub use start_screen::start_screen;
@@ -28,11 +30,6 @@ use start_screen::{RECENT_STAT_MS, recent_file_stat_at};
 use status_bar::DOC_TAB_MAX_W;
 pub use status_bar::{doc_tabs, status_bar};
 
-/// Height of the application bar (InDesign 2026), then a 7 pt lower band and a 1 pt border. The
-/// band covers the panel's 1 pt separator line, so the frame's bottom margin is 1 pt short of it.
-const APP_BAR: f32 = 36.0;
-const APP_BAR_BAND: f32 = 7.0;
-const SEPARATOR: f32 = 1.0;
 /// Height of the application bar on macOS, where it is the window's title bar (#333). AppKit draws
 /// the traffic lights itself, centred in the standard 28 pt title-bar band at the top of the
 /// window; moving them would take AppKit calls (`unsafe`, which the workspace forbids). So the bar

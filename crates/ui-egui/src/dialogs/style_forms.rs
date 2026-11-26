@@ -172,12 +172,11 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> 
                     "keep" => paragraph_forms::keep_options(lang, ui, d, &attrs),
                     "span" => paragraph_forms::span_columns(lang, ui, d, &attrs, &doc),
                     "bullets" => {
-                        let (char_styles, families, fonts, scope) = crate::dialogs::ListUi::new_parts(app);
+                        let (char_styles, families, fonts, _) = crate::dialogs::list_parts(app);
                         let bullets = paragraph_forms::Bullets {
                             char_styles: &char_styles,
                             families: &families,
                             fonts: &fonts,
-                            scope,
                             family: &cp.font_family,
                             style: &cp.font_style,
                         };
@@ -605,10 +604,7 @@ fn load_styles(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool>
 mod tests {
     use super::*;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
 
     type Window = Harness<'static, DesignApp>;
 

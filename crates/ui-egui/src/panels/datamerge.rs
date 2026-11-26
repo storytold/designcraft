@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use crate::DesignApp;
 use crate::app::file_dialogs::Bound;
 use crate::theme::semibold;
+use std::ops::RangeInclusive;
 
 /// The Data Merge panel: the craft framework's controls.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
@@ -25,8 +26,32 @@ struct DataMergeControls {
 }
 
 struct MergeNumber {
-    response: egui::Response,
     value: Option<f64>,
+}
+
+/// A number field's rule: the values it takes, whether it steps in whole numbers, and whether its caption stands
+/// before the field rather than inside it.
+struct NumberSpec {
+    range: Option<RangeInclusive<f64>>,
+    integer: bool,
+    prefix: bool,
+}
+
+impl NumberSpec {
+    /// A count, a record number or a limit: whole numbers, with the caption before the field.
+    fn count(range: RangeInclusive<f64>) -> NumberSpec {
+        NumberSpec { range: Some(range), integer: true, prefix: true }
+    }
+
+    /// The record number in the navigation row: a whole number, with its caption after the field.
+    fn record(range: RangeInclusive<f64>) -> NumberSpec {
+        NumberSpec { range: Some(range), integer: true, prefix: false }
+    }
+
+    /// A measure in points, with the caption before the field: insets and spacing.
+    fn measure() -> NumberSpec {
+        NumberSpec { range: None, integer: false, prefix: true }
+    }
 }
 
 impl DataMergeControls {
@@ -120,17 +145,9 @@ impl DataMergeControls {
         false
     }
 
-    fn number(
-        &self,
-        ui: &mut egui::Ui,
-        key: &str,
-        name: &str,
-        value: f64,
-        range: Option<std::ops::RangeInclusive<f64>>,
-        integer: bool,
-        prefix: bool,
-    ) -> MergeNumber {
+    fn number(&self, ui: &mut egui::Ui, key: &str, name: &str, value: f64, spec: NumberSpec) -> MergeNumber {
         use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
+        let NumberSpec { range, integer, prefix } = spec;
         let id = self.id(ui, "number", key);
         let mut shown = None;
         craft_ui_widgets::layout_components::Row::new().id_salt(("datamerge-number", key)).show(ui, |ui, _| {
@@ -162,9 +179,9 @@ impl DataMergeControls {
                     range.as_ref().map_or(v, |range| v.clamp(*range.start(), *range.end()))
                 })
                 .filter(|v| *v != value);
-            shown = Some(MergeNumber { response: out.edit.response, value: next });
+            shown = Some(MergeNumber { value: next });
         });
-        shown.unwrap_or_else(|| MergeNumber { response: ui.response(), value: None })
+        shown.unwrap_or_else(|| MergeNumber { value: None })
     }
 }
 
@@ -208,7 +225,7 @@ fn tr<'a>(lang: &str, s: &'a str) -> &'a str {
 /// The Data Merge panel on the craft framework: the live commands through the control adapters, laid out with
 /// framework rows and text. Every control's id carries the document's identity.
 mod framework {
-    use super::{DataMergeControls, paint_kind, select_source, tr};
+    use super::{DataMergeControls, NumberSpec, paint_kind, select_source, tr};
     use crate::DesignApp;
     use crate::theme::Tokens;
     use craft_ui_widgets::contract::{Props as _, Show as _, ShowContainer as _, Sizing};
@@ -312,7 +329,7 @@ mod framework {
                         jump = Some(to);
                     }
                 }
-                let record = navigation.number(ui, "preview-record", tr(&lang, "Record"), shown as f64, Some(1.0..=max_record as f64), true, false);
+                let record = navigation.number(ui, "preview-record", tr(&lang, "Record"), shown as f64, NumberSpec::record(1.0..=max_record as f64));
                 if let Some(rec) = record.value {
                     jump = Some(rec as u32);
                 }
@@ -333,8 +350,9 @@ mod framework {
                 commands.push(("data.options", json!({"records": records})));
             }
             if options.records == "one"
-                && let Some(one) =
-                    controls.number(ui, "one-record", tr(&lang, "Record"), options.one.max(1) as f64, Some(1.0..=max_record as f64), true, true).value
+                && let Some(one) = controls
+                    .number(ui, "one-record", tr(&lang, "Record"), options.one.max(1) as f64, NumberSpec::count(1.0..=max_record as f64))
+                    .value
             {
                 commands.push(("data.options", json!({"one": one as u32})));
             }
@@ -357,7 +375,7 @@ mod framework {
                 let mut insets = options.insets;
                 let mut insets_changed = false;
                 for (i, label) in ["Top", "Right", "Bottom", "Left"].iter().enumerate() {
-                    if let Some(value) = controls.number(ui, label, tr(&lang, label), insets[i], None, false, true).value {
+                    if let Some(value) = controls.number(ui, label, tr(&lang, label), insets[i], NumberSpec::measure()).value {
                         insets[i] = value;
                         insets_changed = true;
                     }
@@ -366,11 +384,12 @@ mod framework {
                     commands.push(("data.options", json!({"insets": insets})));
                 }
                 if let Some(spacing) =
-                    controls.number(ui, "column-spacing", tr(&lang, "Column spacing"), options.column_spacing, None, false, true).value
+                    controls.number(ui, "column-spacing", tr(&lang, "Column spacing"), options.column_spacing, NumberSpec::measure()).value
                 {
                     commands.push(("data.options", json!({"columnSpacing": spacing})));
                 }
-                if let Some(spacing) = controls.number(ui, "row-spacing", tr(&lang, "Row spacing"), options.row_spacing, None, false, true).value {
+                let row_spacing = controls.number(ui, "row-spacing", tr(&lang, "Row spacing"), options.row_spacing, NumberSpec::measure());
+                if let Some(spacing) = row_spacing.value {
                     commands.push(("data.options", json!({"rowSpacing": spacing})));
                 }
             }
@@ -392,7 +411,7 @@ mod framework {
                 commands.push(("data.options", json!({"linkImages": link_images})));
             }
             let limit = options.limit.unwrap_or(0) as f64;
-            if let Some(limit) = controls.number(ui, "limit", tr(&lang, "Limit"), limit, Some(0.0..=100_000.0), true, true).value {
+            if let Some(limit) = controls.number(ui, "limit", tr(&lang, "Limit"), limit, NumberSpec::count(0.0..=100_000.0)).value {
                 let limit = limit as u32;
                 commands.push(("data.options", json!({"limit": if limit == 0 { Value::Null } else { json!(limit) }})));
             }
@@ -464,10 +483,7 @@ mod ui223_datamerge_workflow_tests {
     use super::*;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
     use std::{collections::HashSet, sync::Arc};
 
     const CSV: &str = "Name,@Photo,#Code\nAda,,one\nGrace,,two\nKatherine,,three\n";

@@ -9,7 +9,7 @@ use crate::test_window::{self, Window};
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use serde_json::{Value, json};
+use serde_json::json;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Swatches

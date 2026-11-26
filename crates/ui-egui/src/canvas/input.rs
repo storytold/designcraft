@@ -459,6 +459,13 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
     if menu_open || modal_open(app) || (field && !resp.has_focus()) || !keyboard_pane(app) {
         return;
     }
+    canvas_events(app, ui, wants_text, vi);
+    finish_pending_ime_delete(app, ui.ctx());
+    let _ = DVec2::ZERO;
+}
+
+/// One pass's keyboard events for the canvas: the input method, typing, the clipboard and the active tool's keys.
+fn canvas_events(app: &mut DesignApp, ui: &egui::Ui, wants_text: bool, vi: designcraft_engine::ViewInfo) {
     // Keys of a frame that began composing are the IME's too (a Backspace that empties the marked
     // text must not delete the character before it).
     let composing_at_start = app.session.tool_composing();
@@ -535,8 +542,6 @@ pub(super) fn handle_input(app: &mut DesignApp, ui: &mut egui::Ui, resp: &egui::
             _ => {}
         }
     }
-    finish_pending_ime_delete(app, ui.ctx());
-    let _ = DVec2::ZERO;
 }
 
 /// A key for the active tool (caret movement, nudging, Backspace); Escape it leaves alone

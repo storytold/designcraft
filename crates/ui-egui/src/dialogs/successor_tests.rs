@@ -7,7 +7,7 @@ use super::table_layout_kit as kit;
 use super::*;
 use egui::accesskit::Role;
 use egui::{Key, Modifiers};
-use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use egui_kittest::kittest::Queryable as _;
 use serde_json::{Value, json};
 
 /// The items of the first spread.
