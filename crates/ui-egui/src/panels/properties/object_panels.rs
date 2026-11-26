@@ -298,10 +298,6 @@ pub fn align_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::align_panel(app, ui);
 }
 
-/// The width of the shadow's Distance and Size fields: room for a measurement with its unit (`35.278 mm`), as the
-/// Effects dialog has.
-const SHADOW_FIELD_W: f32 = 66.0;
-
 pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
     framework::effects_panel(app, ui);
 }
@@ -369,6 +365,10 @@ fn attributes_contents(app: &mut DesignApp, ui: &mut egui::Ui) {
 /// The object panels on the craft UI framework: every control a framework component. The Text Wrap mode buttons and
 /// Invert, and the Attributes check boxes, are drawn by `wrap_mode_button`, `wrap_invert_checkbox` and `attribute_checkbox`.
 mod framework {
+    /// The width of the shadow's Distance and Size fields: room for a measurement with its unit (`35.278 mm`), as the
+    /// Effects dialog has.
+    const SHADOW_FIELD_W: f32 = 66.0;
+
     use super::{
         ALIGN_EDGES, Arrowhead, BLEND_MODES, BUILT_IN_STROKES, CAPS, CONTOUR_SHOWN_ONLY, CONTOUR_TYPES, CONVERT_POINT, CONVERT_SHAPE, DISTRIBUTE,
         DesignApp, JOINS, PATHFINDER, PATHS, STROKE_ALIGNS, SelInfo, StrokeType, Tokens, Ui, Value, WRAP_SIDES, anchor_transform_section,
