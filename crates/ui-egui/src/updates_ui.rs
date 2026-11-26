@@ -192,7 +192,7 @@ fn message_dialog(ctx: &egui::Context, salt: &'static str, title: String, messag
             .close_on_enter(true)
             .buttons(vec![FooterButton::new(ok_label, DialogRole::Accept)])
             .show(ui, |ui, _| {
-                Text::new(message).sizing(Sizing::FillWidth).show(ui);
+                Text::new(message.clone()).sizing(Sizing::FillWidth).show(ui);
             })
             .output
     });
