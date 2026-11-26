@@ -1,5 +1,5 @@
-use super::common::{bool_s, p, uid, with_props, xref_format_self};
-use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, escape_id, names, num};
+use super::common::{uid, xref_format_self};
+use super::{CHAR_BUILTINS, Document, El, Ex, HashSet, PARA_BUILTINS, names, num};
 
 impl<'a> Ex<'a> {
     // ---------- designmap ----------
@@ -15,30 +15,9 @@ impl<'a> Ex<'a> {
             &format!("{} {}", num(x), num(y)),
             &d.layers.first().map(|l| uid(l.id.0)).unwrap_or_else(|| "n".into()),
         ));
-        root.push(
-            El::new("Language")
-                .attr("Self", "Language/$ID/[No Language]")
-                .attr("Name", "$ID/[No Language]")
-                .attr("SingleQuotes", "''")
-                .attr("DoubleQuotes", "\"\"")
-                .attr("PrimaryLanguageName", "$ID/[No Language]")
-                .attr("SublanguageName", "$ID/[No Language]")
-                .attr("Id", "0")
-                .attr("HyphenationVendor", "$ID/")
-                .attr("SpellingVendor", "$ID/"),
-        );
-        root.push(
-            El::new("Language")
-                .attr("Self", "Language/$ID/English%3a USA")
-                .attr("Name", "$ID/English: USA")
-                .attr("SingleQuotes", "\u{2018}\u{2019}")
-                .attr("DoubleQuotes", "\u{201C}\u{201D}")
-                .attr("PrimaryLanguageName", "$ID/English")
-                .attr("SublanguageName", "$ID/USA")
-                .attr("Id", "269")
-                .attr("HyphenationVendor", "Hunspell")
-                .attr("SpellingVendor", "Hunspell"),
-        );
+        for lang in craft_idml::model::default_languages() {
+            root.push(crate::xml::from_craft(lang));
+        }
         let mut sets = std::collections::BTreeMap::new();
         for a in d.styles.paragraph.iter().map(|p| &p.para).chain(d.stories.values().flat_map(|s| s.paras.iter().map(|p| &p.para))) {
             if let Some(Some(k)) = &a.kinsoku
@@ -48,15 +27,16 @@ impl<'a> Ex<'a> {
             }
         }
         for k in sets.values() {
-            root.push(
-                El::new("KinsokuTable")
-                    .attr("Self", format!("KinsokuTable/{}", escape_id(&k.name)))
-                    .attr("Name", &k.name)
-                    .attr("CantBeginLineChars", &k.no_start)
-                    .attr("CantEndLineChars", &k.no_end)
-                    .attr("CantBeSeparatedChars", &k.inseparable)
-                    .attr("HangingPunctuationChars", &k.hanging),
-            );
+            root.push(crate::xml::from_craft(
+                craft_idml::model::KinsokuTableValues {
+                    name: k.name.clone(),
+                    cant_begin_line_chars: k.no_start.clone(),
+                    cant_end_line_chars: k.no_end.clone(),
+                    cant_be_separated_chars: k.inseparable.clone(),
+                    hanging_punctuation_chars: k.hanging.clone(),
+                }
+                .to_el(),
+            ));
         }
         for t in &d.styles.mojikumi_tables {
             root.push(mojikumi_table_el(t));
@@ -64,29 +44,17 @@ impl<'a> Ex<'a> {
         root.push(crate::xml::from_craft(craft_idml::designmap_include("Graphic", "Resources/Graphic.xml")));
         root.push(crate::xml::from_craft(craft_idml::designmap_include("Fonts", "Resources/Fonts.xml")));
         root.push(crate::xml::from_craft(craft_idml::designmap_include("Styles", "Resources/Styles.xml")));
-        root.push(
-            El::new("NumberingList")
-                .attr("Self", "NumberingList/$ID/[Default]")
-                .attr("Name", "$ID/[Default]")
-                .attr("ContinueNumbersAcrossStories", "false")
-                .attr("ContinueNumbersAcrossDocuments", "false"),
-        );
+        root.push(crate::xml::from_craft(craft_idml::model::NumberingListValues::default_list().to_el()));
         root.push(crate::xml::from_craft(craft_idml::designmap_include("Preferences", "Resources/Preferences.xml")));
         for c in &d.conditions {
-            root.push(
-                El::new("Condition")
-                    .attr("Self", format!("Condition/{}", escape_id(&c.name)))
-                    .attr("Name", &c.name)
-                    .attr("IndicatorColor", format!("{} {} {}", c.color[0], c.color[1], c.color[2]))
-                    .attr("IndicatorMethod", "UseUnderline")
-                    .attr("UnderlineIndicatorAppearance", "Solid")
-                    .attr("Visible", bool_s(c.visible)),
-            );
+            root.push(crate::xml::from_craft(
+                craft_idml::model::ConditionValues { self_id: None, name: Some(c.name.clone()), indicator_rgb: Some(c.color), visible: c.visible }
+                    .to_el(),
+            ));
         }
         // Variables InDesign's cross-reference page/chapter blocks rely on.
-        for (name, ty) in [("XRefChapterNumber", "XrefChapterNumberType"), ("XRefPageNumber", "XrefPageNumberType")] {
-            let n = format!("<?AID 001b?>TV {name}");
-            root.push(El::new("TextVariable").attr("Self", format!("dTextVariablen{n}")).attr("Name", &n).attr("VariableType", ty));
+        for tv in craft_idml::model::default_xref_text_variables() {
+            root.push(crate::xml::from_craft(tv));
         }
         for v in &d.text_variables {
             root.push(text_variable_el(v));
@@ -128,20 +96,24 @@ impl<'a> Ex<'a> {
             }
             let end = secs.get(i + 1).map(|n| n.start).unwrap_or(total).min(total);
             let Some(page) = d.page(s.start) else { continue };
-            let mut el = El::new("Section")
-                .attr("Self", self.fresh())
-                .attr("Length", end.saturating_sub(s.start).max(1))
-                .attr("Name", &s.prefix)
-                .attr("ContinueNumbering", bool_s(s.start_number.is_none()))
-                .attr("IncludeSectionPrefix", bool_s(s.include_prefix));
-            if let Some(n) = s.start_number {
-                el.set("PageNumberStart", n);
-            }
-            el = el.attr("Marker", &s.marker).attr("PageStart", uid(page.id.0)).attr("SectionPrefix", &s.prefix);
-            if alternates && let Some(l) = layouts.iter().rfind(|l| l.start <= s.start) {
-                el = el.attr("AlternateLayout", &l.name).attr("AlternateLayoutLength", l.end.saturating_sub(l.start));
-            }
-            root.push(with_props(el, vec![p("PageNumberStyle", "enumeration", names::number_style_out(s.style))]));
+            let alternate_layout =
+                alternates.then(|| layouts.iter().rfind(|l| l.start <= s.start).map(|l| (l.name.clone(), l.end.saturating_sub(l.start)))).flatten();
+            root.push(crate::xml::from_craft(
+                craft_idml::model::SectionValues {
+                    self_id: self.fresh(),
+                    length: end.saturating_sub(s.start).max(1),
+                    name: s.prefix.clone(),
+                    continue_numbering: s.start_number.is_none(),
+                    include_section_prefix: s.include_prefix,
+                    page_number_start: s.start_number,
+                    marker: s.marker.clone(),
+                    page_start: uid(page.id.0),
+                    section_prefix: s.prefix.clone(),
+                    alternate_layout,
+                    page_number_style: names::number_style_out(s.style).into(),
+                }
+                .to_el(),
+            ));
         }
         if !self.index_topics.is_empty() || !self.index_xrefs.is_empty() {
             root.push(self.index_el());
@@ -175,14 +147,7 @@ impl<'a> Ex<'a> {
                     // in review).
                     let me = format!("HyperlinkPageDestination/p{}", pg.id.0);
                     if !has_self(&root, "HyperlinkPageDestination", &me) {
-                        root.push(
-                            El::new("HyperlinkPageDestination")
-                                .attr("Self", &me)
-                                .attr("Name", &h.name)
-                                .attr("DestinationPage", uid(pg.id.0))
-                                .attr("ViewSetting", "FitPage")
-                                .attr("Hidden", "false"),
-                        );
+                        root.push(crate::xml::from_craft(craft_idml::model::hyperlink_page_destination_el(&me, &h.name, &uid(pg.id.0))));
                     }
                     me
                 }),
@@ -196,64 +161,38 @@ impl<'a> Ex<'a> {
                     // destination, so three links on one frame are three source elements, and
                     // naming them all `i{item}` gave three elements one `Self` (noted in review).
                     let me = format!("HyperlinkPageItemSource/i{}k{i}", id.0);
-                    root.push(
-                        El::new("HyperlinkPageItemSource")
-                            .attr("Self", &me)
-                            .attr("Name", &h.name)
-                            .attr("SourcePageItem", uid(id.0))
-                            .attr("Hidden", "false"),
-                    );
+                    root.push(crate::xml::from_craft(craft_idml::model::hyperlink_page_item_source_el(&me, &h.name, &uid(id.0))));
                     vec![me]
                 }
                 So::Item { .. } => vec![],
                 So::Text { .. } => text_sources.iter().filter(|(_, k)| *k == i).map(|(me, _)| me.clone()).collect(),
             };
             for src in sources {
-                let mut el = El::new("Hyperlink")
-                    .attr("Self", self.fresh())
-                    .attr("Name", &h.name)
-                    .attr("Source", src)
-                    .attr("Visible", "true")
-                    .attr("Highlight", "None")
-                    .attr("Width", "Thin")
-                    .attr("BorderStyle", "Solid")
-                    .attr("Hidden", "false")
-                    .attr("DestinationUniqueKey", h.id & 0xFFFF_FFFF);
-                let mut props = El::new("Properties");
-                props.push(p("Destination", "object", &dest));
-                el.push(props);
-                root.push(el);
+                root.push(crate::xml::from_craft(craft_idml::model::hyperlink_el(&self.fresh(), &h.name, &src, &dest, true, h.id)));
             }
         }
         for (src, target) in self.xref_sources.clone() {
-            let mut h = El::new("Hyperlink")
-                .attr("Self", self.fresh())
-                .attr("Name", "Cross-Reference")
-                .attr("Source", &src)
-                .attr("Visible", "false")
-                .attr("Highlight", "None")
-                .attr("Width", "Thin")
-                .attr("BorderStyle", "Solid")
-                .attr("Hidden", "false")
-                .attr("DestinationUniqueKey", target & 0xFFFF_FFFF);
-            let mut props = El::new("Properties");
-            props.push(p("Destination", "object", craft_idml::model::StoryAnchor::destination_self(target)));
-            h.push(props);
-            root.push(h);
+            root.push(crate::xml::from_craft(craft_idml::model::hyperlink_el(
+                &self.fresh(),
+                "Cross-Reference",
+                &src,
+                &craft_idml::model::StoryAnchor::destination_self(target),
+                false,
+                target,
+            )));
         }
         // Root colour group: the Swatches panel order.
-        let mut cg =
-            El::new("ColorGroup").attr("Self", "ColorGroup/[Root Color Group]").attr("Name", "[Root Color Group]").attr("IsRootColorGroup", "true");
         let mut seen = HashSet::new();
+        let mut swatch_ids = Vec::new();
         for s in &d.swatches {
             let id = self.sw(&s.name);
             if seen.insert(id.clone()) {
-                let n = seen.len() - 1;
-                cg.push(El::new("ColorGroupSwatch").attr("Self", format!("u{:x}ColorGroupSwatch{n:x}", self.next + 1)).attr("SwatchItemRef", id));
+                swatch_ids.push(id);
             }
         }
+        let prefix = format!("u{:x}", self.next + 1);
         self.next += 1;
-        root.push(cg);
+        root.push(crate::xml::from_craft(craft_idml::model::root_color_group_el(&swatch_ids, &prefix)));
         craft_idml::designmap_xml(&crate::xml::to_craft(&root))
     }
 }
@@ -275,110 +214,72 @@ pub(super) fn metadata_xmp(d: &Document) -> String {
 
 /// A `MojikumiTable` element with its spacing overrides.
 fn mojikumi_table_el(t: &designcraft_doc::cjk::MojikumiTable) -> El {
-    let mut e = El::new("MojikumiTable").attr("Self", format!("MojikumiTable/{}", escape_id(&t.name))).attr("Name", &t.name);
-    if !t.based_on.is_empty() {
-        e.set("BasedOnMojikumiSet", &t.based_on);
-    }
-    if !t.overrides.is_empty() {
-        let mut list = El::new("OverrideMojikumiAkiList");
-        for r in &t.overrides {
-            list.push(
-                El::new("OverrideMojikumiAkiType")
-                    .attr("TargetMojikumiClass", r.target_class)
-                    .attr("SideMojikumiClass", r.side_class)
-                    .attr("SideIsAfterTarget", bool_s(r.after))
-                    .attr("Minimum", num(r.minimum))
-                    .attr("Desired", num(r.desired))
-                    .attr("Maximum", num(r.maximum))
-                    .attr("CompressionPriority", r.priority)
-                    .attr("AkiDoesNotFloat", bool_s(r.does_not_float)),
-            );
-        }
-        e.push(El::new("Properties").child(list));
-    }
-    e
+    let overrides = t
+        .overrides
+        .iter()
+        .map(|r| craft_idml::model::MojikumiRow {
+            target_class: r.target_class,
+            side_class: r.side_class,
+            after: r.after,
+            minimum: r.minimum,
+            desired: r.desired,
+            maximum: r.maximum,
+            priority: r.priority,
+            does_not_float: r.does_not_float,
+        })
+        .collect();
+    crate::xml::from_craft(craft_idml::model::MojikumiTableValues { name: t.name.clone(), based_on: t.based_on.clone(), overrides }.to_el())
 }
 
 /// A `Layer` element with its colour property.
 fn layer_el(l: &designcraft_doc::Layer) -> El {
     let color = match names::layer_color_out(l.color) {
-        Some(n) => p("LayerColor", "enumeration", n),
-        None => {
-            let mut e = El::new("LayerColor").attr("type", "list");
-            for c in l.color {
-                e.push(p("ListItem", "double", num(c as f64)));
-            }
-            e
-        }
+        Some(n) => craft_idml::model::LayerColorValue::Named(n),
+        None => craft_idml::model::LayerColorValue::Rgb(l.color.map(f64::from)),
     };
-    let el = El::new("Layer")
-        .attr("Self", uid(l.id.0))
-        .attr("Name", &l.name)
-        .attr("Visible", bool_s(l.visible))
-        .attr("Locked", bool_s(l.locked))
-        .attr("IgnoreWrap", bool_s(l.suppress_wrap_when_hidden))
-        .attr("ShowGuides", bool_s(l.show_guides))
-        .attr("LockGuides", "false")
-        .attr("UI", "true")
-        .attr("Expendable", "true")
-        .attr("Printable", bool_s(l.printable));
-    with_props(el, vec![color])
+    crate::xml::from_craft(
+        craft_idml::model::LayerValues {
+            self_id: uid(l.id.0),
+            name: l.name.clone(),
+            visible: l.visible,
+            locked: l.locked,
+            ignore_wrap: l.suppress_wrap_when_hidden,
+            show_guides: l.show_guides,
+            lock_guides: l.lock_guides,
+            printable: l.printable,
+            color,
+        }
+        .to_el(),
+    )
 }
 
 /// A text variable definition with its type's settings element.
 fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
+    use craft_idml::model::{TextDateKind, TextVariableKind, TextVariableValues};
     use designcraft_doc::vars::{Use, VarKind};
-    let pref = |name: &str| El::new(name).attr("TextBefore", &v.before);
-    let (ty, settings) = match &v.kind {
-        VarKind::Custom { text } => ("CustomTextType", Some(pref("CustomTextVariablePreference").attr("Contents", text))),
-        VarKind::LastPageNumber { section } => (
-            "LastPageNumberType",
-            Some(
-                pref("PageNumberVariablePreference").attr("Format", "Current").attr("Scope", if *section { "SectionScope" } else { "DocumentScope" }),
-            ),
-        ),
-        VarKind::ChapterNumber => ("ChapterNumberType", Some(pref("ChapterNumberVariablePreference").attr("Format", "Current"))),
-        VarKind::FileName { extension } => {
-            ("FileNameType", Some(pref("FileNameVariablePreference").attr("IncludePath", "false").attr("IncludeExtension", bool_s(*extension))))
-        }
-        VarKind::CreationDate { format } => ("CreationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
-        VarKind::ModificationDate { format } => ("ModificationDateType", Some(pref("DateVariablePreference").attr("Format", format))),
-        VarKind::OutputDate { format } => ("OutputDateType", Some(pref("DateVariablePreference").attr("Format", format))),
+    let kind = match &v.kind {
+        VarKind::Custom { text } => TextVariableKind::CustomText { text: text.clone() },
+        VarKind::LastPageNumber { section } => TextVariableKind::LastPageNumber { section: *section },
+        VarKind::ChapterNumber => TextVariableKind::ChapterNumber,
+        VarKind::FileName { extension } => TextVariableKind::FileName { extension: *extension },
+        VarKind::CreationDate { format } => TextVariableKind::Date { kind: TextDateKind::Creation, format: format.clone() },
+        VarKind::ModificationDate { format } => TextVariableKind::Date { kind: TextDateKind::Modification, format: format.clone() },
+        VarKind::OutputDate { format } => TextVariableKind::Date { kind: TextDateKind::Output, format: format.clone() },
         VarKind::RunningHeader { style, use_, character } => {
-            let (ty, el, key, style_ref) = if *character {
-                (
-                    "MatchCharacterStyleType",
-                    "MatchCharacterStylePreference",
-                    "AppliedCharacterStyle",
-                    names::style_self("CharacterStyle", CHAR_BUILTINS, style),
-                )
+            let style_ref = if *character {
+                names::style_self("CharacterStyle", CHAR_BUILTINS, style)
             } else {
-                (
-                    "MatchParagraphStyleType",
-                    "MatchParagraphStylePreference",
-                    "AppliedParagraphStyle",
-                    names::style_self("ParagraphStyle", PARA_BUILTINS, style),
-                )
+                names::style_self("ParagraphStyle", PARA_BUILTINS, style)
             };
-            let strategy = if *use_ == Use::LastOnPage { "LastOnPage" } else { "FirstOnPage" };
-            (
-                ty,
-                Some(pref(el).attr(key, style_ref).attr("SearchStrategy", strategy).attr("ChangeCase", "None").attr("DeleteEndPunctuation", "false")),
-            )
+            TextVariableKind::RunningHeader { style: style_ref, character: *character, last_on_page: *use_ == Use::LastOnPage }
         }
-        VarKind::Imported { variable_type, settings_element, settings, .. } => {
-            let el = (!settings_element.is_empty()).then(|| El { name: settings_element.clone(), attrs: settings.clone(), children: vec![] });
-            (variable_type.as_str(), el)
-        }
+        VarKind::Imported { variable_type, settings_element, settings, .. } => TextVariableKind::Imported {
+            variable_type: variable_type.clone(),
+            settings_element: settings_element.clone(),
+            settings: settings.clone(),
+        },
     };
-    let mut e = El::new("TextVariable").attr("Self", format!("dTextVariablen{}", v.name)).attr("Name", &v.name).attr("VariableType", ty);
-    if let Some(mut s) = settings {
-        if !matches!(v.kind, VarKind::Imported { .. }) {
-            s.set("TextAfter", &v.after);
-        }
-        e.push(s);
-    }
-    e
+    crate::xml::from_craft(TextVariableValues { self_id: None, name: v.name.clone(), before: v.before.clone(), after: v.after.clone(), kind }.to_el())
 }
 
 impl Ex<'_> {
@@ -386,13 +287,7 @@ impl Ex<'_> {
     fn url_dest_el(&mut self, root: &mut El, url: &str, name: &str) -> String {
         let me = format!("HyperlinkURLDestination/u{:x}", fnv(url));
         if !has_self(root, "HyperlinkURLDestination", &me) {
-            root.push(
-                El::new("HyperlinkURLDestination")
-                    .attr("Self", &me)
-                    .attr("Name", if name.is_empty() { url } else { name })
-                    .attr("DestinationURL", url)
-                    .attr("Hidden", "false"),
-            );
+            root.push(crate::xml::from_craft(craft_idml::model::hyperlink_url_destination_el(&me, if name.is_empty() { url } else { name }, url)));
         }
         me
     }

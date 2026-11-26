@@ -280,6 +280,98 @@ fn long_document_names_keep_tabs_short_and_close_buttons_visible() {
     assert!(short.min.x - first.min.x <= 2.0 * super::DOC_TAB_MAX_W, "the last tab {short:?} starts too far right");
 }
 
+/// Tabs past the bar are reached with the arrows (one tab per click) and the document list.
+#[test]
+fn overflowing_document_tabs_scroll_with_arrows_and_list_every_document() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    app.run("file.activate", serde_json::json!({"index": 0})).unwrap();
+    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+    h.run_steps(4);
+    let window = h.ctx.content_rect();
+    let last = |h: &egui_kittest::Harness<'static, test_window::Window>| h.query_by_label("Doc 12").map(|n| n.rect());
+    assert!(last(&h).is_none_or(|r| r.max.x > window.max.x), "the last tab starts off screen");
+
+    // A tab clipped by the bar is narrower than its 150 pt minimum.
+    let whole = |h: &egui_kittest::Harness<'static, test_window::Window>, n: usize| {
+        h.query_by_label(&format!("Doc {n}")).is_some_and(|tab| tab.rect().width() > 149.0)
+    };
+    let shown = (1..=12).take_while(|n| whole(&h, *n)).count();
+    let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+    test_window::click_at(&mut h, arrow);
+    assert!(whole(&h, shown + 1), "one click brings the next tab fully into view");
+    assert!(!whole(&h, shown + 2), "and no more than that one");
+
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let tab = last(&h).expect("the last tab scrolled into view");
+    assert!(window.contains_rect(tab), "{tab:?} outside {window:?}");
+    test_window::click_at(&mut h, tab.right_center() - vec2(10.0, 0.0));
+    assert_eq!(h.state().app.session.active_index(), Some(11));
+
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Left").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let (first, left) = (h.get_by_label("Doc 1").rect(), h.get_by_label("Scroll Tabs Left").rect());
+    assert!((first.min.x - left.max.x).abs() < 1.0, "{first:?} is not the first tab, next to {left:?}");
+
+    let list = h.query_all_by_label("▾").map(|n| n.rect()).find(|r| first.y_range().contains(r.center().y)).expect("the document list").center();
+    test_window::click_at(&mut h, list);
+    h.run_steps(3);
+    h.query_all_by_label("Doc 7").find(|n| !first.y_range().contains(n.rect().center().y)).expect("the list's entry").click();
+    h.run_steps(3);
+    assert_eq!(h.state().app.session.active_index(), Some(6));
+    assert!(window.contains_rect(h.get_by_label("Doc 7").rect()), "the chosen document's tab is scrolled into view");
+}
+
+/// A narrower window must not leave the active tab hidden.
+#[test]
+fn the_active_document_tab_stays_in_view_when_the_window_shrinks() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    let mut h = test_window::open(app, vec2(1800.0, 600.0));
+    h.run_steps(4);
+    let full_width = h.get_by_label("Doc 12").rect().width();
+    h.set_size(vec2(900.0, 600.0));
+    h.run_steps(6);
+    let window = h.ctx.content_rect();
+    // The reported rect is clipped to the bar, so a half-hidden tab would be narrower.
+    let tab = h.get_by_label("Doc 12").rect();
+    assert!(window.contains_rect(tab) && (tab.width() - full_width).abs() < 1.0, "{tab:?} (was {full_width} wide) outside {window:?}");
+}
+
+/// The successor of a closed active tab takes its index, so identity decides what to reveal.
+#[test]
+fn closing_an_active_tab_scrolled_out_of_view_reveals_its_successor() {
+    let mut app = app();
+    for n in 1..=12 {
+        app.run("file.new", serde_json::json!({ "title": format!("Doc {n}") })).unwrap();
+    }
+    app.run("file.activate", serde_json::json!({"index": 2})).unwrap();
+    let mut h = test_window::open(app, vec2(1200.0, 600.0));
+    h.run_steps(4);
+    for _ in 0..12 {
+        let arrow = h.get_by_label("Scroll Tabs Right").rect().center();
+        test_window::click_at(&mut h, arrow);
+    }
+    let left_edge = h.get_by_label("Scroll Tabs Left").rect().max.x;
+    assert!(h.get_by_label("Doc 3").rect().max.x <= left_edge + 1.0, "the active tab is scrolled out of view");
+    crate::menus::close_document(&mut h.state_mut().app, Some(2));
+    h.run_steps(6);
+    // The next document takes the closed one's index, so only its identity tells them apart.
+    assert_eq!(h.state().app.session.active_index(), Some(2));
+    let window = h.ctx.content_rect();
+    let tab = h.get_by_label("Doc 4").rect();
+    assert!(window.contains_rect(tab) && tab.width() > 149.0, "{tab:?} not fully in view in {window:?}");
+}
+
 /// Zero2Graphic's page layout video (0:48): with the Type tool, the Control panel's font size
 /// has a list of sizes; the instructor picks 72 pt from it. Leading has the same list.
 #[test]
@@ -432,6 +524,41 @@ fn the_type_control_panel_has_character_and_paragraph_modes() {
     assert_eq!(a["para"]["align"], "center");
     click(&mut h, "Character Formatting Controls");
     assert!(has(&h, "Small Caps"));
+}
+
+/// Show Right-to-Left Features adds Left-to-Right and Right-to-Left Paragraph Direction buttons
+/// to the ¶ Control panel; a click sets the direction and mirrors left alignment.
+#[test]
+fn the_paragraph_control_panel_has_direction_buttons_under_rtl_features() {
+    let mut app = app();
+    app.run("file.new", serde_json::json!({})).unwrap();
+    let f = app.run("frame.create", serde_json::json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Bulbs"})).unwrap();
+    app.run("text.select", serde_json::json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+    app.run("prefs.set", serde_json::json!({"rtlFeatures": false})).unwrap();
+    app.session.set_tool("type");
+    let mut h = test_window::open(app, vec2(2400.0, 700.0));
+    let bar = test_window::panel_rect(&h, "control_bar");
+    let in_bar = move |r: egui::Rect| bar.y_range().contains(r.center().y);
+    let click = |h: &mut egui_kittest::Harness<'static, test_window::Window>, label: &str| {
+        let r = h.query_all_by_label(label).map(|n| n.rect()).find(|r| in_bar(*r)).unwrap_or_else(|| panic!("no {label:?} in the Control panel"));
+        h.hover_at(r.center());
+        h.drag_at(r.center());
+        h.drop_at(r.center());
+        h.run_steps(3);
+    };
+    let has = |h: &egui_kittest::Harness<'static, test_window::Window>, label: &str| h.query_all_by_label(label).any(|n| in_bar(n.rect()));
+    click(&mut h, "Paragraph Formatting Controls");
+    assert!(has(&h, "Bulleted List") && !has(&h, "Right-to-Left Paragraph Direction"), "hidden while the preference is off");
+    h.state_mut().app.run("prefs.set", serde_json::json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Left-to-Right Paragraph Direction"));
+    click(&mut h, "Right-to-Left Paragraph Direction");
+    let p = crate::panels::text_attrs(&mut h.state_mut().app).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().app.run("prefs.set", serde_json::json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert!(has(&h, "Right-to-Left Paragraph Direction"), "shown for a right-to-left paragraph");
 }
 
 /// The course's chapter 21: the ¶ Control panel has InDesign's Bulleted and Numbered List

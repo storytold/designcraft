@@ -102,7 +102,7 @@ eight of the twelve (cs, da, el, en_GB, fi, hu, it, nb, nl, pl, ro, ru, sq, sv, 
 ## Document languages
 
 InDesign 2026 hyphenates and spell-checks ~40 languages (Hunspell and Duden dictionaries).
-DesignCraft hyphenates **English, Danish, Dutch, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English** only. Text language
+DesignCraft hyphenates **English, Croatian, Danish, Dutch, French, German (2006 reform), Greek, Italian, Norwegian, Portuguese and Spanish** and spell-checks **English** only. Text language
 can be set per paragraph and character (Properties, Character panel) and drives quotes and
 locale shaping; Esperanto is offered too (not hyphenated yet, #1201). See
 [typography-parity.md](typography-parity.md).
@@ -127,6 +127,7 @@ German variants have no automatic hyphenation; their German shaping and quotes a
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-06 | minor | Croatian hyphenation (hyph-hr): Document languages updated |
 | 2026-11-04 | minor | pt-BR catalog filled (996 strings and the unit names; path is "demarcador"): 2,936 of 2,939 strings by `i18n-report`, pt-BR to full 8–12 → 1–2 h; Russian (1,855) listed, eight languages beyond the twelve |
 | 2026-11-01 | minor | Initial Hungarian interface: 1,906 entries, four context captions, native review, bundled-font glyph coverage and wide/narrow flyout regressions |
 | 2026-10-11 | minor | Localized Japanese print, import and table controls; checked Japanese and English renders |
