@@ -204,7 +204,35 @@ impl<'r> Importer<'r> {
             let effects = self.style_effects(e);
             let corners = style_corners(&levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
-            let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
+            // Story Options › Story Direction, from the style or the nearest it is based on.
+            let story_direction = category_on(&levels, "EnableStoryOptions", |_| false)
+                .then(|| {
+                    levels
+                        .iter()
+                        .filter(|l| l.get("EnableStoryOptions") != Some("false"))
+                        .filter_map(|l| l.find("StoryPreference")?.get("StoryDirection"))
+                        .next()
+                        .map(|d| {
+                            if d == "RightToLeftDirection" {
+                                designcraft_doc::TextDirection::RightToLeft
+                            } else {
+                                designcraft_doc::TextDirection::LeftToRight
+                            }
+                        })
+                })
+                .flatten();
+            let s = ObjectStyle {
+                name: name.clone(),
+                based_on,
+                fill,
+                stroke,
+                paragraph_style,
+                apply_next_style,
+                text_frame,
+                effects,
+                corners,
+                story_direction,
+            };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
                 None => self.styles.object.push(s),

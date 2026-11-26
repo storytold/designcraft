@@ -1091,6 +1091,22 @@ fn ports_hit_at_any_zoom() {
     assert_eq!(thread::port_at(&cx, port + designcraft_geom::Vec2::new(4.0, 0.0)), None, "8 screen px away at 4×");
 }
 
+/// A right-to-left story's frames have their ports mirrored, as in InDesign: the in port on the
+/// right edge below the top-right corner, the out port on the left edge above the bottom-left
+/// corner; the Selection tool hits them there.
+#[test]
+fn a_right_to_left_storys_ports_are_mirrored() {
+    let mut td = thread_doc();
+    let sid = td.d.item(td.a).unwrap().text_frame().unwrap().story;
+    td.d.story_mut(sid).unwrap().direction = designcraft_doc::TextDirection::RightToLeft;
+    let cx = td.cx();
+    assert!((td.port(td.a, true) - td.at(100.0, 148.0)).hypot() < 1e-9, "out port bottom left");
+    assert!((td.port(td.a, false) - td.at(250.0, 100.0 + 14.5)).hypot() < 1e-9, "in port top right");
+    assert_eq!(thread::port_at(&cx, td.port(td.a, true)), Some((td.a, true)));
+    // A left-to-right story keeps them where they were.
+    assert!((td.port(td.x, true) - td.at(450.0, 148.0)).hypot() < 1e-9);
+}
+
 #[test]
 fn loaded_click_on_empty_page_makes_a_column_frame() {
     let td = thread_doc();

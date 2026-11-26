@@ -6,8 +6,9 @@ use crate::DesignApp;
 use crate::widgets::{self, NumField};
 
 /// The Story panel: Optical Margin Alignment for the stories of the text selection or the
-/// selected text frames, and the type size its hang amounts are set for. Without text or a text
-/// frame selected, the controls are disabled.
+/// selected text frames, the type size its hang amounts are set for, and Story Direction (under
+/// Show Right-to-Left Features, or for a right-to-left story).
+/// Without text or a text frame selected, the controls are disabled.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let options = super::text_attrs(app).map(|a| a["storyOptions"].clone());
     let enabled = options.is_some();
@@ -28,6 +29,25 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("story.options", json!({"opticalMarginSize": size}));
             }
         });
+        // Story Direction, under Show Right-to-Left Features or for a right-to-left story: the
+        // column order, the side the footnote rule starts on and where the frame ports sit.
+        // Stories that differ show neither selected.
+        let rtl = options["direction"] == "rightToLeft";
+        if crate::show_rtl_control(app, rtl) {
+            ui.horizontal(|ui| {
+                widgets::caption(ui, &tr("Story Direction:"));
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (direction, icon, tip) in [
+                    ("leftToRight", "story-dir-ltr", "Left-to-Right Story Direction"),
+                    ("rightToLeft", "story-dir-rtl", "Right-to-Left Story Direction"),
+                ] {
+                    let on = options["direction"] == direction;
+                    if widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() && !on {
+                        let _ = app.run("story.options", json!({"direction": direction}));
+                    }
+                }
+            });
+        }
     });
 }
 
@@ -93,12 +113,47 @@ mod tests {
         assert_eq!(size_field_text(&h).as_deref(), Some("30 pt"));
     }
 
+    /// Story Direction shows under Show Right-to-Left Features, or for a right-to-left story with
+    /// the preference off in an English interface; each icon sets the story's direction.
+    #[test]
+    fn story_panel_story_direction_follows_show_right_to_left_features() {
+        use designcraft_doc::{StoryId, TextDirection};
+
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let story =
+            app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "Columns", "caret": true})).unwrap()["story"]
+                .as_u64()
+                .unwrap();
+        app.run("edit.selectAll", json!({})).unwrap();
+        app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+        let mut h = harness(app);
+        let direction = |h: &Harness<'static, DesignApp>| h.state().session.active().unwrap().doc.story(StoryId(story)).unwrap().direction;
+        assert!(h.query_by_label("Right-to-Left Story Direction").is_none(), "hidden while the preference is off");
+        h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.get_by_label("Left-to-Right Story Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+        h.get_by_label("Right-to-Left Story Direction").click();
+        h.run_steps(3);
+        assert_eq!(direction(&h), TextDirection::RightToLeft);
+        // With the preference off in an English interface, a right-to-left story still shows it.
+        h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+        h.run_steps(3);
+        assert_eq!(h.get_by_label("Right-to-Left Story Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+        h.get_by_label("Left-to-Right Story Direction").click();
+        h.run_steps(3);
+        assert_eq!(direction(&h), TextDirection::LeftToRight);
+    }
+
     #[test]
     fn story_panel_is_disabled_without_text() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
+        app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
         let mut h = harness(app);
         assert!(h.get_by_label("Optical Margin Alignment").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Right-to-Left Story Direction").accesskit_node().is_disabled());
+        assert!(h.get_by_label("Left-to-Right Story Direction").accesskit_node().is_disabled());
         h.get_by_label("Optical Margin Alignment").click();
         h.run_steps(3);
         assert_eq!(h.get_by_label("Optical Margin Alignment").accesskit_node().toggled(), Some(egui::accesskit::Toggled::False));

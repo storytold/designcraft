@@ -17,14 +17,21 @@ pub const ID: &str = "objectStyle";
 
 /// Basic Attributes: (key, label), in InDesign's order. General isn't an attribute: it sums the
 /// style up.
-const ATTRIBUTES: [(&str, &str); 6] = [
+const ATTRIBUTES: [(&str, &str); 7] = [
     ("general", "General"),
     ("fill", "Fill"),
     ("stroke", "Stroke"),
     ("corners", "Stroke & Corner Options"),
     ("paragraph", "Paragraph Styles"),
     ("textFrame", "Text Frame General Options"),
+    ("story", "Story Options"),
 ];
+
+/// Whether the dialog lists Story Options: under Show Right-to-Left Features, or for a style
+/// that sets a right-to-left Story Direction.
+fn story_options_shown(app: &DesignApp, d: &Dialog) -> bool {
+    crate::show_rtl_control(app, d.b("storyWasRtl"))
+}
 
 /// The fields of the Paragraph Styles and Text Frame General Options pages: the style's paragraph
 /// style (`""`: none), Apply Next Style, and text frame options `tf` as the Text Frame Options
@@ -79,6 +86,13 @@ pub fn open_new(app: &mut DesignApp) {
     let from = it.is_some();
     // A text frame's options come along; its paragraph style is left to choose, as in InDesign.
     let frame = it.as_ref().and_then(|i| i.text_frame()).map(|t| t.options.clone());
+    // Story Direction starts as the selected frame's story's; the style sets it only when it is
+    // included.
+    let story_dir = it
+        .as_ref()
+        .and_then(|i| i.text_frame())
+        .and_then(|t| st.doc.story(t.story))
+        .map_or(designcraft_doc::TextDirection::LeftToRight, |s| s.direction);
     let mut fields = json!({
         "new": true,
         "doc": doc,
@@ -91,7 +105,9 @@ pub fn open_new(app: &mut DesignApp) {
         "corners": it.as_ref().map(|i| i.corners.path_to_named(&i.path)).unwrap_or_default(),
         "fx": crate::effects_dialog::effects_json(&it.map(|i| i.effects).unwrap_or_default()),
         "hadEffects": from,
-        "inc": {"fill": from, "stroke": from, "corners": from, "paragraph": from, "textFrame": frame.is_some()},
+        "inc": {"fill": from, "stroke": from, "corners": from, "paragraph": from, "textFrame": frame.is_some(), "story": false},
+        "storyDirection": story_dir,
+        "storyWasRtl": false,
         "page": "general",
         "apply": from,
     });
@@ -121,8 +137,10 @@ pub fn open_edit(app: &mut DesignApp, name: &str) -> Result<(), String> {
         "hadEffects": os.effects.is_some(),
         "inc": {
             "fill": os.fill.is_some(), "stroke": os.stroke.is_some(), "corners": os.corners.is_some(),
-            "paragraph": os.paragraph_style.is_some(), "textFrame": os.text_frame.is_some(),
+            "paragraph": os.paragraph_style.is_some(), "textFrame": os.text_frame.is_some(), "story": os.story_direction.is_some(),
         },
+        "storyDirection": os.story_direction.unwrap_or_default(),
+        "storyWasRtl": os.story_direction == Some(designcraft_doc::TextDirection::RightToLeft),
         "page": "general",
         "apply": false,
     });
@@ -157,6 +175,10 @@ fn attrs(d: &Dialog) -> serde_json::Map<String, Value> {
     let paragraph = d.s("paragraphStyle");
     p.insert("paragraphStyle".into(), if included(d, "paragraph") && !paragraph.is_empty() { json!(paragraph) } else { Value::Null });
     p.insert("applyNextStyle".into(), json!(d.b("applyNext")));
+    p.insert(
+        "storyDirection".into(),
+        if included(d, "story") { d.fields.get("storyDirection").cloned().unwrap_or(Value::Null) } else { Value::Null },
+    );
     p
 }
 
@@ -375,6 +397,10 @@ fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
             tr("Inset Spacing")
         ));
     }
+    if included(d, "story") {
+        let rtl = d.s("storyDirection") == "rightToLeft";
+        out.push(format!("{}: {} {}", tr("Story Options"), tr("Story Direction:"), tr(if rtl { "Right to Left" } else { "Left to Right" })));
+    }
     if sets_effects(d) {
         let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
         let on: Vec<String> =
@@ -501,6 +527,24 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
         "textFrame" => {
             ui.add_enabled_ui(included(d, "textFrame"), |ui| crate::dialogs::general(&app.ui.language, ui, d));
         }
+        // Story Options › Story Direction, as the Story panel sets it.
+        "story" => {
+            ui.add_enabled_ui(included(d, "story"), |ui| {
+                ui.horizontal(|ui| {
+                    crate::rtl::label(ui, tr("Story Direction:"));
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let rtl = d.s("storyDirection") == "rightToLeft";
+                    for (direction, icon, tip, on) in [
+                        ("leftToRight", "story-dir-ltr", "Left-to-Right Story Direction", !rtl),
+                        ("rightToLeft", "story-dir-rtl", "Right-to-Left Story Direction", rtl),
+                    ] {
+                        if crate::widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() && !on {
+                            d.fields.insert("storyDirection".into(), json!(direction));
+                        }
+                    }
+                });
+            });
+        }
         p => crate::effects_dialog::page_ui(app, ui, d, p),
     }
 }
@@ -527,7 +571,11 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.vertical(|ui| {
             ui.set_width(230.0);
             crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
+            let story_shown = story_options_shown(app, d);
             for (key, label) in ATTRIBUTES {
+                if key == "story" && !story_shown {
+                    continue;
+                }
                 let check = (key != "general").then(|| included(d, key));
                 if let Some(on) = list_row(ui, d, key, &tr(label), check) {
                     set(d, &["inc", key], json!(on));
@@ -971,5 +1019,44 @@ mod tests {
         let style = |id: u64| app.session.active().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().object_style.clone();
         assert_eq!(style(a), "Picked");
         assert_ne!(style(b), "Picked");
+    }
+
+    /// Story Options lists under Show Right-to-Left Features, or for a style whose Story Direction
+    /// is right to left with the preference off in an English interface; OK gives the style the
+    /// direction chosen, and a frame it is applied to takes it.
+    #[test]
+    fn story_options_set_an_object_styles_story_direction() {
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "text": "Hebrew", "caret": false})).unwrap();
+        let id = r["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [id]})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        open_new(&mut app);
+        let texts = frame(&mut app, &ctx);
+        assert!(!texts.iter().any(|x| x.trim() == "Story Options"), "hidden while the preference is off: {texts:?}");
+        app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Story Options"), "{texts:?}");
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("name".into(), json!("Hebrew Frame"));
+            d.fields.insert("page".into(), json!("story"));
+            set(d, &["inc", "story"], json!(true));
+            d.fields.insert("storyDirection".into(), json!("rightToLeft"));
+        }
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Story Direction:"), "{texts:?}");
+        crate::dialogs::confirm(&mut app).unwrap();
+        let doc = app.session.active().unwrap().doc.clone();
+        assert_eq!(doc.styles.object_style("Hebrew Frame").unwrap().story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
+        let sid = doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story;
+        assert_eq!(doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::RightToLeft, "applied to the selection");
+        // With the preference off in an English interface, a right-to-left style still lists it.
+        app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+        open_edit(&mut app, "Hebrew Frame").unwrap();
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Story Options"), "{texts:?}");
     }
 }

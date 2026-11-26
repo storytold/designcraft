@@ -69,6 +69,10 @@ pub struct ObjectStyle {
     /// those corners ([`CornerOptions::named_to_path`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corners: Option<CornerOptions>,
+    /// Story Options › Story Direction: a text frame's story takes it, as its paragraph style
+    /// does (`None`: the style sets none). Other objects have no story, and ignore it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub story_direction: Option<crate::TextDirection>,
 }
 
 impl ObjectStyle {
@@ -109,10 +113,11 @@ impl ObjectStyle {
         Some(out)
     }
 
-    /// Whether a story's paragraphs are in the paragraph styles this style gives them (they
-    /// always are when it sets none).
+    /// Whether a story's paragraphs are in the paragraph styles this style gives them, and the
+    /// story in its Story Direction (each holds when the style sets none).
     pub fn story_follows(&self, styles: &Styles, st: &Story) -> bool {
-        self.paragraph_styles(styles, st.paras.len()).is_none_or(|want| st.paras.iter().zip(&want).all(|(f, w)| f.style == *w))
+        self.story_direction.is_none_or(|d| st.direction == d)
+            && self.paragraph_styles(styles, st.paras.len()).is_none_or(|want| st.paras.iter().zip(&want).all(|(f, w)| f.style == *w))
     }
 
     /// After an edit from `old`: the paragraphs of `st` still in the paragraph style `old` gives
@@ -131,15 +136,19 @@ impl ObjectStyle {
             .collect()
     }
 
-    /// Put a story's paragraphs in the paragraph styles this style gives them; `false` when it
-    /// sets none or they already are.
+    /// Put a story's paragraphs in the paragraph styles this style gives them, and the story in
+    /// its Story Direction; `false` when it sets neither or they already are.
     pub fn restyle(&self, styles: &Styles, st: &mut Story) -> bool {
         if self.story_follows(styles, st) {
             return false;
         }
-        let Some(want) = self.paragraph_styles(styles, st.paras.len()) else { return false };
-        for (f, w) in st.paras.iter_mut().zip(want) {
-            f.style = w;
+        if let Some(d) = self.story_direction {
+            st.direction = d;
+        }
+        if let Some(want) = self.paragraph_styles(styles, st.paras.len()) {
+            for (f, w) in st.paras.iter_mut().zip(want) {
+                f.style = w;
+            }
         }
         st.rev = st.rev.wrapping_add(1);
         true

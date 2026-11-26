@@ -426,3 +426,19 @@ fn a_style_with_legacy_all_corner_attributes_keeps_its_corners() {
     let c = style.corners.expect("the legacy corners").corners;
     assert!(c.iter().all(|c| c.shape == CornerShape::Rounded && c.size == 9.0), "{c:?}");
 }
+
+/// An object style's Story Options › Story Direction (`EnableStoryOptions` and its
+/// `StoryPreference`) round-trips; a style that sets none keeps none.
+#[test]
+fn object_style_story_direction_round_trips() {
+    use designcraft_doc::TextDirection;
+    let mut d = small_doc();
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    for (name, dir) in [("Hebrew Frame", Some(TextDirection::RightToLeft)), ("English Frame", Some(TextDirection::LeftToRight)), ("Plain", None)] {
+        styles.object.push(designcraft_doc::ObjectStyle { name: name.into(), story_direction: dir, ..Default::default() });
+    }
+    let back = import_idml(&export_idml(&d)).unwrap();
+    for (name, dir) in [("Hebrew Frame", Some(TextDirection::RightToLeft)), ("English Frame", Some(TextDirection::LeftToRight)), ("Plain", None)] {
+        assert_eq!(back.styles.object_style(name).unwrap().story_direction, dir, "{name}");
+    }
+}

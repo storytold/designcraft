@@ -258,10 +258,18 @@ impl Notes {
             let top = col.y1 - total;
             let ft = &mut out.frames[fi];
             if o.rule.on && o.rule.weight > 0.0 {
-                let x0 = col.x0 + o.rule.left_indent;
+                // The rule starts on the story's start side, as in InDesign: at the right of the
+                // column in a right-to-left story, its indent measured from there.
+                let (x0, x1) = if story.direction == designcraft_doc::TextDirection::RightToLeft {
+                    let x1 = col.x1 - o.rule.left_indent;
+                    ((x1 - o.rule.width).max(col.x0), x1)
+                } else {
+                    let x0 = col.x0 + o.rule.left_indent;
+                    (x0, (x0 + o.rule.width).min(col.x1))
+                };
                 let y = top + o.rule.offset - o.rule.weight;
                 ft.decos.push(Deco {
-                    rect: Rect::new(x0, y, (x0 + o.rule.width).min(col.x1), y + o.rule.weight),
+                    rect: Rect::new(x0, y, x1, y + o.rule.weight),
                     color: o.rule.color.clone(),
                     tint: o.rule.tint,
                     ..Deco::default()

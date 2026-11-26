@@ -161,6 +161,9 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(tf) = text_frame_param(CREATE, p, os.text_frame.as_ref())? {
         os.text_frame = tf;
     }
+    if let Some(d) = story_direction_param(CREATE, p)? {
+        os.story_direction = d;
+    }
     if let Some(e) = effects_param("style.object.create", p, os.effects.as_ref().unwrap_or(&Effects::default()))? {
         os.effects = Some(e);
     }
@@ -187,6 +190,17 @@ fn check_swatches(cmd: &str, s: &Session, p: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `storyDirection`: leftToRight or rightToLeft, or null (the object style sets none).
+fn story_direction_param(cmd: &str, p: &Value) -> Result<Option<Option<designcraft_doc::TextDirection>>> {
+    match p.get("storyDirection") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(|d| Some(Some(d)))
+            .map_err(|_| bad(cmd, "`storyDirection` must be leftToRight, rightToLeft or null")),
+    }
 }
 
 /// `paragraphStyle`: a paragraph style's name, or null (the object style sets none).
@@ -376,6 +390,9 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(tf) = text_frame_param(CMD, p, old.text_frame.as_ref())? {
         new.text_frame = tf;
     }
+    if let Some(d) = story_direction_param(CMD, p)? {
+        new.story_direction = d;
+    }
     if p.get("rename").is_some_and(|r| !r.is_string()) {
         return Err(bad(CMD, "`rename` must be a style name"));
     }
@@ -495,6 +512,66 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        // A story of a frame using the style takes the new Story Direction while it is in the old
+        // one's (any direction, when the style set none before).
+        if let Some(dir) = new.story_direction
+            && new.story_direction != old.story_direction
+        {
+            let mut stories: Vec<_> =
+                d.placed_items().into_iter().filter(|i| i.object_style == new.name).filter_map(|i| i.text_frame().map(|tf| tf.story)).collect();
+            stories.sort_unstable();
+            stories.dedup();
+            for sid in stories {
+                if let Some(st) = d.story_mut(sid)
+                    && st.direction != dir
+                    && old.story_direction.is_none_or(|was| st.direction == was)
+                {
+                    st.direction = dir;
+                    st.rev = st.rev.wrapping_add(1);
+                    restyled += 1;
+                }
+            }
+        }
         Ok(json!({"name": new.name, "updated": updated, "restyled": restyled}))
     })
+}
+
+#[cfg(test)]
+mod story_direction_tests {
+    use crate::Session;
+    use designcraft_doc::{StoryId, TextDirection};
+    use serde_json::json;
+
+    fn direction(s: &Session, sid: StoryId) -> TextDirection {
+        s.doc().unwrap().doc.story(sid).unwrap().direction
+    }
+
+    /// An object style's Story Direction goes to the story of each text frame it is applied to;
+    /// editing it moves the stories still in the old direction; a bad value is refused.
+    #[test]
+    fn an_object_styles_story_direction_reaches_its_frames_stories() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        let (a, b) = (StoryId(f["story"].as_u64().unwrap()), StoryId(g["story"].as_u64().unwrap()));
+        assert!(s.execute("style.object.create", &json!({"name": "Bad", "storyDirection": "upward"})).is_err());
+        s.execute("style.object.create", &json!({"name": "Hebrew Frame", "storyDirection": "rightToLeft"})).unwrap();
+        s.execute("style.object.apply", &json!({"name": "Hebrew Frame", "ids": [f["id"], g["id"]]})).unwrap();
+        assert_eq!((direction(&s, a), direction(&s, b)), (TextDirection::RightToLeft, TextDirection::RightToLeft));
+        // A story set by hand differs from its style; Clear Overrides puts it back.
+        s.execute("story.options", &json!({"story": b.0, "direction": "leftToRight"})).unwrap();
+        s.execute("style.object.clearOverrides", &json!({"ids": [g["id"]]})).unwrap();
+        assert_eq!(direction(&s, b), TextDirection::RightToLeft);
+        // Editing the style moves the stories still in its old direction.
+        s.execute("story.options", &json!({"story": b.0, "direction": "leftToRight"})).unwrap();
+        let r = s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": "leftToRight"})).unwrap();
+        assert_eq!(r["restyled"], 1, "{r}");
+        assert_eq!((direction(&s, a), direction(&s, b)), (TextDirection::LeftToRight, TextDirection::LeftToRight));
+        // null: the style sets none, and applying it leaves the story as it is.
+        s.execute("story.options", &json!({"story": a.0, "direction": "rightToLeft"})).unwrap();
+        s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": null})).unwrap();
+        s.execute("style.object.apply", &json!({"name": "Hebrew Frame", "ids": [f["id"]]})).unwrap();
+        assert_eq!(direction(&s, a), TextDirection::RightToLeft);
+    }
 }
