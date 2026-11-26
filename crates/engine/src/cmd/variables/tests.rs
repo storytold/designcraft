@@ -118,6 +118,25 @@ fn running_heads() -> (Session, designcraft_doc::StoryId, designcraft_doc::Story
     (s, p1, p3)
 }
 
+#[test]
+fn deleting_a_variable_with_forward_delete_clears_its_visual_caret_side() {
+    use designcraft_doc::TextVariableSide;
+
+    let (mut s, p1, _) = running_heads();
+    s.execute("text.select", &json!({"story": p1.0, "anchor": 0, "focus": 0})).unwrap();
+    let selection = &mut s.doc_mut().unwrap().selection;
+    let caret = selection.text.unwrap();
+    selection.text_variable_caret = Some((caret, TextVariableSide::Before));
+    assert_eq!(selection.text_variable_side(), Some(TextVariableSide::Before));
+
+    s.execute("text.delete", &json!({"forward": true})).unwrap();
+
+    let state = s.doc().unwrap();
+    assert_eq!(state.selection.text, Some(caret));
+    assert_eq!(state.selection.text_variable_caret, None);
+    assert!(state.doc.story(p1).unwrap().text.starts_with('|'));
+}
+
 /// Convert Variable to Text turns the selected instance into the value it shows on its own
 /// page (Epsilon on page 3, not page 1's Alpha); the other instance and the variable stay.
 #[test]

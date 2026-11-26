@@ -49,12 +49,12 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, Notes};
-pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret, note_caret_with_variable_side};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
 pub use crate::placed::Placement;
 use crate::shape::{Glyph, StyleTable, SubstCtx};
-pub use crate::table::{BorderHit, PlacedCell, StrokeSeg, TableFrag, cell_caret, find_cell, hit_border, hit_cell, hit_cell_with};
+pub use crate::table::{BorderHit, PlacedCell, StrokeSeg, TableFrag, cell_caret, cell_caret_with_variable_side, find_cell, hit_border, hit_cell, hit_cell_with};
 
 /// Character appearance shared by many glyphs (indexed from [`PlacedGlyph::style`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -6634,6 +6634,7 @@ fn editable_span(l: &Line, g: &PlacedGlyph) -> (f64, f64) {
 
 /// A variable's source marker has one boundary on each end of its logical text.
 /// On a mixed-direction value those can lie on different bidi runs.
+/// The line stores glyphs in logical order even when their x coordinates run in another order.
 fn variable_caret_x(l: &Line, first: &PlacedGlyph, after: bool) -> f64 {
     let mut boundary = first;
     let mut advance = first.adv;

@@ -3027,7 +3027,8 @@ fn text_selection_frames(s: &Session, t: &TextSel) -> Vec<ItemId> {
     // The frame the caret at the start is drawn in; the caret's stored frame only when no line
     // holds it.
     let caret_frame = || {
-        designcraft_compose::caret(&cs, r.start)
+        let side = st.selection.text_variable_side().filter(|_| t.is_caret());
+        designcraft_compose::caret_with_variable_side(&cs, r.start, side)
             .and_then(|(fi, ..)| cs.frames.get(fi))
             .map(|f| f.frame)
             .or_else(|| t.frame.filter(|f| story.frames.contains(f) && cs.overset_at.is_none_or(|o| r.start < o)))

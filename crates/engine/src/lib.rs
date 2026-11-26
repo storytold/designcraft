@@ -883,6 +883,13 @@ impl Session {
         if doc.anchored_items_changed_since(&st.doc) && doc.fix_anchored_text_frames() > 0 {
             doc.sync_endnote_story();
         }
+        // A content edit can change the variable even when the caret keeps the same byte offset.
+        if let Some((caret, _)) = sel.text_variable_caret
+            && (sel.text != Some(caret)
+                || st.doc.text_story(caret.story, caret.cell).map(|story| &story.text) != doc.text_story(caret.story, caret.cell).map(|story| &story.text))
+        {
+            sel.text_variable_caret = None;
+        }
         st.doc = Arc::new(doc);
         st.selection = sel;
         st.bump_revision();

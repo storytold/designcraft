@@ -220,7 +220,7 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
         draw_text_selection(app, painter, xf, doc, layout, ts, sel.cells);
         let fid = ts.frame.or_else(|| {
             let cs = app.session.cache.get(doc, ts.story, None);
-            compose::caret(&cs, ts.focus).and_then(|c| cs.frames.get(c.0)).map(|f| f.frame)
+            compose::caret_with_variable_side(&cs, ts.focus, sel.text_variable_side()).and_then(|c| cs.frames.get(c.0)).map(|f| f.frame)
         });
         if let Some(fid) = fid
             && let (Some(it), Some((a, _))) = (doc.item(fid), item_canvas_xf(doc, layout, fid))

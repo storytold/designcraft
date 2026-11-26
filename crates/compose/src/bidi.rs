@@ -4,6 +4,9 @@ use designcraft_doc::arabic::CharacterDirection as D;
 use unicode_bidi::{BidiClass, bidi_class};
 
 fn variable_cluster(g: &Glyph) -> Option<&str> {
+    if g.list_label {
+        return None;
+    }
     designcraft_doc::vars::var_index(g.ch).map(|_| g.generated_text.as_deref().unwrap_or(""))
 }
 
