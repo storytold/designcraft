@@ -735,7 +735,7 @@ mod tests {
             .filter(|e| e.facts.as_ref().is_some_and(|f| f.role == "Dialog" && f.name.as_deref() == Some("Numbering & Section Options")))
             .collect();
         assert_eq!(dialogs.len(), 1, "the real SDK986 Dialog");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         let initial = effects(&h);
         let initial_fields = h.state().0.ui.dialog.as_ref().unwrap().fields.clone();
         idle_and_inert_passes_keep_the_draft(&mut h, &initial, initial_fields);
@@ -932,7 +932,7 @@ mod tests {
             step(h);
         }
         assert!(!style_popup(h));
-        assert!(any_open(&h.ctx, OpenFilter::Modal));
+        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, atomic_opening.fields);
         assert_quiet(h, prior);
         type_draft(h, "Start Page Numbering at:", "0");
@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some(), "the real SDK Accept must retain the modal after validation refusal");
-        assert!(any_open(&h.ctx, OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
+        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal), "refusal keeps the SDK modal, not a close/reopen shim");
         assert_quiet(h, prior);
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().s("startNumber"), "0", "a refused draft remains editable");
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_page.fields);
@@ -994,7 +994,7 @@ mod tests {
         assert_eq!(refused_native.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         click_control(h, egui::accesskit::Role::Button, "OK");
         assert!(h.state().0.ui.dialog.is_some());
-        assert!(any_open(&h.ctx, OpenFilter::Modal));
+        assert!(any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.ui.dialog.as_ref().unwrap().fields, invalid_chapter.fields);
         assert_eq!(h.state().0.ui.status, chapter_error);
         assert_quiet(h, prior);
@@ -1122,7 +1122,7 @@ mod tests {
             event(h, Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
         }
         assert!(h.state().0.ui.dialog.is_none(), "one Escape cancels the draft and the actual SDK dialog host");
-        assert!(!any_open(&h.ctx, OpenFilter::Modal));
+        assert!(!any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().0.session.active().unwrap().doc.as_ref(), before.as_ref(), "Cancel never edits either numbering part");
         assert_eq!(
             h.state().0.session.active().unwrap().doc.as_ref(),
@@ -1134,12 +1134,6 @@ mod tests {
         }
         assert_quiet(h, &canceled);
     }
-
-    use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role, vec2};
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
 
     fn section_app() -> DesignApp {
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
@@ -1173,7 +1167,7 @@ mod tests {
         h.input_mut().max_texture_side = Some(8192);
         section_steps(&mut h, 3);
         let _ = h.get_by_role_and_label(Role::Dialog, "Numbering & Section Options");
-        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         h
     }
 
@@ -1521,7 +1515,7 @@ mod tests {
         // craft's dialogs, like InDesign's, cancel on one Escape: the field's typing goes with the dialog.
         section_key(&mut h, Key::Escape, Modifiers::NONE);
         assert!(h.state().ui.dialog.is_none(), "one real Escape over a field draft cancels the SDK modal");
-        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
+        assert!(!craft_ui_widgets::runtime::overlay::any_open(&h.ctx, craft_ui_widgets::runtime::overlay::craft_ui_widgets::runtime::overlay::OpenFilter::Modal));
         assert_eq!(h.state().session.doc().unwrap().doc, before);
         assert_eq!(numbering_undo(&h), undo);
         assert!(numbering_commands(&h).is_empty());
