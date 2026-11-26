@@ -92,6 +92,12 @@ pub struct Tokens {
     /// The Windows caption Close button when hovered, and its glyph.
     pub caption_close: Color32,
     pub caption_close_text: Color32,
+    /// Canvas link badges: a graphic whose file changed (an amber triangle with a dark `!`) or
+    /// is missing (a red octagon with a white `?`).
+    pub link_modified: Color32,
+    pub link_modified_ink: Color32,
+    pub link_missing: Color32,
+    pub link_missing_ink: Color32,
 }
 
 fn hex(s: u32) -> Color32 {
@@ -139,6 +145,10 @@ impl Tokens {
             live_corner: hex(0xffe500),
             caption_close: hex(0xc42b1c),
             caption_close_text: Color32::WHITE,
+            link_modified: hex(0xf5a623),
+            link_modified_ink: hex(0x1e1e1e),
+            link_missing: hex(0xe02424),
+            link_missing_ink: Color32::WHITE,
         };
         match b {
             Brightness::Dark => dark,

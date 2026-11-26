@@ -29,6 +29,8 @@ mod logging;
 mod native_menu;
 mod nightly_session;
 #[cfg(target_os = "macos")]
+mod open_with;
+#[cfg(target_os = "macos")]
 mod pointer;
 mod process_identity;
 mod profile;
@@ -242,6 +244,12 @@ fn services() -> Services {
         read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
         write: Some(Box::new(|p: &str, b: &[u8]| designcraft_engine::atomic::write_atomic(std::path::Path::new(p), b).map_err(|e| e.to_string()))),
         clipboard_text: Some(Box::new(|| arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok())),
+        // Edit › Edit Original and Edit With.
+        launch: Some(Box::new(designcraft_ui_egui::edit_original::system_launch)),
+        #[cfg(target_os = "macos")]
+        applications: Some(Box::new(open_with::applications)),
+        // Links › Reveal in Finder (Explorer, the file manager).
+        reveal: Some(Box::new(designcraft_ui_egui::reveal::system_reveal)),
         clipboard_image: Some(Box::new(clipboard_image::read)),
         #[cfg(target_os = "macos")]
         clipboard_change: Some(Box::new(clipboard_image::change_count)),
