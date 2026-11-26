@@ -3841,6 +3841,47 @@ fn page_numbers_take_the_digits_option() {
     assert_eq!(fourth(&format!("No. {}", story::PAGE_NUMBER)), fourth("No. \u{661}"));
 }
 
+/// A footnote reference is drawn in the Digits of its character style, as the number before the
+/// footnote text already was. The marker in the body text was always drawn with Western digits,
+/// so an Arabic document with Hindi digits showed 1 above and ١ below (#1510).
+#[test]
+fn footnote_references_take_the_digits_of_their_character_style() {
+    use designcraft_fonts::testing::font_mapping;
+    // Draws ١ as X, every other character as itself.
+    let glyphs = [('N', 'N'), ('o', 'o'), ('.', '.'), (' ', ' '), ('1', '1'), ('\u{661}', 'X')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test Note Digits", &glyphs).unwrap());
+    let font = |d: &mut Document, sid| {
+        let st = d.story_mut(sid).unwrap();
+        let n = st.text.len();
+        st.format_chars(0..n, |f| f.over.font_family = Some("DC Test Note Digits".into()));
+    };
+    // The glyph drawn at byte 4 of the first line.
+    let fourth = |cs: &ComposedStory| cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 4).map(|g| g.gid).unwrap();
+    let rect = Rect::new(100.0, 100.0, 400.0, 300.0);
+    // A typed Arabic-Indic one, in Hindi digits so it isn't drawn as a Western 1.
+    let (mut d, sid, _) = doc_with("No. \u{661}", rect, ParaAttrs::default());
+    font(&mut d, sid);
+    d.story_mut(sid).unwrap().format_chars(0..7, |f| f.over.digits = Some(designcraft_doc::Digits::Hindi));
+    let typed = fourth(&compose_story(&d, sid, &ComposeOptions::default()));
+    let (mut d, sid, _) = doc_with("No. 1", rect, ParaAttrs::default());
+    font(&mut d, sid);
+    assert_ne!(typed, fourth(&compose_story(&d, sid, &ComposeOptions::default())), "١ and 1 are different glyphs");
+    // The first footnote's reference, whose character style alone sets Hindi digits.
+    let (mut d, sid, _) = doc_with("No. ", rect, ParaAttrs::default());
+    d.story_mut(sid).unwrap().insert_note(4, "Note.", ParaFormat::default());
+    font(&mut d, sid);
+    let chars = designcraft_doc::CharAttrs { digits: Some(designcraft_doc::Digits::Hindi), ..Default::default() };
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "Note Reference".into(),
+        based_on: None,
+        chars,
+        shortcut: String::new(),
+    });
+    d.footnote_options.ref_char_style = "Note Reference".into();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(fourth(&cs), typed, "the reference is drawn as ١");
+}
+
 #[test]
 fn digits_option_draws_page_numbers_and_list_numbers_in_that_script() {
     use designcraft_doc::{Digits, ListType};
@@ -10488,4 +10529,42 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+/// With Digits at Default, a footnote's reference and the number before its text follow the
+/// Arabic text like typed digits do, and agree. The reference is stored as a private-use
+/// character, which counted as Latin text and lost the context, and the number before the note's
+/// text had no text to take one from, so both stayed Western (#3090).
+#[test]
+fn footnote_numbers_follow_arabic_text_with_default_digits() {
+    let rtl = ParaAttrs { direction: Some(designcraft_doc::TextDirection::RightToLeft), ..Default::default() };
+    // The digits drawn in the body's first line and in the note's first line.
+    let digits = |body: &str, note: &str| {
+        let (mut d, sid, fid) = doc_with(body, Rect::new(36.0, 36.0, 400.0, 400.0), rtl.clone());
+        let at = d.story(sid).unwrap().text.len();
+        d.story_mut(sid).unwrap().insert_note(at, note, ParaFormat { para: rtl.clone(), ..Default::default() });
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let f = cs.frame(fid).unwrap();
+        let of = |glyphs: &[PlacedGlyph]| {
+            glyphs.iter().map(|g| g.rendered_char).filter(|c| c.is_ascii_digit() || ('\u{660}'..='\u{669}').contains(c)).collect::<String>()
+        };
+        (of(&f.lines[0].glyphs), of(&f.notes[0].text.frames[0].lines[0].glyphs))
+    };
+    // A typed 1 after Arabic text is drawn as ١; the reference after it and the note's number too.
+    assert_eq!(digits("نص 1 كلمة", "حاشية"), ("١١".to_string(), "١".to_string()));
+    // After Latin text, and before a Latin note, they stay Western.
+    assert_eq!(digits("Text 1 word", "Note"), ("11".to_string(), "1".to_string()));
+    // A reference in a composite font is shaped on its own path and follows the Arabic text too.
+    let (mut d, sid, fid) = doc_with("نص", Rect::new(36.0, 36.0, 400.0, 400.0), rtl.clone());
+    d.styles_mut().composite_fonts.push(designcraft_doc::cjk::CompositeFont {
+        name: "Note Composite".into(),
+        entries: vec![designcraft_doc::cjk::CompositeFontEntry { family: "Source Serif 4".into(), ..Default::default() }],
+    });
+    let story = d.story_mut(sid).unwrap();
+    let at = story.text.len();
+    story.insert_note(at, "حاشية", ParaFormat::default());
+    story.format_chars(at..at + 3, |f| f.over.font_family = Some("Note Composite".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let reference: String = cs.frame(fid).unwrap().lines[0].glyphs.iter().filter(|g| g.byte == at).map(|g| g.rendered_char).collect();
+    assert_eq!(reference, "١");
 }

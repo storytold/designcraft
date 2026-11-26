@@ -2927,7 +2927,12 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     if paragraph == 0
         && let Some(label) = &opts.label
     {
-        prepend_label(db, &mut sp.glyphs, label, prange.start, base_chars, label_env, &mut table);
+        // A footnote's number follows the Arabic text of the footnote, with Default Digits, as
+        // its reference follows the text before it; it is shaped on its own, so it had no text
+        // to follow and stayed Western (#3090).
+        let mut chars = base_chars.clone();
+        chars.digits = shape::digit_mode(&chars, story.text.get(prange.clone()).unwrap_or("").chars().find_map(shape::digit_context));
+        prepend_label(db, &mut sp.glyphs, label, prange.start, &chars, label_env, &mut table);
         label_aligned = 0;
     }
     let list_align = match pp.list_type {
