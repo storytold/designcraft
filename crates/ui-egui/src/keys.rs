@@ -228,6 +228,11 @@ fn build_catalog() -> (Vec<Bindable>, HashSet<&'static str>) {
             continue;
         }
         let id = b.command.id.as_str();
+        if id == "app.insertPageBreak"
+            && let Some(text) = Scope::new(TEXT_CONTEXT)
+        {
+            b.scope = text;
+        }
         b.is_toggle = b.label.starts_with("Show/Hide ") || TOGGLES.contains(&id);
         if TYPING_COMMANDS.contains(&id)
             && let Some(text) = Scope::new(TEXT_CONTEXT)

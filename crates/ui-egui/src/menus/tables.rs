@@ -265,7 +265,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
             ">Insert Break Character",
             "cmd:text.insert|Column Break|{\"text\": \"\u{e002}\", \"raw\": true}",
             "cmd:text.insert|Frame Break|{\"text\": \"\u{e003}\", \"raw\": true}",
-            "cmd:text.insert|Page Break|{\"text\": \"\u{e004}\", \"raw\": true}",
+            "ui:app.insertPageBreak",
             "cmd:text.insert|Odd Page Break|{\"text\": \"\u{e011}\", \"raw\": true}",
             "cmd:text.insert|Even Page Break|{\"text\": \"\u{e012}\", \"raw\": true}",
             "cmd:text.insert|Paragraph Return|{\"text\": \"\\n\", \"raw\": true}",

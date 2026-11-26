@@ -2651,6 +2651,66 @@ fn story_text(app: &crate::DesignApp, story: &Value) -> String {
 }
 
 #[test]
+fn page_break_shortcut_is_text_only_and_remappable() {
+    use egui::{Key, Modifiers};
+
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({})).unwrap();
+    let frame = app.run("frame.create", json!({"rect": [36, 36, 300, 200], "content": "text", "text": "ab", "caret": false})).unwrap();
+    let story = &frame["story"];
+    let page_break = [(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT)];
+    assert_eq!(shortcut_of(&app, "app.palette").as_deref(), Some("Cmd+Enter"));
+    assert_eq!(shortcut_of(&app, "app.insertPageBreak").as_deref(), Some("Cmd+Shift+Enter"));
+    press_keys(&mut app, &ctx, &page_break);
+    assert_eq!(story_text(&app, story), "ab");
+
+    app.select_tool("type");
+    app.run("text.select", json!({"story": story, "anchor": 1, "focus": 2})).unwrap();
+    press_keys(&mut app, &ctx, &page_break);
+    let broken = format!("a{}", designcraft_doc::PAGE_BREAK);
+    assert_eq!(story_text(&app, story), broken);
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(story_text(&app, story), "ab");
+
+    app.run("text.select", json!({"story": story, "anchor": 1})).unwrap();
+    native_frame(&mut app, &ctx, vec![], None);
+    let enter = [true, false].map(|pressed| egui::Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    native_frame(&mut app, &ctx, enter.to_vec(), None);
+    assert_eq!(story_text(&app, story), "a\nb");
+    app.run("edit.undo", json!({})).unwrap();
+
+    let custom = "Cmd+Alt+Shift+9";
+    app.run("window.setShortcut", json!({"id": "app.insertPageBreak", "shortcut": custom})).unwrap();
+    let row = menu_bar_submenu(&menu_tree(), "Type/Insert Break Character").unwrap();
+    let Item::Sub(_, children) = row else { panic!("missing break submenu") };
+    let (id, params) = children
+        .iter()
+        .find_map(|item| match item {
+            Item::Cmd { id, label, params, .. } if label == "Page Break" => Some((id, params)),
+            _ => None,
+        })
+        .unwrap();
+    let displayed = craft_keymap::Trigger::parse(custom).unwrap().display(app.keymap.platform());
+    assert_eq!(shortcut_label(&app, id, params).as_deref(), Some(displayed.as_str()));
+    app.run("text.select", json!({"story": story, "anchor": 1, "focus": 2})).unwrap();
+    press_keys(&mut app, &ctx, &[(Key::Num9, Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT)]);
+    assert_eq!(story_text(&app, story), broken);
+    app.run("edit.undo", json!({})).unwrap();
+    app.run("text.select", json!({"story": story, "anchor": 1, "focus": 2})).unwrap();
+    activate(&mut app, id, params);
+    assert_eq!(story_text(&app, story), broken);
+    app.run("window.setShortcut", json!({"id": "app.insertPageBreak", "shortcut": null})).unwrap();
+    assert_eq!(shortcut_of(&app, "app.insertPageBreak").as_deref(), Some("Cmd+Shift+Enter"));
+}
+
+#[test]
 fn type_shortcuts_insert_spaces_justify_all_lines_and_open_paragraph_rules() {
     use egui::{Key, Modifiers};
     let ctx = egui::Context::default();

@@ -174,7 +174,7 @@ pub fn activate_native(app: &mut DesignApp, ctx: &egui::Context, id: &str, param
 }
 
 /// Menu items that type a character at the canvas insertion point.
-const TEXT_INSERTS: [&str; 3] = ["app.insertCurrentPageNumber", "app.insertEmSpace", "app.insertEnSpace"];
+const TEXT_INSERTS: [&str; 4] = ["app.insertCurrentPageNumber", "app.insertEmSpace", "app.insertEnSpace", "app.insertPageBreak"];
 
 /// Zoom In/Out from a key: the pointer's position (`at`), so the zoom keeps the point under it
 /// when it is over the canvas. `None` for other commands or with no pointer in the window.
