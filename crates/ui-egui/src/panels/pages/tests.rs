@@ -790,4 +790,16 @@ mod framework_path {
         let page = h.query_by_label("Page 45").expect("the current page's spread was scrolled into view").rect();
         assert!(page.min.y >= 0.0 && page.max.y <= 520.0, "the page lies inside the panel: {page:?}");
     }
+
+    /// Numbering & Section Options from a page's menu is for the page that was right-clicked, not the page in view.
+    #[test]
+    fn the_page_menu_section_options_are_for_the_page_clicked() {
+        let mut h = open(app_with(4, false), vec2(300.0, 700.0));
+        assert_eq!(crate::canvas::current_page(h.state()), Some(0), "the first page is in view");
+        right_click(&mut h, "Page 3");
+        click(&mut h, "Numbering & Section Options…");
+        let dialog = h.state().ui.dialog.as_ref().expect("the section options opened");
+        assert_eq!((dialog.id.as_str(), dialog.fields.get("page")), ("numberingSection", Some(&json!(3))));
+        assert_eq!(crate::canvas::current_page(h.state()), Some(2), "the clicked page came into view");
+    }
 }
