@@ -122,6 +122,14 @@ impl CoverageImage {
         Some(Self { grey: Arc::new(grey), size })
     }
 
+    /// The coverage as a grey JPEG (quality 90), for exports that compress images.
+    fn jpeg(&self, interpolate: bool) -> Option<Image> {
+        let mut buf = Vec::new();
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
+        image::ImageEncoder::write_image(enc, &self.grey, self.size.0, self.size.1, image::ExtendedColorType::L8).ok()?;
+        Image::from_jpeg(buf.into(), interpolate).ok()
+    }
+
     /// Coverage given directly, one byte per pixel; `None` when the size doesn't match.
     fn from_grey(grey: Arc<Vec<u8>>, size: (u32, u32)) -> Option<Self> {
         let n = usize::try_from(u64::from(size.0) * u64::from(size.1)).ok()?;
