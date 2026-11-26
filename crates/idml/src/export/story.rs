@@ -322,6 +322,10 @@ impl<'a> Ex<'a> {
         for (k, (rr, f)) in segs.into_iter().enumerate() {
             let seg_start = rr.start;
             let text = &s.text[rr];
+            // A U+E013 is a custom glyph only with the glyph it draws; without one it is ordinary
+            // text (an icon font's character, say).
+            let custom_glyph =
+                text.contains(st::CUSTOM_GLYPH) && !self.d.styles.resolve_char(&self.d.styles.resolve_para(&pf).1, &f).custom_glyph.is_empty();
             // Split at break characters.
             let mut cur = String::new();
             let mut pending: Vec<Node> = Vec::new();
@@ -340,13 +344,7 @@ impl<'a> Ex<'a> {
             };
             let mut out: Vec<Node> = Vec::new();
             for (ci, ch) in text.char_indices() {
-                let ace = match ch {
-                    st::PAGE_NUMBER | st::NEXT_PAGE_NUMBER | st::PREV_PAGE_NUMBER => Some("18"),
-                    st::SECTION_MARKER => Some("19"),
-                    st::INDENT_HERE => Some("7"),
-                    st::RIGHT_INDENT_TAB => Some("8"),
-                    _ => None,
-                };
+                let ace = ace_code(ch, custom_glyph);
                 let brk = match ch {
                     st::COLUMN_BREAK => Some("NextColumn"),
                     st::FRAME_BREAK => Some("NextFrame"),
@@ -635,5 +633,18 @@ impl Marks {
             index: at(designcraft_doc::INDEX_MARK),
             xref: at(designcraft_doc::XREF_MARK),
         }
+    }
+}
+
+/// The `<?ACE n?>` code character `ch` is written as, if any. A U+E013 is a custom glyph (`1a`)
+/// only when `custom_glyph` (its run names the glyph it draws).
+fn ace_code(ch: char, custom_glyph: bool) -> Option<&'static str> {
+    match ch {
+        st::PAGE_NUMBER | st::NEXT_PAGE_NUMBER | st::PREV_PAGE_NUMBER => Some("18"),
+        st::SECTION_MARKER => Some("19"),
+        st::INDENT_HERE => Some("7"),
+        st::RIGHT_INDENT_TAB => Some("8"),
+        st::CUSTOM_GLYPH if custom_glyph => Some("1a"),
+        _ => None,
     }
 }

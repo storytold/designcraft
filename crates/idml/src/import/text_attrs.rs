@@ -141,6 +141,12 @@ impl<'r> Importer<'r> {
         a.diacritic_x_offset = special.diacritic_x_offset;
         a.diacritic_y_offset = special.diacritic_y_offset;
         a.positional_form = special.positional_form;
+        // A glyph name (a string), or a glyph id (a long) for a glyph the font doesn't name. An
+        // empty name (`$ID/`) is kept: it resets a glyph name a character style gives.
+        a.custom_glyph = match e.prop_el("CustomGlyph").filter(|el| el.get("type") == Some("long")) {
+            Some(el) => el.text_content().trim().parse::<u32>().ok().map(|id| id.to_string()),
+            None => e.prop("CustomGlyph").map(|v| v.trim_start_matches("$ID/").to_string()),
+        };
         self.cjk_settings_chars(&cjk, &mut a);
         if let Some(v) = special.applied_conditions.as_deref().filter(|v| !v.trim().is_empty()) {
             let names: Vec<String> = v.split_whitespace().filter_map(|r| self.condition_names.get(r).cloned()).collect();
@@ -412,6 +418,11 @@ impl<'r> Importer<'r> {
 }
 
 pub(super) fn ace_char(v: &str) -> Option<char> {
+    // A glyph from the Glyphs panel without a Unicode value: InDesign writes its code as `1a`,
+    // which is not a decimal code.
+    if v.trim() == "1a" {
+        return Some(st::CUSTOM_GLYPH);
+    }
     match craft_idml::model::Ace::from_decimal(v)? {
         craft_idml::model::Ace::PageNumber => Some(st::PAGE_NUMBER),
         craft_idml::model::Ace::SectionMarker => Some(st::SECTION_MARKER),

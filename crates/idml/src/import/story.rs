@@ -187,7 +187,14 @@ impl<'r> Importer<'r> {
                                     b.push(&ch.to_string(), cf);
                                 }
                             }
-                            craft_idml::model::ContentPart::Pi { .. } => {}
+                            // An ACE code that isn't decimal (a custom glyph's `1a`).
+                            craft_idml::model::ContentPart::Pi { target, data } => {
+                                if target == "ACE"
+                                    && let Some(ch) = ace_char(data)
+                                {
+                                    b.push(&ch.to_string(), cf);
+                                }
+                            }
                         }
                     }
                 }
@@ -496,6 +503,28 @@ impl StoryBuilder {
     }
 
     fn push(&mut self, s: &str, f: &CharFormat) {
+        if s.is_empty() {
+            return;
+        }
+        // A CustomGlyph names the glyph a custom-glyph character draws: other text in its range
+        // doesn't take it (the story keeps it on those characters only).
+        if f.over.custom_glyph.is_some() && s.contains(|c| c != st::CUSTOM_GLYPH) {
+            let mut plain = f.clone();
+            plain.over.custom_glyph = None;
+            let mut rest = s;
+            while let Some(c) = rest.chars().next() {
+                let glyph = c == st::CUSTOM_GLYPH;
+                let end = rest.find(|c| (c == st::CUSTOM_GLYPH) != glyph).unwrap_or(rest.len());
+                let (part, tail) = rest.split_at(end);
+                self.push_run(part, if glyph { f } else { &plain });
+                rest = tail;
+            }
+            return;
+        }
+        self.push_run(s, f);
+    }
+
+    fn push_run(&mut self, s: &str, f: &CharFormat) {
         if s.is_empty() {
             return;
         }

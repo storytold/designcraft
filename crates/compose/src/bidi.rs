@@ -49,6 +49,10 @@ pub fn paragraph_text(glyphs: &mut [Glyph], source: &str) -> String {
 pub fn resolve_mirroring(glyphs: &mut [Glyph], info: &unicode_bidi::BidiInfo<'_>) {
     for i in 0..glyphs.len() {
         let g = &glyphs[i];
+        // A custom glyph draws the glyph its name picks, whatever direction it reads in.
+        if g.ch == designcraft_doc::story::CUSTOM_GLYPH {
+            continue;
+        }
         if g.len != g.display_char.len_utf8() || glyphs.get(i + 1).is_some_and(|next| next.byte == g.byte) {
             continue;
         }
