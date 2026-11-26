@@ -160,21 +160,21 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
     });
     separator(ui);
     group(ui, "appearance", 224.0, |ui, rect| {
+        let defaults = if info.is_none() { app.session.active().map(|d| d.doc.settings.new_object.clone()) } else { None };
+        let has_stroke_target = selected || defaults.is_some();
         for (row, stroke) in [(0, false), (1, true)] {
             // The chips open with nothing selected too, as they always have.
             cell(ui, rect, 0.0, row, 30.0, true, |ui| {
-                let chip_resp = panels::swatch_picker(
-                    app,
-                    ui,
-                    if stroke { "ctlstroke" } else { "ctlfill" },
-                    info.as_ref().map(|i| if stroke { i.stroke.clone() } else { i.fill.clone() }),
-                    |app, name| {
-                        let _ = app.run(if stroke { "object.stroke" } else { "object.fill" }, json!({"swatch": name}));
-                    },
-                );
+                let swatch = info
+                    .as_ref()
+                    .map(|i| if stroke { i.stroke.clone() } else { i.fill.clone() })
+                    .or_else(|| defaults.as_ref().map(|c| if stroke { c.stroke.clone() } else { c.fill.clone() }));
+                let chip_resp = panels::swatch_picker(app, ui, if stroke { "ctlstroke" } else { "ctlfill" }, swatch.clone(), |app, name| {
+                    let _ = app.run(if stroke { "object.stroke" } else { "object.fill" }, json!({"swatch": name}));
+                });
                 let chip = Rect::from_min_size(rect.min + vec2(0.0, row as f32 * ROW_PITCH + 1.5), vec2(18.0, 18.0));
                 if stroke && let Some(doc) = app.session.active().map(|st| &st.doc) {
-                    let (color, gradient) = info.as_ref().map_or((Some(Color32::GRAY), None), |i| widgets::swatch_colors(doc, &i.stroke, 1.0));
+                    let (color, gradient) = swatch.as_deref().map_or((Some(Color32::GRAY), None), |s| widgets::swatch_colors(doc, s, 1.0));
                     let inner = Tokens::get(ui.ctx()).panel;
                     if gradient.is_some() {
                         widgets::paint_chip(ui.painter(), chip, color, gradient);
@@ -191,14 +191,18 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut Ui) {
             });
         }
         icon(ui, rect, 36.0, 0, "panel-stroke", &tr("Stroke Weight"));
-        if let Some(v) = cell(ui, rect, 56.0, 0, 74.0, selected, |ui| {
-            NumField::points("csw", info.as_ref().map(|i| i.stroke_weight), 3).width(74.0).spinner().range(0.0, 1000.0).show(ui)
+        let weight = info.as_ref().map(|i| i.stroke_weight).or_else(|| defaults.as_ref().map(|c| c.stroke_weight));
+        if let Some(v) = cell(ui, rect, 56.0, 0, 74.0, has_stroke_target, |ui| {
+            NumField::points("csw", weight, 3).width(74.0).spinner().range(0.0, 1000.0).show(ui)
         }) {
             let _ = app.run("object.stroke", json!({"weight": v}));
         }
-        cell(ui, rect, 36.0, 1, 94.0, selected, |ui| {
-            properties::stroke_type_dropdown(app, ui, info.as_ref().map_or("solid", |i| &i.stroke_kind), 94.0)
-        });
+        let kind = info
+            .as_ref()
+            .map(|i| i.stroke_kind.clone())
+            .or_else(|| defaults.as_ref().map(|c| panels::stroke_kind_id(&c.stroke_type)))
+            .unwrap_or_else(|| "solid".into());
+        cell(ui, rect, 36.0, 1, 94.0, has_stroke_target, |ui| properties::stroke_type_dropdown(app, ui, &kind, 94.0));
         icon(ui, rect, 138.0, 0, "opacity", &tr("Opacity"));
         if let Some(v) = cell(ui, rect, 158.0, 0, 66.0, selected, |ui| {
             NumField::number("cop", info.as_ref().map(|i| i.opacity * 100.0), "%", 0).width(66.0).spinner().range(0.0, 100.0).show(ui)
@@ -409,5 +413,15 @@ mod tests {
         }
         let after = ctx.read_response(id).unwrap().rect;
         assert!(after.left() < before.left() && after.right() <= 900.0, "scrolling reaches the last group: {before:?} -> {after:?}");
+    }
+
+    #[test]
+    fn empty_selection_allows_editing_default_stroke_weight_in_control_bar() {
+        let (ctx, mut app) = fixture(false);
+        assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 1.0);
+        let group = ctx.read_response(egui::Id::unique(("object_control", "appearance"))).unwrap().rect;
+        let stroke_up = group.min + vec2(56.0 + widgets::SEG_W / 2.0, FIELD_H / 4.0);
+        click(&ctx, &mut app, stroke_up);
+        assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 2.0);
     }
 }

@@ -266,14 +266,4 @@ pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     )
 }
 
-pub(crate) fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-            out.push(if i <= c.len() { T[(n >> shift & 63) as usize] as char } else { '=' });
-        }
-    }
-    out
-}
+pub(crate) use craft_mime::transfer::base64;

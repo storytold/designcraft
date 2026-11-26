@@ -8,8 +8,14 @@
 //! - no TCP control channel (browsers can't listen on sockets);
 //! - File → Open / Place use the browser file picker; bytes arrive asynchronously through
 //!   `Services::inbox` (`.designcraft` → `file.openBytes`, images → `file.place`);
-//! - Save and Export trigger a browser download;
-//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox.
+//! - Save and Export trigger a browser download (Save in the format Preferences › File Handling
+//!   chooses);
+//! - the Preferences dialog's settings live in the browser's local storage (`prefs_store`), as
+//!   the desktop app keeps them in `prefs.json`;
+//! - dropped files are read asynchronously by `web::WebShell` and delivered through the inbox;
+//! - linked graphics can't be read from their paths (an IDML's Links folder): they show as
+//!   missing, and relink from files handed over instead (Links › Relink… and Relink to Folder…
+//!   pick the files, `links.relinkFiles`).
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?sample` opens the
 //! sample magazine on start. Flags match case-sensitive, percent-decoded query keys; values
@@ -24,6 +30,9 @@ mod web;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod graphics;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod prefs_store;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

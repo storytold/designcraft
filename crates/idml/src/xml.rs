@@ -227,6 +227,16 @@ pub fn parse(bytes: &[u8]) -> Result<El, String> {
 }
 
 pub(crate) fn from_craft(el: craft_xml::El) -> El {
+    from_craft_with_cdata(el, false)
+}
+
+/// Convert shared XML trees back into the writer's tree without losing CDATA boundaries.
+/// Parsing deliberately folds CDATA into text, but write-side model composition must retain it.
+pub(crate) fn from_craft_for_write(el: craft_xml::El) -> El {
+    from_craft_with_cdata(el, true)
+}
+
+fn from_craft_with_cdata(el: craft_xml::El, preserve_cdata: bool) -> El {
     El {
         name: el.name,
         attrs: el.attrs,
@@ -234,11 +244,10 @@ pub(crate) fn from_craft(el: craft_xml::El) -> El {
             .children
             .into_iter()
             .filter_map(|n| match n {
-                craft_xml::Node::El(e) => Some(Node::El(from_craft(e))),
+                craft_xml::Node::El(e) => Some(Node::El(from_craft_with_cdata(e, preserve_cdata))),
                 craft_xml::Node::Text(t) => Some(Node::Text(t)),
-                // The parser joins CDATA to the text around it, so only trees built for export
-                // (`<Contents>` image data passed through `with_props`) carry sections here.
-                craft_xml::Node::CData(t) => Some(Node::CData(t)),
+                craft_xml::Node::CData(t) if preserve_cdata => Some(Node::CData(t)),
+                craft_xml::Node::CData(t) => Some(Node::Text(t)),
                 craft_xml::Node::Pi { target, data } => Some(Node::Pi(target, data.trim().to_string())),
                 craft_xml::Node::Comment(_) => None,
             })
@@ -249,6 +258,16 @@ pub(crate) fn from_craft(el: craft_xml::El) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_cdata_is_text_but_write_conversion_preserves_its_boundary() {
+        let tree = craft_xml::El { name: "Contents".into(), attrs: Vec::new(), children: vec![craft_xml::Node::CData("JVBERi0=".into())] };
+        assert_eq!(from_craft(tree.clone()).children, vec![Node::Text("JVBERi0=".into())]);
+
+        let written = from_craft_for_write(tree);
+        assert_eq!(written.children, vec![Node::CData("JVBERi0=".into())]);
+        assert!(String::from_utf8(document(&written)).unwrap().contains("<![CDATA[JVBERi0=]]>"));
+    }
 
     /// Issue #712: nesting past the budget is an error from the parser, not a stack overflow later.
     #[test]

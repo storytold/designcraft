@@ -2689,7 +2689,27 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "显示/隐藏面板(工具除外)",
         ],
     ),
+    (
+        "Show/Hide Paragraph Break Marks",
+        [
+            "Show/Hide Paragraph Break Marks",
+            "Afficher/Masquer les marques de fin de paragraphe",
+            "Mostrar/ocultar marcas de fin de párrafo",
+            "Show/Hide Paragraph Break Marks",
+            "显示/隐藏段落结束标记",
+        ],
+    ),
     ("Show/Hide Rulers", ["Show/Hide Rulers", "Afficher/Masquer les règles", "Show/Hide Rulers", "Show/Hide Rulers", "显示/隐藏标尺"]),
+    (
+        "Show/Hide Style Name Column",
+        [
+            "Show/Hide Style Name Column",
+            "Afficher/Masquer la colonne des noms de style",
+            "Mostrar/ocultar columna de nombres de estilo",
+            "Show/Hide Style Name Column",
+            "显示/隐藏样式名称栏",
+        ],
+    ),
     (
         "Show/Hide Tagged Frames",
         [
@@ -2703,6 +2723,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     (
         "Show/Hide Text Threads",
         ["Show/Hide Text Threads", "Afficher/Masquer le chaînage du texte", "Show/Hide Text Threads", "Show/Hide Text Threads", "显示/隐藏文本串接"],
+    ),
+    (
+        "Show/Hide Link Badge",
+        [
+            "Show/Hide Link Badge",
+            "Afficher/Masquer le badge de lien",
+            "Mostrar/ocultar distintivo de vínculo",
+            "Show/Hide Link Badge",
+            "显示/隐藏链接标记",
+        ],
     ),
     ("Smooth", ["Smooth", "Lisse", "Smooth", "Smooth", "平滑"]),
     ("Sort", ["Sort", "Trier", "Sort", "Sort", "排序"]),
@@ -4032,6 +4062,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Corner", ["Corner", "Angles", "Corner", "Corner", "角"]),
+    ("Croatian", ["Kroatisch", "Croate", "Croata", "クロアチア語", "克罗地亚语"]),
     ("Custom", ["Custom", "Personnalisé", "Custom", "Custom", "自定义"]),
     ("Czech", ["Czech", "Tchèque", "Czech", "Czech", "捷克语"]),
     ("Danish", ["Danish", "Danois", "Danish", "Danish", "丹麦语"]),
@@ -4467,6 +4498,25 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Show CJK Features", ["CJK-Funktionen anzeigen", "Afficher les fonctions CJK", "Mostrar funciones CJK", "CJK 機能を表示", "显示中日韩功能"]),
+    (
+        "Show Right-to-Left Features",
+        [
+            "Rechts-nach-links-Funktionen anzeigen",
+            "Afficher les fonctions de droite à gauche",
+            "Mostrar funciones de derecha a izquierda",
+            "右から左の機能を表示",
+            "显示从右到左功能",
+        ],
+    ),
+    ("Paragraph Direction:", ["Absatzrichtung:", "Sens du paragraphe :", "Dirección del párrafo:", "段落の方向：", "段落方向："]),
+    (
+        "Left-to-Right Paragraph Direction",
+        ["Absatzrichtung links nach rechts", "Paragraphe de gauche à droite", "Párrafo de izquierda a derecha", "左から右の段落", "从左到右段落"],
+    ),
+    (
+        "Right-to-Left Paragraph Direction",
+        ["Absatzrichtung rechts nach links", "Paragraphe de droite à gauche", "Párrafo de derecha a izquierda", "右から左の段落", "从右到左段落"],
+    ),
     ("Missing Glyphs", ["Fehlende Glyphen", "Glyphes manquants", "Glifos que faltan", "欠落グリフ", "缺失字形"]),
     (
         "Draw Missing Glyphs from Fallback Fonts",
@@ -4878,6 +4928,36 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Start At", ["Beginnen bei", "Commencer à", "Empezar en", "開始番号", "起始编号"]),
     // Cell strokes.
     ("Strokes and Fills…", ["Konturen und Flächen …", "Contours et fonds…", "Trazos y rellenos…", "線と塗り…", "描边和填色…"]),
+    ("Diagonal Lines…", ["Diagonale Linien …", "Lignes diagonales…", "Líneas diagonales…", "斜線…", "对角线…"]),
+    ("No Diagonal Lines", ["Keine diagonalen Linien", "Aucune ligne diagonale", "Sin líneas diagonales", "斜線なし", "无对角线"]),
+    (
+        "Diagonal Line from Top Left to Bottom Right",
+        [
+            "Diagonale Linie von links oben nach rechts unten",
+            "Ligne diagonale du coin supérieur gauche au coin inférieur droit",
+            "Línea diagonal de la esquina superior izquierda a la inferior derecha",
+            "左上から右下への斜線",
+            "从左上到右下的对角线",
+        ],
+    ),
+    (
+        "Diagonal Line from Top Right to Bottom Left",
+        [
+            "Diagonale Linie von rechts oben nach links unten",
+            "Ligne diagonale du coin supérieur droit au coin inférieur gauche",
+            "Línea diagonal de la esquina superior derecha a la inferior izquierda",
+            "右上から左下への斜線",
+            "从右上到左下的对角线",
+        ],
+    ),
+    (
+        "Crossed Diagonal Lines",
+        ["Gekreuzte diagonale Linien", "Lignes diagonales croisées", "Líneas diagonales cruzadas", "交差する斜線", "交叉对角线"],
+    ),
+    ("Line Stroke", ["Linienkontur", "Contour de ligne", "Trazo de línea", "斜線の線", "线条描边"]),
+    ("Draw:", ["Zeichnen:", "Dessin :", "Dibujar:", "描画:", "绘制："]),
+    ("Diagonal In Front", ["Diagonale im Vordergrund", "Diagonale au premier plan", "Diagonal delante", "斜線を前面へ", "对角线置前"]),
+    ("Content In Front", ["Inhalt im Vordergrund", "Contenu au premier plan", "Contenido delante", "内容を前面へ", "内容置前"]),
     ("Cell Stroke", ["Zellkontur", "Contour de cellule", "Trazo de celda", "セルの線", "单元格描边"]),
     ("Cell Fill", ["Zellfläche", "Fond de cellule", "Relleno de celda", "セルの塗り", "单元格填色"]),
     ("Cell edges", ["Zellkanten", "Bords de cellule", "Bordes de celda", "セルの境界線", "单元格边缘"]),

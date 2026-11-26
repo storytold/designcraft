@@ -50,6 +50,9 @@ pub fn is_document(bytes: &[u8]) -> bool {
 /// How much of a file [`is_document`] needs to recognise a package by its `mimetype` entry.
 pub const DOCUMENT_SNIFF_BYTES: u64 = 64 << 10;
 
+/// How a refused lossy IDML save's error starts (see [`bytes_for_path`]).
+pub const LOSSY_IDML_SAVE: &str = "saving as IDML would lose content";
+
 /// The longer side of the first-page picture saved in the file, in pixels.
 pub(super) const PREVIEW_PX: f64 = 320.0;
 
@@ -71,6 +74,38 @@ pub(super) fn to_bytes_with_preview(d: &Document, cache: &crate::Cache) -> Resul
     Ok(bytes)
 }
 
+/// The bytes a save to `path` writes: an IDML package (images embedded) for a `.idml` name, else
+/// DesignCraft's own format with its first-page picture (Preferences › File Handling › Save
+/// documents as). An IDML save that would lose content IDML can't hold (editorial notes,
+/// endnotes) is refused unless `allow_loss`: the save marks the document saved and drops its
+/// recovery copy, so the loss would be silent and for good. Also → the warnings an IDML export
+/// gives (images written as links past the embedded-image limit).
+pub fn bytes_for_path(d: &Document, path: &str, cache: &crate::Cache, allow_loss: bool) -> Result<(Vec<u8>, Vec<String>)> {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => {
+            let lost = designcraft_idml::unwritten(d);
+            if !allow_loss && !lost.is_empty() {
+                return Err(EngineError::Other(format!(
+                    "{LOSSY_IDML_SAVE}: IDML can't keep {} editorial note(s) and {} endnote(s); pass allowLoss to save anyway",
+                    lost.editorial_notes, lost.endnotes
+                )));
+            }
+            crate::cmd::interchange::idml_bytes(d, &designcraft_idml::ExportOptions::default())
+        }
+        crate::SaveFormat::Designcraft => Ok((to_bytes_with_preview(d, cache)?, Vec::new())),
+    }
+}
+
+/// The path a save writes to: a `.idml` name as given (written as IDML, see [`bytes_for_path`]),
+/// any other with the `.designcraft` extension added when it lacks it
+/// ([`with_document_extension`]).
+pub fn with_save_extension(path: &str) -> String {
+    match crate::SaveFormat::of_path(path) {
+        crate::SaveFormat::Idml => path.to_string(),
+        crate::SaveFormat::Designcraft => with_document_extension(path),
+    }
+}
+
 pub fn from_bytes(b: &[u8]) -> Result<Document> {
     load_bytes(b).map(|(d, _)| d)
 }
@@ -83,19 +118,7 @@ pub(super) fn load_bytes(b: &[u8]) -> Result<(Document, Vec<String>)> {
     Ok((d, warnings))
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-pub fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(B64[(n >> 18) as usize & 63] as char);
-        out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { B64[n as usize & 63] as char } else { '=' });
-    }
-    out
-}
+pub use craft_mime::transfer::base64 as base64_encode;
 
 pub fn base64_decode(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
@@ -179,5 +202,22 @@ mod extension_tests {
         let e = t.execute("file.open", &json!({"path": notes.to_string_lossy()})).unwrap_err();
         assert!(e.to_string().contains("not a DesignCraft or IDML file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shared_base64_tests {
+    use super::{base64_decode, base64_encode};
+
+    #[test]
+    fn serialization_encoding_preserves_all_bytes_and_padding() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        for n in 0..=bytes.len() {
+            let encoded = base64_encode(&bytes[..n]);
+            assert_eq!(encoded.len(), n.div_ceil(3) * 4);
+            assert!(!encoded.contains(['\r', '\n']));
+            assert_eq!(base64_decode(&encoded), bytes[..n]);
+        }
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xff]), "+///");
     }
 }
