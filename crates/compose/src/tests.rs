@@ -10489,3 +10489,104 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Where a line may end after a dash. InDesign 2026 (observed with each text alone after a short
+/// word, hyphenation off, the widths swept so that every possible first line shows): a hyphen
+/// breaks only after three or more characters of its word and not before a single letter, so
+/// `(-4)`, `x-4` and `ab-cd` stay whole and `well-known` and `1,000-2,000` break; an en dash
+/// needs something before it and two letters or digits after it; a slash needs two after it and
+/// is no break between digits (`3/4`).
+#[test]
+fn a_dash_ends_a_line_only_between_the_parts_of_a_word() {
+    // `fits`: only measures at least as wide as the whole token, where no emergency break is needed.
+    let breaks_after_dash = |text: &str, composer: designcraft_doc::attrs::Composer, fits: bool| {
+        let para = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+        let text = format!("aaa {text} bbb");
+        let token = 4..text.len() - 4;
+        let mut width = 6.0;
+        if fits {
+            let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 2000.0, 900.0), para.clone());
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let inside = |g: &&PlacedGlyph| token.contains(&g.byte);
+            let line = &all_lines(&cs)[0];
+            let start = line.glyphs.iter().filter(inside).map(|g| g.x).fold(f64::MAX, f64::min);
+            let end = line.glyphs.iter().filter(inside).map(|g| g.x + g.adv).fold(0.0, f64::max);
+            width = (end - start).max(width);
+        }
+        while width < 400.0 {
+            let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, width, 900.0), para.clone());
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let lines = all_lines(&cs);
+            if let Some(first) = lines.first().filter(|_| lines.len() > 1) {
+                let line = text[first.range.clone()].trim_end();
+                if line.len() > 4 && line.ends_with(['-', '\u{2013}', '/']) {
+                    return true;
+                }
+            }
+            width += 0.5;
+        }
+        false
+    };
+    use designcraft_doc::attrs::Composer;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for whole in [
+            "(-4)",
+            "(+4)",
+            "-4",
+            "x-4",
+            "12-34",
+            "5-10",
+            "a-b",
+            "ab-cd",
+            "ab-cdef",
+            "abc-d",
+            "abcd-e",
+            "(-b)",
+            "--4",
+            "x\u{2013}4",
+            "(\u{2013}4)",
+            "3/4",
+            "a/b",
+            "1234/5678",
+            "abcd\u{A0}-4",
+            "\u{661}\u{662}/\u{663}\u{664}",
+        ] {
+            assert!(!breaks_after_dash(whole, composer, true), "{whole:?} stays whole ({composer:?})");
+        }
+        for broken in [
+            "well-known",
+            "(well-known)",
+            "abc-def",
+            "abcd-ef",
+            "1,000-2,000",
+            "abc-1234",
+            "1234-5678",
+            "ab--cdef",
+            "well\u{2013}known",
+            "ab\u{2013}cdef",
+            "abc/def",
+            "ab/cdef",
+            // Ligatures (ff, fi) are one glyph for two characters.
+            "off-ice",
+            "staff-room",
+            "abc/fi",
+        ] {
+            assert!(breaks_after_dash(broken, composer, false), "{broken:?} may break after its dash ({composer:?})");
+        }
+    }
+}
+
+/// A token of dashes or slashes wider than the measure still breaks (no break is natural in it, so
+/// the emergency break applies) instead of being set as one overfull line.
+#[test]
+fn an_overlong_run_of_slashes_still_breaks_to_fit() {
+    use designcraft_doc::attrs::Composer;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        let para = ParaAttrs { align: Some(Align::Left), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+        let (d, sid, _) = doc_with(&"/".repeat(80), Rect::new(0.0, 0.0, 100.0, 900.0), para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        assert!(lines.len() > 1, "{composer:?}: one overfull line");
+        assert!(lines.iter().all(|l| l.glyphs.iter().all(|g| g.x + g.adv <= l.x1 + 0.5)), "{composer:?}: nothing set past the edge");
+    }
+}
