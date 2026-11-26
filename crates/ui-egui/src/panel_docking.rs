@@ -71,6 +71,29 @@ pub(crate) fn cancel_gesture(ctx: &egui::Context) {
     craft_ui::runtime::drag::cancel(ctx, craft_behavior::CancelReason::Dismissed);
 }
 
+/// Where the context records the workspace generation the dock last showed.
+fn shown_generation_key() -> egui::Id {
+    egui::Id::new("designcraft-dock-workspace-generation")
+}
+
+/// Ends a docking drag that started on the workspace before the one in use: another workspace replaced the arrangement,
+/// so the panel or group the drag names may be gone or somewhere else, and its release would move it in the workspace
+/// that replaced the one the person aimed at. The framework ends such a drag itself when the generation of the
+/// workspace it shows moves, and DesignCraft builds the workspace it shows from the layout in use
+/// (`Workspace::from_parts`), whose generation never moves: a workspace switch moves `UiState::docking_generation`,
+/// and the pass that draws the replaced workspace ends the drag here, before the dock reads the pointer.
+fn end_switched_gesture(app: &DesignApp, ctx: &egui::Context) {
+    let generation = app.ui.docking_generation;
+    let before = ctx.data_mut(|data| {
+        let before = data.get_temp::<u64>(shown_generation_key());
+        data.insert_temp(shown_generation_key(), generation);
+        before
+    });
+    if before.is_some_and(|before| before != generation) {
+        cancel_gesture(ctx);
+    }
+}
+
 fn normalize(raw: &str) -> Option<&'static str> {
     crate::dock::all_panels()
         .find(|(id, label, _)| id.eq_ignore_ascii_case(raw.trim()) || label.eq_ignore_ascii_case(raw.trim()))
@@ -691,7 +714,10 @@ impl Transaction {
         if app.ui.docking.as_ref().is_some_and(|layout| !valid(layout)) {
             return Err("saved panel layout is invalid; reset the workspace first".into());
         }
-        let layout = layout_of(app);
+        // A float-only panel an earlier version listed in `UiState::floating` joins the layout here, before the
+        // command's actions: a close then takes the window the layout shows, where joining it after the actions would
+        // bring that window back.
+        let layout = joined_float_only(&app.ui, layout_of(app));
         let (mut hidden, mut floated) = (Vec::new(), Vec::new());
         for (panel, location) in app.ui.docking_hidden.0.iter().filter(|(id, _)| normalize(id) == Some(id.as_str())).take(MAX_PANELS) {
             if !layout.contains(panel) {
@@ -788,8 +814,10 @@ impl Transaction {
         }
         app.ui.docking = Some(layout);
         app.ui.docking_hidden = hidden;
+        // The float-only panels an earlier version listed in `UiState::floating` joined the layout in `begin`. The list
+        // empties here only, once the command succeeded: a refused command leaves it, and the saved layout, as it was.
+        app.ui.floating.clear();
         release_closed(app, &closed);
-        keep_float_only(app);
         if let Some(panel) = reveal {
             app.ui.hidden_panels = 0;
             app.ui.docking_opened = Some(panel.clone());
@@ -898,18 +926,26 @@ fn float_only_panel(app: &mut DesignApp, id: &str, panel: &str, params: &Value) 
     Ok(txn.commit(app, Vec::new(), Some(key)))
 }
 
-/// Once the layout is customized it holds every floating panel, so `UiState::floating` (the default workspace's
-/// floating panels) empties. A float-only panel listed there by an earlier version, beside a customized layout, joins
-/// the layout as a floating window first.
-fn keep_float_only(app: &mut DesignApp) {
-    let Some(layout) = app.ui.docking.as_mut() else { return };
-    for (id, at) in &app.ui.floating {
+/// `layout` with the float-only panels an earlier version listed in `UiState::floating` (the default workspace's
+/// floating panels) joined to it as floating windows where that list saved them. Once the layout is customized it holds
+/// every floating panel, so the list empties.
+fn joined_float_only(ui: &crate::UiState, mut layout: Layout<String>) -> Layout<String> {
+    for (id, at) in &ui.floating {
         let key = id.clone();
         if crate::dock::float_only(id) && at.iter().all(|v| v.is_finite()) && !layout.contains(&key) {
             let window = layout.fresh_window_id();
             layout.floating.push(Floating::single(window, vec![key], 0, Rect::from_min_size(pos2(at[0], at[1]), floating_size(id))));
         }
     }
+    layout
+}
+
+/// Join the float-only panels an earlier version listed in `UiState::floating` to the customized layout, and empty the
+/// list: the dock draws them from the layout alone.
+fn keep_float_only(app: &mut DesignApp) {
+    let Some(layout) = app.ui.docking.take() else { return };
+    let joined = joined_float_only(&app.ui, layout);
+    app.ui.docking = Some(joined);
     app.ui.floating.clear();
 }
 
@@ -1192,6 +1228,7 @@ pub(crate) fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         app.canvas_area(ui, false);
         return;
     }
+    end_switched_gesture(app, ui.ctx());
     let workspace = match shown_workspace(app) {
         Ok(workspace) => workspace,
         Err(error) => {

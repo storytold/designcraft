@@ -457,13 +457,19 @@ fn changing_workspace_during_a_drag_cancels_the_stale_gesture() {
     h.run_steps(1);
     h.event(Event::PointerMoved(source - vec2(90.0, 0.0)));
     h.run_steps(2);
+    assert!(dragging_tab(&h.ctx, "layers"), "the Layers drag is under way before the switch");
     h.state_mut().run("window.workspace", json!({"name":"Destination"})).unwrap();
-    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(1);
-    assert_eq!(h.state().ui.docking, destination);
-    h.event(Event::PointerButton { pos: source, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    // The switch itself ends the drag: Escape is not sent, so nothing else can.
+    assert!(!dragging_tab(&h.ctx, "layers"), "the switch ends the drag it replaced");
+    // The release lands where a surviving drag would float Layers: the canvas takes no drop of its own, so the dock
+    // floats a tab released there. Without the drag there is nothing to float, and the destination stays as saved.
+    let canvas = egui::pos2(160.0, 140.0);
+    h.event(Event::PointerMoved(canvas));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: canvas, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_eq!(h.state().ui.docking, destination);
+    assert_eq!(h.state().ui.docking, destination, "the release drops nothing in the workspace that replaced the drag's");
 }
 
 #[test]
@@ -1550,6 +1556,48 @@ fn a_saved_float_only_entry_joins_a_customized_layout() {
     assert!(h.state().ui.floating.is_empty());
     let rect = super::floating_rect(h.state(), "tabs").expect("Tabs joined the layout");
     assert_eq!([rect.min.x, rect.min.y], [10.0, 20.0]);
+}
+
+/// Dock Panel on a Tabs window an earlier version listed in `UiState::floating`, before the dock has drawn once: the
+/// close takes the window the default layout shows, and the list's entry does not bring it back.
+#[test]
+fn docking_a_saved_float_only_entry_before_the_first_draw_closes_it() {
+    let mut app = app();
+    app.ui.floating = vec![("tabs".to_string(), [10.0, 20.0])];
+    assert!(app.ui.docking.is_none(), "no custom layout: the default layout floats the entry");
+    assert!(super::floating_rect(&app, "tabs").is_some(), "the default layout shows the entry as a window");
+    app.run("window.dockPanel", json!({"panel": "tabs"})).unwrap();
+    let h = harness(app, vec2(1280.0, 800.0));
+    assert!(super::floating_rect(h.state(), "tabs").is_none(), "the closed window does not come back when the dock draws");
+    assert!(h.state().ui.floating.is_empty(), "the entry is spent");
+}
+
+/// A command for another panel keeps a saved float-only entry floating where it was: the entry joins the layout with the
+/// command's own change, and the list empties.
+#[test]
+fn a_command_for_another_panel_keeps_a_saved_float_only_entry() {
+    let mut app = app();
+    app.ui.floating = vec![("tabs".to_string(), [10.0, 20.0])];
+    app.run("window.panel.float", json!({"panel": "swatches", "x": 50, "y": 60})).unwrap();
+    let layout = app.ui.docking.as_ref().expect("customized");
+    assert!(layout.floating.iter().any(|window| window.contains(&"tabs".to_string())), "Tabs still floats");
+    let rect = super::floating_rect(&app, "tabs").expect("Tabs still floats");
+    assert_eq!([rect.min.x, rect.min.y], [10.0, 20.0], "where the entry saved it");
+    assert!(app.ui.floating.is_empty(), "the entry joined the layout");
+}
+
+/// A command the model refuses leaves a saved float-only entry, and the workspace, as they were: the entry joins only
+/// the layout a command commits.
+#[test]
+fn a_rejected_command_keeps_a_saved_float_only_entry() {
+    let mut app = app();
+    app.ui.floating = vec![("tabs".to_string(), [10.0, 20.0])];
+    let rejected = json!({"action": {"MoveFloating": {"panel": "properties", "rect": [0, 0, -5, 30]}}});
+    assert!(app.run("window.panel.layout", rejected).is_err());
+    assert!(app.ui.docking.is_none(), "no layout is committed");
+    assert_eq!(app.ui.floating, [("tabs".to_string(), [10.0, 20.0])], "the entry still waits to join a layout");
+    let h = harness(app, vec2(1280.0, 800.0));
+    assert!(super::floating_rect(h.state(), "tabs").is_some(), "Tabs still floats in the default layout");
 }
 
 /// A panel's title can change while it is open (the Story Editor's word count): the spec model shows the changing title
