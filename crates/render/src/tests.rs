@@ -761,9 +761,12 @@ fn renders_tables() {
     // Header fill (cyan) near the right edge of the middle header cell.
     let c = img.pixel((head.x1 - 3.0) as u32, (head.y0 + 3.0) as u32);
     assert!(c[0] < 80 && c[2] > 150, "{c:?}");
-    // The table border (black) on the left edge.
-    let e = img.pixel(body.x0.round() as u32, body.center().y as u32);
-    assert!(e[0] < 200, "{e:?}");
+    // The table border (black) on the left edge. The grid sits half the border
+    // weight inside the frame, so look within a pixel of the edge rather than at
+    // one exact pixel.
+    let (ex, ey) = (body.x0.round() as u32, body.center().y as u32);
+    let e: Vec<_> = (ex - 1..=ex + 1).map(|x| img.pixel(x, ey)).collect();
+    assert!(e.iter().any(|p| p[0] < 200), "{e:?}");
     // Cell text drew dark pixels inside the body cell.
     let dark = ((body.x0 + 5.0) as u32..(body.x1 - 2.0) as u32)
         .flat_map(|x| ((body.y0 + 2.0) as u32..(body.y1 - 2.0) as u32).map(move |y| (x, y)))
