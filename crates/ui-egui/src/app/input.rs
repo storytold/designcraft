@@ -55,7 +55,12 @@ impl DesignApp {
     pub(crate) fn frame_input(&self) -> craft_ui_widgets::runtime::frame::FrameInput {
         use craft_ui_widgets::runtime::commands::CommandInput;
         use craft_ui_widgets::runtime::frame::FrameInput;
-        let catalog = menus::quick_apply_catalog(self).unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
+        // Quick Apply's catalog is native-only; the web build has the Tools rail's alone.
+        #[cfg(not(target_arch = "wasm32"))]
+        let quick_apply = menus::quick_apply_catalog(self);
+        #[cfg(target_arch = "wasm32")]
+        let quick_apply = None;
+        let catalog = quick_apply.unwrap_or_else(|| crate::toolbar::tool_catalog(&self.ui.language, &self.keymap));
         let commands = CommandInput::new().catalog(catalog);
         FrameInput::new(self.root_env()).host(crate::framework_host::host(&self.ui.language)).commands(commands)
     }

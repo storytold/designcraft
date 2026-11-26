@@ -326,7 +326,7 @@ impl DesignApp {
                     // The window's own pass ends here: with nothing else focused in it, its canvas takes the keyboard
                     // (Escape, Tab and the clipboard reach it), as the main window's does at the end of its pass. An
                     // embedded viewport draws in the main window's pass, which takes the target there.
-                    if class != egui::ViewportClass::Embedded {
+                    if class != egui::ViewportClass::EmbeddedWindow {
                         canvas::take_key_focus(self, ui.ctx());
                     }
                     if ui.input(|i| i.viewport().close_requested()) {
