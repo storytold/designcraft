@@ -122,9 +122,10 @@ struct CellLayout {
     line_heights: Vec<f64>,
 }
 
-/// Cell text fits by its baseline, while its typographic/inline-object bounds must still
-/// remain inside the physical cell. The bottom inset can contain ordinary descenders;
-/// adding both the inset and the full descent unnecessarily grows every row.
+/// Cell text fits by its baseline: a row is the last baseline plus the bottom inset, and a
+/// descender that reaches below it hangs out of the cell (observed in InDesign 2026: at 4 pt
+/// insets a 48 pt line's row is 34.9 + 8 pt, with no room for its 10 pt descent). Inline objects
+/// are different: their bottom must stay inside the cell.
 struct CellLineExtent {
     baseline: f64,
     bottom: f64,
@@ -167,7 +168,7 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, (lef
         .frames
         .first()
         .map(|f| {
-            let mut extents: Vec<_> = f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline + l.descent }).collect();
+            let mut extents: Vec<_> = f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline }).collect();
             // Line metrics include baseline shifts and super/subscript. Include the final
             // geometry of in-flow objects too, but leave custom anchors out of text flow.
             for object in &f.objects {
@@ -958,7 +959,11 @@ mod height_tests {
     }
 
     #[test]
-    fn small_insets_still_contain_descenders_and_shifted_text() {
+    fn small_insets_leave_descenders_and_shifted_text_hanging_as_in_indesign() {
+        // InDesign 2026 sets a row at the last baseline plus the bottom inset, whatever hangs below
+        // it: a descender, a lowered baseline shift or a subscript do not grow the row (Arial 20 pt
+        // at 0, 1, 3 and 5 pt insets: rows of 18.56, 19.56, 21.56 and 23.56 pt with a 4 pt top inset;
+        // a -15 pt baseline shift at 10 pt left the row at 15.28 pt).
         for bottom in [0.0, 1.0] {
             for (shift, position) in [(0.0, Position::Normal), (-15.0, Position::Normal), (0.0, Position::Superscript), (0.0, Position::Subscript)] {
                 let mut cell = text_cell("gyp", bottom);
@@ -968,11 +973,13 @@ mod height_tests {
                 });
                 let layout = measure(&cell, 92.0);
                 let line = &layout.text.frames[0].lines[0];
-                let expected = cell.insets[0] + line.baseline + bottom.max(line.descent);
-                let composed = compose_table(single_table(cell), 200.0);
+                let expected = cell.insets[0] + line.baseline + bottom;
+                let mut table = single_table(cell);
+                // No stroke: half a stroke would raise a 0 pt inset (see `effective_insets`).
+                table.options.border.weight = 0.0;
+                let composed = compose_table(table, 200.0);
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
                 assert!((placed.rect.height() - expected).abs() < 1e-6);
-                assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
                 assert!(!placed.overset);
             }
         }
@@ -1000,7 +1007,7 @@ mod height_tests {
     }
 
     #[test]
-    fn exact_height_cannot_fit_a_descender_outside_the_physical_cell() {
+    fn exact_height_does_not_count_a_descender() {
         let cell = text_cell("gyp", 0.0);
         let layout = measure(&cell, 92.0);
         let line = &layout.text.frames[0].lines[0];
@@ -1009,23 +1016,24 @@ mod height_tests {
         table.rows[0].height = 8.5 + line.baseline + line.descent / 2.0;
         let composed = compose_table(table, 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
-        assert!(placed.overset);
-        assert!(placed.text.frames[0].lines.is_empty());
+        assert!(!placed.overset, "a row of the baseline plus the inset holds the line; the descender hangs out");
+        assert_eq!(placed.text.frames[0].lines.len(), 1);
     }
 
     #[test]
-    fn earlier_lowered_line_controls_height_and_cannot_be_skipped_on_overset() {
+    fn a_lowered_line_does_not_grow_the_row() {
         let mut cell = text_cell("gyp\njqp", 8.5);
         cell.text.format_chars(0..cell.text.len(), |f| f.over.leading = Some(designcraft_doc::Leading::Points(6.0)));
         cell.text.format_chars(0..3, |f| f.over.baseline_shift = Some(-30.0));
         let layout = measure(&cell, 92.0);
         let lines = &layout.text.frames[0].lines;
         assert_eq!(lines.len(), 2);
-        let deep_bottom = lines[0].baseline + lines[0].descent;
-        assert!(deep_bottom > lines[1].baseline + lines[1].descent + 8.5);
+        // The lowered first line hangs far below the second line's baseline; the row is still the
+        // last baseline plus the insets (InDesign 2026 ignores baseline shifts in the row height).
+        assert!(lines[0].baseline + lines[0].descent > lines[1].baseline + lines[1].descent + 8.5);
         let composed = compose_table(single_table(cell.clone()), 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
-        assert!((placed.rect.height() - 8.5 - deep_bottom).abs() < 1e-6);
+        assert!((placed.rect.height() - 17.0 - lines[1].baseline).abs() < 1e-6);
         assert!(!placed.overset);
 
         let mut table = single_table(cell);
@@ -1033,8 +1041,8 @@ mod height_tests {
         table.rows[0].height = 17.0 + lines[1].baseline;
         let composed = compose_table(table, 200.0);
         let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
-        assert!(placed.overset);
-        assert!(placed.text.frames[0].lines.is_empty(), "a later fitting line cannot reappear after the first line oversets");
+        assert!(!placed.overset);
+        assert_eq!(placed.text.frames[0].lines.len(), 2);
     }
 
     #[test]
@@ -1055,7 +1063,7 @@ mod height_tests {
     }
 
     #[test]
-    fn vertical_alignment_uses_baseline_fit_without_losing_descenders() {
+    fn vertical_alignment_uses_baseline_fit() {
         for bottom in [0.0, 8.5] {
             for (vj, expected_shift) in
                 [(VerticalJustification::Top, 0.0), (VerticalJustification::Center, 10.0), (VerticalJustification::Bottom, 20.0)]
@@ -1065,13 +1073,18 @@ mod height_tests {
                 let layout = measure(&cell, 92.0);
                 let required = cell.insets[0] + layout.content_h + bottom;
                 let mut table = single_table(cell);
+                // No stroke: half a stroke would raise a 0 pt inset (see `effective_insets`).
+                table.options.border.weight = 0.0;
                 table.rows[0].mode = RowHeightMode::Exactly;
                 table.rows[0].height = required + 20.0;
                 let composed = compose_table(table, 200.0);
                 let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
                 let line = &placed.text.frames[0].lines[0];
                 assert!((placed.origin.y - placed.clip.y0 - expected_shift).abs() < 1e-6);
-                assert!(placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
+                // The last baseline sits the bottom inset above the cell's bottom (InDesign 2026 Bottom
+                // alignment); with the inset smaller than the descent the descender hangs out.
+                assert!(placed.origin.y + line.baseline <= placed.rect.y1 - bottom + 1e-6);
+                assert!(bottom < line.descent || placed.origin.y + line.baseline + line.descent <= placed.rect.y1 + 1e-6);
                 assert!(!placed.overset);
             }
         }
