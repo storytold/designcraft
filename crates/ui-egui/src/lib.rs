@@ -17,6 +17,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod about;
 pub mod canvas;
+pub mod channel;
 pub mod chrome;
 pub mod control;
 pub mod credits;
