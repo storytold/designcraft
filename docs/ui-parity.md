@@ -134,6 +134,7 @@ covers checking the sampled and redefined settings in the styles tutorial (2:45 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-16 | minor | Story panel: column direction (Left to Right / Right to Left) |
 | 2026-11-02 | patch | Pen: while a smooth point's direction line is dragged out, the segment it shapes (from the previous anchor's out handle to the new anchor's in handle) shows live under the pointer; after a smooth point the rubber band to the pointer curves out of its direction line, a corner's stays straight (#1438, first item; the Option/Alt handle split is the other). Test: `pen_previews_the_curve_while_dragging_and_after_a_smooth_point` |
 | 2026-11-02 | patch | Text variables: a Custom variable defined with a number (a typed `2026` reaches `variables.define` as one) shows its digits instead of nothing (#2093, first item); `text` takes a string, a number or a boolean. Test: `variables::tests::a_custom_variable_defined_with_a_number_shows_its_digits` |
 | 2026-10-30 | minor | Dialogs: Table of Contents title field keeps its edit width; More Options toggles without losing hidden settings |
