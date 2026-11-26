@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use designcraft_doc::{Asset, AssetId, DocSettings, Document, InkManager, Item, ItemId, Layer, StrokeStyleDef};
-use designcraft_geom::{Affine, BezPath, Rect, Shape, Vec2};
+use designcraft_geom::{Affine, BezPath, PathEl, Point, Rect, Shape, Vec2};
 use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_cpu::peniko::{self, BlendMode, Compose, Mix};
 use vello_cpu::{Pixmap, RenderContext, kurbo};
@@ -80,6 +80,80 @@ fn basic_feather(it: &Item) -> bool {
 fn fades(it: &Item) -> bool {
     let e = &it.effects;
     basic_feather(it) || e.directional_feather.on && e.directional_feather.widths.iter().any(|w| *w > 0.0) || e.gradient_feather.on
+}
+
+/// The box a directional feather is measured from, in the item's inner space: the edges of what
+/// the object paints. A fill or a stroke paints the frame's path, and text its frame; a placed
+/// graphic paints the part of the image the frame shows, so an image smaller than or offset in
+/// its frame fades at its own edge, not in the empty part of the frame (as in InDesign).
+fn painted_bounds(it: &Item) -> Rect {
+    let frame = it.inner_bounds();
+    if !it.fill.is_none() || !it.stroke.is_none() {
+        return frame;
+    }
+    let Some(g) = it.graphic() else { return frame };
+    let Some(shown) = g.shown_bounds(frame) else { return frame };
+    // A clipping path crops the image further.
+    let Some((path, even_odd)) = g.clip_region().filter(|(p, _)| !p.is_empty()) else { return shown };
+    if even_odd {
+        // An inverted clip keeps the graphic's rectangle minus the path, so the box ends where a
+        // rectangular path removes a side of it, not at the combined region's outer edge.
+        let Some(clip) = g.clip.as_ref() else { return shown };
+        let mut excluded = clip.path.to_bezpath();
+        excluded.apply_affine(g.xf);
+        let hole = excluded.bounding_box();
+        // Only a rectangular hole removes whole strips; any other shape leaves pixels inside its box.
+        // It is one rectangle when it is a single subpath of straight lines that run along its
+        // box's sides, from corner to corner, and covers the box once: such a path winds the same
+        // number of times round every point inside the box, so covering it once means once
+        // everywhere (a triangle drawn twice, or a bow tie, has diagonal sides).
+        let corner = |p: Point| (p.x == hole.x0 || p.x == hole.x1) && (p.y == hole.y0 || p.y == hole.y1);
+        let els = excluded.elements();
+        let pts: Vec<Point> = els
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        let along_sides = pts.iter().zip(pts.iter().cycle().skip(1)).all(|(a, b)| a.x == b.x || a.y == b.y);
+        let one_rect = els.iter().filter(|e| matches!(e, PathEl::MoveTo(_))).count() == 1
+            && along_sides
+            && els.iter().all(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => corner(*p),
+                PathEl::ClosePath => true,
+                _ => false,
+            });
+        if !one_rect || (excluded.area().abs() - hole.area()).abs() > 1e-6 * hole.area().max(1.0) {
+            return shown;
+        }
+        let kept = bounds_without(shown, hole);
+        return if kept.width() > 0.0 && kept.height() > 0.0 { kept } else { shown };
+    }
+    let clipped = shown.intersect(path.bounding_box());
+    if clipped.width() > 0.0 && clipped.height() > 0.0 { clipped } else { shown }
+}
+
+/// The bounds of `outer` once `hole` is removed: the union of the strips beside it (bounding
+/// boxes), or a degenerate rect when nothing is left.
+fn bounds_without(outer: Rect, hole: Rect) -> Rect {
+    let h = outer.intersect(hole);
+    if h.width() <= 0.0 || h.height() <= 0.0 {
+        return outer;
+    }
+    let strips = [
+        Rect::new(outer.x0, outer.y0, h.x0, outer.y1),
+        Rect::new(h.x1, outer.y0, outer.x1, outer.y1),
+        Rect::new(outer.x0, outer.y0, outer.x1, h.y0),
+        Rect::new(outer.x0, h.y1, outer.x1, outer.y1),
+    ];
+    let mut kept: Option<Rect> = None;
+    for s in strips {
+        if s.width() > 0.0 && s.height() > 0.0 {
+            kept = Some(kept.map_or(s, |k| k.union(s)));
+        }
+    }
+    kept.unwrap_or(Rect::new(h.x0, h.y0, h.x0, h.y0))
 }
 
 /// (blur σ, growth) in points for an effect `size` with `pct` percent hardened.
@@ -553,7 +627,7 @@ impl Renderer {
         // Directional feather: one fading ramp per side, multiplied in.
         let df = &e.directional_feather;
         if df.on && df.widths.iter().any(|w| *w > 0.0) {
-            let b = it.inner_bounds();
+            let b = painted_bounds(it);
             let area = if xf.determinant().abs() > 1e-12 { xf.inverse().transform_rect_bbox(reach) } else { b };
             let ramps = [
                 (df.widths[0], kurbo::Point::new(b.x0, b.y0), kurbo::Point::new(b.x0, b.y0 + df.widths[0])),
@@ -1173,6 +1247,161 @@ mod tests {
         assert!(lum(250) + 60 < lum(204), "glow fades toward the image's own edge: {} vs {}", lum(250), lum(204));
     }
 
+    /// A directional feather is measured from the edges of what the object paints: an image
+    /// smaller than its frame fades at its own right edge, and the empty part of the frame stays
+    /// out of the fade (as in InDesign).
+    #[test]
+    fn directional_feather_follows_an_image_inside_its_frame() {
+        let (d, mut it) = offset_image_frame();
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The image runs to x = 200; the 70 pt fade runs 130..200.
+        assert!(lum(120) < 60, "solid before the fade: {}", lum(120));
+        assert!(lum(150) > lum(120) + 100, "the fade runs inward from the image's edge: {} vs {}", lum(150), lum(120));
+        assert!(lum(195) > 600, "nearly transparent at the image's right edge: {}", lum(195));
+        assert!(lum(250) > 700, "the empty part of the frame: {}", lum(250));
+    }
+
+    /// An image larger than its frame is cropped by it, so what shows ends at the frame's edge and
+    /// the directional feather fades there.
+    #[test]
+    fn directional_feather_fades_at_the_frames_edge_when_the_image_overhangs_it() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            g.size = (400.0, 400.0);
+            g.xf = Affine::translate((-100.0, -100.0));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The frame's right edge is at x = 300: the fade runs 230..300.
+        assert!(lum(220) < 60, "solid before the fade: {}", lum(220));
+        assert!(lum(295) > 600, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
+    /// A fill paints the whole frame, so a frame with a fill fades at its own edge even when its
+    /// image is smaller.
+    #[test]
+    fn directional_feather_follows_a_filled_frames_edge() {
+        let (d, mut it) = offset_image_frame();
+        it.fill = designcraft_doc::Fill::swatch("C=0 M=100 Y=0 K=0");
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fill reaches the frame's right edge at x = 300: the fade runs 230..300.
+        assert!(lum(220) < 700, "the fill before the fade: {}", lum(220));
+        assert!(lum(295) > 700, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
+    /// An inverted clipping path shows the graphic outside the path, so what it paints ends where
+    /// the path removes a side of it: the directional feather fades at that retained edge.
+    #[test]
+    fn directional_feather_fades_at_an_inverted_clips_retained_edge() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // The frame's right half (x = 200 to 300) is outside the path, so it is removed.
+            let hole = designcraft_geom::Shape::to_path(&Rect::new(100.0, 0.0, 200.0, 200.0), 0.1);
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // What remains ends at x = 200: the 70 pt fade runs 130..200, not 230..300.
+        assert!(lum(120) < 60, "solid before the fade: {}", lum(120));
+        assert!(lum(195) > 600, "nearly transparent at the retained edge: {}", lum(195));
+        assert!(lum(250) > 700, "the removed part of the frame: {}", lum(250));
+    }
+
+    /// A non-rectangular inverted clip leaves pixels inside its box, so the feather stays at the visible edge.
+    #[test]
+    fn directional_feather_keeps_a_non_rectangular_inverted_clips_pixels() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // A triangle whose box is the frame's right half; on the sampled row (the middle) it
+            // removes x = 200 to 250 only, so the image still shows up to the frame's edge at 300.
+            let mut hole = BezPath::new();
+            hole.move_to((100.0, 0.0));
+            hole.line_to((200.0, 0.0));
+            hole.line_to((100.0, 200.0));
+            hole.close_path();
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fade runs 230..300 at the frame's edge, not 130..200 at the triangle's box.
+        assert!(lum(180) < 60, "solid before the fade: {}", lum(180));
+        assert!(lum(225) > 700, "the triangle's part of the row: {}", lum(225));
+        assert!(lum(295) > 600, "nearly transparent at the visible edge: {}", lum(295));
+    }
+
+    /// Two overlapping rectangles cover as much area as their combined box, yet an inverted
+    /// (even-odd) clip shows the image where they overlap, so they are not a rectangular hole.
+    #[test]
+    fn directional_feather_keeps_pixels_where_two_inverted_clip_rectangles_overlap() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // 150..200 x 0..200 and 100..180 x 0..125 in the frame: 10,000 each, 20,000 together,
+            // the same as their box, the frame's right half. On the sampled row (the middle) they
+            // overlap at 150..180 (250..280 on the page), which shows.
+            let mut hole = BezPath::new();
+            for (x0, y0, x1, y1) in [(150.0, 0.0, 200.0, 200.0), (100.0, 0.0, 180.0, 125.0)] {
+                hole.move_to((x0, y0));
+                hole.line_to((x1, y0));
+                hole.line_to((x1, y1));
+                hole.line_to((x0, y1));
+                hole.close_path();
+            }
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // The fade runs 230..300 at the frame's edge, not 130..200 at the left edge of the box.
+        assert!(lum(160) < 60, "solid left of the box: {}", lum(160));
+        assert!(lum(225) > 700, "hidden by one rectangle: {}", lum(225));
+        assert!(lum(255) < 500, "the overlap still shows: {}", lum(255));
+    }
+
+    /// A triangle drawn twice in one subpath touches only its box's corners and covers as much
+    /// area as the box, yet an inverted (even-odd) clip shows the whole image through it.
+    #[test]
+    fn directional_feather_keeps_pixels_under_an_inverted_clip_drawn_twice() {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            // The frame's right half's triangle, twice: 2 x 10,000 = the box's 20,000.
+            let mut hole = BezPath::new();
+            hole.move_to((100.0, 0.0));
+            for _ in 0..2 {
+                hole.line_to((200.0, 0.0));
+                hole.line_to((100.0, 200.0));
+                hole.line_to((100.0, 0.0));
+            }
+            hole.close_path();
+            g.clip = Some(std::sync::Arc::new(designcraft_doc::ClippingPath {
+                invert: true,
+                ..designcraft_doc::ClippingPath::new(designcraft_doc::ClippingKind::PhotoshopPath, designcraft_geom::PathData::from_bezpath(&hole))
+            }));
+        }
+        let df = &mut it.effects.directional_feather;
+        (df.on, df.widths) = (true, [0.0, 0.0, 0.0, 70.0]);
+        let lum = render_row(d, it);
+        // Nothing is cut away, so the fade runs 230..300 at the frame's edge, not 130..200.
+        assert!(lum(180) < 60, "solid before the fade: {}", lum(180));
+        assert!(lum(215) < 60, "inside the twice-drawn triangle: {}", lum(215));
+        assert!(lum(295) > 600, "nearly transparent at the frame's edge: {}", lum(295));
+    }
+
     /// Eroding keeps a half-transparent area at half coverage away from its edge and clears the
     /// band along the edge.
     #[test]
@@ -1200,6 +1429,16 @@ mod tests {
         for (x, y) in [(27, 20), (20, 13), (25, 25), (14, 14)] {
             assert_eq!(out.sample(x, y).a, 255, "({x}, {y}) is more than 5 pixels from the hole");
         }
+    }
+
+    /// A 200 pt frame at (100, 100) holding a 100 × 200 black image at its left edge: the right
+    /// half of the frame is empty, in a new document.
+    fn offset_image_frame() -> (designcraft_doc::Document, Item) {
+        let (d, mut it) = image_frame(|_| image::Rgba([0, 0, 0, 255]));
+        if let designcraft_doc::Content::Graphic(g) = &mut it.content {
+            g.size = (100.0, 200.0);
+        }
+        (d, it)
     }
 
     /// A 200 pt frame at (100, 100) holding a 20 × 20 image with a transparent left half and an
