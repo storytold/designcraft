@@ -197,6 +197,26 @@ fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// Adding DisplayDocTitle keeps PDF/X-1a findings the same as before the incremental update.
+#[test]
+fn x1a_checks_preserve_findings_after_the_title_preference_update() {
+    let valid = tiny_x1a("/Resources<<>>", "0 0 0 1 k");
+    let mut invalid =
+        tiny_objects("/Resources<<>>", "1 0 0 rg 0 0 10 10 re f", "/OutputConditionIdentifier(Custom)/DestOutputProfile 4 0 R", &icc_header(2));
+    invalid[5] = b"<</GTS_PDFXConformance(PDF/X-3:2003)/Trapped/False>>".to_vec();
+    let valid_findings = craft_prepress::pdfx1a::check_pdfx1a(&valid);
+    assert!(valid_findings.is_empty(), "{valid_findings:?}");
+    let invalid = assemble(&invalid);
+    let invalid_findings = craft_prepress::pdfx1a::check_pdfx1a(&invalid);
+    for diagnostic in ["PDF/X-1:2003", "PDF/X-1a:2003", "DeviceRGB"] {
+        assert!(invalid_findings.iter().any(|finding| finding.contains(diagnostic)), "{invalid_findings:?}");
+    }
+    for (before, expected) in [(valid, valid_findings), (invalid, invalid_findings)] {
+        let updated = crate::transitions::display_document_title(&before).unwrap();
+        assert_eq!(check_pdfx1a(&updated), expected);
+    }
+}
+
 /// The X-1a checks refuse soft masks, constant opacity, blend modes, transparency groups, RGB
 /// and ICC-based color; process and spot color pass.
 #[test]
