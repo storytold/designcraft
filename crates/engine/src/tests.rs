@@ -2718,3 +2718,66 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
 }
+
+#[test]
+fn selection_tool_drag_and_double_click_at_top_keeps_bottom_aligned_text_in_place() {
+    use designcraft_doc::{ItemId, SpreadRef};
+    use designcraft_geom::{Point, Rect};
+    use designcraft_tools::{PointerEvent, PointerKind};
+
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [100, 100, 500, 300], "content": "text", "text": "Line one\nLine two"})).unwrap();
+    let id = ItemId(r["id"].as_u64().unwrap());
+    let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.set_tool("selection");
+
+    let baselines = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        let cs = s.cache.get(d, sid, None);
+        (!cs.is_overset(), cs.frame(id).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>())
+    };
+    let (ok0, lines0) = baselines(&s);
+    assert!(ok0 && lines0.len() == 2);
+    let original = Rect::new(100.0, 100.0, 500.0, 300.0);
+
+    let v = ViewInfo { snap: designcraft_tools::SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let canvas_pt = |s: &Session, x: f64, y: f64| s.layout().to_canvas(SpreadRef::Doc(0), Point::new(x, y));
+
+    // Drag the top-center handle down to y = 200: bottom edge and text stay anchored.
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let mid = canvas_pt(&s, 300.0, 200.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, top.x, top.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, mid.x, mid.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, mid.x, mid.y), v).unwrap();
+    let dragged = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    let (ok1, lines1) = baselines(&s);
+    assert!(ok1 && (dragged.y0 - 200.0).abs() < 1e-6 && (dragged.y1 - 300.0).abs() < 1e-9, "{dragged:?}");
+    assert!((lines1[0] - lines0[0]).abs() < 1e-6 && (lines1[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines1:?}");
+
+    // Undo and drag near the bottom edge (triggering the 1e-3 clamp): y1 still does not drift.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let near_bottom = canvas_pt(&s, 300.0, 299.99);
+    s.pointer(&PointerEvent::new(PointerKind::Down, top.x, top.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, near_bottom.x, near_bottom.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, near_bottom.x, near_bottom.y), v).unwrap();
+    let clamped = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    assert!((clamped.y1 - 300.0).abs() < 1e-9, "bottom edge drifted on clamped drag: {clamped:?}");
+
+    // Undo and double-click the top-center handle: aligns flush with the text while bottom stays pinned.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let undo_before = s.doc().unwrap().history.undo.len();
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, top.x, top.y), v).unwrap();
+    let fitted = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    let (ok2, lines2) = baselines(&s);
+    assert!(ok2 && (fitted.y1 - 300.0).abs() < 1e-9 && fitted.y0 > 200.0 && fitted.x0 == 100.0 && fitted.x1 == 500.0, "{fitted:?}");
+    assert!((lines2[0] - lines0[0]).abs() < 1e-6 && (lines2[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines2:?}");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo_before + 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
+}

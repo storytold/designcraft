@@ -502,7 +502,7 @@ fn is_origin(p: &[f64; 2]) -> bool {
     p[0] == 0.0 && p[1] == 0.0
 }
 
-/// The colours of new shapes (see [`DocSettings::new_object`]).
+/// The colours and stroke defaults of new shapes (see [`DocSettings::new_object`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NewObjectColors {
@@ -510,12 +510,126 @@ pub struct NewObjectColors {
     pub fill_tint: f32,
     pub stroke: String,
     pub stroke_tint: f32,
+    #[serde(skip_serializing_if = "is_default_stroke_weight")]
+    pub stroke_weight: f64,
+    #[serde(rename = "strokeType", skip_serializing_if = "is_default_stroke_type")]
+    pub stroke_type: StrokeType,
+    #[serde(skip_serializing_if = "is_default_stroke_align")]
+    pub stroke_align: StrokeAlign,
+    #[serde(skip_serializing_if = "is_default_cap")]
+    pub stroke_cap: Cap,
+    #[serde(skip_serializing_if = "is_default_join")]
+    pub stroke_join: Join,
+    #[serde(skip_serializing_if = "is_default_miter_limit")]
+    pub stroke_miter_limit: f64,
+    #[serde(skip_serializing_if = "is_default_arrowhead")]
+    pub stroke_start: Arrowhead,
+    #[serde(skip_serializing_if = "is_default_arrowhead")]
+    pub stroke_end: Arrowhead,
+    #[serde(skip_serializing_if = "is_default_gap_swatch")]
+    pub gap_swatch: String,
+    #[serde(skip_serializing_if = "is_one_f32")]
+    pub gap_tint: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gap_overprint: bool,
+}
+
+fn is_default_stroke_weight(w: &f64) -> bool {
+    *w == 1.0
+}
+
+fn is_default_stroke_type(t: &StrokeType) -> bool {
+    matches!(t, StrokeType::Solid)
+}
+
+fn is_default_stroke_align(a: &StrokeAlign) -> bool {
+    *a == StrokeAlign::Center
+}
+
+fn is_default_cap(c: &Cap) -> bool {
+    *c == Cap::Butt
+}
+
+fn is_default_join(j: &Join) -> bool {
+    *j == Join::Miter
+}
+
+fn is_default_miter_limit(m: &f64) -> bool {
+    *m == 4.0
+}
+
+fn is_default_arrowhead(a: &Arrowhead) -> bool {
+    *a == Arrowhead::None
+}
+
+fn is_default_gap_swatch(s: &str) -> bool {
+    s == designcraft_color::swatch::NONE
+}
+
+fn is_one_f32(v: &f32) -> bool {
+    *v == 1.0
 }
 
 impl Default for NewObjectColors {
-    /// No fill and a black stroke, as new documents have.
+    /// No fill and a 1 pt black stroke, as new documents have.
     fn default() -> Self {
-        NewObjectColors { fill: "[None]".into(), fill_tint: 1.0, stroke: "[Black]".into(), stroke_tint: 1.0 }
+        let s = Stroke::default();
+        NewObjectColors {
+            fill: "[None]".into(),
+            fill_tint: 1.0,
+            stroke: s.swatch,
+            stroke_tint: s.tint,
+            stroke_weight: s.weight,
+            stroke_type: s.kind,
+            stroke_align: s.align,
+            stroke_cap: s.cap,
+            stroke_join: s.join,
+            stroke_miter_limit: s.miter_limit,
+            stroke_start: s.start,
+            stroke_end: s.end,
+            gap_swatch: s.gap_swatch,
+            gap_tint: s.gap_tint,
+            gap_overprint: s.gap_overprint,
+        }
+    }
+}
+
+impl NewObjectColors {
+    /// The default stroke applied to newly drawn shapes and paths.
+    pub fn to_stroke(&self) -> Stroke {
+        Stroke {
+            swatch: self.stroke.clone(),
+            tint: self.stroke_tint,
+            weight: self.stroke_weight,
+            kind: self.stroke_type.clone(),
+            align: self.stroke_align,
+            cap: self.stroke_cap,
+            join: self.stroke_join,
+            miter_limit: self.stroke_miter_limit,
+            start: self.stroke_start,
+            end: self.stroke_end,
+            gap_swatch: self.gap_swatch.clone(),
+            gap_tint: self.gap_tint,
+            gap_overprint: self.gap_overprint,
+            ..Stroke::default()
+        }
+    }
+
+    /// Copy `s` into the stroke defaults for new shapes.
+    pub fn set_stroke(&mut self, s: &Stroke) {
+        self.stroke = s.swatch.clone();
+        self.stroke_tint = s.tint;
+        self.stroke_weight = s.weight;
+        self.stroke_type = s.kind.clone();
+        self.stroke_align = s.align;
+        self.stroke_cap = s.cap;
+        self.stroke_join = s.join;
+        self.stroke_miter_limit = s.miter_limit;
+        self.stroke_start = s.start;
+        self.stroke_end = s.end;
+        self.gap_swatch = s.gap_swatch.clone();
+        self.gap_tint = s.gap_tint;
+        self.gap_overprint = s.gap_overprint;
     }
 }
 
