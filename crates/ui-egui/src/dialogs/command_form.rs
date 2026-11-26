@@ -33,7 +33,15 @@ fn command_form(app: &mut DesignApp, ui: &mut Ui, d: &mut Dialog) -> Option<bool
     let layouts: Vec<(String, (f64, f64))> = app
         .session
         .active()
-        .map(|st| st.doc.layouts().iter().map(|l| (l.name.clone(), st.doc.page(l.start).map_or((st.doc.settings.page_width, st.doc.settings.page_height), |p| (p.width, p.height)))).collect())
+        .map(|st| {
+            st.doc
+                .layouts()
+                .iter()
+                .map(|l| {
+                    (l.name.clone(), st.doc.page(l.start).map_or((st.doc.settings.page_width, st.doc.settings.page_height), |p| (p.width, p.height)))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let title = super::dialog_title(app, d);
     Stack::new().id_salt(("command_form", command.clone())).fill_width().show(ui, |ui, _| {

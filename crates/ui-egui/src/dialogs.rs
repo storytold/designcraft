@@ -9,34 +9,34 @@ use serde_json::{Map, Value, json};
 use crate::DesignApp;
 use crate::app::file_dialogs::{Bound, with_path};
 
+mod cell_options_form;
 pub(crate) mod char_sections;
+mod color_forms;
+mod command_form;
 pub(crate) mod document_forms;
 pub(crate) mod export_forms;
 pub(crate) mod find_forms;
 pub(crate) mod frame_forms;
-pub(crate) mod import_forms;
-mod cell_options_form;
-mod color_forms;
 pub(crate) mod framework;
+pub(crate) mod import_forms;
 mod layout_forms;
-mod special_forms;
+mod options;
 pub(crate) mod paragraph_forms;
-mod command_form;
 mod preferences;
-mod table_forms;
-pub(crate) mod text_forms;
-#[cfg(test)]
-pub(crate) mod table_layout_kit;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod successor_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod successor_find_tests;
+mod special_forms;
+mod style_cjk;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod successor_dialog_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_find_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod successor_pending_tests;
-mod options;
-mod style_cjk;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod successor_tests;
+mod table_forms;
+#[cfg(test)]
+pub(crate) mod table_layout_kit;
+pub(crate) mod text_forms;
 pub use options::{open_color_group_options, open_layer_options, open_swatch_options};
 
 #[derive(Clone, Debug, Serialize)]
@@ -3498,7 +3498,13 @@ pub fn command_fields(doc: &str) -> Vec<CommandField> {
                 vec![]
             };
         let boolean = spec.starts_with("bool") || spec.starts_with("true|false") || spec.starts_with("true") && spec.len() <= 5;
-        out.push(CommandField { key: key.into(), optional, choices: if boolean { vec![] } else { choices }, boolean, hint: spec.trim_start_matches(['|', ' ']).into() });
+        out.push(CommandField {
+            key: key.into(),
+            optional,
+            choices: if boolean { vec![] } else { choices },
+            boolean,
+            hint: spec.trim_start_matches(['|', ' ']).into(),
+        });
     }
     out
 }
@@ -4016,9 +4022,3 @@ fn store_picked(d: &mut Dialog, p: &Picked) {
     d.fields.insert("_hsb".into(), json!(p.hsb));
     d.fields.insert("_lab".into(), json!(p.lab));
 }
-
-
-
-
-
-

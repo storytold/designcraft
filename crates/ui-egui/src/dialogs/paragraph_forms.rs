@@ -669,15 +669,15 @@ fn sides(lang: &str, ui: &mut Ui, d: &mut Dialog, a: &Attrs, key: &str, legend: 
                 } else {
                     tr("Offsets")
                 })
-                    .id_salt(("paragraph_sides_fields", key.to_owned(), column))
-                    // As wide as its fields, so the link button and the second column stand beside the first, not at the far end.
-                    .sizing(Sizing::Content)
-                    .show(ui, |ui, _| {
-                        for i in indices {
-                            let caption = tr(["Top:", "Left:", "Bottom:", "Right:"][i]);
-                            field(ui, &caption, &format!("{key}{i}"), |ui| changed |= edit(ui, &mut values, i, &caption));
-                        }
-                    });
+                .id_salt(("paragraph_sides_fields", key.to_owned(), column))
+                // As wide as its fields, so the link button and the second column stand beside the first, not at the far end.
+                .sizing(Sizing::Content)
+                .show(ui, |ui, _| {
+                    for i in indices {
+                        let caption = tr(["Top:", "Left:", "Bottom:", "Right:"][i]);
+                        field(ui, &caption, &format!("{key}{i}"), |ui| changed |= edit(ui, &mut values, i, &caption));
+                    }
+                });
             }
         });
     };

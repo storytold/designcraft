@@ -371,11 +371,11 @@ mod framework {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod installed_action_tests {
     use super::*;
-    use serde_json::json;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
+    use serde_json::json;
     use std::sync::Arc;
 
     struct State {
@@ -788,13 +788,13 @@ mod installed_action_tests {
 mod style_control_tests {
     use super::*;
     use crate::theme::Tokens;
-    use serde_json::json;
     use designcraft_doc::{Document, Selection, StoryId, Table};
     use egui::{Event, Key, Modifiers, PointerButton};
     use egui_kittest::{
         Harness,
         kittest::{NodeT, Queryable},
     };
+    use serde_json::json;
     use std::sync::Arc;
 
     const TABLE_STYLE: &str = "Editorial table — complete second style";

@@ -100,8 +100,28 @@ pub(crate) struct TabRuler {
 
 impl TabRuler {
     /// A ruler named `label` over `tabs` and the three indents, `width` points wide, its scale in `unit`.
-    pub(crate) fn new(label: impl Into<Label>, tabs: Vec<TabStop>, indents: (f64, f64, f64), width: f64, unit: Unit, selected: Option<usize>) -> Self {
-        TabRuler { common: Common::new(), tabs, left: indents.0, first: indents.1, right: indents.2, width, unit, selected, scale: None, edit: None, drag: None }.label(label)
+    pub(crate) fn new(
+        label: impl Into<Label>,
+        tabs: Vec<TabStop>,
+        indents: (f64, f64, f64),
+        width: f64,
+        unit: Unit,
+        selected: Option<usize>,
+    ) -> Self {
+        TabRuler {
+            common: Common::new(),
+            tabs,
+            left: indents.0,
+            first: indents.1,
+            right: indents.2,
+            width,
+            unit,
+            selected,
+            scale: None,
+            edit: None,
+            drag: None,
+        }
+        .label(label)
     }
 
     /// The ruler's scale in pixels to the point, when the panel keeps it at the view's zoom (over its text frame).
@@ -291,7 +311,13 @@ fn paint_ruler(painter: &egui::Painter, r: &TabRuler, g: &Geometry, drag: Option
             };
             p.line_segment([pos2(x, bar.max.y - len), pos2(x, bar.max.y)], tick);
         }
-        p.text(pos2(g.to_x(m) + 2.0, bar.min.y + 1.0), egui::Align2::LEFT_TOP, crate::canvas::fmt_tick(r.unit.from_pt(m)), font.clone(), t.ruler_text);
+        p.text(
+            pos2(g.to_x(m) + 2.0, bar.min.y + 1.0),
+            egui::Align2::LEFT_TOP,
+            crate::canvas::fmt_tick(r.unit.from_pt(m)),
+            font.clone(),
+            t.ruler_text,
+        );
         k += 1;
     }
     // Indent markers (a dragged one follows the pointer; the first line follows the left indent).
@@ -370,7 +396,11 @@ pub(crate) fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value, doc
             for (a, tip) in crate::panels::tabs::ALIGNS {
                 let glyph = AlignGlyph(tab_icon(a));
                 let shown = stop.as_ref().map_or(align, |s| s.align) == a;
-                let out = ToggleButton::new(tr(tip), Bind::given(shown)).icon(IconSpec::glyph(&glyph)).icon_only().id_salt(("style_tab_align", tab_icon(a))).show(ui);
+                let out = ToggleButton::new(tr(tip), Bind::given(shown))
+                    .icon(IconSpec::glyph(&glyph))
+                    .icon_only()
+                    .id_salt(("style_tab_align", tab_icon(a)))
+                    .show(ui);
                 if out.events.committed().copied() == Some(true) && !shown {
                     align = a;
                     if let Some(i) = sel {
@@ -386,22 +416,30 @@ pub(crate) fn tabs(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, pv: &Value, doc
             }
             let leader = committed_text(ui, "tabs_leader", &tr("Leader:"), stop.as_ref().map_or("", |s| s.leader.as_str()), stop.is_some());
             if let (Some(l), Some(i)) = (leader, sel) {
-                result = Some(engine::leader_value(&l, "tabs").map_err(|e| e.to_string()).and_then(|l| engine::change(&mut list, i, None, Some(l), None)));
+                result =
+                    Some(engine::leader_value(&l, "tabs").map_err(|e| e.to_string()).and_then(|l| engine::change(&mut list, i, None, Some(l), None)));
             }
             let on_char = stop.as_ref().is_some_and(|s| s.align == TabAlign::Char);
             let align_on = committed_text(ui, "tabs_align_on", &tr("Align On:"), stop.as_ref().map_or("", |s| s.align_on.as_str()), on_char);
             if let (Some(c), Some(i)) = (align_on, sel) {
-                result = Some(engine::align_on_value(&c, "tabs").map_err(|e| e.to_string()).and_then(|c| engine::change(&mut list, i, None, None, Some(c))));
+                result = Some(
+                    engine::align_on_value(&c, "tabs").map_err(|e| e.to_string()).and_then(|c| engine::change(&mut list, i, None, None, Some(c))),
+                );
             }
             if push(ui, "tabs_clear_all", &tr("Clear All"), true) {
                 list.clear();
                 result = Some(Ok(None));
             }
         });
-        let ruler = TabRuler::new(tr("Tabs"), list.clone(), (left, first, right), width, unit, sel).id_salt("style_tab_ruler").sizing(Sizing::FillWidth).show(ui);
+        let ruler = TabRuler::new(tr("Tabs"), list.clone(), (left, first, right), width, unit, sel)
+            .id_salt("style_tab_ruler")
+            .sizing(Sizing::FillWidth)
+            .show(ui);
         match ruler.edit {
             Some(RulerEdit::Select(i)) => sel = Some(i),
-            Some(RulerEdit::Add(x)) => result = Some(engine::add(&mut list, TabStop { position: x, align, leader: String::new(), align_on: String::new() })),
+            Some(RulerEdit::Add(x)) => {
+                result = Some(engine::add(&mut list, TabStop { position: x, align, leader: String::new(), align_on: String::new() }))
+            }
             Some(RulerEdit::Move(i, x)) => result = Some(engine::move_to(&mut list, i, x)),
             Some(RulerEdit::Remove(i)) => result = Some(engine::remove(&mut list, i)),
             Some(RulerEdit::Indent(k, x)) => indent = Some((k, x)),

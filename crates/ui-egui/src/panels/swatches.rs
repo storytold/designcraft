@@ -899,11 +899,8 @@ mod framework {
         let rows = rows(ui, &lang, &doc);
         let picked: Option<String> = ui.data(|d| d.get_temp(egui::Id::unique(PICKED)));
         // The row picked, else the swatch the selection has in front: that row shows as the current one.
-        let mut selection = picked
-            .as_deref()
-            .or(fill_cur.as_deref())
-            .and_then(|name| rows.of_swatch(name))
-            .map_or_else(Selection::default, Selection::single);
+        let mut selection =
+            picked.as_deref().or(fill_cur.as_deref()).and_then(|name| rows.of_swatch(name)).map_or_else(Selection::default, Selection::single);
         let before = selection.clone();
         let renamable = |key: &RowKey| key.swatch().and_then(|name| doc.swatch(name)).is_some_and(|sw| !sw.locked);
         let list_id = ui.id().with(("swatches-list", identity));
@@ -1012,7 +1009,9 @@ mod framework {
                     RowKey::Swatch { group: Some(group), .. } => ui.data(|d| d.get_temp::<bool>(open_id(group))).unwrap_or(true),
                     _ => true,
                 };
-                if let Some(name) = key.swatch().filter(|name| shown && ui.is_enabled() && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden)) {
+                if let Some(name) =
+                    key.swatch().filter(|name| shown && ui.is_enabled() && doc.swatch(name).is_some_and(|sw| !sw.locked && !sw.hidden))
+                {
                     rename(app, ui, Some(name), &to);
                 }
             }
@@ -2304,7 +2303,8 @@ mod color_panel_tests {
         let id = app.run("frame.create", json!({"rect": [36, 36, 200, 200]})).unwrap()["id"].as_u64().unwrap();
         app.run("selection.set", json!({"ids": [id]})).unwrap();
         app.run("object.color", json!({"color": {"c": 0, "m": 50, "y": 100, "k": 0}})).unwrap();
-        let mut h = crate::test_window::builder().with_size(vec2(320.0, 300.0)).build_ui_state(|ui, app: &mut DesignApp| super::color_panel(app, ui), app);
+        let mut h =
+            crate::test_window::builder().with_size(vec2(320.0, 300.0)).build_ui_state(|ui, app: &mut DesignApp| super::color_panel(app, ui), app);
         h.run_steps(3);
         let fields: Vec<egui::Rect> = h.query_all_by(|n| n.role() == egui::accesskit::Role::SpinButton).map(|n| n.rect()).collect();
         assert_eq!(fields.len(), 4, "C, M, Y and K fields");

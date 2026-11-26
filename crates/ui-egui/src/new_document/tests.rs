@@ -56,11 +56,13 @@ fn card_at(h: &egui_kittest::Harness<'_, DesignApp>, name: &str) -> egui::Pos2 {
     use egui::accesskit::Role;
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
     let joined = format!("{name}, ");
-    h.query_all_by(|node| !matches!(node.role(), Role::Label | Role::Tab) && node.label().is_some_and(|label| label == name || label.starts_with(&joined)))
-        .next()
-        .expect("a card of that name")
-        .rect()
-        .center()
+    h.query_all_by(|node| {
+        !matches!(node.role(), Role::Label | Role::Tab) && node.label().is_some_and(|label| label == name || label.starts_with(&joined))
+    })
+    .next()
+    .expect("a card of that name")
+    .rect()
+    .center()
 }
 
 #[test]

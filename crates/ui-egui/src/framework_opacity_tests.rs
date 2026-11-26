@@ -15,10 +15,10 @@
 //! rects these tests press are the hit areas the framework recorded, never a guessed percentage of the
 //! panel.
 
-use egui_kittest::kittest::Queryable as _;
 use crate::DesignApp;
 use egui::{Event, Key, Modifiers, PointerButton, pos2, vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
 use serde_json::json;
 
 /// The frame the tests fade.

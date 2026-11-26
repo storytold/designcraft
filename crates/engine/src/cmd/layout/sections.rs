@@ -269,7 +269,6 @@ mod section_side_tests {
     }
 }
 
-
 #[cfg(test)]
 mod numbering_noop_guard_tests {
     use super::{Value, json};
@@ -296,7 +295,10 @@ mod numbering_noop_guard_tests {
         assert!(Arc::ptr_eq(&now.doc, &old.doc), "no-op/refusal cannot replace the live Arc");
         assert!(Arc::ptr_eq(&now.saved_doc, &old.saved_doc));
         assert_eq!(now.saved_doc.as_ref(), old.saved_doc.as_ref());
-        assert_eq!((now.uid, now.identity_epoch, now.revision, now.saved_revision, now.is_dirty()), (old.uid, old.identity_epoch, old.revision, old.saved_revision, old.is_dirty()));
+        assert_eq!(
+            (now.uid, now.identity_epoch, now.revision, now.saved_revision, now.is_dirty()),
+            (old.uid, old.identity_epoch, old.revision, old.saved_revision, old.is_dirty())
+        );
         assert_eq!(now.selection, old.selection);
         assert_eq!(entries(&now.history.undo), entries(&old.history.undo));
         assert_eq!(entries(&now.history.redo), entries(&old.history.redo));
@@ -304,11 +306,15 @@ mod numbering_noop_guard_tests {
         assert_eq!(now.path, old.path);
         assert_eq!(now.preview_record, old.preview_record);
         assert_eq!(now.preview_stash.as_deref(), old.preview_stash.as_deref());
-        if let (Some(now), Some(old)) = (&now.preview_stash, &old.preview_stash) { assert!(Arc::ptr_eq(now, old)); }
+        if let (Some(now), Some(old)) = (&now.preview_stash, &old.preview_stash) {
+            assert!(Arc::ptr_eq(now, old));
+        }
         assert_eq!(now.active_layer, old.active_layer);
         assert_eq!(now.editing_parents, old.editing_parents);
         let mut journal = before.1.clone();
-        if let Some(params) = attempt { journal.push(("layout.numberingOptions".into(), params.clone())); }
+        if let Some(params) = attempt {
+            journal.push(("layout.numberingOptions".into(), params.clone()));
+        }
         assert_eq!(s.journal, journal, "successful no-ops journal attempts; refused commands do not");
     }
     fn one_edit(s: &Session, before: &(DocState, Vec<(String, Value)>), params: &Value) {
@@ -316,7 +322,11 @@ mod numbering_noop_guard_tests {
         let old = &before.0;
         assert_ne!(now.doc.as_ref(), old.doc.as_ref());
         assert!(!Arc::ptr_eq(&now.doc, &old.doc));
-        assert_ne!(now.doc.spreads.iter().map(|spread| spread.id).collect::<Vec<_>>(), old.doc.spreads.iter().map(|spread| spread.id).collect::<Vec<_>>(), "real combined edits still run the original repagination, even for chapter-only changes");
+        assert_ne!(
+            now.doc.spreads.iter().map(|spread| spread.id).collect::<Vec<_>>(),
+            old.doc.spreads.iter().map(|spread| spread.id).collect::<Vec<_>>(),
+            "real combined edits still run the original repagination, even for chapter-only changes"
+        );
         assert!(now.revision > old.revision, "a fresh process-global revision, not a guessed +1");
         assert_eq!((now.uid, now.identity_epoch, now.saved_revision), (old.uid, old.identity_epoch, old.saved_revision));
         assert!(Arc::ptr_eq(&now.saved_doc, &old.saved_doc));
@@ -493,7 +503,10 @@ mod numbering_noop_guard_tests {
         // Same public native document/story fixture seam used by place_text's autoflow tests.
         // Explicit page breaks make pending flow independent of an incidental line-wrap count.
         let mut doc = designcraft_doc::Document::new(&designcraft_doc::build::NewDocument {
-            pages: 1, facing_pages: false, primary_text_frame: true, ..Default::default()
+            pages: 1,
+            facing_pages: false,
+            primary_text_frame: true,
+            ..Default::default()
         });
         let story = doc.settings.primary_story.unwrap();
         doc.story_mut(story).unwrap().insert(0, &format!("First{}Second{}Third", designcraft_doc::PAGE_BREAK, designcraft_doc::PAGE_BREAK));
@@ -560,7 +573,8 @@ mod numbering_noop_guard_tests {
         source.execute("file.new", &json!({"pages": 1})).unwrap();
         let item = source.execute("frame.create", &json!({"rect": [72, 72, 272, 172]})).unwrap()["id"].as_u64().unwrap();
         source.execute("object.altText", &json!({"text": "First", "ids": [item]})).unwrap();
-        let caption = source.execute("object.caption", &json!({"ids": [item], "text": "Photo: {altText}", "live": true})).unwrap()["ids"][0].as_u64().unwrap();
+        let caption =
+            source.execute("object.caption", &json!({"ids": [item], "text": "Photo: {altText}", "live": true})).unwrap()["ids"][0].as_u64().unwrap();
         let caption = designcraft_doc::ItemId(caption);
         let mut loaded = (*source.doc().unwrap().doc).clone();
         // A legal persisted/native model with stale dependent text, not a synthetic engine flag.
@@ -593,9 +607,14 @@ mod numbering_noop_guard_tests {
             assert_eq!(s.doc().unwrap().doc.item(caption).unwrap().bounds(), before.0.doc.item(caption).unwrap().bounds());
             let before_real = snapshot(&s);
             s.execute(id, &params).unwrap();
-            if genuine { one_edit(&s, &before_real, &params); }
+            if genuine {
+                one_edit(&s, &before_real, &params);
+            }
             assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "Photo: Second\nThird\nFourth\nFifth\nSixth");
-            assert!(s.doc().unwrap().doc.item(caption).unwrap().bounds().height() > before_real.0.doc.item(caption).unwrap().bounds().height(), "the original caption->autosize ordering remains effective");
+            assert!(
+                s.doc().unwrap().doc.item(caption).unwrap().bounds().height() > before_real.0.doc.item(caption).unwrap().bounds().height(),
+                "the original caption->autosize ordering remains effective"
+            );
             assert_eq!(s.doc().unwrap().history.undo.len(), before_real.0.history.undo.len() + 1);
             assert_eq!(s.journal.last().unwrap(), &(id.to_owned(), params));
             assert_eq!(s.journal.len(), before_real.1.len() + 1);
@@ -613,7 +632,8 @@ mod numbering_noop_guard_tests {
     fn preview_fixture() -> Session {
         let mut s = Session::new();
         s.execute("file.new", &json!({"pages": 1})).unwrap();
-        s.execute("data.source.select", &json!({"bytes": crate::cmd::base64_encode(b"Name\nAda\nGrace\nKatherine\n"), "name": "people.csv"})).unwrap();
+        s.execute("data.source.select", &json!({"bytes": crate::cmd::base64_encode(b"Name\nAda\nGrace\nKatherine\n"), "name": "people.csv"}))
+            .unwrap();
         s.execute("data.preview", &json!({"record": 2})).unwrap();
         assert_eq!(s.doc().unwrap().preview_record, Some(2));
         assert!(s.doc().unwrap().preview_stash.is_some());
@@ -705,7 +725,11 @@ mod numbering_noop_guard_tests {
             if !refused {
                 assert_eq!(s.journal.last().unwrap(), &(id.to_owned(), params));
                 s.execute("edit.undo", &json!({})).unwrap();
-                assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "Marked", "numbering is one atomic step after the separate prelude commit");
+                assert_eq!(
+                    s.doc().unwrap().doc.story(story).unwrap().text,
+                    "Marked",
+                    "numbering is one atomic step after the separate prelude commit"
+                );
             }
             s.execute("edit.undo", &json!({})).unwrap();
             assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "");

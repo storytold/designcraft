@@ -145,8 +145,8 @@ fn show_framework(app: &mut DesignApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::vec2;
     use designcraft_doc::StoryId;
+    use egui::vec2;
     use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
     use egui_kittest::{
         Harness,

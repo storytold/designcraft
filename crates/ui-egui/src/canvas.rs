@@ -30,6 +30,7 @@ mod tool_overlays;
 mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
+pub(crate) use frames::item_canvas_xf;
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]
 use frames::{frame_x, overset_frames, overset_marks, ported_frames, text_frames_in};
@@ -38,7 +39,6 @@ use guides::{GUIDE_DRAG, GUIDE_PRESS, GuideDrag, GuidePress, guide_readout, guid
 use guides::{guide_at, guide_drag_delta, guide_measure};
 use ime::ime_canvas_pass;
 pub(crate) use ime::{CanvasIme, ime_observe};
-pub(crate) use frames::item_canvas_xf;
 pub(crate) use input::forwarded_keys;
 pub use input::{begin_frame, context_menu_open, drop_frame};
 use input::{context_menu, draw_cursor_badge, handle_input, pointer_elsewhere};
@@ -560,7 +560,7 @@ mod parent_canvas_tests;
 #[path = "guide_selection_tests.rs"]
 mod guide_selection_tests;
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod successor_tests;
+#[cfg(test)]
+mod tests;

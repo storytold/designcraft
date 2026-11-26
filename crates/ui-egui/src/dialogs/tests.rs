@@ -2160,7 +2160,6 @@ fn the_color_pickers_eyedropper_takes_a_colour_off_the_page() {
     assert_eq!(h.state().ui.dialog.as_ref().unwrap().s("hex"), hex, "the picker isn't sampled");
 }
 
-
 /// The Color Picker laid out as InDesign's: a field and a slider for the component whose radio
 /// is on, the new colour over the old one, and the values in every space.
 #[test]
@@ -2169,7 +2168,8 @@ fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_wi
     let mut app = kit::app(1, false);
     // A CMYK colour: the picker keeps its inks (the draft's `model` names them) while they give the colour it shows.
     let hex = designcraft_color::Color::Cmyk { c: 0.0, m: 0.0, y: 0.0, k: 1.0 }.to_hex();
-    app.ui.dialog = Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": hex, "model": "cmyk", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
+    app.ui.dialog =
+        Some(Dialog::new("colorPicker", json!({"target": "fill", "hex": hex, "model": "cmyk", "cmyk": [0.0, 0.0, 0.0, 100.0], "text": false})));
     let mut h = kit::harness_sized(app, egui::vec2(1400.0, 900.0));
     // A C typed at 100% K is kept, whether or not the colour shown changes with it.
     let rgb = kit::draft(&h).fields.get("rgb").cloned();
@@ -2178,7 +2178,6 @@ fn the_color_picker_keeps_a_typed_cmyk_value_the_colour_shown_does_not_change_wi
     assert_eq!(d.fields["cmyk"], json!([50.0, 0.0, 0.0, 100.0]), "rgb {:?} (was {rgb:?})", d.fields.get("rgb"));
     assert!(d.b("edited"));
 }
-
 
 /// The colour area of the Color Picker named by its two components (the Red mode's is "Blue and green").
 fn picker_area(h: &egui_kittest::Harness<'_, DesignApp>, name: &str) -> egui::Rect {
@@ -2251,7 +2250,6 @@ fn the_color_picker_picks_on_its_field_and_slider_and_adds_a_cmyk_swatch() {
     assert_eq!(st.doc.resolve_color(&fill, 1.0).unwrap().to_hex(), "#7c1315");
 }
 
-
 /// The Color Picker reopens on the component it was left on, and the choice survives the
 /// preferences file; an opener that names a component still gets it.
 #[test]
@@ -2283,7 +2281,6 @@ fn the_color_picker_remembers_its_component() {
     assert_eq!(crate::UiState::from_preferences_json(&saved).unwrap().color_picker_component, "h");
     assert_eq!(crate::UiState::from_preferences_json(b"{}").unwrap().color_picker_component, "r");
 }
-
 
 #[test]
 fn create_guides_dialog_covers_the_spread_in_view() {
@@ -2476,7 +2473,12 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     };
     // Unlinked, Left alone takes 10 pt.
     link(&mut h, 0);
-    assert_eq!(kit::draft(&h).fields.get("_linked.p.borderWeights").or(kit::draft(&h).fields.get("_linked.borderWeights")), Some(&json!(false)), "the click turned the weights' link off: {:?}", kit::draft(&h).fields.keys().filter(|k| k.contains("link")).collect::<Vec<_>>());
+    assert_eq!(
+        kit::draft(&h).fields.get("_linked.p.borderWeights").or(kit::draft(&h).fields.get("_linked.borderWeights")),
+        Some(&json!(false)),
+        "the click turned the weights' link off: {:?}",
+        kit::draft(&h).fields.keys().filter(|k| k.contains("link")).collect::<Vec<_>>()
+    );
     kit::type_and_commit(&mut h, "Left:", 0, "10");
     assert_eq!(field(&h, "borderWeights"), json!([3.0, 10.0, 3.0, 3.0]));
     // Linked again, the four take Top's weight; unlinked once more for the thick left side.
@@ -2501,7 +2503,6 @@ fn paragraph_border_sides_and_corners_link_as_indesigns() {
     let style = h.state().session.doc().unwrap().doc.styles.para("Ruled Child").cloned().unwrap();
     assert_eq!(style.para.border_weights, Some([3.0, 10.0, 3.0, 3.0]));
 }
-
 
 /// The course's chapter 41: Paragraph Shading as InDesign's. The page is the one the section list has chosen;
 /// the tint has Overprint beside it; the corners are a two-by-two grid whose shape menus show
@@ -2546,7 +2547,6 @@ fn paragraph_shading_page_is_laid_out_as_indesigns() {
     assert_eq!(style.para.shading_corners.map(|c| c[1].shape), Some(CornerShape::Rounded));
 }
 
-
 /// The course's chapter 20: a paragraph style's rule below becomes wavy, 3 pt, with a gap
 /// colour, from Paragraph Rules › Type and Gap Color.
 #[test]
@@ -2578,14 +2578,10 @@ fn a_rules_default_gap_tint_shows_100() {
     .unwrap();
     app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Ruled Child", "section": "rules", "rule": "ruleBelow"})));
     let h = table_layout_kit::harness_sized(app, egui::vec2(1400.0, 1000.0));
-    let field = h
-        .query_all_by_label("Gap Tint:")
-        .find(|n| table_layout_kit::FIELD.contains(&n.accesskit_node().role()))
-        .and_then(|n| n.value());
+    let field = h.query_all_by_label("Gap Tint:").find(|n| table_layout_kit::FIELD.contains(&n.accesskit_node().role())).and_then(|n| n.value());
     // The field spells its unit with or without a space ("100%", "100 %"): what it shows is the whole 100.
     assert_eq!(field.map(|text| text.split_whitespace().collect::<String>()).as_deref(), Some("100%"));
 }
-
 
 /// The course's chapter 20: the "Recipe Categories" title formatted on the page (size, All
 /// Caps, tracking, space after), then New Paragraph Style from it: the dialog starts from the

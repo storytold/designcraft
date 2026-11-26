@@ -592,7 +592,6 @@ mod tests {
         assert!(!out.exists(), "nothing packaged");
         std::fs::remove_dir_all(dir).unwrap();
     }
-
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

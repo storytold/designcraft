@@ -16,18 +16,17 @@ use craft_ui_widgets::buttons::{Button, IconButton};
 use craft_ui_widgets::contract::overlay::Anchor;
 use craft_ui_widgets::contract::{
     Access, Bind, CollectionEvent, Common, Component, Cx, DisabledLook, DropMark, DropOperation, DropTarget, Focus as _, LeadSource, ListDrag,
-    MeasureCx,
-    NoValue, Outcome, PaintUi, Pointer as _, PopupKind, Props as _, Role, Scroll, SelectMode, Show as _, ShowCollection as _, ShowContainer as _,
-    Sizing, Trigger,
+    MeasureCx, NoValue, Outcome, PaintUi, Pointer as _, PopupKind, Props as _, Role, Scroll, SelectMode, Show as _, ShowCollection as _,
+    ShowContainer as _, Sizing, Trigger,
 };
 use craft_ui_widgets::display::{Divider, Shade, Text};
 use craft_ui_widgets::layout_components::Stack;
 use craft_ui_widgets::list::{List, ListRow};
 use craft_ui_widgets::menu::{Menu, MenuItem};
 use craft_ui_widgets::primitives::IconSpec;
+use craft_ui_widgets::primitives::PaintShape;
 use craft_ui_widgets::runtime::drag::{self, DragPreview};
 use craft_ui_widgets::runtime::env::{Direction, Label, with_env};
-use craft_ui_widgets::primitives::PaintShape;
 use craft_ui_widgets::style::{ComponentStyle, Flags, FocusLook, StyleColor, StyleCx, TypeRole, Variant};
 use designcraft_doc::SpreadId;
 use egui::{Color32, Pos2, Rect, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};

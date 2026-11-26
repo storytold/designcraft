@@ -282,8 +282,10 @@ pub(crate) mod form {
         Row::new().id_salt(salt).show(ui, |ui, _| {
             let id = ui.make_persistent_id("effects_measure_steps");
             stepped = crate::framework_transform::measure_steps(ui, id, label, unit, true);
-            let shown =
-                TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range }).id_salt("effects_measure_field").width_chars(MEASURE_CHARS).show(ui);
+            let shown = TextField::with_codec(label.to_owned(), Bind::given(points), Measure { unit, range })
+                .id_salt("effects_measure_field")
+                .width_chars(MEASURE_CHARS)
+                .show(ui);
             out = Some(shown.events);
         });
         if let Some(by) = stepped {

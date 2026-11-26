@@ -301,12 +301,14 @@ fn adornment_color(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields
     let key = format!("{prefix}{part}");
     let (fill_label, stroke_label, swatch_label) = (tr(app, "Fill"), tr(app, "Stroke"), tr(app, if stroke { "Stroke" } else { "Fill" }));
     Stack::new().id_salt(("cjk_adornment_color", prefix.to_owned())).fill_width().show(ui, |ui, _| {
-        let shown = RadioGroup::new(tr(app, "Color Target"), Bind::given(if stroke { "stroke" } else { "fill" }.to_owned())).id_salt(("cjk_color_target", prefix.to_owned())).show(ui, |ui, _| {
-            Row::new().show(ui, |ui, _| {
-                Radio::new("fill".to_owned()).label(fill_label.clone()).show(ui);
-                Radio::new("stroke".to_owned()).label(stroke_label.clone()).show(ui);
+        let shown = RadioGroup::new(tr(app, "Color Target"), Bind::given(if stroke { "stroke" } else { "fill" }.to_owned()))
+            .id_salt(("cjk_color_target", prefix.to_owned()))
+            .show(ui, |ui, _| {
+                Row::new().show(ui, |ui, _| {
+                    Radio::new("fill".to_owned()).label(fill_label.clone()).show(ui);
+                    Radio::new("stroke".to_owned()).label(stroke_label.clone()).show(ui);
+                });
             });
-        });
         if let Some(next) = shown.output.events.committed().cloned() {
             d.fields.insert(target.clone(), json!(next));
         }
@@ -462,7 +464,13 @@ fn warichu(app: &DesignApp, ui: &mut Ui, d: &mut Dialog, cf: &CharFields) {
             cf,
             "Alignment:",
             "warichuAlignment",
-            &[(json!("auto"), "Auto"), (json!("left"), "Left"), (json!("center"), "Center"), (json!("right"), "Right"), (json!("justify"), "Justify")],
+            &[
+                (json!("auto"), "Auto"),
+                (json!("left"), "Left"),
+                (json!("center"), "Center"),
+                (json!("right"), "Right"),
+                (json!("justify"), "Justify"),
+            ],
         );
     });
     GroupBox::new(tr(app, "Line Break Options"), None).id_salt("cjk_warichu_break").show(ui, |ui, _| {

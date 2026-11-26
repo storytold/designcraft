@@ -916,10 +916,10 @@ fn page_entries(app: &DesignApp, doc: &designcraft_doc::Document, layouts: &[des
 
 mod framework;
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod successor_tests;
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod spread_label_tests {
@@ -979,8 +979,8 @@ mod spread_label_tests {
 #[cfg(test)]
 mod pages_footer_workflow_tests {
     use super::*;
-    use egui::vec2;
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
+    use egui::vec2;
     use egui::{Event, Key, Modifiers, PointerButton, UiBuilder};
     use egui_kittest::{
         Harness,

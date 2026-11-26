@@ -683,11 +683,8 @@ mod optical_margin_sdk_tests {
     #[test]
     fn ui_story_optical_margin_real_no_document_no_selection_and_disabled_parent_are_quiet() {
         for absent in ["no-document", "no-selection", "parent-disabled"] {
-            let app = if absent == "no-document" {
-                DesignApp::new(designcraft_engine::Session::new(), crate::Services::default())
-            } else {
-                fixture().0
-            };
+            let app =
+                if absent == "no-document" { DesignApp::new(designcraft_engine::Session::new(), crate::Services::default()) } else { fixture().0 };
             let mut h = harness(app, 460.0);
             if absent == "no-selection" {
                 h.state_mut().app.run("selection.set", json!({"ids": []})).unwrap();

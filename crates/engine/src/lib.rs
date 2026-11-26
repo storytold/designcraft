@@ -715,9 +715,9 @@ impl Session {
         // while a true no-op cannot accidentally settle unrelated pending document work.
         let run_success_passes = match spec.success_passes {
             cmd::SuccessPasses::Always => true,
-            cmd::SuccessPasses::IfDocumentChanged(_) => !before.as_ref().is_some_and(|(uid, doc, _)| {
-                self.active().is_some_and(|st| st.uid == *uid && Arc::ptr_eq(doc, &st.doc))
-            }),
+            cmd::SuccessPasses::IfDocumentChanged(_) => {
+                !before.as_ref().is_some_and(|(uid, doc, _)| self.active().is_some_and(|st| st.uid == *uid && Arc::ptr_eq(doc, &st.doc)))
+            }
         };
         if run_success_passes {
             // Undo, redo or deleting layers can take the active layer away: new objects would land on

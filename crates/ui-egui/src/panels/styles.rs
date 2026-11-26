@@ -433,7 +433,10 @@ mod tests {
         let at = h.get_by_role_and_label(egui::accesskit::Role::Button, "Header+").rect().center();
         text_style_event(&mut h, egui::Event::PointerMoved(at));
         for pressed in [true, false] {
-            text_style_event(&mut h, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+            text_style_event(
+                &mut h,
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() },
+            );
             text_style_steps(&mut h, 2);
         }
         let at = h.get_by_label("Redefine Style").rect().center();
@@ -513,7 +516,10 @@ mod tests {
         let at = h.get_by_role_and_label(egui::accesskit::Role::Button, "Header+").rect().center();
         text_style_event(&mut h, egui::Event::PointerMoved(at));
         for pressed in [true, false] {
-            text_style_event(&mut h, egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() });
+            text_style_event(
+                &mut h,
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() },
+            );
             text_style_steps(&mut h, 2);
         }
         text_style_click_item(&mut h, "Apply \"Header\", Clear Overrides");
@@ -861,7 +867,10 @@ mod tests {
                 let label = crate::i18n::tr("ja", "Create New Style from Selection");
                 let control = h.get_by_role_and_label(egui::accesskit::Role::Button, label);
                 let size = control.rect().size();
-                assert!(size.x > 0.0 && size.x <= 64.0 && size.y > 0.0 && size.y <= 48.0, "the plus stays compact at the SDK default footprint: {size:?}");
+                assert!(
+                    size.x > 0.0 && size.x <= 64.0 && size.y > 0.0 && size.y <= 48.0,
+                    "the plus stays compact at the SDK default footprint: {size:?}"
+                );
                 assert!(control.rect().right() <= 380.0, "the action fits the actual panel parent");
                 assert_eq!(control.accesskit_node().is_disabled(), !enabled);
                 let before = text_style_undo_len(&h);

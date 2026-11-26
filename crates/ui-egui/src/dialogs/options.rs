@@ -148,5 +148,3 @@ pub fn confirm_layer_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, S
     }
     app.run("layer.set", p)
 }
-
-

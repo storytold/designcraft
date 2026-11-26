@@ -537,10 +537,10 @@ mod framework {
     }
 }
 
-#[cfg(test)]
-mod tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod successor_tests;
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod text_color_tests {
@@ -622,7 +622,6 @@ mod text_color_tests {
     }
 }
 
-
 #[cfg(test)]
 mod line_workflow_tests {
     use super::*;
@@ -630,7 +629,10 @@ mod line_workflow_tests {
     use designcraft_doc::{Document, Item, ItemId, Shape};
     use designcraft_geom::Point;
     use egui::{Event, Key, Modifiers, PointerButton, Rect, UiBuilder, vec2};
-    use egui_kittest::{Harness, kittest::{NodeT, Queryable}};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
     use std::{collections::HashSet, sync::Arc};
 
     struct Rig {
@@ -651,7 +653,9 @@ mod line_workflow_tests {
         h.step();
     }
     fn idle(h: &mut Harness<'_, Rig>, count: usize) {
-        for _ in 0..count { step(h); }
+        for _ in 0..count {
+            step(h);
+        }
     }
     fn event(h: &mut Harness<'_, Rig>, event: Event) {
         h.input_mut().events.push(event);
@@ -715,8 +719,11 @@ mod line_workflow_tests {
 
     fn mark(h: &Harness<'_, Rig>) -> Mark {
         let st = h.state().app.session.active().unwrap();
-        (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
-            (st.history.undo.len(), st.history.redo.len()))
+        (
+            st.doc.clone(),
+            format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
+            (st.history.undo.len(), st.history.redo.len()),
+        )
     }
     fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
         assert_eq!(mark(h), *before, "document, incarnation, complete selection and both real history stacks remain unchanged");
@@ -733,10 +740,14 @@ mod line_workflow_tests {
     }
     /// The installed rail's button of the tool named `name`.
     fn rail_elements(h: &Harness<'_, Rig>, name: &str) -> Vec<Element> {
-        h.state().controls.as_ref().into_iter().flat_map(|r| &r.elements)
-            .filter(|e| e.component.contains("FlyoutButton") && e.part.is_none()
-                && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(name)))
-            .cloned().collect()
+        h.state()
+            .controls
+            .as_ref()
+            .into_iter()
+            .flat_map(|r| &r.elements)
+            .filter(|e| e.component.contains("FlyoutButton") && e.part.is_none() && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some(name)))
+            .cloned()
+            .collect()
     }
     fn line_elements(h: &Harness<'_, Rig>) -> Vec<Element> {
         // Installed, the standalone Line slot is a button of the framework's Tools rail (a FlyoutButton with one tool).
@@ -762,11 +773,15 @@ mod line_workflow_tests {
         // The rich tooltip has the same text, but it is a Label, never this Button.
         let rect = h.get_by_role_and_label(egui::accesskit::Role::Button, &label(h)).rect();
         let element = native(h);
-        assert!(rect.expand(0.5).contains_rect(element.rect) && element.rect.expand(0.5).contains_rect(rect),
-            "the unique named Button is the actual recorded Line cell, not tooltip text");
+        assert!(
+            rect.expand(0.5).contains_rect(element.rect) && element.rect.expand(0.5).contains_rect(rect),
+            "the unique named Button is the actual recorded Line cell, not tooltip text"
+        );
         let controls = h.state().controls.as_ref().unwrap();
-        assert!(controls.hits.iter().any(|hit| hit.owner == element.id && hit.part.is_none() && hit.rect.contains(rect.center())),
-            "the named Button has the installed Line control's physical hit owner");
+        assert!(
+            controls.hits.iter().any(|hit| hit.owner == element.id && hit.part.is_none() && hit.rect.contains(rect.center())),
+            "the named Button has the installed Line control's physical hit owner"
+        );
         rect
     }
     fn choose_line(h: &mut Harness<'_, Rig>) {
@@ -799,11 +814,8 @@ mod line_workflow_tests {
             assert!(visited.insert(focused), "natural Tab traversal reaches the real Line slot without forced focus");
             // The installed rail's buttons are one roving group, as a toolbar's are: Tab reaches the group, and the
             // arrow keys move between its buttons.
-            let in_rail = h
-                .state()
-                .controls
-                .as_ref()
-                .is_some_and(|r| r.elements.iter().any(|e| e.component.contains("FlyoutButton") && Some(e.id) == focused));
+            let in_rail =
+                h.state().controls.as_ref().is_some_and(|r| r.elements.iter().any(|e| e.component.contains("FlyoutButton") && Some(e.id) == focused));
             key(h, if in_rail { Key::ArrowDown } else { Key::Tab });
         }
     }
@@ -831,14 +843,14 @@ mod line_workflow_tests {
         let before = mark(h);
         let untouched = item(h, h.state().anchor);
         let start = h.state().app.session.journal.len();
-        let to = begin_line(h, [250.0,300.0], [370.0,365.0]);
+        let to = begin_line(h, [250.0, 300.0], [370.0, 365.0]);
         assert_eq!(mark(h).2, before.2, "previews add no independent Undo entries");
         pointer(h, to, false);
         idle(h, 3);
         let commands = &h.state().app.session.journal[start..];
         assert_eq!(commands.len(), 1, "a genuine multi-pass Canvas drag journals only its committed line");
         assert_eq!(commands[0].0, "line.create");
-        for (name, expected) in [("a", [250.0,300.0]), ("b", [370.0,365.0])] {
+        for (name, expected) in [("a", [250.0, 300.0]), ("b", [370.0, 365.0])] {
             for (axis, expected) in expected.into_iter().enumerate() {
                 assert!((commands[0].1[name][axis].as_f64().unwrap() - expected).abs() < 1e-3);
             }
@@ -895,7 +907,7 @@ mod line_workflow_tests {
         let mut app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.open", json!({"path":path})).unwrap();
         app.run("selection.set", json!({"ids":[anchor]})).unwrap();
-        let mut h = harness(app, anchor, vec2(1800.0,1000.0));
+        let mut h = harness(app, anchor, vec2(1800.0, 1000.0));
         choose_line(&mut h);
         let id = draw_line(&mut h);
         let first = item(&h, id);
@@ -910,7 +922,7 @@ mod line_workflow_tests {
         let busy = h.state().app.session.tool_busy();
         let selection = format!("{:?}", h.state().app.session.active().unwrap().selection);
         for (a, b) in [(true, false), (false, false)] {
-            event(&mut h, Event::Key { key:Key::Escape, physical_key:None, pressed:a, repeat:b, modifiers:Modifiers::NONE });
+            event(&mut h, Event::Key { key: Key::Escape, physical_key: None, pressed: a, repeat: b, modifiers: Modifiers::NONE });
             assert_eq!(mark(&h), during, "Escape leaves the document, selection and history as the gesture had them");
             let state = h.state().app.session.active().unwrap();
             assert!(state.interaction.is_some());
@@ -957,7 +969,7 @@ mod line_workflow_tests {
 
     #[test]
     fn installed_line_real_parent_geometry_idle_and_adaptive_columns_are_preserved() {
-        for (double, size) in [(false,vec2(1800.0,1000.0)), (true,vec2(1800.0,1000.0)), (false,vec2(1800.0,600.0))] {
+        for (double, size) in [(false, vec2(1800.0, 1000.0)), (true, vec2(1800.0, 1000.0)), (false, vec2(1800.0, 600.0))] {
             let (mut app, anchor) = fixture();
             app.ui.tools_double_column = double;
             let mut h = harness(app, anchor, size);
@@ -1009,7 +1021,7 @@ mod line_workflow_tests {
         let mut h = ordinary();
         let other = h.state_mut().app.run("frame.create", json!({"rect":[430,90,500,160]})).unwrap()["id"].as_u64().unwrap();
         let anchor = h.state().anchor;
-        for selected in [vec![anchor], vec![anchor,other], vec![other,anchor], vec![other], vec![]] {
+        for selected in [vec![anchor], vec![anchor, other], vec![other, anchor], vec![other], vec![]] {
             idle(&mut h, 2);
             let old = native(&h);
             pointer(&mut h, old.rect.center(), true);
@@ -1069,7 +1081,7 @@ mod line_workflow_tests {
         let directory = tempfile::tempdir().unwrap();
         app.run("file.saveAs", json!({"path":directory.path().join("LineRevert.designcraft")})).unwrap();
         app.run("transform.move", json!({"dx":7.0,"dy":9.0})).unwrap();
-        let mut h = harness(app, anchor, vec2(1800.0,1000.0));
+        let mut h = harness(app, anchor, vec2(1800.0, 1000.0));
         let uid = h.state().app.session.active().unwrap().uid;
         let epoch = h.state().app.session.active().unwrap().identity_epoch;
         let old = native(&h);
@@ -1120,8 +1132,10 @@ mod line_workflow_tests {
         assert!(h.state().parent.unwrap().contains_rect(line_rect(&h)));
         key(&mut h, Key::Tab);
         assert_eq!(h.state().app.ui.hidden_panels, 1, "retain the real Tab policy");
-        assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, &label(&h)).is_none(),
-            "the exact Line Button disappears with the Tools panel; it does not change role or caption");
+        assert!(
+            h.query_by_role_and_label(egui::accesskit::Role::Button, &label(&h)).is_none(),
+            "the exact Line Button disappears with the Tools panel; it does not change role or caption"
+        );
         unchanged(&h, &before);
         assert_eq!(h.state().app.session.journal.len(), start, "hiding chrome submits no engine command");
         key(&mut h, Key::Tab);
@@ -1151,7 +1165,7 @@ mod line_workflow_tests {
     #[test]
     fn installed_line_no_document_retains_the_original_enabled_tool_choice_without_editing() {
         let app = DesignApp::new_for_panel_tests(designcraft_engine::Session::new(), crate::Services::default());
-        let mut h = harness(app, 0, vec2(1800.0,1000.0));
+        let mut h = harness(app, 0, vec2(1800.0, 1000.0));
         assert!(h.state().app.session.active().is_none());
         let start = h.state().app.session.journal.len();
         let pos = native(&h).rect.center();
@@ -1167,7 +1181,7 @@ mod line_workflow_tests {
         tab_to_line(&mut h);
         let old = native(&h);
         let start = h.state().app.session.journal.len();
-        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:true, repeat:false, modifiers:Modifiers::NONE });
+        event(&mut h, Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
         assert_eq!(&h.state().app.session.journal[start..], &[("tool.select".to_owned(), json!({"tool":"line"}))]);
         h.state_mut().app.run("file.new", json!({})).unwrap();
         h.state_mut().app.run("frame.create", json!({"rect":[80,80,160,150]})).unwrap();
@@ -1175,8 +1189,8 @@ mod line_workflow_tests {
         assert_ne!(native(&h).id, old.id);
         let before = mark(&h);
         let start = h.state().app.session.journal.len();
-        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:true, repeat:true, modifiers:Modifiers::NONE });
-        event(&mut h, Event::Key { key:Key::Space, physical_key:None, pressed:false, repeat:false, modifiers:Modifiers::NONE });
+        event(&mut h, Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: true, modifiers: Modifiers::NONE });
+        event(&mut h, Event::Key { key: Key::Space, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
         idle(&mut h, 2);
         unchanged(&h, &before);
         assert_eq!(h.state().app.session.journal.len(), start, "neither a held repeat nor its release activates the replacement slot");

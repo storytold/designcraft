@@ -205,8 +205,10 @@ impl ExportControls {
         use craft_ui_widgets::contract::{Props as _, Show as _};
         use craft_ui_widgets::primitives::IconSpec;
         let id = self.id(ui, "remove", label);
-        let out =
-            craft_ui_widgets::buttons::IconButton::new(IconSpec::svg(std::borrow::Cow::Borrowed("trash").into())).id(id).label(label.to_owned()).show(ui);
+        let out = craft_ui_widgets::buttons::IconButton::new(IconSpec::svg(std::borrow::Cow::Borrowed("trash").into()))
+            .id(id)
+            .label(label.to_owned())
+            .show(ui);
         let clicked = out.clicked();
         ExportButton { response: out.response, clicked }
     }
@@ -237,19 +239,22 @@ impl ExportControls {
         use craft_ui_widgets::contract::{Bind, Entry, Props as _, Show as _};
         let id = self.id(ui, "choice", label);
         let choices: Vec<_> = entries.iter().enumerate().map(|(i, name)| Entry::new(i, name.clone())).collect();
-        let out =
-            craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices).id(id).placeholder(placeholder.to_owned()).show(ui);
+        let out = craft_ui_widgets::pickers::Select::new(label.to_owned(), Bind::given(current), &choices)
+            .id(id)
+            .placeholder(placeholder.to_owned())
+            .show(ui);
         out.events.committed().copied().filter(|i| *i < entries.len())
     }
 
     fn combine(&self, ui: &mut egui::Ui, value: &mut bool, label: &str, per_layout: &str, all_layouts: &str) {
         use craft_ui_widgets::contract::{Bind, Props as _, Show as _, ShowContainer as _};
-        let out = craft_ui_widgets::choice::RadioGroup::new(label.to_owned(), Bind::given(*value)).id(self.id(ui, "radio", label)).show(ui, |ui, _| {
-            craft_ui_widgets::layout_components::Row::new().show(ui, |ui, _| {
-                craft_ui_widgets::choice::Radio::new(false).label(per_layout.to_owned()).show(ui);
-                craft_ui_widgets::choice::Radio::new(true).label(all_layouts.to_owned()).show(ui);
+        let out =
+            craft_ui_widgets::choice::RadioGroup::new(label.to_owned(), Bind::given(*value)).id(self.id(ui, "radio", label)).show(ui, |ui, _| {
+                craft_ui_widgets::layout_components::Row::new().show(ui, |ui, _| {
+                    craft_ui_widgets::choice::Radio::new(false).label(per_layout.to_owned()).show(ui);
+                    craft_ui_widgets::choice::Radio::new(true).label(all_layouts.to_owned()).show(ui);
+                });
             });
-        });
         if let Some(next) = out.output.events.committed() {
             *value = *next;
         }

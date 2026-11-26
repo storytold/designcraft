@@ -23,7 +23,8 @@ fn auto_fit_checkbox(app: &DesignApp, ui: &mut Ui, value: &mut bool, label: &str
 
     // A held activation belongs to this exact document incarnation and ordered selection.
     // Do not let its release apply to a replacement document or a different set of frames.
-    let target = app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
+    let target =
+        app.session.active().map(|st| format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)));
     let id = ui.scope_id().with(("object-control-auto-fit", target));
 
     let output = Checkbox::new(Bind::given(*value)).id(id).label(label.to_owned()).size(ControlSize::Sm).show(ui);
@@ -406,8 +407,11 @@ mod auto_fit_workflow_tests {
     use craft_ui_widgets::runtime::inspect::{Element, Recorded, record};
     use designcraft_doc::{Document, Fitting, Item, ItemId};
     use egui::{Event, Key, Modifiers, PointerButton, Rect, UiBuilder, vec2};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
     use serde_json::json;
-    use egui_kittest::{Harness, kittest::{NodeT, Queryable}};
     use std::{collections::HashSet, sync::Arc};
 
     struct Rig {
@@ -428,7 +432,9 @@ mod auto_fit_workflow_tests {
         h.step();
     }
     fn idle(h: &mut Harness<'_, Rig>, frames: usize) {
-        for _ in 0..frames { step(h); }
+        for _ in 0..frames {
+            step(h);
+        }
     }
     fn event(h: &mut Harness<'_, Rig>, event: Event) {
         h.input_mut().events.push(event);
@@ -469,7 +475,8 @@ mod auto_fit_workflow_tests {
                     ui.add_enabled_ui(state.enabled, |ui| {
                         // The shipping parent, its top Panel, horizontal scroller and fixed cells all run.
                         let parent_id = ui.scope_id().with("control_bar");
-                        state.controls = record(ui, egui::Id::unique("object-auto-fit-workflow"), |ui| crate::chrome::control_bar(&mut state.app, ui)).1;
+                        state.controls =
+                            record(ui, egui::Id::unique("object-auto-fit-workflow"), |ui| crate::chrome::control_bar(&mut state.app, ui)).1;
                         state.toolbar = egui::containers::panel::PanelState::load(ui.ctx(), parent_id).map(|panel| panel.outer_rect);
                         if state.canvas {
                             egui::CentralPanel::default().show(ui, |ui| crate::canvas::show(&mut state.app, ui));
@@ -490,7 +497,9 @@ mod auto_fit_workflow_tests {
         let mut ids = Vec::new();
         for x in [100, 400, 700] {
             let id = session.execute("frame.create", &json!({"rect":[x,100,x+200,300]})).unwrap()["id"].as_u64().unwrap();
-            session.execute("file.place", &json!({"base64":designcraft_engine::cmd::base64_encode(&png), "name":"auto-fit.png", "frame":id})).unwrap();
+            session
+                .execute("file.place", &json!({"base64":designcraft_engine::cmd::base64_encode(&png), "name":"auto-fit.png", "frame":id}))
+                .unwrap();
             ids.push(id);
         }
         // Keep both real history stacks populated, so an idle draw cannot hide a stray edit.
@@ -503,8 +512,11 @@ mod auto_fit_workflow_tests {
     }
     fn mark(h: &Harness<'_, Rig>) -> Mark {
         let st = h.state().app.session.active().unwrap();
-        (st.doc.clone(), format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
-            (st.history.undo.len(), st.history.redo.len()))
+        (
+            st.doc.clone(),
+            format!("{:?}", (st.uid, st.identity_epoch, &st.selection.items, &st.selection.text, &st.selection.cells)),
+            (st.history.undo.len(), st.history.redo.len()),
+        )
     }
     fn unchanged(h: &Harness<'_, Rig>, before: &Mark) {
         assert_eq!(mark(h), *before, "document, identity, selection and both real history stacks remain unchanged");
@@ -514,8 +526,12 @@ mod auto_fit_workflow_tests {
     }
     fn checkbox(h: &Harness<'_, Rig>) -> Element {
         let controls = h.state().controls.as_ref().unwrap();
-        let found: Vec<_> = controls.elements.iter().filter(|e| e.component == "Checkbox" && e.part.is_none()
-            && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some("Auto-Fit"))).cloned().collect();
+        let found: Vec<_> = controls
+            .elements
+            .iter()
+            .filter(|e| e.component == "Checkbox" && e.part.is_none() && e.facts.as_ref().is_some_and(|f| f.name.as_deref() == Some("Auto-Fit")))
+            .cloned()
+            .collect();
         assert_eq!(found.len(), 1, "one actual installed SDK Auto-Fit Checkbox in the complete toolbar");
         let field = found.into_iter().next().unwrap();
         assert_eq!(field.facts.as_ref().unwrap().role, format!("{:?}", egui::accesskit::Role::CheckBox));
@@ -532,25 +548,35 @@ mod auto_fit_workflow_tests {
         assert_eq!(cell.height(), 21.0);
         let parent = h.state().toolbar.expect("the shipping top Panel persisted its actual outer rectangle");
         assert!((parent.height() - 59.0).abs() < 1e-6, "measure the shipping parent, not a test-owned substitute: {parent:?}");
-        assert!(group.contains_rect(cell) && parent.contains_rect(group) && parent.contains_rect(cell),
-            "actual second-row cell stays inside the unchanged parent toolbar: {cell:?}, {parent:?}");
+        assert!(
+            group.contains_rect(cell) && parent.contains_rect(group) && parent.contains_rect(cell),
+            "actual second-row cell stays inside the unchanged parent toolbar: {cell:?}, {parent:?}"
+        );
         cell
     }
     fn painted_label(h: &Harness<'_, Rig>) -> Rect {
         fn collect(shape: &egui::Shape, clip: Rect, labels: &mut Vec<(Rect, Rect)>) {
             match shape {
                 egui::Shape::Text(t) if t.galley.job.text == "Auto-Fit" => labels.push((t.visual_bounding_rect(), clip)),
-                egui::Shape::Vec(shapes) => for shape in shapes { collect(shape, clip, labels); },
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, clip, labels);
+                    }
+                }
                 _ => {}
             }
         }
         let mut labels = Vec::new();
-        for shape in &h.output().shapes { collect(&shape.shape, shape.clip_rect, &mut labels); }
+        for shape in &h.output().shapes {
+            collect(&shape.shape, shape.clip_rect, &mut labels);
+        }
         assert_eq!(labels.len(), 1, "measure the real full painted caption, not an assumed checkbox width");
         let (label, clip) = labels[0];
         assert!(label.is_finite() && label.width() > 0.0 && label.height() > 0.0);
-        assert!(fitting_cell(h).expand(0.5).contains_rect(label) && clip.expand(0.5).contains_rect(label),
-            "the complete caption is inside its real cell and paint clip, not merely a clipped taller row: {label:?}, {clip:?}");
+        assert!(
+            fitting_cell(h).expand(0.5).contains_rect(label) && clip.expand(0.5).contains_rect(label),
+            "the complete caption is inside its real cell and paint clip, not merely a clipped taller row: {label:?}, {clip:?}"
+        );
         label
     }
     fn native_geometry(h: &Harness<'_, Rig>) -> (Element, Rect) {
@@ -561,11 +587,16 @@ mod auto_fit_workflow_tests {
         let controls = h.state().controls.as_ref().unwrap();
         let hits: Vec<_> = controls.hits.iter().filter(|hit| hit.owner == field.id && hit.part.is_none()).collect();
         assert!(!hits.is_empty(), "the SDK registered its real pointer hit target");
-        assert!(hits.iter().all(|hit| cell.expand(0.5).contains_rect(hit.rect)), "hit targets do not intrude into the fitting actions above or outside the cell");
+        assert!(
+            hits.iter().all(|hit| cell.expand(0.5).contains_rect(hit.rect)),
+            "hit targets do not intrude into the fitting actions above or outside the cell"
+        );
         assert!(hits.iter().any(|hit| hit.rect.contains(label.center())), "the visible caption is genuinely clickable");
         let node = h.get_by(|n| n.role() == egui::accesskit::Role::CheckBox && n.label().as_deref() == Some("Auto-Fit"));
-        assert!(cell.expand(0.5).contains_rect(node.rect()) && field.rect.contains(node.rect().center()),
-            "the SDK's named indicator AX node stays inside its real cell; the separate label claim is checked above");
+        assert!(
+            cell.expand(0.5).contains_rect(node.rect()) && field.rect.contains(node.rect().center()),
+            "the SDK's named indicator AX node stays inside its real cell; the separate label claim is checked above"
+        );
         (field, label)
     }
     fn tab_to_checkbox(h: &mut Harness<'_, Rig>) {
@@ -624,18 +655,30 @@ mod auto_fit_workflow_tests {
         pointer(&mut h, to, false);
         idle(&mut h, 3);
         let frame_after = item(&h, ids[0]).bounds();
-        assert!((frame_after.width() - frame_before.width() - 80.0).abs() < 1e-3,
-            "the actual frame handle resizes, rather than moving or scaling its content: {frame_before:?} -> {frame_after:?}");
+        assert!(
+            (frame_after.width() - frame_before.width() - 80.0).abs() < 1e-3,
+            "the actual frame handle resizes, rather than moving or scaling its content: {frame_before:?} -> {frame_after:?}"
+        );
         assert!((frame_after.height() - frame_before.height()).abs() < 1e-6);
         let commands = &h.state().app.session.journal[start..];
         assert_eq!(commands.len(), 1, "one committed command from the genuine multi-pass handle gesture");
-        assert_eq!(commands[0], ("transform.resize".to_owned(), json!({
-            "from":[frame_before.x0,frame_before.y0,frame_before.x1,frame_before.y1],
-            "to":[frame_after.x0,frame_after.y0,frame_after.x1,frame_after.y1], "content":false,"distribute":false
-        })));
+        assert_eq!(
+            commands[0],
+            (
+                "transform.resize".to_owned(),
+                json!({
+                    "from":[frame_before.x0,frame_before.y0,frame_before.x1,frame_before.y1],
+                    "to":[frame_after.x0,frame_after.y0,frame_after.x1,frame_after.y1], "content":false,"distribute":false
+                })
+            )
+        );
         let resized = item(&h, ids[0]);
         let graphic = resized.graphic().unwrap();
-        assert_eq!(graphic.xf, graphic.fitted(resized.inner_bounds(), graphic.auto_fit).unwrap(), "the real frame resize refits the graphic downstream");
+        assert_eq!(
+            graphic.xf,
+            graphic.fitted(resized.inner_bounds(), graphic.auto_fit).unwrap(),
+            "the real frame resize refits the graphic downstream"
+        );
         assert_ne!(graphic.xf, content_before_resize, "proves a changed graphic transform, not just the Auto-Fit flag");
         documents.push(mark(&h).0);
 
@@ -650,8 +693,10 @@ mod auto_fit_workflow_tests {
         assert_eq!(h.state().app.session.tool_id(), "selection");
         let canvas_owner = h.ctx.memory(|m| m.focused()).expect("the completed Canvas gesture owns focus");
         let canvas_response = h.ctx.read_response(canvas_owner).expect("the focused Canvas response remains live");
-        assert!(canvas_response.rect.contains_rect(h.state().app.canvas_rect.unwrap()),
-            "Canvas focus covers the real view, including its ruler margin");
+        assert!(
+            canvas_response.rect.contains_rect(h.state().app.canvas_rect.unwrap()),
+            "Canvas focus covers the real view, including its ruler margin"
+        );
         let traversal_before = mark(&h);
         let traversal_start = h.state().app.session.journal.len();
         // The X field is named by its caption, as the framework names a field.
@@ -760,7 +805,7 @@ mod auto_fit_workflow_tests {
     fn installed_auto_fit_held_pointer_retires_on_selection_expansion_reorder_and_replacement() {
         let (app, ids) = fixture();
         let mut h = harness(app);
-        for selected in [vec![ids[0],ids[1]], vec![ids[1],ids[0]], vec![ids[2]]] {
+        for selected in [vec![ids[0], ids[1]], vec![ids[1], ids[0]], vec![ids[2]]] {
             let (old, label) = native_geometry(&h);
             let start = h.state().app.session.journal.len();
             pointer(&mut h, label.center(), true);
@@ -792,7 +837,7 @@ mod auto_fit_workflow_tests {
         h.state_mut().app.run("file.new", json!({})).unwrap();
         let other = h.state_mut().app.run("frame.create", json!({"rect":[100,100,300,300]})).unwrap()["id"].as_u64().unwrap();
         assert_eq!(other, ids[0], "real new documents reuse document-local IDs");
-        let png = designcraft_render::Rendered { width:40, height:20, pixels:vec![200;40*20*4] }.to_png();
+        let png = designcraft_render::Rendered { width: 40, height: 20, pixels: vec![200; 40 * 20 * 4] }.to_png();
         h.state_mut().app.run("file.place", json!({"base64":designcraft_engine::cmd::base64_encode(&png),"name":"other.png","frame":other})).unwrap();
         idle(&mut h, 2);
         let before = mark(&h);

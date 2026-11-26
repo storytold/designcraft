@@ -668,7 +668,11 @@ mod tests {
             h.drop_at(at);
             h.run_steps(3);
         }
-        let weight = h.get_by(|n| n.role() == egui::accesskit::Role::SpinButton && n.label().as_deref() == Some("Weight") && n.value().as_deref() == Some("1 pt")).rect();
+        let weight = h
+            .get_by(|n| {
+                n.role() == egui::accesskit::Role::SpinButton && n.label().as_deref() == Some("Weight") && n.value().as_deref() == Some("1 pt")
+            })
+            .rect();
         h.hover_at(weight.center());
         h.drag_at(weight.center());
         h.drop_at(weight.center());

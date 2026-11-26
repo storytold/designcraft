@@ -406,7 +406,10 @@ pub(crate) mod test_window {
         crate::cursors::install(&ctx);
         // The framework's services get a frame to route keys and focus in, as `DesignApp::raw_input_hook` gives them
         // each frame in the shipping window; a test that calls the hook replaces it each frame.
-        craft_ui_widgets::runtime::frame::set_input(&ctx, craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()));
+        craft_ui_widgets::runtime::frame::set_input(
+            &ctx,
+            craft_ui_widgets::runtime::frame::FrameInput::new(craft_ui_widgets::runtime::env::RootEnv::new()),
+        );
         // From then on each frame is set from the app's own state, as `DesignApp::raw_input_hook` does in the shipping window
         // (its command catalog, host and root values): the window's frame leaves them in the slot for the next frame's input hook.
         let slot = FrameSlot::default();
@@ -481,25 +484,24 @@ pub(crate) mod test_window {
         if app.session.active().is_none() {
             app.run("file.new", serde_json::json!({})).unwrap();
         }
-        let mut h =
-            builder.with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
-                |ui, w: &mut Window| {
-                    // The builder runs a frame before the texture size can be raised: skip it.
-                    if !w.ready {
-                        return;
+        let mut h = builder.with_size(size).with_pixels_per_point(pixels_per_point).with_max_steps(1000).with_step_dt(step_dt).build_ui_state(
+            |ui, w: &mut Window| {
+                // The builder runs a frame before the texture size can be raised: skip it.
+                if !w.ready {
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                w.app.logic(&ctx);
+                w.app.ui(ui);
+                // The next frame's input, for a context with the runtime (the plugin of `context`).
+                if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id())) {
+                    if let Ok(mut slot) = slot.lock() {
+                        *slot = Some(w.app.frame_input());
                     }
-                    let ctx = ui.ctx().clone();
-                    w.app.logic(&ctx);
-                    w.app.ui(ui);
-                    // The next frame's input, for a context with the runtime (the plugin of `context`).
-                    if let Some(slot) = ctx.data(|data| data.get_temp::<FrameSlot>(frame_slot_id())) {
-                        if let Ok(mut slot) = slot.lock() {
-                            *slot = Some(w.app.frame_input());
-                        }
-                    }
-                },
-                Window { app, ready: false },
-            );
+                }
+            },
+            Window { app, ready: false },
+        );
         h.input_mut().max_texture_side = Some(8192);
         h.state_mut().ready = true;
         h.run_steps(6);

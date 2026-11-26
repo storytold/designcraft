@@ -906,17 +906,33 @@ mod tests {
                 entries.iter().map(|e| (e.label.clone(), e.doc.clone(), e.selection.clone())).collect()
             };
             Effects {
-                documents: app.session.documents().iter().map(|st| DocumentState {
-                    uid: st.uid, epoch: st.identity_epoch, revision: st.revision, doc: st.doc.clone(),
-                    saved: st.saved_doc.clone(), selected: st.selection.clone(),
-                    undo: history(&st.history.undo), redo: history(&st.history.redo),
-                }).collect(),
+                documents: app
+                    .session
+                    .documents()
+                    .iter()
+                    .map(|st| DocumentState {
+                        uid: st.uid,
+                        epoch: st.identity_epoch,
+                        revision: st.revision,
+                        doc: st.doc.clone(),
+                        saved: st.saved_doc.clone(),
+                        selected: st.selection.clone(),
+                        undo: history(&st.history.undo),
+                        redo: history(&st.history.redo),
+                    })
+                    .collect(),
                 active: app.session.active().map(|st| st.uid),
                 journal: app.session.journal.clone(),
             }
         }
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        enum Pass { Host, Body, Measure, Sizing, Disabled }
+        enum Pass {
+            Host,
+            Body,
+            Measure,
+            Sizing,
+            Disabled,
+        }
         struct Workflow {
             app: DesignApp,
             ctx: egui::Context,
@@ -934,10 +950,16 @@ mod tests {
                 app.install_framework(&ctx);
                 app.raw_input_hook(&ctx, &mut egui::RawInput::default());
                 // Initialize fonts in an actual headless frame and explicitly dispose its GPU deltas.
-                let out = ctx.run_ui(egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),
-                    max_texture_side: Some(8192), ..Default::default()
-                }, |ui| { crate::theme::install_fonts(ui.ctx(), ""); });
+                let out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),
+                        max_texture_side: Some(8192),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        crate::theme::install_fonts(ui.ctx(), "");
+                    },
+                );
                 out.drop_without_applying_deltas();
                 let mut w = Self { app, ctx, recorded: None, ax: None, time: 1.0, pass: Pass::Host, guarded: 0 };
                 w.idle();
@@ -947,7 +969,10 @@ mod tests {
                 self.time += 0.05;
                 let mut input = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1100.0))),
-                    max_texture_side: Some(8192), time: Some(self.time), events, ..Default::default()
+                    max_texture_side: Some(8192),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
                 };
                 self.app.raw_input_hook(&self.ctx, &mut input);
                 let ctx = self.ctx.clone();
@@ -956,7 +981,11 @@ mod tests {
                         if self.pass == Pass::Host {
                             crate::dialogs::show(&mut self.app, &ctx);
                         } else {
-                            let builder = if matches!(self.pass, Pass::Measure | Pass::Sizing) { egui::UiBuilder::new().sizing_pass() } else { egui::UiBuilder::new() };
+                            let builder = if matches!(self.pass, Pass::Measure | Pass::Sizing) {
+                                egui::UiBuilder::new().sizing_pass()
+                            } else {
+                                egui::UiBuilder::new()
+                            };
                             ui.scope_builder(builder, |ui| {
                                 ui.add_enabled_ui(self.pass != Pass::Disabled, |ui| {
                                     let mut d = self.app.ui.dialog.clone().unwrap();
@@ -969,12 +998,20 @@ mod tests {
                                             assert!(ui.is_sizing_pass(), "SDK measurement pairs its context guard with a sizing Ui");
                                             framework::show(&mut self.app, ui, &mut d);
                                             assert_eq!(d.fields, fields, "measurement must not consume draft events inside the guarded callback");
-                                            assert_eq!(effects(&self.app), before, "measurement callback must not mutate any document/history/journal");
+                                            assert_eq!(
+                                                effects(&self.app),
+                                                before,
+                                                "measurement callback must not mutate any document/history/journal"
+                                            );
                                             self.guarded += 1;
                                         });
                                     } else {
-                                        if self.pass == Pass::Sizing { assert!(ui.is_sizing_pass()); }
-                                        if self.pass == Pass::Disabled { assert!(!ui.is_enabled()); }
+                                        if self.pass == Pass::Sizing {
+                                            assert!(ui.is_sizing_pass());
+                                        }
+                                        if self.pass == Pass::Disabled {
+                                            assert!(!ui.is_enabled());
+                                        }
                                         framework::show(&mut self.app, ui, &mut d);
                                         if guarded {
                                             assert_eq!(d.fields, fields, "{:#?}: guard must refuse edits during the callback", self.pass);
@@ -986,26 +1023,40 @@ mod tests {
                                 });
                             });
                         }
-                    }).1;
+                    })
+                    .1;
                 });
                 self.ax = out.platform_output.accesskit_update.take();
                 out.drop_without_applying_deltas();
             }
-            fn idle(&mut self) { for _ in 0..8 { self.frame(Vec::new()); } }
+            fn idle(&mut self) {
+                for _ in 0..8 {
+                    self.frame(Vec::new());
+                }
+            }
             fn key_with(&mut self, key: Key, modifiers: Modifiers) {
                 for pressed in [true, false] {
                     self.frame(vec![Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }]);
                 }
                 self.frame(Vec::new());
             }
-            fn key(&mut self, key: Key) { self.key_with(key, Modifiers::NONE); }
+            fn key(&mut self, key: Key) {
+                self.key_with(key, Modifiers::NONE);
+            }
             fn sdk(&self, role: Role, name: &str) -> (egui::Id, egui::Rect) {
                 let (ax_id, _) = self.ax_control(role, name);
                 let role = format!("{role:?}");
-                let matches: Vec<_> = self.recorded.as_ref().unwrap().elements.iter().filter(|e| {
-                    // Hidden Field labels name the actual AX node, not the flat recorded facts.
-                    e.facts.as_ref().is_some_and(|f| f.role == role) && e.id.accesskit_id() == ax_id
-                }).collect();
+                let matches: Vec<_> = self
+                    .recorded
+                    .as_ref()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .filter(|e| {
+                        // Hidden Field labels name the actual AX node, not the flat recorded facts.
+                        e.facts.as_ref().is_some_and(|f| f.role == role) && e.id.accesskit_id() == ax_id
+                    })
+                    .collect();
                 assert_eq!(matches.len(), 1, "exactly one real SDK owner for {role} / {name}");
                 (matches[0].id, matches[0].rect)
             }
@@ -1013,9 +1064,10 @@ mod tests {
                 let matches: Vec<_> = self.ax.as_ref().unwrap().nodes.iter().filter(|(_, n)| n.role() == role && n.label() == Some(name)).collect();
                 assert_eq!(matches.len(), 1, "exactly one real AX owner for {role:?} / {name}");
                 let bounds = matches[0].1.bounds().unwrap();
-                (matches[0].0, egui::Rect::from_min_max(
-                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32), egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
-                ))
+                (
+                    matches[0].0,
+                    egui::Rect::from_min_max(egui::pos2(bounds.x0 as f32, bounds.y0 as f32), egui::pos2(bounds.x1 as f32, bounds.y1 as f32)),
+                )
             }
             fn pointer(&mut self, at: egui::Pos2, pressed: bool) {
                 self.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }]);
@@ -1051,7 +1103,9 @@ mod tests {
                 self.click(Role::TextInput, "Style Name:");
                 self.key_with(Key::A, Modifiers::COMMAND);
                 self.key(Key::Backspace);
-                if !text.is_empty() { self.frame(vec![Event::Text(text.into())]); }
+                if !text.is_empty() {
+                    self.frame(vec![Event::Text(text.into())]);
+                }
                 self.idle();
                 assert_eq!(self.app.ui.dialog.as_ref().unwrap().s("name"), text, "the real text owner updates only the draft");
             }
@@ -1138,7 +1192,9 @@ mod tests {
             w.app.run("edit.undo", json!({})).unwrap();
             assert_eq!(w.app.session.active().unwrap().doc.as_ref(), base.as_ref());
             assert_eq!(w.app.session.active().unwrap().history.redo.len(), 2);
-            for _ in 0..2 { w.app.run("edit.redo", json!({})).unwrap(); }
+            for _ in 0..2 {
+                w.app.run("edit.redo", json!({})).unwrap();
+            }
             assert_eq!(w.app.session.active().unwrap().doc.as_ref(), made.as_ref());
             w.open(Some("Workflow"));
             let edit_before = effects(&w.app);
@@ -1267,8 +1323,14 @@ mod tests {
             assert_eq!(w.app.session.journal.last().unwrap().1["ids"], json!([a]));
             assert_eq!(w.app.session.active().unwrap().history.undo.len(), undo + 2);
             assert_eq!(w.app.session.active().unwrap().selection.items, vec![designcraft_doc::ItemId(c)]);
-            for _ in 0..2 { w.app.run("edit.undo", json!({})).unwrap(); }
-            assert_eq!(w.app.session.active().unwrap().doc.as_ref(), before_apply.as_ref(), "undoing create/apply never resurrects a target deleted before OK");
+            for _ in 0..2 {
+                w.app.run("edit.undo", json!({})).unwrap();
+            }
+            assert_eq!(
+                w.app.session.active().unwrap().doc.as_ref(),
+                before_apply.as_ref(),
+                "undoing create/apply never resurrects a target deleted before OK"
+            );
         }
 
         #[test]
@@ -1290,7 +1352,10 @@ mod tests {
             assert_eq!(item_style(&w.app, a), "Locked target characterization");
             assert!(w.app.session.active().unwrap().doc.item(designcraft_doc::ItemId(a)).unwrap().locked);
             assert_eq!(w.app.session.active().unwrap().history.undo.len(), undo + 2);
-            assert_eq!(w.app.session.journal[journal..].iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["style.object.create", "style.object.apply"]);
+            assert_eq!(
+                w.app.session.journal[journal..].iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+                ["style.object.create", "style.object.apply"]
+            );
             assert_eq!(w.app.session.active().unwrap().doc.styles.object.iter().filter(|s| s.name == "Locked target characterization").count(), 1);
             let settled = effects(&w.app);
             w.quiet(&settled);
@@ -1369,7 +1434,11 @@ mod tests {
             assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(false));
             // No idle, recovery Tab, synthetic focus, or second opening click before Enter.
             w.key(Key::Enter);
-            assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(true), "a closing dropdown must yield fresh Enter to its own anchor immediately");
+            assert_eq!(
+                w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(),
+                Some(true),
+                "a closing dropdown must yield fresh Enter to its own anchor immediately"
+            );
             assert!(w.app.ui.dialog.is_some());
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
             assert_eq!(effects(&w.app), before);
@@ -1415,7 +1484,11 @@ mod tests {
             assert_eq!(w.app.ui.dialog.as_ref().unwrap().s("paragraphStyle"), initial_style);
             assert_eq!(effects(&w.app), before);
             let combo_id = w.ax_control(Role::ComboBox, "Paragraph Style:").0;
-            assert_eq!(w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(), Some(false), "Escape logically collapses the combo before its paint fade ends");
+            assert_eq!(
+                w.ax.as_ref().unwrap().nodes.iter().find(|(id, _)| *id == combo_id).unwrap().1.is_expanded(),
+                Some(false),
+                "Escape logically collapses the combo before its paint fade ends"
+            );
             // A closed layer retains hidden raw AX descendants during its exit fade.
             w.idle();
             assert!(!w.ax.as_ref().unwrap().nodes.iter().any(|(_, n)| n.role() == Role::ListBox));

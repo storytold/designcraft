@@ -1030,10 +1030,10 @@ mod deferred_clipboard_tests {
 
 /// Passive, root-viewport diagnostics for the Object Styles GUI transition. Off unless explicitly enabled.
 pub(crate) mod object_style_witness {
-    use std::collections::VecDeque;
     use egui::{Context, Event, Id, Key, Response, Ui, ViewportId};
     use serde::Serialize;
     use serde_json::{Value, json};
+    use std::collections::VecDeque;
 
     const RECORD_CAP: usize = 64;
     const EVENT_SCAN_CAP: usize = 64;
@@ -1229,11 +1229,7 @@ pub(crate) mod object_style_witness {
             let mut pass = ctx.data_mut(|data| {
                 let state = data.get_temp_mut_or_default::<State>(state_key());
                 let ready = state.pending.as_ref().is_some_and(|pass| pass.app_ui_completed && pass.pass.checked_add(1) == Some(completed));
-                if ready {
-                    state.pending.take()
-                } else {
-                    None
-                }
+                if ready { state.pending.take() } else { None }
             });
             let Some(mut pass) = pass.take() else { return };
             pass.focus_end = ctx.memory(|memory| memory.focused()).map(|id| id.value());
