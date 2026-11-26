@@ -147,7 +147,8 @@ fn text_stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui, c: &Value) {
     egui::Grid::new("text_stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
         if let Some(v) = number(ui, "tsw_panel", c["strokeWeight"].as_f64(), " pt", 60.0, 3) {
-            let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v}}));
+            // The character stroke weight's range, as the character style's Weight field has it.
+            let _ = app.run("type.char", json!({"attrs": {"strokeWeight": v.clamp(0.0, 800.0)}}));
         }
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));

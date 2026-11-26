@@ -397,13 +397,11 @@ pub(crate) fn model_body(ex: &mut Exporter, seg: &Segment, k: f64, opacity: f32,
     fn color(ex: &Exporter, swatch: &str, tint: f32, opacity: f32) -> Option<craft_pptx::ColorRef> {
         let color = if let Some(gradient) = resolve_gradient(&ex.doc.swatches, swatch) {
             let (_, color, alpha) = gradient.expanded_stops().into_iter().next()?;
-            let [r, g, b, a] = color.to_rgba8(alpha * opacity);
-            craft_pptx::Rgba::rgba(r, g, b, a)
+            return Some(crate::slide::color_with_opacity(color, alpha * opacity));
         } else {
-            let [r, g, b, a] = ex.doc.resolve_color(swatch, tint)?.to_rgba8(opacity);
-            craft_pptx::Rgba::rgba(r, g, b, a)
+            ex.doc.resolve_color(swatch, tint)?
         };
-        Some(craft_pptx::ColorRef::rgb(color))
+        Some(crate::slide::color_with_opacity(color, opacity))
     }
 
     fn run_props(ex: &mut Exporter, run: Option<&Run>, size: f64, k: f64, opacity: f32) -> craft_pptx::text::RunProps {

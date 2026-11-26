@@ -33,7 +33,8 @@ pub use quick_apply::{QuickItem, command_search, palette, quick_apply_items};
 pub use run::run_ui;
 pub(crate) use run::save_then;
 pub use state::{
-    checked, default_shortcut, enabled, menu_enabled, native_menu_enabled, shortcut_label, shortcut_of, shortcut_text, tool_shortcut_label,
+    checked, default_shortcut, enabled, menu_enabled, native_key_equivalent, native_menu_enabled, shortcut_label, shortcut_of, shortcut_text,
+    tool_shortcut_label,
 };
 pub use tables::{CLASSIC_GROUPS, MENUS, TYPOGRAPHY_GROUPS, WORKSPACE_OPEN_PANELS, WORKSPACES, workspace_open_panel};
 #[cfg(test)]

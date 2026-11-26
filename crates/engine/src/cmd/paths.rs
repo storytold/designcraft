@@ -279,7 +279,14 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                     let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
                     let shatai = st.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
-                    let a = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let mut a = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    // Upright in vertical text, as the canvas and the PDF export draw it (#2895):
+                    // without the turn, CJK glyphs lay on their sides along the column.
+                    if ft.vertical
+                        && let Some(turn) = g.vertical_xf(l.baseline)
+                    {
+                        a = turn * a;
+                    }
                     let key = (li, st.fill.clone(), st.fill_tint, st.stroke.clone(), st.stroke_tint, st.stroke_weight, st.stroke_behind_fill);
                     let k = match runs.iter().position(|r| r.0 == key) {
                         Some(k) => k,
@@ -298,6 +305,8 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
             let (sr, _) = spread_xf(d, *id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             let at = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| i.id == *id));
             let text_xf = d.text_xf(&it);
+            // Text space → the item's inner space: a vertical frame's quarter turn (#2895).
+            let text_local = d.text_local(&it);
             let make = |d: &mut Document, ((_, fill, ft, stroke, stt, sw, behind), bp): ((usize, String, f32, String, f32, f64, bool), BezPath)| {
                 let mut o = Item::new(ItemId(d.alloc()), it.layer, Shape::Path, PathData::from_bezpath(&bp));
                 o.xf = text_xf;
@@ -319,8 +328,10 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                 one
             } else {
                 let mut g = Item::new(ItemId(d.alloc()), it.layer, Shape::Group, PathData::default());
+                // Each line is in text space: in the group (which has the frame's transform) it
+                // takes the frame's text turn, so the columns of vertical text stay columns.
                 for p in &mut parts {
-                    p.xf = Affine::IDENTITY;
+                    p.xf = text_local;
                 }
                 g.xf = it.xf;
                 g.content = Content::Group { items: parts.into_iter().map(Arc::new).collect() };
@@ -688,5 +699,50 @@ mod tests {
         let it = d.item(ItemId(rect)).unwrap();
         assert!(!it.path.is_closed());
         assert_eq!(it.path.anchor_count(), 6);
+    }
+
+    /// #2895: Create Outlines on vertical text draws the glyphs where the canvas does. Upright
+    /// glyphs take their own quarter turn, and a frame of several columns (a group of lines) keeps
+    /// the frame's turn: the columns stay columns, read top to bottom.
+    #[test]
+    fn outlines_of_vertical_text_stay_where_the_text_was_drawn() {
+        let family = "DC Test Outline Vertical";
+        designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(family, &['一', '日']).unwrap());
+        for (text, columns) in [("日一", 1), ("日一\n一日", 2)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let id =
+                s.execute("frame.create", &json!({"rect": [100, 100, 300, 500], "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+            s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
+            s.execute("type.storyDirection", &json!({"vertical": true})).unwrap();
+            // Where the canvas draws each glyph (render/src/text.rs): the frame's text transform,
+            // then each upright glyph's turn, then its place on the line.
+            let d = s.doc().unwrap().doc.clone();
+            let it = d.item(ItemId(id)).unwrap().clone();
+            let story = it.text_frame().unwrap().story;
+            let cs = designcraft_compose::compose_story(&d, story, &Default::default());
+            let ft = cs.frame(ItemId(id)).unwrap();
+            assert!(ft.vertical);
+            assert_eq!(ft.lines.len(), columns, "{text}");
+            let db = designcraft_fonts::FontDb::global();
+            let text_xf = d.text_xf(&it);
+            let mut drawn: Option<kurbo::Rect> = None;
+            for l in &ft.lines {
+                for g in l.glyphs.iter().filter(|g| g.visible) {
+                    assert!(g.upright, "{text}: CJK is set upright");
+                    let turn = g.vertical_xf(l.baseline).unwrap();
+                    let a = text_xf * turn * Affine::translate((g.x, l.baseline + g.y)) * Affine::scale_non_uniform(g.sx, g.sy);
+                    let b = (a * db.outline(&g.face, g.gid).as_ref().clone()).bounding_box();
+                    drawn = Some(drawn.map_or(b, |r| r.union(b)));
+                }
+            }
+            let drawn = drawn.unwrap();
+            let out = ItemId(s.execute("type.createOutlines", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+            let b = s.doc().unwrap().doc.item(out).unwrap().bounds();
+            for (got, want) in [(b.x0, drawn.x0), (b.y0, drawn.y0), (b.x1, drawn.x1), (b.y1, drawn.y1)] {
+                assert!((got - want).abs() < 0.01, "{text}: outlines {b:?}, drawn {drawn:?}");
+            }
+        }
     }
 }
