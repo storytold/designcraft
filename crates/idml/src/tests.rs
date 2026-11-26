@@ -363,6 +363,10 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "StrikeThru": "false" => false, "true" => true, |r| r.1.strikethrough;
         "UnderlineTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.1.underline_tint;
         "StrikeThruTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.1.strikethrough_tint;
+        "StrikeThroughWeight": "-9999" => None::<f64>, "3" => Some(3.0f64), |r| r.1.strikethrough_weight;
+        "StrikeThroughOffset": "-9999" => None::<f64>, "-2" => Some(-2.0f64), |r| r.1.strikethrough_offset;
+        "StrikeThroughColor": "Text Color" => "", "Color/Black" => "[Black]", |r| r.1.strikethrough_color;
+        "StrikeThroughTint": "-1" => 1.0f32, "50" => 0.5f32, |r| r.1.strikethrough_tint;
         "Ligatures": "true" => true, "false" => false, |r| r.1.ligatures;
         "NoBreak": "false" => false, "true" => true, |r| r.1.no_break;
         "OTFContextualAlternate": "true" => true, "false" => false, |r| designcraft_doc::otf::is_on(&r.1.otf_features, "calt");
@@ -1274,6 +1278,33 @@ fn round_trips_footnotes_and_options() {
     assert_eq!(s.notes[0].text.text, "First note.");
     assert_eq!(s.notes[1].text.text, "Second\nnote.");
     assert_eq!(back.footnote_options, d.footnote_options);
+}
+
+/// InDesign names the strikethrough options StrikeThroughWeight, StrikeThroughOffset, StrikeThroughColor
+/// and StrikeThroughTint (only the on/off flag is StrikeThru): they are written under those names and
+/// read back, so a file from InDesign keeps its strike colour, weight and offset.
+#[test]
+fn round_trips_strikethrough_options_under_indesigns_names() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(40.0, 40.0, 400.0, 400.0), lid, "Struck text", ParaFormat::default()).unwrap();
+    d.story_mut(sid).unwrap().format_chars(0..6, |f| {
+        f.over.strikethrough = Some(true);
+        f.over.strikethrough_weight = Some(Some(3.0));
+        f.over.strikethrough_offset = Some(Some(-2.0));
+        f.over.strikethrough_color = Some("[Black]".into());
+        f.over.strikethrough_tint = Some(0.5);
+    });
+    d.check().unwrap();
+    let bytes = export_idml(&d);
+    let xml = zip_text(&bytes, "Stories/");
+    assert!(xml.contains(r#"StrikeThroughWeight="3""#) && xml.contains(r#"StrikeThroughOffset="-2""#), "{xml}");
+    assert!(!xml.contains("StrikeThruWeight"), "{xml}");
+    let back = import_idml(&bytes).unwrap();
+    let s = back.stories.values().find(|s| s.text.starts_with("Struck")).unwrap();
+    let f = &s.char_format_at(1).over;
+    assert_eq!((f.strikethrough_weight, f.strikethrough_offset), (Some(Some(3.0)), Some(Some(-2.0))));
+    assert_eq!((f.strikethrough_color.as_deref(), f.strikethrough_tint), (Some("[Black]"), Some(0.5)));
 }
 
 /// IDML has no endnote structure written yet, so each endnote reference keeps its number as

@@ -155,7 +155,7 @@ impl<'a> Ex<'a> {
     fn char_decoration_attrs(&self, el: &mut El, a: &CharAttrs) {
         for (k, w, o, c, t) in [
             ("Underline", a.underline_weight, a.underline_offset, &a.underline_color, a.underline_tint),
-            ("StrikeThru", a.strikethrough_weight, a.strikethrough_offset, &a.strikethrough_color, a.strikethrough_tint),
+            ("StrikeThrough", a.strikethrough_weight, a.strikethrough_offset, &a.strikethrough_color, a.strikethrough_tint),
         ] {
             if let Some(w) = w {
                 el.set(&format!("{k}Weight"), num(w.unwrap_or(-9999.0)));

@@ -95,6 +95,16 @@ impl<'r> Importer<'r> {
         for (underline, values) in [(true, appearance.underline_options), (false, appearance.strikethrough_options)] {
             // An explicit Text Color resets an inherited swatch; absence still inherits.
             // Resolve the sentinel before swatch_ref, which maps unknown names to [None].
+            // InDesign names the strikethrough options StrikeThroughWeight/Offset/Color/Tint (the boolean
+            // is StrikeThru), which the model does not read: take them from the element.
+            let own = |k: &str| (!underline).then(|| e.prop(&format!("StrikeThrough{k}"))).flatten();
+            let number = |k: &str, from: Option<f64>| own(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| *v > -9000.0).or(from);
+            let values = craft_idml::model::TextDecorationValues {
+                weight: number("Weight", values.weight),
+                offset: number("Offset", values.offset),
+                color: own("Color").or(values.color),
+                tint: own("Tint").and_then(|v| v.trim().parse::<f64>().ok()).or(values.tint),
+            };
             let color = values.color.map(|r| if r.trim() == "Text Color" { String::new() } else { self.swatch_ref(r.trim()) });
             let tint = tint(values.tint);
             if underline {

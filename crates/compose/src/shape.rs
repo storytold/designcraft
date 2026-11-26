@@ -254,6 +254,16 @@ impl StyleTable<'_> {
         } else {
             None
         };
+        // Automatic underline and strikethrough: the font's own underline position and thickness
+        // (post table), and a strikethrough a third of an em above the baseline, as in InDesign
+        // (measured with Arial, Times New Roman, Georgia, Verdana and Courier New). A font without
+        // them keeps the old em fractions.
+        let face = db.face(&p.font_family, &p.font_style);
+        let (line_pos, line_thick) = if face.underline_thickness > 0.0 && face.upem > 0.0 {
+            (face.underline_position / face.upem, face.underline_thickness / face.upem)
+        } else {
+            (0.12, 1.0 / 14.0)
+        };
         let rs = RunStyle {
             fill: p.fill.clone(),
             fill_tint: p.fill_tint,
@@ -264,14 +274,14 @@ impl StyleTable<'_> {
             underline: p.underline,
             strikethrough: p.strikethrough,
             underline_rule: crate::Rule {
-                offset: p.underline_offset.unwrap_or(p.size * 0.12),
-                weight: p.underline_weight.unwrap_or(p.size / 14.0),
+                offset: p.underline_offset.unwrap_or(p.size * line_pos),
+                weight: p.underline_weight.unwrap_or(p.size * line_thick),
                 color: if p.underline_color.is_empty() { p.fill.clone() } else { p.underline_color.clone() },
                 tint: if p.underline_color.is_empty() { p.fill_tint } else { p.underline_tint },
             },
             strike_rule: crate::Rule {
-                offset: -p.strikethrough_offset.unwrap_or(p.size * 0.3),
-                weight: p.strikethrough_weight.unwrap_or(p.size / 14.0),
+                offset: -p.strikethrough_offset.unwrap_or(p.size / 3.0),
+                weight: p.strikethrough_weight.unwrap_or(p.size * line_thick),
                 color: if p.strikethrough_color.is_empty() { p.fill.clone() } else { p.strikethrough_color.clone() },
                 tint: if p.strikethrough_color.is_empty() { p.fill_tint } else { p.strikethrough_tint },
             },
