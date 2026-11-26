@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use super::{CommandSpec, bad, cmd, has_doc, str_param};
 use crate::{Result, Session};
 
+/// Describe the commands for inserting, editing, and releasing anchored objects.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -21,6 +22,33 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids, story?, pos? (default: the text insertion point), position?: inline|aboveLine|custom, yOffset?, align?: left|center|right, spaceBefore?, spaceAfter?, xRelative? | yRelative?: anchor|textFrame|columnEdge|pageMargin|pageEdge, xOffset?, objectPoint? | refPoint?: 0..8, keepWithinColumn?, spineRelative? (custom: the settings describe a left-hand page and mirror on a right-hand page)} — moves the items into the text",
             has_doc,
             insert
+        ),
+        cmd!(
+            "anchored.linkCaption",
+            "Link Anchored Image and Caption",
+            [],
+            None,
+            "{image: unsigned item id, caption?: unsigned item id} — caption must be an anchored text frame in the same story, used by at most one image; omit caption to unlink; invalid values are errors",
+            has_doc,
+            link_caption
+        ),
+        cmd!(
+            "anchored.resize",
+            "Resize Anchored Graphic",
+            [],
+            None,
+            "{id, left?, top?, right?, bottom?, width?, height?} crop edge deltas in frame points (clamped to graphic bounds and 1pt minimum frame), OR {id, width, height} explicit frame size (1..100000pt); modes cannot be mixed; frame changes preserve graphic content size; recomposes text",
+            has_doc,
+            resize_graphic
+        ),
+        cmd!(
+            "anchored.contentTransform",
+            "Move or Scale Anchored Image Content",
+            [],
+            None,
+            "{id, dx?, dy?, scale?} — require at least one; dx/dy in frame points (±1000000), scale 0.01..100 around natural graphic centre; can combine move and proportional scale without changing frame",
+            has_doc,
+            transform_content
         ),
         cmd!(
             "anchored.options",
@@ -52,6 +80,186 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(out))
         }),
     ]
+}
+
+/// Reject transforms that cannot be serialized and safely inverted by later edits.
+fn valid_graphic_transform(xf: Affine) -> bool {
+    xf.as_coeffs().iter().all(|v| v.is_finite() && v.abs() <= 1.0e12) && xf.determinant().is_finite() && xf.determinant().abs() >= 1.0e-12
+}
+
+/// Associate only explicitly identified objects; adjacent paragraphs are never guessed as captions.
+fn link_caption(s: &mut Session, p: &Value) -> Result<Value> {
+    let image = ItemId(p.get("image").and_then(Value::as_u64).ok_or_else(|| bad("anchored.linkCaption", "missing image"))?);
+    let caption = match p.get("caption") {
+        None => None,
+        Some(v) => Some(ItemId(v.as_u64().ok_or_else(|| bad("anchored.linkCaption", "caption must be an unsigned integer; omit to unlink"))?)),
+    };
+    if caption == Some(image) {
+        return Err(bad("anchored.linkCaption", "caption cannot be image"));
+    }
+    s.edit(|d, _| {
+        let story = d.anchored_scope_mut(image).ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
+        let idx = story.objects.iter().position(|obj| obj.item.id == image).ok_or_else(|| bad("anchored.linkCaption", "image not found"))?;
+        if !matches!(story.objects[idx].item.content, Content::Graphic(_)) {
+            return Err(bad("anchored.linkCaption", "source is not a graphic"));
+        }
+        if let Some(cid) = caption {
+            let other = story
+                .objects
+                .iter()
+                .find(|o| o.item.id == cid)
+                .ok_or_else(|| bad("anchored.linkCaption", "caption must be anchored in the same story"))?;
+            if !matches!(other.item.content, Content::Text(_)) {
+                return Err(bad("anchored.linkCaption", "caption must be an anchored text frame"));
+            }
+            if story.objects.iter().any(|o| o.item.id != image && o.caption_id == Some(cid)) {
+                return Err(bad("anchored.linkCaption", "caption already linked to another image"));
+            }
+        }
+        let mut obj = (*story.objects[idx]).clone();
+        obj.caption_id = caption;
+        story.objects[idx] = Arc::new(obj);
+        Ok(json!({"image": image.0, "caption": caption.map(|c| c.0)}))
+    })
+}
+
+/// Crop or reveal the edges of an anchored image without moving its text anchor.
+/// Deltas are relative to the original frame during a preview gesture.
+fn resize_graphic(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = ItemId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchored.resize", "missing id"))?);
+    let read = |key: &str| -> Result<f64> {
+        let v = match p.get(key) {
+            None => 0.0,
+            Some(value) => value.as_f64().ok_or_else(|| bad("anchored.resize", format!("{key} must be numeric")))?,
+        };
+        if !v.is_finite() || v.abs() > 1_000_000.0 {
+            return Err(bad("anchored.resize", format!("{key} out of range")));
+        }
+        Ok(v)
+    };
+    // Retain the legacy explicit-size command for scripts and existing documents.
+    // Interactive handle drags use edge deltas instead, and are crop-limited.
+    let explicit_size = match (p.get("width"), p.get("height")) {
+        (Some(w), Some(h)) => {
+            let w = w.as_f64().ok_or_else(|| bad("anchored.resize", "width must be numeric"))?;
+            let h = h.as_f64().ok_or_else(|| bad("anchored.resize", "height must be numeric"))?;
+            if !w.is_finite() || !h.is_finite() || !(1.0..=100_000.0).contains(&w) || !(1.0..=100_000.0).contains(&h) {
+                return Err(bad("anchored.resize", "explicit dimensions must be between 1 and 100000 points"));
+            }
+            Some((w, h))
+        }
+        (None, None) => None,
+        _ => return Err(bad("anchored.resize", "width and height must be supplied together")),
+    };
+    if explicit_size.is_some() && ["left", "top", "right", "bottom"].iter().any(|key| p.get(*key).is_some()) {
+        return Err(bad("anchored.resize", "explicit dimensions cannot be combined with crop edges"));
+    }
+    let (left, top, right, bottom) = (read("left")?, read("top")?, read("right")?, read("bottom")?);
+    s.edit(|d, _| {
+        let obj = d
+            .anchored_scope_mut(id)
+            .and_then(|story| story.objects.iter_mut().find(|obj| obj.item.id == id))
+            .ok_or_else(|| bad("anchored.resize", "anchored item not found"))?;
+        let mut resized = obj.item.clone();
+        let Content::Graphic(ref mut graphic) = resized.content else {
+            return Err(bad("anchored.resize", "object is not a graphic"));
+        };
+        let (old_w, old_h) = obj.size();
+        if old_w < 1.0 || old_h < 1.0 {
+            return Err(bad("anchored.resize", "empty frame"));
+        }
+        if let Some((width, height)) = explicit_size {
+            let sx = width / old_w;
+            let sy = height / old_h;
+            graphic.xf = Affine::scale_non_uniform(1.0 / sx, 1.0 / sy) * graphic.xf;
+            resized.xf = Affine::scale_non_uniform(sx, sy) * resized.xf;
+            if !valid_graphic_transform(graphic.xf) || !valid_graphic_transform(resized.xf) {
+                return Err(bad("anchored.resize", "invalid resulting graphic transform"));
+            }
+            let mut normalized = AnchoredObject::new(resized, obj.position.clone());
+            normalized.caption_id = obj.caption_id;
+            *obj = std::sync::Arc::new(normalized);
+            return Ok(json!({"id": id.0, "width": width, "height": height}));
+        }
+        // The placed graphic's transformed natural bounds define the maximum
+        // revealable area. Never create empty frame space beyond those bounds.
+        // Graphic bounds are in the item's inner coordinates, while the API
+        // receives edge deltas in the frame's parent coordinates. Convert the
+        // bounds before clamping and convert the final offset back to inner
+        // coordinates. Otherwise a second crop multiplies the offset by the
+        // scale introduced by the first crop.
+        let frame_xf = resized.xf;
+        if frame_xf.determinant().abs() < 1e-12 {
+            return Err(bad("anchored.resize", "singular frame transform"));
+        }
+        let image_bounds = (frame_xf * graphic.xf).transform_rect_bbox(designcraft_geom::Rect::new(0.0, 0.0, graphic.size.0, graphic.size.1));
+        let l = left.clamp(image_bounds.x0.min(0.0), old_w - 1.0);
+        let t = top.clamp(image_bounds.y0.min(0.0), old_h - 1.0);
+        let r = right.clamp(old_w - image_bounds.x1.max(old_w), old_w - l - 1.0);
+        let b = bottom.clamp(old_h - image_bounds.y1.max(old_h), old_h - t - 1.0);
+        let width = old_w - l - r;
+        let height = old_h - t - b;
+        let sx = width / old_w;
+        let sy = height / old_h;
+        let inner_offset = frame_xf.inverse() * designcraft_geom::Point::new(-l, -t) - frame_xf.inverse() * designcraft_geom::Point::ORIGIN;
+        graphic.xf = Affine::scale_non_uniform(1.0 / sx, 1.0 / sy) * Affine::translate(inner_offset) * graphic.xf;
+        resized.xf = Affine::scale_non_uniform(sx, sy) * resized.xf;
+        if !valid_graphic_transform(graphic.xf) || !valid_graphic_transform(resized.xf) {
+            return Err(bad("anchored.resize", "invalid resulting graphic transform"));
+        }
+        let mut normalized = AnchoredObject::new(resized, obj.position.clone());
+        normalized.caption_id = obj.caption_id;
+        *obj = std::sync::Arc::new(normalized);
+        Ok(json!({"id": id.0, "width": width, "height": height}))
+    })
+}
+
+/// Edit only the graphic-to-frame transform; the frame geometry, anchor and story stay intact.
+fn transform_content(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = ItemId(p.get("id").and_then(Value::as_u64).ok_or_else(|| bad("anchored.contentTransform", "missing id"))?);
+    let read = |key: &str, default: f64| -> Result<f64> {
+        let v = match p.get(key) {
+            None => default,
+            Some(value) => value.as_f64().ok_or_else(|| bad("anchored.contentTransform", format!("{key} must be numeric")))?,
+        };
+        if !v.is_finite() {
+            return Err(bad("anchored.contentTransform", "non-finite transform"));
+        }
+        Ok(v)
+    };
+    if !["dx", "dy", "scale"].iter().any(|key| p.get(*key).is_some()) {
+        return Err(bad("anchored.contentTransform", "provide dx, dy, or scale"));
+    }
+    let (dx, dy, scale) = (read("dx", 0.0)?, read("dy", 0.0)?, read("scale", 1.0)?);
+    if dx.abs() > 1_000_000.0 || dy.abs() > 1_000_000.0 {
+        return Err(bad("anchored.contentTransform", "movement exceeds 1000000 points"));
+    }
+    if !(0.01..=100.0).contains(&scale) {
+        return Err(bad("anchored.contentTransform", "invalid scale"));
+    }
+    s.edit(|d, _| {
+        let obj = d
+            .anchored_scope_mut(id)
+            .and_then(|story| story.objects.iter_mut().find(|obj| obj.item.id == id))
+            .ok_or_else(|| bad("anchored.contentTransform", "anchored item not found"))?;
+        let mut edited = obj.item.clone();
+        let Content::Graphic(ref mut graphic) = edited.content else {
+            return Err(bad("anchored.contentTransform", "not a graphic"));
+        };
+        // Scaling around the graphic's natural centre preserves its proportions.
+        let cx = graphic.size.0 / 2.0;
+        let cy = graphic.size.1 / 2.0;
+        if edited.xf.determinant().abs() < 1e-12 {
+            return Err(bad("anchored.contentTransform", "singular frame transform"));
+        }
+        let inner_delta = edited.xf.inverse() * designcraft_geom::Point::new(dx, dy) - edited.xf.inverse() * designcraft_geom::Point::ORIGIN;
+        graphic.xf = Affine::translate(inner_delta) * graphic.xf * Affine::translate((cx, cy)) * Affine::scale(scale) * Affine::translate((-cx, -cy));
+        if !valid_graphic_transform(graphic.xf) {
+            return Err(bad("anchored.contentTransform", "invalid resulting graphic transform"));
+        }
+        *obj = Arc::new(AnchoredObject { item: edited, position: obj.position.clone(), caption_id: obj.caption_id });
+        Ok(json!({"id": id.0}))
+    })
 }
 
 fn position_param(p: &Value, base: &AnchorPosition) -> Result<AnchorPosition> {
@@ -205,6 +413,7 @@ fn options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Move an anchored object back to its spread while preserving its visual placement.
 fn release(s: &mut Session, p: &Value) -> Result<Value> {
     let (sid, k) = object_ref(s, p, "anchored.release")?;
     let d0 = s.doc()?.doc.clone();
@@ -249,6 +458,380 @@ fn release(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise sequential frame cropping and content movement through real Session commands.
+    #[test]
+    fn actual_resize_and_content_transform_preserve_frame_and_caption() {
+        use designcraft_doc::{AssetId, Graphic, Shape};
+        use designcraft_geom::{Point, Rect, shapes};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 500], "content": "text", "text": "Body"})).unwrap();
+        let sid = StoryId(host["story"].as_u64().unwrap());
+        let id = ItemId(s.doc().unwrap().doc.next_id);
+        let layer = s.doc().unwrap().doc.default_layer();
+        let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(1),
+            size: (100.0, 60.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        s.edit(|d, _| {
+            d.alloc();
+            d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+            Ok(json!({}))
+        })
+        .unwrap();
+        let displayed = |s: &Session| {
+            let obj = &s.doc().unwrap().doc.story(sid).unwrap().objects[0];
+            let Content::Graphic(ref g) = obj.item.content else { panic!("not a graphic") };
+            (obj.size(), obj.item.xf * g.xf * Point::new(60.0, 35.0))
+        };
+        assert_eq!(displayed(&s).0, (100.0, 60.0));
+        s.execute("anchored.resize", &json!({"id": id.0, "left": 20.0})).unwrap();
+        assert!((displayed(&s).0.0 - 80.0).abs() < 1e-9);
+        s.execute("anchored.resize", &json!({"id": id.0, "left": 10.0})).unwrap();
+        let (size, point) = displayed(&s);
+        assert!((size.0 - 70.0).abs() < 1e-9);
+        assert!((point.x - 30.0).abs() < 1e-9, "{point:?}");
+        s.execute("anchored.contentTransform", &json!({"id": id.0, "dx": 8.0, "dy": -4.0})).unwrap();
+        let (after_size, after_point) = displayed(&s);
+        assert_eq!(after_size, size);
+        assert!((after_point.x - 38.0).abs() < 1e-9);
+        assert!((after_point.y - 31.0).abs() < 1e-9);
+        assert_eq!(s.doc().unwrap().doc.story(sid).unwrap().objects[0].caption_id, None);
+    }
+
+    /// A real graphic and a valid text-frame caption for command rejection and edit tests.
+    fn review_fixture() -> (Session, StoryId, ItemId, ItemId) {
+        use designcraft_doc::{AssetId, Graphic, Shape};
+        use designcraft_geom::{Rect, shapes};
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72,72,400,500], "content":"text", "text":"Body"})).unwrap();
+        let sid = StoryId(host["story"].as_u64().unwrap());
+        let caption = s.execute("frame.create", &json!({"rect": [0,0,100,30], "content":"text", "text":"Caption"})).unwrap();
+        let caption = ItemId(caption["id"].as_u64().unwrap());
+        s.edit(|d, _| {
+            let item = d.item(caption).unwrap().clone();
+            for spread in &mut d.spreads {
+                Arc::make_mut(spread).items.retain(|i| i.id != caption);
+            }
+            d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+            Ok(json!({}))
+        })
+        .unwrap();
+        let id = ItemId(s.doc().unwrap().doc.next_id);
+        let layer = s.doc().unwrap().doc.default_layer();
+        let mut item = Item::new(id, layer, Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 60.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(1),
+            size: (100.0, 60.0),
+            xf: Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        s.edit(|d, _| {
+            d.alloc();
+            d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+            Ok(json!({}))
+        })
+        .unwrap();
+        s.execute("anchored.linkCaption", &json!({"image":id.0, "caption":caption.0})).unwrap();
+        s.doc().unwrap().doc.check().unwrap();
+        (s, sid, id, caption)
+    }
+
+    /// Assert rejection reaches parameter validation and leaves the entire document unchanged.
+    fn rejected(s: &mut Session, command: &str, params: Value, expected: &str) {
+        let before = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+        let error = s.execute(command, &params).unwrap_err().to_string();
+        assert!(error.contains(expected), "{command} {params}: {error}, expected {expected}");
+        assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), before);
+    }
+
+    /// Invalid parameters must be tested on existing objects, not rejected at object lookup.
+    #[test]
+    fn anchored_commands_reject_invalid_parameters_without_mutating_document() {
+        let (mut s, _, id, caption) = review_fixture();
+        for value in [json!(null), json!("7"), json!(-1), json!(1.5), json!(true)] {
+            rejected(&mut s, "anchored.linkCaption", json!({"image":id.0,"caption":value}), "caption must be an unsigned integer");
+        }
+        rejected(&mut s, "anchored.linkCaption", json!({"image":id.0,"caption":id.0}), "caption cannot be image");
+        rejected(&mut s, "anchored.linkCaption", json!({"image":caption.0,"caption":id.0}), "source is not a graphic");
+        for key in ["left", "top", "right", "bottom", "width", "height"] {
+            for value in [json!("5"), json!(null), json!(false)] {
+                let mut params = json!({"id":id.0});
+                params[key] = value;
+                let expected = if key == "width" || key == "height" {
+                    "width and height must be supplied together".to_string()
+                } else {
+                    format!("{key} must be numeric")
+                };
+                rejected(&mut s, "anchored.resize", params, &expected);
+            }
+        }
+        for (extra, expected) in [
+            (json!({"width":40,"height":50,"left":1}), "explicit dimensions cannot be combined"),
+            (json!({"width":40}), "width and height must be supplied together"),
+            (json!({"width":0,"height":10}), "explicit dimensions must be between"),
+            (json!({"width":100001,"height":10}), "explicit dimensions must be between"),
+            (json!({"width":"5","height":10}), "width must be numeric"),
+            (json!({"width":10,"height":false}), "height must be numeric"),
+        ] {
+            let mut params = extra;
+            params["id"] = json!(id.0);
+            rejected(&mut s, "anchored.resize", params, expected);
+        }
+        rejected(&mut s, "anchored.contentTransform", json!({"id":id.0}), "provide dx, dy, or scale");
+        for key in ["dx", "dy", "scale"] {
+            for value in [json!(null), json!("5"), json!(true)] {
+                let mut params = json!({"id":id.0});
+                params[key] = value;
+                rejected(&mut s, "anchored.contentTransform", params, &format!("{key} must be numeric"));
+            }
+        }
+        for (extra, expected) in [
+            (json!({"dx":1000001}), "movement exceeds"),
+            (json!({"dy":-1000001}), "movement exceeds"),
+            (json!({"scale":0}), "invalid scale"),
+            (json!({"scale":101}), "invalid scale"),
+        ] {
+            let mut params = extra;
+            params["id"] = json!(id.0);
+            rejected(&mut s, "anchored.contentTransform", params, expected);
+        }
+    }
+
+    /// Delete removes a selected marker, cleans caption links, and remains one undoable edit.
+    #[test]
+    fn review_clear_removes_anchored_selection_and_undo_restores_it() {
+        for caption_first in [false, true] {
+            let (mut s, sid, image, caption) = review_fixture();
+            let id = if caption_first { caption } else { image };
+            s.execute("selection.set", &json!({"ids":[id.0]})).unwrap();
+            let before = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+            let result = s.execute("edit.clear", &json!({})).unwrap();
+            assert_eq!(result["deleted"], 1);
+            let d = &s.doc().unwrap().doc;
+            assert!(d.anchored_item(id).is_none());
+            if caption_first {
+                assert_eq!(d.story(sid).unwrap().objects[0].caption_id, None);
+            }
+            d.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), before);
+            s.execute("edit.redo", &json!({})).unwrap();
+            assert!(s.doc().unwrap().doc.anchored_item(id).is_none());
+        }
+    }
+
+    /// Unsupported anchored and mixed copies must preserve clipboard, document, and selection.
+    #[test]
+    fn review_copy_cut_reject_anchored_selections_without_mutation() {
+        let (mut s, _, image, _) = review_fixture();
+        let ordinary = s.execute("frame.create", &json!({"rect":[0,0,40,40]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("selection.set", &json!({"ids":[ordinary]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        let clip = s.clipboard.clone().unwrap();
+        for ids in [json!([image.0]), json!([ordinary, image.0])] {
+            s.execute("selection.set", &json!({"ids":ids})).unwrap();
+            let selected = s.doc().unwrap().selection.clone();
+            for command in ["edit.copy", "edit.cut"] {
+                rejected(&mut s, command, json!({}), "anchored selections is unsupported");
+                assert!(Arc::ptr_eq(s.clipboard.as_ref().unwrap(), &clip));
+                assert_eq!(s.doc().unwrap().selection, selected);
+            }
+        }
+        s.execute("selection.set", &json!({"ids":[ordinary]})).unwrap();
+        s.execute("edit.cut", &json!({})).unwrap();
+        assert!(s.doc().unwrap().doc.item(ItemId(ordinary)).is_none());
+    }
+
+    /// Formatted text paste remaps links in both the slice and any adopted child stories.
+    #[test]
+    fn review_formatted_paste_remaps_caption_links() {
+        for nested in [false, true] {
+            let (mut s, mut sid, image, caption) = review_fixture();
+            if nested {
+                let host = s.doc().unwrap().doc.story(sid).unwrap().frames[0];
+                let outer = s.execute("frame.create", &json!({"rect":[72,72,500,650],"content":"text","text":"Outer"})).unwrap();
+                sid = StoryId(outer["story"].as_u64().unwrap());
+                s.edit(|d, _| {
+                    let item = d.item(host).unwrap().clone();
+                    for spread in &mut d.spreads {
+                        Arc::make_mut(spread).items.retain(|i| i.id != host);
+                    }
+                    d.story_mut(sid).unwrap().insert_object(0, AnchoredObject::new(item, Default::default()));
+                    Ok(json!({}))
+                })
+                .unwrap();
+            }
+            let len = s.doc().unwrap().doc.story(sid).unwrap().len();
+            s.doc_mut().unwrap().selection.text = Some(designcraft_doc::TextSel { story: sid, anchor: 0, focus: len, frame: None, cell: None });
+            s.execute("edit.copy", &json!({})).unwrap();
+            let target = s.execute("frame.create", &json!({"rect":[420,72,700,500],"content":"text"})).unwrap()["story"].as_u64().unwrap();
+            let target = StoryId(target);
+            s.doc_mut().unwrap().selection.text = Some(designcraft_doc::TextSel { story: target, anchor: 0, focus: 0, frame: None, cell: None });
+            s.execute("edit.paste", &json!({})).unwrap();
+            let d = &s.doc().unwrap().doc;
+            let mut copied = d.story(target).unwrap();
+            if nested {
+                copied = d.story(copied.objects[0].item.text_frame().unwrap().story).unwrap();
+            }
+            let objects = &copied.objects;
+            assert_ne!(objects[0].item.id, image);
+            assert_ne!(objects[1].item.id, caption);
+            assert_eq!(objects[0].caption_id, Some(objects[1].item.id));
+            d.check().unwrap();
+            designcraft_format::load(&designcraft_format::save(d).unwrap()).unwrap();
+        }
+    }
+
+    /// A partial text copy must not retain a caption reference into the source document.
+    #[test]
+    fn review_adoption_clears_uncopied_caption_link() {
+        let (s, sid, _, _) = review_fixture();
+        let source = s.doc().unwrap().doc.clone();
+        let mut slice = source.story(sid).unwrap().extract(0..OBJECT_MARK.len_utf8());
+        let mut target = (*source).clone();
+        target.adopt_anchored_from(&mut slice, &source);
+        assert_eq!(slice.objects[0].caption_id, None);
+        assert_ne!(slice.objects[0].item.id, source.story(sid).unwrap().objects[0].item.id);
+        let mut slice = source.story(sid).unwrap().extract(0..source.story(sid).unwrap().len());
+        target.adopt_anchored(&mut slice, &|id| source.stories.get(&id).cloned());
+        assert_eq!(slice.objects[0].caption_id, Some(slice.objects[1].item.id));
+    }
+
+    /// Clearing image content keeps the anchor, while nonexistent ids never count as deleted.
+    #[test]
+    fn review_clear_content_keeps_anchor_and_counts_only_changes() {
+        let (mut s, _, image, _) = review_fixture();
+        s.execute("selection.set", &json!({"ids":[image.0],"content":true})).unwrap();
+        let result = s.execute("edit.clear", &json!({})).unwrap();
+        assert_eq!(result["deleted"], 1);
+        assert!(matches!(s.doc().unwrap().doc.anchored_item(image).unwrap().content, Content::Unassigned));
+        assert_eq!(s.doc().unwrap().selection.items, vec![image]);
+        s.doc().unwrap().doc.check().unwrap();
+        let result = s.execute("edit.clear", &json!({"ids":[999999]})).unwrap();
+        assert_eq!(result["deleted"], 0);
+    }
+
+    /// Real edits and drag previews must reach graphics in every nested text scope.
+    #[test]
+    fn review3_nested_graphic_commands_support_edit_preview_and_undo() {
+        use designcraft_doc::{ParaFormat, Table};
+        for scope in 0..4 {
+            let (mut s, sid, image, caption) = review_fixture();
+            s.edit(|d, _| {
+                let tid = d.alloc();
+                let st = d.story_mut(sid).unwrap();
+                let len = st.len();
+                let slice = st.extract(0..len);
+                st.delete(0..len);
+                match scope {
+                    0 => {
+                        st.insert_note(0, "", ParaFormat::default());
+                        Arc::make_mut(&mut st.notes[0]).text.insert_story(0, &slice);
+                    }
+                    1 => {
+                        st.insert_endnote(0, "", ParaFormat::default()).unwrap();
+                        Arc::make_mut(&mut st.endnotes[0]).text.insert_story(0, &slice);
+                    }
+                    _ => {
+                        let mut table = Table::new(tid, 1, 1, 0, 0, 200.0);
+                        if scope == 2 {
+                            table.cells[0].text.insert_story(0, &slice);
+                        } else {
+                            table.cells[0].text.insert_note(0, "", ParaFormat::default());
+                            Arc::make_mut(&mut table.cells[0].text.notes[0]).text.insert_story(0, &slice);
+                        }
+                        st.insert_table(0, table);
+                    }
+                }
+                Ok(json!({}))
+            })
+            .unwrap();
+            let source = serde_json::to_value(&*s.doc().unwrap().doc).unwrap();
+            s.execute("selection.set", &json!({"ids":[image.0]})).unwrap();
+            s.execute("anchored.resize", &json!({"id":image.0,"width":80,"height":50})).unwrap();
+            let bounds = s.doc().unwrap().doc.anchored_item(image).unwrap().bounds();
+            assert!((bounds.width() - 80.0).abs() < 1e-8);
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.begin_interaction("nested graphic").unwrap();
+            s.preview("anchored.contentTransform", json!({"id":image.0,"dx":8,"dy":-3,"scale":1.1})).unwrap();
+            s.commit_interaction().unwrap();
+            assert_ne!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.doc().unwrap().doc.check().unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(serde_json::to_value(&*s.doc().unwrap().doc).unwrap(), source);
+            s.execute("anchored.linkCaption", &json!({"image":image.0})).unwrap();
+            s.execute("anchored.linkCaption", &json!({"image":image.0,"caption":caption.0})).unwrap();
+            s.doc().unwrap().doc.check().unwrap();
+        }
+    }
+
+    /// Ensure repeated crops preserve graphic coordinates in frame space.
+    #[test]
+    fn consecutive_crops_keep_graphic_coordinates_in_frame_space() {
+        use designcraft_geom::Point;
+        // A first crop scales the item frame; the second must convert its
+        // edge delta through that scaled frame, not treat it as inner points.
+        let mut frame = Affine::IDENTITY;
+        let mut content = Affine::IDENTITY;
+        let natural_point = Point::new(60.0, 35.0);
+        let initial = frame * content * natural_point;
+        let mut old_width = 100.0;
+        for left in [20.0, 10.0] {
+            let sx = (old_width - left) / old_width;
+            let inv = frame.inverse();
+            let inner = inv * Point::new(-left, 0.0) - inv * Point::ORIGIN;
+            content = Affine::scale_non_uniform(1.0 / sx, 1.0) * Affine::translate(inner) * content;
+            frame = Affine::scale_non_uniform(sx, 1.0) * frame;
+            let displayed = frame * content * natural_point;
+            assert!((displayed.x - (initial.x - (100.0 - old_width) - left)).abs() < 1e-9);
+            assert!((displayed.y - initial.y).abs() < 1e-9);
+            old_width -= left;
+        }
+        // A content move is also specified in frame points after both crops.
+        let inv = frame.inverse();
+        let delta = inv * Point::new(8.0, -4.0) - inv * Point::ORIGIN;
+        content = Affine::translate(delta) * content;
+        let moved = frame * content * natural_point;
+        assert!((moved.x - (initial.x - 30.0 + 8.0)).abs() < 1e-9);
+        assert!((moved.y - (initial.y - 4.0)).abs() < 1e-9);
+    }
+
+    /// Ensure caption linking rejects non-graphic sources and never infers body text.
+    #[test]
+    fn linking_caption_never_guesses_body_text_or_accepts_non_graphics() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 500], "content": "text", "text": "Caption\nBody text."})).unwrap();
+        let sid = host["story"].as_u64().unwrap();
+        let shape = s.execute("frame.create", &json!({"rect": [420, 72, 510, 150]})).unwrap()["id"].as_u64().unwrap();
+        s.execute("anchored.insert", &json!({"ids": [shape], "story": sid, "pos": 0})).unwrap();
+        assert!(s.execute("anchored.linkCaption", &json!({"image": shape, "caption": shape})).is_err());
+        assert!(s.execute("anchored.linkCaption", &json!({"image": shape, "caption": 999999})).is_err());
+        let story = s.doc().unwrap().doc.story(StoryId(sid)).unwrap();
+        assert!(story.text.contains("Caption\nBody text."));
+        assert_eq!(story.objects.len(), 1);
+        assert_eq!(story.objects[0].caption_id, None);
+        s.doc().unwrap().doc.check().unwrap();
+    }
 
     #[test]
     fn inline_object_flows_with_text_and_releases() {

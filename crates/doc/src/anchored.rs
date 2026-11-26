@@ -106,6 +106,11 @@ pub struct AnchoredObject {
     pub item: Item,
     #[serde(default)]
     pub position: AnchorPosition,
+    /// Explicit one-to-one link to an anchored text-frame caption in the same story.
+    /// None means unlinked, is the default, and is omitted from serialization.
+    /// Never infer a caption from adjacent body text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_id: Option<crate::ids::ItemId>,
 }
 
 impl AnchoredObject {
@@ -113,7 +118,7 @@ impl AnchoredObject {
     pub fn new(mut item: Item, position: AnchorPosition) -> Self {
         let b = item.bounds();
         item.xf = designcraft_geom::Affine::translate((-b.x0, -b.y0)) * item.xf;
-        AnchoredObject { item, position }
+        AnchoredObject { item, position, caption_id: None }
     }
 
     /// Width and height.
@@ -128,7 +133,7 @@ impl Default for AnchoredObject {
     fn default() -> Self {
         let path = designcraft_geom::shapes::rectangle(designcraft_geom::Rect::new(0.0, 0.0, 0.0, 0.0));
         let item = Item::new(crate::ids::ItemId(0), crate::ids::LayerId(0), crate::item::Shape::Rectangle, path);
-        AnchoredObject { item, position: AnchorPosition::default() }
+        AnchoredObject { item, position: AnchorPosition::default(), caption_id: None }
     }
 }
 
@@ -213,10 +218,137 @@ fn has_items(st: &Story) -> bool {
     false
 }
 
+/// Caption ids belong to the copied text scope; targets outside the copy must not survive adoption.
+fn remap_adopted_captions(st: &mut Story, ids: &HashMap<ItemId, ItemId>, depth: usize) {
+    for obj in &mut st.objects {
+        let obj = Arc::make_mut(obj);
+        obj.caption_id = obj.caption_id.and_then(|id| ids.get(&id).copied());
+    }
+    if depth >= NESTING {
+        return;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        remap_adopted_captions(&mut Arc::make_mut(note).text, ids, depth + 1);
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            remap_adopted_captions(&mut cell.text, ids, depth + 1);
+        }
+    }
+}
+
+/// Preserve fragment identity before insertion loses the boundary between original and copy.
+/// Only targets included in this fragment may remain linked to its graphics.
+pub(crate) fn prepare_anchored_fragment(dst: &Story, src: &Story) -> Option<Story> {
+    if !has_items(src) {
+        return None;
+    }
+    let mut occupied = HashSet::new();
+    items(dst, 0, &mut |item| {
+        occupied.insert(item.id);
+    });
+    let mut ids = HashMap::new();
+    items(src, 0, &mut |item| {
+        ids.insert(item.id, item.id);
+    });
+    let mut used = occupied.clone();
+    used.extend(ids.keys().copied());
+    let mut next = crate::ids::next_local_id(used.iter().map(|id| id.0));
+    // Traversal order, rather than hash iteration, keeps the resulting ids deterministic.
+    items(src, 0, &mut |item| {
+        if occupied.contains(&item.id) && ids.get(&item.id) == Some(&item.id) {
+            while used.contains(&ItemId(next)) {
+                next = next.checked_add(1).unwrap_or(1);
+            }
+            ids.insert(item.id, ItemId(next));
+            used.insert(ItemId(next));
+        }
+    });
+    let mut fragment = src.clone();
+    items_mut(&mut fragment, 0, &mut |item| {
+        if let Some(id) = ids.get(&item.id) {
+            item.id = *id;
+        }
+    });
+    remap_adopted_captions(&mut fragment, &ids, 0);
+    Some(fragment)
+}
+
+/// Repair each text scope separately: insertion already separated copied fragments' ids.
+fn repair_scope_ids(st: &mut Story, seen: &mut HashSet<ItemId>, next: &mut u64, depth: usize) -> usize {
+    let mut copies = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    let mut changed = 0;
+    for obj in &mut st.objects {
+        walk_mut(&mut Arc::make_mut(obj).item, &mut |item| {
+            let old = item.id;
+            if !seen.insert(old) {
+                *next = next.saturating_add(1);
+                item.id = ItemId(*next);
+                seen.insert(item.id);
+                changed += 1;
+            }
+            if copies.insert(old, item.id).is_some() {
+                ambiguous.insert(old);
+            }
+        });
+    }
+    // Malformed raw payloads have no fragment provenance: never guess an ambiguous target.
+    for obj in &mut st.objects {
+        let caption = obj.caption_id.filter(|id| !ambiguous.contains(id)).and_then(|id| copies.get(&id).copied());
+        if obj.caption_id != caption {
+            Arc::make_mut(obj).caption_id = caption;
+        }
+    }
+    if depth >= NESTING {
+        return changed;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        changed += repair_scope_ids(&mut Arc::make_mut(note).text, seen, next, depth + 1);
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            changed += repair_scope_ids(&mut cell.text, seen, next, depth + 1);
+        }
+    }
+    changed
+}
+
+/// Find the owning text scope, preserving cache invalidation through all containing stories.
+fn anchored_scope_mut(st: &mut Story, id: ItemId, depth: usize) -> Option<&mut Story> {
+    st.rev = st.rev.wrapping_add(1);
+    if st.objects.iter().any(|obj| obj.item.id == id) {
+        return Some(st);
+    }
+    if depth >= NESTING {
+        return None;
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if let Some(scope) = anchored_scope_mut(&mut Arc::make_mut(note).text, id, depth + 1) {
+            return Some(scope);
+        }
+    }
+    for table in st.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            if let Some(scope) = anchored_scope_mut(&mut cell.text, id, depth + 1) {
+                return Some(scope);
+            }
+        }
+    }
+    None
+}
+
 impl Document {
     /// Does any story (its footnotes and table cells included) hold anchored objects?
     pub fn has_anchored_items(&self) -> bool {
         self.stories.values().any(|s| has_items(s))
+    }
+
+    /// Owning text of a direct anchored object, including notes, endnotes and table cells.
+    /// Group descendants are not independent text anchors.
+    pub fn anchored_scope_mut(&mut self, id: ItemId) -> Option<&mut Story> {
+        let owner = self.anchored_items().into_iter().find_map(|(owner, item)| (item.id == id).then_some(owner))?;
+        anchored_scope_mut(self.story_mut(owner)?, id, 0)
     }
 
     /// The stories the anchored text frames in `st` show, and the stories shown by the frames
@@ -241,17 +373,17 @@ impl Document {
     /// empty story when `src` hasn't it) threaded to the copied frames that show it, copying the
     /// frames anchored in those stories the same way.
     pub fn adopt_anchored(&mut self, st: &mut Story, src: &dyn Fn(StoryId) -> Option<Arc<Story>>) {
-        self.adopt(&mut |f| items_mut(st, 0, f), src, None, &mut Vec::new(), &mut HashMap::new());
+        self.adopt(st, src, None, &mut Vec::new(), &mut HashMap::new());
     }
 
     /// [`Document::adopt_anchored`] for text copied from document `src`: the copies of the
     /// stories its anchored text frames show also take the assets they place along from `src`
     /// (or reuse the same file here), since `src`'s asset ids may name other files here.
     pub fn adopt_anchored_from(&mut self, st: &mut Story, src: &Document) {
-        self.adopt(&mut |f| items_mut(st, 0, f), &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut HashMap::new());
+        self.adopt(st, &|id| src.stories.get(&id).cloned(), Some(src), &mut Vec::new(), &mut HashMap::new());
     }
 
-    /// `visit` runs a function on every copied item. `path`: the stories being copied (a frame
+    /// `st` contains the copied anchored items. `path`: the stories being copied (a frame
     /// showing one of them again gets an empty story, so copies never nest without end).
     /// `assets`: the document the copied stories' assets are in, when it isn't this one.
     /// `copies`: the copy made of each source story in this operation. A story shown by frames in
@@ -259,7 +391,7 @@ impl Document {
     /// so a graph of shared stories doesn't multiply into exponentially many copies.
     fn adopt(
         &mut self,
-        visit: &mut dyn FnMut(&mut dyn FnMut(&mut Item)),
+        st: &mut Story,
         src: &dyn Fn(StoryId) -> Option<Arc<Story>>,
         assets: Option<&Document>,
         path: &mut Vec<StoryId>,
@@ -267,11 +399,15 @@ impl Document {
     ) {
         let mut next = self.next_id;
         let mut frames = Vec::new();
-        visit(&mut |i| {
+        let mut ids = HashMap::new();
+        items_mut(st, 0, &mut |i| {
+            let old = i.id;
             next = next.saturating_add(1);
             i.id = ItemId(next);
+            ids.insert(old, i.id);
             frames.extend(i.text_frame().map(|t| (i.id, t.story)));
         });
+        remap_adopted_captions(st, &ids, 0);
         self.next_id = next;
         // The story each copied frame shows: the operation's copy of its story, or an empty one
         // where copying would loop or nest too deep.
@@ -303,7 +439,7 @@ impl Document {
                         crate::remap_story_assets(&mut copy, &map);
                     }
                     path.push(old);
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), src, assets, path, copies);
+                    self.adopt(&mut copy, src, assets, path, copies);
                     path.pop();
                     copy
                 }
@@ -318,7 +454,7 @@ impl Document {
             };
             self.stories.insert(id, Arc::new(copy));
         }
-        visit(&mut |i| {
+        items_mut(st, 0, &mut |i| {
             if let Some(id) = shows.get(&i.id)
                 && let Some(t) = i.text_frame_mut()
             {
@@ -391,6 +527,8 @@ impl Document {
     /// missing). Returns how many items, threads and stories changed.
     pub fn fix_anchored_text_frames(&mut self) -> usize {
         let mut changed = 0;
+        // Story-local insertion can allocate ids beyond the document's current counter.
+        self.next_id = self.next_id.max(self.live_items().iter().map(|id| id.0).max().unwrap_or(0));
         // Fresh ids for copies: items on spreads keep theirs, then the first in story order.
         let mut seen = HashSet::new();
         for sp in self.spreads.iter().chain(&self.parents) {
@@ -413,14 +551,7 @@ impl Document {
             let mut next = self.next_id;
             let Some(st) = self.stories.get_mut(sid) else { continue };
             let st = Arc::make_mut(st);
-            items_mut(st, 0, &mut |i| {
-                if !seen.insert(i.id) {
-                    next = next.saturating_add(1);
-                    i.id = ItemId(next);
-                    seen.insert(i.id);
-                    changed += 1;
-                }
-            });
+            changed += repair_scope_ids(st, &mut seen, &mut next, 0);
             st.rev = st.rev.wrapping_add(1);
             self.next_id = next;
         }
@@ -476,7 +607,7 @@ impl Document {
                     // Only the stories the copy reaches, as they are now (copies made for earlier
                     // frames included).
                     let reachable = self.anchored_stories(&copy);
-                    self.adopt(&mut |f| items_mut(&mut copy, 0, f), &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
+                    self.adopt(&mut copy, &|s| reachable.get(&s).cloned(), None, &mut vec![sid], &mut HashMap::new());
                     copy.frames = vec![fid];
                     self.stories.insert(id, Arc::new(copy));
                     id
@@ -532,6 +663,124 @@ mod tests {
         let n = h.len();
         h.insert_object(n, AnchoredObject::new(it, AnchorPosition::default()));
         (sid, fid)
+    }
+
+    /// Repair duplicate copies independently in body text, footnotes and table-cell scopes.
+    #[test]
+    fn review2_duplicate_repair_remaps_caption_links_in_their_own_scopes() {
+        use crate::{Content, Graphic, Shape, Table};
+        let (mut d, sid) = doc();
+        let (_, caption) = anchor(&mut d, sid, "Caption");
+        let image = ItemId(d.alloc());
+        let mut item = Item::new(image, d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 30.0, 20.0)));
+        item.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: AssetId(999),
+            size: (30.0, 20.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        let mut obj = AnchoredObject::new(item, Default::default());
+        obj.caption_id = Some(caption);
+        d.story_mut(sid).unwrap().insert_object(0, obj);
+        d.check().unwrap();
+        let source = d.story(sid).unwrap().clone();
+        // Include repeated raw copies in the original scope, not just copies in another story.
+        for _ in 0..2 {
+            let st = d.story_mut(sid).unwrap();
+            let end = st.len();
+            st.insert_story(end, &source);
+        }
+        let layer = d.default_layer();
+        let (_, target) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 36.0, 600.0, 700.0), layer, "", ParaFormat::default()).unwrap();
+        let tid = d.alloc();
+        let mut table = Table::new(tid, 1, 1, 0, 0, 200.0);
+        table.cells[0].text.insert_story(0, &source);
+        let end = table.cells[0].text.len();
+        table.cells[0].text.insert_note(end, "", ParaFormat::default());
+        Arc::make_mut(&mut table.cells[0].text.notes[0]).text.insert_story(0, &source);
+        let st = d.story_mut(target).unwrap();
+        st.insert_story(0, &source);
+        st.insert_note(st.len(), "", ParaFormat::default());
+        Arc::make_mut(&mut st.notes[0]).text.insert_story(0, &source);
+        st.insert_table(st.len(), table);
+        assert!(d.fix_anchored_text_frames() > 0);
+        fn linked(st: &Story) {
+            let graphic = st.objects.iter().find(|o| matches!(o.item.content, Content::Graphic(_))).unwrap();
+            let caption = st.objects.iter().find(|o| o.item.text_frame().is_some()).unwrap();
+            assert_eq!(graphic.caption_id, Some(caption.item.id));
+        }
+        linked(d.story(sid).unwrap());
+        let pairs = &d.story(sid).unwrap().objects;
+        assert_eq!(pairs.len(), 6);
+        for pair in pairs.as_chunks::<2>().0 {
+            assert_eq!(pair[0].caption_id, Some(pair[1].item.id), "each original/copy occurrence keeps its own caption");
+        }
+        assert_eq!(d.story(sid).unwrap().objects[0].caption_id, Some(caption), "unrelated original link stays unchanged");
+        let st = d.story(target).unwrap();
+        linked(st);
+        linked(&st.notes[0].text);
+        let cell = &st.tables[&tid].cells[0];
+        linked(&cell.text);
+        linked(&cell.text.notes[0].text);
+        d.check().unwrap();
+        assert_eq!(d.fix_anchored_text_frames(), 0, "repair is idempotent");
+    }
+
+    #[test]
+    fn review4_partial_fragment_before_complete_pair_keeps_caption_identity() {
+        for append in [false, true] {
+            for linked_partial in [false, true] {
+                use crate::{Content, Graphic, Shape};
+                let (mut d, sid) = doc();
+                let (_, caption) = anchor(&mut d, sid, "Caption");
+                let image = ItemId(d.alloc());
+                let mut item =
+                    Item::new(image, d.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 30.0, 20.0)));
+                item.content = Content::Graphic(Graphic {
+                    layer_options: None,
+                    asset: AssetId(999),
+                    size: (30.0, 20.0),
+                    xf: designcraft_geom::Affine::IDENTITY,
+                    clip: None,
+                    auto_fit: Default::default(),
+                    fit_align: 4,
+                    crop: [0.0; 4],
+                    wrap: Default::default(),
+                    fill: Default::default(),
+                });
+                let mut obj = AnchoredObject::new(item, Default::default());
+                obj.caption_id = Some(caption);
+                d.story_mut(sid).unwrap().insert_object(0, obj);
+                d.check().unwrap();
+                let source = d.story(sid).unwrap().clone();
+                let mut partial = source.extract(0..crate::OBJECT_MARK.len_utf8());
+                if !linked_partial {
+                    Arc::make_mut(&mut partial.objects[0]).caption_id = None;
+                }
+                let st = d.story_mut(sid).unwrap();
+                if append {
+                    st.append_story(partial);
+                    st.append_story(source.clone());
+                } else {
+                    st.insert_story(st.len(), &partial);
+                    st.insert_story(st.len(), &source);
+                }
+                d.fix_anchored_text_frames();
+                let objects = &d.story(sid).unwrap().objects;
+                assert_eq!(objects.len(), 5);
+                assert_eq!(objects[0].caption_id, Some(objects[1].item.id));
+                assert_eq!(objects[2].caption_id, None, "partial fragment cannot steal another fragment's caption");
+                assert_eq!(objects[3].caption_id, Some(objects[4].item.id), "complete fragment keeps its own caption");
+                d.check().unwrap();
+                assert_eq!(d.fix_anchored_text_frames(), 0);
+            }
+        }
     }
 
     /// The stories the anchored text frames show, with their texts.

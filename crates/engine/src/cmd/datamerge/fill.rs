@@ -131,14 +131,31 @@ fn renumber_in(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Docum
 
 /// Fresh ids for the objects anchored in story copy `st`, its table cells, footnotes and endnotes (#1522).
 fn renumber_anchored(dst: &mut designcraft_doc::Document, src: &designcraft_doc::Document, st: &mut Story, maps: &mut Maps) {
+    let mut ids = HashMap::new();
     let mut fresh = |t: &mut Story| {
         for o in &mut t.objects {
-            renumber_in(dst, src, &mut Arc::make_mut(o).item, maps, false);
+            let obj = Arc::make_mut(o);
+            let old = obj.item.id;
+            renumber_in(dst, src, &mut obj.item, maps, false);
+            ids.insert(old, obj.item.id);
         }
     };
     st.for_each_text_mut(&mut fresh);
     for n in &mut st.endnotes {
         Arc::make_mut(n).text.for_each_text_mut(&mut fresh);
+    }
+    // Caption references belong to the copied story, never to its source.
+    let mut remap = |t: &mut Story| {
+        for o in &mut t.objects {
+            let obj = Arc::make_mut(o);
+            if let Some(id) = obj.caption_id {
+                obj.caption_id = ids.get(&id).copied();
+            }
+        }
+    };
+    st.for_each_text_mut(&mut remap);
+    for n in &mut st.endnotes {
+        Arc::make_mut(n).text.for_each_text_mut(&mut remap);
     }
 }
 

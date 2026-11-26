@@ -236,6 +236,63 @@ pub struct ToolContext<'a> {
     pub loaded: Option<(f64, f64)>,
 }
 
+/// Inspect the composed placement, including anchors inside note and table text.
+fn frame_contains_anchor(frame: &designcraft_compose::FrameText, id: ItemId, depth: usize) -> bool {
+    if frame.objects.iter().any(|o| {
+        let mut found = false;
+        o.object.item.walk(&mut |it| found |= it.id == id);
+        found
+    }) {
+        return true;
+    }
+    if depth >= 8 {
+        return false;
+    }
+    frame.notes.iter().any(|n| n.text.frames.iter().any(|f| frame_contains_anchor(f, id, depth + 1)))
+        || frame.tables.iter().flat_map(|t| &t.cells).any(|c| c.text.frames.iter().any(|f| frame_contains_anchor(f, id, depth + 1)))
+}
+
+/// Nested note/cell frames use anonymous frame ids. Carry their real host and composed offsets.
+fn collect_frame_graphics(
+    frame: &designcraft_compose::FrameText,
+    parent: Affine,
+    host: ItemId,
+    doc: &Document,
+    depth: usize,
+    out: &mut Vec<(ItemId, Rect, Affine, ItemId)>,
+) {
+    for placed in &frame.objects {
+        let item = &placed.object.item;
+        if !matches!(item.content, designcraft_doc::Content::Graphic(_))
+            || item.hidden
+            || item.locked
+            || doc.layer(item.layer).is_some_and(|l| !l.visible || l.locked)
+        {
+            continue;
+        }
+        let xf = parent * Affine::translate(placed.origin.to_vec2());
+        let rect = xf.transform_rect_bbox(item.bounds());
+        if [rect.x0, rect.y0, rect.x1, rect.y1].iter().all(|v| v.is_finite()) {
+            out.push((item.id, rect, xf, host));
+        }
+    }
+    if depth >= 8 {
+        return;
+    }
+    for note in &frame.notes {
+        let xf = parent * Affine::translate(note.origin.to_vec2());
+        for child in &note.text.frames {
+            collect_frame_graphics(child, xf, host, doc, depth + 1, out);
+        }
+    }
+    for cell in frame.tables.iter().flat_map(|t| &t.cells) {
+        let xf = parent * Affine::translate(cell.origin.to_vec2());
+        for child in &cell.text.frames {
+            collect_frame_graphics(child, xf, host, doc, depth + 1, out);
+        }
+    }
+}
+
 impl ToolContext<'_> {
     pub fn tol(&self, px: f64) -> f64 {
         px / self.zoom.max(1e-9)
@@ -248,6 +305,91 @@ impl ToolContext<'_> {
             return self.hit_parent(sr, sp);
         };
         self.doc.hit_item(si, sp, self.tol(4.0)).map(|id| (sr, id))
+    }
+
+    /// Anchored graphics are composed inside text frames, not stored as spread items.
+    /// Return their composed canvas bounds and the transform from frame space to canvas.
+    /// The full transform includes vertical text and rotated spread views.
+    pub fn anchored_graphic_geometry(&self) -> Vec<(ItemId, Rect, Affine, ItemId)> {
+        let mut out = Vec::new();
+        for story in self.doc.stories.values() {
+            let composed = self.cache.get(self.doc, story.id, None);
+            for frame in &composed.frames {
+                let loc = self.doc.find(frame.frame);
+                let Some(host) = loc.as_ref().and_then(|l| self.doc.item_at(l)).or_else(|| self.doc.anchored_item(frame.frame)) else { continue };
+                let (spread, host_parent) = if let Some(loc) = &loc {
+                    (loc.spread, self.doc.parent_xf(loc))
+                } else if let Some(placed) = self.cache.placement(self.doc, story.id, frame.frame) {
+                    (placed.spread, placed.xf)
+                } else {
+                    continue;
+                };
+                if host.hidden || host.locked || self.doc.layer(host.layer).is_some_and(|l| !l.visible || l.locked) {
+                    continue;
+                }
+                let parent = self.layout.xf(spread) * host_parent * self.doc.text_xf(host);
+                collect_frame_graphics(frame, parent, frame.frame, self.doc, 0, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Legacy canvas hit rectangles for selecting anchored graphics.
+    pub fn anchored_graphic_bounds(&self) -> Vec<(ItemId, Rect)> {
+        self.anchored_graphic_geometry().into_iter().map(|(id, bounds, _, _)| (id, bounds)).collect()
+    }
+
+    /// Resolve stacking against the spread frame that actually contains a nested anchor.
+    fn anchored_host_location(&self, id: ItemId, depth: usize) -> Option<designcraft_doc::ItemLoc> {
+        if let Some(loc) = self.doc.find(id) {
+            return Some(loc);
+        }
+        if depth >= 8 {
+            return None;
+        }
+        let owner = self.doc.anchored_items().into_iter().find_map(|(owner, it)| (it.id == id).then_some(owner))?;
+        let composed = self.cache.get(self.doc, owner, None);
+        composed
+            .frames
+            .iter()
+            .find_map(|frame| frame_contains_anchor(frame, id, 0).then(|| self.anchored_host_location(frame.frame, depth + 1)).flatten())
+    }
+
+    /// The frontmost anchored graphic under the pointer, unless a normal page
+    /// item is stacked over its host frame. Respect both layer order and the
+    /// order of items within the layer, rather than capturing clicks through
+    /// an overlaid object.
+    pub fn hit_anchored_graphic(&self, p: Point) -> Option<ItemId> {
+        let front = self.hit(p).and_then(|(_, id)| {
+            let loc = self.doc.find(id)?;
+            let item = self.doc.spread(loc.spread)?.items.get(loc.top())?;
+            Some((loc.spread, loc.top(), self.doc.layer_rank(item.layer)))
+        });
+        // Story allocation order is unrelated to stacking, especially for custom anchors outside frames.
+        let candidate = self
+            .anchored_graphic_geometry()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, (id, bounds, _, host_id))| {
+                if !bounds.contains(p) {
+                    return None;
+                }
+                let host = self.anchored_host_location(host_id, 0)?;
+                let host_item = self.doc.spread(host.spread)?.items.get(host.top())?;
+                let layer = self.doc.layer_rank(host_item.layer);
+                if let Some((front_spread, front_index, front_layer)) = front
+                    && (front_spread != host.spread || front_layer > layer || (front_layer == layer && front_index > host.top()))
+                {
+                    return None;
+                }
+                let spread = match host.spread {
+                    SpreadRef::Doc(i) => (0, i),
+                    SpreadRef::Parent(i) => (1, i),
+                };
+                Some(((spread, layer, host.path.clone(), order), id, host.spread))
+            })
+            .max_by(|a, b| a.0.cmp(&b.0))?;
+        Some(candidate.1)
     }
 
     /// The frontmost text frame under `p`, looking inside groups. [`Self::hit`] stops at the
@@ -361,7 +503,16 @@ impl ToolContext<'_> {
     /// Canvas bounds of the selected items' paths. Handles and resize use this geometric box.
     pub fn selection_bounds(&self) -> Option<Rect> {
         let mut r: Option<Rect> = None;
-        for (it, xf) in self.selected_with_canvas_xf() {
+        let selected = self.selected_with_canvas_xf();
+        // Only missing spread items can be anchors; ordinary selections avoid story composition.
+        if selected.len() < self.selection.items.len() {
+            for (id, b) in self.anchored_graphic_bounds() {
+                if self.selection.items.contains(&id) {
+                    r = Some(r.map_or(b, |r| r.union(b)));
+                }
+            }
+        }
+        for (it, xf) in selected {
             let b = xf.transform_rect_bbox(it.bounds());
             r = Some(r.map_or(b, |r| r.union(b)));
         }
