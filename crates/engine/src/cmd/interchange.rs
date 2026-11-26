@@ -547,10 +547,9 @@ fn import_interchange(s: &mut Session, bytes: Vec<u8>, package: Option<&std::pat
     // Save writes IDML back to it. Anything else starts unsaved, so neither a converted .indd nor a
     // file that isn't named .idml is ever overwritten (nor is any .idml with the native format).
     let path = match s.prefs.save_format {
-        crate::SaveFormat::Idml if !from_indd => package
-            .and_then(std::path::Path::to_str)
-            .filter(|path| crate::SaveFormat::of_path(path) == crate::SaveFormat::Idml)
-            .map(str::to_string),
+        crate::SaveFormat::Idml if !from_indd => {
+            package.and_then(std::path::Path::to_str).filter(|path| crate::SaveFormat::of_path(path) == crate::SaveFormat::Idml).map(str::to_string)
+        }
         _ => None,
     };
     let mut st = DocState::new(d, path);
