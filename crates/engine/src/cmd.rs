@@ -16,6 +16,7 @@ mod edit;
 mod editorial;
 mod endnotes;
 mod export;
+pub(crate) use export::pdf_export_report_with_progress;
 pub(crate) use export::print_pdf;
 pub mod export_batch;
 mod file;
@@ -97,7 +98,12 @@ pub struct CommandSpec {
     pub journal: bool,
     /// Record an undo step when the document changes.
     pub undoable: bool,
+    /// Changes the document, so it is refused while the document is being exported.
+    pub mutates: bool,
 }
+
+/// Why a mutating command is refused while its document is exported.
+pub const EXPORTING: &str = "the document is being exported";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandInfo {
@@ -113,7 +119,9 @@ pub struct CommandInfo {
 
 impl CommandSpec {
     pub fn info(&self, s: &Session) -> CommandInfo {
-        let e = (self.enabled)(s);
+        // The export lock comes first: it explains why a command is dead while its document is
+        // being exported, rather than the command's own reason ("nothing selected").
+        let e = if self.mutates { s.check_not_exporting().and_then(|()| (self.enabled)(s)) } else { (self.enabled)(s) };
         CommandInfo {
             id: self.id,
             label: self.label,
@@ -162,13 +170,21 @@ pub fn has_text_or_frames(s: &Session) -> std::result::Result<(), String> {
 
 macro_rules! cmd {
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: true, mutates: true }
     };
     (query $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false, mutates: false }
+    };
+    // A query that still changes the document (Data Merge Preview): refused while it is exported.
+    (query_mut $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: false, undoable: false, mutates: true }
     };
     (noundo $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
-        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false }
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false, mutates: false }
+    };
+    // A command that is not undoable but does change the document: refused while it is exported.
+    (noundo_mut $id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
+        $crate::cmd::CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true, undoable: false, mutates: true }
     };
 }
 pub(crate) use cmd;

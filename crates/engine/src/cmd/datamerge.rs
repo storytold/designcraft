@@ -73,8 +73,8 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             options_cmd
         ),
-        cmd!(query "data.preview", "Preview Record", [], None, "{record?: n} → fill the template with that record (session only)", has_doc, preview_cmd),
-        cmd!(noundo "data.preview.stop", "Stop Preview", [], None, "{} → restore the unfilled template", has_doc, |_s, _| ok()),
+        cmd!(query_mut "data.preview", "Preview Record", [], None, "{record?: n} → fill the template with that record (session only)", has_doc, preview_cmd),
+        cmd!(noundo_mut "data.preview.stop", "Stop Preview", [], None, "{} → restore the unfilled template", has_doc, |_s, _| ok()),
         cmd!(
             "data.merge",
             "Create Merged Document…",

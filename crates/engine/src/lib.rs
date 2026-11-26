@@ -13,6 +13,7 @@ pub mod atomic;
 pub mod autosize;
 pub mod cmd;
 pub mod dtd;
+mod export_job;
 pub mod file_access;
 pub mod guard;
 pub mod io;
@@ -460,6 +461,8 @@ pub struct Session {
     /// polled): a file of the recorded size and time isn't read again, and one touched but not
     /// changed is read once.
     pub(crate) link_checks: cmd::LinkListChecks,
+    /// Background exports (`file.exportPdf {background: true}`), polled by `file.export.progress`.
+    pub(crate) export_jobs: export_job::Jobs,
 }
 
 impl Default for Session {
@@ -510,6 +513,7 @@ impl Session {
             book: None,
             untitled: 0,
             new_document_preview: None,
+            export_jobs: Default::default(),
         }
     }
 
@@ -556,6 +560,15 @@ impl Session {
     }
     pub fn doc_mut(&mut self) -> Result<&mut DocState> {
         self.active_mut().ok_or(EngineError::NoDocument)
+    }
+    /// Is a background export running for the active document? While it is, the document is
+    /// frozen: mutating commands are refused so the file being written matches what the user saw.
+    pub fn exporting_active(&self) -> bool {
+        self.active().is_some_and(|st| self.export_jobs.is_running(st.uid))
+    }
+    /// The same check as [`Self::exporting_active`], as the reason a command is disabled.
+    pub fn check_not_exporting(&self) -> std::result::Result<(), String> {
+        if self.exporting_active() { Err(crate::cmd::EXPORTING.into()) } else { Ok(()) }
     }
     /// Release the transient Find/Change domain when its caller starts or closes a search.
     pub fn reset_find_scope(&mut self) {
@@ -718,6 +731,11 @@ impl Session {
 
     /// Fails with `Disabled` unless the command is enabled or names objects or a table it can act on.
     fn check_enabled(&self, spec: &CommandSpec, id: &str, params: &Value) -> Result<()> {
+        // A document being exported is frozen: an edit would not reach the file, so refuse it
+        // before the command runs (menus get the same answer from `CommandSpec::info`).
+        if spec.mutates && self.exporting_active() {
+            return Err(EngineError::Disabled(id.into(), crate::cmd::EXPORTING.into()));
+        }
         if let Err(e) = (spec.enabled)(self) {
             // Explicit story/frame targets do not need a selection. Keep menu enablement
             // selection-based; these handlers validate even malformed non-null targets.

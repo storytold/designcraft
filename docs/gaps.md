@@ -1,6 +1,6 @@
 # Where DesignCraft falls short of InDesign
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; gap 29 added: document tabs can't be reordered (overflowing tabs now scroll); placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-17 · **Change:** minor (gap 20 shrunk further: a background PDF export can be cancelled per job (`file.export.cancel`), several run at once and are listed by `file.export.jobs` in an Exports panel, and the exporting document refuses the mutating commands with `EXPORTING`; gap 20 shrunk: PDF export runs off the interface thread with a progress bar, `file.exportPdf {background}`, `file.export.progress`; gap 7 closed: pull-request quality gate already runs; linked placed images and multi-image place; gap 20: automatic recovery moved off the interface thread; gap 21 shrunk: pt-BR translates the whole interface; gap 29 added: document tabs can't be reordered (overflowing tabs now scroll); placed graphic layer-option preservation and explicit rendering warnings; gap 16 shrunk: File › File Info; gap 16: Convert Variable to Text; gap 28 added: placed-PDF font repair remains after visible unembedded font detection, #909; gap 26 shrunk: autoflow fills the following pages before it adds pages at the end; gap 6 shrunk: Type › Reload Fonts reads fonts installed, edited or removed while running (#328); gap 3: Package links are relative, #340; gap 27 closed: the loaded text cursor threads into a frame inside a group (#1075); .indd and .indt open through indd-utils; gap 0 shrunk: text threads by hand; threading gaps added; Optical kerning from outlines (#181); gap 6: macOS lists fonts that font services and managers activate; shared print spooler; image clipping paths from IDML; Tabs panel listed as present (#343); book chapter update safety; gap 16: Based on Parent leftovers; bounded control click/drag input; swatches on placed greyscale and bitmap images) · **Target:** Adobe InDesign 2026 (21.6)
 
 Every known shortfall against InDesign 2026, one entry each, ranked by how much it stops an
 InDesign professional from doing real work. This is the work list: agents pick from the top.
@@ -238,7 +238,18 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   background thread and streams to disk, so an autosave of that catalogue no longer blocks the
   interface thread for 30-100 s (`file.recovery.save {background}`, `file.recovery.progress`). A
   snapshot still being written when its document is saved, reverted or closed is cancelled before
-  it is published, so a crash cannot offer back a copy older than the saved file.
+  it is published, so a crash cannot offer back a copy older than the saved file. A PDF export
+  runs on a background job (`file.exportPdf {background: true, path}`, `file.export.progress`)
+  and the status bar shows its progress, so exporting a large document no longer freezes the
+  window. An export can be cancelled (`file.export.cancel {job}`) at a page boundary, and a
+  cancelled job writes no file; a cancel is refused once the file is being written, so
+  `cancelRequested: true` always means no file. Several exports run at once, listed by
+  `file.export.jobs` and in the Exports panel (click the status bar), each with its own progress
+  and cancel. While an export
+  reads a document, the commands that would rewrite it (parent edits, data merge, undo/redo,
+  revert) are refused with `EXPORTING` and greyed in the menus; book pagination and style
+  synchronisation still run on other books and refuse an open destination chapter, while style
+  synchronisation reads an open style source from its saved file.
 - **Estimate:** 40–80 h.
 
 ### 26. Autoflow flows into the primary text frame of the pages that follow (F)

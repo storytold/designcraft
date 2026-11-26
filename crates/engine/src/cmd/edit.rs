@@ -275,7 +275,7 @@ fn strip_objects(st: &designcraft_doc::Story) -> designcraft_doc::Story {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(noundo "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {
+        cmd!(noundo_mut "edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| {
             let st = s.doc_mut()?;
             let e = st.history.undo.pop().ok_or_else(|| super::bad("edit.undo", "nothing to undo"))?;
             st.history.redo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
@@ -288,7 +288,7 @@ pub fn specs() -> Vec<CommandSpec> {
             s.typing_format = None;
             Ok(json!({"undone": e.label}))
         }),
-        cmd!(noundo "edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| {
+        cmd!(noundo_mut "edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| {
             let st = s.doc_mut()?;
             let e = st.history.redo.pop().ok_or_else(|| super::bad("edit.redo", "nothing to redo"))?;
             st.history.undo.push(HistoryEntry { label: e.label.clone(), doc: st.doc.clone(), selection: st.selection.clone() });
