@@ -10489,3 +10489,55 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// Justify All Lines: a last line holding one word follows Single Word Justification, as a
+/// one-word line elsewhere in the paragraph does, instead of falling back to the left edge.
+/// Spread out, the word's letters reach both edges, and no Arabic join opens; a word whose
+/// letters all join stays at the paragraph's starting edge.
+#[test]
+fn a_one_word_last_line_of_a_fully_justified_paragraph_follows_single_word_justification() {
+    use designcraft_doc::TextDirection as D;
+    for (text, direction) in [("Word", D::LeftToRight), ("وأموالهم", D::RightToLeft), ("بسم", D::RightToLeft)] {
+        let compose = |single: Align| {
+            let para = ParaAttrs {
+                direction: Some(direction),
+                align: Some(Align::FullyJustified),
+                single_word_justify: Some(single),
+                kashidas: Some(false),
+                ..Default::default()
+            };
+            let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 100.0), para);
+            d.settings.glyph_fallback = true;
+            compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].clone()
+        };
+        let pen = |g: &PlacedGlyph| g.x - g.dx;
+        // Right aligned, every glyph keeps its own advance.
+        let right = compose(Align::Right);
+        if right.glyphs.iter().any(|g| g.gid == 0) {
+            continue;
+        }
+        let ink = |line: &Line| {
+            let left = line.glyphs.iter().map(pen).fold(f64::INFINITY, f64::min);
+            let end = line.glyphs.iter().zip(&right.glyphs).map(|(g, r)| pen(g) + r.adv).fold(f64::NEG_INFINITY, f64::max);
+            (left - line.x0, line.x1 - end)
+        };
+        let (before, after) = ink(&right);
+        assert!(after.abs() < 0.5 && before > 50.0, "{text} Right: {before} before, {after} after");
+        let (before, after) = ink(&compose(Align::Center));
+        assert!((before - after).abs() < 0.5 && before > 50.0, "{text} Center: {before} before, {after} after");
+        let full = compose(Align::FullyJustified);
+        let (before, after) = ink(&full);
+        // A word whose letters all join has nowhere to spread: it stays at the starting edge.
+        let spreads = text.chars().zip(text.chars().skip(1)).any(|(a, b)| !(joins_next(a) && joins_prev(b)));
+        if spreads {
+            assert!(before.abs() < 0.5 && after.abs() < 0.5, "{text} Full: {before} before, {after} after");
+        } else {
+            assert!(after.abs() < 0.5 && before > 50.0, "{text} Full: {before} before, {after} after");
+        }
+        for (j, (a, b)) in full.glyphs.iter().zip(full.glyphs.iter().skip(1)).enumerate() {
+            if a.byte != b.byte && joins_next(a.rendered_char) && joins_prev(b.rendered_char) {
+                assert!((pen(b) + right.glyphs[j + 1].adv - pen(a)).abs() < 0.01, "{text}: the join after {} opened", a.rendered_char);
+            }
+        }
+    }
+}
