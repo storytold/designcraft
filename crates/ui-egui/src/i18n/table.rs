@@ -4027,6 +4027,7 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Corner", ["Corner", "Angles", "Corner", "Corner", "角"]),
+    ("Croatian", ["Kroatisch", "Croate", "Croata", "クロアチア語", "克罗地亚语"]),
     ("Custom", ["Custom", "Personnalisé", "Custom", "Custom", "自定义"]),
     ("Czech", ["Czech", "Tchèque", "Czech", "Czech", "捷克语"]),
     ("Danish", ["Danish", "Danois", "Danish", "Danish", "丹麦语"]),
@@ -4462,6 +4463,25 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     ("Show CJK Features", ["CJK-Funktionen anzeigen", "Afficher les fonctions CJK", "Mostrar funciones CJK", "CJK 機能を表示", "显示中日韩功能"]),
+    (
+        "Show Right-to-Left Features",
+        [
+            "Rechts-nach-links-Funktionen anzeigen",
+            "Afficher les fonctions de droite à gauche",
+            "Mostrar funciones de derecha a izquierda",
+            "右から左の機能を表示",
+            "显示从右到左功能",
+        ],
+    ),
+    ("Paragraph Direction:", ["Absatzrichtung:", "Sens du paragraphe :", "Dirección del párrafo:", "段落の方向：", "段落方向："]),
+    (
+        "Left-to-Right Paragraph Direction",
+        ["Absatzrichtung links nach rechts", "Paragraphe de gauche à droite", "Párrafo de izquierda a derecha", "左から右の段落", "从左到右段落"],
+    ),
+    (
+        "Right-to-Left Paragraph Direction",
+        ["Absatzrichtung rechts nach links", "Paragraphe de droite à gauche", "Párrafo de derecha a izquierda", "右から左の段落", "从右到左段落"],
+    ),
     ("Missing Glyphs", ["Fehlende Glyphen", "Glyphes manquants", "Glifos que faltan", "欠落グリフ", "缺失字形"]),
     (
         "Draw Missing Glyphs from Fallback Fonts",
