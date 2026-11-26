@@ -2,7 +2,7 @@
 //! bookmark outline.
 
 use craft_pdf::write::backend as krilla;
-use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, SpreadRef};
+use designcraft_doc::{Bookmark, Document, HyperlinkDest, HyperlinkSource, ItemLoc, SpreadRef};
 use designcraft_geom::{Affine, Rect};
 use krilla::action::{Action, LinkAction};
 use krilla::annotation::{Annotation, LinkAnnotation, Target};
@@ -25,48 +25,106 @@ pub(crate) fn sheet_of_page(doc: &Document, sheets: &[Sheet], abs: usize) -> Opt
     sheets.iter().position(|s| s.spread == si && s.trim.x0 <= page.center().x && page.center().x <= s.trim.x1)
 }
 
+/// Where the item at `loc` is drawn on page `pi` of spread `si`, as the transform of its parent:
+/// an item of the spread itself (on any of its pages: `pi` is `None`), or an item of a parent page
+/// that page shows (#2910), moved onto it as the PDF draws it.
+fn placed_on(doc: &Document, loc: &ItemLoc, si: usize, pi: Option<usize>) -> Option<Affine> {
+    if !shown(doc, loc) {
+        return None;
+    }
+    match (loc.spread, pi) {
+        (SpreadRef::Doc(s), None) => (s == si).then(|| doc.parent_xf(loc)),
+        (SpreadRef::Parent(_), Some(pi)) => {
+            let top = doc.spread(loc.spread)?.items.get(*loc.path.first()?)?.id;
+            let (xf, _) = crate::export::shown_parent_items(doc, si, pi).into_iter().find(|(_, it)| it.id == top)?;
+            Some(xf * doc.parent_xf(loc))
+        }
+        _ => None,
+    }
+}
+
+/// Whether the item at `loc` shows in the PDF: it is on an exported layer, neither it nor a
+/// group around it is hidden, and it is not an inactive state of a multi-state object (a frame
+/// draws all the states pasted into it). A link on a hidden item would cover nothing. A nonprinting item
+/// on a document spread keeps its link: an object rasterized for its soft effects leaves a
+/// nonprinting stand-in that carries the object's links (`link_stand_in` in the engine's PDF
+/// flattening). Flattening leaves no stand-in on a parent spread, so a nonprinting parent item is
+/// one the PDF does not draw, and it has no link.
+fn shown(doc: &Document, loc: &ItemLoc) -> bool {
+    let Some(sp) = doc.spread(loc.spread) else { return false };
+    let mut items: &[std::sync::Arc<designcraft_doc::Item>] = &sp.items;
+    let mut only: Option<usize> = None;
+    for (depth, &i) in loc.path.iter().enumerate() {
+        let Some(it) = items.get(i).filter(|_| only.is_none_or(|a| a == i)) else { return false };
+        if it.hidden
+            || (it.nonprinting && matches!(loc.spread, SpreadRef::Parent(_)))
+            || (depth == 0 && !doc.layer(it.layer).is_some_and(crate::export::layer_exported))
+        {
+            return false;
+        }
+        only = (!it.states.is_empty() && !it.has_nested_items()).then_some(it.active_state);
+        items = it.children();
+    }
+    true
+}
+
+/// The pages a link's rectangles are looked for on: the spread's own items (`None`), then each
+/// page's parent items.
+fn page_slots(doc: &Document, si: usize) -> impl Iterator<Item = Option<usize>> {
+    let pages = doc.spreads.get(si).map_or(0, |sp| sp.pages.len());
+    std::iter::once(None).chain((0..pages).map(Some))
+}
+
 /// Spread-space rectangles covered by a hyperlink source on spread `si`.
 fn source_rects(doc: &Document, cache: &designcraft_compose::Cache, src: &HyperlinkSource, si: usize) -> Vec<Rect> {
     match src {
-        HyperlinkSource::Item { id } => match (doc.find(*id), doc.item(*id)) {
-            (Some(loc), Some(it)) if loc.spread == SpreadRef::Doc(si) => vec![doc.parent_xf(&loc).transform_rect_bbox(it.bounds())],
-            _ => vec![],
-        },
+        HyperlinkSource::Item { id } => {
+            let (Some(loc), Some(it)) = (doc.find(*id), doc.item(*id)) else { return vec![] };
+            page_slots(doc, si).filter_map(|pi| placed_on(doc, &loc, si, pi)).map(|xf| xf.transform_rect_bbox(it.bounds())).collect()
+        }
         HyperlinkSource::Text { story, start, end } => {
-            let cs = cache.get(doc, *story, None);
+            let first = doc.first_page_of_spread(si);
+            let own = cache.get(doc, *story, None);
+            let on_parent = own.frames.iter().any(|ft| doc.find(ft.frame).is_some_and(|l| matches!(l.spread, SpreadRef::Parent(_))));
             let mut out = Vec::new();
-            for ft in &cs.frames {
-                let (Some(loc), Some(it)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
-                if loc.spread != SpreadRef::Doc(si) {
-                    continue;
-                }
-                let m: Affine = doc.parent_xf(&loc) * doc.text_xf(it);
-                for l in &ft.lines {
-                    if l.range.end <= *start || l.range.start >= *end {
-                        continue;
-                    }
-                    // Every glyph the source's characters produced, not only the ones that own
-                    // their bytes: the glyphs of generated text — a cross-reference's — all point
-                    // at the one marker character, and only the first of them owns it, so asking
-                    // for owned bytes measured the first letter and nothing else (#1446).
-                    //
-                    // The bullet or number a paragraph's list adds is not the paragraph's text,
-                    // but the composer gives it the first character's offset and no length, so a
-                    // link starting at that character took the label in and the rectangle
-                    // covered text outside the link. So `list_label` glyphs are left out, and so are the zero-length glyphs that are not
-                    // generated text (kenten marks, ruby, kashidas, tab leaders, a cluster's later glyphs): they
-                    // sit over or inside text that is counted already (noted in review).
-                    for (x0, x1) in visual_link_spans(l.glyphs.iter().filter_map(|g| {
-                        // Decorative marks do not partition a text row. Generated cross-reference
-                        // glyphs do count even when only their first glyph owns the source byte.
-                        if g.list_label || (g.len == 0 && g.generated_text.is_none()) {
-                            return None;
+            for pi in page_slots(doc, si) {
+                // Text on a parent page is composed for each page that shows it (its page numbers).
+                let cs = match pi {
+                    None => own.clone(),
+                    Some(pi) if on_parent => cache.get(doc, *story, Some(first + pi)),
+                    Some(_) => continue,
+                };
+                for ft in &cs.frames {
+                    let (Some(loc), Some(it)) = (doc.find(ft.frame), doc.item(ft.frame)) else { continue };
+                    let Some(xf) = placed_on(doc, &loc, si, pi) else { continue };
+                    let m: Affine = xf * doc.text_xf(it);
+                    for l in &ft.lines {
+                        if l.range.end <= *start || l.range.start >= *end {
+                            continue;
                         }
-                        let stacked = cs.styles.get(g.style as usize).is_some_and(|style| style.warichu);
-                        Some((link_row(stacked, g.y), g.x, g.x + g.adv, g.byte >= *start && g.byte < *end))
-                    })) {
-                        let r = Rect::new(x0, l.baseline - l.ascent, x1, l.baseline + l.descent);
-                        out.push(m.transform_rect_bbox(r));
+                        // Every glyph the source's characters produced, not only the ones that own
+                        // their bytes: the glyphs of generated text — a cross-reference's — all point
+                        // at the one marker character, and only the first of them owns it, so asking
+                        // for owned bytes measured the first letter and nothing else (#1446).
+                        //
+                        // The bullet or number a paragraph's list adds is not the paragraph's text,
+                        // but the composer gives it the first character's offset and no length, so a
+                        // link starting at that character took the label in and the rectangle
+                        // covered text outside the link. So `list_label` glyphs are left out, and so are the zero-length glyphs that are not
+                        // generated text (kenten marks, ruby, kashidas, tab leaders, a cluster's later glyphs): they
+                        // sit over or inside text that is counted already (noted in review).
+                        for (x0, x1) in visual_link_spans(l.glyphs.iter().filter_map(|g| {
+                            // Decorative marks do not partition a text row. Generated cross-reference
+                            // glyphs do count even when only their first glyph owns the source byte.
+                            if g.list_label || (g.len == 0 && g.generated_text.is_none()) {
+                                return None;
+                            }
+                            let stacked = cs.styles.get(g.style as usize).is_some_and(|style| style.warichu);
+                            Some((link_row(stacked, g.y), g.x, g.x + g.adv, g.byte >= *start && g.byte < *end))
+                        })) {
+                            let r = Rect::new(x0, l.baseline - l.ascent, x1, l.baseline + l.descent);
+                            out.push(m.transform_rect_bbox(r));
+                        }
                     }
                 }
             }
