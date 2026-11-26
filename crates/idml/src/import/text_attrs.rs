@@ -229,7 +229,8 @@ impl<'r> Importer<'r> {
                 a.grid_reference = Some(crate::cjk::grid_reference_in(&g));
             }
         }
-        a.composer = alignment.composer.map(|c| composer_in(&c));
+        a.composer = alignment.composer.as_deref().map(composer_in);
+        a.world_ready = alignment.composer.as_deref().map(world_ready_in);
         a.hyphenate = flow.hyphenate;
         a.hyph_min_word = flow.hyphenate_min_word.map(|v| v.max(0.0) as u32);
         a.hyph_after_first = flow.hyphenate_after_first.map(|v| v.max(0.0) as u32);
@@ -419,6 +420,14 @@ pub(super) fn ace_char(v: &str) -> Option<char> {
         craft_idml::model::Ace::RightIndentTab => Some(st::RIGHT_INDENT_TAB),
         craft_idml::model::Ace::FootnoteNumber | craft_idml::model::Ace::Other(_) => None,
     }
+}
+
+/// Whether IDML composer `name` is World-Ready: the `… Optyca` composers are; `HL Composer` and
+/// `HL Single` (InDesign's Paragraph and Single-line Composers) aren't. The Japanese composers
+/// (`… J`) set text as they did before the attribute.
+fn world_ready_in(name: &str) -> bool {
+    let name = name.trim().trim_start_matches("$ID/");
+    name.contains("Optyca") || name.ends_with(" J") || name.contains("Japanese")
 }
 
 /// `HL Composer` and `HL Single`, their World-Ready (`… Optyca`) and Japanese (`… J`) forms.

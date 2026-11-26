@@ -321,12 +321,18 @@ impl<'a> Ex<'a> {
             dropcap_detail: detail,
             grid_alignment,
             grid_align_first_line_only,
-            composer: a.composer.map(|value| {
-                match value {
-                    designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
-                    designcraft_doc::Composer::Japanese => "HL Composer J",
-                    designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
+            // One name says both the composer and World-Ready: what isn't set here comes from the
+            // parent style.
+            composer: (a.composer.is_some() || a.world_ready.is_some()).then(|| {
+                use designcraft_doc::Composer as C;
+                let d = parent.map(|name| self.d.styles.resolve_para_style(name).0).unwrap_or_default();
+                match (a.composer.unwrap_or(d.composer), a.world_ready.unwrap_or(d.world_ready)) {
+                    (C::Paragraph, true) => "HL Composer Optyca",
+                    (C::Paragraph, false) => "HL Composer",
+                    (C::SingleLine, true) => "HL Single Optyca",
+                    (C::SingleLine, false) => "HL Single",
+                    (C::Japanese, _) => "HL Composer J",
+                    (C::JapaneseSingleLine, _) => "HL Single J",
                 }
                 .into()
             }),
