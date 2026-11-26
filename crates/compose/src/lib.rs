@@ -49,7 +49,7 @@ use designcraft_geom::{Affine, Point, Rect};
 use crate::breaker::{Break, Spacing};
 pub use crate::cache::{Cache, ShownOn};
 use crate::notes::{NoteColumn, Notes};
-pub use crate::notes::{find_note, hit_note, hit_note_with, note_caret};
+pub use crate::notes::{NoteNumber, find_note, hit_note, hit_note_with, note_caret};
 pub use crate::outline::FrameOutline;
 use crate::parabox::ParaBox;
 pub use crate::placed::Placement;
@@ -275,6 +275,8 @@ pub struct Deco {
     pub nonprinting: bool,
     /// Set to overprint (paragraph shading or border); PDF export doesn't overprint yet.
     pub overprint: bool,
+    /// The rule above a footnote area (a table cell's composition drops it with its notes).
+    pub footnote_rule: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -317,7 +319,8 @@ pub struct PlacedObject {
 /// A footnote composed at the bottom of a column.
 #[derive(Clone, Debug)]
 pub struct PlacedNote {
-    /// Footnote id (in the story's [`Story::notes`]) and its index there.
+    /// Footnote id and index in its owning story (the host story or a table cell).
+    /// Cell-note indices must not be used to index the host story's notes.
     pub id: u64,
     pub index: usize,
     pub column: u32,
@@ -330,6 +333,8 @@ pub struct PlacedNote {
     pub text: Arc<ComposedStory>,
     /// The footnote's story text (exporters map glyphs back to text).
     pub source: Arc<str>,
+    /// The footnote itself (a table cell's notes reach the column foot too).
+    pub note: Arc<designcraft_doc::Footnote>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -341,6 +346,9 @@ pub struct ComposedStory {
     pub overset_at: Option<usize>,
     pub styles: Vec<RunStyle>,
     pub text_len: usize,
+    /// Numbering after this story and its nested table cells, for the next cell to continue.
+    /// Set after composition even when only nested cells contain footnotes.
+    pub notes_after: Option<NoteNumber>,
 }
 
 impl ComposedStory {
@@ -1050,6 +1058,9 @@ pub struct ComposeOptions {
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
     /// composed where it is stored, on no page.
     pub placed: Vec<(ItemId, Placement)>,
+    /// Where the story's footnote numbering starts, when it continues a host story's sequence
+    /// (a table cell). None starts from the document's numbering for this story.
+    pub notes_start: Option<NoteNumber>,
 }
 
 /// Nesting depth past which wrap obstacles inside groups are not collected.
@@ -1610,14 +1621,21 @@ fn place_table_paragraph(input: TableParagraphInput<'_>) -> TableParagraphResult
     }
     let at_top = cursor.last_baseline.is_none();
     let start_at = (cursor.fi, cursor.col);
-    if !table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
-        if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
-            *balance_runs += 1;
+    match table::place_table(doc, table, anchor, paragraph, props, frames, columns, cursor, out, notes, opts) {
+        TableParagraphResult::Placed => {}
+        TableParagraphResult::Restart(j) => {
             rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
             return TableParagraphResult::Restart(j);
         }
-        out.overset_at = Some(range_start);
-        return TableParagraphResult::Overset;
+        TableParagraphResult::Overset => {
+            if let Some(j) = trial_failed(trial, limits, *balance_runs < balance_budget) {
+                *balance_runs += 1;
+                rewind(j, snaps, note_snaps, notes, out, cursor, list_counter, force_col, line_cap, no_hyph);
+                return TableParagraphResult::Restart(j);
+            }
+            out.overset_at = Some(range_start);
+            return TableParagraphResult::Overset;
+        }
     }
     info.push(ParaInfo {
         start: start_at,
@@ -3254,7 +3272,7 @@ fn compose_run(
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
+    let mut notes = Notes::continuing(doc, story, opts.notes_start);
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -3706,7 +3724,7 @@ struct FinishInput<'a> {
 
 fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
     let FinishInput { doc, story, frames, cols, notes, out, boxes, span_paras, split_paras, grid_paras, styles_tab } = input;
-    notes.finish(doc, story, frames, cols, out);
+    notes.finish(doc, frames, cols, out);
     // The story byte of each anchored object's mark, found once for every frame that holds one.
     let mut marks: Option<Vec<usize>> = None;
     // Ranges, content heights and vertical justification.
@@ -3811,6 +3829,7 @@ fn finish_composition(input: FinishInput<'_>) -> ComposedStory {
         }
     }
     out.styles = styles_tab;
+    out.notes_after = Some(notes.next_number());
     mark_keep_violations(doc, story, out);
     std::mem::take(out)
 }
