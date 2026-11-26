@@ -73,6 +73,8 @@ fn digits_map_to_their_script() {
 
 #[test]
 fn language_names_map_to_bcp47_tags() {
+    assert_eq!(language_tag("Estonian"), Some("et"));
+    assert_eq!(language_tag("$ID/Estonian"), Some("et"));
     assert_eq!(language_tag("English: USA"), Some("en-US"));
     assert_eq!(language_tag("English: Australian"), Some("en"));
     assert_eq!(language_tag("Turkish"), Some("tr"));

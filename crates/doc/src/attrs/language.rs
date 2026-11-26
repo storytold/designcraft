@@ -67,6 +67,7 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "swedish" => "sv",
         "norwegian" => "no",
         "finnish" => "fi",
+        "estonian" => "et",
         "polish" => "pl",
         "czech" => "cs",
         "slovak" => "sk",

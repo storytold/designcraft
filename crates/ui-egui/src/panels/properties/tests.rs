@@ -304,6 +304,14 @@ fn properties_character_section_sets_the_language() {
     h.get_by_label("French").click();
     h.run_steps(2);
     assert_eq!(language(h.state_mut()), "French");
+    h.get_by_label("Language").click();
+    h.run_steps(2);
+    // Estonian is below the language menu's visible 320 px scroll area.
+    h.get_by_label("Estonian").scroll_to_me();
+    h.run_steps(4);
+    h.get_by_label("Estonian").click();
+    h.run_steps(2);
+    assert_eq!(language(h.state_mut()), "Estonian");
 }
 
 /// Drop shadow Distance and Size in the Effects panel read and show the document's unit, as
