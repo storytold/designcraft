@@ -9,7 +9,8 @@
 //! The footnotes of a column read as one text: the first footnote's first baseline sits at the
 //! First Baseline offset below the top of the footnote area, and each later footnote's first
 //! baseline sits its first line's leading (plus Space Between Footnotes) below the previous
-//! footnote's last baseline. Only the last footnote's descent counts toward the area's height.
+//! footnote's last baseline. The area ends at that baseline, which sits on the column bottom: the
+//! last line's descent hangs below it, and body text only has to clear the baseline.
 //!
 //! With Span Footnotes Across Columns the notes of a frame share one area across all its columns,
 //! composed at the frame's text width: every column of the frame makes room for it.
@@ -55,19 +56,17 @@ pub(crate) struct NoteColumn<'a> {
 }
 
 /// Height of footnotes stacked baseline to baseline, from the top of the footnote area to the
-/// last footnote's descent.
+/// last footnote's last baseline: InDesign sets that baseline on the bottom of the column, so the
+/// descent of the last line hangs below it, and body text only has to clear the baseline.
 fn stack_height<'a>(notes: impl IntoIterator<Item = &'a NoteMetrics>, space_between: f64) -> f64 {
     let mut h: Option<f64> = None;
-    let mut descent = 0.0;
     for m in notes {
-        let last = match h {
+        h = Some(match h {
             None => m.last,
             Some(prev) => prev + space_between + m.lead + (m.last - m.first),
-        };
-        h = Some(last);
-        descent = m.descent;
+        });
     }
-    h.map_or(0.0, |h| h + descent)
+    h.unwrap_or(0.0)
 }
 
 pub(crate) struct Notes {
@@ -223,9 +222,7 @@ impl Notes {
         if !self.span || col == 0 || reserve <= self.floor.get(&fi).copied().unwrap_or(0.0) + 0.01 {
             return false;
         }
-        let hit = lines
-            .iter()
-            .any(|l| (l.column as usize) < col && cols.get(l.column as usize).is_some_and(|c| l.baseline + l.descent > c.y1 - reserve + 0.01));
+        let hit = lines.iter().any(|l| (l.column as usize) < col && cols.get(l.column as usize).is_some_and(|c| l.baseline > c.y1 - reserve + 0.01));
         if hit {
             self.floor.insert(fi, reserve);
         }
