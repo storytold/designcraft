@@ -17,14 +17,21 @@ fn save_bytes(d: &Document, preview: Option<&[u8]>) -> Result<Vec<u8>> {
 }
 
 /// `path` ending in `.designcraft`: the extension is added when it is missing or another one, so
-/// the file opens from the file manager. A path without a file name is left for the write to fail.
+/// the file opens from the file manager. A path without a file name is left unchanged; save commands reject it.
 pub fn with_document_extension(path: &str) -> String {
     let p = std::path::Path::new(path);
     let ext = p.extension().and_then(std::ffi::OsStr::to_str);
-    if p.file_name().is_none() || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
+    if !has_document_file_name(path) || ext.is_some_and(|e| craft_file_formats::from_extension(e) == Some(craft_file_formats::Format::DesignCraft)) {
         return path.to_string();
     }
     format!("{path}.{}", designcraft_format::EXTENSION)
+}
+
+/// Whether a save path has a file name, without querying the file system.
+pub(super) fn has_document_file_name(path: &str) -> bool {
+    // Path normalizes directory suffixes, but appending an extension would create a child file.
+    let directory_suffix = path.ends_with(std::path::is_separator) || path.strip_suffix('.').is_some_and(|p| p.ends_with(std::path::is_separator));
+    std::path::Path::new(path).file_name().is_some() && !directory_suffix
 }
 
 /// `name` without a trailing `.designcraft` (any case): the title of a document opened from bytes
@@ -122,6 +129,28 @@ mod extension_tests {
         assert_eq!(with_document_extension("/a/v1.2 Brochure"), "/a/v1.2 Brochure.designcraft");
         assert_eq!(with_document_extension("/a/Brochure.DesignCraft"), "/a/Brochure.DesignCraft");
         assert_eq!(with_document_extension("/a/.."), "/a/..");
+    }
+
+    #[test]
+    fn directory_paths_do_not_gain_a_document_filename() {
+        for path in ["folder/", "folder/.", "folder//.", "folder.idml/", "folder.idml/.", "folder.DesignCraft/", "folder.DesignCraft/."] {
+            assert_eq!(with_document_extension(path), path);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_suffixes_do_not_gain_a_document_filename() {
+        for path in [r"folder\", r"folder\.", r"folder\\.", r"C:\folder\", r"C:\folder\."] {
+            assert_eq!(with_document_extension(path), path);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn backslashes_remain_filename_characters() {
+        assert_eq!(with_document_extension(r"folder\"), r"folder\.designcraft");
+        assert_eq!(with_document_extension(r"folder\."), r"folder\..designcraft");
     }
 
     #[test]

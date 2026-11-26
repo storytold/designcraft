@@ -2,7 +2,7 @@
 use super::DocState;
 #[cfg(not(target_arch = "wasm32"))]
 use super::bytes::from_bytes;
-use super::bytes::{to_bytes_with_preview, with_document_extension};
+use super::bytes::{has_document_file_name, to_bytes_with_preview, with_document_extension};
 #[cfg(not(target_arch = "wasm32"))]
 use super::open::load_document_fonts;
 #[cfg(test)]
@@ -16,6 +16,9 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
         .map(with_document_extension)
         .or_else(|| st.path.clone())
         .ok_or_else(|| bad("file.save", "missing `path` (document has never been saved)"))?;
+    if !has_document_file_name(&path) {
+        return Err(bad("file.save", "path must name a file, not a directory"));
+    }
     // Before anything about the document changes: a refused save leaves it as it was.
     crate::file_access::check_write(&path).map_err(EngineError::Other)?;
     // Prepare paths for the destination without changing the live document until persistence succeeds.
@@ -62,6 +65,9 @@ pub(super) fn file_save(s: &mut Session, p: &Value) -> Result<Value> {
 pub(super) fn file_save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").ok_or_else(|| bad("file.saveACopy", "missing `path`"))?;
     let path = with_document_extension(path);
+    if !has_document_file_name(&path) {
+        return Err(bad("file.saveACopy", "path must name a file, not a directory"));
+    }
     let embed = match p.get("embedLinks") {
         None | Some(Value::Null) => false,
         Some(v) => v.as_bool().ok_or_else(|| bad("file.saveACopy", "`embedLinks` must be true or false"))?,
@@ -252,5 +258,48 @@ mod save_tests {
         assert_eq!(std::fs::read(&path).unwrap(), before, "the saved file is untouched");
         assert!(s.doc().unwrap().is_dirty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod save_path_tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use crate::Session;
+    use crate::cmd::file::FAIL_TO_BYTES;
+
+    struct SerializationFailure(bool);
+
+    impl Drop for SerializationFailure {
+        fn drop(&mut self) {
+            FAIL_TO_BYTES.with(|failure| failure.set(self.0));
+        }
+    }
+
+    #[test]
+    fn directory_save_paths_are_rejected_before_serialization_or_state_changes() {
+        let mut session = Session::new();
+        session.execute("file.new", &json!({})).unwrap();
+        session.execute("frame.create", &json!({"rect": [36, 36, 100, 100], "content": "unassigned"})).unwrap();
+        assert!(session.doc().unwrap().is_dirty());
+        let _restore = SerializationFailure(FAIL_TO_BYTES.with(|failure| failure.replace(true)));
+
+        for command in ["file.save", "file.saveAs", "file.saveACopy"] {
+            for path in ["folder/", "folder/.", ".", ".."] {
+                let before = session.doc().unwrap();
+                let (old_path, revision, saved_revision) = (before.path.clone(), before.revision, before.saved_revision);
+                let (document, saved_document) = (before.doc.clone(), before.saved_doc.clone());
+                let (result, touched) = crate::io::touched(|| session.execute(command, &json!({"path": path})));
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("path must name a file"), "{command} {path}: {error}");
+                assert!(touched.is_empty(), "a rejected path reached I/O: {touched:?}");
+                let after = session.doc().unwrap();
+                assert_eq!((after.path.clone(), after.revision, after.saved_revision), (old_path, revision, saved_revision));
+                assert!(Arc::ptr_eq(&after.doc, &document) && Arc::ptr_eq(&after.saved_doc, &saved_document));
+                assert!(after.is_dirty());
+            }
+        }
     }
 }
