@@ -108,14 +108,27 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
             p[k] = v;
             p
         };
+        // A browser hands over the chosen files' bytes, not paths: they arrive through the inbox.
+        let browser = app.services.open_async.is_some();
         if link_button(app, ui, (kind, aid, "relink"), "Relink…", None, true).clicked {
-            let target = with("path", Value::Null);
-            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
-                let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
+            if browser {
+                // A linked text story is read from its path, which a browser doesn't give: say so rather than ignore
+                // the click.
+                if is_text {
+                    app.status(crate::i18n::tr(&app.ui.language, "A linked text file can't be relinked in the browser"));
+                } else {
+                    app.request_files(&format!("relink:{aid}"));
+                }
+            } else {
+                let target = with("path", Value::Null);
+                let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+                    let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
+                    Ok(Value::Null)
+                });
+                if let Err(e) = asked {
+                    app.status_error("Relink", e);
+                }
+            }
             }
         }
         if link_button(app, ui, (kind, aid, "go_to"), "Go To", None, true).clicked {
@@ -153,12 +166,22 @@ fn link_actions(app: &mut DesignApp, ui: &mut egui::Ui, rows: &[Value], chosen: 
         }
     });
     ui.horizontal(|ui| {
-        // The folder holding the moved graphics: missing links are looked up there by name.
+        // The folder holding the moved graphics: missing links are looked up there by name. In a browser, which hands
+        // over files rather than paths, the folder's files are chosen instead.
+        let browser = app.services.open_async.is_some();
         let tip = crate::i18n::tr(&app.ui.language, "Choose the folder holding the moved graphics");
-        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked
-            && let Err(e) = relink_to_folder(app)
+        if link_button(app, ui, ("document", 0, "relink_folder"), "Relink to Folder…", Some(tip), true).clicked {
+            if browser {
+                app.request_files("relinkFiles");
+            } else if let Err(e) = relink_to_folder(app) {
+                app.status_error("Relink", e);
+            }
         {
-            app.status_error("Relink", e);
+            if browser {
+                app.request_files("relinkFiles");
+            } else if let Err(e) = relink_to_folder(app) {
+                app.status_error("Relink", e);
+            }
         }
     });
 }

@@ -116,6 +116,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.baselineGrid" => app.ui.baseline_grid,
         "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
+        "view.linkBadge" => app.ui.link_badge,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
         "view.storyEditorStyleColumn" => app.ui.story_editor_style_column,
