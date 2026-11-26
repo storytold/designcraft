@@ -259,6 +259,7 @@ fn text_variable_el(v: &designcraft_doc::vars::TextVariable) -> El {
     use designcraft_doc::vars::{Use, VarKind};
     let kind = match &v.kind {
         VarKind::Custom { text } => TextVariableKind::CustomText { text: text.clone() },
+        VarKind::NextPageFirstWord { .. } => TextVariableKind::CustomText { text: String::new() },
         VarKind::LastPageNumber { section } => TextVariableKind::LastPageNumber { section: *section },
         VarKind::ChapterNumber => TextVariableKind::ChapterNumber,
         VarKind::FileName { extension } => TextVariableKind::FileName { extension: *extension },

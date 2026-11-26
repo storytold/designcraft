@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Define Text Variable…",
             ["Type", "Text Variables"],
             None,
-            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader, text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
+            "{name, type: custom|lastPageNumber|chapterNumber|fileName|creationDate|modificationDate|outputDate|runningHeader|nextPageFirstWord, story? (story id for nextPageFirstWord), frame? (text frame id for nextPageFirstWord), text? (a string; a number or a boolean is shown as typed, anything else is refused), format?, style?, use?: firstOnPage|lastOnPage, character?, section?, extension?, before?, after?} — creates or replaces by name",
             has_doc,
             define
         ),
@@ -437,6 +437,26 @@ fn define(s: &mut Session, p: &Value) -> Result<Value> {
         "creationDate" => VarKind::CreationDate { format: fmt() },
         "modificationDate" => VarKind::ModificationDate { format: fmt() },
         "outputDate" => VarKind::OutputDate { format: fmt() },
+        "nextPageFirstWord" => {
+            let d = &s.doc()?.doc;
+            let story = if let Some(value) = p.get("story") {
+                let id = value.as_u64().map(designcraft_doc::StoryId).ok_or_else(|| bad("variables.define", "invalid story id"))?;
+                if d.story(id).is_none() {
+                    return Err(bad("variables.define", "unknown story"));
+                }
+                Some(id)
+            } else if let Some(value) = p.get("frame") {
+                let id = value.as_u64().map(designcraft_doc::ItemId).ok_or_else(|| bad("variables.define", "invalid frame id"))?;
+                let frame = d.item(id).and_then(|item| item.text_frame()).ok_or_else(|| bad("variables.define", "unknown or non-text frame"))?;
+                if d.story(frame.story).is_none() {
+                    return Err(bad("variables.define", "unknown story"));
+                }
+                Some(frame.story)
+            } else {
+                None
+            };
+            VarKind::NextPageFirstWord { story }
+        }
         "runningHeader" => VarKind::RunningHeader {
             style: str_param(p, "style").ok_or_else(|| bad("variables.define", "runningHeader needs `style`"))?.into(),
             use_: if str_param(p, "use") == Some("lastOnPage") { designcraft_doc::vars::Use::LastOnPage } else { Default::default() },
