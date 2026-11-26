@@ -539,6 +539,17 @@ fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
 }
 
+/// Whether a press at `p` (canvas) lands on a handle of the selection that resizes or reshapes
+/// it: the selected placed graphic's handles, and the frame's own handles with the Selection
+/// tool, or the anchors and direction handles of the selected items with `direct`.
+pub fn handle_under(cx: &ToolContext, p: Point, direct: bool) -> bool {
+    if direct {
+        anchor_at(cx, p).is_some() || content_handle_at(cx, p).is_some()
+    } else {
+        content_handle_at(cx, p).is_some() || handle_at(cx, p).is_some()
+    }
+}
+
 /// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
 fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
     if handle.is_multiple_of(2) {
