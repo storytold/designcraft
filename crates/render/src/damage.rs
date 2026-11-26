@@ -112,11 +112,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             let cur = c.get(new, sid, None);
             let changed = designcraft_compose::Cache::changed_frames(&prev, &cur);
             for f in changed {
-                for d in [old, new] {
-                    if d.find(f).is_some() {
-                        out.push(frame_area(d, f)?);
-                    }
-                }
+                out.extend(changed_frame_areas(old, new, f)?);
             }
             continue;
         }
@@ -194,6 +190,25 @@ fn painted_bounds(it: &Item) -> Option<Rect> {
         b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
     Some(b)
+}
+
+/// The areas of changed frame `f` before and after an edit. None (repaint everything) for a
+/// text frame anchored in either document: it isn't on a spread there (so it has no area of its
+/// own here) but is drawn inside the text it is anchored in, wherever that is laid out, also when
+/// it is on a spread in the other document. A frame that is neither on a spread nor anchored in
+/// either document is drawn nowhere and adds nothing. Anchored items are searched (a scan of the
+/// whole document) only in a version where the frame is not on a spread: item ids are unique in
+/// a document, and anchoring takes an item off its spread.
+fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
+    let mut areas = Vec::new();
+    for d in [old, new] {
+        if d.find(f).is_some() {
+            areas.push(frame_area(d, f)?);
+        } else if d.anchored_item(f).is_some() {
+            return None;
+        }
+    }
+    Some(areas)
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
@@ -357,6 +372,56 @@ mod tests {
         d.item_mut(f).unwrap().xf = Affine::translate((210.0, 90.0)) * Affine::rotate(30f64.to_radians());
         let diff = patched_diff(&old, &d, (700, 560), 1.0);
         assert_eq!(diff, 0, "the moved text left {diff} stale channels behind");
+    }
+
+    #[test]
+    fn editing_the_story_of_an_anchored_text_frame_repaints_everything() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        d.check().unwrap();
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, " text");
+        assert!(damage(&old, &d).is_none());
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
+    }
+
+    /// Only an anchored frame repaints everything: a frame on a spread damages its areas, and
+    /// one that is nowhere damages nothing.
+    #[test]
+    fn changed_frame_areas_repaint_everything_for_anchored_frames_only() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (on_spread, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&d, &d, fid).is_none(), "anchored");
+        assert_eq!(changed_frame_areas(&d, &d, on_spread).map(|a| a.len()), Some(2), "before and after");
+        assert_eq!(changed_frame_areas(&d, &d, ItemId(u64::MAX)), Some(Vec::new()), "nowhere");
+    }
+
+    /// A frame on a spread in one document and anchored in the other repaints everything, both
+    /// ways: its anchored placement is drawn inside its host's text, outside the spread area.
+    #[test]
+    fn a_frame_moving_between_a_spread_and_an_anchor_repaints_everything() {
+        let mut on_spread = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = on_spread.default_layer();
+        let (_, host) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let mut anchored = on_spread.clone();
+        let it = anchored.item(fid).unwrap().clone();
+        anchored.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        anchored.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&on_spread, &anchored, fid).is_none(), "spread to anchor");
+        assert!(changed_frame_areas(&anchored, &on_spread, fid).is_none(), "anchor to spread");
     }
 
     #[test]

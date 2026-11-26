@@ -5,11 +5,27 @@ use std::path::{Path, PathBuf};
 
 /// A file with this name next to the executable makes the install portable: settings, logs and
 /// recovery data are kept in [`PORTABLE_DATA_DIR`] beside it. The Windows portable zip ships one.
-const PORTABLE_MARKER: &str = "portable.txt";
-const PORTABLE_DATA_DIR: &str = "DesignCraftData";
+pub(crate) const PORTABLE_MARKER: &str = "portable.txt";
+pub(crate) const PORTABLE_DATA_DIR: &str = "DesignCraftData";
 
+/// The settings folder. A Launcher nightly profile replaces every data root at once: settings,
+/// logs, GPU state and recovery all live under it, so the fence in `profile_root` covers the
+/// whole of Nightly's user state (the engine's `Prefs`, `ui.json` and `recovery` included).
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(root) = crate::launch_profile::current().root() {
+        return Some(root.to_path_buf());
+    }
     config_dir_with(std::env::consts::OS, |key| std::env::var_os(key), executable_dir().as_deref())
+}
+
+/// Whether `dir` exists, or can be created, and takes a new file. The nightly profile validator
+/// uses this same probe (`profile_root`), so a profile is accepted only where settings can land.
+pub(crate) fn ensure_writable(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".write-test-{}", std::process::id()));
+    let result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map(drop);
+    let _ = std::fs::remove_file(&probe);
+    result
 }
 
 fn config_dir_with(os: &str, env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -> Option<PathBuf> {
@@ -50,13 +66,7 @@ fn marked_data_dir(exe_dir: &Path) -> Option<PathBuf> {
 /// Whether `dir` exists, or can be created, and takes a new file: read-only attributes and
 /// permissions are only known by trying.
 fn writable(dir: &Path) -> bool {
-    if std::fs::create_dir_all(dir).is_err() {
-        return false;
-    }
-    let probe = dir.join(format!(".write-test-{}", std::process::id()));
-    let ok = std::fs::write(&probe, b"").is_ok();
-    let _ = std::fs::remove_file(&probe);
-    ok
+    ensure_writable(dir).is_ok()
 }
 
 /// The data folder of a portable install that could not be used because it is not writable, for
@@ -85,6 +95,10 @@ fn executable_dir() -> Option<PathBuf> {
 }
 
 pub fn recovery_dir() -> Option<PathBuf> {
+    if let Some(root) = crate::launch_profile::current().root() {
+        // Recovery stays inside the profile, including the per-run folder's lock.
+        return own_run(root.join("Recovery"));
+    }
     recovery_dir_with(root_with(|key| std::env::var_os(key), executable_dir().as_deref()), designcraft_engine::recovery::default_dir)
         .and_then(own_run)
 }
