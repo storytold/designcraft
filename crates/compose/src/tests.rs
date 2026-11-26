@@ -10489,3 +10489,69 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A paragraph that runs on from a frame on page 9 into one on page 10: each page number shows
+/// the page of the frame its line is set in, and takes the width of that number. Shaping took the
+/// frame at the paragraph's start for all of them, so page 10 showed 9s (#2886).
+#[test]
+fn page_numbers_in_a_paragraph_follow_the_frame_each_line_is_set_in() {
+    let marker = story::PAGE_NUMBER.to_string();
+    let body = vec![marker.as_str(); 300].join(" ");
+    let text = format!("Opening.\n{body}\nClosing.");
+    let (d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 156.0, 216.0), ParaAttrs::default());
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("9".into());
+    let mut next = specs[0].clone();
+    next.id = ItemId(1 << 40);
+    next.area = Rect::new(36.0, 36.0, 156.0, 756.0);
+    next.page_name = Some("10".into());
+    specs.push(next);
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let para = text.find('\n').unwrap() + 1;
+    let para_end = para + body.len();
+    let shown = |fi: usize| -> Vec<String> {
+        let mut by_marker: std::collections::BTreeMap<usize, String> = Default::default();
+        for g in cs.frames[fi].lines.iter().flat_map(|l| &l.glyphs).filter(|g| g.visible && (para..para_end).contains(&g.byte)) {
+            if text[g.byte..].starts_with(story::PAGE_NUMBER) {
+                by_marker.entry(g.byte).or_default().push(g.rendered_char);
+            }
+        }
+        by_marker.into_values().collect()
+    };
+    let (first, second) = (shown(0), shown(1));
+    assert!(!first.is_empty() && !second.is_empty(), "the paragraph crosses the frames: {} {}", first.len(), second.len());
+    assert!(first.iter().all(|s| s == "9"), "{first:?}");
+    assert!(second.iter().all(|s| s == "10"), "{second:?}");
+    // The lines were broken for the wider numbers: none runs past the column.
+    for l in &cs.frames[1].lines {
+        assert!(l.end_x <= 156.0 + 0.01, "{} past the column", l.end_x);
+    }
+    // Every marker is set once.
+    assert_eq!(first.len() + second.len(), 300);
+}
+
+/// A paragraph that starts with a page number drop cap and whose first line goes on to the frame
+/// on page 10: the drop cap shows 10. Its glyphs are kept apart from the first line's, so the
+/// check for numbers shaped for another page missed it and it showed 9.
+#[test]
+fn a_page_number_drop_cap_follows_the_frame_its_line_is_set_in() {
+    let text = format!("Opening.\n{}ne two three four five six.", story::PAGE_NUMBER);
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 156.0, 56.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().paras[1].para = drop_cap(2, 1);
+    let mut specs = frame_specs(&d, sid);
+    specs[0].page_name = Some("9".into());
+    let mut next = specs[0].clone();
+    next.id = ItemId(1 << 40);
+    next.area = Rect::new(36.0, 36.0, 156.0, 756.0);
+    next.page_name = Some("10".into());
+    specs.push(next);
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    assert!(!cs.is_overset());
+    let para = text.find('\n').unwrap() + 1;
+    assert!(cs.frames[0].lines.iter().all(|l| l.range.end <= para), "the paragraph starts in the second frame");
+    let first = cs.frames[1].lines.first().unwrap();
+    assert!(first.drop_cap.is_some());
+    let shown: String = first.glyphs.iter().filter(|g| g.visible && g.byte == para).map(|g| g.rendered_char).collect();
+    assert_eq!(shown, "10");
+}
