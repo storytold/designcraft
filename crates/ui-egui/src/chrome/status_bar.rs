@@ -58,11 +58,21 @@ mod framework {
             })
             .collect();
         let selected = active.and_then(|i| docs.get(i)).map(|d| d.0);
-        let mut strip = DocumentTabs::new(tr("Documents"), &tabs);
-        if let Some(uid) = selected {
-            strip = strip.selected(uid);
-        }
-        let events = strip.show(ui).events;
+        // The strip's band: the framework's `TabStrip` has no look of its own ("its row is as high as its tabs"), so the
+        // host paints it, as main's own code did with the tab-strip colour and a rule along its bottom edge. A `Frame`
+        // paints its fill behind what it shows and takes no margin of its own here, so the band is exactly the strip's
+        // height and the tabs sit in it rather than below it.
+        let t = crate::theme::Tokens::get(ui.ctx());
+        let band = egui::Frame::NONE.fill(t.tab_strip).show(ui, |ui| {
+            let mut strip = DocumentTabs::new(tr("Documents"), &tabs);
+            if let Some(uid) = selected {
+                strip = strip.selected(uid);
+            }
+            strip.show(ui).events
+        });
+        let events = band.inner;
+        // The rule along the band's bottom edge, in the border colour, as main's strip had it.
+        ui.painter().line_segment([band.response.rect.left_bottom(), band.response.rect.right_bottom()], egui::Stroke::new(1.0, t.border));
         let index_of = |uid: u64| docs.iter().position(|d| d.0 == uid);
         for event in events {
             match event {
