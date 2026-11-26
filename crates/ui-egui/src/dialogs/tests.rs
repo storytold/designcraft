@@ -3515,6 +3515,27 @@ fn new_document_binding_follows_show_right_to_left_features() {
     assert!(app.session.doc().unwrap().doc.settings.right_to_left_binding);
 }
 
+/// With the preference off, a preset or Recent card bound right to left still shows Binding in
+/// the New Document window, so the binding it is about to make can be seen and changed.
+#[test]
+fn new_document_shows_binding_a_preset_already_binds_right_to_left() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("rightToLeft"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 1400.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Binding");
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("leftToRight"));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Binding"), "hidden again once bound left to right");
+}
+
 #[test]
 fn arabic_new_document_fields_remain_reachable_and_editable() {
     for size in [egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0), egui::vec2(1178.0, 814.0)] {
