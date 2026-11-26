@@ -954,7 +954,9 @@ mod border_tests {
         assert_eq!(edges, 6, "top on the first part, bottom on the last, sides on both");
         let top = decos.iter().filter(|d| d.tint >= 0.5).map(|d| d.rect).fold(f64::MAX, |a, r| a.min(r.y0));
         let first_line = &cs.frames[0].lines[0];
-        assert!((top - (first_line.baseline - first_line.ascent - 4.0 - 2.0)).abs() < 1e-6, "offset 4 + weight 2 above the text");
+        let g = first_line.glyphs.iter().find(|g| g.visible).unwrap();
+        let box_top = first_line.baseline - g.face.typo_ascent * g.sy;
+        assert!((top - (box_top - 4.0 - 1.0)).abs() < 1e-6, "offset 4 above the font ascender, and half the 2 pt stroke past it");
         let back = designcraft_idml::import_idml(&designcraft_idml::export_idml(&s.doc().unwrap().doc)).unwrap();
         let p = &back.stories.values().find(|st| st.text.starts_with("word")).unwrap().paras[0].para;
         assert_eq!(

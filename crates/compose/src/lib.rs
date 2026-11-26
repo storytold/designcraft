@@ -3107,7 +3107,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
                 .lines
                 .iter()
                 .find(|l| l.para == pi && l.first_in_para)
-                .map(|l| if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) })
+                .map(|l| if r.column_width { (l.x0, l.x1) } else { (text_start(l), l.end_x) })
                 .unwrap_or((0.0, 0.0));
             let (color, tint) = rule_color(r, above);
             // Keep In Frame: not above the frame, as InDesign's (its top, not the text area's
@@ -3124,7 +3124,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
     {
         let r = &pp.rule_below;
         let y = l.baseline + r.offset;
-        let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (l.x0, l.end_x) };
+        let (x0, x1) = if r.column_width { (l.x0, l.x1) } else { (text_start(l), l.end_x) };
         let (color, tint) = rule_color(r, below);
         ft.decos.extend(rule_decos(doc, r, Rect::new(x0 + r.left_indent, y, x1 - r.right_indent, y + r.weight), (color, tint), below));
     }
@@ -3170,6 +3170,13 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
         }
     }
     ParagraphFinish::Done(ends_split)
+}
+
+/// Where a line's text starts: a Text width rule runs from the first visible glyph (past the
+/// indent) to the end of the text, not from the column's edge (measured in InDesign 2026: a 20 pt
+/// left indent starts the rule 20 pt in).
+fn text_start(l: &Line) -> f64 {
+    l.glyphs.iter().filter(|g| g.visible).map(|g| g.x.min(g.x + g.adv)).reduce(f64::min).filter(|x| x.is_finite()).unwrap_or(l.x0)
 }
 
 fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &ComposeOptions, db: &FontDb) -> ComposedStory {

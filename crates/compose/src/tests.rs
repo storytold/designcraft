@@ -8418,6 +8418,24 @@ fn rounded_border_corners_are_curves_and_dotted_borders_paint_their_gap_first() 
     assert_eq!(colors, ["[Paper]", "[Black]"]);
 }
 
+/// A paragraph border's stroke is centred on the edge of its box (measured in InDesign 2026 with 1
+/// and 6 pt borders at offsets 0 and 4: a 6 pt top edge covers 3 pt either side of the box top, and
+/// the left and right edges 3 pt either side of the box sides), not drawn outside it.
+#[test]
+fn a_border_stroke_is_centred_on_the_edge_of_its_box() {
+    let para = ParaAttrs { border_on: Some(true), border_weights: Some([6.0; 4]), ..Default::default() };
+    let (d, sid, _) = doc_with("Boxed", Rect::new(36.0, 36.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = &cs.frames[0].lines[0];
+    let g = line.glyphs.iter().find(|g| g.visible).unwrap();
+    let box_top = line.baseline - g.face.typo_ascent * g.sy;
+    let rects: Vec<Rect> = cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect).collect();
+    let top = rects.iter().find(|r| r.width() > r.height() && r.y0 < box_top + 0.001).unwrap();
+    assert!((top.y0 - (box_top - 3.0)).abs() < 1e-6 && (top.y1 - (box_top + 3.0)).abs() < 1e-6, "{top:?}, box top {box_top}");
+    let left = rects.iter().find(|r| r.height() > r.width()).unwrap();
+    assert!((left.x0 - (36.0 - 3.0)).abs() < 1e-6 && (left.x1 - (36.0 + 3.0)).abs() < 1e-6, "{left:?}");
+}
+
 /// The width of the widest border edge (the top and bottom edges span the box).
 fn border_width(cs: &ComposedStory) -> f64 {
     cs.frames[0].decos.iter().filter(|dc| dc.color == "[Black]").map(|dc| dc.rect.width()).fold(0.0, f64::max)
@@ -8428,7 +8446,9 @@ fn a_text_width_border_is_narrower_than_a_column_width_one() {
     let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
     let column = border_width(&bordered("Short", rect, ParaAttrs::default()));
     let text = border_width(&bordered("Short", rect, ParaAttrs { border_width: Some(designcraft_doc::BoxWidth::Text), ..Default::default() }));
-    assert!((column - 302.0).abs() < 1e-6, "column and both side strokes: {column}");
+    // The strokes are centred on the box edges: the top edge spans the 300 pt column and half a stroke
+    // past each side.
+    assert!((column - 301.0).abs() < 1e-6, "column and one stroke: {column}");
     assert!(text > 2.0 && text < 60.0, "text: {text}");
 }
 
@@ -8470,7 +8490,11 @@ fn consecutive_paragraphs_with_the_same_border_share_one_box() {
     let lines = &merged.frames[0].lines;
     let (first, last) = (&lines[0], &lines[lines.len() - 1]);
     let left = edges.iter().find(|r| r.height() > r.width()).unwrap();
-    assert!((left.y0 - (first.baseline - first.ascent)).abs() < 1e-6 && (left.y1 - (last.baseline + last.descent)).abs() < 1e-6, "{left:?}");
+    // The box runs from the font ascender to the font descender; the side edge lies between the
+    // half strokes of the top and bottom edges, which are centred on the box edges.
+    let (gf, gl) = (first.glyphs.iter().find(|g| g.visible).unwrap(), last.glyphs.iter().find(|g| g.visible).unwrap());
+    let (top, bottom) = (first.baseline - gf.face.typo_ascent * gf.sy, last.baseline + gl.face.typo_descent * gl.sy);
+    assert!((left.y0 - (top + 0.5)).abs() < 1e-6 && (left.y1 - (bottom - 0.5)).abs() < 1e-6, "{left:?}, box {top}..{bottom}");
     assert_eq!(compose(false).frames[0].decos.iter().filter(|dc| dc.color == "[Black]").count(), 12, "a box each");
 }
 
@@ -8489,6 +8513,44 @@ fn shading_clips_to_the_frame_and_can_stay_off_print() {
     let shade = &cs.frames[0].decos[0];
     assert!(shade.nonprinting);
     assert!(shade.rect.x0 >= area.x0 - 1e-6 && shade.rect.y0 >= area.y0 - 1e-6 && shade.rect.x1 <= area.x1 + 1e-6, "{:?} in {area:?}", shade.rect);
+}
+
+/// A paragraph's shaded box runs from the font's typographic ascender above the first baseline to
+/// its typographic descender below the last (measured in InDesign 2026 with Arial, Times New Roman,
+/// Georgia, Verdana and Courier New at 12 to 30 pt: 8.74 pt above and 2.54 below for 12 pt Arial,
+/// where the line's own ascent is 10.86 pt; 7.36 and 2.26 for Courier New, where the line's descent
+/// is 3.6), and every shaded paragraph gets a box of its own: they do not merge, whatever the space
+/// between them.
+#[test]
+fn shading_is_a_box_per_paragraph_from_the_font_ascender_to_its_descender() {
+    let para = ParaAttrs { shading_on: Some(true), space_after: Some(10.0), ..Default::default() };
+    let (d, sid, fid) = doc_with("One\nTwo\nThree", Rect::new(36.0, 36.0, 300.0, 300.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let ft = cs.frame(fid).unwrap();
+    let mut boxes: Vec<Rect> = ft.decos.iter().map(|dc| dc.rect).collect();
+    boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    let lines = all_lines(&cs);
+    assert_eq!(boxes.len(), 3, "a box each: {boxes:?}");
+    for (b, l) in boxes.iter().zip(&lines) {
+        let g = l.glyphs.iter().find(|g| g.visible).unwrap();
+        let (up, down) = (g.face.typo_ascent * g.sy, g.face.typo_descent * g.sy);
+        assert!((b.y0 - (l.baseline - up)).abs() < 1e-6 && (b.y1 - (l.baseline + down)).abs() < 1e-6, "{b:?} for baseline {}", l.baseline);
+    }
+}
+
+/// A Text width rule starts at the text, past the paragraph's left indent (measured in InDesign
+/// 2026: 20 pt in for a 20 pt left indent, where the rule's end is the text's end).
+#[test]
+fn a_text_width_rule_starts_past_the_left_indent() {
+    use designcraft_doc::Rule;
+    let rule = Rule { on: true, weight: 2.0, offset: 5.0, column_width: false, ..Default::default() };
+    let para = ParaAttrs { rule_above: Some(rule), left_indent: Some(20.0), ..Default::default() };
+    let (d, sid, fid) = doc_with("Hxg", Rect::new(36.0, 36.0, 300.0, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let r = cs.frame(fid).unwrap().decos[0].rect;
+    assert!((r.x0 - (36.0 + 20.0)).abs() < 1e-6, "rule {r:?}");
+    assert!((r.x1 - line.end_x).abs() < 1e-6, "rule {r:?}, text ends at {}", line.end_x);
 }
 
 // ---------- span space, bullets and numbering ----------

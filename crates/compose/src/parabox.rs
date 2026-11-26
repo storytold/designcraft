@@ -115,7 +115,9 @@ pub(crate) fn draw(out: &mut ComposedStory, boxes: &[Option<ParaBox>], frames: &
             continue;
         };
         let mut end = pi;
-        while b.merge && boxes.get(end + 1).and_then(Option::as_ref).is_some_and(|n| n == b) {
+        // Only borders merge (InDesign gives each shaded paragraph its own box, whatever the space
+        // between them; measured with the merge option on).
+        while b.merge && b.border.is_some() && boxes.get(end + 1).and_then(Option::as_ref).is_some_and(|n| n == b) {
             end += 1;
         }
         let decos = group_decos(out, pi..=end, b, frames);
@@ -154,6 +156,13 @@ fn border_decos(bd: &Border, part: &Part<'_>, first_part: bool, last_part: bool,
     let o = Rect::new(r.x0 - l, r.y0 - t, r.x1 + rr, r.y1 + bo);
     let open_top = !first_part && !bd.display_if_splits;
     let open_bottom = !last_part && !bd.display_if_splits;
+    // The stroke is centred on the edge of the offset box (measured in InDesign 2026 with 1 and 6 pt
+    // borders: a 6 pt top edge covers 3 pt either side of the box top); the drawing below puts it
+    // outside the box it is given, so that box is drawn half a stroke in.
+    let [wt, wl, wb, wr] = bd.weights;
+    let [top, right, bottom, left] = edges(bd, open_top, open_bottom);
+    let half = |on: bool, w: f64| if on { w / 2.0 } else { 0.0 };
+    let o = Rect::new(o.x0 + half(left, wl), o.y0 + half(top, wt), o.x1 - half(right, wr), o.y1 - half(bottom, wb));
     for (path, gap) in border_paths(bd, o, open_top, open_bottom) {
         let (color, tint, overprint) =
             if gap { (bd.gap_color.clone(), bd.gap_tint, bd.gap_overprint) } else { (bd.color.clone(), bd.tint, bd.overprint) };
@@ -221,18 +230,31 @@ fn em_box(l: &Line) -> Option<(f64, f64)> {
     })
 }
 
+/// The font ascender (OS/2 typographic ascent, the one the Ascent first baseline offset uses) of a
+/// line's tallest glyph: where a box's Ascent top origin is (measured in InDesign 2026: 8.74 pt
+/// above the baseline for 12 pt Arial, where the line's own ascent is 10.86 pt).
+fn typo_ascent(l: &Line) -> Option<f64> {
+    l.glyphs.iter().filter(|g| g.visible && g.sy.is_finite() && g.sy > 0.0).map(|g| g.face.typo_ascent * g.sy).reduce(f64::max)
+}
+
+/// The font descender (OS/2 typographic descent) of a line's deepest glyph: the bottom of a box's
+/// Descent origin (0.188 em for Courier New, where the line's own descent is 0.300 em).
+fn typo_descent(l: &Line) -> Option<f64> {
+    l.glyphs.iter().filter(|g| g.visible && g.sy.is_finite() && g.sy > 0.0).map(|g| g.face.typo_descent * g.sy).reduce(f64::max)
+}
+
 /// The box around `lines` before offsets: the column or the text across, from the top edge of the
 /// first line to the bottom edge of the last.
 fn inner_rect(lines: &[&Line], width: BoxWidth, top: BoxTop, bottom: BoxBottom) -> Option<Rect> {
     let (a, z) = (lines.first()?, lines.last()?);
     let y0 = match top {
-        BoxTop::Ascent => a.baseline - a.ascent,
+        BoxTop::Ascent => a.baseline - typo_ascent(a).unwrap_or(a.ascent),
         BoxTop::Baseline => a.baseline,
         BoxTop::EmBox => a.baseline - em_box(a).map_or(a.ascent, |e| e.0),
         BoxTop::Leading => a.baseline - a.leading.max(a.ascent),
     };
     let y1 = match bottom {
-        BoxBottom::Descent => z.baseline + z.descent,
+        BoxBottom::Descent => z.baseline + typo_descent(z).unwrap_or(z.descent),
         BoxBottom::Baseline => z.baseline,
         BoxBottom::EmBox => z.baseline + em_box(z).map_or(z.descent, |e| e.1),
     };
