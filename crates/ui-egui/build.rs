@@ -107,6 +107,7 @@ fn locales(dir: &std::path::Path) -> Result<Vec<LocaleEntry>, String> {
         if !path.is_dir() {
             continue;
         }
+        println!("cargo::rerun-if-changed={}", path.display());
         let Some(code) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
         let shared = path.join("common.tsv");
         let app = path.join(APP_CATALOG);
@@ -115,7 +116,6 @@ fn locales(dir: &std::path::Path) -> Result<Vec<LocaleEntry>, String> {
         if app.is_none() && !(code == "sv" && shared.is_some()) {
             continue;
         }
-        println!("cargo::rerun-if-changed={}", path.display());
         if let Some(p) = &shared {
             println!("cargo::rerun-if-changed={}", p.display());
         }
@@ -123,6 +123,9 @@ fn locales(dir: &std::path::Path) -> Result<Vec<LocaleEntry>, String> {
             println!("cargo::rerun-if-changed={}", p.display());
         }
         out.push((code, shared, app));
+    }
+    if out.is_empty() {
+        return Err(format!("{} has no locale with a {APP_CATALOG} or sv/common.tsv", dir.display()));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)

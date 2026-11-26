@@ -130,6 +130,9 @@ impl SwedishCatalog {
     }
 
     fn get_context<'a>(&'a self, s: &'a str, context: &str) -> Option<&'a str> {
+        if context.is_empty() {
+            return self.get(s);
+        }
         let non_empty = |text: &&str| !text.trim().is_empty();
         if let Some((i18n, lang)) = &self.app
             && let Some(text) = i18n.get(*lang, context, s).filter(non_empty)
@@ -153,9 +156,9 @@ impl SwedishCatalog {
     }
 
     #[cfg(test)]
-    fn app_override<'a>(&'a self, s: &'a str) -> Option<&'a str> {
+    fn app_override<'a>(&'a self, context: &str, s: &'a str) -> Option<&'a str> {
         let (i18n, lang) = self.app.as_ref()?;
-        i18n.get(*lang, "", s).filter(|text| !text.trim().is_empty())
+        i18n.get(*lang, context, s).filter(|text| !text.trim().is_empty())
     }
 }
 
@@ -411,11 +414,12 @@ mod swedish_tests {
         // Keys absent from every catalog report none/false (UI falls back to English).
         assert_eq!(catalog.get("Untranslated Swedish Label"), None);
         assert!(!catalog.has("Untranslated Swedish Label"));
-        // Context lookup follows app -> local -> shared.
+        // Context lookup follows app -> local -> shared, and empty context delegates to plain lookup.
         assert_eq!(catalog.get_context("Columns", "menu"), Some("Kolumner (app)"));
         assert_eq!(catalog.get_context("Columns", "table"), Some("Kolumner"));
         assert_eq!(catalog.get_context("Shared Context", "menu"), Some("Delad kontext"));
         assert_eq!(catalog.get_context("Shared Context", "unknown"), None);
+        assert_eq!(catalog.get_context("Type", ""), Some("Text"));
     }
 }
 
