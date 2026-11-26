@@ -73,14 +73,16 @@ impl<'a> Ex<'a> {
         }
         for (r, row) in t.rows.iter().enumerate() {
             let exact = row.mode == designcraft_doc::RowHeightMode::Exactly;
-            el.push(
-                El::new("Row")
-                    .attr("Self", format!("{id}Row{r}"))
-                    .attr("Name", r)
-                    .attr("SingleRowHeight", num(row.height.max(3.0)))
-                    .attr("MinimumHeight", num(row.height.max(0.0)))
-                    .attr("AutoGrow", bool_s(!exact)),
-            );
+            let mut row_el = El::new("Row")
+                .attr("Self", format!("{id}Row{r}"))
+                .attr("Name", r)
+                .attr("SingleRowHeight", num(row.height.max(3.0)))
+                .attr("MinimumHeight", num(row.height.max(0.0)));
+            // Written only when it is not InDesign's default, as InDesign does.
+            if !exact && (row.max_height - designcraft_doc::DEFAULT_MAX_ROW_HEIGHT).abs() > 1e-9 {
+                row_el = row_el.attr("MaximumHeight", num(row.max_height.max(0.0)));
+            }
+            el.push(row_el.attr("AutoGrow", bool_s(!exact)));
         }
         for (c, col) in t.columns.iter().enumerate() {
             el.push(El::new("Column").attr("Self", format!("{id}Column{c}")).attr("Name", c).attr("SingleColumnWidth", num(col.width)));

@@ -5577,3 +5577,21 @@ fn only_exactly_generated_cross_reference_text_is_regenerated() {
     let got: Vec<Option<&str>> = s.xrefs.iter().map(|x| x.text.as_deref()).collect();
     assert_eq!(got, [Some("Page <pageNum />, revised"), None, Some("Seite <pageNum />")]);
 }
+
+/// A row's Maximum height is read (InDesign's default, 600 pt, when absent) and written only when it
+/// is not the default, for rows that grow with their content.
+#[test]
+fn a_row_maximum_height_is_read_and_written_when_it_is_not_the_default() {
+    let paras = r#"<ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+<Table HeaderRowCount="0" FooterRowCount="0"><Row Name="0" MinimumHeight="8" MaximumHeight="100" AutoGrow="true"/><Row Name="1" MinimumHeight="8" AutoGrow="true"/><Row Name="2" SingleRowHeight="30" MinimumHeight="8" AutoGrow="false"/><Column Name="0" SingleColumnWidth="60"/><Cell Name="0:0"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>a</Content></CharacterStyleRange></ParagraphStyleRange></Cell><Cell Name="0:1"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>b</Content></CharacterStyleRange></ParagraphStyleRange></Cell><Cell Name="0:2"><ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]"><Content>c</Content></CharacterStyleRange></ParagraphStyleRange></Cell></Table>
+</CharacterStyleRange></ParagraphStyleRange>"#;
+    let d = import_idml_with(&drop_cap_fixture("", paras), &|_| None).unwrap();
+    let story = d.stories.values().find(|s| !s.tables.is_empty()).expect("a story with a table");
+    let table = story.tables.values().next().unwrap();
+    let max: Vec<f64> = table.rows.iter().map(|r| r.max_height).collect();
+    assert_eq!(max, [100.0, designcraft_doc::DEFAULT_MAX_ROW_HEIGHT, designcraft_doc::DEFAULT_MAX_ROW_HEIGHT], "{max:?}");
+    // Written back: only the first row carries MaximumHeight.
+    let all = zip_text(&export_idml(&d), "Stories/");
+    assert_eq!(all.matches("MaximumHeight=\"100\"").count(), 1, "{all}");
+    assert_eq!(all.matches("MaximumHeight=").count(), 1);
+}

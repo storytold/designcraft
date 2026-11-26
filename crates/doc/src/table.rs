@@ -22,7 +22,9 @@ mod grid;
 mod merge;
 mod story;
 
-pub use cell::{AltFills, AltStrokes, Cell, CellDiagonal, CellStroke, Column, DiagonalLines, Row, RowHeightMode, RowKind, TableOptions};
+pub use cell::{
+    AltFills, AltStrokes, Cell, CellDiagonal, CellStroke, Column, DEFAULT_MAX_ROW_HEIGHT, DiagonalLines, Row, RowHeightMode, RowKind, TableOptions,
+};
 pub use grid::CellRange;
 
 /// Most rows a table holds, as InDesign allows.
@@ -337,6 +339,15 @@ mod tests {
         let old = r#"{"id":1,"text":"a","paras":[{"style":"[Basic Paragraph]"}],"chars":[{"len":1,"style":"[None]"}],"frames":[]}"#;
         let st: Story = serde_json::from_str(old).unwrap();
         assert!(st.tables.is_empty());
+    }
+
+    #[test]
+    fn a_row_maximum_height_defaults_for_old_documents_and_roundtrips() {
+        let old: Row = serde_json::from_str(r#"{"height":5,"mode":"atLeast","kind":"body"}"#).unwrap();
+        assert_eq!(old.max_height, DEFAULT_MAX_ROW_HEIGHT);
+        let row = Row { max_height: 100.0, ..Default::default() };
+        let back: Row = serde_json::from_str(&serde_json::to_string(&row).unwrap()).unwrap();
+        assert_eq!(back, row);
     }
 
     #[test]

@@ -405,6 +405,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-23** · A table row that grows with its content stops at its Maximum height (#3186), as in InDesign: the row grows by whole lines up to the maximum (600 pt unless set) and the lines that do not fit under it are not drawn (a 50-line cell in a default row shows 49 lines, a 30-line cell under a 100 pt maximum 8). IDML `MaximumHeight` is read and written when it is not 600 pt, and `table.setRowHeight` takes `maxHeight`. Cells that span rows are still sized by their full content.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
 - **2026-11-15** · Removed the obsolete gap saying pull requests have no test workflow: [CI](.github/workflows/ci.yml) runs the shared quality gate on every pull request and push to main (#1352). No readiness percentage change.
 - **2026-11-15** · Accepting tracked deletions or rejecting insertions follows body-text selections through the removed text, including resolving all changes, and preserves independent cell and footnote insertion points. No readiness percentage change.

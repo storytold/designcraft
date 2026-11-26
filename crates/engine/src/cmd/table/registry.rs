@@ -319,7 +319,7 @@ fn table_specs() -> Vec<CommandSpec> {
             "Row Height",
             [],
             None,
-            "{height, mode?: atLeast|exactly, story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
+            "{height?, mode?: atLeast|exactly, maxHeight? (pt, 0..10000: the most an atLeast row grows to; the lines that do not fit under it are left out), story?, table?, rows?: [a, b] | row?, cols?: [a, b] | col? (the target cells; default: the selection)}",
             in_table,
             set_row_height
         ),
