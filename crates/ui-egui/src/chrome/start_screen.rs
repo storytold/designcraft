@@ -62,7 +62,7 @@ fn recent_preview_texture(ctx: &egui::Context, path: &str, modified: Option<std:
 mod framework {
     use super::{DesignApp, START_SCREEN_RECENT, Tokens, json, recent_file_stat, recent_preview_texture};
     use craft_ui_panels::sections::GroupBox;
-    use craft_ui_widgets::buttons::{Arrangement, Button, Link};
+    use craft_ui_widgets::buttons::{Button, Link};
     use craft_ui_widgets::contract::{Props as _, Scroll, Show as _, ShowContainer as _, Sizing};
     use craft_ui_widgets::display::{Picture, PictureSize, Shade, Text};
     use craft_ui_widgets::layout_components::{Row, Stack};
@@ -147,34 +147,27 @@ mod framework {
                             let label = crate::menus::recent_label(path);
                             let name = label.strip_suffix(".designcraft").unwrap_or(&label).to_string();
                             let (border, blank) = (t.border, if there { egui::Color32::from_gray(245) } else { egui::Color32::from_gray(110) });
-                            let card = Button::new(name)
-                                .id_salt(("start_recent", *i))
-                                .tooltip(path.clone())
-                                .arrangement(Arrangement::Stacked)
-                                .picture(
-                                    ThumbAspect::new(4, 5),
-                                    Picture::painter("", ThumbAspect::new(4, 5), move |cx, rect| match &tex {
-                                        Some(tex) => {
-                                            let size = tex.size_vec2();
-                                            let k = (rect.width() / size.x).min(rect.height() / size.y);
-                                            let pr = egui::Rect::from_center_size(rect.center(), size * k);
-                                            cx.painter.image(
-                                                tex.id(),
-                                                pr,
-                                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                                egui::Color32::WHITE,
-                                            );
-                                            cx.painter.rect_stroke(pr, 0.0, egui::Stroke::new(1.0, border), egui::StrokeKind::Outside);
-                                        }
-                                        // No picture (saved before files had one) or the file is gone: a blank page.
-                                        None => {
-                                            cx.painter.rect_filled(egui::Rect::from_center_size(rect.center(), rect.size() * 0.8), 0.0, blank);
-                                        }
-                                    })
-                                    .extent(PictureSize::Thumb(ThumbSize::Large)),
-                                )
-                                .show(ui);
-                            if card.clicked() {
+                            let (cr, resp) = ui.allocate_exact_size(egui::vec2(120.0, 150.0), egui::Sense::click());
+                            ui.painter().rect_filled(cr, 6.0, if resp.hovered() { t.hover } else { t.panel });
+                            resp.clone().on_hover_text(path.clone());
+                            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, false, name.clone()));
+                            let page = egui::Rect::from_center_size(cr.center() - egui::vec2(0.0, 14.0), egui::vec2(80.0, 100.0));
+                            if let Some(tex) = &tex {
+                                let size = tex.size_vec2();
+                                let k = (page.width() / size.x).min(page.height() / size.y);
+                                ui.painter().image(tex.id(), egui::Rect::from_center_size(page.center(), size * k), page, egui::Color32::WHITE);
+                            } else {
+                                ui.painter().rect_filled(page, 0.0, blank);
+                            }
+                            let _ = border;
+                            ui.painter().text(
+                                egui::pos2(cr.center().x, cr.max.y - 12.0),
+                                egui::Align2::CENTER_CENTER,
+                                name,
+                                crate::theme::semibold(11.0),
+                                t.text_strong,
+                            );
+                            if resp.clicked() {
                                 asks.push(Ask::Recent(*i));
                             }
                         }
@@ -188,6 +181,8 @@ mod framework {
                     for p in designcraft_doc::build::PRESETS.iter().filter(|p| p.intent == designcraft_doc::Intent::Print) {
                         let (cr, resp) = ui.allocate_exact_size(egui::vec2(120.0, 150.0), egui::Sense::click());
                         ui.painter().rect_filled(cr, 6.0, if resp.hovered() { panel.hover } else { panel.panel });
+                        // The tile is its own button to the accessibility tree, as the button it replaced was.
+                        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, false, p.name));
                         let k = (80.0 / p.width.max(p.height)) as f32;
                         let page =
                             egui::Rect::from_center_size(cr.center() - egui::vec2(0.0, 14.0), egui::vec2(p.width as f32 * k, p.height as f32 * k));

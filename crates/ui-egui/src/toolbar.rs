@@ -230,6 +230,10 @@ mod framework {
         // press held across it is retired rather than activating at its slot's new place.
         let rail_id = |cols: usize| egui::Id::unique(("tools-rail", &target, cols));
         let toggle_h = 24.0;
+        // The panel is filled and edged as main's were: without a frame the window's background showed through the rail
+        // as a black strip, with the tools touching the window's edge.
+        let t = Tokens::get(ui.ctx());
+        let frame = egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.divider));
         SLOTS.with(|slots| {
             LAST_USED.with(|last| {
                 let sizes = DockSizes::of_scope(ui);
@@ -254,11 +258,9 @@ mod framework {
                 // rail's grid: the rail takes as many columns as the width it gets holds, and at two columns less a point it
                 // laid out one.
                 let separator = ui.style().visuals.widgets.noninteractive.bg_stroke.width.round();
-                let width = grid(cols).width(cols as u16) + separator;
-                // The panel is filled and edged as main's were: without a frame the window's background showed through the
-                // rail as a black strip, with the tools touching the window's edge.
-                let t = Tokens::get(ui.ctx());
-                let frame = egui::Frame::NONE.fill(t.panel).stroke(egui::Stroke::new(1.0, t.divider));
+                // The frame is filled and edged, so its insets come off the room the rail's grid gets: add them back.
+                let frame_room = frame.total_margin().sum().x;
+                let width = grid(cols).width(cols as u16) + separator + frame_room;
                 egui::Panel::left("tools").exact_size(width).resizable(false).frame(frame).show(ui, |ui| {
                     Row::new().fill_width().align(RowAlign::Center).show(ui, |ui, _| {
                         let icon = if cols == 1 { "double-chevron-right" } else { "double-chevron-left" };
