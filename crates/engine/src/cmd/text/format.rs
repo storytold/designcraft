@@ -418,6 +418,10 @@ pub(crate) fn apply_char_attrs(d: &mut designcraft_doc::Document, targets: &[Tar
 }
 
 pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
+    format_paras_with_options(s, attrs, false)
+}
+
+pub(crate) fn format_paras_with_options(s: &mut Session, attrs: &Value, mirror_align: bool) -> Result<Value> {
     let empty = serde_json::Map::new();
     let obj = attrs.as_object().unwrap_or(&empty);
     // A rule object changes only the rule fields it names, so each paragraph gets its own attrs
@@ -431,6 +435,7 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
     let rows = justification_rows_named(obj.keys().map(String::as_str));
     // `null` removes the override (back to the style's value).
     let cleared: Vec<String> = obj.iter().filter(|(_, v)| v.is_null()).map(|(k, _)| k.clone()).collect();
+    let explicit_align = obj.contains_key("align");
     let targets = format_targets(s);
     s.edit(|d, _| {
         let styles = d.styles.clone();
@@ -443,6 +448,21 @@ pub(crate) fn format_paras(s: &mut Session, attrs: &Value) -> Result<Value> {
                     let mut a = a.clone();
                     for (k, v) in obj {
                         let _ = a.set_json_over(k, v, &current);
+                    }
+                    if mirror_align
+                        && !explicit_align
+                        && let Some(new_dir) = a.direction
+                        && a.align.is_none()
+                        && new_dir != current.direction
+                    {
+                        let rtl = new_dir == designcraft_doc::TextDirection::RightToLeft;
+                        a.align = match current.align {
+                            designcraft_doc::Align::Left if rtl => Some(designcraft_doc::Align::Right),
+                            designcraft_doc::Align::Right if !rtl => Some(designcraft_doc::Align::Left),
+                            designcraft_doc::Align::LeftJustified if rtl => Some(designcraft_doc::Align::RightJustified),
+                            designcraft_doc::Align::RightJustified if !rtl => Some(designcraft_doc::Align::LeftJustified),
+                            _ => None,
+                        };
                     }
                     p.para.merge(&a);
                     for k in &cleared {
@@ -1573,5 +1593,51 @@ mod missing_font_tests {
                 assert_eq!(&s.execute("type.selectionAttrs", &json!({})).unwrap()["chars"]["fontFamily"], family, "{name}");
             }
         }
+    }
+
+    #[test]
+    fn type_para_mirror_align_evaluates_each_selected_paragraph_independently() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let text = "one\ntwo\nthree\nfour";
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": text})).unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        let p2 = "one\n".len();
+        let p3 = p2 + "two\n".len();
+        let p4 = p3 + "three\n".len();
+        // Set heterogeneous initial states per paragraph:
+        // p0: LTR + Left, p1: RTL + Right, p2: LTR + Center, p3: LTR + LeftJustified.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": p2, "focus": p2})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "align": "right"}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": p3, "focus": p3})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": p4, "focus": p4})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"align": "leftJustified"}})).unwrap();
+
+        // Select across all 4 paragraphs and switch direction to RTL with mirrorAlign=true.
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": text.len()})).unwrap();
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft"}, "mirrorAlign": true})).unwrap();
+
+        let st = s.doc().unwrap().doc.story(sid).unwrap();
+        let styles = &s.doc().unwrap().doc.styles;
+        let resolved: Vec<_> = st.paras.iter().map(|p| styles.resolve_para(p).0).collect();
+        assert_eq!(resolved[0].direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(resolved[0].align, designcraft_doc::Align::Right);
+        assert_eq!(resolved[1].direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(resolved[1].align, designcraft_doc::Align::Right);
+        assert_eq!(resolved[2].direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(resolved[2].align, designcraft_doc::Align::Center);
+        assert_eq!(resolved[3].direction, designcraft_doc::TextDirection::RightToLeft);
+        assert_eq!(resolved[3].align, designcraft_doc::Align::RightJustified);
+
+        // Switching back to LTR preserves Center and mirrors Right/RightJustified back to Left/LeftJustified.
+        s.execute("type.para", &json!({"attrs": {"direction": "leftToRight"}, "mirrorAlign": true})).unwrap();
+        let st = s.doc().unwrap().doc.story(sid).unwrap();
+        let styles = &s.doc().unwrap().doc.styles;
+        let resolved: Vec<_> = st.paras.iter().map(|p| styles.resolve_para(p).0).collect();
+        assert_eq!(resolved[0].align, designcraft_doc::Align::Left);
+        assert_eq!(resolved[1].align, designcraft_doc::Align::Left);
+        assert_eq!(resolved[2].align, designcraft_doc::Align::Center);
+        assert_eq!(resolved[3].align, designcraft_doc::Align::LeftJustified);
     }
 }

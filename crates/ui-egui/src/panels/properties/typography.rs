@@ -42,6 +42,39 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
         let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Digits"));
     });
+    // Character Direction and Diacritic Positioning (World-Ready).
+    let cdir = c["characterDirection"].as_str().unwrap_or("default").to_string();
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Character Direction"));
+        let cur = CHARACTER_DIRECTIONS.iter().find(|o| o.0 == cdir).map_or("Default", |o| o.1);
+        let combo = craft_ui::ComboBox::from_id_salt("char_direction")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur)))
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for (k, lbl) in CHARACTER_DIRECTIONS {
+                    if ui.selectable_label(*k == cdir, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, lbl))).clicked() {
+                        let _ = app.run("type.char", json!({"attrs": {"characterDirection": k}}));
+                    }
+                }
+            });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Character Direction"));
+    });
+    let diac = c["diacriticPosition"].as_str().unwrap_or("default").to_string();
+    ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Diacritic Positioning"));
+        let cur = DIACRITIC_POSITIONS.iter().find(|o| o.0 == diac).map_or("Default", |o| o.1);
+        let combo = craft_ui::ComboBox::from_id_salt("char_diacritics")
+            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, cur)))
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for (k, lbl) in DIACRITIC_POSITIONS {
+                    if ui.selectable_label(*k == diac, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, lbl))).clicked() {
+                        let _ = app.run("type.char", json!({"attrs": {"diacriticPosition": k}}));
+                    }
+                }
+            });
+        let _ = crate::widgets::name_combo(combo, crate::i18n::tr(&app.ui.language, "Diacritic Positioning"));
+    });
     // Two columns: Size, Kerning and Baseline on the left, Leading and Tracking on the right. A
     // column's captions share the width of its widest one and each field takes the rest of the
     // column, so they line up.
@@ -242,6 +275,20 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         x += pitch;
     }
     place(ui, sub(b, fw - 20.0, 0.0, 20.0, 21.0), |ui| crate::menus::menu_button(ui, "☰", |ui| paragraph_panel_menu(app, ui, &p)));
+    ui.add_space(4.0);
+    // Paragraph Direction (World-Ready): Left-to-Right (¶→) and Right-to-Left (←¶).
+    let dir = p["direction"].as_str();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (icon, target_dir, is_rtl, tip) in [
+            ("para-dir-ltr", "leftToRight", false, "Left-to-Right Paragraph Direction"),
+            ("para-dir-rtl", "rightToLeft", true, "Right-to-Left Paragraph Direction"),
+        ] {
+            if widgets::icon_toggle_sized(ui, icon, dir == Some(target_dir), &tr(tip), vec2(23.0, 21.0)).clicked() {
+                set_paragraph_direction(app, is_rtl);
+            }
+        }
+    });
     ui.add_space(6.0);
     // Indents, spacing and drop cap, two to a row as in InDesign.
     let row = FIELD_H + 5.0;
@@ -329,6 +376,11 @@ pub fn paragraph_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     }
     ui.add_space(4.0);
+    let mut kashidas = p["kashidas"].as_bool().unwrap_or(false);
+    if widgets::checkbox(ui, &mut kashidas, &tr("Insert Kashidas")).changed() {
+        let _ = app.run("type.para", json!({"attrs": {"kashidas": kashidas}}));
+    }
+    ui.add_space(4.0);
 }
 
 /// The Paragraph panel menu, in the order of InDesign's.
@@ -409,17 +461,13 @@ fn paragraph_panel_menu(app: &mut DesignApp, ui: &mut Ui, p: &Value) {
     if item(ui, "Define Lists…", None, true) {
         command = Some("list.define");
     }
-    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment.
+    // Paragraph Direction (World-Ready): switching also mirrors left and right alignment per paragraph.
     ui.separator();
-    let rtl = p["direction"] == "rightToLeft";
-    for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+    let pdir = p["direction"].as_str();
+    for (target, is_rtl, label) in [("leftToRight", false, "Left to Right"), ("rightToLeft", true, "Right to Left")] {
+        let on = pdir == Some(target);
         if item(ui, label, Some(on), true) && !on {
-            let align = match serde_json::from_value(p["align"].clone()).unwrap_or_default() {
-                Align::Left => Align::Right,
-                Align::Right => Align::Left,
-                a => a,
-            };
-            attrs = Some(json!({"direction": dir, "align": align}));
+            set_paragraph_direction(app, is_rtl);
         }
     }
     if let Some(attrs) = attrs {
@@ -553,6 +601,28 @@ pub(crate) fn composer_choice(composer: Option<&str>) -> (bool, [&'static str; 2
     let single = matches!(composer, Some("singleLine" | "japaneseSingleLine"));
     let kind = if composer.is_some_and(|c| c.starts_with("japanese")) { ["japanese", "japaneseSingleLine"] } else { ["paragraph", "singleLine"] };
     (single, kind)
+}
+
+/// The Character Direction choices (World-Ready): Default (from the character's script and the
+/// paragraph's direction), Left-to-Right, or Right-to-Left.
+pub const CHARACTER_DIRECTIONS: [(&str, &str); 3] = [("default", "Default"), ("leftToRight", "Left-to-Right"), ("rightToLeft", "Right-to-Left")];
+
+/// The Diacritic Positioning choices (World-Ready): Default, Loose, Medium, Tight, OpenType,
+/// or OpenType from Baseline.
+pub const DIACRITIC_POSITIONS: [(&str, &str); 6] = [
+    ("default", "Default"),
+    ("loose", "Loose"),
+    ("medium", "Medium"),
+    ("tight", "Tight"),
+    ("openType", "OpenType"),
+    ("openTypeFromBaseline", "OpenType from Baseline"),
+];
+
+/// Set paragraph direction (`leftToRight` or `rightToLeft`), mirroring left/right alignment per
+/// target paragraph as in InDesign ME.
+pub fn set_paragraph_direction(app: &mut DesignApp, rtl: bool) {
+    let dir = if rtl { "rightToLeft" } else { "leftToRight" };
+    let _ = app.run("type.para", json!({"attrs": {"direction": dir}, "mirrorAlign": true}));
 }
 
 /// The Digits choices: (value, caption, sample of 0–3). The values are the file format's:

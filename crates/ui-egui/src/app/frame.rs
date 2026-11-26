@@ -80,6 +80,10 @@ impl DesignApp {
             theme::apply(ctx, &theme::Tokens::for_brightness(self.ui.brightness));
             self.restyle = false;
         }
+        let rtl = crate::i18n::is_rtl(&self.ui.language);
+        if ctx.global_style().right_to_left != rtl {
+            ctx.all_styles_mut(|s| s.right_to_left = rtl);
+        }
     }
 
     /// The end of a settled `run_ui` pass: pacing, recovery and screenshot settlement. Recovery

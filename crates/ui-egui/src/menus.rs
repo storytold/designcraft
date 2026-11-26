@@ -71,14 +71,13 @@ mod tests;
 mod swedish_tests {
     use super::*;
 
-    #[test]
-    fn swedish_interface_is_selectable_and_translates_every_menu_label() {
+    fn assert_interface_translates_every_menu_label(lang: &str, expected_file: &str, has_entry: fn(&str) -> bool) {
         let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
-        run_ui(&mut app, "app.language", &json!({"lang": "sv"})).unwrap().unwrap();
-        assert_eq!(app.ui.language, "sv");
-        assert_eq!(checked(&app, "app.language", &json!({"lang": "sv"})), Some(true));
-        assert_eq!(crate::i18n::tr("sv", "File"), "Arkiv");
-        // Every menu title, item and submenu has a Swedish entry.
+        run_ui(&mut app, "app.language", &json!({"lang": lang})).unwrap().unwrap();
+        assert_eq!(app.ui.language, lang);
+        assert_eq!(checked(&app, "app.language", &json!({"lang": lang})), Some(true));
+        assert_eq!(crate::i18n::tr(lang, "File"), expected_file);
+        // Every menu title, item and submenu has a catalog entry.
         let mut untranslated = Vec::new();
         for (title, entries) in menu_tree() {
             let mut labels = vec![title.to_string()];
@@ -93,10 +92,20 @@ mod swedish_tests {
                     _ => {}
                 }
             }
-            // Swedish shares many words with English ("Layout", "Cyan"), so look for a catalog entry.
+            // Languages like Swedish share many words with English ("Layout", "Cyan"), so look for a catalog entry.
             let size = |l: &str| l.strip_suffix(" pt").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
-            untranslated.extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && !crate::i18n::swedish_has(l)));
+            untranslated.extend(labels.into_iter().filter(|l| l.chars().any(char::is_alphabetic) && !size(l) && !has_entry(l)));
         }
-        assert!(untranslated.is_empty(), "untranslated Swedish menu labels: {untranslated:?}");
+        assert!(untranslated.is_empty(), "untranslated {lang} menu labels: {untranslated:?}");
+    }
+
+    #[test]
+    fn swedish_interface_is_selectable_and_translates_every_menu_label() {
+        assert_interface_translates_every_menu_label("sv", "Arkiv", crate::i18n::swedish_has);
+    }
+
+    #[test]
+    fn hebrew_interface_is_selectable_and_translates_every_menu_label() {
+        assert_interface_translates_every_menu_label("he", "קובץ", crate::i18n::hebrew_has);
     }
 }

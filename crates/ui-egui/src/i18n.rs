@@ -12,6 +12,7 @@ mod ar;
 mod cs;
 mod de;
 mod fr;
+mod he;
 mod hu;
 mod it;
 mod ja;
@@ -40,11 +41,12 @@ pub const LANGUAGES: &[(&str, &str)] = &[
     ("ka", "ქართული"),
     ("hu", "Magyar"),
     ("sv", "Svenska"),
+    ("he", "עברית"),
 ];
 
 /// The interface languages in the order the Preferences picker lists them: English first (the
 /// source language), then the rest by their own name with accents folded, so Čeština sits under
-/// C. Names in other scripts follow the Latin ones in code point order: Cyrillic, Arabic,
+/// C. Names in other scripts follow the Latin ones in code point order: Cyrillic, Hebrew, Arabic,
 /// Georgian, then the CJK languages.
 pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
     let mut rest: Vec<(&str, &str)> = LANGUAGES.iter().copied().filter(|(code, _)| !code.is_empty()).collect();
@@ -54,7 +56,7 @@ pub fn picker_languages() -> Vec<(&'static str, &'static str)> {
 
 /// Interface direction; independent of document binding and paragraph direction.
 pub fn is_rtl(lang: &str) -> bool {
-    lang == "ar"
+    matches!(lang, "ar" | "he")
 }
 
 /// A Japanese, Chinese or Korean interface language (`zh-tw` included): CJK features are shown by
@@ -88,6 +90,7 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static JAPANESE: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static TRANSLATIONS: OnceLock<HashMap<&str, [&str; 5]>> = OnceLock::new();
     static ARABIC: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static HEBREW: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static UKRAINIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static PORTUGUESE_BR: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     static ITALIAN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
@@ -103,6 +106,9 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     static SWEDISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
     if lang == "ar" {
         return ARABIC.get_or_init(|| ar::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
+    }
+    if lang == "he" {
+        return HEBREW.get_or_init(|| he::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
     // The German and Japanese tables cover the whole interface; the shared table's German and Japanese
     // columns are the fallback for keys added there after them.
@@ -166,6 +172,7 @@ pub fn tr_context<'a>(lang: &str, s: &'a str, context: &str) -> &'a str {
         "pl" => pl::CONTEXT,
         "ja" => ja::CONTEXT,
         "ar" => ar::CONTEXT,
+        "he" => he::CONTEXT,
         "sv" => sv::CONTEXT,
         _ => &[],
     };
@@ -198,6 +205,12 @@ pub(crate) fn swedish_has(s: &str) -> bool {
     sv::TABLE.iter().any(|(key, _)| *key == s)
 }
 
+/// Whether the Hebrew catalog has an entry for `s`.
+#[cfg(test)]
+pub(crate) fn hebrew_has(s: &str) -> bool {
+    he::TABLE.iter().any(|(key, _)| *key == s)
+}
+
 /// Ukrainian, Russian, Polish and Georgian put the category before the value in count captions
 /// ("сторінок: 5", "страниц: 5", "Strony: 5", "გვერდი: 5"): every number stays grammatical in the
 /// languages with several plural forms, and Georgian nouns stay singular after numerals. Other
@@ -226,6 +239,12 @@ pub fn count_label(lang: &str, noun: &str, count: usize) -> String {
     if lang == "sv"
         && count == 1
         && let Some(one) = swedish_singular(noun)
+    {
+        return format!("{count} {one}");
+    }
+    if lang == "he"
+        && count == 1
+        && let Some((_, one)) = he::SINGULARS.iter().find(|(key, _)| *key == noun)
     {
         return format!("{count} {one}");
     }

@@ -140,7 +140,10 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.newDocumentDialog" => {
             // In the default units (Preferences with no document open).
-            let fields = crate::new_document::defaults_for(&app.session.default_new_document());
+            let mut fields = crate::new_document::defaults_for(&app.session.default_new_document());
+            if crate::i18n::is_rtl(&app.ui.language) {
+                fields["rightToLeftBinding"] = json!(true);
+            }
             app.ui.dialog = Some(crate::dialogs::Dialog::new("newDocument", fields));
             Ok(Value::Null)
         }

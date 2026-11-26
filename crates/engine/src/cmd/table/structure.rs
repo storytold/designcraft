@@ -51,10 +51,16 @@ pub(super) fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     let footer = given("footerRows", None, 0, 0..=MAX_HEADER_FOOTER_ROWS)?;
     let style = table_style_param(s, p, "table.insert")?;
     let width = p.get("width").and_then(Value::as_f64).unwrap_or_else(|| column_width(s, &t));
+    let explicit_dir = match str_param(p, "direction") {
+        Some("leftToRight") => Some(designcraft_doc::TextDirection::LeftToRight),
+        Some("rightToLeft") => Some(designcraft_doc::TextDirection::RightToLeft),
+        Some(other) => return Err(bad("table.insert", format!("unknown direction {other:?}"))),
+        None => None,
+    };
     s.edit(|d, sel| {
         let id = d.alloc();
         let mut table = Table::new(id, rows, cols, header, footer, width);
-        table.options.direction = para_direction(d, t.story, t.range().start);
+        table.options.direction = explicit_dir.unwrap_or_else(|| para_direction(d, t.story, t.range().start));
         let st = d.story_mut(t.story).ok_or_else(|| bad("table.insert", "no story"))?;
         // Cells start with the paragraph format at the caret.
         let pf = st.paras[st.para_at(t.range().start)].clone();

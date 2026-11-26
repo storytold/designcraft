@@ -6254,6 +6254,22 @@ fn arabic_kashida_moves_marks_with_their_cluster_and_respects_nonjoiners() {
 }
 
 #[test]
+fn rtl_fully_justified_with_non_left_tab_keeps_tab_stop_fixed() {
+    let pa = ParaAttrs {
+        direction: Some(designcraft_doc::TextDirection::RightToLeft),
+        align: Some(Align::FullyJustified),
+        tabs: Some(vec![designcraft_doc::TabStop { position: 100.0, align: TabAlign::Right, leader: String::new(), align_on: String::new() }]),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with("Name\t42", Rect::new(0.0, 0.0, 200.0, 100.0), pa);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    let last_g = l.glyphs.iter().filter(|g| g.visible && g.adv > 0.0).max_by(|a, b| a.x.total_cmp(&b.x)).unwrap();
+    let right_edge = last_g.x + last_g.adv;
+    assert!((right_edge - 100.0).abs() < 2.0, "right tab stop should remain near 100.0, got right_edge={right_edge}");
+}
+
+#[test]
 fn arabic_explicit_isolated_forms_disable_contextual_joining() {
     let text = "بب";
     let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 180.0, 100.0), ParaAttrs::default());

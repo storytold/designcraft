@@ -539,6 +539,7 @@ impl Document {
     fn give_empty_story(&mut self, id: ItemId) -> Result<StoryId> {
         let sid = StoryId(self.alloc());
         let mut st = Story::new(sid);
+        st.direction = self.new_story_direction();
         st.frames.push(id);
         let it = self.item_mut(id).ok_or(DocError::NoItem(id))?;
         it.content = Content::Text(TextFrame { story: sid, options: TextFrameOptions::default() });
