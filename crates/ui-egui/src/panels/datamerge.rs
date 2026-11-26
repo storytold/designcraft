@@ -181,7 +181,7 @@ impl DataMergeControls {
                 .filter(|v| *v != value);
             shown = Some(MergeNumber { value: next });
         });
-        shown.unwrap_or_else(|| MergeNumber { value: None })
+        shown.unwrap_or(MergeNumber { value: None })
     }
 }
 

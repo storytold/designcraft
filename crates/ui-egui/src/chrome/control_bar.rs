@@ -1,4 +1,6 @@
-use super::{Align, DesignApp, NumField, Sense, Stroke, Tokens, Unit, icons, panels, vec2};
+use super::{Align, DesignApp, Stroke, Tokens, Unit, panels};
+#[cfg(test)]
+use super::{NumField, Sense, icons, vec2};
 
 /// Two-row context-sensitive Control panel.
 pub fn control_bar(app: &mut DesignApp, ui: &mut egui::Ui) {

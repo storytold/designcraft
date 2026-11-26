@@ -1,6 +1,6 @@
 use super::{
-    CornerShape, DesignApp, FIELD_H, Rect, SelInfo, Sense, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, json, pos2, set_temp_bool,
-    show_panel, sub, temp_bool, units, vec2, widgets,
+    CornerShape, DesignApp, FIELD_H, Rect, SelInfo, Stroke, StrokeKind, Tokens, Ui, Value, block, full_width, json, pos2, set_temp_bool, show_panel,
+    sub, temp_bool, units, vec2, widgets,
 };
 
 // ---------------------------------------------------------------- Objects

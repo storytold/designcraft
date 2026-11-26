@@ -30,6 +30,7 @@ mod tool_overlays;
 mod view;
 
 use column_guides::{COLUMN_DRAG, ColumnDrag, column_guide_at, spread_x_across};
+#[cfg(test)]
 pub(crate) use frames::item_canvas_xf;
 use frames::{draw_frames, draw_selection};
 #[cfg(test)]

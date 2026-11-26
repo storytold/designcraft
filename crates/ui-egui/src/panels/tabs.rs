@@ -3,13 +3,18 @@
 
 use designcraft_doc::{TabAlign, TabStop};
 use designcraft_geom::{Point, Unit};
-use egui::{Color32, Pos2, Rect, Ui, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Ui, pos2};
 use serde_json::{Value, json};
 
 use crate::DesignApp;
 
 /// The inset of position 0 from the ruler's left edge.
 pub(crate) const PAD: f32 = 10.0;
+/// The ruler band's height and its tab-mark strip, which the tests aim at.
+#[cfg(test)]
+const H: f32 = 40.0;
+#[cfg(test)]
+const STRIP: f32 = 15.0;
 /// The narrowest the panel gets when it moves over a frame (its controls fit on one row).
 const MIN_WIDTH: f32 = 560.0;
 

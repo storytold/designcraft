@@ -229,7 +229,7 @@ mod framework {
                 let on = on && f.is_some();
                 let at = Rect::from_min_size(r.min + vec2(col as f32 * cell, row as f32 * cell), vec2(cell, cell));
                 let glyph = Cell(on.then_some(arrow));
-                let label = crate::i18n::tr(&app.ui.language, *name).to_owned();
+                let label = crate::i18n::tr(&app.ui.language, name).to_owned();
                 let id = cid(app, ui, ("cell", row, col));
                 if IconButton::new(IconSpec::glyph(&glyph)).id(id).label(label.clone()).tooltip(label).selected(on).show_at(ui, at).clicked() {
                     picked = Some((row * 3 + col) as u8);
