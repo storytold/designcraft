@@ -135,6 +135,66 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     h.get_by_label("Stroke Behind Fill");
 }
 
+/// The text Stroke panel's Weight keeps a typed value inside the character stroke weight's
+/// range of 0 to 800 pt, as the character style's Weight field does.
+#[test]
+fn text_stroke_panel_keeps_the_weight_in_range() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            stroke_panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    let weight = |h: &mut Harness<'_, DesignApp>| crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["strokeWeight"].as_f64();
+    for (typed, expected) in [("2000", 800.0), ("12", 12.0), ("-5", 0.0)] {
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+        type_in_field(&mut h, field, typed);
+        assert_eq!(weight(&mut h), Some(expected), "{typed}");
+    }
+}
+
+/// The Properties panel's text stroke Weight keeps a typed value inside the same 0 to 800 pt
+/// range as the Stroke panel and the character style's Weight field.
+#[test]
+fn properties_text_stroke_weight_keeps_the_character_range() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Hello", "caret": true})).unwrap();
+    app.run("edit.selectAll", json!({})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            super::text::text_appearance_section(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    let weight = |h: &mut Harness<'_, DesignApp>| crate::panels::text_attrs(h.state_mut()).unwrap()["chars"]["strokeWeight"].as_f64();
+    for (typed, expected) in [("500", 500.0), ("2000", 800.0), ("-5", 0.0)] {
+        let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+        type_in_field(&mut h, field, typed);
+        assert_eq!(weight(&mut h), Some(expected), "{typed}");
+    }
+}
+
 /// As InDesign's: Edit Page takes the Page tool to the page in view, and Properties sets that
 /// page alone; Back returns to the document.
 #[test]

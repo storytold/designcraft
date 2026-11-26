@@ -34,6 +34,7 @@ impl UiState {
             }
         }
         let mut ui: UiState = serde_json::from_value(saved)?;
+        ui.story_editor_style_width = crate::story_editor::style_column_width(ui.story_editor_style_width);
         clear_stale_open_panels(&mut ui);
         intact &= migrate(&mut ui.docking, &mut ui.floating, &ui.docking_hidden, ui.dock_expanded, ui.icon_groups.as_deref());
         for workspace in &mut ui.custom_workspaces {
