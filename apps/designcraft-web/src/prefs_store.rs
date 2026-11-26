@@ -115,4 +115,21 @@ mod tests {
         assert_eq!(sync.wait(1.0), None);
         assert_eq!(sync.wait(f64::NAN), None);
     }
+
+    /// A write that failed at a due check is retried at the next one: right after the check,
+    /// `wait` gives that time (the shell asks for a frame then, so an idle app retries too), and
+    /// the change is still pending when it comes.
+    #[test]
+    fn a_failed_write_is_retried_at_the_next_check_without_input() {
+        let mut sync = PrefsSync::new(None);
+        let prefs = Prefs { save_format: SaveFormat::Idml, ..Prefs::default() };
+        assert!(sync.due(5.0));
+        assert!(sync.changed(&prefs).is_some(), "a change to write");
+        // The write failed: nothing marked stored.
+        assert_eq!(sync.wait(5.0), Some(1.0), "the next check is scheduled from the failed one");
+        assert!(sync.due(6.0));
+        let json = sync.changed(&prefs).expect("still pending at the next check");
+        sync.stored(json);
+        assert!(sync.changed(&prefs).is_none(), "written: nothing pending");
+    }
 }

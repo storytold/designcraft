@@ -380,12 +380,23 @@ impl eframe::App for WebShell {
             }
         } else if self.prefs_sync.due(now)
             && let Some(json) = self.prefs_sync.changed(&self.app.session.prefs)
-            && let Some(storage) = local_storage()
         {
             // Counted as stored only once written; otherwise it's tried again at the next check.
-            match storage.set_item(prefs_store::KEY, &json) {
-                Ok(()) => self.prefs_sync.stored(json),
-                Err(e) => log::warn!("couldn't keep the preferences in local storage: {e:?}"),
+            let written = match local_storage() {
+                Some(storage) => match storage.set_item(prefs_store::KEY, &json) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("couldn't keep the preferences in local storage: {e:?}");
+                        false
+                    }
+                },
+                None => false,
+            };
+            if written {
+                self.prefs_sync.stored(json);
+            } else if let Some(d) = self.prefs_sync.wait(now).and_then(|w| std::time::Duration::try_from_secs_f64(w).ok()) {
+                // Still pending: a frame at the next check retries, even if the app is idle.
+                ctx.request_repaint_after(d);
             }
         }
     }
