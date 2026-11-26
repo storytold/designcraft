@@ -205,9 +205,11 @@ fn painted_bounds(it: &Item) -> Option<Rect> {
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it)?);
+    let pxf = d.parent_xf(&loc);
+    let b = pxf.transform_rect_bbox(painted_bounds(it)?);
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
-    Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
+    let glyph = GLYPH_OVERHANG * max_scale(pxf * it.xf)?.max(1.0);
+    Some((loc.spread, b.inflate(glyph + 0.1 * b.width().max(b.height()), glyph)))
 }
 
 #[cfg(test)]
