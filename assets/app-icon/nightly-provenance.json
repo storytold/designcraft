@@ -1,0 +1,60 @@
+{
+  "title": "DesignCraft nightly deep-background icons",
+  "author": "@nightlty-designcraft (generated for the nightlies lead)",
+  "license": "MIT OR Apache-2.0",
+  "source_commit": null,
+  "inputs": [
+    {
+      "path": "assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png",
+      "sha256": "b8407dae4f43d6f0503ec6c1df619cca34b358d8bb230c6b0d18c992aa5a7f61",
+      "purpose": "Windows/Linux native256 master"
+    },
+    {
+      "path": "assets/app-icon/designcraft-1024.png",
+      "sha256": "5cf554e4ac5b9b02a5e3ef7f9491c421ac7cbdf902eb93834586eaacd3d0feca",
+      "purpose": "native 1024 master, padded onto Apple's 824/1024 grid for the Mac"
+    }
+  ],
+  "method": {
+    "kind": "code-generated derivative of the project-owned icon",
+    "original_palette": {
+      "ink": "#0b0b0c",
+      "paper": "#efe9dc",
+      "background": "#7bb51c"
+    },
+    "nightly_background": "#26400f",
+    "transform": "Fit each pixel's ink/paper/background weights in the existing three-colour palette and rebuild it with the deeper field, keeping alpha and every foreground/detail pixel; derive the Mac 1024 master from the native 1024 tile on Apple's 824/1024 grid (not an upscale from 256) and pack native-size PNG frames into ICO/ICNS. No badge, crescent or letter.",
+    "generator_sha256": "a96dc21e32e581284f9b9cfc4fdf2b47cef2a06a2a8d3184274866f376131399"
+  },
+  "outputs": {
+    "assets/app-icon/designcraft-nightly.png": "01a05015cda1ddf5117ab8e02b6e3cf6cf3106e90e41c91164b7245ad9d22c97",
+    "assets/app-icon/designcraft-nightly-1024.png": "91647d2cc680df2d416fc0fdb33afbaddc02b09090bdef80c466e58807c3ec17",
+    "assets/app-icon/designcraft-nightly.ico": "d100e87c2a98b4a981ddd927454fdef3bca962f490b347a13d5841fa30224d51",
+    "assets/app-icon/designcraft-nightly.icns": "189e20cd7db4014dd807b354abc5da57d894385dd190a630bd0932b626ffe8f2"
+  },
+  "ico_frame_sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    128,
+    256
+  ],
+  "icns_png_slots": {
+    "icp4": 16,
+    "icp5": 32,
+    "ic11": 32,
+    "icp6": 64,
+    "ic12": 64,
+    "ic07": 128,
+    "ic08": 256,
+    "ic13": 256,
+    "ic09": 512,
+    "ic14": 512,
+    "ic10": 1024
+  },
+  "validation": "Input/output hashes recorded; PNG dimensions and container members checked; the tiles were compared visually against the stable icon (same artwork, deeper field, Mac padding intact). Native Explorer/Finder/iconutil/app-package qualification remains unrun."
+}

@@ -97,3 +97,7 @@ sync_github_name = true
 
 [people.gmrmad1]
 real_name = "Madhav Agarwal"
+
+[people.thib-cal]
+display_name = "TS-Ca"
+sync_github_name = true

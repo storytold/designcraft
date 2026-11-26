@@ -247,24 +247,16 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     ui.horizontal(|ui| {
-        // Choose any file in the folder: missing links are looked up there by name.
+        // Missing links are looked up in the chosen folder by name.
         if ui
             .button(crate::i18n::tr(&app.ui.language, "Relink to Folder…"))
             .on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Choose the folder holding the moved graphics"));
             })
             .clicked()
+            && let Err(e) = relink_to_folder(app)
         {
-            let asked = app.ask_open("relink", Bound::Document, |app, path| {
-                let Some(dir) = std::path::Path::new(&path).parent() else { return Ok(Value::Null) };
-                if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()})) {
-                    app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
-                }
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
-            }
+            app.status_error("Relink", e);
         }
     });
 }
@@ -353,6 +345,18 @@ impl DesignApp {
             self.status_error("Unembed", e);
         }
     }
+}
+
+/// Relink to Folder: asks for the folder holding the moved graphics and looks missing
+/// links up there by name.
+pub(crate) fn relink_to_folder(app: &mut DesignApp) -> Result<Value, String> {
+    let title = crate::i18n::tr(&app.ui.language, "Relink to Folder").to_string();
+    app.ask_folder(&title, Bound::Document, |app, dir| {
+        if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir})) {
+            app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
+        }
+        Ok(Value::Null)
+    })
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks
