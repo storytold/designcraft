@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Paste Image",
         [],
         None,
-        "{base64: an image file (PNG/JPEG/GIF/WebP/TIFF/BMP) as base64, name?: its name in the Links panel ending in an image extension (default \"Pasted image.png\"), spread?, at?: [x, y] (spread coords of the image's center; default the first page's center)} → {id, asset} — embedded; a selected empty frame takes the image, otherwise a new frame holds it at one point per pixel, as File › Place sizes an image, and at most 60% of the page width",
+        "{base64: an image file (PNG/JPEG/GIF/WebP/TIFF/BMP) as base64, name?: its name in the Links panel ending in an image extension (default \"Pasted image.png\"), spread?, at?: [x, y] (spread coords of the image's center; default the first page's center)} → {id, asset} — embedded; a selected empty frame takes the image, otherwise a new frame holds it at the size File › Place gives it (the resolution stored in the file, or one point per pixel when the file stores none) and at most 60% of the page width",
         has_doc,
         paste_image
     )]
@@ -140,8 +140,8 @@ fn paste_image(s: &mut Session, p: &Value) -> Result<Value> {
         Some(at) => at,
         None => sp.pages.first().map_or(Point::ZERO, |pg| pg.bounds().center()),
     };
-    // The size File › Place gives it: one point per pixel (`designcraft_images::natural_size`), at
-    // most 60% of the page width.
+    // The size File › Place gives it (`designcraft_images::natural_size`): the resolution stored in
+    // the file, or one point per pixel when it stores none, at most 60% of the page width.
     let (nw, nh) = designcraft_render::natural_size(&bytes, 0).unwrap_or((f64::from(pw), f64::from(ph)));
     let w = nw.min(d.settings.page_width * 0.6);
     let h = nh * w / nw;
@@ -222,6 +222,39 @@ mod tests {
         let w = d.settings.page_width * 0.6;
         assert!((b.width() - w).abs() < 1e-9 && (b.height() - w / 100.0).abs() < 1e-9, "{b:?}");
         assert!((b.center().x - page.center().x).abs() < 1e-9 && (b.center().y - page.center().y).abs() < 1e-9, "{b:?}");
+    }
+
+    /// `png` with a pHYs chunk after IHDR giving `ppm` pixels per meter on both axes.
+    fn png_with_phys(png: &[u8], ppm: u32) -> Vec<u8> {
+        let mut data = ppm.to_be_bytes().repeat(2);
+        data.push(1);
+        let mut kind_and_data = b"pHYs".to_vec();
+        kind_and_data.extend_from_slice(&data);
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in &kind_and_data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        // Signature (8) + IHDR chunk (length 4 + type 4 + data 13 + CRC 4).
+        let mut out = png[..33].to_vec();
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(&kind_and_data);
+        out.extend_from_slice(&(!crc).to_be_bytes());
+        out.extend_from_slice(&png[33..]);
+        out
+    }
+
+    #[test]
+    fn a_pasted_image_file_comes_in_at_its_stored_resolution() {
+        let mut s = doc();
+        // 5669 pixels per meter is 144 ppi: 40 × 30 pixels place 20 × 15 points.
+        let png = png_with_phys(&png(40, 30), 5669);
+        let r = s.execute(ID, &json!({"base64": base64_encode(&png), "at": [300, 400]})).unwrap();
+        let b = s.doc().unwrap().doc.item(ItemId(r["id"].as_u64().unwrap())).unwrap().bounds();
+        assert!((b.width() - 20.0).abs() < 0.01 && (b.height() - 15.0).abs() < 0.01, "{b:?}");
+        assert!((b.center().x - 300.0).abs() < 1e-9 && (b.center().y - 400.0).abs() < 1e-9, "{b:?}");
     }
 
     #[test]

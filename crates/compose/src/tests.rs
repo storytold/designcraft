@@ -1499,6 +1499,137 @@ fn hyphen_limit_is_a_hard_constraint() {
     }
 }
 
+/// Each paragraph's own text decides, not the story's: a Korean document's English paragraphs
+/// still hyphenate, and a mostly-English story's Korean paragraphs still do not (noted in review
+/// of #1688).
+#[test]
+fn hyphenation_follows_each_paragraph_not_the_story() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 / an English paragraph that wants hyphenation
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4}";
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let hyphens = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let lines = all_lines(&cs);
+        // Which paragraph each hyphenated line belongs to: the Korean one is first.
+        lines.iter().filter(|l| l.hyphenated).count()
+    };
+    // The English paragraph in a Korean document still hyphenates: the story is mostly Hangul,
+    // but that paragraph is not.
+    let mixed = format!("{korean}\n{english}");
+    assert!(hyphens(&mixed) > 0, "the English paragraph of a Korean document still hyphenates");
+    // And the Korean paragraph alone invents none.
+    assert_eq!(hyphens(korean), 0, "a Korean paragraph invents no hyphens");
+}
+
+/// The paragraph's *glyphs* decide, not its source text: hidden conditional text is not set, so
+/// it does not get a vote. Reading the source let hidden Korean turn hyphenation off for the
+/// visible English around it (noted in review of #1688).
+#[test]
+fn hidden_text_does_not_decide_whether_a_paragraph_hyphenates() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    // 이번 통지문은 아래와 같습니다 — repeated, so the Hangul outweighs the English after it
+    // (`mostly_hangul` wants at least as many Hangul characters as ASCII letters).
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} \u{C544}\u{B798}\u{C640} \u{AC19}\u{C2B5}\u{B2C8}\u{B2E4} ".repeat(6);
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let text = format!("{korean}{english}");
+
+    let hyphens = |hide: bool| {
+        let (mut d, sid, _) = doc_with(&text, rect, para.clone());
+        d.conditions.push(designcraft_doc::Condition { name: "Draft".into(), color: [255, 0, 0], visible: !hide });
+        let story = d.story_mut(sid).expect("the story is there");
+        let chars = designcraft_doc::CharAttrs { conditions: Some(vec!["Draft".into()]), ..Default::default() };
+        story.chars = vec![
+            designcraft_doc::CharRun { len: korean.len(), format: designcraft_doc::CharFormat { over: chars, ..Default::default() } },
+            designcraft_doc::CharRun { len: english.len(), format: designcraft_doc::CharFormat::default() },
+        ];
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // Shown, the Hangul outweighs the English and the paragraph is not hyphenated.
+    assert_eq!(hyphens(false), 0, "a visibly Korean paragraph invents no hyphens");
+    // Hidden, the only text set is English, and it hyphenates like any English paragraph.
+    assert!(hyphens(true) > 0, "hidden Korean does not turn hyphenation off for the visible English");
+}
+
+/// `split_drop_cap` takes the drop cap's glyphs out of the vector, so classifying the paragraph
+/// after it ran lost that character's vote: with the Hangul and Latin counts level, dropping one
+/// Hangul character made the paragraph read as Latin and its English words took automatic hyphens
+/// (noted in review). The classification is made before the split.
+#[test]
+fn a_drop_cap_still_counts_when_a_paragraph_is_judged_korean() {
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    // English long enough that it really does hyphenate in a 90 pt column -- the run
+    // `hidden_text_does_not_decide_whether_a_paragraph_hyphenates` uses for the same reason. A
+    // short run leaves no hyphens whichever way the paragraph is classified, so the test would
+    // pass without testing anything (measured: it did).
+    let english = "This notice about hyphenation and composition continues for a while in English";
+    let letters = english.chars().filter(char::is_ascii_alphabetic).count();
+    // One Hangul syllable per Latin letter, so the counts are level -- which `hangul >= latin`
+    // calls Korean, and one character either way decides it.
+    let korean: String = "\u{AC00}\u{B098}\u{B2E4}\u{B77C}\u{B9C8}".chars().cycle().take(letters).collect();
+    assert_eq!(korean.chars().count(), letters, "the two counts are level at {letters}");
+    let text = format!("{korean} {english}");
+
+    let hyphens = |para: ParaAttrs| {
+        let (d, sid, _) = doc_with(&text, rect, para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+    let base = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+
+    // Level counts read as Korean, so nothing hyphenates.
+    assert_eq!(hyphens(base.clone()), 0, "level counts read as Korean");
+    // The paragraph opens on a Hangul character, so that character is the drop cap. It is still
+    // set, just larger, so the answer must not change.
+    let with_cap = ParaAttrs { drop_cap_lines: Some(2), drop_cap_chars: Some(1), ..base.clone() };
+    assert_eq!(hyphens(with_cap), 0, "a drop cap does not turn the paragraph Latin");
+
+    // And the fixture really is poised on the boundary: one Latin letter more and the English
+    // hyphenates, so the assertions above are not passing for want of any hyphen at all.
+    let tipped = format!("{korean} {english}x");
+    let (d, sid, _) = doc_with(&tipped, rect, base);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(all_lines(&cs).iter().any(|l| l.hyphenated), "one more Latin letter tips it and hyphens appear");
+}
+
+/// A Korean notice leaves its paragraphs at the default English language, so English
+/// hyphenation broke the Latin words Korean particles attach to and the addresses such a document
+/// is full of: `New-` / `s와`, `library.exam-` / `ple.kr` (#1688). The lines may now be looser --
+/// that is the cost of not hyphenating, and what #1691 is about -- but no hyphen is invented
+/// inside those tokens.
+#[test]
+fn korean_text_and_addresses_are_not_hyphenated() {
+    // Narrow enough that every line has to break somewhere.
+    let rect = Rect::new(0.0, 0.0, 90.0, 100_000.0);
+    let para = ParaAttrs { align: Some(Align::LeftJustified), hyphenate: Some(true), ..Default::default() };
+    let hyphens_in = |text: &str| {
+        let (d, sid, _) = doc_with(text, rect, para.clone());
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().filter(|l| l.hyphenated).count()
+    };
+
+    // 이번 통지문은 News와 관련된 library.example.kr 주소를 포함합니다
+    let korean = "\u{C774}\u{BC88} \u{D1B5}\u{C9C0}\u{BB38}\u{C740} News\u{C640} \u{AD00}\u{B828}\u{B41C} library.example.kr \u{C8FC}\u{C18C}\u{B97C} \u{D3EC}\u{D568}\u{D569}\u{B2C8}\u{B2E4}";
+    assert_eq!(hyphens_in(korean), 0, "a Korean paragraph invents no hyphens");
+
+    // An English paragraph holding the same address: the prose still hyphenates, the address does
+    // not, so the protection is about the token and not about turning hyphenation off.
+    let english = "This notice about hyphenation and composition mentions library.example.kr somewhere inside a long sentence";
+    assert!(hyphens_in(english) > 0, "English prose is still hyphenated");
+    let (d, sid, _) = doc_with(english, rect, para.clone());
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    for l in all_lines(&cs).iter().filter(|l| l.hyphenated) {
+        let upto = &english[..l.range.end.min(english.len())];
+        let token = upto.rsplit(char::is_whitespace).next().unwrap_or("");
+        assert!(!"library.example.kr".starts_with(token) || token.is_empty(), "a hyphen was invented inside the address: {token:?}");
+    }
+}
+
 #[test]
 fn hyphenation_zone_limits_ragged_hyphens() {
     let text = CORPUS.join(" ");
@@ -3000,6 +3131,19 @@ fn vertical_justification_with_an_extreme_grid_increment_stays_finite() {
             assert!((b - natural).abs() < 1e-6, "Top, grid away from the line: baseline {b}, natural {natural}");
         }
     }
+
+    // A grid whose first line is too far off to count the text area in its 0.7 pt steps: Bottom
+    // takes the room as it does without a grid.
+    let mut area = Rect::ZERO;
+    let (lines, _) = grid_doc("One", ParaAttrs { grid_align: Some(GridAlign::AllLines), ..Default::default() }, |d, sid| {
+        let spec = frame_specs(d, sid).remove(0);
+        area = spec.area;
+        let opts = &mut d.item_mut(spec.id).unwrap().text_frame_mut().unwrap().options;
+        opts.baseline_grid = Some(designcraft_doc::FrameBaselineGrid::new(-1.7e308, 0.7));
+        opts.vertical_justification = Bottom;
+    });
+    let b = lines[0].baseline;
+    assert!((b - area.y1).abs() < 1e-6, "Bottom with a far-off grid: baseline {b}, text area {area:?}");
 }
 
 /// In a shaped frame that narrows and widens again, Align to Baseline Grid takes the grid step
@@ -5195,6 +5339,22 @@ fn drop_cap_on_a_baseline_grid_reaches_down_by_grid_steps() {
     assert!((lines[2].baseline - cap_of(dc) - (lines[0].baseline - cap_of(body))).abs() < 0.01);
 }
 
+/// A grid the lines can't count in steps (its first line too far off for a 0.7 pt step) is no grid
+/// for the drop cap either: it reaches down to line 3 at the 12 pt leading the lines are set at.
+#[test]
+fn drop_cap_skips_a_grid_the_lines_skip() {
+    let (d, sid, _) = drop_doc(LOREM, ParaAttrs { grid_align: Some(designcraft_doc::GridAlign::AllLines), ..drop_cap(3, 1) });
+    let mut specs = frame_specs(&d, sid);
+    specs[0].grid = Some((-1.7e308, 0.7));
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!((lines[2].baseline - lines[0].baseline - 24.0).abs() < 1e-6, "{} {}", lines[0].baseline, lines[2].baseline);
+    let dc = &lines[0].glyphs[0];
+    assert!((lines[0].baseline + dc.y - lines[2].baseline).abs() < 1e-6, "drop cap baseline {} below line 1", dc.y);
+    let b = lines[0].drop_cap.unwrap();
+    assert!((b.baseline - lines[2].baseline).abs() < 1e-6, "{}", b.baseline);
+}
+
 /// A line with a larger auto leading doesn't move the drop cap: it reaches down `lines − 1`
 /// leadings of the text after it, not to where line N is set.
 #[test]
@@ -5627,6 +5787,27 @@ fn norwegian_text_gets_norwegian_hyphenation() {
         let nb = hyphen::Lang::for_language("Norwegian: Bokmål").unwrap();
         let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), nb);
         assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a hyph-no point");
+    }
+}
+
+/// Croatian text in a narrow frame composes with automatic hyphenation, and every line-ending
+/// break is a hyph-hr point. Without the croatian feature the language resolves to nothing.
+#[test]
+fn croatian_text_gets_croatian_hyphenation() {
+    let text = "udžbenik njegovati rastavljanje hrvatski ljubav najbolji izvor";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 76.0, 700.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    let n = st.len();
+    st.format_chars(0..n, |f| f.over.language = Some("Croatian".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let breaks: Vec<&str> = all_lines(&cs).into_iter().filter(|l| l.hyphenated).map(|l| text[l.range.clone()].trim_end()).collect();
+    assert!(!breaks.is_empty(), "Croatian text is hyphenated");
+    for b in breaks {
+        let tail = b.rsplit(' ').next().unwrap_or(b);
+        let whole = text[text.find(b).unwrap() + b.len() - tail.len()..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let hr = hyphen::Lang::for_language("Croatian").unwrap();
+        let pts = hyphen::hyphen_points_in(whole, &hyphen::Limits::default(), hr);
+        assert!(pts.contains(&tail.chars().count()), "break {tail}- in {whole} is a hyph-hr point");
     }
 }
 
@@ -6974,6 +7155,224 @@ fn mojikumi_kinsoku_push_in_and_push_out_select_different_legal_breaks() {
     for cs in [&inside, &outside] {
         assert!(all_lines(cs).iter().all(|l| l.end_x <= l.x1 + 0.01));
     }
+}
+
+/// A paragraph that can compress: the Mojikumi table gives its ideographs shrinkable space, so
+/// a line ending before a 禁則 boundary can be pulled in (追い込み) or pushed out (追い出し).
+fn kinsoku_push_pull_doc(kind: Option<&str>) -> (Document, StoryId) {
+    kinsoku_push_pull_doc_text("甲乙丙丁戊己庚辛", kind)
+}
+
+/// Same paragraph with a different body: used for the supplementary-plane ideographs, whose
+/// CJK classification must match the breaker's Han set.
+fn kinsoku_push_pull_doc_text(text: &str, kind: Option<&str>) -> (Document, StoryId) {
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    let (mut d, sid, _) = doc_with(
+        text,
+        Rect::new(0.0, 0.0, 45.0, 300.0),
+        ParaAttrs {
+            composer: Some(Composer::SingleLine),
+            mojikumi: Some("MojikumiTable/Compress".into()),
+            kinsoku_type: kind.map(str::to_string),
+            ..Default::default()
+        },
+    );
+    Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+        name: "Compress".into(),
+        based_on: "SimpChineseDefault".into(),
+        overrides: vec![MojikumiAki {
+            target_class: 12,
+            side_class: 12,
+            after: true,
+            minimum: 0.0,
+            desired: 1.0,
+            maximum: 2.0,
+            priority: 1,
+            ..Default::default()
+        }],
+    });
+    (d, sid)
+}
+
+fn first_line_end(cs: &ComposedStory) -> (usize, f64) {
+    let line = all_lines(cs)[0];
+    (line.range.end, line.end_x)
+}
+
+#[test]
+fn default_kinsoku_type_composes_as_push_in_first() {
+    // The empty value is InDesign's default (and what the UI's "Push In First" stores): it must
+    // behave as push-in-first, not as the minimum-adjustment mode.
+    let (d, sid) = kinsoku_push_pull_doc(None);
+    let default = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushInFirst"));
+    let push_in = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushOutFirst"));
+    let push_out = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(first_line_end(&default).0, first_line_end(&push_in).0);
+    assert!(first_line_end(&default).0 > first_line_end(&push_out).0, "{:?} vs {:?}", first_line_end(&default), first_line_end(&push_out));
+}
+
+#[test]
+fn push_out_only_leaves_the_line_end_uncompressed() {
+    // Push-out-only turns the 追い込み compression off: the line cannot be squeezed to reach a
+    // break, so it ends earlier (and never past the measure).
+    let (d, sid) = kinsoku_push_pull_doc(None);
+    let push_in = compose_story(&d, sid, &ComposeOptions::default());
+    let (d, sid) = kinsoku_push_pull_doc(Some("KinsokuPushOutOnly"));
+    let push_out_only = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(first_line_end(&push_out_only).0 <= first_line_end(&push_in).0);
+    for cs in [&push_in, &push_out_only] {
+        for line in all_lines(cs) {
+            assert!(line.end_x <= line.x1 + 0.01, "line end {} past the measure {}", line.end_x, line.x1);
+        }
+    }
+    // Push-out-only's first line is not compressed to the measure: it ends short of it.
+    let (_, short) = first_line_end(&push_out_only);
+    let line = all_lines(&push_out_only)[0];
+    assert!(line.x1 - short > 0.5, "no compression: end {short} vs measure {}", line.x1);
+}
+
+#[test]
+fn supplementary_ideograph_paragraph_keeps_the_kinsoku_gate() {
+    // Extension B 以降の漢字 (U+20000..) は breaker では Han として扱われる。段落全体の CJK 判定
+    // (is_cjk_char) がそこを落とすと、補助面だけの段落で禁則の指定が効かなくなる。
+    // 補助面だけの本文でも、追い込みと追い出しで行末が変わる (指定が効いている) こと。
+    let first_end = |text: &str, kind: Option<&str>| {
+        let (d, sid) = kinsoku_push_pull_doc_text(text, kind);
+        first_line_end(&compose_story(&d, sid, &ComposeOptions::default())).0
+    };
+    let bmp = "甲乙丙丁戊己庚辛";
+    let sup = "\u{20000}\u{20001}\u{20002}\u{20003}\u{20004}\u{20005}\u{20006}\u{20007}";
+    // 対照: BMP の漢字だけの段落では、追い込みと追い出しで行末が変わる
+    assert_ne!(first_end(bmp, None), first_end(bmp, Some("KinsokuPushOutOnly")), "BMP の対照で禁則の指定が効いていない");
+    // 補助面だけの段落でも同じように効く (判定から漏れると、どちらも同じ行末になる)
+    assert_ne!(first_end(sup, None), first_end(sup, Some("KinsokuPushOutOnly")), "補助面だけの段落で禁則の指定が効いていない");
+    // 判定そのもの (Extension B の最初と最後、Ext G の終わり)
+    assert!(is_cjk_char('\u{20000}'));
+    assert!(is_cjk_char('\u{2A6DF}'));
+    assert!(is_cjk_char('\u{3FFFF}'));
+    assert!(!is_cjk_char('A'));
+}
+
+#[test]
+fn hangul_jamo_extended_blocks_count_as_cjk() {
+    // `is_cjk_char` takes Hangul from the breaker's classification, so the syllables and the
+    // Jamo Extended-A/B blocks count as well: a Hangul-only paragraph keeps its 禁則 priority.
+    for c in ['\u{A960}', '\u{A97F}', '\u{D7B0}', '\u{D7FF}'] {
+        assert!(is_cjk_char(c), "U+{:04X} is Hangul", c as u32);
+    }
+    assert!(is_cjk_char('\u{3105}'), "bopomofo is still CJK");
+}
+
+/// Shape `text` as a one-paragraph story with the default font and styles: the glyph list the
+/// composition classifies before `split_drop_cap` and `prepend_label`.
+fn shape_for_script_test(text: &str) -> Vec<Glyph> {
+    shape_for_script_test_with(text, &SubstCtx::default())
+}
+
+/// Same, with text variables resolved through `sub`.
+fn shape_for_script_test_with(text: &str, sub: &SubstCtx) -> Vec<Glyph> {
+    let db = designcraft_fonts::FontDb::global().scoped(0);
+    let mut styles = Vec::new();
+    let mut missing = std::collections::HashMap::new();
+    let mut table = shape::StyleTable { styles: &mut styles, missing: &mut missing };
+    let mut story = Story::new(StoryId(0));
+    story.insert(0, text);
+    let doc_styles = designcraft_doc::Styles::default();
+    shape::shape_para(
+        shape::ShapeInput {
+            db: &db,
+            styles: &doc_styles,
+            story: &story,
+            range: 0..text.len(),
+            para_chars: &designcraft_doc::CharProps::default(),
+            auto_leading: shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+            sub,
+            nested: &[],
+            grep: &[],
+            lines: &[],
+            drop_cap: (0, ""),
+        },
+        &mut table,
+    )
+    .glyphs
+}
+
+#[test]
+fn paragraph_script_counts_a_drop_cap_but_not_a_generated_label() {
+    // The 禁則 gate reads the paragraph's own shaped glyphs. The drop cap has not been split off
+    // yet, so a CJK one still makes the paragraph CJK.
+    assert!(paragraph_is_cjk(&shape_for_script_test("漢abc")));
+    // A generated list label is prepended after the gate, so it is not part of the paragraph.
+    let mut glyphs = shape_for_script_test("abc");
+    assert!(!paragraph_is_cjk(&glyphs));
+    let db = designcraft_fonts::FontDb::global().scoped(0);
+    let mut styles = Vec::new();
+    let mut missing = std::collections::HashMap::new();
+    let mut table = shape::StyleTable { styles: &mut styles, missing: &mut missing };
+    let n = prepend_label(
+        &db,
+        &mut glyphs,
+        "第1章",
+        0,
+        &designcraft_doc::CharProps::default(),
+        shape::TypeEnv { auto_leading: 1.2, adv: Default::default(), glyph_fallback: true },
+        &mut table,
+    );
+    assert!(n > 0);
+    // The label's glyphs are CJK, so a gate computed after prepend_label would flip the answer.
+    assert!(glyphs.iter().take(n).any(|g| is_cjk_char(g.ch)));
+}
+
+#[test]
+fn paragraph_script_reads_a_text_variable_replacement() {
+    // A text variable's glyphs keep the source marker in `ch`; the paragraph shows the replacement,
+    // so a CJK replacement makes it CJK text even though no source character is.
+    let marker = designcraft_doc::vars::var_char(0).expect("variable 0");
+    let text = format!("{marker}abc");
+    let sub = SubstCtx { vars: Arc::new(vec!["漢字".into()]), ..Default::default() };
+    let glyphs = shape_for_script_test_with(&text, &sub);
+    assert!(!glyphs.iter().any(|g| is_cjk_char(g.ch)), "the source is only the marker and Latin text");
+    assert!(glyphs.iter().any(|g| g.generated_text.as_deref().is_some_and(|t| t.chars().any(is_cjk_char))));
+    assert!(paragraph_is_cjk(&glyphs), "the CJK replacement is the paragraph's text");
+}
+
+#[test]
+fn kinsoku_priority_modes_map_to_breaker_policies() {
+    let mut pp = ParaProps::default();
+    let story = designcraft_doc::Story::new(designcraft_doc::StoryId::default());
+    for (kind, priority) in [
+        ("", 1u8),
+        ("KinsokuPushInFirst", 1),
+        ("KinsokuPushOutFirst", 2),
+        ("KinsokuPushOutOnly", 3),
+        ("KinsokuPrioritizeAdjustmentAmount", 0),
+        ("KinsokuSomethingElse", 0),
+    ] {
+        pp.kinsoku_type = kind.to_string();
+        let sp = spacing_for(&pp, 12.0, &story, true);
+        assert_eq!(sp.kinsoku_priority, priority, "{kind}");
+        assert!(sp.kinsoku_cjk, "{kind}");
+        assert!(!spacing_for(&pp, 12.0, &story, false).kinsoku_cjk, "{kind}: Latin text is not biased");
+    }
+}
+
+#[test]
+fn latin_paragraphs_are_not_biased_by_the_kinsoku_priority() {
+    // A justified Latin paragraph composes the same with push-in-first, push-out-first and
+    // minimum adjustment: the policy is about CJK 禁則, and a Latin paragraph has none.
+    let compose_with = |kind: &str| {
+        let (mut d, sid, _) =
+            doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 500.0), ParaAttrs { align: Some(Align::FullyJustified), ..Default::default() });
+        d.story_mut(sid).unwrap().paras[0].para.kinsoku_type = Some(kind.to_string());
+        compose_story(&d, sid, &ComposeOptions::default())
+    };
+    let ends = |cs: &ComposedStory| all_lines(cs).iter().map(|l| l.range.end).collect::<Vec<_>>();
+    let push_in = ends(&compose_with(""));
+    assert_eq!(ends(&compose_with("KinsokuPushInFirst")), push_in);
+    assert_eq!(ends(&compose_with("KinsokuPushOutFirst")), push_in);
+    assert_eq!(ends(&compose_with("KinsokuPrioritizeAdjustmentAmount")), push_in);
 }
 
 #[test]
@@ -10110,4 +10509,147 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+/// A story numbering list `list` (continuing across stories; Upper Roman, no tab after the
+/// number) in a frame at `r` on `page`.
+fn listed_story(d: &mut Document, page: usize, r: Rect, text: &str, list: &str) -> StoryId {
+    if !d.settings.lists.iter().any(|l| l.name == list) {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: list.into(), continue_across_stories: true });
+    }
+    let lid = d.default_layer();
+    let para = ParaAttrs { list_name: Some(list.into()), ..numbered(designcraft_doc::NumberStyle::UpperRoman, "^#. ") };
+    d.add_text_frame(SpreadRef::Doc(page), r, lid, text, ParaFormat { para, ..Default::default() }).unwrap().1
+}
+
+#[test]
+fn a_list_a_story_does_not_number_leaves_its_composition_cached() {
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let r = Rect::new(36.0, 36.0, 300.0, 300.0);
+    let other = listed_story(&mut d, 0, r, "a", "Other");
+    let steps = listed_story(&mut d, 0, Rect::new(36.0, 320.0, 300.0, 500.0), "b", "Steps");
+    let later = listed_story(&mut d, 1, r, "x\ny", "Steps");
+    let cache = Cache::new();
+    let before = cache.get(&d, later, None);
+    assert_eq!(list_labels(&before, LABEL_CHARS), ["II. ", "III. "]);
+    // An earlier story numbers more of a list `later` doesn't use: nothing to compose again.
+    let st = d.story_mut(other).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    assert!(Arc::ptr_eq(&before, &cache.get(&d, later, None)), "another list's numbering recomposed the story");
+    // More of its own list: composed again, with the new numbers.
+    let st = d.story_mut(steps).unwrap();
+    let end = st.len();
+    st.insert(end, "\nmore");
+    let after = cache.get(&d, later, None);
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(list_labels(&after, LABEL_CHARS), ["III. ", "IV. "]);
+}
+
+#[test]
+fn a_neighbours_numbering_moves_the_text_its_objects_wrap() {
+    // Regression: a story wrapped by a neighbour's anchored object kept its cached lines when
+    // only the neighbour's numbering changed (a list continuing from an earlier page), though
+    // the longer number pushed the object's anchor onto the next line.
+    let long = [LOREM; 3].join(" ");
+    let mut d = Document::new(&NewDocument { pages: 2, facing_pages: false, ..Default::default() });
+    let first = listed_story(&mut d, 0, Rect::new(36.0, 36.0, 300.0, 300.0), "a", "Steps");
+    // A frame just wide enough for "II. Anchor", not for "XXXVIII. Anchor".
+    let a = listed_story(&mut d, 1, Rect::new(0.0, 0.0, 80.0, 400.0), "Anchor", "Steps");
+    let fa = d.story(a).unwrap().frames[0];
+    let lid = d.default_layer();
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), Rect::new(320.0, 0.0, 620.0, 400.0), lid, &long, ParaFormat::default()).unwrap();
+    let left = all_lines(&compose_story(&d, b, &ComposeOptions::default()))[0].x0;
+    let area = d.item(fa).unwrap().text_area();
+    let end = d.story(a).unwrap().len();
+    anchor_box(&mut d, a, end, left - area.x0, 20.0, true, WrapMode::BoundingBox);
+    let cache = Cache::new();
+    let before = line_layout(&cache.get(&d, b, None));
+    assert_eq!(before, line_layout(&compose_story(&d, b, &ComposeOptions::default())));
+    // 36 more numbers on the first page: the neighbour's paragraph becomes XXXVIII.
+    let st = d.story_mut(first).unwrap();
+    let end = st.len();
+    st.insert(end, &"\nmore".repeat(36));
+    let fresh = line_layout(&compose_story(&d, b, &ComposeOptions::default()));
+    assert_ne!(fresh, before, "the longer number moves the object");
+    assert_eq!(line_layout(&cache.get(&d, b, None)), fresh);
+}
+
+#[test]
+fn many_stories_in_continuing_lists_compose_quickly() {
+    // Regression: each story's cache lookup searched the whole item tree per story and per list
+    // to order the stories by page, so a 677-story book took 69 s to compose and a second per
+    // repaint.
+    let pages = 20;
+    let mut d = Document::new(&NewDocument { pages, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let names: Vec<String> = (0..8).map(|i| format!("List {i}")).collect();
+    for name in &names {
+        d.settings.lists.push(designcraft_doc::NumberedList { name: name.clone(), continue_across_stories: true });
+    }
+    let mut sids = Vec::new();
+    for i in 0..400 {
+        let para = ParaAttrs { list_name: Some(names[i % names.len()].clone()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.^t") };
+        let (x, y) = ((i / pages % 4) as f64 * 120.0, (i / pages / 4) as f64 * 120.0);
+        let r = Rect::new(36.0 + x, 36.0 + y, 140.0 + x, 140.0 + y);
+        sids.push(d.add_text_frame(SpreadRef::Doc(i % pages), r, lid, "a\nb", ParaFormat { para, ..Default::default() }).unwrap().1);
+    }
+    let cache = Cache::new();
+    let t = std::time::Instant::now();
+    // Compose everything, then look everything up again (what every repaint does).
+    for _ in 0..2 {
+        for &sid in &sids {
+            cache.get(&d, sid, None);
+        }
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+    // Story 392 (list 0) sits on page 12. List 0 is every 8th story, on pages 0, 8, 16, 4, 12 in
+    // turn: 30 of them on earlier pages and 9 earlier on page 12 come first, two numbers each.
+    let later = cache.get(&d, sids[392], None);
+    assert_eq!(list_labels(&later, LABEL_CHARS), ["79.", "80."]);
+    assert_eq!(list_labels(&cache.get(&d, sids[0], None), LABEL_CHARS), ["1.", "2."]);
+}
+
+#[test]
+fn moving_a_frame_within_its_spread_renumbers_continuing_lists() {
+    // Regression: the numbering starts were cached by spread address, which an in-place edit of an
+    // unshared spread keeps, so moving a frame to the other page of its spread kept stale numbers.
+    let mut d = Document::new(&NewDocument { pages: 3, facing_pages: true, ..Default::default() });
+    let lid = d.default_layer();
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
+    let fmt = ParaFormat { para, ..Default::default() };
+    let (left, right) = {
+        let sp = &d.spreads[1];
+        (sp.pages[0].x, sp.pages[1].x)
+    };
+    // `b` is made first (lower id) on the right page, `a` on the left page: a numbers first.
+    let r = |x: f64| Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+    let (_, b) = d.add_text_frame(SpreadRef::Doc(1), r(right), lid, "b1\nb2", fmt.clone()).unwrap();
+    let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), r(left), lid, "a1\na2", fmt).unwrap();
+    let cache = Cache::new();
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["3.", "4."]);
+    // Move `a` onto the right page in place: same page as `b`, so `b` (lower id) now numbers first.
+    let loc = d.find(fa).unwrap();
+    let it = d.item_mut_at(&loc).unwrap();
+    it.xf = designcraft_geom::Affine::translate((right - left, 0.0)) * it.xf;
+    assert_eq!(d.stories_in_page_order().iter().map(|s| s.id).collect::<Vec<_>>()[..2], [b, a]);
+    assert_eq!(list_labels(&cache.get(&d, b, None), LABEL_CHARS), ["1.", "2."]);
+    assert_eq!(list_labels(&cache.get(&d, a, None), LABEL_CHARS), ["3.", "4."]);
+}
+
+#[test]
+fn editing_a_paragraph_style_rebuilds_the_numbering_starts() {
+    // Regression: nothing but the cached starts held the styles, so an edit kept their address
+    // (`Arc::make_mut` writes in place) and the starts from before it were returned.
+    let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+    let lid = d.default_layer();
+    d.settings.lists.push(designcraft_doc::NumberedList { name: "Steps".into(), continue_across_stories: true });
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 200.0, 200.0), lid, "a\nb", ParaFormat::default()).unwrap();
+    let cache = Cache::new();
+    assert_eq!(cache.number_starts(&d).lists_in(sid).count(), 0);
+    let basic = d.styles_mut().para_mut(designcraft_doc::story::BASIC_PARAGRAPH).unwrap();
+    basic.para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
+    assert_eq!(cache.number_starts(&d).lists_in(sid).count(), 1);
 }

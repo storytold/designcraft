@@ -319,6 +319,7 @@ fn plain_blocks(blocks: &[std::sync::Arc<Block>]) -> String {
                     out.push('\n');
                 }
                 first = false;
+                // The importer accepts tracked changes: deletions are left out, inline objects expanded.
                 let text = p.final_text();
                 let is_break = |c: char| matches!(c, designcraft_doc::PAGE_BREAK | designcraft_doc::COLUMN_BREAK);
                 out.push_str(&text.chars().map(|c| if is_break(c) { '\n' } else { c }).collect::<String>());

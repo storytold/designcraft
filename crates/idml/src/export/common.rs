@@ -10,7 +10,7 @@ pub(super) fn p(name: &str, ty: &str, val: impl Into<String>) -> El {
 
 /// Insert a `<Properties>` element as the first child when there are any.
 pub(super) fn with_props(el: El, props: Vec<El>) -> El {
-    crate::xml::from_craft(craft_idml::with_props(crate::xml::to_craft(&el), props.into_iter().map(|p| crate::xml::to_craft(&p)).collect()))
+    crate::xml::from_craft_for_write(craft_idml::with_props(crate::xml::to_craft(&el), props.into_iter().map(|p| crate::xml::to_craft(&p)).collect()))
 }
 
 pub(super) fn pkg_root(kind: &str) -> El {

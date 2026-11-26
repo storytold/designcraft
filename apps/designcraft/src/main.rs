@@ -15,16 +15,24 @@
 
 #[cfg(target_os = "macos")]
 mod apple_events;
+// The build script includes this file by path; the crate needs it only for its tests.
+#[cfg(test)]
+mod build_channel;
+mod build_flavor;
 mod clipboard_image;
 mod control_server;
 mod gpu;
 mod gpu_limits;
+mod launch_profile;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod nightly_session;
 #[cfg(target_os = "macos")]
 mod pointer;
+mod process_identity;
 mod profile;
+mod profile_root;
 mod window_frame;
 
 use designcraft_engine::Session;
@@ -48,6 +56,10 @@ struct App {
     /// (`gpu_limits::log_uncaptured_errors`). Until then wgpu's default handler panics, so a
     /// failing adapter still makes `gpu` start again on the next one.
     log_errors_after_startup: Option<eframe::wgpu::Device>,
+    /// The Nightly session record's owner, finished on the one exit path (`on_exit`).
+    session: nightly_session::Shared,
+    /// Whether this window showed the previous Nightly session's unclean-exit notice.
+    unclean_notice_shown: bool,
 }
 
 impl eframe::App for App {
@@ -107,6 +119,8 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // A normal exit before the third frame is not a crash.
         self.startup.presented();
+        // The one exit path, including macOS Dock Quit (`with_close_requested_on_terminate`).
+        nightly_session::finish_once(&self.session, self.unclean_notice_shown);
         if let Err(e) = preserve_documents_on_exit(&mut self.app) {
             log::error!("Couldn't preserve documents on exit: {e}");
             eprintln!("designcraft: couldn't preserve documents on exit: {e}");
@@ -233,20 +247,23 @@ fn services() -> Services {
         clipboard_change: Some(Box::new(clipboard_image::change_count)),
         #[cfg(target_os = "macos")]
         pointer: Some(Box::new(pointer::screen_position)),
+        open_in_background: true,
         ..Default::default()
     }
 }
 
-/// Desktop app ID: the Linux `.desktop` file name and hicolor icon name (Wayland matches windows by it).
-const APP_ID: &str = "ai.storyteller.designcraft";
-
 /// The window, Dock, taskbar and Alt-Tab icon. macOS gets Apple's icon grid (transparent margin);
 /// elsewhere the full tile. Regenerate with `packaging/icons.sh`.
 fn app_icon() -> Option<egui::IconData> {
+    // The Nightly keeps the artwork on its deeper field, so a dock or window list shows the channel.
     #[cfg(target_os = "macos")]
     let png: &[u8] = include_bytes!("../../../assets/app-icon/designcraft-macos-512.png");
     #[cfg(not(target_os = "macos"))]
-    let png: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png");
+    let png: &[u8] = if designcraft_ui_egui::channel::is_nightly() {
+        include_bytes!("../../../assets/app-icon/designcraft-nightly.png")
+    } else {
+        include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.designcraft.png")
+    };
     eframe::icon_data::from_png_bytes(png).map_err(|e| log::warn!("app icon: {e}")).ok()
 }
 
@@ -261,34 +278,186 @@ fn control_port_from(source: &str, value: Option<String>) -> Option<u16> {
     port
 }
 
+/// What [`prepare_launch`] decided before any start-up service ran.
+struct Launched {
+    /// The arguments left for the ordinary parser (files, and `--` already removed).
+    args: Vec<std::ffi::OsString>,
+    /// This is the Launcher's nightly-v1 build, started with its profile.
+    nightly: bool,
+    /// The Nightly session record's owner.
+    session: nightly_session::Shared,
+    /// The previous Nightly session did not end cleanly.
+    unclean: bool,
+    /// This window could not take the session record (a second Nightly is running).
+    session_unavailable: bool,
+}
+
+fn desktop_session() -> bool {
+    cfg!(windows)
+        || cfg!(target_os = "macos")
+        || (cfg!(target_os = "linux") && ["DISPLAY", "WAYLAND_DISPLAY"].into_iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty())))
+}
+
+/// Whether a refusal may also open a native message box. Standard error always carries the reason;
+/// this only adds a box where one renders without the app's event loop. Never on macOS: rfd's alert
+/// there needs the AppKit run loop this start has not reached, so a refused nightly launch hung in
+/// an invisible modal instead of exiting (GridCraft Mac smoke, 2026-11-26).
+fn refusal_dialog(flavor: build_flavor::BuildFlavor, desktop_session: bool, macos: bool) -> bool {
+    build_flavor::needs_native_error(flavor, desktop_session) && !macos
+}
+
+/// A Nightly launch that is refused before the window: say why where the user looks.
+#[allow(clippy::disallowed_types, reason = "native refusal before any window exists")]
+fn report_launch_profile_error(error: &str) {
+    eprintln!("DesignCraft launch profile: {error}");
+    if refusal_dialog(build_flavor::COMPILED, desktop_session(), cfg!(target_os = "macos")) {
+        // Before any window exists, so this is not the in-frame dialog clippy.toml forbids.
+        let _ = rfd::MessageDialog::new()
+            .set_title("DesignCraft Nightly")
+            .set_description(error)
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+}
+
+/// Select the immutable launch profile before any start-up service or side effect: the version
+/// answer first, then the profile, the Windows identity, the fenced root and the session record.
+fn prepare_launch() -> Option<Launched> {
+    let argv: Vec<_> = std::env::args_os().skip(1).collect();
+    // Plain `--version`, or the Launcher's `--launch-profile nightly-v1 --profile-root <dir>
+    // --version`: answered before logging, root validation, process identity or any window. A
+    // headless runner otherwise hung on macOS and exited 2 on Linux.
+    if build_flavor::COMPILED == build_flavor::BuildFlavor::NightlyV1 && (build_flavor::version_query(&argv) || launch_profile::version_query(&argv))
+    {
+        use std::io::Write as _;
+        let line = build_flavor::version_line(build_flavor::COMPILED, build_flavor::STABLE_VERSION_LINE, build_flavor::VERSION);
+        let _ = writeln!(std::io::stdout(), "{line}");
+        return None;
+    }
+    let launch = launch_profile::parse(argv)
+        .and_then(|launch| {
+            build_flavor::require_profile(build_flavor::COMPILED, &launch.profile)?;
+            if launch.profile.is_nightly() {
+                process_identity::initialize(true, designcraft_ui_egui::channel::NIGHTLY_APP_ID).map_err(|error| error.to_string())?;
+            }
+            Ok(launch)
+        })
+        .and_then(|launch| {
+            launch_profile::prepare(launch, |root| {
+                launch_profile::validate_root(root, |key| std::env::var_os(key), std::env::current_exe().ok().as_deref())
+            })
+        })
+        .unwrap_or_else(|error| {
+            report_launch_profile_error(&error);
+            std::process::exit(2)
+        });
+    let nightly = launch.profile.is_nightly();
+    let channel = if nightly { designcraft_ui_egui::channel::Channel::NightlyV1 } else { designcraft_ui_egui::channel::Channel::Stable };
+    if let Err(error) = launch_profile::install(launch.profile)
+        .and_then(|()| designcraft_ui_egui::channel::select(channel, build_flavor::VERSION, option_env!("DESIGNCRAFT_NIGHTLY_COMMIT")))
+    {
+        report_launch_profile_error(&error);
+        std::process::exit(2);
+    }
+    let mut session = nightly_session::shared();
+    let mut unclean = false;
+    let mut session_unavailable = false;
+    if nightly {
+        match nightly_session::Session::begin_with_health(
+            launch_profile::current().root(),
+            build_flavor::VERSION,
+            option_env!("DESIGNCRAFT_NIGHTLY_COMMIT"),
+        ) {
+            Ok((watch, unavailable)) => {
+                unclean = watch.as_ref().is_some_and(nightly_session::Session::previous_unclean);
+                session_unavailable = unavailable;
+                session = nightly_session::shared_with(watch);
+            }
+            Err(error) => {
+                // Standard error only: this runs before the log file exists.
+                eprintln!("designcraft: Nightly session state is unavailable: {error}");
+                session_unavailable = true;
+            }
+        }
+    }
+    Some(Launched { args: launch.args, nightly, session, unclean, session_unavailable })
+}
+
+/// The ordinary command line, once the launch profile was selected.
+#[derive(Default)]
+struct AppCommand {
+    /// `--control <port>` (Stable only).
+    control_port: Option<u16>,
+    /// `--sample` (Stable only).
+    sample: bool,
+    /// A Stable `--version`/`-V`, answered before anything starts.
+    version: bool,
+    /// Documents to open, in the order they were named.
+    files: Vec<String>,
+    /// The graphics backends a restart asked to skip ([`gpu::SKIP_ARG`]).
+    skip: Vec<String>,
+}
+
+/// Read the arguments left after the launch profile. A Nightly start's first argument is the
+/// separator `launch_profile::parse` put there: it is never a document, and an option after it was
+/// named by the Launcher as a file. Stable keeps its control, sample and version options and drops
+/// a user's own separator, so a literal `--` is never opened as a document.
+fn app_command(args: impl IntoIterator<Item = std::ffi::OsString>, nightly: bool) -> AppCommand {
+    let mut command = AppCommand::default();
+    let mut args = args.into_iter();
+    if nightly {
+        // `parse` puts the protocol's separator first; skipping it keeps a restart's `--gpu-skip=`
+        // (appended after that separator) in the ordinary arm below.
+        args.next();
+    }
+    while let Some(a) = args.next() {
+        let text = a.to_string_lossy().into_owned();
+        match text.as_str() {
+            "--" if !nightly => {
+                command.files.extend(args.map(|rest| rest.to_string_lossy().into_owned()));
+                break;
+            }
+            "--control" if !nightly => command.control_port = control_port_from("--control", args.next().map(|v| v.to_string_lossy().into_owned())),
+            "--sample" if !nightly => command.sample = true,
+            "--version" | "-V" if !nightly => {
+                command.version = true;
+                break;
+            }
+            _ => match gpu::skip_arg(&text) {
+                Some(list) => command.skip = list,
+                None => command.files.push(text),
+            },
+        }
+    }
+    command
+}
+
 fn main() -> std::process::ExitCode {
-    // Windows: the update helper is a copy of this program started with `--finish-update`.
+    let Some(launch) = prepare_launch() else { return std::process::ExitCode::SUCCESS };
+    // Windows: the update helper is a copy of this program started with `--finish-update`. A
+    // Nightly copy is installed and updated by the Launcher, so it never runs the updater.
     #[cfg(windows)]
-    if let Some(result) = craft_update::self_update::finish(&designcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    if !launch.nightly
+        && let Some(result) = craft_update::self_update::finish(&designcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>())
+    {
         std::process::exit(i32::from(result.is_err()));
     }
     // First, so every start-up record (and the engine's panic hook, installed with the first
     // Session) is captured; see `logging`.
     let logger = logging::install();
-    let mut control_port = control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok());
-    let mut files = Vec::new();
-    let mut sample = false;
-    let mut skip = Vec::new();
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--control" => control_port = control_port_from("--control", args.next()),
-            "--sample" => sample = true,
-            "--version" => {
-                println!("designcraft {}", env!("CARGO_PKG_VERSION"));
-                return std::process::ExitCode::SUCCESS;
-            }
-            _ => match gpu::skip_arg(&a) {
-                Some(list) => skip = list,
-                None => files.push(a),
-            },
-        }
+    // A Nightly launch is handed files only; its control channel, sample document and graphics
+    // restart options are not part of the Launcher's protocol.
+    let command = app_command(launch.args, launch.nightly);
+    if command.version {
+        println!("{}", build_flavor::version_line(build_flavor::COMPILED, build_flavor::STABLE_VERSION_LINE, build_flavor::VERSION));
+        return std::process::ExitCode::SUCCESS;
     }
+    // A Nightly start never takes the Stable control channel, even from the environment.
+    let control_port = command.control_port.or_else(|| {
+        if launch.nightly { None } else { control_port_from("DESIGNCRAFT_CONTROL_PORT", std::env::var("DESIGNCRAFT_CONTROL_PORT").ok()) }
+    });
+    let AppCommand { sample, files, skip, .. } = command;
     // A portable.txt whose DesignCraftData folder cannot be written: the platform folders are used
     // instead (see `profile`), and the user is told, in the log and in the status bar.
     let portable_note = profile::unwritable_portable_dir().map(|dir| {
@@ -299,14 +468,14 @@ fn main() -> std::process::ExitCode {
     // leaves no file behind. Records logged until now are written to it first.
     if let (Some(logger), Some(dir)) = (logger, profile::config_dir()) {
         match logger.attach_dir(&dir.join("logs")) {
-            Ok(path) => log::info!("DesignCraft {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+            Ok(path) => log::info!("{} {}, log file {}", designcraft_ui_egui::channel::name(), build_flavor::VERSION, path.display()),
             // Standard error only by now (`attach_dir` gave up on the file); unlike `eprintln!`, never panics.
             Err(e) => log::warn!("no log file: {e}"),
         }
     }
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("DesignCraft")
+            .with_title(designcraft_ui_egui::channel::name())
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 560.0])
             .with_decorations(!cfg!(target_os = "windows"))
@@ -319,7 +488,7 @@ fn main() -> std::process::ExitCode {
         system_font_fallback: false,
         ..Default::default()
     };
-    options.viewport = options.viewport.with_app_id(APP_ID);
+    options.viewport = options.viewport.with_app_id(designcraft_ui_egui::channel::current().app_id());
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
@@ -384,10 +553,19 @@ fn main() -> std::process::ExitCode {
     #[cfg(target_os = "macos")]
     let events = &apple_events;
     let created = startup.clone();
+    // What the app creator needs, copied out of `launch` so the closure does not borrow it.
+    let nightly = launch.nightly;
+    let session_unavailable = launch.session_unavailable;
+    let app_session = launch.session.clone();
+    // The same record, for a start that created no window (the creator closure owns the Arc).
+    let exit_session = launch.session.clone();
+    // Whether the previous Nightly session's notice reaches a window: always when one is shown,
+    // and the same answer for the exit paths below.
+    let unclean_notice_shown = launch.unclean;
     // A panic that ends the window (egui-wgpu's own) is caught here: never a crash.
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
-            "DesignCraft",
+            designcraft_ui_egui::channel::name(),
             options,
             Box::new(move |cc| {
                 let mut restarted = None;
@@ -428,7 +606,12 @@ fn main() -> std::process::ExitCode {
                 session.recovery_dir = profile::recovery_dir();
                 let recovered = session.execute("file.recovery.open", &serde_json::json!({})).ok();
                 let mut app = DesignApp::new(session, services());
-                app.set_startup_update_check(true);
+                if nightly {
+                    // Installed and updated by the Launcher: never check the stable feed from here.
+                    app.set_updates_managed(Some("ArtCraft Launcher"));
+                } else {
+                    app.set_startup_update_check(true);
+                }
                 if let Some(line) = restarted.or_else(|| created.status_line()) {
                     app.status(line);
                 }
@@ -440,6 +623,13 @@ fn main() -> std::process::ExitCode {
                 // After `load_prefs`, which replaces the UI state and with it the status line.
                 if let Some(note) = portable_note {
                     app.status(note);
+                }
+                // Last, so the interruption is the line the user reads. Showing it is also what
+                // lets this session clear the record instead of passing it on.
+                if unclean_notice_shown {
+                    app.status("DesignCraft Nightly did not close cleanly last time. Recovered documents are listed below.");
+                } else if session_unavailable && nightly {
+                    log::warn!("another DesignCraft Nightly holds this profile's session record");
                 }
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.custom_titlebar = cfg!(target_os = "windows");
@@ -471,6 +661,8 @@ fn main() -> std::process::ExitCode {
                     movable: None,
                     frames: 0,
                     log_errors_after_startup: device,
+                    session: app_session,
+                    unclean_notice_shown,
                 }))
             }),
         )
@@ -481,6 +673,9 @@ fn main() -> std::process::ExitCode {
     // Documents that arrived after the last frame, for a start again to open too.
     #[cfg(target_os = "macos")]
     startup.opening(apple_events.queued());
+    // Normally `on_exit` already finished it; a graphics failure or a start without a window
+    // reaches this path instead, and the second call does nothing.
+    nightly_session::finish_once(&exit_session, unclean_notice_shown);
     match gpu::finish(run, &startup) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -506,6 +701,34 @@ mod tests {
         assert!(first.starts_with(b"{\"docking\""), "the first copy is not replaced");
         assert_eq!(second, b"not json");
         assert!(!super::KEEP_UI_PREFS.load(std::sync::atomic::Ordering::Relaxed), "ui.json can be saved once a copy is kept");
+    }
+
+    #[test]
+    fn the_launcher_separator_is_never_a_file_and_never_hides_a_named_document() {
+        let nightly = super::app_command(["--", "--version", "a.dc", "--control", "7979", "--sample"].map(std::ffi::OsString::from), true);
+        assert_eq!(nightly.files, ["--version", "a.dc", "--control", "7979", "--sample"]);
+        assert!(!nightly.version, "a flag after the separator is a document");
+        assert_eq!(nightly.control_port, None);
+        assert!(!nightly.sample);
+    }
+
+    #[test]
+    fn a_graphics_restart_after_the_separator_keeps_its_skip_list() {
+        let nightly = super::app_command(["--", "a.dc", "--gpu-skip=vulkan,gl"].map(std::ffi::OsString::from), true);
+        assert_eq!(nightly.files, ["a.dc"]);
+        assert_eq!(nightly.skip, ["vulkan", "gl"]);
+    }
+
+    #[test]
+    fn stable_keeps_its_options_and_drops_a_user_separator() {
+        let stable = super::app_command(["--control", "7979", "--sample", "--", "--version"].map(std::ffi::OsString::from), false);
+        assert_eq!(stable.control_port, Some(7979));
+        assert!(stable.sample);
+        assert_eq!(stable.files, ["--version"]);
+        assert!(!stable.version, "a flag after the separator is a document");
+        let version = super::app_command([std::ffi::OsString::from("--version")], false);
+        assert!(version.version);
+        assert!(version.files.is_empty());
     }
 
     #[test]
@@ -681,5 +904,19 @@ mod exit_recovery_tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod refusal_dialog_tests {
+    use super::refusal_dialog;
+    use crate::build_flavor::BuildFlavor;
+
+    #[test]
+    fn a_refusal_never_blocks_on_a_modal_before_the_event_loop_on_macos() {
+        assert!(refusal_dialog(BuildFlavor::NightlyV1, true, false), "a desktop refusal still shows the box where one renders");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, true, true), "macOS has no run loop yet: the modal would hang");
+        assert!(!refusal_dialog(BuildFlavor::NightlyV1, false, false), "a headless session has no box");
+        assert!(!refusal_dialog(BuildFlavor::Stable, true, false), "only a nightly refusal explains itself in a box");
     }
 }
