@@ -4389,6 +4389,47 @@ fn only_english_text_gets_english_hyphenation() {
     assert!(in_language("Italian") > 0, "Italian hyphenates (hyph-it)");
 }
 
+#[test]
+fn a_foreign_paragraph_leaves_its_english_neighbours_hyphenated() {
+    let para = "internationalization internationalization internationalization";
+    let text = format!("{para}\n{para}\n{para}");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 120.0, 700.0), ParaAttrs::default());
+    let second = para.len() + 1..2 * para.len() + 1;
+    d.story_mut(sid).unwrap().format_chars(second.clone(), |f| f.over.language = Some("Swedish".into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let hyphenated = |r: &Range<usize>| all_lines(&cs).iter().filter(|l| l.hyphenated && r.contains(&l.range.start)).count();
+    assert!(hyphenated(&(0..second.start)) > 0, "the English paragraph before hyphenates");
+    assert_eq!(hyphenated(&second), 0, "Swedish isn't hyphenated with English rules");
+    assert!(hyphenated(&(second.end..text.len())) > 0, "the English paragraph after hyphenates");
+}
+
+#[test]
+fn story_runs_are_checked_for_language_once_per_composition() {
+    let para = "Some words in italic and the rest in roman.";
+    let text = vec![para; 30].join("\n");
+    let (mut d, sid, _) = doc_with(&text, Rect::new(36.0, 36.0, 576.0, 2000.0), ParaAttrs::default());
+    let st = d.story_mut(sid).unwrap();
+    for i in 0..30 {
+        let at = i * (para.len() + 1) + 11;
+        st.format_chars(at..at + 6, |f| f.over.font_style = Some("Italic".into()));
+    }
+    for language in [None, Some("Swedish")] {
+        if let Some(language) = language {
+            d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.language = Some(language.into()));
+        }
+        PLAIN_ENGLISH_SCANS.with(|n| n.set(0));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        assert!(!cs.is_overset() && cs.line_count() >= 30, "every paragraph is composed");
+        assert_eq!(PLAIN_ENGLISH_SCANS.with(|n| n.get()), 1, "{language:?}");
+    }
+    // A paragraph whose own language isn't English never asks.
+    d.story_mut(sid).unwrap().format_paras(0..text.len(), |p| p.chars.language = Some("Swedish".into()));
+    PLAIN_ENGLISH_SCANS.with(|n| n.set(0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert!(!cs.is_overset() && cs.line_count() >= 30, "every paragraph is composed");
+    assert_eq!(PLAIN_ENGLISH_SCANS.with(|n| n.get()), 0, "Swedish paragraphs");
+}
+
 // A text frame's bottom inset constrains its last baseline. The full font descent
 // still belongs to the line metrics, caret geometry and measured content height.
 fn baseline_fit_doc(text: &str, height: f64) -> (Document, StoryId, ItemId) {

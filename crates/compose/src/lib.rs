@@ -34,6 +34,7 @@ mod warichu;
 pub mod wrap;
 pub mod xref;
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -1641,6 +1642,7 @@ struct NestedLineStyleInput<'a, 'b, 'font> {
     db: &'a ScopedFonts<'font>,
     doc: &'a Document,
     story: &'a Story,
+    plain_english: &'a OnceCell<bool>,
     range: Range<usize>,
     props: &'a designcraft_doc::ParaProps,
     para_chars: &'a designcraft_doc::CharProps,
@@ -1668,6 +1670,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         db,
         doc,
         story,
+        plain_english,
         range: prange,
         props: pp,
         para_chars: base_chars,
@@ -1713,7 +1716,14 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+            let mut hy = hyphenation_points(
+                &story.text,
+                &gl,
+                pp,
+                hyph_exceptions,
+                &foreign_ranges(doc, story, prange.clone(), base_chars, plain_english),
+                korean,
+            );
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2726,6 +2736,8 @@ struct ParagraphShapeInput<'a, 'font> {
     db: &'a ScopedFonts<'font>,
     doc: &'a Document,
     story: &'a Story,
+    /// [`runs_plain_english`] for the story, worked out by the first paragraph that asks.
+    plain_english: &'a OnceCell<bool>,
     opts: &'a ComposeOptions,
     range: Range<usize>,
     props: &'a mut designcraft_doc::ParaProps,
@@ -2769,6 +2781,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         db,
         doc,
         story,
+        plain_english,
         opts,
         range: prange,
         props: pp,
@@ -2838,6 +2851,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         db,
         doc,
         story,
+        plain_english,
         range: prange.clone(),
         props: pp,
         para_chars: base_chars,
@@ -2956,7 +2970,7 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
     let mut hyph_after =
-        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
+        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars, plain_english), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -3211,6 +3225,7 @@ fn compose_run(
     let mut out = ComposedStory { story: story.id, rev: story.rev, text_len: story.text.len(), ..Default::default() };
     let mut styles_tab: Vec<RunStyle> = Vec::new();
     let mut missing_fonts: HashMap<String, bool> = HashMap::new();
+    let plain_english = OnceCell::new();
     let (cols, frame_text) = frame_columns_and_text(frames, story.direction);
     out.frames = frame_text;
     let mut cur = Cursor {
@@ -3404,6 +3419,7 @@ fn compose_run(
             db,
             doc,
             story,
+            plain_english: &plain_english,
             opts,
             range: prange.clone(),
             props: &mut pp,
@@ -5908,17 +5924,31 @@ pub fn is_english(language: &str) -> bool {
     language.starts_with("English") || designcraft_doc::language_tag(language).is_some_and(|t| designcraft_doc::language_subtag(t) == "en")
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Stories [`runs_plain_english`] looked through on this thread.
+    static PLAIN_ENGLISH_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether no run of `story` has a character style or a language other than English. It looks
+/// at every run, so a composition asks it once (`compose_run` keeps the answer).
+fn runs_plain_english(story: &designcraft_doc::Story) -> bool {
+    #[cfg(test)]
+    PLAIN_ENGLISH_SCANS.with(|n| n.set(n.get() + 1));
+    story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == designcraft_doc::story::NO_CHAR_STYLE)
+}
+
 /// Byte ranges of paragraph `prange` set in a language other than English, with the hyphenator
-/// for that language (None: not hyphenated).
+/// for that language (None: not hyphenated). `plain_english` holds [`runs_plain_english`] for the
+/// story once a paragraph has asked.
 fn foreign_ranges(
     doc: &Document,
     story: &designcraft_doc::Story,
     prange: Range<usize>,
     base: &designcraft_doc::CharProps,
+    plain_english: &OnceCell<bool>,
 ) -> Vec<(Range<usize>, Option<hyphen::Lang>)> {
-    if is_english(&base.language)
-        && story.runs().all(|(_, f)| f.over.language.as_deref().is_none_or(is_english) && f.style == designcraft_doc::story::NO_CHAR_STYLE)
-    {
+    if is_english(&base.language) && *plain_english.get_or_init(|| runs_plain_english(story)) {
         return vec![];
     }
     story
