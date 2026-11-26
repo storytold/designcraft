@@ -375,6 +375,7 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
         }
     }
     let mut union: Option<Rect> = None;
+    let mut ports = Vec::new();
     let mut color = Color32::from_rgb(79, 153, 255);
     let direct = matches!(app.session.tool_id(), "directSelection" | "pen" | "addAnchor" | "deleteAnchor" | "convertDirection");
     for id in &sel.items {
@@ -394,12 +395,10 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
         let b = xf.rect(a.transform_rect_bbox(it.bounds()));
         union = Some(union.map_or(b, |u| u.union(b)));
         // Text frame ports, also of the frames inside a selected group (so an overset frame in a
-        // group shows its red mark).
+        // group shows its red mark), drawn last so the selection box and threads pass under them.
         let mut frames = Vec::new();
         text_frames_in(it, 0, &mut frames);
-        for (frame, story) in frames {
-            draw_ports(app, painter, xf, doc, layout, frame, story, color);
-        }
+        ports.extend(frames.into_iter().map(|(frame, story)| (frame, story, color)));
         if let Content::Graphic(g) = &it.content
             && sel.content
         {
@@ -471,17 +470,22 @@ pub(super) fn draw_selection(app: &DesignApp, painter: &egui::Painter, xf: &Xf, 
             painter.rect_stroke(r, 0.0, Stroke::new(hair(painter), color), StrokeKind::Inside);
         }
     }
-    // Threads.
-    if app.ui.text_threads || sel.items.iter().any(|i| doc.item(*i).is_some_and(|x| x.is_text_frame())) {
+    // Threads (View › Show Text Threads): from each selected story's out ports to the in ports
+    // of the frames they thread to, as InDesign draws them.
+    if app.ui.text_threads {
+        let port = |id, out| designcraft_tools::thread::port_center(doc, layout, id, out, xf.zoom).map(|c| xf.to_screen(c));
         for id in &sel.items {
             let Some(sid) = doc.item(*id).and_then(|i| i.text_frame()).map(|t| t.story) else { continue };
             let Some(story) = doc.story(sid) else { continue };
             for w in story.frames.windows(2) {
-                let (Some(a), Some(b)) = (port_pos(doc, layout, w[0], true), port_pos(doc, layout, w[1], false)) else { continue };
+                let (Some(a), Some(b)) = (port(w[0], true), port(w[1], false)) else { continue };
                 let col = doc.item(w[0]).map(|i| layer_color(doc, i)).unwrap_or(color);
-                painter.line_segment([xf.to_screen(a), xf.to_screen(b)], Stroke::new(1.0, col));
+                painter.line_segment([a, b], Stroke::new(1.0, col));
             }
         }
+    }
+    for (frame, story, color) in ports {
+        draw_ports(app, painter, xf, doc, layout, frame, story, color);
     }
     text_rect.or(union)
 }
@@ -555,22 +559,6 @@ pub(super) fn text_frames_in<'a>(it: &'a Item, depth: usize, out: &mut Vec<(&'a 
         }
         _ => {}
     }
-}
-
-/// Port location (canvas), where a thread line ends: out port at bottom-right, in port at
-/// top-left; mirrored for a right-to-left story, as its ports are.
-fn port_pos(doc: &Document, layout: &CanvasLayout, id: designcraft_doc::ItemId, out: bool) -> Option<Point> {
-    let it = doc.item(id)?;
-    let (a, _) = item_canvas_xf(doc, layout, id)?;
-    let r = it.inner_bounds();
-    let rtl = designcraft_tools::thread::right_to_left_ports(doc, it);
-    let p = match (out, rtl) {
-        (true, false) => Point::new(r.x1 - 10.0, r.y1),
-        (true, true) => Point::new(r.x0 + 10.0, r.y1),
-        (false, false) => Point::new(r.x0 + 10.0, r.y0),
-        (false, true) => Point::new(r.x1 - 10.0, r.y0),
-    };
-    Some(a * it.xf * p)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -69,8 +69,11 @@ pub struct ObjectStyle {
     /// those corners ([`CornerOptions::named_to_path`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub corners: Option<CornerOptions>,
-    /// Story Options › Story Direction: a text frame's story takes it, as its paragraph style
-    /// does (`None`: the style sets none). Other objects have no story, and ignore it.
+    /// Story Options › Optical Margin Alignment and its size: a text frame's story takes them,
+    /// as its paragraph style does (`None`: the style sets none). Other objects have no story.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optical_margin: Option<crate::OpticalMargin>,
+    /// Story Options › Story Direction, given to a text frame's story the same way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub story_direction: Option<crate::TextDirection>,
 }
@@ -114,9 +117,10 @@ impl ObjectStyle {
     }
 
     /// Whether a story's paragraphs are in the paragraph styles this style gives them, and the
-    /// story in its Story Direction (each holds when the style sets none).
+    /// story has its Story Options (each holds when the style sets none).
     pub fn story_follows(&self, styles: &Styles, st: &Story) -> bool {
         self.story_direction.is_none_or(|d| st.direction == d)
+            && self.optical_margin.is_none_or(|om| st.optical_margin == om)
             && self.paragraph_styles(styles, st.paras.len()).is_none_or(|want| st.paras.iter().zip(&want).all(|(f, w)| f.style == *w))
     }
 
@@ -136,14 +140,17 @@ impl ObjectStyle {
             .collect()
     }
 
-    /// Put a story's paragraphs in the paragraph styles this style gives them, and the story in
-    /// its Story Direction; `false` when it sets neither or they already are.
+    /// Put a story's paragraphs in the paragraph styles this style gives them, and give the story
+    /// its Story Options; `false` when it sets none of them or they already are.
     pub fn restyle(&self, styles: &Styles, st: &mut Story) -> bool {
         if self.story_follows(styles, st) {
             return false;
         }
         if let Some(d) = self.story_direction {
             st.direction = d;
+        }
+        if let Some(om) = self.optical_margin {
+            st.optical_margin = om;
         }
         if let Some(want) = self.paragraph_styles(styles, st.paras.len()) {
             for (f, w) in st.paras.iter_mut().zip(want) {

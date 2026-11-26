@@ -164,6 +164,9 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(d) = story_direction_param(CREATE, p)? {
         os.story_direction = d;
     }
+    if let Some(om) = optical_margin_param(CREATE, p, os.optical_margin)? {
+        os.optical_margin = om;
+    }
     if let Some(e) = effects_param("style.object.create", p, os.effects.as_ref().unwrap_or(&Effects::default()))? {
         os.effects = Some(e);
     }
@@ -201,6 +204,35 @@ fn story_direction_param(cmd: &str, p: &Value) -> Result<Option<Option<designcra
             .map(|d| Some(Some(d)))
             .map_err(|_| bad(cmd, "`storyDirection` must be leftToRight, rightToLeft or null")),
     }
+}
+
+/// `opticalMargin`: `{on?: bool, size?: pt (0.1–1296)}` merged over `base` (the default when the
+/// style set none), or null (the object style sets none).
+fn optical_margin_param(
+    cmd: &str,
+    p: &Value,
+    base: Option<designcraft_doc::OpticalMargin>,
+) -> Result<Option<Option<designcraft_doc::OpticalMargin>>> {
+    let v = match p.get("opticalMargin") {
+        None => return Ok(None),
+        Some(Value::Null) => return Ok(Some(None)),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad(cmd, "`opticalMargin` must be {on?, size?} or null")),
+    };
+    if let Some(k) = v.keys().find(|k| !matches!(k.as_str(), "on" | "size")) {
+        return Err(bad(cmd, format!("`opticalMargin` has no `{k}`")));
+    }
+    let mut om = base.unwrap_or_default();
+    if let Some(on) = v.get("on") {
+        om.on = on.as_bool().ok_or_else(|| bad(cmd, "`opticalMargin.on` must be a bool"))?;
+    }
+    if let Some(size) = v.get("size") {
+        om.size = size
+            .as_f64()
+            .and_then(designcraft_doc::OpticalMargin::clamp_size)
+            .ok_or_else(|| bad(cmd, "`opticalMargin.size` must be a finite number of points"))?;
+    }
+    Ok(Some(Some(om)))
 }
 
 /// `paragraphStyle`: a paragraph style's name, or null (the object style sets none).
@@ -393,6 +425,9 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(d) = story_direction_param(CMD, p)? {
         new.story_direction = d;
     }
+    if let Some(om) = optical_margin_param(CMD, p, old.optical_margin)? {
+        new.optical_margin = om;
+    }
     if p.get("rename").is_some_and(|r| !r.is_string()) {
         return Err(bad(CMD, "`rename` must be a style name"));
     }
@@ -512,21 +547,33 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
-        // A story of a frame using the style takes the new Story Direction while it is in the old
-        // one's (any direction, when the style set none before).
-        if let Some(dir) = new.story_direction
-            && new.story_direction != old.story_direction
-        {
+        // A story of a frame using the style takes the new Story Options while it has the old
+        // ones (any, when the style set none before).
+        let new_dir = new.story_direction.filter(|_| new.story_direction != old.story_direction);
+        let new_om = new.optical_margin.filter(|_| new.optical_margin != old.optical_margin);
+        if new_dir.is_some() || new_om.is_some() {
             let mut stories: Vec<_> =
                 d.placed_items().into_iter().filter(|i| i.object_style == new.name).filter_map(|i| i.text_frame().map(|tf| tf.story)).collect();
             stories.sort_unstable();
             stories.dedup();
             for sid in stories {
-                if let Some(st) = d.story_mut(sid)
+                let Some(st) = d.story_mut(sid) else { continue };
+                let mut changed = false;
+                if let Some(dir) = new_dir
                     && st.direction != dir
                     && old.story_direction.is_none_or(|was| st.direction == was)
                 {
                     st.direction = dir;
+                    changed = true;
+                }
+                if let Some(om) = new_om
+                    && st.optical_margin != om
+                    && old.optical_margin.is_none_or(|was| st.optical_margin == was)
+                {
+                    st.optical_margin = om;
+                    changed = true;
+                }
+                if changed {
                     st.rev = st.rev.wrapping_add(1);
                     restyled += 1;
                 }
@@ -568,6 +615,12 @@ mod story_direction_tests {
         let r = s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": "leftToRight"})).unwrap();
         assert_eq!(r["restyled"], 1, "{r}");
         assert_eq!((direction(&s, a), direction(&s, b)), (TextDirection::LeftToRight, TextDirection::LeftToRight));
+        // Optical Margin Alignment goes to the stories the same way; a bad size or key is refused.
+        assert!(s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"size": "big"}})).is_err());
+        assert!(s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"hang": true}})).is_err());
+        s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"on": true, "size": 18}})).unwrap();
+        let om = |s: &Session, sid: StoryId| s.doc().unwrap().doc.story(sid).unwrap().optical_margin;
+        assert_eq!((om(&s, a).on, om(&s, a).size, om(&s, b).on), (true, 18.0, true));
         // null: the style sets none, and applying it leaves the story as it is.
         s.execute("story.options", &json!({"story": a.0, "direction": "rightToLeft"})).unwrap();
         s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": null})).unwrap();

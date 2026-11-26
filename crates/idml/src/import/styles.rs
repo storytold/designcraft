@@ -204,23 +204,25 @@ impl<'r> Importer<'r> {
             let effects = self.style_effects(e);
             let corners = style_corners(&levels);
             let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
-            // Story Options › Story Direction, from the style or the nearest it is based on.
-            let story_direction = category_on(&levels, "EnableStoryOptions", |_| false)
-                .then(|| {
-                    levels
-                        .iter()
-                        .filter(|l| l.get("EnableStoryOptions") != Some("false"))
-                        .filter_map(|l| l.find("StoryPreference")?.get("StoryDirection"))
-                        .next()
-                        .map(|d| {
-                            if d == "RightToLeftDirection" {
-                                designcraft_doc::TextDirection::RightToLeft
-                            } else {
-                                designcraft_doc::TextDirection::LeftToRight
-                            }
-                        })
-                })
+            // Story Options (Optical Margin Alignment and its size, Story Direction), from the
+            // style or the nearest it is based on.
+            let story_pref = category_on(&levels, "EnableStoryOptions", |_| false)
+                .then(|| levels.iter().filter(|l| l.get("EnableStoryOptions") != Some("false")).find_map(|l| l.find("StoryPreference")))
                 .flatten();
+            // InDesign writes `UnknownDirection` where the style leaves the direction unset.
+            let story_direction = story_pref.and_then(|sp| sp.get("StoryDirection")).and_then(|d| match d {
+                "RightToLeftDirection" => Some(designcraft_doc::TextDirection::RightToLeft),
+                "LeftToRightDirection" => Some(designcraft_doc::TextDirection::LeftToRight),
+                _ => None,
+            });
+            let optical_margin = story_pref.map(|sp| designcraft_doc::OpticalMargin {
+                on: sp.get("OpticalMarginAlignment") == Some("true"),
+                size: sp
+                    .get("OpticalMarginSize")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .and_then(designcraft_doc::OpticalMargin::clamp_size)
+                    .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+            });
             let s = ObjectStyle {
                 name: name.clone(),
                 based_on,
@@ -231,6 +233,7 @@ impl<'r> Importer<'r> {
                 text_frame,
                 effects,
                 corners,
+                optical_margin,
                 story_direction,
             };
             match self.styles.object.iter_mut().find(|o| o.name == name) {

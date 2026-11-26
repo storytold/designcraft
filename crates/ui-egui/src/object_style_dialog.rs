@@ -27,9 +27,9 @@ const ATTRIBUTES: [(&str, &str); 7] = [
     ("story", "Story Options"),
 ];
 
-/// Whether the dialog lists Story Options: under Show Right-to-Left Features, or for a style
-/// that sets a right-to-left Story Direction.
-fn story_options_shown(app: &DesignApp, d: &Dialog) -> bool {
+/// Whether Story Options shows Story Direction: under Show Right-to-Left Features, or for a style
+/// that sets a right-to-left Story Direction. Optical Margin Alignment shows either way.
+fn story_direction_shown(app: &DesignApp, d: &Dialog) -> bool {
     crate::show_rtl_control(app, d.b("storyWasRtl"))
 }
 
@@ -86,13 +86,11 @@ pub fn open_new(app: &mut DesignApp) {
     let from = it.is_some();
     // A text frame's options come along; its paragraph style is left to choose, as in InDesign.
     let frame = it.as_ref().and_then(|i| i.text_frame()).map(|t| t.options.clone());
-    // Story Direction starts as the selected frame's story's; the style sets it only when it is
-    // included.
-    let story_dir = it
-        .as_ref()
-        .and_then(|i| i.text_frame())
-        .and_then(|t| st.doc.story(t.story))
-        .map_or(designcraft_doc::TextDirection::LeftToRight, |s| s.direction);
+    // Story Options start as the selected frame's story's; the style sets them only when they
+    // are included.
+    let story = it.as_ref().and_then(|i| i.text_frame()).and_then(|t| st.doc.story(t.story));
+    let story_dir = story.map_or(designcraft_doc::TextDirection::LeftToRight, |s| s.direction);
+    let om = story.map(|s| s.optical_margin).unwrap_or_default();
     let mut fields = json!({
         "new": true,
         "doc": doc,
@@ -108,6 +106,9 @@ pub fn open_new(app: &mut DesignApp) {
         "inc": {"fill": from, "stroke": from, "corners": from, "paragraph": from, "textFrame": frame.is_some(), "story": false},
         "storyDirection": story_dir,
         "storyWasRtl": false,
+        "hadStoryDirection": false,
+        "omOn": om.on,
+        "omSize": om.size,
         "page": "general",
         "apply": from,
     });
@@ -137,10 +138,14 @@ pub fn open_edit(app: &mut DesignApp, name: &str) -> Result<(), String> {
         "hadEffects": os.effects.is_some(),
         "inc": {
             "fill": os.fill.is_some(), "stroke": os.stroke.is_some(), "corners": os.corners.is_some(),
-            "paragraph": os.paragraph_style.is_some(), "textFrame": os.text_frame.is_some(), "story": os.story_direction.is_some(),
+            "paragraph": os.paragraph_style.is_some(), "textFrame": os.text_frame.is_some(),
+            "story": os.story_direction.is_some() || os.optical_margin.is_some(),
         },
         "storyDirection": os.story_direction.unwrap_or_default(),
         "storyWasRtl": os.story_direction == Some(designcraft_doc::TextDirection::RightToLeft),
+        "hadStoryDirection": os.story_direction.is_some(),
+        "omOn": os.optical_margin.unwrap_or_default().on,
+        "omSize": os.optical_margin.unwrap_or_default().size,
         "page": "general",
         "apply": false,
     });
@@ -178,6 +183,14 @@ fn attrs(d: &Dialog) -> serde_json::Map<String, Value> {
     p.insert(
         "storyDirection".into(),
         if included(d, "story") { d.fields.get("storyDirection").cloned().unwrap_or(Value::Null) } else { Value::Null },
+    );
+    p.insert(
+        "opticalMargin".into(),
+        if included(d, "story") {
+            json!({"on": d.b("omOn"), "size": d.n("omSize").unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE)})
+        } else {
+            Value::Null
+        },
     );
     p
 }
@@ -237,6 +250,15 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
         return Err(crate::i18n::tr(&app.ui.language, "Enter a style name.").to_string());
     }
     let mut p = attrs(d);
+    // Story Direction not shown (left to right setup, the preference off): the style keeps the
+    // direction it had, and a new one sets none.
+    if included(d, "story") && !story_direction_shown(app, d) {
+        if d.b("new") || !d.b("hadStoryDirection") {
+            p.insert("storyDirection".into(), Value::Null);
+        } else {
+            p.remove("storyDirection");
+        }
+    }
     p.insert("textFrame".into(), frame_options(d)?.map_or(Value::Null, |o| general_json(&o)));
     if d.b("new") {
         // A name another style has is refused, as Object Style Options refuses it.
@@ -398,8 +420,18 @@ fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
         ));
     }
     if included(d, "story") {
-        let rtl = d.s("storyDirection") == "rightToLeft";
-        out.push(format!("{}: {} {}", tr("Story Options"), tr("Story Direction:"), tr(if rtl { "Right to Left" } else { "Left to Right" })));
+        // Optical Margin Alignment when it is on, and Story Direction where it shows.
+        let mut parts = Vec::new();
+        if d.b("omOn") {
+            parts.push(format!("{} {} pt", tr("Optical Margin Alignment"), d.s("omSize")));
+        }
+        if story_direction_shown(app, d) {
+            let rtl = d.s("storyDirection") == "rightToLeft";
+            parts.push(format!("{} {}", tr("Story Direction:"), tr(if rtl { "Right to Left" } else { "Left to Right" })));
+        }
+        if !parts.is_empty() {
+            out.push(format!("{}: {}", tr("Story Options"), parts.join(", ")));
+        }
     }
     if sets_effects(d) {
         let fx = d.fields.get("fx").cloned().unwrap_or(Value::Null);
@@ -527,9 +559,26 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
         "textFrame" => {
             ui.add_enabled_ui(included(d, "textFrame"), |ui| crate::dialogs::general(&app.ui.language, ui, d));
         }
-        // Story Options › Story Direction, as the Story panel sets it.
+        // Story Options: Optical Margin Alignment and its size, and Story Direction under Show
+        // Right-to-Left Features (or for a right-to-left style), as the Story panel sets them.
         "story" => {
+            let direction = story_direction_shown(app, d);
             ui.add_enabled_ui(included(d, "story"), |ui| {
+                ui.horizontal(|ui| {
+                    let mut on = d.b("omOn");
+                    if ui.checkbox(&mut on, crate::rtl::widget(ui, tr("Optical Margin Alignment"))).changed() {
+                        d.fields.insert("omOn".into(), json!(on));
+                    }
+                    let field = crate::widgets::NumField::number("osOpticalMarginSize", d.n("omSize"), " pt", 2)
+                        .width(72.0)
+                        .range(designcraft_doc::OpticalMargin::MIN_SIZE, designcraft_doc::OpticalMargin::MAX_SIZE);
+                    if let Some(size) = crate::chrome::icon_field(ui, "font-size", &tr("Optical Margin Size"), field) {
+                        d.fields.insert("omSize".into(), json!(size));
+                    }
+                });
+                if !direction {
+                    return;
+                }
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, tr("Story Direction:"));
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -571,11 +620,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         ui.vertical(|ui| {
             ui.set_width(230.0);
             crate::rtl::label(ui, egui::RichText::new(tr("Basic Attributes")).font(semibold(12.0)));
-            let story_shown = story_options_shown(app, d);
             for (key, label) in ATTRIBUTES {
-                if key == "story" && !story_shown {
-                    continue;
-                }
                 let check = (key != "general").then(|| included(d, key));
                 if let Some(on) = list_row(ui, d, key, &tr(label), check) {
                     set(d, &["inc", key], json!(on));
@@ -1021,11 +1066,12 @@ mod tests {
         assert_ne!(style(b), "Picked");
     }
 
-    /// Story Options lists under Show Right-to-Left Features, or for a style whose Story Direction
-    /// is right to left with the preference off in an English interface; OK gives the style the
-    /// direction chosen, and a frame it is applied to takes it.
+    /// Story Options is listed in every interface with Optical Margin Alignment; its Story
+    /// Direction shows under Show Right-to-Left Features, or for a right-to-left style with the
+    /// preference off in an English interface. OK gives the style both, and the frame it is applied
+    /// to takes them.
     #[test]
-    fn story_options_set_an_object_styles_story_direction() {
+    fn story_options_set_an_object_styles_optical_margin_and_story_direction() {
         let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
         app.run("file.new", json!({})).unwrap();
         app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
@@ -1035,28 +1081,42 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx, "en");
         open_new(&mut app);
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("page".into(), json!("story"));
+        }
         let texts = frame(&mut app, &ctx);
-        assert!(!texts.iter().any(|x| x.trim() == "Story Options"), "hidden while the preference is off: {texts:?}");
+        assert!(texts.iter().any(|x| x.trim() == "Story Options"), "listed in every interface: {texts:?}");
+        assert!(texts.iter().any(|x| x.trim() == "Optical Margin Alignment"), "{texts:?}");
+        assert!(!texts.iter().any(|x| x.trim() == "Story Direction:"), "no direction while the preference is off: {texts:?}");
         app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
-        let texts = frame(&mut app, &ctx);
-        assert!(texts.iter().any(|x| x.trim() == "Story Options"), "{texts:?}");
         if let Some(d) = app.ui.dialog.as_mut() {
             d.fields.insert("name".into(), json!("Hebrew Frame"));
-            d.fields.insert("page".into(), json!("story"));
             set(d, &["inc", "story"], json!(true));
+            d.fields.insert("omOn".into(), json!(true));
+            d.fields.insert("omSize".into(), json!(18.0));
             d.fields.insert("storyDirection".into(), json!("rightToLeft"));
         }
         let texts = frame(&mut app, &ctx);
         assert!(texts.iter().any(|x| x.trim() == "Story Direction:"), "{texts:?}");
         crate::dialogs::confirm(&mut app).unwrap();
         let doc = app.session.active().unwrap().doc.clone();
-        assert_eq!(doc.styles.object_style("Hebrew Frame").unwrap().story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
+        let os = doc.styles.object_style("Hebrew Frame").unwrap();
+        assert_eq!(os.story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
+        assert_eq!(os.optical_margin, Some(designcraft_doc::OpticalMargin { on: true, size: 18.0 }));
         let sid = doc.item(designcraft_doc::ItemId(id)).unwrap().text_frame().unwrap().story;
         assert_eq!(doc.story(sid).unwrap().direction, designcraft_doc::TextDirection::RightToLeft, "applied to the selection");
-        // With the preference off in an English interface, a right-to-left style still lists it.
+        assert!(doc.story(sid).unwrap().optical_margin.on);
+        // With the preference off in an English interface, a right-to-left style still shows its
+        // direction, and OK keeps it.
         app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
         open_edit(&mut app, "Hebrew Frame").unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("page".into(), json!("story"));
+        }
         let texts = frame(&mut app, &ctx);
-        assert!(texts.iter().any(|x| x.trim() == "Story Options"), "{texts:?}");
+        assert!(texts.iter().any(|x| x.trim() == "Story Direction:"), "{texts:?}");
+        crate::dialogs::confirm(&mut app).unwrap();
+        let os = app.session.active().unwrap().doc.styles.object_style("Hebrew Frame").cloned().unwrap();
+        assert_eq!(os.story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
     }
 }
