@@ -30,6 +30,8 @@ pub fn activate(app: &mut DesignApp, id: &str, params: &Value) {
     }
 }
 
+/// Runs a menu or shortcut command: commands that need a dialog open it when called without
+/// parameters (Layout › Ruler Guides among them); the rest run directly.
 fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
     // Object › Effects › Drop Shadow… (and its shortcut): the Effects dialog on that page.
     if params.is_null()
@@ -73,6 +75,10 @@ fn activate_inner(app: &mut DesignApp, id: &str, params: &Value) {
     }
     if params.is_null() && id == "layout.createGuides" {
         crate::dialogs::open_create_guides(app);
+        return;
+    }
+    if params.is_null() && id == "guide.options" {
+        let _ = crate::dialogs::open_ruler_guides(app);
         return;
     }
     if params.is_null() && id == "layout.marginsAndColumns" {

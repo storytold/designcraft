@@ -235,6 +235,74 @@ fn bleed_and_slug_are_preview_modes_that_show_their_area() {
     }
 }
 
+/// Layout › Ruler Guides: an unselected guide is drawn in its own colour from its view threshold
+/// up, and below it is neither drawn nor picked up by a click; a guide without options keeps
+/// the canvas's guide cyan.
+#[test]
+fn ruler_guides_show_their_colour_from_their_view_threshold() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", serde_json::json!({})).unwrap();
+    app.run("guide.add", serde_json::json!({"orientation": "vertical", "position": 100.0, "page": 0})).unwrap();
+    app.run("guide.add", serde_json::json!({"orientation": "vertical", "position": 300.0, "page": 0})).unwrap();
+    app.run("guide.options", serde_json::json!({"guides": [{"page": 0, "index": 0}], "color": [200, 10, 20], "viewThreshold": 150})).unwrap();
+    app.run("guide.deselect", serde_json::json!({})).unwrap();
+    let ctx = egui::Context::default();
+    // The vertical guide lines drawn in `color`, by their screen x.
+    let lines = |app: &mut DesignApp, color: Color32| -> Vec<f32> {
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| show(app, ui));
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::LineSegment { points: [a, b], stroke } if stroke.color == color && (a.x - b.x).abs() < 0.01 => Some(a.x),
+                _ => None,
+            })
+            .collect()
+    };
+    let red = Color32::from_rgb(200, 10, 20);
+    let cyan = page_decor::guide_color(&app.session.active().unwrap().doc.spreads[0].pages[0].guides[1]);
+    assert_eq!(cyan, Color32::from_rgb(74, 227, 255), "a guide without options keeps the guide cyan");
+    // The guide at x = 100 on screen, and whether a click there picks it up.
+    let at = |app: &DesignApp| {
+        let xf = Xf::new(app.canvas_rect.unwrap(), app.view().unwrap());
+        let slot = CanvasLayout::new(&app.session.active().unwrap().doc, false).slots[0];
+        let x = xf.to_screen(slot.xf * Point::new(100.0, 200.0));
+        (x, guide_at(app, &xf, x).map(|(_, page, index, _)| (page, index)))
+    };
+    // The canvas paints only what reaches into the view, so each zoom centres the view between
+    // the two guides (x = 200) to keep both of them in it.
+    let centre = |app: &mut DesignApp| {
+        let rect = app.canvas_rect.unwrap();
+        let xf = Xf::new(rect, app.view().unwrap());
+        let slot = CanvasLayout::new(&app.session.active().unwrap().doc, false).slots[0];
+        let p = xf.to_screen(slot.xf * Point::new(200.0, 200.0));
+        let v = app.view_mut().unwrap();
+        v.origin = Point::new(v.origin.x + f64::from(p.x - rect.center().x) / v.zoom, v.origin.y + f64::from(p.y - rect.center().y) / v.zoom);
+    };
+    lines(&mut app, red);
+    for (zoom, drawn) in [(1.0, false), (1.4, false), (2.0, true), (4.0, true)] {
+        view::set_zoom(&mut app, zoom);
+        centre(&mut app);
+        let red_lines = lines(&mut app, red);
+        let (x, picked) = at(&app);
+        if drawn {
+            assert_eq!(red_lines.len(), 1, "drawn at {zoom}: {red_lines:?}");
+            assert!((red_lines[0] - x.x).abs() < 0.5, "at the guide: {red_lines:?} vs {x:?}");
+            assert_eq!(picked, Some((0, 0)), "picked up at {zoom}");
+        } else {
+            assert!(red_lines.is_empty(), "hidden at {zoom}: {red_lines:?}");
+            assert_eq!(picked, None, "not picked up at {zoom}");
+        }
+        // The default guide is drawn, in cyan, at every one of these zooms.
+        assert_eq!(lines(&mut app, cyan).len(), 1, "the cyan guide at {zoom}");
+    }
+}
+
 /// An empty graphic frame's X joins its corners: a rectangle's, and a frame slanted by
 /// moving its top points, as in the Zero2Graphic tutorial's row of parallelograms.
 #[test]

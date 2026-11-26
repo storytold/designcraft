@@ -1,4 +1,4 @@
-use super::common::{bool_s, uid};
+use super::common::{bool_s, pct, ui_color_el, uid, with_props};
 use super::{Affine, Document, El, Ex, PageSide, Spread, names, num};
 
 /// The IDML spread origin in our spread coordinates.
@@ -133,6 +133,8 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
             item_layer: g.layer.map(|l| uid(l.0)),
         }
         .to_el();
-        pe.push(crate::xml::from_craft(ge));
+        let mut ge = crate::xml::from_craft(ge);
+        ge.set("ViewThreshold", pct(g.options.view_threshold));
+        pe.push(with_props(ge, vec![ui_color_el("GuideColor", g.options.rgb())]));
     }
 }

@@ -205,6 +205,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Pages", "ページ"),
     ("Margins and Columns…", "マージン・段組…"),
     ("Create Guides…", "ガイドを作成…"),
+    ("Ruler Guides…", "定規ガイド…"),
+    ("Ruler Guides", "定規ガイド"),
     ("Numbering & Section Options…", "ノンブルとセクション設定…"),
     ("Story Direction", "組み方向"),
     ("Horizontal", "横書き"),

@@ -1,4 +1,4 @@
-use super::common::pkg_root;
+use super::common::{pct, pkg_root, ui_color_el, with_props};
 use super::spread::margin_el;
 use super::{El, Ex, PARA_BUILTINS, document, escape_id, names, num, st};
 use craft_idml::model::{CompositeFontDefinition, CompositeFontEntryDefinition, FontDefinition, FontFamilyDefinition, FontsPart};
@@ -60,6 +60,8 @@ impl<'a> Ex<'a> {
 
     // ---------- Preferences.xml ----------
 
+    /// Preferences.xml: the document's preferences, among them the
+    /// colour and view threshold new ruler guides get (`GuidePreference`).
     pub(super) fn prefs_part(&mut self) -> Vec<u8> {
         let d = self.d;
         let s = &d.settings;
@@ -129,6 +131,11 @@ impl<'a> Ex<'a> {
             grid_preference.set(&key, value);
         }
         root.push(grid_preference);
+        let rg = &s.ruler_guides;
+        root.push(with_props(
+            El::new("GuidePreference").attr("RulerGuidesViewThreshold", pct(rg.view_threshold)),
+            vec![ui_color_el("RulerGuidesColor", rg.rgb())],
+        ));
         root.push(crate::xml::from_craft(craft_idml::model::pasteboard_preference_el(s.pasteboard.0, s.pasteboard.1)));
         root.push(self.footnote_option_el());
         root.push(crate::xml::from_craft(craft_idml::model::transparency_preference_el(match s.blend_space {
