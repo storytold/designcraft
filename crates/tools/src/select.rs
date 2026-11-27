@@ -563,24 +563,100 @@ fn handle_at(cx: &ToolContext, p: Point) -> Option<usize> {
     handles(b).iter().position(|h| (h.x - p.x).abs() <= tol && (h.y - p.y).abs() <= tol)
 }
 
-/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes.
-fn fitting_axis(cx: &ToolContext, handle: usize) -> &'static str {
-    if handle.is_multiple_of(2) {
-        return "both";
+/// Side handles are drawn on the canvas bounding box; fitting uses the frame's local axes and
+/// keeps the opposite local edge/corner (`ref` 0..=8) fixed. Returns `None` when a multi-selection
+/// needs different local axes for the same side handle (e.g. an unrotated frame selected alongside
+/// a 90°-rotated frame). When all selected items share the same local axis but have differing
+/// opposite references, `ref` is omitted so each frame keeps its own default.
+fn fitting_params(cx: &ToolContext, handle: usize) -> Option<(&'static str, Option<usize>)> {
+    let dir = match handle {
+        0 => Point::new(-1.0, -1.0),
+        1 => Point::new(0.0, -1.0),
+        2 => Point::new(1.0, -1.0),
+        3 => Point::new(1.0, 0.0),
+        4 => Point::new(1.0, 1.0),
+        5 => Point::new(0.0, 1.0),
+        6 => Point::new(-1.0, 1.0),
+        _ => Point::new(-1.0, 0.0),
+    };
+    let corner = handle.is_multiple_of(2);
+    let fallback_axis = if corner {
+        "both"
+    } else if matches!(handle, 3 | 7) {
+        "width"
+    } else {
+        "height"
+    };
+    let mut axis: Option<&'static str> = None;
+    let mut ref_pt: Option<usize> = None;
+    let mut ref_mixed = false;
+    let mut seen_degenerate = false;
+    let selected = cx.selected_with_canvas_xf();
+    let count = selected.len();
+    for (it, spread_xf) in selected {
+        let Some((ax, rf)) = fitting_item_params(spread_xf * it.xf, handle, dir) else {
+            seen_degenerate = true;
+            ref_mixed = true;
+            continue;
+        };
+        match axis {
+            None => {
+                axis = Some(ax);
+                ref_pt = Some(rf);
+            }
+            Some(prev) if prev != ax => return None,
+            Some(_) => {
+                if ref_pt != Some(rf) {
+                    ref_mixed = true;
+                }
+            }
+        }
     }
-    let canvas_height = matches!(handle, 1 | 5);
-    let local_width_is_vertical = cx
-        .selection
-        .items
-        .first()
-        .and_then(|id| {
-            let it = cx.doc.item(*id)?;
-            let xf = cx.item_canvas_xf(*id)? * it.xf;
-            let [a, b, _, _, _, _] = xf.as_coeffs();
-            Some(b.abs() > a.abs())
-        })
-        .unwrap_or(false);
-    if canvas_height == local_width_is_vertical { "width" } else { "height" }
+    if seen_degenerate && !corner && count > 1 {
+        return None;
+    }
+    let axis = axis.unwrap_or(fallback_axis);
+    Some((axis, if ref_mixed { None } else { ref_pt }))
+}
+
+fn fitting_item_params(xf: designcraft_geom::Affine, handle: usize, dir: Point) -> Option<(&'static str, usize)> {
+    let [a, b, c, d, _, _] = xf.as_coeffs();
+    let det = a * d - b * c;
+    let sx = a.hypot(b);
+    if !(det.is_finite() && det.abs() > 1e-12 && sx.is_finite() && sx > 1e-12) {
+        return None;
+    }
+    // Preserve the base side-handle axis rule (local width vs height follows the local X axis
+    // orientation) so horizontal shear does not turn a top/bottom handle into a width fit.
+    let axis = if handle.is_multiple_of(2) {
+        "both"
+    } else {
+        let canvas_height = matches!(handle, 1 | 5);
+        let local_width_is_vertical = b.abs() > a.abs();
+        if canvas_height == local_width_is_vertical { "width" } else { "height" }
+    };
+    // Project the handle direction onto the orthonormal local-X / signed-perpendicular basis so
+    // shear and non-uniform scaling keep the opposite local edge/corner anchor intact.
+    let ux = (a * dir.x + b * dir.y) / sx;
+    let uy = ((-b * dir.x + a * dir.y) / sx) * det.signum();
+    if !(ux.is_finite() && uy.is_finite()) {
+        return None;
+    }
+    let anchor = |v: f64| {
+        if v < -1e-6 {
+            2
+        } else if v > 1e-6 {
+            0
+        } else {
+            1
+        }
+    };
+    let (rx, ry) = match axis {
+        "width" => (anchor(ux), 1),
+        "height" => (1, anchor(uy)),
+        _ => (anchor(ux), anchor(uy)),
+    };
+    Some((axis, ry * 3 + rx))
 }
 
 /// Just outside a corner handle of the selection → rotate.
@@ -1336,14 +1412,21 @@ impl Tool for SelectionTool {
             }
         }
         // The second press of a double click on a selection handle: Fit Frame to Content, along
-        // that handle's side (a corner fits both).
+        // that handle's side (a corner fits both), anchoring the opposite side.
         if !self.direct
             && matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)
             && ev.click_count() == 2
             && let Some(h) = handle_at(cx, p)
         {
             self.drag = Drag::None;
-            return vec![Action::Exec("object.fit".into(), json!({"mode": "fitFrameToContent", "axis": fitting_axis(cx, h)}))];
+            let Some((axis, rf)) = fitting_params(cx, h) else {
+                return vec![];
+            };
+            let params = match rf {
+                Some(rf) => json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}),
+                None => json!({"mode": "fitFrameToContent", "axis": axis}),
+            };
+            return vec![Action::Exec("object.fit".into(), params)];
         }
         // The second press of a double click on a text frame: edit its text.
         if matches!(ev.kind, PointerKind::Down | PointerKind::DoubleClick)

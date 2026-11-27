@@ -318,7 +318,7 @@ impl ToolContext<'_> {
     /// The selected items with the transform from their own space to the canvas, found in one walk
     /// of the document (a search per item made a big selection quadratic). Same first match per
     /// id as `Document::find`, in selection order.
-    fn selected_with_canvas_xf(&self) -> Vec<(&Item, Affine)> {
+    pub(crate) fn selected_with_canvas_xf(&self) -> Vec<(&Item, Affine)> {
         let mut want: std::collections::HashSet<ItemId> = self.selection.items.iter().copied().collect();
         let mut found: std::collections::HashMap<ItemId, (&Item, Affine)> = std::collections::HashMap::new();
         // Pre-order with an explicit stack: a deep group tree must not exhaust the call stack.
