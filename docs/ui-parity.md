@@ -1,6 +1,12 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-02 · **Change:** patch (the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
+- **2026-11-18 · UI1994:** Show Hidden Characters no longer paints marks for hidden text
+  frames, hidden layers or children of hidden groups. Visible locked layers retain their marks.
+  Visibility checks and painting share the resolved frame location and item.
+  Canvas-painter regressions check emitted marks and hide/show transitions, including table
+  cells, parent editing and culled spreads (#1994).
+
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-19 · **Change:** patch (hidden characters follow frame, group and layer visibility (#1994); link badge on placed files; the Pen previews the curve while a smooth point is dragged and curves the rubber band after one, #1438; a Custom text variable defined with a number shows its digits, #2093; Table of Contents dialog: title field keeps its width, More Options toggles without losing hidden settings; Story panel; text Control panel Character/Paragraph modes; Properties ••• expands Character and Paragraph; live corners work; document views row: scrollbars, Alt pans while editing text; Tabs panel listed as present (#343); spring-loaded Zoom navigation; paragraph style override feedback and clearing; double-clicking a handle anchors its opposite side when fitting, #2880) · **Target:** Adobe InDesign 2026 (21.6, Medium Dark, macOS)
 
 Tools, handles, snapping, nudging, modifiers, shortcuts, panels, menus, context menus and feel,
 against InDesign 2026. The look was measured from the running app
@@ -31,7 +37,8 @@ basics of editing fail for too many users on Windows and Linux.
 | Selection tool: click, marquee, move, Alt-duplicate, resize handles, rotate from corners | ✓ | ✓ | ✓ | Cmd/Ctrl held with another tool borrows the selection tool used last (Selection or Direct Selection) for one gesture, #919 |
 | Direct Selection, Pen family, Pencil, Scissors | ✓ | ✓ | ~ | the Pen previews the segment while a smooth point is dragged out and curves the rubber band out of a smooth point's direction line (`pen_previews_the_curve_while_dragging_and_after_a_smooth_point`, #1438); moving reference point "0" fails (#337) |
 | Live corners (yellow handle) | ✓ | ✓ widget on a selected rectangle frame; diamonds drag the corner size (Shift: one corner), Alt-click steps the shape (Shift+Alt: all) | ✓ | #186 |
-| Content grabber, frame fitting by double-click | ✓ | ✓ | ✓ | |
+| Content grabber, frame fitting by double-click | ✓ | ✓ double-clicking a handle anchors its opposite side (#2880) | ✓ | `object::fit_text_frame_tests::bottom_aligned_fit_keeps_bottom_edge_and_text_in_place` |
+| Link badge (View › Extras): a chain on each picture placed from a file; modified and missing links marked | ✓ | ✓ chain on the frame's top edge in its layer colour, a yellow warning when the file changed, a red stop when it is missing; hidden in Preview | ✓ | Learn Skills Daily course, chapter 10 |
 | Overset mark (red + at the out port) | selected frame only | every overset frame, groups included, while frame edges show | ✓ | a deliberate step past InDesign: grouped labels that overflow were invisible until Preflight |
 | Smart guides, snapping to guides/grid/baseline | ✓ | ✓ (2,049-line `snap.rs`) | ~ | vertical smart spacing between two rectangles (#188) |
 | Nudging with arrows, Shift ×10 | ✓ | ✓ | ✓ | |
@@ -50,7 +57,7 @@ basics of editing fail for too many users on Windows and Linux.
 | Panels: Pages, Layers, Swatches, Color, Stroke, Character, Paragraph, Styles, Links, Effects, Text Wrap, Align, Pathfinder, Table, Index, TOC, Hyperlinks, Bookmarks, Articles, Tags, Notes, Track Changes, Object States, Buttons and Forms, Preflight, Data Merge, Library, Scripts, Glyphs, Info, Tabs, Story | ✓ | all present | ~ | Navigator, Trap Presets, Animation, Timing missing; pull-down panels can't scroll on Linux (#267) |
 | Dialogs: New Document, Document Setup, Preferences (all pages), Paragraph/Character/Object/Table/Cell Style Options, Export PDF, Print, Package, Find/Change | ✓ | present | ~ | a Custom text variable whose text is typed as a number shows its digits (`variables.define` takes a string, a number or a boolean for `text` and refuses anything else; #2093); generated command dialogs fill the long tail; depth varies |
 | Workspaces | Essentials, Essentials Classic, Advanced, Book, Digital Publishing, Interactive for PDF, Printing and Proofing, Review, Typography, Touch | ✓ named workspaces (Essentials Classic: Control panel and iconic panel groups) + custom; Window › Workspace; no Review or Touch | ~ | tab bar overlaps menus in Book/Advanced (#182) |
-| Story Editor | ✓ | ✓ | ~ | depth ruler and View › Story Editor › Show/Hide Depth Ruler (`story_editor.rs` `depth_ruler_shows_and_hides_from_the_view_menu`); Show/Hide Style Name Column and dragging the column's width (`style_name_column_shows_and_hides_from_the_view_menu`, `dragging_the_style_column_bar_resizes_the_column`); Expand/Collapse All Footnotes and Show/Hide Paragraph Break Marks missing |
+| Story Editor | ✓ | ✓ | ~ | depth ruler and View › Story Editor › Show/Hide Depth Ruler (`story_editor.rs` `depth_ruler_shows_and_hides_from_the_view_menu`); Show/Hide Style Name Column and dragging the column's width (`style_name_column_shows_and_hides_from_the_view_menu`, `dragging_the_style_column_bar_resizes_the_column`); Show/Hide Paragraph Break Marks (`paragraph_break_marks_show_and_hide_from_the_view_menu`); Expand/Collapse All Footnotes missing |
 | Undo granularity (a drag = one step) | ✓ | ✓ (Begin/Preview/Commit) | ✓ | |
 | Closing with unsaved changes asks | ✓ | ✓ File › Close and window/menu quit (#146, #545) | ✓ | macOS Dock Quit still bypasses the prompt (#544) |
 | UI scaling, System appearance | ✓ | scaling ✓ (#281); follows macOS light/dark ✗ (#237) | ~ | |

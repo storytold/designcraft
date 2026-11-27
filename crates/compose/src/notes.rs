@@ -106,9 +106,9 @@ pub(crate) struct Notes {
 }
 
 impl Notes {
-    pub fn new(doc: &Document, story: &Story) -> Notes {
+    pub fn new(doc: &Document, story: &Story, starts: impl FnOnce() -> u32) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let start = if refs.is_empty() { 1 } else { starts() };
         Notes {
             numbers: vec![start; refs.len()],
             keys: vec![None; refs.len()],
@@ -236,6 +236,7 @@ impl Notes {
             label: Some(label),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
+            starts: opts.starts.clone(),
         };
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
@@ -391,7 +392,7 @@ mod tests {
                 st.insert_note(at, "Note.", ParaFormat::default());
             }
         }
-        let mut notes = Notes::new(&d, d.story(sid).unwrap());
+        let mut notes = Notes::new(&d, d.story(sid).unwrap(), || d.footnote_start(sid));
         assert_eq!(notes.refs.len(), 2);
         notes.keys = vec![Some(0), Some(0)];
         // Footnote 0 alternates between pages 1 and 0, renumbered on each re-lay.
