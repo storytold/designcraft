@@ -451,6 +451,37 @@ fn xlsx(parts: &[(&str, &str)]) -> String {
 }
 
 #[test]
+fn merged_spreadsheet_text_preserves_line_breaks_in_frames_and_cells() {
+    let book = xlsx(&[
+        (
+            "xl/workbook.xml",
+            r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="People" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        ),
+        ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#),
+        ("xl/sharedStrings.xml", "<sst><si><t>Name</t></si><si><t>Ada_x000D__x000A_Grace_x000D_Katherine</t></si></sst>"),
+        (
+            "xl/worksheets/sheet1.xml",
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c></row></sheetData></worksheet>"#,
+        ),
+    ]);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"bytes": book, "name": "people.xlsx"}));
+    let frame = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], " / <<Name>>", None);
+    exec(&mut s, "text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    let table = "Label\t<<Name>>";
+    let frame = text_frame(&mut s, [36.0, 230.0, 400.0, 400.0], table, None);
+    exec(&mut s, "text.select", json!({"story": frame["story"], "anchor": 0, "focus": table.len()}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+
+    exec(&mut s, "data.merge", json!({}));
+    let text = "Ada\nGrace\nKatherine";
+    assert!(texts(&s).contains(&format!("{text} / {text}")), "merged frame: {:?}", texts(&s));
+    assert_eq!(cell_texts(&s), ["Label", text]);
+}
+
+#[test]
 fn excel_first_sheet_named_sheet_and_cached_values() {
     let first = xlsx(&[
         (
