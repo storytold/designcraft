@@ -2,7 +2,6 @@
 //! strings the shared table (`TABLE`, whose Chinese column comes first) has no row for.
 pub(super) const TABLE: &[(&str, &str)] = &[
     ("Select an object to color its fill or stroke.", "选择一个对象以设置其填色或描边颜色。"),
-    ("Panels", "面板"),
     ("Object Styles", "对象样式"),
     ("Hide Guides", "隐藏参考线"),
     ("Colour", "颜色"),
@@ -20,8 +19,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Kerning", "字偶间距"),
     ("Alignment", "对齐"),
     ("Indent", "缩进"),
-    ("Space Before", "段前间距"),
-    ("Space After", "段后间距"),
     ("New Layer", "新建图层"),
     ("Colour Picker", "拾色器"),
     ("Find What", "查找内容"),
@@ -309,7 +306,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Found", "已找到"),
     ("Georgian", "格鲁吉亚语"),
     ("Grab bag", "杂项"),
-    ("Group with", "编组到"),
     ("Import Warnings", "导入警告"),
     ("Import cancelled: the originating document has closed", "导入已取消：源文档已关闭"),
     ("Invalid panel layout; restored the default dock", "面板布局无效；已恢复默认停靠"),
@@ -339,8 +335,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Real name", "真实姓名"),
     ("Relinked {count}", "已重新链接 {count} 个"),
     ("Report an issue", "报告问题"),
-    ("Resize panel window", "调整面板窗口大小"),
-    ("Resize panels", "调整面板大小"),
     ("Reverse the order", "反转顺序"),
     ("Sent {count} page(s) to {printer}", "已将 {count} 页发送到 {printer}"),
     ("Story Editor — {count} words", "文章编辑器 — {count} 字"),

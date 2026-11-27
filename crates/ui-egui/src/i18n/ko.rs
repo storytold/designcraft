@@ -1372,6 +1372,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Records per page", "페이지당 레코드 수"),
     ("Single record", "단일 레코드"),
     ("Multiple records", "여러 레코드"),
+    ("Arrangement", "배열"),
     ("Rows first", "행 우선"),
     ("Columns first", "열 우선"),
     ("Column spacing", "열 간격"),

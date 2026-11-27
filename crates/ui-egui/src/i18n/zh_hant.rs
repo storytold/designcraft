@@ -1375,6 +1375,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Records per page", "每頁記錄數"),
     ("Single record", "單筆記錄"),
     ("Multiple records", "多筆記錄"),
+    ("Arrangement", "排列"),
     ("Rows first", "先列後欄"),
     ("Columns first", "先欄後列"),
     ("Column spacing", "欄間距"),
