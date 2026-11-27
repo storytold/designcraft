@@ -1056,7 +1056,7 @@ fn several_shapes_show_pathfinder_and_intersect_combines_them() {
 }
 
 /// A placed image's Quick Actions, as InDesign's: Edit Original and Reveal open the linked file
-/// and its folder; Embed embeds it, and the linked-file actions grey out.
+/// and its folder; Embed copies the file into the document and keeps the link for Unembed.
 #[test]
 fn image_quick_actions_open_the_link_and_embed_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1093,14 +1093,14 @@ fn image_quick_actions_open_the_link_and_embed_it() {
     // The file itself, opened, then revealed in the file manager; no browser URL.
     assert_eq!(*opened.borrow(), [(path.clone(), false), (path.clone(), true)]);
     assert!(h.state().ui.pending_urls.is_empty());
-    // Embedded: no link left, and the linked-file actions grey out.
+    // Embedding keeps the link for Unembed, and a save writes the bytes into the document.
     h.get_by_label("Embed").click();
     h.run_steps(3);
     let st = h.state().session.active().unwrap();
     let g = st.doc.item(designcraft_doc::ids::ItemId(id)).unwrap().graphic().unwrap().clone();
-    assert!(st.doc.assets[&g.asset].link.is_none(), "embedded");
-    use egui_kittest::kittest::NodeT;
-    assert!(h.get_by_label("Edit Original").accesskit_node().is_disabled(), "nothing linked to edit");
+    let asset = &st.doc.assets[&g.asset];
+    assert_eq!(asset.link.as_deref(), path.to_str());
+    assert_eq!(asset.storage, designcraft_doc::Storage::Embedded, "embedded");
 }
 
 /// The opener only gets an existing image or document: a program, a URL, a missing file or a

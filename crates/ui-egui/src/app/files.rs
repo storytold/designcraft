@@ -11,10 +11,14 @@ impl DesignApp {
     /// later frame ([`Self::open_picked`]); in a browser the file arrives through the inbox.
     #[track_caller]
     pub fn pick_and_open(&mut self, purpose: &str) -> Result<Value, String> {
-        if let Some(open) = self.services.open_async.as_mut() {
+        // Build the request before borrowing the picker: import_request needs `&self`,
+        // and open_async is a field of `self`.
+        if self.services.open_async.is_some() {
             // With the selection asked from: a place replaces its graphic when the file arrives.
             let request = self.import_request(purpose);
-            open(request);
+            if let Some(open) = self.services.open_async.as_mut() {
+                open(request);
+            }
             return Ok(Value::Null);
         }
         // File › Place takes several files: they load the place cursor in the order chosen.
