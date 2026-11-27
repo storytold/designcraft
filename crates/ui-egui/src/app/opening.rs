@@ -29,9 +29,11 @@ impl Drop for Opening {
 
 impl DesignApp {
     /// Read the file at `path` on a worker thread; [`Self::poll_opening`] opens it when it is in.
-    /// The same file asked for again while it is read opens once.
+    /// The same file asked for again while it is read opens once, moved to the end of the queue.
     pub(super) fn open_in_background(&mut self, path: String) -> Result<Value, String> {
-        if self.opening.iter().any(|o| o.path == path) {
+        if let Some(i) = self.opening.iter().position(|o| o.path == path) {
+            let queued = self.opening.remove(i);
+            self.opening.push(queued);
             return Ok(Value::Null);
         }
         let name = std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
