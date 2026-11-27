@@ -77,4 +77,4 @@ The status line reports once: "N images will be saved as links to their files (L
 
 ## Web builds
 
-The web build cannot read files, so it embeds everything it places and cannot unembed. A document with linked assets opens with their proxies. Saving it on the web keeps the link records as version 5 and warns: "N linked files are saved as links only: the web version can't read them to embed them".
+The web build cannot read files, so it embeds everything it places and cannot unembed. Links › Relink… and Relink to Folder… take files from the browser's file and folder pickers instead (`links.relinkFiles`): a missing graphic takes the file whose path ends most like its link, and the bytes become the document's copy. A document with linked assets opens with their proxies. Saving it on the web keeps the link records as version 5 and warns: "N linked files are saved as links only: the web version can't read them to embed them".

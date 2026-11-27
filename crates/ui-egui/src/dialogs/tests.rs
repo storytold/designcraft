@@ -347,6 +347,50 @@ fn document_setup_keeps_each_pages_margins_unless_they_are_edited() {
     assert_eq!(margins(&app), [12.0; 4]);
 }
 
+/// Document Setup's Binding is two buttons under Orientation, under Show Right-to-Left Features;
+/// Right to Left binds the document right to left on OK.
+#[test]
+fn document_setup_binding_follows_show_right_to_left_features() {
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    let mut app = document_setup_app("points");
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    crate::menus::activate(&mut app, "layout.documentSetup", &Value::Null);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1178.0, 900.0))
+        // Document Setup's older fields have no accessible names yet; this test only needs Binding's.
+        .with_accessibility_check(false)
+        .build_ui_state(
+            |ui, app: &mut DesignApp| {
+                let key = egui::Id::unique("document_setup_binding_fonts");
+                if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                    crate::theme::install_fonts(ui.ctx(), "");
+                    ui.data_mut(|d| d.insert_temp(key, true));
+                    return;
+                }
+                show(app, ui.ctx());
+            },
+            app,
+        );
+    h.run_steps(3);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Left to Right").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
+    // With the preference off in an English interface, a right-to-left bound document still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    crate::menus::activate(h.state_mut(), "layout.documentSetup", &Value::Null);
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right to Left").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+}
+
 #[test]
 fn document_setup_keeps_a_value_it_cannot_read_and_changes_nothing() {
     for (key, value) in [("width", "wide"), ("marginTop", "-"), ("pages", "0"), ("bleedTop", "x")] {
@@ -384,6 +428,41 @@ fn document_setup_links_edges_and_adjust_layout_applies() {
     let doc = &app.session.active().unwrap().doc;
     let b = doc.item(designcraft_doc::ItemId(f["id"].as_u64().unwrap())).unwrap().bounds();
     assert!((b.y0 - 72.0).abs() < 1e-6 && doc.page(0).unwrap().margins.outside == 72.0, "{b:?}");
+}
+
+/// The Table panel's Direction is under Show Right-to-Left Features; Right to Left puts the first
+/// column on the right.
+#[test]
+fn table_panel_direction_follows_show_right_to_left_features() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("frame.create", json!({"rect": [72, 72, 400, 400], "content": "text", "caret": true})).unwrap();
+    app.run("table.insert", json!({"rows": 2, "cols": 2})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(320.0, 1200.0)).with_accessibility_check(false).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("table_direction_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            crate::panels::table::show(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    assert_eq!(h.state_mut().run("table.get", json!({})).unwrap()["options"]["direction"], "rightToLeft");
+    // With the preference off in an English interface, a right-to-left table still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    let _ = h.get_by_label("Right to Left");
 }
 
 #[test]
@@ -1111,6 +1190,51 @@ fn paragraph_style_options_ignore_optical_margin_is_set_on_ok() {
     let app = h.state();
     assert!(app.ui.dialog.is_none());
     assert_eq!(app.session.doc().unwrap().doc.styles.para("Flush").unwrap().para.ignore_optical_margin, Some(true));
+}
+
+/// Show Right-to-Left Features adds Paragraph Direction to Paragraph Style Options › Indents and
+/// Spacing: off, it isn't there; on, Right to Left is saved with the style and its left
+/// alignment mirrored (after #1220).
+#[test]
+fn paragraph_style_options_direction_follows_show_right_to_left_features() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("style.paragraph.create", json!({"name": "Hebrew Body"})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Hebrew Body", "section": "indents"})));
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut DesignApp| {
+            let key = egui::Id::unique("paragraph_direction_fonts");
+            if ui.data(|d| d.get_temp::<bool>(key)).is_none() {
+                crate::theme::install_fonts(ui.ctx(), "");
+                ui.data_mut(|d| d.insert_temp(key, true));
+                return;
+            }
+            show(app, ui.ctx());
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Paragraph Direction:").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Paragraph Direction:").click();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    h.get_by_label("  OK  ").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialog.is_none());
+    let para = &app.session.doc().unwrap().doc.styles.para("Hebrew Body").unwrap().para;
+    assert_eq!(para.direction, Some(designcraft_doc::TextDirection::RightToLeft));
+    assert_eq!(para.align, Some(designcraft_doc::Align::Right));
+    // With the preference off in an English interface, a right-to-left style still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.state_mut().ui.dialog = Some(Dialog::new("paragraphStyleOptions", json!({"name": "Hebrew Body", "section": "indents"})));
+    h.run_steps(3);
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Paragraph Direction:");
 }
 
 #[test]
@@ -3366,6 +3490,52 @@ fn new_document_vertical_scroll_reaches_every_field_and_preset() {
     scroll_to_label(&mut app, &ctx, screen, body, "[Default]");
 }
 
+/// Show Right-to-Left Features adds Binding to the New Document window; Right to Left makes a
+/// document whose spreads run right to left. Off, Binding isn't shown and documents are bound
+/// left to right.
+#[test]
+fn new_document_binding_follows_show_right_to_left_features() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 1400.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Binding"), "hidden while the preference is off");
+    assert_eq!(crate::new_document::params(app.ui.dialog.as_ref().unwrap())["binding"], "leftToRight");
+    app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Binding");
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("rightToLeft"));
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert!(app.session.doc().unwrap().doc.settings.right_to_left_binding);
+}
+
+/// With the preference off, a preset or Recent card bound right to left still shows Binding in
+/// the New Document window, so the binding it is about to make can be seen and changed.
+#[test]
+fn new_document_shows_binding_a_preset_already_binds_right_to_left() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    app.run("app.newDocumentDialog", json!({})).unwrap();
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("rightToLeft"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1178.0, 1400.0));
+    for _ in 0..3 {
+        dialog_frame(&mut app, &ctx, screen, vec![]);
+    }
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    visible_label(&labels, screen, "Binding");
+    app.ui.dialog.as_mut().unwrap().fields.insert("binding".into(), json!("leftToRight"));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let labels = dialog_frame(&mut app, &ctx, screen, vec![]);
+    assert!(!labels.iter().any(|(t, _, _)| t.trim() == "Binding"), "hidden again once bound left to right");
+}
+
 #[test]
 fn arabic_new_document_fields_remain_reachable_and_editable() {
     for size in [egui::vec2(392.0, 271.0), egui::vec2(360.0, 280.0), egui::vec2(1178.0, 814.0)] {
@@ -3797,7 +3967,7 @@ fn pdf_export_override_keeps_override() {
 }
 
 #[test]
-fn pdf_export_preset_high_quality_print_keeps_flatten() {
+fn pdf_export_preset_desktop_printing_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "Desktop Printing");
@@ -3806,11 +3976,11 @@ fn pdf_export_preset_high_quality_print_keeps_flatten() {
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium", "a leave-unchanged preset must not touch flatten");
+    assert_eq!(d.s("flatten"), "", "non-X-1a presets keep transparency live");
 }
 
 #[test]
-fn pdf_export_preset_press_quality_keeps_flatten() {
+fn pdf_export_preset_commercial_printing_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("high"));
     apply_pdf_preset(&mut d, "Commercial Printing");
@@ -3819,19 +3989,20 @@ fn pdf_export_preset_press_quality_keeps_flatten() {
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "high");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
-fn pdf_export_preset_smallest_file_size_sets_flatten_low() {
+fn pdf_export_preset_screen_and_email_keeps_transparency_live() {
     let mut d = Dialog::new("pdfExport", json!({}));
+    d.fields.insert("flatten".into(), json!("low"));
     apply_pdf_preset(&mut d, "Screen and Email");
     assert_eq!(d.s("standard"), "none");
     assert!(d.b("compressImages"));
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "low");
+    assert_eq!(d.s("flatten"), "");
 }
 
 /// The PDF/X-1a preset exports X-1a with the High Resolution flattener and printer's marks.
@@ -3846,7 +4017,7 @@ fn pdf_export_preset_pdf_x1a_flattens_at_high_resolution() {
 }
 
 #[test]
-fn pdf_export_preset_pdf_x4_keeps_flatten() {
+fn pdf_export_preset_pdf_x4_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("medium"));
     apply_pdf_preset(&mut d, "PDF/X-4");
@@ -3855,11 +4026,11 @@ fn pdf_export_preset_pdf_x4_keeps_flatten() {
     assert!(d.b("marksCrop"));
     assert!(d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "medium");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
-fn pdf_export_preset_pdf_a2b_keeps_flatten() {
+fn pdf_export_preset_pdf_a2b_clears_flatten() {
     let mut d = Dialog::new("pdfExport", json!({}));
     d.fields.insert("flatten".into(), json!("low"));
     apply_pdf_preset(&mut d, "PDF/A-2b");
@@ -3868,7 +4039,7 @@ fn pdf_export_preset_pdf_a2b_keeps_flatten() {
     assert!(!d.b("marksCrop"));
     assert!(!d.b("marksBleed"));
     assert!(!d.b("marksPageInfo"));
-    assert_eq!(d.s("flatten"), "low");
+    assert_eq!(d.s("flatten"), "");
 }
 
 #[test]
@@ -3895,6 +4066,27 @@ fn open_pdf_export_seeds_fields_from_settings() {
     open_pdf_export(&mut app);
     let d = app.ui.dialog.as_ref().unwrap();
     assert_eq!(d.s("flatten"), "low");
+
+    // An explicit No Flattening choice (flatten = "", flatten_chosen = true) keeps "" without falling back to the global flattener.
+    app.ui.pdf_export.flatten = String::new();
+    app.ui.pdf_export.flatten_chosen = true;
+    app.ui.flattener = "medium".into();
+    open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("flatten"), "");
+
+    // Choosing a flattener via Edit › Transparency Flattener Presets updates app.ui.flattener,
+    // switches pdf_export to follow it (marking preset Custom), and updates the menu checkmark.
+    app.run("app.flattener", json!({"preset": "high"})).unwrap();
+    assert_eq!(app.ui.flattener, "high");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(app.ui.pdf_export.resolved_flatten(&app.ui.flattener), "high");
+    assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(false));
+    open_pdf_export(&mut app);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.s("flatten"), "high");
 }
 
 #[test]
@@ -3946,6 +4138,277 @@ fn confirm_pdf_export_writes_file_and_persists_settings() {
     assert!(!app.ui.pdf_export.bleed);
     assert!(app.ui.pdf_export.marks_crop);
     assert!(!app.ui.pdf_export.tagged);
+}
+
+fn make_checker_png_b64(side: u32) -> String {
+    let mut pixels = Vec::with_capacity((side * side * 4) as usize);
+    for y in 0..side {
+        for x in 0..side {
+            let v = if ((x + y) / 4).is_multiple_of(2) { 20u8 } else { 235u8 };
+            pixels.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let png = designcraft_render::Rendered { width: side, height: side, pixels }.to_png();
+    designcraft_engine::cmd::base64_encode(&png)
+}
+
+fn select_pdf_preset(d: &mut Dialog, preset: &str) {
+    d.fields.insert("preset".into(), json!(preset));
+    apply_pdf_preset(d, preset);
+}
+
+#[test]
+fn pdf_export_presets_keep_full_png_resolution_with_effects_and_blending() {
+    use std::sync::{Arc, Mutex};
+    let b64_blend = make_checker_png_b64(400);
+    let b64_feather = make_checker_png_b64(440);
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let blended = app.run("file.place", json!({"base64": &b64_blend, "name": "blend.png", "x": 36, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.effects", json!({"ids": [blended], "blend": "Multiply"})).unwrap();
+    let feathered =
+        app.run("file.place", json!({"base64": &b64_feather, "name": "grad.png", "x": 260, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.gradientFeather", json!({"ids": [feathered], "from": [260, 136], "to": [460, 136]})).unwrap();
+
+    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = writes.clone();
+    app.services.write = Some(Box::new(move |_path: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/preset-resolution-test.pdf".into())));
+
+    // 1. "Screen and Email" must keep transparency live instead of flattening effects/blends to 72 ppi.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        select_pdf_preset(d, "Screen and Email");
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.preset, "Screen and Email");
+    assert_eq!(app.ui.pdf_export.flatten, "");
+    assert!(app.ui.pdf_export.flatten_chosen);
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+
+    // 2. Switching away from a prior "low" choice (via Edit › Transparency Flattener Presets) must not re-flatten at 72 ppi.
+    app.run("app.flattener", json!({"preset": "low"})).unwrap();
+    assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        assert_eq!(d.s("flatten"), "low");
+        select_pdf_preset(d, "Desktop Printing");
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.preset, "Desktop Printing");
+    assert_eq!(app.ui.pdf_export.flatten, "");
+    assert!(app.ui.pdf_export.flatten_chosen);
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
+
+    // 3. Reopening the dialog without re-selecting the preset must keep flatten = "" (not fall back to "low").
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.s("flatten"), "");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.preset, "Desktop Printing");
+    assert_eq!(app.ui.pdf_export.flatten, "");
+    assert!(app.ui.pdf_export.flatten_chosen);
+
+    let pdfs = writes.lock().unwrap();
+    assert_eq!(pdfs.len(), 3);
+    for (i, pdf) in pdfs.iter().enumerate() {
+        let text = String::from_utf8_lossy(pdf);
+        assert!(text.contains("/Width 400"), "export #{i} should keep 400px blended PNG unflattened");
+        assert!(text.contains("/Width 440"), "export #{i} should keep 440px feathered PNG unflattened");
+    }
+}
+
+#[test]
+fn pdf_export_interactive_keeps_transparency_after_print_export() {
+    use std::sync::{Arc, Mutex};
+    let b64_blend = make_checker_png_b64(400);
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let blended = app.run("file.place", json!({"base64": &b64_blend, "name": "blend.png", "x": 36, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.effects", json!({"ids": [blended], "blend": "Multiply"})).unwrap();
+
+    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = writes.clone();
+    app.services.write = Some(Box::new(move |_path: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/interactive-transparency-test.pdf".into())));
+
+    // 1. Confirm Print PDF with PDF/X-1a:2003 -> flattens print export without mutating app.ui.flattener.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        select_pdf_preset(d, "PDF/X-1a:2003");
+        assert_eq!(d.s("flatten"), "high");
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+
+    // 2. Interactive PDF export must keep live transparency instead of inheriting "high".
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.settle_dialogs();
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+
+    // 3. Confirm Print PDF with Custom + Low (non-X-1a) -> flattens print export without mutating app.ui.flattener.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        select_pdf_preset(d, "Custom");
+        d.fields.insert("standard".into(), json!("none"));
+        d.fields.insert("flatten".into(), json!("low"));
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(app.ui.pdf_export.standard, "none");
+    assert_eq!(app.ui.pdf_export.preset, "Custom");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+
+    // 4. Subsequent Interactive PDF export must still keep live transparency instead of inheriting "low".
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.settle_dialogs();
+
+    // 5. Explicit global flattener via Edit › Transparency Flattener Presets must also not flatten Interactive PDF.
+    app.run("app.flattener", json!({"preset": "low"})).unwrap();
+    app.run("app.exportInteractivePdf", json!({})).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "low", "interactive export should not clobber the global flattener");
+
+    // 6. Explicit flattener override passed directly by a caller still works.
+    app.run("app.exportInteractivePdf", json!({"path": "/tmp/interactive-explicit-low.pdf", "flatten": "low"})).unwrap();
+
+    let pdfs = writes.lock().unwrap();
+    assert_eq!(pdfs.len(), 6);
+    let as_text: Vec<_> = pdfs.iter().map(|b| String::from_utf8_lossy(b)).collect();
+    assert!(!as_text[0].contains("/Width 400"), "PDF/X-1a print export should flatten blended image");
+    assert!(as_text[1].contains("/Width 400"), "Interactive PDF after PDF/X-1a must keep 400px blended PNG unflattened");
+    assert!(!as_text[2].contains("/Width 400"), "Custom+Low print export should flatten blended image");
+    assert!(as_text[3].contains("/Width 400"), "Interactive PDF after Custom+Low must keep 400px blended PNG unflattened");
+    assert!(as_text[4].contains("/Width 400"), "Interactive PDF after app.flattener low must keep 400px blended PNG unflattened");
+    assert!(!as_text[5].contains("/Width 400"), "Explicit flatten override on Interactive PDF should still flatten");
+}
+
+#[test]
+fn pdf_export_scripted_does_not_inherit_dialog_flattener() {
+    use std::sync::{Arc, Mutex};
+    let b64_blend = make_checker_png_b64(400);
+
+    let mut app = crate::DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let blended = app.run("file.place", json!({"base64": &b64_blend, "name": "blend.png", "x": 36, "y": 36, "width": 200})).unwrap()["id"].clone();
+    app.run("object.effects", json!({"ids": [blended], "blend": "Multiply"})).unwrap();
+
+    let writes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = writes.clone();
+    app.services.write = Some(Box::new(move |_path: &str, bytes: &[u8]| {
+        sink.lock().unwrap().push(bytes.to_vec());
+        Ok(())
+    }));
+    app.answer_dialogs(crate::app::file_dialogs::testing::answer_with(Some("/tmp/scripted-transparency-test.pdf".into())));
+
+    // 1. Scripted app.exportPdf keeps live transparency by default.
+    app.run("app.exportPdf", json!({"path": "/tmp/a.pdf"})).unwrap();
+
+    // 2. Confirming File › Export PDF with PDF/X-1a:2003 flattens that export, not subsequent scripted exports.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "PDF/X-1a:2003");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+
+    app.run("app.exportPdf", json!({"path": "/tmp/b.pdf"})).unwrap();
+
+    // 3. Confirming File › Export PDF with Custom + Low flattens that export, not subsequent scripted exports.
+    open_pdf_export(&mut app);
+    {
+        let d = app.ui.dialog.as_mut().unwrap();
+        select_pdf_preset(d, "Custom");
+        d.fields.insert("standard".into(), json!("none"));
+        d.fields.insert("flatten".into(), json!("low"));
+    }
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(app.ui.flattener, "");
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+
+    app.run("app.exportPdf", json!({"path": "/tmp/c.pdf"})).unwrap();
+
+    // 4. Choosing Edit › Transparency Flattener Presets explicitly applies to scripted app.exportPdf.
+    app.run("app.flattener", json!({"preset": "low"})).unwrap();
+    app.run("app.exportPdf", json!({"path": "/tmp/d.pdf"})).unwrap();
+
+    // 5. Confirming Desktop Printing in the dialog clears flattening for menu, dialog, and scripted export.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "Desktop Printing");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/e.pdf"})).unwrap();
+
+    // 6. Explicit flatten parameter on scripted app.exportPdf still flattens.
+    app.run("app.exportPdf", json!({"path": "/tmp/f.pdf", "flatten": "low"})).unwrap();
+
+    // 7. PDF/X-1a:2003 + explicit app.flattener "high" keeps flattening scripted exports across a
+    //    preferences save/reload, whereas dialog-only PDF/X-1a:2003 keeps scripted exports live.
+    open_pdf_export(&mut app);
+    select_pdf_preset(app.ui.dialog.as_mut().unwrap(), "PDF/X-1a:2003");
+    confirm(&mut app).unwrap();
+    app.settle_dialogs();
+    let dialog_only_bytes = serde_json::to_vec(&app.ui).unwrap();
+
+    app.run("app.flattener", json!({"preset": "high"})).unwrap();
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    let global_high_bytes = serde_json::to_vec(&app.ui).unwrap();
+
+    app.ui = crate::UiState::read_preferences(&global_high_bytes).unwrap().ui;
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/g.pdf"})).unwrap();
+
+    app.ui = crate::UiState::read_preferences(&dialog_only_bytes).unwrap().ui;
+    assert_eq!(app.ui.pdf_export.preset, "PDF/X-1a:2003");
+    assert!(!app.ui.pdf_export.uses_global_flatten());
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    app.run("app.exportPdf", json!({"path": "/tmp/h.pdf"})).unwrap();
+
+    let pdfs = writes.lock().unwrap();
+    assert_eq!(pdfs.len(), 12);
+    let as_text: Vec<_> = pdfs.iter().map(|b| String::from_utf8_lossy(b)).collect();
+    assert!(as_text[0].contains("/Width 400"), "initial scripted export keeps 400px PNG unflattened");
+    assert!(!as_text[1].contains("/Width 400"), "PDF/X-1a dialog export flattens");
+    assert!(as_text[2].contains("/Width 400"), "scripted export after PDF/X-1a keeps 400px PNG unflattened");
+    assert!(!as_text[3].contains("/Width 400"), "Custom+Low dialog export flattens");
+    assert!(as_text[4].contains("/Width 400"), "scripted export after Custom+Low keeps 400px PNG unflattened");
+    assert!(!as_text[5].contains("/Width 400"), "scripted export after explicit app.flattener low flattens");
+    assert!(as_text[6].contains("/Width 400"), "Desktop Printing dialog export keeps 400px PNG unflattened");
+    assert!(as_text[7].contains("/Width 400"), "scripted export after Desktop Printing keeps 400px PNG unflattened");
+    assert!(!as_text[8].contains("/Width 400"), "scripted export with explicit flatten=low flattens");
+    assert!(!as_text[9].contains("/Width 400"), "PDF/X-1a dialog export before reload flattens");
+    assert!(!as_text[10].contains("/Width 400"), "reloaded PDF/X-1a + explicit global high keeps flattening scripted export");
+    assert!(as_text[11].contains("/Width 400"), "reloaded dialog-only PDF/X-1a keeps scripted export unflattened");
 }
 
 #[test]
@@ -5908,4 +6371,30 @@ fn parent_resize_exact_dialog_keeps_its_target_and_rejects_invalid_input() {
     assert!(confirm(&mut app).is_err());
     assert!(app.ui.dialog.is_some());
     assert!(std::sync::Arc::ptr_eq(&saved, &app.session.doc().unwrap().doc));
+}
+
+/// #2397: opening Text Frame Options focuses the Columns count field, so Ctrl/Cmd+B, Up, Up,
+/// Return changes 1 column to 3 without the mouse.
+#[test]
+fn text_frame_options_opens_with_the_columns_field_focused() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [36, 36, 336, 236], "content": "text", "text": "Hello"})).unwrap();
+    let id = designcraft_doc::ItemId(r["id"].as_u64().unwrap());
+    app.run("selection.set", json!({"ids": [id.0]})).unwrap();
+    crate::menus::activate(&mut app, "object.textFrameOptions", &Value::Null);
+    assert_eq!(app.ui.dialog.as_ref().map(|d| d.id.as_str()), Some("textFrameOptions"));
+    let ctx = dialog_context("en");
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let up = || egui::Event::Key { key: egui::Key::ArrowUp, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    dialog_frame(&mut app, &ctx, screen, vec![up()]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    dialog_frame(&mut app, &ctx, screen, vec![up()]);
+    dialog_frame(&mut app, &ctx, screen, vec![]);
+    let d = app.ui.dialog.as_ref().unwrap();
+    assert_eq!(d.n("columns"), Some(3.0), "two Up presses step 1 column to 3: {:?}", d.fields.get("columns"));
+    confirm(&mut app).unwrap();
+    assert_eq!(app.session.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().options.columns, 3);
 }

@@ -152,7 +152,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 - **Estimate:** 25–40 h.
 
 ### 13. Hyphenation and spelling languages (T, L)
-- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Danish, Greek, German (2006 reform), French, Italian and Dutch; spelling for
+- **Missing:** hyphenation patterns for every language but English, Spanish, Portuguese, Norwegian, Danish, Greek, German (2006 reform), French, Italian, Dutch and Croatian; spelling for
   every language but English. InDesign ships dictionaries for ~40 languages.
 - **Estimate:** 30–60 h (permissively licensed patterns exist for most; spelling word lists need
   licence review). **Doc:** [typography-parity.md](typography-parity.md)
@@ -185,7 +185,7 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   Profile / Edit Original, File ▸ Open PDF / Document and Print Presets / User
   Settings, Type ▸ Size presets, Table ▸ Table Options / Cell Options submenus, Paste Before/After,
   Convert Columns, Object ▸ Interactive ▸ Convert to (form fields),
-  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler and Show/Hide Style Name Column are there). Overriding a
+  View ▸ Extras badges and Story Editor options (Show/Hide Depth Ruler, Show/Hide Style Name Column and Show/Hide Paragraph Break Marks are there). Overriding a
   base parent's items on a parent spread itself (overrides work on document pages only); Save
   as Parent; new parents for an alternate layout (its pages keep their source pages' parents).
 - **Estimate:** 40–70 h (most are thin wrappers over existing engine features).
@@ -234,7 +234,9 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
   images are not yet measured on a real catalogue).
 - **Have:** placed graphics link to their files instead of embedding them; a document stores a proxy and a hash, loads original bytes on demand through a 512 MiB cache, and opens without reading them (see [linked-artwork.md](linked-artwork.md)). Compose 300k characters ~38 ms warm, damage-region repaint (< 1 ms while typing),
   parallel story composition, and an edit composes only the paragraphs it can change in a plain
-  story (240 paragraphs: 3 composed for a typed character). Automatic recovery writes on a
+  story (240 paragraphs: 3 composed for a typed character); list/footnote/endnote numbering
+  across stories built once per document version (a 677-story IDML with 8 continuing lists:
+  69 s → 37 ms to compose). Automatic recovery writes on a
   background thread and streams to disk, so an autosave of that catalogue no longer blocks the
   interface thread for 30-100 s (`file.recovery.save {background}`, `file.recovery.progress`). A
   snapshot still being written when its document is saved, reverted or closed is cancelled before
@@ -289,6 +291,7 @@ Cue. These are excluded from every percentage.
 |---|---|---|
 | 2026-11-15 | trivial | Gap 7 closed: the quality gate already runs on every pull request and push to main (#1352) |
 | 2026-11-14 | minor | Gaps 19 and 20 shrunk: placed files are linked with proxies and a hash (save format 5); multi-image place cursor, grid and contact sheet |
+| 2026-11-06 | trivial | Gap 13 shrunk: Croatian hyphenates (hyph-hr), so eleven languages do |
 | 2026-11-05 | minor | Gap 29 added: document tabs can't be reordered (overflowing tabs now scroll) |
 | 2026-11-04 | trivial | Gap 21 shrunk: pt-BR translates 2,936 of 2,939 strings, all but three Control panel captions (61% before) |
 | 2026-10-22 | minor | Gap 26 shrunk: autoflow threads a frame per column on the pages that follow the story's last frame, then adds pages at the end of the document |
