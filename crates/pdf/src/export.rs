@@ -124,9 +124,9 @@ impl CoverageImage {
 
     /// The coverage as a grey JPEG (quality 90), for exports that compress images.
     fn jpeg(&self, interpolate: bool) -> Option<Image> {
-        let mut buf = Vec::new();
-        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
-        image::ImageEncoder::write_image(enc, &self.grey, self.size.0, self.size.1, image::ExtendedColorType::L8).ok()?;
+        let img = craft_image_codecs::Image::from_u8(self.size.0, self.size.1, craft_image_codecs::ChannelLayout::Gray, self.grey.to_vec()).ok()?;
+        let options = craft_image_codecs::EncodeOptions { jpeg_quality: 90, ..Default::default() };
+        let buf = craft_image_codecs::encode(&img, craft_image_codecs::Format::Jpeg, &options).ok()?;
         Image::from_jpeg(buf.into(), interpolate).ok()
     }
 
