@@ -2108,8 +2108,10 @@ fn place_paragraph_lines(shared: PlacementShared<'_, '_>, paragraph: ParagraphLi
             // alignment); a justified line ended by a forced line break stays justified.
             let ends_para = last || brk.is_some_and(story::is_break_char);
             let forced_mid = brk == Some(story::FORCED_LINE_BREAK) && !last;
+            // An overfull centred line hangs left of its slot only at the column's edge, not onto a drop cap or wrap.
+            let hang_left = beside.is_none() && x0 <= col.x0;
             let (mut placed, end_x, ratio) =
-                layout_line(glyphs, s, e, b.hyphen, lx0, lx1, col.x0, pp, spacing, ends_para, forced_mid, f.left_page, bidi_info);
+                layout_line(glyphs, s, e, b.hyphen, lx0, lx1, col.x0, pp, spacing, ends_para, forced_mid, f.left_page, hang_left, bidi_info);
             let end_x = if line_no == 0 && s == 0 { align_label(&mut placed, label_aligned, label_tab, list_align, end_x) } else { end_x };
             // Warichu runs before ruby so a reading is placed over the stacked note, and before
             // the trimmed spaces and the drop cap join the line, so neither is stacked.
@@ -4616,6 +4618,7 @@ fn layout_line(
     last: bool,
     forced_mid: bool,
     left_page: bool,
+    hang_left: bool,
     bidi_info: &unicode_bidi::BidiInfo<'_>,
 ) -> (Vec<PlacedGlyph>, f64, f64) {
     let mut line: Vec<Glyph> = glyphs[s..e.max(s)].to_vec();
@@ -4692,7 +4695,7 @@ fn layout_line(
         distribute(seg_line, &rebased, extra, sp, seg_add, seg_scale);
         // A squeezed centred line still wider than the measure is centred on it too, hanging out
         // on both sides like one with nothing to squeeze.
-        if squeeze_last && last_align == Align::Center {
+        if squeeze_last && last_align == Align::Center && hang_left {
             let width: f64 = line.iter().zip(&add).zip(&scale).map(|((g, a), k)| g.adv * k + a).sum();
             offset = ((measure - width) / 2.0).min(0.0);
         }
@@ -4738,7 +4741,7 @@ fn layout_line(
         };
         // An overfull ragged line is not shifted left of the slot, except a centred one: InDesign
         // centres it, hanging out on both sides.
-        if offset < 0.0 && last_align != Align::Center {
+        if offset < 0.0 && !(last_align == Align::Center && hang_left) {
             offset = 0.0;
         }
     }

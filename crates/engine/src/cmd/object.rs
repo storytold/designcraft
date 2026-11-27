@@ -3139,7 +3139,9 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Res
     if width && tf.options.columns <= 1 {
         let cs = compose(out);
         if let Some(ft) = cs.frame(id) {
-            let right = ft.lines.iter().map(|l| l.end_x).fold(f64::NEG_INFINITY, f64::max);
+            // A line may start left of the column (an overfull centred one): count that overhang.
+            let right =
+                ft.lines.iter().map(|l| l.end_x + (l.x0 - l.glyphs.iter().map(|g| g.x).fold(l.x0, f64::min))).fold(f64::NEG_INFINITY, f64::max);
             if right.is_finite() {
                 out.x1 = (right + tf.options.inset[3] + 0.001).max(r.x0 + 1.0);
             }
