@@ -77,7 +77,14 @@ pub(super) fn guard_idml_loss(
             lost["uid"] = json!(uid);
             lost["dontAskAgain"] = json!(false);
             app.ui.dialog = Some(crate::dialogs::Dialog::new("idmlLoss", lost));
-            app.lossy_save = Some(Box::new(then));
+            app.lossy_save = Some(Box::new(move |app, answer| {
+                if !matches!(&answer, LossyAnswer::Cancel) {
+                    let index =
+                        app.session.documents().iter().position(|document| Some(document.uid) == uid).ok_or("The document to save is closed")?;
+                    app.run("file.activate", json!({"index": index}))?;
+                }
+                then(app, answer)
+            }));
             return Ok(Value::Null);
         }
     }

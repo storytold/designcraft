@@ -106,6 +106,40 @@ fn document_with_a_note(app: &mut DesignApp, title: &str) {
     app.run("note.new", json!({"text": "Check this"})).unwrap();
 }
 
+#[test]
+fn a_deferred_idml_save_uses_its_original_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    document_with_a_note(&mut app, "Original");
+    let original = app.session.active().unwrap().uid;
+    let path = dir.path().join("Original.idml");
+    app.run("app.saveDialog", json!({"path": path.to_string_lossy()})).unwrap();
+    app.run("file.new", json!({"title": "Later"})).unwrap();
+    let later = app.session.active().unwrap().uid;
+    crate::dialogs::confirm(&mut app).unwrap();
+    assert_eq!(app.session.active().unwrap().uid, original);
+    assert_eq!(app.session.active().unwrap().path.as_deref(), path.to_str());
+    let other = app.session.documents().iter().find(|doc| doc.uid == later).unwrap();
+    assert!(other.path.is_none());
+    assert!(path.exists());
+}
+
+#[test]
+fn a_deferred_idml_save_rejects_a_closed_original_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    document_with_a_note(&mut app, "Original");
+    let path = dir.path().join("Original.idml");
+    app.run("app.saveDialog", json!({"path": path.to_string_lossy()})).unwrap();
+    app.run("file.close", json!({"index": 0})).unwrap();
+    app.run("file.new", json!({"title": "Later"})).unwrap();
+    let later = app.session.active().unwrap().uid;
+    assert!(crate::dialogs::confirm(&mut app).is_err());
+    assert_eq!(app.session.active().unwrap().uid, later);
+    assert!(app.session.active().unwrap().path.is_none());
+    assert!(!path.exists());
+}
+
 /// CodeRabbit on #1105: a save as IDML that would lose editorial notes asks first. Cancel saves
 /// nothing; Save Anyway writes the IDML; Save as DesignCraft… asks where and writes DesignCraft's
 /// format instead, which keeps the notes.
