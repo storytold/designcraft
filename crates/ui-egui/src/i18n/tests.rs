@@ -38,11 +38,7 @@ const WHOLE_INTERFACE: [&str; 2] = ["de", "ja"];
 
 /// What `tr` shows for a row: an empty one is still untranslated.
 fn or_english<'a>(text: &'a str, english: &'a str) -> &'a str {
-    if text.trim().is_empty() {
-        english
-    } else {
-        text
-    }
+    if text.trim().is_empty() { english } else { text }
 }
 
 /// Checks cached catalog lookup across language switches, including source-text fallback.
