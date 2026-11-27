@@ -32,8 +32,8 @@ mod nightly_session;
 mod pointer;
 mod process_identity;
 mod profile;
-mod window;
 mod profile_root;
+mod window;
 mod window_frame;
 
 use designcraft_engine::Session;
