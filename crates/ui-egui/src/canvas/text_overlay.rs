@@ -1,6 +1,8 @@
 use super::caret;
 use super::frames::{item_canvas_xf, layer_color, path_screen};
+use super::render::{display_key, screen_options};
 use super::{Affine, CanvasLayout, Color32, DesignApp, Document, Point, Pos2, Rect, Stroke, Xf, compose, pos2};
+use crate::{ScreenMode, theme::Tokens};
 
 pub(super) fn draw_text_selection(
     app: &DesignApp,
@@ -38,8 +40,8 @@ pub(super) fn draw_text_selection(
         draw_cell_selection(app, painter, xf, doc, layout, &cs, ts, cell);
         return;
     }
-    let mut runs: Vec<(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)> = Vec::new();
-    for (fi, ft) in cs.frames.iter().enumerate() {
+    let mut runs: Vec<(Affine, Vec<[Point; 4]>)> = Vec::new();
+    for ft in &cs.frames {
         let Some((a, _)) = item_canvas_xf(doc, layout, ft.frame) else { continue };
         let Some(it) = doc.item(ft.frame) else { continue };
         let m = a * doc.text_xf(it);
@@ -73,8 +75,7 @@ pub(super) fn draw_text_selection(
             continue;
         }
         let mut quads = Vec::new();
-        let mut glyphs = Vec::new();
-        for (li, l) in ft.lines.iter().enumerate() {
+        for l in &ft.lines {
             let s = range.start.max(l.range.start);
             let e = range.end.min(l.range.end);
             if s > e || (s == e && !(l.range.end < range.end && e == l.range.end)) {
@@ -91,18 +92,13 @@ pub(super) fn draw_text_selection(
                     quads.push([Point::new(a, r.y0), Point::new(b, r.y0), Point::new(b, r.y1), Point::new(a, r.y1)]);
                 }
             }
-            for (gi, g) in l.glyphs.iter().enumerate() {
-                if g.visible && g.len > 0 && g.byte >= s && g.byte < e {
-                    glyphs.push((li, gi));
-                }
-            }
         }
         if !quads.is_empty() {
-            runs.push((fi, m, quads, glyphs));
+            runs.push((m, quads));
         }
     }
     if !runs.is_empty() {
-        draw_inverse_highlight(app, painter, xf, doc, &cs, ts.story, &runs);
+        draw_inverse_highlight(app, painter, xf, doc, layout, ts.story, &runs);
     }
     if ts.is_caret()
         && let Some((fi, x, bl, asc, desc)) = compose::caret(&cs, ts.focus)
@@ -172,24 +168,49 @@ fn draw_cell_selection(
     }
 }
 
-/// InDesign draws selected text inverted: a black highlight with the selected glyphs in the
-/// inverse of their colour (white for black text). The highlight and glyph outlines are
-/// rasterised with `vello_cpu` into a small screen-space texture over the selection.
+thread_local! {
+    /// Renders what lies under a text highlight, apart from the canvas renderer and its worker.
+    static HIGHLIGHT_RENDERER: std::cell::RefCell<Option<designcraft_render::Renderer>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The `w` × `h` premultiplied pixels of `img` from (`x0`, `y0`), the pasteboard colour `back`
+/// where that reaches past the image.
+fn crop(img: &designcraft_render::Rendered, x0: i64, y0: i64, w: u32, h: u32, back: [u8; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..i64::from(h) {
+        for x in 0..i64::from(w) {
+            let (sx, sy) = (x0 + x, y0 + y);
+            let inside = sx >= 0 && sy >= 0 && sx < i64::from(img.width) && sy < i64::from(img.height);
+            let px = inside.then(|| (sy as usize * img.width as usize + sx as usize) * 4).and_then(|i| img.pixels.get(i..i + 4));
+            match px {
+                Some(p) => out.extend_from_slice(p),
+                None => out.extend_from_slice(&[back[0], back[1], back[2], 255]),
+            }
+        }
+    }
+    out
+}
+
+/// InDesign draws selected text inverted: whatever lies under the highlight (paper, the frame's
+/// fill, a placed image, the selected glyphs themselves) shows in its inverse colour. Black text
+/// on white paper turns white on black, and white text on a dark fill turns dark on a light
+/// highlight instead of vanishing into a black bar. The area under the selection is rendered from
+/// the document into a small screen-space texture and inverted inside the highlight quads.
 fn draw_inverse_highlight(
     app: &DesignApp,
     painter: &egui::Painter,
     xf: &Xf,
     doc: &Document,
-    cs: &compose::ComposedStory,
+    layout: &CanvasLayout,
     story: designcraft_doc::StoryId,
-    runs: &[(usize, Affine, Vec<[Point; 4]>, Vec<(usize, usize)>)],
+    runs: &[(Affine, Vec<[Point; 4]>)],
 ) {
     use designcraft_render::vello_cpu::{self, kurbo, peniko};
     let ctx = painter.ctx();
     let ppp = ctx.pixels_per_point();
     let to_screen = |m: Affine, p: Point| xf.to_screen(m * p);
     let mut bbox = Rect::NOTHING;
-    for (_, m, quads, _) in runs {
+    for (m, quads) in runs {
         for q in quads {
             for p in q {
                 bbox.extend_with(to_screen(*m, *p));
@@ -207,18 +228,62 @@ fn draw_inverse_highlight(
     );
     let (w, h) = (((bbox.width() * ppp).round() as u32).clamp(1, 8192), ((bbox.height() * ppp).round() as u32).clamp(1, 8192));
     let Some(st) = app.session.active() else { return };
+    let preview = app.ui.screen_mode != ScreenMode::Normal;
+    let back = Tokens::get(ctx).pasteboard;
+    // Everything that changes the colours the canvas shows changes the highlight too: the display
+    // options the canvas texture is redrawn for (Rich Black, Overprint Preview, quality …) and
+    // the proof setup and pasteboard behind them.
+    let display = (format!("{:?}", display_key(app)), app.ui.proof_colors.then(|| format!("{:?}", app.ui.proof_setup)), back.to_array());
+    // What the canvas shows under the highlight: cut from the canvas's own pixels when its texture
+    // is at this zoom (no second render; Preview mode's clipping included), else rendered here.
+    // The texture's pixel at the highlight's top left, kept in canvas space so scrolling (which
+    // only shifts the texture) reuses the highlight.
+    let from_canvas =
+        app.canvas.shown.zip(app.canvas.pixels.clone()).filter(|(sh, _)| (sh.zoom - xf.zoom).abs() < 1e-9 && xf.rot == 0).map(|(sh, px)| {
+            let c = xf.to_canvas(bbox.min);
+            let k = sh.zoom * ppp as f64;
+            (((c.x - sh.origin.x) * k).round() as i64, ((c.y - sh.origin.y) * k).round() as i64, px)
+        });
+    // Preview, Bleed, Slug: only where each spread shows its content, as the canvas.
+    let clips: Vec<Rect> = if app.ui.screen_mode == crate::ScreenMode::Normal {
+        vec![painter.clip_rect()]
+    } else {
+        layout.slots.iter().map(|slot| super::page_decor::shown_area(app, doc, xf, slot).intersect(painter.clip_rect())).collect()
+    };
+    // Without the canvas's pixels the area would be rendered here, on the UI thread. That is not
+    // done on a frame of a zoom or right after text is selected, when the worker is already
+    // bringing a texture with its pixels, nor in a turned view, whose texture never matches (every
+    // zoom or selection change would render again): there, and with Separations Preview on (which
+    // shows a plate, not the composite the canvas pixels hold), a plain highlight.
+    let waiting = from_canvas.is_none() && app.canvas.pending.is_some();
+    if app.ui.separations.is_some() || waiting || xf.rot != 0 {
+        for clip in &clips {
+            let painter = painter.with_clip_rect(*clip);
+            for (m, quads) in runs {
+                for q in quads {
+                    let poly = q.map(|p| to_screen(*m, p));
+                    painter.add(egui::Shape::convex_polygon(poly.to_vec(), PLAIN_HIGHLIGHT, Stroke::NONE));
+                }
+            }
+        }
+        return;
+    }
+    let at = from_canvas.as_ref().map(|(x, y, _)| (*x, *y));
     let key = egui::Id::unique(("inverse_sel", st.uid, st.revision, std::sync::Arc::as_ptr(&st.doc) as usize, story.0))
-        .with((runs.iter().map(|r| r.2.len() + r.3.len() * 7919).sum::<usize>(), w, h))
-        .with((bbox.min.x.to_bits(), bbox.min.y.to_bits(), xf.zoom.to_bits(), st.selection.text.map(|t| (t.anchor, t.focus))));
+        .with(&display)
+        .with((runs.iter().map(|r| r.1.len()).sum::<usize>(), w, h, preview))
+        .with((at, app.canvas.pixels_generation, xf.zoom.to_bits(), xf.rot, st.selection.text.map(|t| (t.anchor, t.focus))))
+        .with(at.is_none().then(|| (bbox.min.x.to_bits(), bbox.min.y.to_bits())));
     let cache_id = egui::Id::unique("inverse_sel_tex");
     let cached: Option<(egui::Id, egui::TextureHandle)> = ctx.data(|d| d.get_temp(cache_id));
     let tex = match cached {
         Some((k, t)) if k == key => t,
         _ => {
             let view = xf.affine(ppp as f64, bbox.min);
+            // How much of each pixel the highlight covers.
             let mut rc = vello_cpu::RenderContext::new_with(w as u16, h as u16, vello_cpu::RenderSettings { num_threads: 0, ..Default::default() });
-            rc.set_paint(peniko::Color::from_rgba8(0, 0, 0, 255));
-            for (_, m, quads, _) in runs {
+            rc.set_paint(peniko::Color::from_rgba8(255, 255, 255, 255));
+            for (m, quads) in runs {
                 rc.set_transform(view * *m);
                 for q in quads {
                     let mut bp = kurbo::BezPath::new();
@@ -230,41 +295,67 @@ fn draw_inverse_highlight(
                     rc.fill_path(&bp);
                 }
             }
-            let db = designcraft_fonts::FontDb::global();
-            for (fi, m, _, glyphs) in runs {
-                let Some(ft) = cs.frames.get(*fi) else { continue };
-                for &(li, gi) in glyphs {
-                    let Some(l) = ft.lines.get(li) else { continue };
-                    let Some(g) = l.glyphs.get(gi) else { continue };
-                    let Some(style) = cs.styles.get(g.style as usize) else { continue };
-                    let Some(c) = doc.resolve_color(&style.fill, style.fill_tint) else { continue };
-                    let [r, gg, b, _] = c.to_rgba8(1.0);
-                    rc.set_paint(peniko::Color::from_rgba8(255 - r, 255 - gg, 255 - b, 255));
-                    let outline = db.outline(&g.face, g.gid);
-                    let skew =
-                        if style.skew != 0.0 { Affine::new([1.0, 0.0, -style.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let shatai = style.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
-                    let mut ga = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
-                    if ft.vertical
-                        && let Some(turn) = g.vertical_xf(l.baseline)
-                    {
-                        ga = turn * ga;
-                    }
-                    rc.set_transform(view * *m * ga);
-                    rc.fill_path(&outline);
-                }
-            }
             rc.flush();
-            let mut pm = vello_cpu::Pixmap::new(w as u16, h as u16);
+            let mut mask = vello_cpu::Pixmap::new(w as u16, h as u16);
             let mut res = vello_cpu::Resources::new();
-            rc.render(&mut pm, &mut res);
-            let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pm.data_as_u8_slice());
+            rc.render(&mut mask, &mut res);
+            let under = match &from_canvas {
+                Some((x0, y0, px)) => crop(px, *x0, *y0, w, h, [back.r(), back.g(), back.b()]),
+                None => {
+                    // Rendered with the canvas's own options and colours, on this thread only (a
+                    // pool per frame of a drag would cost more than the render).
+                    let placed: Vec<designcraft_render::Placed> =
+                        layout.slots.iter().map(|s| designcraft_render::Placed { spread: s.spread, xf: s.xf }).collect();
+                    let opts = screen_options(app, layout, preview, ppp as f64);
+                    let mut under = HIGHLIGHT_RENDERER.with(|r| {
+                        let mut r = r.borrow_mut();
+                        r.get_or_insert_with(|| {
+                            let mut r = designcraft_render::Renderer::new();
+                            r.threads = 0;
+                            r
+                        })
+                        .render(doc, &app.session.cache, &placed, (w, h), view, &opts)
+                    });
+                    if app.ui.proof_colors {
+                        designcraft_render::proof_view(&mut under, &app.ui.proof_setup);
+                    }
+                    under.pixels
+                }
+            };
+            let pixels = inverse_under(mask.data_as_u8_slice(), &under, [back.r(), back.g(), back.b()]);
+            let ci = egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], &pixels);
             let t = crate::widgets::load_texture(ctx, "inverse_selection", ci, egui::TextureOptions::NEAREST);
             ctx.data_mut(|d| d.insert_temp(cache_id, (key, t.clone())));
             t
         }
     };
-    painter.image(tex.id(), bbox, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    for clip in &clips {
+        painter.with_clip_rect(*clip).image(tex.id(), bbox, uv, Color32::WHITE);
+    }
+}
+
+/// The highlight where the inverse of what lies under it isn't at hand.
+pub(super) const PLAIN_HIGHLIGHT: Color32 = Color32::from_rgba_premultiplied(35, 60, 110, 110);
+
+/// Premultiplied RGBA: the inverse of `under` (composited over `back` where it is transparent),
+/// shown as far as `mask` (premultiplied white) covers each pixel.
+pub(super) fn inverse_under(mask: &[u8], under: &[u8], back: [u8; 3]) -> Vec<u8> {
+    let mut out = vec![0u8; mask.len()];
+    let under = under.as_chunks::<4>().0.iter().chain(std::iter::repeat(&[0u8; 4]));
+    for ((o, m), u) in out.as_chunks_mut::<4>().0.iter_mut().zip(mask.as_chunks::<4>().0).zip(under) {
+        let cover = u32::from(m[3]);
+        if cover == 0 {
+            continue;
+        }
+        let a = u32::from(u[3]);
+        for k in 0..3 {
+            let shown = (u32::from(u[k]) + u32::from(back[k]) * (255 - a) / 255).min(255);
+            o[k] = ((255 - shown) * cover / 255) as u8;
+        }
+        o[3] = cover as u8;
+    }
+    out
 }
 
 /// View → Show Hidden Characters: ¶ paragraph ends, » tabs, · spaces, ¬ forced line breaks, # end of story.
@@ -274,7 +365,10 @@ pub(super) fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, x
     for story in doc.stories.values() {
         let cs = app.session.cache.get(doc, story.id, None);
         for ft in &cs.frames {
-            let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame)) else { continue };
+            let Some((loc, it)) = hidden_characters_frame(doc, ft.frame) else { continue };
+            // Parent editing and viewport culling can leave this spread off the canvas.
+            let Some(slot) = layout.slot(loc.spread) else { continue };
+            let a = slot.xf * doc.parent_xf(&loc);
             let m = a * doc.text_xf(it);
             let col = layer_color(doc, it);
             for (p, mark, centered, ascent) in frame_hidden_marks(&story.text, ft) {
@@ -284,6 +378,22 @@ pub(super) fn draw_hidden_characters(app: &DesignApp, painter: &egui::Painter, x
             }
         }
     }
+}
+
+/// Resolve a visible frame once for both the visibility check and painting, including its groups.
+fn hidden_characters_frame(doc: &Document, frame: designcraft_doc::ItemId) -> Option<(designcraft_doc::ItemLoc, &designcraft_doc::Item)> {
+    let loc = doc.find(frame)?;
+    let spread = doc.spread(loc.spread)?;
+    let mut items = spread.items.as_slice();
+    for &index in &loc.path {
+        let item = items.get(index)?;
+        if item.hidden || doc.layer(item.layer).is_some_and(|layer| !layer.visible) {
+            return None;
+        }
+        items = item.children();
+    }
+    let item = doc.item_at(&loc)?;
+    Some((loc, item))
 }
 
 /// A frame's hidden-character marks in frame space (position at the baseline, mark, centered,

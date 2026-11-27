@@ -110,10 +110,10 @@ pub(crate) struct Notes {
 impl Notes {
     /// The footnotes of `story` to place, numbered from the document's start for it, or from the
     /// numbers `opts` hands down for the text of a footnote holding nested notes.
-    pub fn new(doc: &Document, story: &Story, opts: &ComposeOptions) -> Notes {
+    pub fn new(doc: &Document, story: &Story, opts: &ComposeOptions, starts: impl FnOnce() -> u32) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
         let inner = opts.note_numbers.clone();
-        let start = if refs.is_empty() || inner.is_some() { 1 } else { doc.footnote_start(story.id) };
+        let start = if refs.is_empty() || inner.is_some() { 1 } else { starts() };
         Notes {
             nested: Arc::default(),
             inner,
@@ -245,6 +245,7 @@ impl Notes {
                 xrefs: opts.xrefs.clone(),
                 placed: Vec::new(),
                 note_numbers: Some(Arc::clone(&nested)),
+                starts: opts.starts.clone(),
             };
             let cs = crate::compose(doc, story, std::slice::from_ref(&spec), &nopts);
             let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();
