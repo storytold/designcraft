@@ -29,8 +29,8 @@ pub use paint::{
     path_length_bound,
 };
 pub use text_frame::{
-    AutoSize, ColumnsKind, ContourType, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame, TextFrameOptions,
-    TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
+    AutoSize, ColumnsKind, ContourType, DEFAULT_ALPHA_THRESHOLD, FirstBaseline, FrameBaselineGrid, FrameGridRelative, PathAlign, PathType, TextFrame,
+    TextFrameOptions, TextWrap, VerticalJustification, WrapMode, WrapSide, vertical_text_xf,
 };
 
 fn is_zero_usize(v: &usize) -> bool {
@@ -336,7 +336,7 @@ impl Item {
 
     /// How far a visible stroke reaches inside the path: half its weight centred, all of it inside,
     /// none outside.
-    fn stroke_inside(&self) -> f64 {
+    pub fn stroke_inside(&self) -> f64 {
         let w = self.stroke.weight;
         if self.stroke.is_none() || !w.is_finite() {
             return 0.0;

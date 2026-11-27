@@ -197,6 +197,28 @@ fn cmd_shift_click_overrides_parent_item() {
     assert_eq!(a, vec![Action::Exec("layout.overrideParentItems".into(), serde_json::json!({"page": 0, "ids": [pid.0]}))]);
 }
 
+/// A parent page that overrode an item of its base and deleted the override hides it on the pages
+/// that use it, so a click there finds nothing to override: the hit list is what the renderer
+/// draws, and it looked only at the page's own overrides (#1469).
+#[test]
+fn an_item_a_parent_overrode_and_deleted_is_not_hit() {
+    let mut d = Document::new(&NewDocument { pages: 1, facing_pages: false, ..Default::default() });
+    let lid = d.default_layer();
+    let a = d.parents[0].id;
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    Arc::make_mut(&mut d.parents[1]).parent.as_mut().unwrap().based_on = Some(a);
+    d.apply_parent(&[0], Some(b)).unwrap();
+    let (a_item, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 200.0, 200.0), lid, "a", ParaFormat::default()).unwrap();
+    let hit = |d: &Document| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, false));
+        let off = l.xf(SpreadRef::Doc(0)).translation();
+        ctx(d, &s, &c, &l).hit_parent_on_page(Point::new(150.0 + off.x, 150.0 + off.y))
+    };
+    assert_eq!(hit(&d).map(|(_, id)| id), Some(a_item), "A's item shows through B and is hit");
+    Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(a_item);
+    assert_eq!(hit(&d), None, "removed on B: nothing there to hit");
+}
+
 /// On a page whose parent B is based on A, A's items are hit too, B's win where they overlap, and
 /// nothing is hit when the page hides parent items.
 #[test]
@@ -1749,7 +1771,12 @@ fn eyedropper_samples_a_placed_image_and_matches_other_objects() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            link_fingerprint: None,
+            link_relative: None,
+            link_hash: None,
+            storage: Default::default(),
+            proxy: None,
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             page: 0,
             pdf_crop: Default::default(),
@@ -1818,9 +1845,9 @@ fn double_clicking_a_handle_fits_the_frame_to_its_content_along_that_side() {
     let off = l.xf(SpreadRef::Doc(0)).translation();
     let cx = ctx(&d, &s, &c, &l);
     let mut t = create("selection");
-    for ((x, y), axis) in [((300.0, 200.0), "both"), ((200.0, 200.0), "height"), ((300.0, 150.0), "width")] {
+    for ((x, y), axis, rf) in [((300.0, 200.0), "both", 0), ((200.0, 200.0), "height", 1), ((300.0, 150.0), "width", 3)] {
         let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, x + off.x, y + off.y));
-        assert_eq!(a, vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))], "{axis}");
+        assert_eq!(a, vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))], "{axis}");
     }
 }
 
@@ -1837,17 +1864,176 @@ fn fitting_handle_axes_follow_spread_and_frame_rotation() {
             let cx = ctx(&d, &s, &c, &l);
             let b = cx.selection_bounds().unwrap();
             let mut t = create("selection");
-            let swapped = (spread_turn + frame_turn) % 2 == 1;
-            for (index, axis) in [(1, if swapped { "width" } else { "height" }), (3, if swapped { "height" } else { "width" }), (4, "both")] {
+            let total_turn = ((spread_turn + frame_turn) % 4) as usize;
+            let swapped = total_turn % 2 == 1;
+            let expected = [
+                (1, if swapped { "width" } else { "height" }, [7, 5, 1, 3][total_turn]),
+                (3, if swapped { "height" } else { "width" }, [3, 7, 5, 1][total_turn]),
+                (4, "both", [0, 6, 8, 2][total_turn]),
+            ];
+            for (index, axis, rf) in expected {
                 let p = select::handles(b)[index];
                 let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
                 assert_eq!(
                     a,
-                    vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis}))],
+                    vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
                     "spread={spread_turn}, frame={frame_turn}, handle={index}"
                 );
             }
         }
+    }
+}
+
+#[test]
+fn double_clicking_top_and_rotated_handles_sets_opposite_ref() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let off = l.xf(SpreadRef::Doc(0)).translation();
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("selection");
+    // Handle 1 (top) fixes bottom-center (7); TL (0) fixes BR (8); L (7) fixes right-center (5).
+    for (handle, axis, rf) in [(1, "height", 7), (0, "both", 8), (2, "both", 6), (7, "width", 5)] {
+        let p = select::handles(Rect::new(100.0 + off.x, 100.0 + off.y, 300.0 + off.x, 200.0 + off.y))[handle];
+        let a = t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y));
+        assert_eq!(
+            a,
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "handle={handle}"
+        );
+    }
+    // Rotating the frame 180 deg maps canvas top (1) to local bottom, so local top (1) stays fixed.
+    d.item_mut(id).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::PI);
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    let top = select::handles(b)[1];
+    assert_eq!(
+        t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+        vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height", "ref": 1}))]
+    );
+    // Mixed rotations in one selection omit `ref` so each frame uses its own default.
+    let other = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let s2 = Selection { items: vec![id, other], ..Default::default() };
+    let cx2 = ctx(&d, &s2, &c, &l);
+    let b2 = cx2.selection_bounds().unwrap();
+    let top2 = select::handles(b2)[1];
+    assert_eq!(
+        t.pointer(&cx2, &PointerEvent::new(PointerKind::DoubleClick, top2.x, top2.y)),
+        vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height"}))]
+    );
+}
+
+#[test]
+fn double_clicking_handles_on_sheared_frame_keeps_axis_and_opposite_ref() {
+    let mut d = Document::new(&NewDocument::default());
+    let id = add_rect(&mut d, Rect::new(100.0, 100.0, 300.0, 200.0));
+    let shear = designcraft_geom::Affine::new([1.0, 0.0, 60.0_f64.to_radians().tan(), 1.0, 0.0, 0.0]);
+    d.item_mut(id).unwrap().xf = shear;
+    let s = Selection { items: vec![id], ..Default::default() };
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    let mut t = create("selection");
+    // A 60° horizontal shear keeps local X horizontal, so top/bottom still fit height and
+    // left/right still fit width, with each handle pinning its opposite local side.
+    for (handle, axis, rf) in [(1, "height", 7), (5, "height", 1), (7, "width", 5), (3, "width", 3), (0, "both", 8)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "sheared handle={handle}"
+        );
+    }
+    // 90° clockwise rotation combined with 60° horizontal shear maps local X vertically.
+    d.item_mut(id).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2) * shear;
+    let cx = ctx(&d, &s, &c, &l);
+    let b = cx.selection_bounds().unwrap();
+    for (handle, axis, rf) in [(1, "width", 5), (3, "height", 7)] {
+        let p = select::handles(b)[handle];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "rotated+sheared handle={handle}"
+        );
+    }
+}
+
+#[test]
+fn double_clicking_handle_on_mixed_orientation_selection_declines_ambiguous_axes() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (upright, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 100.0, 300.0, 200.0), lid, "A", ParaFormat::default()).unwrap();
+    let (upright2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 100.0, 520.0, 200.0), lid, "B", ParaFormat::default()).unwrap();
+    let (rot90, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 250.0, 300.0, 350.0), lid, "C", ParaFormat::default()).unwrap();
+    d.item_mut(rot90).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let (rot90_2, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(320.0, 250.0, 520.0, 350.0), lid, "D", ParaFormat::default()).unwrap();
+    d.item_mut(rot90_2).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let (rot180, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 400.0, 300.0, 500.0), lid, "E", ParaFormat::default()).unwrap();
+    d.item_mut(rot180).unwrap().xf = designcraft_geom::Affine::rotate(std::f64::consts::PI);
+    let singular = add_rect(&mut d, Rect::new(320.0, 400.0, 520.0, 500.0));
+    d.item_mut(singular).unwrap().xf = designcraft_geom::Affine::scale(0.0);
+
+    let (c, l) = (Cache::new(), CanvasLayout::new(&d, false));
+    let mut t = create("selection");
+
+    // Mixed 0° + 90° selection: every side handle needs different local axes, so both selection
+    // orders decline the ambiguous fit (without falling through to text editing), while corners
+    // still share axis="both" and omit `ref`.
+    for items in [vec![upright, rot90], vec![rot90, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let b = cx.selection_bounds().unwrap();
+        for handle in [1, 3, 5, 7] {
+            let p = select::handles(b)[handle];
+            assert!(
+                t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, p.x, p.y)).is_empty(),
+                "expected decline for order={items:?} handle={handle}"
+            );
+            assert!(
+                t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p.x, p.y).with_clicks(2)).is_empty(),
+                "expected decline on second press for order={items:?} handle={handle}"
+            );
+        }
+        let tl = select::handles(b)[0];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, tl.x, tl.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "both"}))],
+            "corner handle for order={items:?}"
+        );
+    }
+
+    // Mixed 0° + 180° selection shares axis="height" on the top handle in both selection orders,
+    // omitting `ref` because opposite edges differ.
+    for items in [vec![upright, rot180], vec![rot180, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": "height"}))],
+            "0+180 order={items:?}"
+        );
+    }
+
+    // Matching multi-selections keep both axis and opposite `ref`.
+    for (items, axis, rf) in [(vec![upright, upright2], "height", 7), (vec![rot90, rot90_2], "width", 5)] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert_eq!(
+            t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)),
+            vec![Action::Exec("object.fit".into(), serde_json::json!({"mode": "fitFrameToContent", "axis": axis, "ref": rf}))],
+            "same-orientation multi-select {items:?}"
+        );
+    }
+
+    // A degenerate transform alongside a valid frame also declines side handles in both orders.
+    for items in [vec![upright, singular], vec![singular, upright]] {
+        let s = Selection { items: items.clone(), ..Default::default() };
+        let cx = ctx(&d, &s, &c, &l);
+        let top = select::handles(cx.selection_bounds().unwrap())[1];
+        assert!(t.pointer(&cx, &PointerEvent::new(PointerKind::DoubleClick, top.x, top.y)).is_empty(), "degenerate mixed order={items:?}");
     }
 }
 
@@ -2128,7 +2314,7 @@ fn eyedropper_ignores_inactive_states_of_a_multi_state_object() {
             name: "photo.png".into(),
             mime: "image/png".into(),
             link: None,
-            data: std::sync::Arc::new(vec![]),
+            data: designcraft_doc::AssetData::embedded(vec![]),
             pixels: Some((100, 100)),
             ..Default::default()
         }),
@@ -2392,4 +2578,200 @@ fn direct_selection_marquee_selects_points_of_several_frames_and_drags_them_toge
     let want = lt.delta_to_spread(SpreadRef::Doc(0), designcraft_geom::Vec2::new(inc, 0.0));
     assert!(want.x.abs() < 1e-9 && (want.y.abs() - inc).abs() < 1e-9, "a quarter turn: {want:?}");
     assert!(moves(p).iter().all(|&(x, y)| (x - want.x).abs() < 1e-9 && (y - want.y).abs() < 1e-9), "{p}");
+}
+
+#[test]
+fn gap_tool_follows_snapping_settings() {
+    let mut d = Document::new(&NewDocument::default());
+    add_rect(&mut d, Rect::new(100.0, 100.0, 180.0, 200.0));
+    add_rect(&mut d, Rect::new(200.0, 100.0, 300.0, 200.0));
+    add_rect(&mut d, Rect::new(250.0, 250.0, 320.0, 350.0));
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 225.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    Arc::make_mut(&mut d.spreads[0]).pages[0].guides.push(Guide {
+        orientation: Orientation::Vertical,
+        position: 310.0,
+        spread: false,
+        locked: false,
+        layer: None,
+        liquid: false,
+    });
+    let sel = Selection::default();
+    let c = Cache::new();
+    let l = CanvasLayout::new(&d, false);
+    let p0 = spread_pt(&l, 190.0, 150.0);
+
+    let drag_dx = |snap: SnapView, mods: Mods, raw_dx: f64| -> (f64, Vec<Overlay>) {
+        let mut t = create("gap");
+        let cx = ToolContext { snap, ..ctx(&d, &sel, &c, &l) };
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, p0.x, p0.y));
+        let drag = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, p0.x + raw_dx, p0.y).with_mods(mods));
+        let Some(Action::Preview(cmd, p)) = drag.last() else { panic!("{drag:?}") };
+        assert_eq!(cmd, "gap.move");
+        let overlays = t.overlays(&cx);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Up, p0.x + raw_dx, p0.y).with_mods(mods));
+        (p["dx"].as_f64().unwrap(), overlays)
+    };
+
+    // Ruler guide at x = 225: gap right edge is 200 + 23 = 223, snaps +2 pt to 225.
+    let (dx, _) = drag_dx(SnapView::FACTORY, Mods::default(), 23.0);
+    assert!((dx - 25.0).abs() < 1e-6, "expected snap to guide (dx=25), got {dx}");
+
+    // Snapping off: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::OFF, Mods::default(), 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays when snap is off: {overlays:?}");
+
+    // Cmd suspends snapping: stays at raw 23.0.
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods { cmd: true, ..Default::default() }, 23.0);
+    assert!((dx - 23.0).abs() < 1e-6, "expected unsnapped dx=23 with Cmd, got {dx}");
+    assert!(overlays.is_empty(), "expected no overlays with Cmd: {overlays:?}");
+
+    // Smart guide alignment to third item's left edge (x = 250): gap left edge 180 + 68 = 248, snaps to 250 (dx = 70).
+    let (dx, overlays) = drag_dx(SnapView::FACTORY, Mods::default(), 68.0);
+    assert!((dx - 70.0).abs() < 1e-6, "expected smart-guide snap (dx=70), got {dx}");
+    assert!(overlays.iter().any(|o| matches!(o, Overlay::Guide { .. })), "expected alignment guide overlay: {overlays:?}");
+
+    // Smart guides disabled: no snap to third item.
+    let no_smart = SnapView { smart_guides: false, ..SnapView::FACTORY };
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 68.0);
+    assert!((dx - 68.0).abs() < 1e-6, "expected no smart-guide snap when disabled, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay when smart_guides=false: {overlays:?}");
+
+    // Ruler guide beyond gap_move's minimum-width clamp (right item [200..300] clamps at x=299, max_delta=99):
+    // dragging 108 pt reaches x=308 near guide x=310 (dx=110), which must be rejected as unreachable.
+    let (dx, overlays) = drag_dx(no_smart, Mods::default(), 108.0);
+    assert!((dx - 108.0).abs() < 1e-6, "expected unreachable snap target to be rejected, got {dx}");
+    assert!(overlays.is_empty(), "expected no guide overlay for unreachable snap target: {overlays:?}");
+
+    // With two left neighbours of different widths ([100..180] and [140..180]), dragging left by 60 pt
+    // without a snap match preserves the raw delta (-60) instead of clamping it to the narrower item (-39).
+    let mut d2 = Document::new(&NewDocument::default());
+    add_rect(&mut d2, Rect::new(100.0, 100.0, 180.0, 150.0));
+    add_rect(&mut d2, Rect::new(140.0, 150.0, 180.0, 200.0));
+    add_rect(&mut d2, Rect::new(200.0, 100.0, 300.0, 200.0));
+    let l2 = CanvasLayout::new(&d2, false);
+    let q0 = spread_pt(&l2, 190.0, 150.0);
+    let mut t2 = create("gap");
+    let cx2 = ToolContext { snap: SnapView::FACTORY, ..ctx(&d2, &sel, &c, &l2) };
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Down, q0.x, q0.y));
+    let drag2 = t2.pointer(&cx2, &PointerEvent::new(PointerKind::Drag, q0.x - 60.0, q0.y));
+    let Some(Action::Preview(cmd2, p2)) = drag2.last() else { panic!("{drag2:?}") };
+    assert_eq!(cmd2, "gap.move");
+    assert!((p2["dx"].as_f64().unwrap() - (-60.0)).abs() < 1e-6, "expected raw dx=-60 preserved, got {p2}");
+    assert!(t2.overlays(&cx2).is_empty(), "expected no guide overlay without snap match");
+    t2.pointer(&cx2, &PointerEvent::new(PointerKind::Up, q0.x - 60.0, q0.y));
+}
+
+/// While the place cursor drags out a grid, the arrow keys change it and are handled, even at a
+/// limit, so the session doesn't try them elsewhere; other keys and keys before a drag aren't.
+#[test]
+fn place_gun_grid_arrow_keys_are_handled_during_a_drag() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let mut t = create("placeGun");
+    assert!(t.key(&cx, ToolKey::Right, Mods::default()).is_empty(), "no drag yet");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    for key in [ToolKey::Right, ToolKey::Up, ToolKey::Left, ToolKey::Left, ToolKey::Down, ToolKey::Down] {
+        assert_eq!(t.key(&cx, key, Mods::default()), vec![Action::Handled], "{key:?}");
+    }
+    assert!(t.key(&cx, ToolKey::Delete, Mods::default()).is_empty());
+}
+
+/// Escape drops only the current loaded image; between drags the arrows cycle the loaded images,
+/// and during a drag they keep their grid meaning.
+#[test]
+fn place_gun_escape_skips_and_arrows_cycle_between_drags() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    let mut t = create("placeGun");
+    let exec = |cmd: &str, p: serde_json::Value| vec![Action::Exec(cmd.into(), p)];
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), exec("place.skip", serde_json::json!({})));
+    for (key, dir) in [(ToolKey::Right, 1), (ToolKey::Down, 1), (ToolKey::Left, -1), (ToolKey::Up, -1)] {
+        assert_eq!(t.key(&cx, key, Mods::default()), exec("place.cycle", serde_json::json!({"dir": dir})), "{key:?}");
+    }
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 110.0, 60.0));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    // Nothing loaded: Escape leaves the tool instead of asking to skip an image there isn't.
+    cx.loaded = None;
+    assert_eq!(t.key(&cx, ToolKey::Escape, Mods::default()), vec![Action::SwitchTool("selection".into())]);
+}
+
+/// A place-cursor grid drag too thin for its cells shows and places the single frame an ordinary
+/// drag would; one with room shows its cells and places the grid.
+#[test]
+fn place_gun_grid_too_small_for_its_cells_previews_and_places_one_frame() {
+    let d = Document::new(&NewDocument::default());
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let mut cx = ctx(&d, &s, &c, &l);
+    cx.loaded = Some((40.0, 20.0));
+    // Drag from (10, 10) to `to`, pressing ↑ (two rows) when `grid`: the overlay before release,
+    // and the release.
+    let drag = |to: (f64, f64), grid: bool| {
+        let mut t = create("placeGun");
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 10.0, 10.0));
+        let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, to.0, to.1));
+        if grid {
+            assert_eq!(t.key(&cx, ToolKey::Up, Mods::default()), vec![Action::Handled]);
+        }
+        let shown = t.overlays(&cx);
+        (shown, t.pointer(&cx, &PointerEvent::new(PointerKind::Up, to.0, to.1)))
+    };
+    // 100 × 8 pt: two rows 6 pt apart leave each a 1 pt cell; 100 × 4 pt leaves none.
+    let (shown, out) = drag((110.0, 18.0), true);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["rows"] == 2), "{out:?}");
+    let (shown, out) = drag((110.0, 14.0), true);
+    let (single_shown, single_out) = drag((110.0, 14.0), false);
+    assert_eq!(shown, single_shown);
+    assert_eq!(out, single_out);
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, _)] if cmd == "place.drop"), "{out:?}");
+}
+
+/// On a rotated spread a place-cursor grid previews the cells it places: worked out on the spread,
+/// then shown on the canvas, so two columns on the spread don't preview as two across the canvas.
+#[test]
+fn place_gun_grid_preview_matches_the_release_on_a_rotated_spread() {
+    let mut d = Document::new(&NewDocument::default());
+    std::sync::Arc::make_mut(&mut d.spreads[0]).pages[0].view_rotation = 1;
+    let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(&d, false));
+    let cx = ctx(&d, &s, &c, &l);
+    let (start, end) = (Point::new(10.0, 10.0), Point::new(210.0, 110.0));
+    let (spread, a) = l.spread_at(start).unwrap();
+    let b = l.to_spread(spread, end);
+    let mut t = create("placeGun");
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Down, start.x, start.y));
+    let _ = t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, end.x, end.y));
+    assert_eq!(t.key(&cx, ToolKey::Right, Mods::default()), vec![Action::Handled]);
+    let shown = t.overlays(&cx);
+    let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, end.x, end.y));
+    assert!(matches!(out.as_slice(), [Action::Exec(cmd, p)] if cmd == "place.grid" && p["columns"] == 2 && p["gutter"] == 6.0), "{out:?}");
+    // Two columns on the spread, 6 pt apart, each shown where its corners land on the canvas.
+    let r = Rect::from_points(a, b);
+    let w = (r.width() - 6.0) / 2.0;
+    let expected: Vec<Overlay> = [r.x0, r.x0 + w + 6.0]
+        .into_iter()
+        .map(|x| Overlay::Marquee(Rect::from_points(l.to_canvas(spread, Point::new(x, r.y0)), l.to_canvas(spread, Point::new(x + w, r.y1)))))
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    for (got, want) in shown.iter().zip(&expected) {
+        let (Overlay::Marquee(got), Overlay::Marquee(want)) = (got, want) else { panic!("{got:?}") };
+        for (g, w) in [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)] {
+            assert!((g - w).abs() < 1e-6, "{shown:?} against {expected:?}");
+        }
+    }
+    // A quarter turn: the columns stack down the canvas.
+    let (Overlay::Marquee(first), Overlay::Marquee(second)) = (&shown[0], &shown[1]) else { panic!("{shown:?}") };
+    assert!((first.x0 - second.x0).abs() < 1e-6, "{shown:?}");
 }

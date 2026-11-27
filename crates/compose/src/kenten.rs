@@ -123,6 +123,7 @@ fn shape_mark(face: FaceRef, text: &str, m: &KentenMark, b: &PlacedGlyph) -> Vec
         let ch = text.get(sg.cluster..).and_then(|t| t.chars().next()).unwrap_or(' ');
         let adv = f64::from(sg.x_advance) * sx;
         out.push(PlacedGlyph {
+            list_label: false,
             rendered_char: ch,
             face,
             gid: sg.gid,

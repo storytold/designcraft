@@ -28,11 +28,16 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let fill_cur = target.map(|(fill, _, stroke, _)| if app.ui.stroke_front { stroke } else { fill });
     // Unnamed colours (mixed in the Color panel) aren't listed until Add to Swatches; swatches in
     // colour groups are listed under their folder.
-    let grouped: Vec<&str> = doc.color_groups.iter().flat_map(|g| g.swatches.iter().map(String::as_str)).collect();
+    let grouped: std::collections::HashSet<&str> = doc.color_groups.iter().flat_map(|g| g.swatches.iter().map(String::as_str)).collect();
+    // Swatches by name (the first of a repeated name), so a row's lookup isn't a search of the list.
+    let mut by_name: std::collections::HashMap<&str, &designcraft_color::swatch::Swatch> = std::collections::HashMap::new();
+    for w in &doc.swatches {
+        by_name.entry(w.name.as_str()).or_insert(w);
+    }
     // A gradient dragged from the Gradient panel's thumbnail is dropped on the list, colour
     // groups included.
     let (_, dropped) = ui.dnd_drop_zone::<GradientDrag, _>(egui::Frame::NONE, |ui| {
-        for sw in doc.swatches.iter().filter(|w| !w.hidden && !grouped.contains(&w.name.as_str())) {
+        for sw in doc.swatches.iter().filter(|w| !w.hidden && !grouped.contains(w.name.as_str())) {
             swatch_row(app, ui, &doc, sw, 0.0, fill_cur.as_deref());
         }
         for g in &doc.color_groups {
@@ -74,7 +79,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
             });
             if open {
                 for n in &g.swatches {
-                    if let Some(sw) = doc.swatches.iter().find(|w| w.name == *n) {
+                    if let Some(sw) = by_name.get(n.as_str()).copied() {
                         swatch_row(app, ui, &doc, sw, 16.0, fill_cur.as_deref());
                     }
                 }

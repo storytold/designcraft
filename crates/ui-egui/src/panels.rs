@@ -56,11 +56,12 @@ pub struct SelInfo {
     /// Uniform corner (shape, size) — the first corner.
     pub corner: (designcraft_geom::corners::CornerShape, f64),
     pub wrap_invert: bool,
-    /// Text wrap side and contour type ids (`bothSides`, `sameAsClipping`, …).
-    pub wrap_side: String,
-    pub wrap_contour: String,
     /// Text wrap offsets: top, left, bottom, right.
     pub wrap_offsets: [f64; 4],
+    pub wrap_side: String,
+    pub wrap_contour: String,
+    /// Contour Options › Include Inside Edges (an Alpha Channel contour).
+    pub wrap_inside_edges: bool,
     pub locked: bool,
 }
 
@@ -252,17 +253,23 @@ pub fn sel_info(app: &DesignApp) -> Option<SelInfo> {
         kind: first.default_label(),
         is_graphic: matches!(first.content, Content::Graphic(_)),
         is_text: first.is_text_frame(),
-        stroke_kind: serde_json::to_value(&first.stroke.kind)
-            .ok()
-            .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| v.as_str().map(str::to_string)))
-            .unwrap_or_else(|| "solid".into()),
+        stroke_kind: stroke_kind_id(&first.stroke.kind),
         corner: (first.corners.corners[0].shape, first.corners.corners[0].size),
         wrap_invert: tw.invert,
         wrap_side: serde_json::to_value(tw.side).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         wrap_contour: serde_json::to_value(tw.contour).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
         wrap_offsets: tw.offsets,
+        wrap_inside_edges: tw.inside_edges,
         locked: first.locked,
     })
+}
+
+/// The JSON kind string for a stroke type (`solid`, `dashed`, `thickThin`, …).
+pub fn stroke_kind_id(kind: &designcraft_doc::StrokeType) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string).or_else(|| v.as_str().map(str::to_string)))
+        .unwrap_or_else(|| "solid".into())
 }
 
 /// Resolved attributes at the text selection (or the selected text frames).
@@ -299,21 +306,13 @@ pub fn text_attrs(app: &mut DesignApp) -> Option<Value> {
     if v.is_null() { None } else { Some(serde_json::to_value(v).ok()?) }
 }
 
-/// Count preflight errors: overset stories (more checks land with the Preflight panel).
-pub fn preflight_errors(app: &DesignApp) -> usize {
-    // Memoized per document snapshot (the status bar asks every frame).
-    static MEMO: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
-    let Some(st) = app.session.active() else { return 0 };
-    let key = std::sync::Arc::as_ptr(&st.doc) as usize;
-    let mut g = MEMO.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((k, n)) = *g
-        && k == key
-    {
-        return n;
+/// Count the preflight errors last found for the active document: `None` until its first check
+/// ends, and 0 with no document open.
+pub fn preflight_errors(app: &mut DesignApp, ctx: &egui::Context) -> Option<usize> {
+    match crate::preflight_worker::issues(app, ctx) {
+        Some(issues) => Some(issues.iter().filter(|i| i.severity == "error").count()),
+        None => app.session.active().is_none().then_some(0),
     }
-    let n = designcraft_engine::cmd::preflight::check(&app.session, 150.0).iter().filter(|i| i.severity == "error").count();
-    *g = Some((key, n));
-    n
 }
 
 /// Height of one swatch-menu row.

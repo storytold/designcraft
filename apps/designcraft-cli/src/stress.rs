@@ -169,7 +169,7 @@ pub fn synthetic(spec: &Spec) -> Result<Document, String> {
                     id,
                     name: format!("art-{k}.png"),
                     mime: "image/png".into(),
-                    data: Arc::new(data),
+                    data: designcraft_doc::AssetData::embedded(data),
                     pixels: Some((aw, ah)),
                     ..Default::default()
                 }),

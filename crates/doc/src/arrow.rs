@@ -75,7 +75,12 @@ fn end_of(seg: &PathSeg, at_start: bool) -> (Point, Vec2) {
     let mut d = match seg {
         PathSeg::Line(l) => l.p1 - l.p0,
         PathSeg::Quad(q) => q.deriv().eval(t).to_vec2(),
-        PathSeg::Cubic(c) => c.deriv().eval(t).to_vec2(),
+        PathSeg::Cubic(c) => {
+            // A handle sitting on its anchor has no direction: the tangent then points at the next
+            // control point of the segment that differs from the end point.
+            let pts = if at_start { [c.p1 - c.p0, c.p2 - c.p0, c.p3 - c.p0] } else { [c.p3 - c.p2, c.p3 - c.p1, c.p3 - c.p0] };
+            pts.into_iter().find(|v| v.hypot() >= 1e-9).unwrap_or(Vec2::ZERO)
+        }
     };
     if d.hypot() < 1e-9 {
         d = seg.end() - seg.start();
