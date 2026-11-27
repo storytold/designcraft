@@ -355,7 +355,7 @@ impl Exporter<'_> {
         let Some(paint) = self.swatch_color(&g.fill.swatch, g.fill.tint) else { return false };
         let Some(coverage) = designcraft_images::decode_rgba(&bytes).and_then(|img| CoverageImage::new(&img)) else { return false };
         let interpolate = RasterMode::for_standard(self.opts.standard).interpolate;
-        let mask = if self.opts.compress_images { coverage.jpeg(interpolate) } else { None };
+        let mask = if self.opts.compress_images && tone == designcraft_images::Tone::Gray { coverage.jpeg(interpolate) } else { None };
         let Some(mask) = mask.or_else(|| Image::from_custom(coverage, interpolate).ok()) else { return false };
         let size = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32);
         let (Some(size), Some(rect)) = (size, to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1))) else { return false };
