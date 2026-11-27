@@ -2675,13 +2675,8 @@ fn page_break_shortcut_is_text_only_and_remappable() {
 
     app.run("text.select", json!({"story": story, "anchor": 1})).unwrap();
     native_frame(&mut app, &ctx, vec![], None);
-    let enter = [true, false].map(|pressed| egui::Event::Key {
-        key: Key::Enter,
-        physical_key: None,
-        pressed,
-        repeat: false,
-        modifiers: Modifiers::NONE,
-    });
+    let enter =
+        [true, false].map(|pressed| egui::Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
     native_frame(&mut app, &ctx, enter.to_vec(), None);
     assert_eq!(story_text(&app, story), "a\nb");
     app.run("edit.undo", json!({})).unwrap();
