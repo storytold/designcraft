@@ -5,17 +5,25 @@ use super::{Margins, Result, Session, Value, bad, has_doc, json};
 pub(super) struct PageBox {
     pub spread: designcraft_doc::SpreadRef,
     pub id: designcraft_doc::PageId,
+    pub bounds: designcraft_geom::Rect,
     pub margin: designcraft_geom::Rect,
     pub width: f64,
     pub height: f64,
 }
 
-/// Each page's margin box and page dimensions, by spread and page id.
+/// Each page's bounds, margin box, and page dimensions, by spread and page id.
 pub(super) fn margin_boxes(d: &designcraft_doc::Document) -> Vec<PageBox> {
     d.spread_refs()
         .filter_map(|r| d.spread(r).map(|sp| (r, sp)))
         .flat_map(|(r, sp)| {
-            sp.pages.iter().map(move |pg| PageBox { spread: r, id: pg.id, margin: pg.margin_rect(), width: pg.width, height: pg.height })
+            sp.pages.iter().map(move |pg| PageBox {
+                spread: r,
+                id: pg.id,
+                bounds: pg.bounds(),
+                margin: pg.margin_rect(),
+                width: pg.width,
+                height: pg.height,
+            })
         })
         .collect()
 }
@@ -52,8 +60,18 @@ fn group_pages_by_spread(
     (order, by_spread)
 }
 
-/// Captures each eligible top-level item's page assignment from `before` margin boxes before any
-/// page geometry or spread layout changes.
+/// Picks the page on a spread that owns horizontal coordinate `x`: the page whose bounds contain
+/// `x`, falling back to the nearest margin box only when `x` lies outside every page.
+fn page_for_x<'a>(pages: &[&'a PageBox], x: f64) -> Option<&'a PageBox> {
+    pages
+        .iter()
+        .copied()
+        .find(|p| x >= p.bounds.x0 && x <= p.bounds.x1)
+        .or_else(|| pages.iter().copied().min_by(|a, b| dist(a.margin, x).total_cmp(&dist(b.margin, x))))
+}
+
+/// Captures each eligible top-level item's page assignment from `before` page bounds/margin boxes
+/// before any page geometry or spread layout changes.
 pub(super) fn assign_items(
     d: &designcraft_doc::Document,
     before: &[PageBox],
@@ -71,8 +89,8 @@ pub(super) fn assign_items(
                 continue;
             }
             let c = it.bounds().center();
-            // Pages share a spread side by side: the margin box's page is the one under the centre's x.
-            if let Some(target) = pages.iter().copied().min_by(|a, b| dist(a.margin, c.x).total_cmp(&dist(b.margin, c.x))) {
+            // Pages share a spread side by side: prefer the page whose bounds contain the centre's x.
+            if let Some(target) = page_for_x(pages, c.x) {
                 assigned.push((target.id, it.id));
             }
         }
@@ -202,11 +220,7 @@ fn adjust_guides(
                     continue;
                 }
                 let pair = if g.spread && g.orientation == designcraft_doc::Orientation::Vertical {
-                    pages
-                        .iter()
-                        .copied()
-                        .min_by(|a, b| dist(a.margin, g.position).total_cmp(&dist(b.margin, g.position)))
-                        .and_then(|target| valid_pair(target.id))
+                    page_for_x(pages, g.position).and_then(|target| valid_pair(target.id))
                 } else {
                     pg_pair
                 };
@@ -1245,5 +1259,46 @@ mod adjust_tests {
             (scaled_b - 20.0 * 2.0_f64.sqrt()).abs() < 1e-6,
             "first frame in thread order on resized page 2 scales story once by sqrt(2), got {scaled_b}"
         );
+    }
+
+    #[test]
+    fn adjust_layout_assigns_facing_page_item_by_page_bounds_before_margin_distance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true, "width": 612, "height": 792, "margins": 36})).unwrap();
+        // Spread 1: left page (page index 1, x in 0..612) has inside=400 (margin box 36..212);
+        // right page (page index 2, x in 612..1224) has inside=100 (margin box 712..1188).
+        s.execute("layout.marginsAndColumns", &json!({"pages": [1], "margins": {"top": 36, "bottom": 36, "inside": 400, "outside": 36}})).unwrap();
+        s.execute("layout.marginsAndColumns", &json!({"pages": [2], "margins": {"top": 36, "bottom": 36, "inside": 100, "outside": 36}})).unwrap();
+
+        // Item centred at x=512 (100 pt left of spine): 300 pt from left margin box, 200 pt from right.
+        let id =
+            designcraft_doc::ItemId(s.execute("frame.create", &json!({"spread": 1, "rect": [462, 100, 562, 200]})).unwrap()["id"].as_u64().unwrap());
+        s.execute("guide.add", &json!({"spread": 1, "orientation": "vertical", "position": 512, "spreadGuide": true})).unwrap();
+
+        let (left_page_id, assigned_page) = {
+            let d = &s.doc().unwrap().doc;
+            let before = super::margin_boxes(d);
+            let assigned = super::assign_items(d, &before, false);
+            let found = assigned.iter().find(|&&(_, item)| item == id).map(|&(pid, _)| pid);
+            (d.spreads[1].pages[0].id, found)
+        };
+        assert_eq!(assigned_page, Some(left_page_id), "item in left page's inside margin belongs to left page");
+
+        // Widening to 1224 without auto-adjust margins gives left page margin box 36..824 (width 788,
+        // old width 176) and right page 1324..2412 (width 1088, old width 476).
+        s.execute("layout.adjust", &json!({"width": 1224})).unwrap();
+
+        let d = &s.doc().unwrap().doc;
+        let sx_left = 788.0 / 176.0;
+        let expected_x0 = 36.0 + sx_left * (462.0 - 36.0);
+        let expected_x1 = 36.0 + sx_left * (562.0 - 36.0);
+        let b = d.item(id).unwrap().bounds();
+        assert!(
+            (b.x0 - expected_x0).abs() < 1e-6 && (b.x1 - expected_x1).abs() < 1e-6,
+            "item follows left page transform ({expected_x0}..{expected_x1}), got {b:?}"
+        );
+        let expected_guide = 36.0 + sx_left * (512.0 - 36.0);
+        let g = d.spreads[1].pages[0].guides[0].position;
+        assert!((g - expected_guide).abs() < 1e-6, "spread vertical guide follows left page ({expected_guide}), got {g}");
     }
 }
