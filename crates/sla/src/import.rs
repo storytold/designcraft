@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use designcraft_color::{Color, ColorType, Swatch, SwatchValue, swatch as sw};
 use designcraft_doc::{
-    Asset, AssetId, BASIC_PARAGRAPH, CharAttrs, CharFormat, CharacterStyle, Columns, Content, DocSettings, Document, Fill, FirstBaseline, Graphic,
-    Guide, Item, ItemId, Layer, LayerId, Margins, NumberStyle, Orientation, Page, PageId, PageSide, ParaFormat, ParagraphStyle, ParentInfo, Section,
-    Shape, Spread, SpreadId, Story, StoryId, Stroke, Styles, TextFrame, TextFrameOptions, VerticalJustification,
+    Asset, AssetData, AssetId, BASIC_PARAGRAPH, CharAttrs, CharFormat, CharacterStyle, Columns, Content, DocSettings, Document, Fill, FirstBaseline,
+    Graphic, Guide, Item, ItemId, Layer, LayerId, Margins, NumberStyle, Orientation, Page, PageId, PageSide, ParaFormat, ParagraphStyle, ParentInfo,
+    Section, Shape, Spread, SpreadId, Story, StoryId, Stroke, Styles, TextFrame, TextFrameOptions, VerticalJustification,
 };
 use designcraft_geom::{Affine, BezPath, PathData, Rect, Unit, shapes};
 
@@ -507,6 +507,7 @@ impl<'a> Importer<'a> {
                 locked: !e.flag(&["IsEditable", "EDIT"]).unwrap_or(true),
                 printable: e.flag(&["IsPrintable", "DRUCKEN"]).unwrap_or(true),
                 show_guides: true,
+                lock_guides: false,
                 suppress_wrap_when_hidden: false,
             };
             layers.push((number, level, layer));
@@ -524,6 +525,7 @@ impl<'a> Importer<'a> {
                     locked: false,
                     printable: true,
                     show_guides: true,
+                    lock_guides: false,
                     suppress_wrap_when_hidden: false,
                 },
             ));
@@ -1077,7 +1079,7 @@ impl<'a> Importer<'a> {
         let fresh = AssetId(self.alloc());
         let id = designcraft_doc::insert_asset(
             &mut self.assets,
-            Asset { id: fresh, name, mime, link, data: Arc::new(data), pixels, ..Default::default() },
+            Asset { id: fresh, name, mime, link, data: AssetData::embedded(data), pixels, ..Default::default() },
         );
         (id, size)
     }
@@ -1150,6 +1152,7 @@ impl<'a> Importer<'a> {
             endnote_story: None,
             sections: self.sections,
             assets: self.assets,
+            alpha_outlines: Vec::new(),
             hyperlinks: vec![],
             data_merge: Default::default(),
             bookmarks: vec![],

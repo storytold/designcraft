@@ -186,7 +186,7 @@ mod tests {
         let r = s.execute("file.open", &json!({"path": path.to_string_lossy()})).unwrap();
         assert!(r["warnings"].as_array().unwrap().iter().all(|w| !w.as_str().unwrap().contains("missing.png")), "{r}");
         let asset = s.doc().unwrap().doc.assets.values().next().unwrap().clone();
-        assert_eq!((asset.mime.as_str(), asset.data.len()), ("image/svg+xml", svg.len()));
+        assert_eq!((asset.mime.as_str(), asset.data.len()), ("image/svg+xml", svg.len() as u64));
         assert!(asset.link.as_deref().is_some_and(|l| std::path::Path::new(l).is_absolute()), "the link is held as the file it names");
     }
 }

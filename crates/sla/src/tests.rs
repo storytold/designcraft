@@ -359,7 +359,9 @@ fn embedded_images_are_inflated() {
     let d = import(&sla).document;
     let Content::Graphic(g) = &d.spreads[0].items[1].content else { panic!("not an image") };
     let asset = &d.assets[&g.asset];
-    assert_eq!((asset.data.as_slice(), asset.mime.as_str(), asset.link.as_deref()), (&svg[..], "image/svg+xml", None));
+    assert_eq!(asset.data.resident().as_deref().map(Vec::as_slice), Some(&svg[..]));
+    assert_eq!(asset.mime.as_str(), "image/svg+xml");
+    assert_eq!(asset.link.as_deref(), None);
     // Broken embedded data is a warning, not a failure.
     let broken = DOC_15.replace(r#"PFILE="pic.png""#, r#"ImageData="!!!""#);
     assert!(import(&broken).warnings.iter().any(|w| w.contains("embedded image")));

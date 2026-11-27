@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "designcraft-sla"
-version = "0.17.0"
+version = "0.21.1"
 dependencies = [
  "designcraft-color",
  "designcraft-doc",
