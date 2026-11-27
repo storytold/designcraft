@@ -261,6 +261,38 @@ fn vertical_justification_uses_the_frame_grid_over_a_baseline_grid() {
     assert!(rows.top + (last.round() + 1.0) * rows.pitch + rows.cell > 400.0 + 1e-6, "a row is left below the last line ({last})");
 }
 
+/// The row the first of `lines` one-line paragraphs sits on, in a frame grid of 12 pt cells 18 pt
+/// apart whose rows run `extent` pt, justified `vj`.
+fn justified_first_row(vertical: bool, extent: f64, lines: usize, vj: designcraft_doc::VerticalJustification) -> i64 {
+    let text = vec!["AB"; lines].join("\n");
+    let rect = if vertical { Rect::new(0.0, 0.0, extent, 400.0) } else { Rect::new(0.0, 0.0, 400.0, extent) };
+    let (mut d, sid, fid) = doc_with(&text, rect, aligned(R::EmCenter));
+    let st = d.story_mut(sid).unwrap();
+    st.frame_grid = Some(FrameGrid { size: 12.0, line_aki: 6.0, ..Default::default() });
+    st.vertical = vertical;
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+    tf.options.vertical_justification = vj;
+    let rows = frame_specs(&d, sid)[0].frame_grid.expect("a frame grid frame has rows");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let at = (em_box(all_lines(&cs)[0]).0 - rows.top) / rows.pitch;
+    assert!((at - at.round()).abs() < 1e-6, "a line between rows ({at})");
+    at.round() as i64
+}
+
+/// Frame extent, lines, and the first line's row with Center and with Bottom, as measured in
+/// InDesign 20.4.1: 300 pt holds 17 rows and 282 pt holds 16.
+const JUSTIFIED_ROWS: [(f64, usize, i64, i64); 4] = [(300.0, 2, 7, 15), (300.0, 3, 7, 14), (282.0, 2, 7, 14), (282.0, 3, 6, 13)];
+
+#[test]
+fn centre_leaves_the_odd_row_after_the_lines() {
+    use designcraft_doc::VerticalJustification::{Bottom, Center};
+    for (extent, lines, centre, bottom) in JUSTIFIED_ROWS {
+        assert_eq!(justified_first_row(false, extent, lines, Center), centre, "Center, {extent} pt, {lines} lines");
+        assert_eq!(justified_first_row(false, extent, lines, Bottom), bottom, "Bottom, {extent} pt, {lines} lines");
+    }
+}
+
 #[test]
 fn space_before_moves_a_line_to_the_next_row_it_reaches() {
     // Space before 20 takes the next line past row 1 to row 2; 5 keeps it on row 1.

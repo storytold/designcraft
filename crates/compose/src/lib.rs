@@ -6410,7 +6410,10 @@ fn vertical_justify(
                 // The last baseline stays above the bottom of the text, and the rows above it fit.
                 let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
                 // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
-                let target = if center { (space / 2.0 / inc).round().min(most) } else { most };
+                // In a frame grid Center counts the free rows and leaves the odd one after the
+                // lines (InDesign, observed: 2 lines in 17 rows start on row 7, not 8).
+                let middle = if rows_step.is_some() { ((space / inc + 1e-9).floor() / 2.0).floor() } else { (space / 2.0 / inc).round() };
+                let target = if center { middle.min(most) } else { most };
                 // A shaped frame can narrow and widen again, so the target step may not fit: take
                 // the fitting step nearest it, up to `most` (the lower one on a tie, and no step
                 // when that is as near), and leave the lines in place when none within
